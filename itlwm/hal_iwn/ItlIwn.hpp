@@ -57,6 +57,7 @@
 
 #include <IOKit/network/IOEthernetController.h>
 #include <IOKit/IOWorkLoop.h>
+#include <IOKit/IOCommandGate.h>
 #include <IOKit/network/IOGatedOutputQueue.h>
 #include <libkern/c++/OSString.h>
 #include <IOKit/IOService.h>
@@ -86,6 +87,11 @@ public:
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
     int iwn_build_ap_rxon(struct iwn_rxon *, const struct ItlHalApConfig *);
+
+    /* One-ticket, real IWN management-TX path for the SAE relay. */
+    IOReturn submitSaeAuthFrame(
+        const struct ItlSaeAuthTxRequestV1 *request) override;
+    void cancelSaeAuthFrame(uint64_t ticket) override;
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -216,8 +222,11 @@ public:
     static void        iwn5000_update_sched(struct iwn_softc *, int, int, uint8_t,
                 uint16_t);
     static void        iwn5000_reset_sched(struct iwn_softc *, int, int);
+    bool       iwn_sae_tx_commit_doorbell(struct iwn_softc *, uint64_t,
+                int, int);
     int        iwn_tx(struct iwn_softc *, mbuf_t,
-                struct ieee80211_node *);
+                struct ieee80211_node *,
+                const struct ItlSaeAuthTxRequestV1 * = nullptr);
     int        iwn_rval2ridx(int);
     static void        iwn_start(struct _ifnet *);
     static void        iwn_watchdog(struct _ifnet *);
@@ -271,6 +280,25 @@ public:
     int        iwn_rxon_ht40_enabled(struct iwn_softc *);
     int        iwn_auth(struct iwn_softc *, int);
     int        iwn_run(struct iwn_softc *);
+    static IOReturn iwn_sae_tx_gate_action(OSObject *, void *, void *,
+                void *, void *);
+    IOReturn   iwn_sae_tx_submit_on_gate(struct iwn_softc *,
+                const struct ItlSaeAuthTxRequestV1 *);
+    static void iwn_sae_tx_task(void *);
+    bool       iwn_sae_tx_queue_terminal(struct iwn_softc *,
+                const struct ItlSaeAuthTransportEventV1 *, uint32_t);
+    void       iwn_sae_tx_report_terminal(struct iwn_softc *,
+                struct iwn_tx_data *, int32_t);
+    void       iwn_sae_tx_retire_unsubmitted(struct iwn_softc *, uint64_t);
+    void       iwn_sae_tx_cancel_all(struct iwn_softc *);
+    void       iwn_sae_tx_stop_begin(struct iwn_softc *);
+    void       iwn_sae_tx_reopen(struct iwn_softc *);
+    void       iwn_sae_tx_detach_begin(struct iwn_softc *);
+    bool       iwn_sae_tx_snapshot_reset(struct iwn_softc *,
+                struct ItlSaeAuthTransportEventV1 *);
+    void       iwn_sae_tx_emit_reset_event(struct iwn_softc *,
+                const struct ItlSaeAuthTransportEventV1 *);
+    void       iwn_sae_tx_purge(struct iwn_softc *);
     static void        iwn_mfp_pae_task(void *);
     static int         iwn_pae_mfp_txn_submit(struct ieee80211com *,
                 u_int64_t, u_int64_t, struct ieee80211_node *,
@@ -341,6 +369,8 @@ public:
     
 public:
     IOInterruptEventSource* fInterrupt;
+    /* Private driver workloop gate; never AirportItlwm's policy gate. */
+    IOCommandGate *fSaeTxGate;
     struct pci_attach_args pci;
     struct iwn_softc com;
 };

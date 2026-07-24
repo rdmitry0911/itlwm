@@ -92,6 +92,7 @@ clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
 
 bash "$root/scripts/test_tahoe_sae_controller_relay_contract.sh"
 bash "$root/scripts/test_tahoe_iwx_sae_auth_transport_contract.sh"
+bash "$root/scripts/test_tahoe_iwn_sae_auth_transport_contract.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path

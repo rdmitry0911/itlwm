@@ -100,6 +100,812 @@ iwn_mfp_pae_lab_opted_in(void)
 #endif
 }
 
+/* SAE transport is experimental until the selected-BSS state owner and the
+ * association bridge exist.  Keep even its physical Algorithm-3 admission
+ * in the disposable software-PMF laboratory artifact. */
+static bool
+iwn_sae_auth_transport_lab_opted_in(void)
+{
+#if IWN_SOFTWARE_PMF_LAB_BUILD
+    return true;
+#else
+    return false;
+#endif
+}
+
+namespace {
+
+struct IwnSaeTxGateArgs {
+    struct ItlSaeAuthTxRequestV1 request;
+    IOReturn rc;
+};
+
+static void
+iwn_sae_tx_make_terminal_event(const struct ItlSaeAuthTxRequestV1 *request,
+    int32_t result, struct ItlSaeAuthTransportEventV1 *event)
+{
+    if (request == NULL || event == NULL)
+        return;
+    explicit_bzero(event, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->kind = kItlSaeAuthTransportEventTxComplete;
+    event->result = result;
+    event->association_epoch = request->association_epoch;
+    event->relay_generation = request->relay_generation;
+    event->ticket = request->ticket;
+    event->phase = request->phase;
+    event->auth_status = request->auth_status;
+    event->wire_transaction = request->wire_transaction;
+    memcpy(event->bssid, request->bssid, sizeof(event->bssid));
+    memcpy(event->sta, request->sta, sizeof(event->sta));
+}
+
+static void
+iwn_sae_tx_make_terminal_event_from_data(const struct iwn_tx_data *data,
+    int32_t result, struct ItlSaeAuthTransportEventV1 *event)
+{
+    if (data == NULL || event == NULL)
+        return;
+    explicit_bzero(event, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->kind = kItlSaeAuthTransportEventTxComplete;
+    event->result = result;
+    event->association_epoch = data->sae_association_epoch;
+    event->relay_generation = data->sae_relay_generation;
+    event->ticket = data->sae_ticket;
+    event->phase = data->sae_phase;
+    event->auth_status = data->sae_auth_status;
+    event->wire_transaction = data->sae_wire_transaction;
+    memcpy(event->bssid, data->sae_bssid, sizeof(event->bssid));
+    memcpy(event->sta, data->sae_sta, sizeof(event->sta));
+}
+
+static void
+iwn_sae_tx_data_clear(struct iwn_tx_data *data)
+{
+    if (data == NULL)
+        return;
+    data->sae_active = false;
+    data->sae_phase = 0;
+    data->sae_auth_status = 0;
+    data->sae_wire_transaction = 0;
+    data->sae_association_epoch = 0;
+    data->sae_relay_generation = 0;
+    data->sae_ticket = 0;
+    data->sae_lifecycle_generation = 0;
+    explicit_bzero(data->sae_bssid, sizeof(data->sae_bssid));
+    explicit_bzero(data->sae_sta, sizeof(data->sae_sta));
+}
+
+/*
+ * The lifecycle lock guards private-gate lifetime, not the descriptor owner.
+ * It is deliberately separate from sc_sae_tx_lock, which completion may take
+ * in interrupt context.  The lock order wherever both are needed is
+ * lifecycle -> SAE leaf.
+ */
+static bool
+iwn_sae_tx_lifecycle_enter(struct iwn_softc *sc, bool allow_closed)
+{
+    bool entered = false;
+
+    if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL)
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_detaching &&
+        (!sc->sc_sae_tx_lifecycle_closed || allow_closed)) {
+        sc->sc_sae_tx_lifecycle_active++;
+        entered = true;
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return entered;
+}
+
+static void
+iwn_sae_tx_lifecycle_leave(struct iwn_softc *sc)
+{
+    if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL)
+        return;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    KASSERT(sc->sc_sae_tx_lifecycle_active != 0,
+        "sc->sc_sae_tx_lifecycle_active != 0");
+    if (sc->sc_sae_tx_lifecycle_active != 0)
+        sc->sc_sae_tx_lifecycle_active--;
+    IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+static void
+iwn_sae_tx_lifecycle_close(struct iwn_softc *sc, bool detaching)
+{
+    if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL)
+        return;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    sc->sc_sae_tx_lifecycle_closed = true;
+    if (detaching)
+        sc->sc_sae_tx_detaching = true;
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+static bool
+iwn_sae_tx_lifecycle_is_open(struct iwn_softc *sc)
+{
+    bool open = false;
+
+    if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL)
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    open = !sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching;
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return open;
+}
+
+static void
+iwn_sae_tx_lifecycle_drain(struct iwn_softc *sc)
+{
+    if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL)
+        return;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    while (sc->sc_sae_tx_lifecycle_active != 0)
+        IOLockSleep(sc->sc_sae_tx_lifecycle_lock, sc, THREAD_UNINT);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+static void
+iwn_sae_tx_generation_advance_locked(struct iwn_softc *sc)
+{
+    if (++sc->sc_sae_tx_generation == 0)
+        ++sc->sc_sae_tx_generation;
+}
+
+static bool
+iwn_sae_tx_request_is_live(struct iwn_softc *sc, uint64_t ticket)
+{
+    bool live = false;
+
+    if (sc == NULL || ticket == 0 || sc->sc_sae_tx_lifecycle_lock == NULL ||
+        sc->sc_sae_tx_lock == NULL)
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        live = !sc->sc_sae_tx_stopping && sc->sc_sae_tx_active &&
+            sc->sc_sae_tx_active_ticket == ticket &&
+            sc->sc_sae_tx_active_generation == sc->sc_sae_tx_generation &&
+            ticket > sc->sc_sae_tx_cancel_through;
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return live;
+}
+
+static void
+iwn_sae_tx_schedule_task(struct iwn_softc *sc, bool allow_closed)
+{
+    if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL ||
+        systq == NULL)
+        return;
+
+    /* Gate-close and enqueue share this lock: detach cannot miss a task
+     * requeued by a completion that it is about to barrier and destroy. */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if ((!sc->sc_sae_tx_lifecycle_closed || allow_closed) &&
+        !sc->sc_sae_tx_detaching && sc->sc_sae_tx_task_ready)
+        (void)task_add(systq, &sc->sae_tx_task);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+} // namespace
+
+IOReturn ItlIwn::
+submitSaeAuthFrame(const struct ItlSaeAuthTxRequestV1 *request)
+{
+    struct iwn_softc *sc = &com;
+    IwnSaeTxGateArgs args;
+    IOCommandGate *gate = NULL;
+    IOReturn rc = kIOReturnNotReady;
+
+    if (!itl_sae_auth_transport_request_is_well_formed(request))
+        return kIOReturnBadArgument;
+    if (!iwn_sae_auth_transport_lab_opted_in())
+        return kIOReturnUnsupported;
+    if (!iwn_sae_tx_lifecycle_enter(sc, false))
+        return kIOReturnNotReady;
+
+    /*
+     * Admission and gate retention share the lifecycle lock.  Detach closes
+     * it before removing fSaeTxGate, and drains this lease before freeing the
+     * softc storage, so a copied submit never dereferences a stale gate.
+     */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching &&
+        sc->sc_sae_tx_task_ready && fSaeTxGate != NULL &&
+        sc->sc_sae_tx_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        if (request->ticket <= sc->sc_sae_tx_cancel_through)
+            rc = kIOReturnAborted;
+        else if (sc->sc_sae_tx_stopping || sc->sc_sae_tx_active ||
+                 sc->sc_sae_tx_event_count != 0)
+            rc = kIOReturnNotReady;
+        else {
+            sc->sc_sae_tx_active = true;
+            sc->sc_sae_tx_doorbelled = false;
+            sc->sc_sae_tx_active_ticket = request->ticket;
+            sc->sc_sae_tx_active_generation = sc->sc_sae_tx_generation;
+            iwn_sae_tx_make_terminal_event(request, EIO,
+                &sc->sc_sae_tx_active_event);
+            sc->sc_sae_tx_last_event_valid = false;
+            explicit_bzero(&sc->sc_sae_tx_last_event,
+                sizeof(sc->sc_sae_tx_last_event));
+            gate = fSaeTxGate;
+            gate->retain();
+            rc = kIOReturnSuccess;
+        }
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    if (rc != kIOReturnSuccess) {
+        iwn_sae_tx_lifecycle_leave(sc);
+        return rc;
+    }
+
+    explicit_bzero(&args, sizeof(args));
+    memcpy(&args.request, request, sizeof(args.request));
+    args.rc = kIOReturnNotReady;
+    /*
+     * This is intentionally an IWN-private workloop gate.  It serializes the
+     * bounded builder/TX leaf with IWN output and completion ownership, but
+     * never re-enters AirportItlwm's controller policy gate.
+     */
+    rc = gate->attemptAction(&ItlIwn::iwn_sae_tx_gate_action, &args);
+    gate->release();
+    if (rc == kIOReturnCannotLock)
+        rc = kIOReturnNotReady;
+    if (rc != kIOReturnSuccess)
+        iwn_sae_tx_retire_unsubmitted(sc, request->ticket);
+    iwn_sae_tx_lifecycle_leave(sc);
+    explicit_bzero(&args, sizeof(args));
+    return rc;
+}
+
+void ItlIwn::
+cancelSaeAuthFrame(uint64_t ticket)
+{
+    struct iwn_softc *sc = &com;
+
+    if (ticket == 0 || !iwn_sae_tx_lifecycle_enter(sc, true))
+        return;
+    if (sc->sc_sae_tx_lock == NULL) {
+        iwn_sae_tx_lifecycle_leave(sc);
+        return;
+    }
+
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (ticket > sc->sc_sae_tx_cancel_through)
+        sc->sc_sae_tx_cancel_through = ticket;
+    /* A pre-doorbell reservation owns no descriptor and has no event. */
+    if (sc->sc_sae_tx_active &&
+        sc->sc_sae_tx_active_ticket == ticket &&
+        !sc->sc_sae_tx_doorbelled) {
+        sc->sc_sae_tx_active = false;
+        sc->sc_sae_tx_active_ticket = 0;
+        sc->sc_sae_tx_active_generation = 0;
+        explicit_bzero(&sc->sc_sae_tx_active_event,
+            sizeof(sc->sc_sae_tx_active_event));
+    }
+    if (sc->sc_sae_tx_last_event_valid &&
+        sc->sc_sae_tx_last_event.ticket <= sc->sc_sae_tx_cancel_through) {
+        sc->sc_sae_tx_last_event_valid = false;
+        explicit_bzero(&sc->sc_sae_tx_last_event,
+            sizeof(sc->sc_sae_tx_last_event));
+    }
+    if (!sc->sc_sae_tx_active && sc->sc_sae_tx_event_count != 0) {
+        explicit_bzero(sc->sc_sae_tx_eventq,
+            sizeof(sc->sc_sae_tx_eventq));
+        sc->sc_sae_tx_event_head = 0;
+        sc->sc_sae_tx_event_tail = 0;
+        sc->sc_sae_tx_event_count = 0;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    iwn_sae_tx_lifecycle_leave(sc);
+}
+
+IOReturn ItlIwn::
+iwn_sae_tx_gate_action(OSObject *owner, void *arg0, void * /*arg1*/,
+    void * /*arg2*/, void * /*arg3*/)
+{
+    ItlIwn *that = OSDynamicCast(ItlIwn, owner);
+    IwnSaeTxGateArgs *args = (IwnSaeTxGateArgs *)arg0;
+
+    if (that == NULL || args == NULL ||
+        !itl_sae_auth_transport_request_is_well_formed(&args->request))
+        return kIOReturnBadArgument;
+    args->rc = that->iwn_sae_tx_submit_on_gate(&that->com, &args->request);
+    return args->rc;
+}
+
+IOReturn ItlIwn::
+iwn_sae_tx_submit_on_gate(struct iwn_softc *sc,
+    const struct ItlSaeAuthTxRequestV1 *request)
+{
+    struct ieee80211com *ic;
+    struct _ifnet *ifp;
+    struct ieee80211_node *ni = NULL;
+    mbuf_t m = NULL;
+    IOReturn rc = kIOReturnError;
+    int error;
+
+    if (sc == NULL || !itl_sae_auth_transport_request_is_well_formed(request))
+        return kIOReturnBadArgument;
+    ic = &sc->sc_ic;
+    ifp = IC2IFP(ic);
+    if (!iwn_sae_tx_request_is_live(sc, request->ticket)) {
+        iwn_sae_tx_retire_unsubmitted(sc, request->ticket);
+        return kIOReturnAborted;
+    }
+    if (!(ifp->if_flags & IFF_RUNNING) || sc->qfullmsk != 0 ||
+        ic->ic_bss == NULL) {
+        iwn_sae_tx_retire_unsubmitted(sc, request->ticket);
+        return kIOReturnNotReady;
+    }
+
+    ni = ieee80211_ref_node(ic->ic_bss);
+    if (ni == NULL)
+        goto out;
+    m = ieee80211_sae_auth_frame_build(ic, ni, request);
+    if (m == NULL) {
+        rc = kIOReturnNoMemory;
+        goto out;
+    }
+
+    /* Cancellation or a reset may have won during bounded frame assembly. */
+    if (!iwn_sae_tx_request_is_live(sc, request->ticket)) {
+        rc = kIOReturnAborted;
+        goto out;
+    }
+
+    /*
+     * The held node ref prevents UAF only.  These checks make the on-air
+     * frame belong to the current selected BSS and current association epoch,
+     * rather than a former scan candidate or a stale reconnect.
+     */
+    if (ic->ic_state != IEEE80211_S_AUTH || ic->ic_bss != ni ||
+        ieee80211_pae_assoc_epoch_current(ic) != request->association_epoch ||
+        memcmp(ni->ni_macaddr, request->bssid, sizeof(request->bssid)) != 0 ||
+        memcmp(ni->ni_bssid, request->bssid, sizeof(request->bssid)) != 0 ||
+        memcmp(ic->ic_myaddr, request->sta, sizeof(request->sta)) != 0)
+        goto out;
+
+    error = iwn_tx(sc, m, ni, request);
+    /* iwn_tx() consumes m on every accepted or rejected direct path. */
+    m = NULL;
+    if (error != 0) {
+        rc = error == ENOMEM ? kIOReturnNoMemory : kIOReturnError;
+        goto out;
+    }
+
+    if (ifp->netStat != NULL)
+        ifp->netStat->outputPackets++;
+    if (ifp->if_flags & IFF_UP) {
+        sc->sc_tx_timer = 5;
+        ifp->if_timer = 1;
+    }
+    /* The accepted descriptor owns exactly this node reference to TX_DONE. */
+    ni = NULL;
+    return kIOReturnSuccess;
+
+out:
+    if (m != NULL)
+        mbuf_freem(m);
+    if (ni != NULL)
+        ieee80211_release_node(ic, ni);
+    iwn_sae_tx_retire_unsubmitted(sc, request->ticket);
+    return rc;
+}
+
+bool ItlIwn::
+iwn_sae_tx_commit_doorbell(struct iwn_softc *sc, uint64_t ticket,
+    int qid, int next_cur)
+{
+    bool committed = false;
+
+    if (sc == NULL || ticket == 0 ||
+        sc->sc_sae_tx_lifecycle_lock == NULL || sc->sc_sae_tx_lock == NULL)
+        return false;
+
+    /*
+     * Stop/cancel and the hardware doorbell linearize under the lifecycle
+     * then SAE leaf locks.  Thus cancellation either wins before the WRPTR
+     * write or observes a descriptor that remains firmware-owned to its
+     * native completion/reset; there is no half-accepted physical TX.
+     */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        committed = !sc->sc_sae_tx_stopping && sc->sc_sae_tx_active &&
+            !sc->sc_sae_tx_doorbelled &&
+            sc->sc_sae_tx_active_ticket == ticket &&
+            sc->sc_sae_tx_active_generation == sc->sc_sae_tx_generation &&
+            ticket > sc->sc_sae_tx_cancel_through;
+        if (committed) {
+            sc->sc_sae_tx_doorbelled = true;
+            IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | next_cur);
+        }
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return committed;
+}
+
+bool ItlIwn::
+iwn_sae_tx_queue_terminal(struct iwn_softc *sc,
+    const struct ItlSaeAuthTransportEventV1 *event,
+    uint32_t lifecycle_generation)
+{
+    bool queued = false;
+    bool schedule_allow_closed = false;
+
+    if (sc == NULL || event == NULL || sc->sc_sae_tx_lock == NULL ||
+        !itl_sae_auth_transport_event_is_well_formed(event))
+        return false;
+
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (!sc->sc_sae_tx_active || !sc->sc_sae_tx_doorbelled ||
+        sc->sc_sae_tx_active_ticket != event->ticket ||
+        sc->sc_sae_tx_active_generation != lifecycle_generation) {
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+        return false;
+    }
+
+    /* Native TX_DONE (or reset reclaim) is the sole descriptor release. */
+    sc->sc_sae_tx_active = false;
+    sc->sc_sae_tx_doorbelled = false;
+    sc->sc_sae_tx_active_ticket = 0;
+    sc->sc_sae_tx_active_generation = 0;
+    explicit_bzero(&sc->sc_sae_tx_active_event,
+        sizeof(sc->sc_sae_tx_active_event));
+    if (event->ticket > sc->sc_sae_tx_cancel_through) {
+        /* One live descriptor means FIFO saturation is an ownership bug,
+         * not backpressure.  Preserve the present identity as a reset so
+         * the controller cannot wait forever behind stale queued records. */
+        KASSERT(sc->sc_sae_tx_event_count < IWN_SAE_TX_EVENTQ_LEN,
+            "sc->sc_sae_tx_event_count < IWN_SAE_TX_EVENTQ_LEN");
+        if (sc->sc_sae_tx_event_count >= IWN_SAE_TX_EVENTQ_LEN) {
+            struct iwn_sae_tx_event_entry *entry;
+
+            explicit_bzero(sc->sc_sae_tx_eventq,
+                sizeof(sc->sc_sae_tx_eventq));
+            sc->sc_sae_tx_event_head = 0;
+            sc->sc_sae_tx_event_tail = 0;
+            sc->sc_sae_tx_event_count = 0;
+            entry = &sc->sc_sae_tx_eventq[0];
+            entry->event = *event;
+            entry->event.result = EIO;
+            entry->is_reset = true;
+            sc->sc_sae_tx_last_event = entry->event;
+            sc->sc_sae_tx_last_event_valid = true;
+            sc->sc_sae_tx_event_tail = 1;
+            sc->sc_sae_tx_event_count = 1;
+            queued = true;
+            schedule_allow_closed = true;
+        } else {
+            struct iwn_sae_tx_event_entry *entry =
+                &sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_tail];
+            entry->event = *event;
+            entry->is_reset = false;
+            sc->sc_sae_tx_last_event = *event;
+            sc->sc_sae_tx_last_event_valid = true;
+            sc->sc_sae_tx_event_tail = (sc->sc_sae_tx_event_tail + 1) %
+                IWN_SAE_TX_EVENTQ_LEN;
+            sc->sc_sae_tx_event_count++;
+            queued = true;
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+
+    /* A cancelled ticket reaches terminal state but is deliberately silent. */
+    if (queued)
+        iwn_sae_tx_schedule_task(sc, schedule_allow_closed);
+    return true;
+}
+
+void ItlIwn::
+iwn_sae_tx_report_terminal(struct iwn_softc *sc, struct iwn_tx_data *data,
+    int32_t result)
+{
+    struct ItlSaeAuthTransportEventV1 event;
+    uint32_t lifecycle_generation;
+
+    if (data == NULL || !data->sae_active)
+        return;
+    lifecycle_generation = data->sae_lifecycle_generation;
+    iwn_sae_tx_make_terminal_event_from_data(data, result, &event);
+    iwn_sae_tx_data_clear(data);
+    (void)iwn_sae_tx_queue_terminal(sc, &event, lifecycle_generation);
+    explicit_bzero(&event, sizeof(event));
+}
+
+void ItlIwn::
+iwn_sae_tx_retire_unsubmitted(struct iwn_softc *sc, uint64_t ticket)
+{
+    if (sc == NULL || ticket == 0 || sc->sc_sae_tx_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (ticket > sc->sc_sae_tx_cancel_through)
+        sc->sc_sae_tx_cancel_through = ticket;
+    /* This helper is only valid before the hardware doorbell. */
+    if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled &&
+        sc->sc_sae_tx_active_ticket == ticket) {
+        sc->sc_sae_tx_active = false;
+        sc->sc_sae_tx_active_ticket = 0;
+        sc->sc_sae_tx_active_generation = 0;
+        explicit_bzero(&sc->sc_sae_tx_active_event,
+            sizeof(sc->sc_sae_tx_active_event));
+    }
+    if (sc->sc_sae_tx_last_event_valid &&
+        sc->sc_sae_tx_last_event.ticket <= sc->sc_sae_tx_cancel_through) {
+        sc->sc_sae_tx_last_event_valid = false;
+        explicit_bzero(&sc->sc_sae_tx_last_event,
+            sizeof(sc->sc_sae_tx_last_event));
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+void ItlIwn::
+iwn_sae_tx_stop_begin(struct iwn_softc *sc)
+{
+    if (sc == NULL)
+        return;
+
+    /* Do not wait here: iwn_hw_stop() is also a calibration-reset edge. */
+    iwn_sae_tx_lifecycle_close(sc, false);
+    if (sc->sc_sae_tx_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    sc->sc_sae_tx_stopping = true;
+    iwn_sae_tx_generation_advance_locked(sc);
+    /* A reservation not yet doorbelled has no physical owner to retain. */
+    if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled) {
+        if (sc->sc_sae_tx_active_ticket > sc->sc_sae_tx_cancel_through)
+            sc->sc_sae_tx_cancel_through = sc->sc_sae_tx_active_ticket;
+        sc->sc_sae_tx_active = false;
+        sc->sc_sae_tx_active_ticket = 0;
+        sc->sc_sae_tx_active_generation = 0;
+        explicit_bzero(&sc->sc_sae_tx_active_event,
+            sizeof(sc->sc_sae_tx_active_event));
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+void ItlIwn::
+iwn_sae_tx_cancel_all(struct iwn_softc *sc)
+{
+    if (sc == NULL || sc->sc_sae_tx_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (sc->sc_sae_tx_active_ticket > sc->sc_sae_tx_cancel_through)
+        sc->sc_sae_tx_cancel_through = sc->sc_sae_tx_active_ticket;
+    if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled) {
+        sc->sc_sae_tx_active = false;
+        sc->sc_sae_tx_active_ticket = 0;
+        sc->sc_sae_tx_active_generation = 0;
+        explicit_bzero(&sc->sc_sae_tx_active_event,
+            sizeof(sc->sc_sae_tx_active_event));
+    }
+    sc->sc_sae_tx_last_event_valid = false;
+    explicit_bzero(&sc->sc_sae_tx_last_event,
+        sizeof(sc->sc_sae_tx_last_event));
+    /* Deferred normal completions are stale at a hardware-reset boundary. */
+    explicit_bzero(sc->sc_sae_tx_eventq, sizeof(sc->sc_sae_tx_eventq));
+    sc->sc_sae_tx_event_head = 0;
+    sc->sc_sae_tx_event_tail = 0;
+    sc->sc_sae_tx_event_count = 0;
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+void ItlIwn::
+iwn_sae_tx_reopen(struct iwn_softc *sc)
+{
+    if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL ||
+        sc->sc_sae_tx_lock == NULL)
+        return;
+
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_detaching) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        iwn_sae_tx_generation_advance_locked(sc);
+        sc->sc_sae_tx_stopping = false;
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+        sc->sc_sae_tx_lifecycle_closed = false;
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+bool ItlIwn::
+iwn_sae_tx_snapshot_reset(struct iwn_softc *sc,
+    struct ItlSaeAuthTransportEventV1 *snapshot)
+{
+    bool have_snapshot = false;
+
+    if (sc == NULL || snapshot == NULL || sc->sc_sae_tx_lock == NULL)
+        return false;
+    explicit_bzero(snapshot, sizeof(*snapshot));
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (sc->sc_sae_tx_active && sc->sc_sae_tx_doorbelled &&
+        sc->sc_sae_tx_active_ticket > sc->sc_sae_tx_cancel_through &&
+        itl_sae_auth_transport_event_is_well_formed(
+            &sc->sc_sae_tx_active_event)) {
+        *snapshot = sc->sc_sae_tx_active_event;
+        snapshot->result = EIO;
+        have_snapshot = true;
+    } else if (sc->sc_sae_tx_event_count != 0) {
+        const struct ItlSaeAuthTransportEventV1 *event =
+            &sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_head].event;
+        if (event->ticket > sc->sc_sae_tx_cancel_through &&
+            itl_sae_auth_transport_event_is_well_formed(event)) {
+            *snapshot = *event;
+            snapshot->result = EIO;
+            have_snapshot = true;
+        }
+    } else if (sc->sc_sae_tx_last_event_valid &&
+        sc->sc_sae_tx_last_event.ticket > sc->sc_sae_tx_cancel_through &&
+        itl_sae_auth_transport_event_is_well_formed(
+            &sc->sc_sae_tx_last_event)) {
+        *snapshot = sc->sc_sae_tx_last_event;
+        snapshot->result = EIO;
+        have_snapshot = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    return have_snapshot;
+}
+
+void ItlIwn::
+iwn_sae_tx_emit_reset_event(struct iwn_softc *sc,
+    const struct ItlSaeAuthTransportEventV1 *event)
+{
+    bool queued = false;
+
+    if (sc == NULL || event == NULL || sc->sc_sae_tx_lock == NULL ||
+        !itl_sae_auth_transport_event_is_well_formed(event) ||
+        !iwn_sae_tx_lifecycle_enter(sc, true))
+        return;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (!sc->sc_sae_tx_detaching && sc->sc_sae_tx_task_ready &&
+        sc->sc_sae_tx_event_count < IWN_SAE_TX_EVENTQ_LEN) {
+        struct iwn_sae_tx_event_entry *entry =
+            &sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_tail];
+        entry->event = *event;
+        entry->is_reset = true;
+        sc->sc_sae_tx_event_tail = (sc->sc_sae_tx_event_tail + 1) %
+            IWN_SAE_TX_EVENTQ_LEN;
+        sc->sc_sae_tx_event_count++;
+        queued = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    if (queued)
+        /* A reset notification is the one allowed post-close delivery. */
+        iwn_sae_tx_schedule_task(sc, true);
+    iwn_sae_tx_lifecycle_leave(sc);
+}
+
+void ItlIwn::
+iwn_sae_tx_purge(struct iwn_softc *sc)
+{
+    if (sc == NULL || sc->sc_sae_tx_lock == NULL)
+        return;
+
+    /* Caller has reset/reclaimed every descriptor before forgetting ownership. */
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    explicit_bzero(sc->sc_sae_tx_eventq, sizeof(sc->sc_sae_tx_eventq));
+    sc->sc_sae_tx_event_head = 0;
+    sc->sc_sae_tx_event_tail = 0;
+    sc->sc_sae_tx_event_count = 0;
+    sc->sc_sae_tx_active = false;
+    sc->sc_sae_tx_doorbelled = false;
+    sc->sc_sae_tx_active_ticket = 0;
+    sc->sc_sae_tx_active_generation = 0;
+    explicit_bzero(&sc->sc_sae_tx_active_event,
+        sizeof(sc->sc_sae_tx_active_event));
+    sc->sc_sae_tx_last_event_valid = false;
+    explicit_bzero(&sc->sc_sae_tx_last_event,
+        sizeof(sc->sc_sae_tx_last_event));
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+void ItlIwn::
+iwn_sae_tx_task(void *arg)
+{
+    struct iwn_softc *sc = (struct iwn_softc *)arg;
+    struct ieee80211com *ic;
+    struct ItlSaeAuthTransportEventV1 event;
+    bool have_event = false;
+    bool is_reset = false;
+    bool suppressed = false;
+    bool more = false;
+    bool deliver_normal = false;
+
+    if (sc == NULL || !iwn_sae_tx_lifecycle_enter(sc, true))
+        return;
+    ic = &sc->sc_ic;
+    explicit_bzero(&event, sizeof(event));
+
+    if (sc->sc_sae_tx_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        if (sc->sc_sae_tx_event_count != 0) {
+            struct iwn_sae_tx_event_entry *entry =
+                &sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_head];
+            event = entry->event;
+            is_reset = entry->is_reset;
+            explicit_bzero(entry, sizeof(*entry));
+            sc->sc_sae_tx_event_head = (sc->sc_sae_tx_event_head + 1) %
+                IWN_SAE_TX_EVENTQ_LEN;
+            sc->sc_sae_tx_event_count--;
+            suppressed = !is_reset &&
+                event.ticket <= sc->sc_sae_tx_cancel_through;
+            more = sc->sc_sae_tx_event_count != 0;
+            have_event = true;
+        }
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    deliver_normal = iwn_sae_tx_lifecycle_is_open(sc);
+
+    if (have_event && !suppressed &&
+        (is_reset || deliver_normal) &&
+        itl_sae_auth_transport_event_is_well_formed(&event) &&
+        ic->ic_event_handler != NULL) {
+        /* Deferred task context only; never firmware completion/IRQ context. */
+        (*ic->ic_event_handler)(ic,
+            is_reset ? IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET :
+            IEEE80211_EVT_SAE_AUTH_TRANSPORT, &event);
+    }
+    explicit_bzero(&event, sizeof(event));
+    /* Keep the lease until any requeue is admitted or rejected by close().
+     * Otherwise detach could drain, free the task storage, and race the
+     * post-callback task_add() below. */
+    if (more)
+        iwn_sae_tx_schedule_task(sc, false);
+    /* Detach drains this lease before it can release ic/softc storage. */
+    iwn_sae_tx_lifecycle_leave(sc);
+}
+
+void ItlIwn::
+iwn_sae_tx_detach_begin(struct iwn_softc *sc)
+{
+    IOCommandGate *gate;
+    bool task_ready = false;
+
+    if (sc == NULL)
+        return;
+    iwn_sae_tx_lifecycle_close(sc, true);
+    iwn_sae_tx_cancel_all(sc);
+    if (sc->sc_sae_tx_lifecycle_lock != NULL) {
+        IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+        task_ready = sc->sc_sae_tx_task_ready;
+        sc->sc_sae_tx_task_ready = false;
+        IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    }
+    if (task_ready && systq != NULL) {
+        (void)task_del(systq, &sc->sae_tx_task);
+        /* task_del() cannot retract a callback already copied by systq. */
+        taskq_barrier(systq);
+    }
+    iwn_sae_tx_lifecycle_drain(sc);
+
+    /* Close+drain makes a retained submit gate unreachable from now on. */
+    gate = fSaeTxGate;
+    fSaeTxGate = NULL;
+    if (gate != NULL) {
+        if (pci.workloop != NULL)
+            pci.workloop->removeEventSource(gate);
+        gate->release();
+    }
+}
+
 /*
  * IWN firmware has no reliable PMF-key command path.  A negotiated PMF
  * association therefore uses the existing net80211 software CCMP/BIP
@@ -475,8 +1281,8 @@ iwn_mfp_pae_publish_hooks(struct iwn_softc *sc, bool enabled)
 }
 
 /* Capability publication is intentionally independent of SAE.  It admits
- * only the completed software PMF owner; pure WPA3 remains gated on IWN's
- * absent Algorithm-3 peer transport. */
+ * only the completed software PMF owner; pure WPA3 remains gated on the
+ * absent selected-BSS SAE state owner and association bridge. */
 static void
 iwn_publish_mfp_capability(struct iwn_softc *sc)
 {
@@ -501,6 +1307,8 @@ iwn_publish_mfp_capability(struct iwn_softc *sc)
 
 bool ItlIwn::attach(IOPCIDevice *device)
 {
+    /* iwn_attach() may fail after publishing an event source; detach owns it. */
+    fSaeTxGate = NULL;
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
     if (!iwn_attach(&com, &pci)) {
@@ -517,6 +1325,8 @@ detach(IOPCIDevice *device)
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     struct iwn_softc *sc = &com;
 
+    /* Close direct Algorithm-3 TX before its gate, IRQ or DMA disappear. */
+    iwn_sae_tx_detach_begin(sc);
     /* Close the software-PMF producer before DMA, net80211 nodes, or systq
      * disappear.  This is safe on an early attach unwind as every helper
      * tolerates an uninitialised PMF lock. */
@@ -529,6 +1339,7 @@ detach(IOPCIDevice *device)
     
     for (int txq_i = 0; txq_i < nitems(sc->txq); txq_i++)
         iwn_free_tx_ring(sc, &sc->txq[txq_i]);
+    iwn_sae_tx_purge(sc);
     iwn_free_rx_ring(sc, &sc->rxq);
     iwn_free_sched(sc);
     iwn_free_ict(sc);
@@ -542,6 +1353,14 @@ detach(IOPCIDevice *device)
     if (sc->sc_mfp_pae_lock != NULL) {
         IOSimpleLockFree(sc->sc_mfp_pae_lock);
         sc->sc_mfp_pae_lock = NULL;
+    }
+    if (sc->sc_sae_tx_lock != NULL) {
+        IOSimpleLockFree(sc->sc_sae_tx_lock);
+        sc->sc_sae_tx_lock = NULL;
+    }
+    if (sc->sc_sae_tx_lifecycle_lock != NULL) {
+        IOLockFree(sc->sc_sae_tx_lifecycle_lock);
+        sc->sc_sae_tx_lifecycle_lock = NULL;
     }
     releaseAll();
 }
@@ -1076,6 +1895,49 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
         ((sc->rxchainmask >> 0) & 1);
 
     taskq_init();
+    sc->sc_sae_tx_lifecycle_lock = IOLockAlloc();
+    if (sc->sc_sae_tx_lifecycle_lock == NULL) {
+        XYLog("%s: SAE TX lifecycle unavailable\n", DEVNAME(sc));
+        goto fail4;
+    }
+    sc->sc_sae_tx_lifecycle_active = 0;
+    sc->sc_sae_tx_lifecycle_closed = true;
+    sc->sc_sae_tx_detaching = false;
+    sc->sc_sae_tx_task_ready = false;
+    sc->sc_sae_tx_lock = IOSimpleLockAlloc();
+    if (sc->sc_sae_tx_lock == NULL) {
+        XYLog("%s: SAE TX owner unavailable\n", DEVNAME(sc));
+        goto fail4;
+    }
+    sc->sc_sae_tx_active = false;
+    sc->sc_sae_tx_doorbelled = false;
+    sc->sc_sae_tx_stopping = true;
+    sc->sc_sae_tx_active_ticket = 0;
+    sc->sc_sae_tx_cancel_through = 0;
+    sc->sc_sae_tx_generation = 1;
+    sc->sc_sae_tx_active_generation = 0;
+    sc->sc_sae_tx_last_event_valid = false;
+    explicit_bzero(&sc->sc_sae_tx_active_event,
+        sizeof(sc->sc_sae_tx_active_event));
+    explicit_bzero(&sc->sc_sae_tx_last_event,
+        sizeof(sc->sc_sae_tx_last_event));
+    explicit_bzero(sc->sc_sae_tx_eventq, sizeof(sc->sc_sae_tx_eventq));
+    sc->sc_sae_tx_event_head = 0;
+    sc->sc_sae_tx_event_tail = 0;
+    sc->sc_sae_tx_event_count = 0;
+
+    /* This is IWN-private and intentionally not the controller policy gate. */
+    fSaeTxGate = IOCommandGate::commandGate(this);
+    if (fSaeTxGate == NULL || pa->workloop == NULL ||
+        pa->workloop->addEventSource(fSaeTxGate) != kIOReturnSuccess) {
+        if (fSaeTxGate != NULL) {
+            fSaeTxGate->release();
+            fSaeTxGate = NULL;
+        }
+        XYLog("%s: could not establish SAE TX workloop gate\n", DEVNAME(sc));
+        goto fail4;
+    }
+
     sc->sc_mfp_pae_lock = IOSimpleLockAlloc();
     if (sc->sc_mfp_pae_lock == NULL) {
         XYLog("%s: software PMF owner unavailable\n", DEVNAME(sc));
@@ -1212,7 +2074,9 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     timeout_set(&sc->calib_to, iwn_calib_timeout, sc);
 //    rw_init(&sc->sc_rwlock, "iwnlock");
     task_set(&sc->init_task, iwn_init_task, sc, "iwn_init_task");
+    task_set(&sc->sae_tx_task, iwn_sae_tx_task, sc, "iwn_sae_tx_task");
     task_set(&sc->mfp_pae_task, iwn_mfp_pae_task, sc, "iwn_mfp_pae_task");
+    sc->sc_sae_tx_task_ready = true;
     sc->sc_mfp_pae_task_ready = sc->sc_mfp_pae_lock != NULL;
     iwn_publish_mfp_capability(sc);
 
@@ -1992,6 +2856,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+        iwn_sae_tx_data_clear(data);
         paddr += sizeof (struct iwn_tx_cmd);
 
         error = bus_dmamap_create(sc->sc_dmat, MCLBYTES,
@@ -2012,10 +2877,20 @@ fail:    iwn_free_tx_ring(sc, ring);
 void ItlIwn::
 iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
 {
+    ItlIwn *that = container_of(sc, ItlIwn, com);
     int i;
 
     for (i = 0; i < IWN_TX_RING_COUNT; i++) {
         struct iwn_tx_data *data = &ring->data[i];
+
+        /* Reset has no native TX_DONE; retire an accepted SAE descriptor. */
+        if (data->sae_active) {
+            that->iwn_sae_tx_report_terminal(sc, data, EIO);
+            if (data->ni != NULL) {
+                ieee80211_release_node(&sc->sc_ic, data->ni);
+                data->ni = NULL;
+            }
+        }
 
         if (data->m != NULL) {
 //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
@@ -2027,6 +2902,7 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+        iwn_sae_tx_data_clear(data);
     }
     /* Clear TX descriptors. */
     memset(ring->desc, 0, ring->desc_dma.size);
@@ -2040,6 +2916,7 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
 void ItlIwn::
 iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
 {
+    ItlIwn *that = container_of(sc, ItlIwn, com);
     int i;
 
     iwn_dma_contig_free(&ring->desc_dma);
@@ -2047,6 +2924,15 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
 
     for (i = 0; i < IWN_TX_RING_COUNT; i++) {
         struct iwn_tx_data *data = &ring->data[i];
+
+        /* Detach/unwind may reclaim without a firmware completion. */
+        if (data->sae_active) {
+            that->iwn_sae_tx_report_terminal(sc, data, EIO);
+            if (data->ni != NULL) {
+                ieee80211_release_node(&sc->sc_ic, data->ni);
+                data->ni = NULL;
+            }
+        }
 
         if (data->m != NULL) {
 //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
@@ -2057,6 +2943,7 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         }
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
+        iwn_sae_tx_data_clear(data);
         if (data->map != NULL) {
             bus_dmamap_destroy(sc->sc_dmat, data->map);
             data->map = NULL;
@@ -3256,6 +4143,10 @@ iwn_ampdu_txq_advance(struct iwn_softc *sc, struct iwn_tx_ring *txq, int qid,
         struct iwn_tx_data *txdata = &txq->data[txq->read];
         if (txdata->m != NULL) {
             ops->reset_sched(sc, qid, txq->read);
+            if (txdata->sae_active) {
+                ItlIwn *that = container_of(sc, ItlIwn, com);
+                that->iwn_sae_tx_report_terminal(sc, txdata, EIO);
+            }
             iwn_tx_done_free_txdata(sc, txdata);
             txq->queued--;
         }
@@ -3525,6 +4416,7 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
     data->tx_apple_nrate = 0;
     data->tx_apple_nrate_valid = 0;
     data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+    iwn_sae_tx_data_clear(data);
 }
 
 void ItlIwn::
@@ -3577,6 +4469,7 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     uint8_t ackfailcnt, uint8_t rate, uint8_t rflags, int txfail,
     int qid, uint16_t len)
 {
+    ItlIwn *that = container_of(sc, ItlIwn, com);
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = &ic->ic_if;
     struct iwn_tx_ring *ring = &sc->txq[qid];
@@ -3646,6 +4539,10 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
 
     /* Completion is categorical only; the trace intentionally omits status. */
     iwn_post_plti_trace_record_completion(ic, data->post_plti_trace_class);
+
+    /* Both 4965 and 5000 native status formats funnel here exactly once. */
+    if (data->sae_active)
+        that->iwn_sae_tx_report_terminal(sc, data, txfail ? EIO : 0);
 
     iwn_tx_done_free_txdata(sc, data);
 
@@ -4337,7 +5234,8 @@ iwn_post_plti_trace_record_completion(struct ieee80211com *ic,
 }
 
 int ItlIwn::
-iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
+iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
+    const struct ItlSaeAuthTxRequestV1 *sae_request)
 {
     struct iwn_ops *ops = &sc->ops;
     struct ieee80211com *ic = &sc->sc_ic;
@@ -4371,6 +5269,40 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
         hdrlen = sizeof(struct ieee80211_frame_min);
     else
         hdrlen = ieee80211_get_hdrlen(wh);
+
+    /*
+     * The private direct path transports exactly one public Algorithm-3
+     * Authentication frame.  Validate its complete pre-trim representation
+     * before an mbuf or later diagnostics can become the source of truth.
+     */
+    if (sae_request != NULL) {
+        const u_int8_t *auth;
+
+        if (!itl_sae_auth_transport_request_is_well_formed(sae_request) ||
+            type != IEEE80211_FC0_TYPE_MGT ||
+            subtype != IEEE80211_FC0_SUBTYPE_AUTH ||
+            hdrlen != sizeof(struct ieee80211_frame) ||
+            mbuf_len(m) < hdrlen + 6 + sae_request->body_len ||
+            mbuf_pkthdr_len(m) != hdrlen + 6 + sae_request->body_len ||
+            memcmp(wh->i_addr1, sae_request->bssid,
+                sizeof(sae_request->bssid)) != 0 ||
+            memcmp(wh->i_addr2, sae_request->sta,
+                sizeof(sae_request->sta)) != 0 ||
+            memcmp(wh->i_addr3, sae_request->bssid,
+                sizeof(sae_request->bssid)) != 0) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+        auth = (const u_int8_t *)wh + hdrlen;
+        if (LE_READ_2(auth) != IEEE80211_AUTH_ALG_SAE ||
+            LE_READ_2(auth + 2) != sae_request->wire_transaction ||
+            LE_READ_2(auth + 4) != sae_request->auth_status ||
+            memcmp(auth + 6, sae_request->body,
+                sae_request->body_len) != 0) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+    }
     post_plti_trace_class = iwn_post_plti_trace_classify_tx(
         wh, type, subtype, hdrlen, m);
 
@@ -4725,6 +5657,24 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     data->tx_apple_nrate = tx_apple_nrate;
     data->tx_apple_nrate_valid = tx_apple_nrate_valid ? 1 : 0;
     data->post_plti_trace_class = post_plti_trace_class;
+    iwn_sae_tx_data_clear(data);
+    if (sae_request != NULL) {
+        data->sae_active = true;
+        data->sae_phase = sae_request->phase;
+        data->sae_auth_status = sae_request->auth_status;
+        data->sae_wire_transaction = sae_request->wire_transaction;
+        data->sae_association_epoch = sae_request->association_epoch;
+        data->sae_relay_generation = sae_request->relay_generation;
+        data->sae_ticket = sae_request->ticket;
+        if (sc->sc_sae_tx_lock != NULL) {
+            IOSimpleLockLock(sc->sc_sae_tx_lock);
+            data->sae_lifecycle_generation = sc->sc_sae_tx_generation;
+            IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+        }
+        memcpy(data->sae_bssid, sae_request->bssid,
+            sizeof(data->sae_bssid));
+        memcpy(data->sae_sta, sae_request->sta, sizeof(data->sae_sta));
+    }
     if (data->tx_apple_nrate_valid)
         iwn_publish_apple_nrate(sc, data->tx_apple_nrate);
     /* Store captured diagnostic identity onto the per-tx-buffer
@@ -4763,11 +5713,39 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     /* Update TX scheduler. */
     ops->update_sched(sc, ring->qid, ring->cur, tx->id, totlen);
 
-    /* Kick TX ring. */
-    ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
-    IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    /* Kick TX ring.  SAE checks cancellation in the same leaf as WRPTR. */
+    if (sae_request != NULL) {
+        const int saved_cur = ring->cur;
+        const int next_cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
+
+        ring->cur = next_cur;
+        if (!iwn_sae_tx_commit_doorbell(sc, sae_request->ticket,
+            ring->qid, next_cur)) {
+            ring->cur = saved_cur;
+            ops->reset_sched(sc, ring->qid, saved_cur);
+            explicit_bzero(desc, sizeof(*desc));
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->ni = NULL;
+            data->totlen = 0;
+            data->ampdu_nframes = 0;
+            data->ampdu_txmcs = 0;
+            data->tx_apple_nrate = 0;
+            data->tx_apple_nrate_valid = 0;
+            data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+            data->diag_subtype = 0xff;
+            data->diag_auth_seq = 0xffff;
+            explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
+            iwn_sae_tx_data_clear(data);
+            return EIO;
+        }
+    } else {
+        ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
+        IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    }
     iwn_post_plti_trace_record_submit(ic, data->post_plti_trace_class);
-    if (diag_subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+    /* Legacy Open-System AUTH telemetry must not claim SAE Commit(seq=1). */
+    if (sae_request == NULL && diag_subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
         char auth_tx_path_buf[224];
         snprintf(auth_tx_path_buf, sizeof(auth_tx_path_buf),
             "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
@@ -9046,7 +10024,21 @@ iwn_hw_init(struct iwn_softc *sc)
 void ItlIwn::
 iwn_hw_stop(struct iwn_softc *sc)
 {
+    ItlIwn *that = container_of(sc, ItlIwn, com);
+    struct ItlSaeAuthTransportEventV1 reset_event;
+    bool emit_reset_event = false;
     int chnl, qid, ntries;
+
+    explicit_bzero(&reset_event, sizeof(reset_event));
+    /*
+     * This helper also runs during the init-firmware calibration reboot, so
+     * it uses a generation/cancel fence rather than waiting for systq here.
+     * A direct frame already owned by firmware is snapshotted before reset;
+     * a controller-cancelled ticket remains deliberately silent.
+     */
+    that->iwn_sae_tx_stop_begin(sc);
+    emit_reset_event = that->iwn_sae_tx_snapshot_reset(sc, &reset_event);
+    that->iwn_sae_tx_cancel_all(sc);
 
     IWN_WRITE(sc, IWN_RESET, IWN_RESET_NEVO);
 
@@ -9091,6 +10083,12 @@ iwn_hw_stop(struct iwn_softc *sc)
     DELAY(5);
     /* Power OFF adapter. */
     iwn_apm_stop(sc);
+
+    /* Ring reset reclaimed every descriptor; forget stale terminal state. */
+    that->iwn_sae_tx_purge(sc);
+    if (emit_reset_event)
+        that->iwn_sae_tx_emit_reset_event(sc, &reset_event);
+    explicit_bzero(&reset_event, sizeof(reset_event));
 }
 
 int ItlIwn::
@@ -9152,6 +10150,7 @@ iwn_init(struct _ifnet *ifp)
     /* The reset boundary stays closed until hardware configuration is fully
      * usable.  Reopening creates a new generation for future PMF workers. */
     iwn_mfp_pae_reopen(sc);
+    iwn_sae_tx_reopen(sc);
 
     if (ic->ic_opmode != IEEE80211_M_MONITOR)
         ieee80211_begin_scan(ifp);
@@ -9179,6 +10178,7 @@ iwn_stop(struct _ifnet *ifp)
      * it before the usual state-machine cancellation edge.  Close local PMF
      * first: generic abort then cannot promote a reconnect successor while
      * this interrupt/timer path is powering the radio down. */
+    iwn_sae_tx_stop_begin(sc);
     iwn_mfp_pae_abort_all(sc);
     ieee80211_pae_mfp_txn_abort(ic);
     ieee80211_new_state(ic, IEEE80211_S_INIT, -1);

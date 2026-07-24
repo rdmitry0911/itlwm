@@ -40,7 +40,7 @@ for token in (
     "IWN_SOFTWARE_PMF_LAB_BUILD=1",
     "Tahoe-IwnSoftwarePmfLab",
     "DerivedData-iwn-software-pmf-lab",
-    "WPA2+PMF validation only; SAE remains unavailable.",
+    "IWN SAE transport compiled; WPA3 association remains disabled.",
 ):
     require(token, "lab-only build surface")
 
@@ -65,5 +65,5 @@ if "#define IWN_SOFTWARE_PMF_LAB_BUILD 0" not in iwn:
 if "#if IWN_SOFTWARE_PMF_LAB_BUILD" not in iwn:
     fail("missing lab-build capability predicate")
 
-print("PASS: IWN software-PMF lab build is isolated, STA-only, and does not enable SAE")
+print("PASS: IWN software-PMF lab build is isolated, STA-only, and does not enable WPA3 association")
 PY

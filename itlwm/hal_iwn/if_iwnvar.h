@@ -35,6 +35,7 @@
 #include <net80211/ieee80211_ra.h>
 #include <net80211/ieee80211_radiotap.h>
 #include <net80211/ieee80211_priv.h>
+#include <HAL/ItlSaeAuthTransportV1.h>
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
@@ -89,6 +90,18 @@ enum iwn_post_plti_trace_tx_class {
     IWN_POST_PLTI_TRACE_TX_EAPOL,
 };
 
+/*
+ * One Algorithm-3 TX is owned at a time.  Firmware completion and ring-reset
+ * leaves append only this bounded public identity; the deferred task is the
+ * sole context which calls into the controller/net80211 event handler.
+ */
+#define IWN_SAE_TX_EVENTQ_LEN 4
+
+struct iwn_sae_tx_event_entry {
+    struct ItlSaeAuthTransportEventV1 event;
+    bool                              is_reset;
+};
+
 struct iwn_tx_data {
     bus_dmamap_t        map;
     bus_addr_t        cmd_paddr;
@@ -104,6 +117,23 @@ struct iwn_tx_data {
     uint32_t tx_apple_nrate;
     uint8_t tx_apple_nrate_valid;
     uint8_t post_plti_trace_class;
+
+    /*
+     * Descriptor-local, credential-free ownership for a direct SAE
+     * Authentication TX.  The body is deliberately never retained here:
+     * completion correlation uses only the controller ticket and public
+     * selected-BSS identity copied before the firmware doorbell.
+     */
+    bool     sae_active;
+    uint16_t sae_phase;
+    uint16_t sae_auth_status;
+    uint16_t sae_wire_transaction;
+    uint64_t sae_association_epoch;
+    uint64_t sae_relay_generation;
+    uint64_t sae_ticket;
+    uint32_t sae_lifecycle_generation;
+    uint8_t  sae_bssid[IEEE80211_ADDR_LEN];
+    uint8_t  sae_sta[IEEE80211_ADDR_LEN];
 
     /*
      * Diagnostic identity captured by iwn_tx() BEFORE the
@@ -354,7 +384,42 @@ struct iwn_softc {
     struct iwn_calib_state    calib;
 
     struct task        init_task;
+    struct task        sae_tx_task;
     struct task        mfp_pae_task;
+
+    /*
+     * Admission for the private IWN workloop gate.  It is distinct from
+     * AirportItlwm's policy command gate.  A submitter holds one lifecycle
+     * lease from reservation through attemptAction(), so detach can close,
+     * drain and remove the event source without racing a copied gate.
+     */
+    IOLock             *sc_sae_tx_lifecycle_lock;
+    uint32_t            sc_sae_tx_lifecycle_active;
+    bool                sc_sae_tx_lifecycle_closed;
+    bool                sc_sae_tx_detaching;
+    bool                sc_sae_tx_task_ready;
+
+    /*
+     * This short leaf is used by firmware completion, reset and cancellation.
+     * It is never held across frame construction, taskq operations or the
+     * controller callback.  A doorbelled descriptor remains ring-owned until
+     * native TX_DONE or reset; cancellation only advances reject-through.
+     */
+    IOSimpleLock       *sc_sae_tx_lock;
+    bool                sc_sae_tx_active;
+    bool                sc_sae_tx_doorbelled;
+    bool                sc_sae_tx_stopping;
+    uint64_t            sc_sae_tx_active_ticket;
+    uint64_t            sc_sae_tx_cancel_through;
+    uint32_t            sc_sae_tx_generation;
+    uint32_t            sc_sae_tx_active_generation;
+    struct ItlSaeAuthTransportEventV1 sc_sae_tx_active_event;
+    bool                sc_sae_tx_last_event_valid;
+    struct ItlSaeAuthTransportEventV1 sc_sae_tx_last_event;
+    struct iwn_sae_tx_event_entry sc_sae_tx_eventq[IWN_SAE_TX_EVENTQ_LEN];
+    uint8_t             sc_sae_tx_event_head;
+    uint8_t             sc_sae_tx_event_tail;
+    uint8_t             sc_sae_tx_event_count;
 
     /* This leaf protects only the two value owners below; it is never held
      * across a taskq operation or software-crypto allocation. */
