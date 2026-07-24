@@ -12,10 +12,16 @@ set -euo pipefail
 readonly QEMU_IMG="/usr/bin/qemu-img"
 readonly DISK_NAME="tahoe-pmf-runtime.qcow2"
 readonly ATTESTATION_NAME="overlay-attestation.json"
+readonly OVMF_VARS_NAME="OVMF_VARS-1920x1080.fd"
 
 BASE_IMAGE=""
 VM_ROOT=""
 OUT_DIR_NAME=""
+OVMF_VARS_TEMPLATE=""
+BASE_IMAGE_SEEN=0
+VM_ROOT_SEEN=0
+OUT_DIR_NAME_SEEN=0
+OVMF_VARS_TEMPLATE_SEEN=0
 STAGING_DIR=""
 
 usage() {
@@ -23,11 +29,16 @@ usage() {
 usage: tahoe_prepare_disposable_overlay.sh \
   --base-image /absolute/root-tahoe.qcow2 \
   --vm-root /absolute/pinned-vm-root \
-  --out-dir fresh-overlay-directory
+  --out-dir fresh-overlay-directory \
+  [--ovmf-vars-template /absolute/OVMF_VARS-template.fd]
 
 Creates exactly these new files below --vm-root/fresh-overlay-directory:
   tahoe-pmf-runtime.qcow2
   overlay-attestation.json
+
+When --ovmf-vars-template is supplied, also creates a private, distinct-inode
+copy named OVMF_VARS-1920x1080.fd.  The template must be an unopened,
+nonempty, absolute regular file that is not a symlink.
 
 The base must be an unopened qcow2 image with no backing image.  This helper
 does not boot QEMU or reboot a guest.  The output directory must be a fresh
@@ -87,6 +98,230 @@ canonical_regular_file() {
     printf '%s\n' "$resolved"
 }
 
+prepare_ovmf_vars_copy() {
+    local template_path="$1" copy_path="$2"
+
+    # Hash the opened template before and after the copy, and hash the opened
+    # destination after fsync.  A simple pathname-to-pathname copy would leave
+    # a replace-or-mutate race unobserved between validation and publication.
+    python3 - "$template_path" "$copy_path" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+
+
+def fail(reason: str) -> None:
+    raise SystemExit(reason)
+
+
+def fingerprint(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns)
+
+
+def require_regular_nonempty(value: os.stat_result, reason: str) -> None:
+    if not stat.S_ISREG(value.st_mode) or value.st_size <= 0:
+        fail(reason)
+
+
+def stable_hash(fd: int) -> tuple[str, os.stat_result]:
+    before = os.fstat(fd)
+    require_regular_nonempty(before, "file-not-regular-nonempty")
+    os.lseek(fd, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    total = 0
+    while True:
+        chunk = os.read(fd, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+        total += len(chunk)
+    after = os.fstat(fd)
+    if fingerprint(before) != fingerprint(after) or total != before.st_size:
+        fail("file-changed-during-hash")
+    return digest.hexdigest(), after
+
+
+def write_all(fd: int, data: bytes) -> None:
+    offset = 0
+    while offset < len(data):
+        written = os.write(fd, data[offset:])
+        if written <= 0:
+            fail("copy-write-failed")
+        offset += written
+
+
+if len(sys.argv) != 3:
+    fail("copy-arguments")
+if not hasattr(os, "O_NOFOLLOW"):
+    fail("no-follow-unavailable")
+
+template_path, copy_path = sys.argv[1:]
+if os.path.basename(copy_path) != "OVMF_VARS-1920x1080.fd":
+    fail("copy-name-invalid")
+
+try:
+    template_lstat = os.lstat(template_path)
+except OSError:
+    fail("template-stat-failed")
+require_regular_nonempty(template_lstat, "template-not-regular-nonempty")
+
+source_fd = -1
+copy_fd = -1
+try:
+    source_fd = os.open(template_path, os.O_RDONLY | os.O_NOFOLLOW)
+    source_open_stat = os.fstat(source_fd)
+    require_regular_nonempty(source_open_stat, "template-not-regular-nonempty")
+    if fingerprint(template_lstat) != fingerprint(source_open_stat):
+        fail("template-replaced-before-copy")
+
+    template_before_sha256, template_before_stat = stable_hash(source_fd)
+    if fingerprint(source_open_stat) != fingerprint(template_before_stat):
+        fail("template-changed-before-copy")
+
+    copy_fd = os.open(copy_path,
+                      os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_RDWR,
+                      0o600)
+    os.fchmod(copy_fd, 0o600)
+    os.lseek(source_fd, 0, os.SEEK_SET)
+    copy_source_before = os.fstat(source_fd)
+    copied = 0
+    copy_digest = hashlib.sha256()
+    while True:
+        chunk = os.read(source_fd, 1024 * 1024)
+        if not chunk:
+            break
+        copy_digest.update(chunk)
+        write_all(copy_fd, chunk)
+        copied += len(chunk)
+    os.fsync(copy_fd)
+    copy_source_after = os.fstat(source_fd)
+    if (fingerprint(copy_source_before) != fingerprint(copy_source_after) or
+            copied != copy_source_before.st_size):
+        fail("template-changed-during-copy")
+
+    template_after_sha256, template_after_stat = stable_hash(source_fd)
+    copy_after_sha256, copy_after_stat = stable_hash(copy_fd)
+    if (fingerprint(template_before_stat) != fingerprint(template_after_stat) or
+            template_before_sha256 != template_after_sha256):
+        fail("template-changed-during-copy")
+    if (copy_digest.hexdigest() != template_before_sha256 or
+            copy_after_sha256 != template_before_sha256):
+        fail("template-copy-hash-mismatch")
+    if stat.S_IMODE(copy_after_stat.st_mode) != 0o600:
+        fail("copy-mode-invalid")
+    if (copy_after_stat.st_dev, copy_after_stat.st_ino) == (
+            template_after_stat.st_dev, template_after_stat.st_ino):
+        fail("copy-inode-not-distinct")
+
+    template_after_lstat = os.lstat(template_path)
+    copy_after_lstat = os.lstat(copy_path)
+    if (fingerprint(template_after_lstat) != fingerprint(template_after_stat) or
+            fingerprint(copy_after_lstat) != fingerprint(copy_after_stat)):
+        fail("path-changed-during-copy")
+    if stat.S_IMODE(copy_after_lstat.st_mode) != 0o600:
+        fail("copy-mode-invalid")
+except OSError:
+    fail("copy-io-failed")
+finally:
+    if copy_fd >= 0:
+        os.close(copy_fd)
+    if source_fd >= 0:
+        os.close(source_fd)
+
+print(f"{template_before_sha256} {copy_after_sha256} {copy_after_stat.st_size}")
+PY
+}
+
+validate_ovmf_vars_copy_before_publish() {
+    local template_path="$1" copy_path="$2" expected_template_sha256="$3"
+    local expected_copy_sha256="$4" expected_size="$5"
+
+    python3 - "$template_path" "$copy_path" "$expected_template_sha256" \
+        "$expected_copy_sha256" "$expected_size" <<'PY'
+import hashlib
+import os
+import re
+import stat
+import sys
+
+
+def fail(reason: str) -> None:
+    raise SystemExit(reason)
+
+
+def fingerprint(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns)
+
+
+def stable_path_hash(path: str) -> tuple[str, os.stat_result]:
+    try:
+        before_path = os.lstat(path)
+    except OSError:
+        fail("file-stat-failed")
+    if not stat.S_ISREG(before_path.st_mode) or before_path.st_size <= 0:
+        fail("file-not-regular-nonempty")
+    if not hasattr(os, "O_NOFOLLOW"):
+        fail("no-follow-unavailable")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        fail("file-open-failed")
+    try:
+        before = os.fstat(fd)
+        if fingerprint(before_path) != fingerprint(before):
+            fail("file-replaced-before-hash")
+        os.lseek(fd, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+        after = os.fstat(fd)
+    except OSError:
+        fail("file-hash-failed")
+    finally:
+        os.close(fd)
+    if fingerprint(before) != fingerprint(after) or total != before.st_size:
+        fail("file-changed-during-hash")
+    try:
+        after_path = os.lstat(path)
+    except OSError:
+        fail("file-stat-failed")
+    if fingerprint(after_path) != fingerprint(after):
+        fail("path-changed-during-hash")
+    return digest.hexdigest(), after
+
+
+if len(sys.argv) != 6:
+    fail("verify-arguments")
+template_path, copy_path, template_sha256, copy_sha256, expected_size = sys.argv[1:]
+if (re.fullmatch(r"[0-9a-f]{64}", template_sha256) is None or
+        re.fullmatch(r"[0-9a-f]{64}", copy_sha256) is None or
+        not expected_size.isdecimal() or int(expected_size) <= 0):
+    fail("verify-input-invalid")
+if os.path.basename(copy_path) != "OVMF_VARS-1920x1080.fd":
+    fail("copy-name-invalid")
+
+actual_template_sha256, template_stat = stable_path_hash(template_path)
+actual_copy_sha256, copy_stat = stable_path_hash(copy_path)
+if stat.S_IMODE(copy_stat.st_mode) != 0o600:
+    fail("copy-mode-invalid")
+if (template_stat.st_dev, template_stat.st_ino) == (copy_stat.st_dev, copy_stat.st_ino):
+    fail("copy-inode-not-distinct")
+if (actual_template_sha256 != template_sha256 or
+        actual_copy_sha256 != copy_sha256 or
+        actual_template_sha256 != actual_copy_sha256 or
+        copy_stat.st_size != int(expected_size)):
+    fail("template-copy-hash-mismatch")
+PY
+}
+
 validate_base_info() {
     local info_path="$1"
     python3 - "$info_path" <<'PY'
@@ -117,17 +352,23 @@ PY
 write_and_validate_attestation() {
     local base_info_path="$1" overlay_info_path="$2" overlay_map_path="$3"
     local base_image="$4" overlay_image="$5" attestation="$6"
+    shift 6
 
     python3 - "$base_info_path" "$overlay_info_path" "$overlay_map_path" \
-        "$base_image" "$overlay_image" "$attestation" <<'PY'
+        "$base_image" "$overlay_image" "$attestation" "$@" <<'PY'
 import hashlib
 import json
 import os
+import re
 import sys
 
 
 def fail(reason: str) -> None:
     raise SystemExit(reason)
+
+
+if len(sys.argv) not in (7, 10):
+    fail("attestation-arguments")
 
 
 try:
@@ -143,6 +384,17 @@ except (IndexError, OSError, json.JSONDecodeError):
 base_path = os.path.realpath(sys.argv[4])
 overlay_path = os.path.realpath(sys.argv[5])
 attestation_path = sys.argv[6]
+ovmf_vars_enabled = len(sys.argv) == 10
+if ovmf_vars_enabled:
+    template_sha256 = sys.argv[7]
+    copy_sha256 = sys.argv[8]
+    copy_size_text = sys.argv[9]
+    if (re.fullmatch(r"[0-9a-f]{64}", template_sha256) is None or
+            re.fullmatch(r"[0-9a-f]{64}", copy_sha256) is None or
+            template_sha256 != copy_sha256 or
+            not copy_size_text.isdecimal() or int(copy_size_text) <= 0):
+        fail("ovmf-vars-attestation-input-invalid")
+    copy_size_bytes = int(copy_size_text)
 
 if not isinstance(base, dict) or not isinstance(overlay, dict):
     fail("image-info-shape")
@@ -252,6 +504,30 @@ document = {
     ],
 }
 
+if ovmf_vars_enabled:
+    document["schema"] = "itlwm-tahoe-disposable-overlay/v2"
+    document["launch_contract"] = {
+        "pinned_vm_root_required": True,
+        "disk_selector_environment_variable": "ITLWM_DISK",
+        "guest_boot_performed_by_helper": False,
+        "ovmf_vars_selector_environment_variable": "ITLWM_OVMF_VARS",
+        "ovmf_vars_file_name": "OVMF_VARS-1920x1080.fd",
+        "ovmf_vars_sha256_must_match_before_first_boot": True,
+    }
+    document["ovmf_vars"] = {
+        "format": "raw-pflash",
+        "file_name": "OVMF_VARS-1920x1080.fd",
+        "per_overlay_copy_created": True,
+        "copy_mode_0600": True,
+        "copy_has_distinct_inode": True,
+        "template_not_in_use_precheck": True,
+        "template_stable_during_copy": True,
+        "template_sha256": template_sha256,
+        "copy_sha256": copy_sha256,
+        "template_copy_sha256_match": True,
+        "copy_size_bytes": copy_size_bytes,
+    }
+
 try:
     fd = os.open(attestation_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as output:
@@ -266,17 +542,31 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --base-image)
             [ "$#" -ge 2 ] || { usage; exit 2; }
+            [ "$BASE_IMAGE_SEEN" -eq 0 ] || fail "base-image-duplicate"
             BASE_IMAGE="$2"
+            BASE_IMAGE_SEEN=1
             shift 2
             ;;
         --vm-root)
             [ "$#" -ge 2 ] || { usage; exit 2; }
+            [ "$VM_ROOT_SEEN" -eq 0 ] || fail "vm-root-duplicate"
             VM_ROOT="$2"
+            VM_ROOT_SEEN=1
             shift 2
             ;;
         --out-dir)
             [ "$#" -ge 2 ] || { usage; exit 2; }
+            [ "$OUT_DIR_NAME_SEEN" -eq 0 ] || fail "out-dir-duplicate"
             OUT_DIR_NAME="$2"
+            OUT_DIR_NAME_SEEN=1
+            shift 2
+            ;;
+        --ovmf-vars-template)
+            [ "$#" -ge 2 ] || { usage; exit 2; }
+            [ "$OVMF_VARS_TEMPLATE_SEEN" -eq 0 ] ||
+                fail "ovmf-vars-template-duplicate"
+            OVMF_VARS_TEMPLATE="$2"
+            OVMF_VARS_TEMPLATE_SEEN=1
             shift 2
             ;;
         -h|--help)
@@ -301,6 +591,12 @@ FUSER="$(command -v fuser || true)"
 
 base_image="$(canonical_regular_file "$BASE_IMAGE")" || fail "base-image-invalid"
 vm_root="$(canonical_directory "$VM_ROOT")" || fail "vm-root-invalid"
+ovmf_vars_template=""
+if [ -n "$OVMF_VARS_TEMPLATE" ]; then
+    ovmf_vars_template="$(canonical_regular_file "$OVMF_VARS_TEMPLATE")" ||
+        fail "ovmf-vars-template-invalid"
+    [ -s "$ovmf_vars_template" ] || fail "ovmf-vars-template-empty"
+fi
 safe_output_leaf "$OUT_DIR_NAME" || fail "out-dir-invalid"
 final_dir="$vm_root/$OUT_DIR_NAME"
 [ ! -e "$final_dir" ] && [ ! -L "$final_dir" ] || fail "out-dir-exists"
@@ -312,6 +608,10 @@ final_dir="$vm_root/$OUT_DIR_NAME"
 # as the sole operand so a running QEMU holding the root image is a hard stop.
 if "$FUSER" -s "$base_image" >/dev/null 2>&1; then
     fail "base-image-in-use"
+fi
+if [ -n "$ovmf_vars_template" ] &&
+        "$FUSER" -s "$ovmf_vars_template" >/dev/null 2>&1; then
+    fail "ovmf-vars-template-in-use"
 fi
 
 umask 077
@@ -327,6 +627,25 @@ attestation="$STAGING_DIR/$ATTESTATION_NAME"
 base_info_path="$STAGING_DIR/base-info.json"
 overlay_info_path="$STAGING_DIR/overlay-info.json"
 overlay_map_path="$STAGING_DIR/overlay-map.json"
+ovmf_vars_copy=""
+ovmf_template_sha256=""
+ovmf_copy_sha256=""
+ovmf_copy_size=""
+
+if [ -n "$ovmf_vars_template" ]; then
+    ovmf_vars_copy="$STAGING_DIR/$OVMF_VARS_NAME"
+    ovmf_copy_result="$(prepare_ovmf_vars_copy "$ovmf_vars_template" \
+        "$ovmf_vars_copy")" || fail "ovmf-vars-copy-invalid"
+    ovmf_copy_extra=""
+    if ! IFS=' ' read -r ovmf_template_sha256 ovmf_copy_sha256 \
+            ovmf_copy_size ovmf_copy_extra <<<"$ovmf_copy_result"; then
+        fail "ovmf-vars-copy-result-invalid"
+    fi
+    [[ "$ovmf_template_sha256" =~ ^[0-9a-f]{64}$ &&
+        "$ovmf_copy_sha256" =~ ^[0-9a-f]{64}$ &&
+        "$ovmf_copy_size" =~ ^[1-9][0-9]*$ &&
+        -z "$ovmf_copy_extra" ]] || fail "ovmf-vars-copy-result-invalid"
+fi
 
 if ! "$QEMU_IMG" info --output=json "$base_image" >"$base_info_path" 2>/dev/null; then
     fail "base-image-info-unavailable"
@@ -346,9 +665,19 @@ fi
 if ! "$QEMU_IMG" map --output=json "$overlay_image" >"$overlay_map_path" 2>/dev/null; then
     fail "overlay-map-unavailable"
 fi
-write_and_validate_attestation "$base_info_path" "$overlay_info_path" \
-    "$overlay_map_path" "$base_image" "$overlay_image" "$attestation" ||
-    fail "overlay-attestation-invalid"
+if [ -n "$ovmf_vars_template" ]; then
+    validate_ovmf_vars_copy_before_publish "$ovmf_vars_template" \
+        "$ovmf_vars_copy" "$ovmf_template_sha256" "$ovmf_copy_sha256" \
+        "$ovmf_copy_size" || fail "ovmf-vars-copy-changed-before-publish"
+    write_and_validate_attestation "$base_info_path" "$overlay_info_path" \
+        "$overlay_map_path" "$base_image" "$overlay_image" "$attestation" \
+        "$ovmf_template_sha256" "$ovmf_copy_sha256" "$ovmf_copy_size" ||
+        fail "overlay-attestation-invalid"
+else
+    write_and_validate_attestation "$base_info_path" "$overlay_info_path" \
+        "$overlay_map_path" "$base_image" "$overlay_image" "$attestation" ||
+        fail "overlay-attestation-invalid"
+fi
 [ -f "$attestation" ] && [ ! -L "$attestation" ] ||
     fail "overlay-attestation-missing"
 for transient_metadata in "$base_info_path" "$overlay_info_path" "$overlay_map_path"; do

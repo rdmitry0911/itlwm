@@ -5,20 +5,27 @@
 `tahoe_prepare_disposable_overlay.sh` prepares the host-side storage boundary
 for a future Tahoe candidate experiment. It creates one new qcow2 overlay over
 one direct backing image, treats that base as read-only, and writes a
-local-only sanitized attestation. It does not boot QEMU or reboot a guest. It
-does not activate a candidate. It also does not alter an AuxKC, control an AP,
-or change host networking.
+local-only sanitized attestation. With the explicit OVMF variables option, it
+also creates one private variables copy that is paired with that overlay. It
+does not boot QEMU or reboot a guest. It does not activate a candidate. It also
+does not alter an AuxKC, control an AP, or change host networking.
 
 The helper is intentionally not a runtime runner and its `PASS` receipt is not
 candidate, association, PMF/BIP, traffic, or physical-host evidence.
 
 ## Required inputs
 
-The caller supplies three explicit values:
+The caller supplies three required explicit values:
 
 1. an absolute qcow2 root image with no backing image;
 2. the absolute pinned VM root already used by the local Tahoe launcher; and
 3. a fresh single-component output-directory name below that VM root.
+
+The caller can additionally supply an absolute `--ovmf-vars-template` for the
+future OVMF variables store. This option is opt-in: when it is absent, the
+helper retains the exact v1 disk-only receipt and produces no OVMF variables
+file. When it is present, the template must be a nonempty regular file, not a
+symlink, and not open by another process. Duplicate input flags are rejected.
 
 The helper refuses a symlinked base, a base with an existing backing chain, an
 existing output directory, or a base currently open by another process. It
@@ -27,10 +34,25 @@ only after checking that the new top layer has one direct backing image and no
 top-level guest-data allocation. A failed preparation removes only its own
 staging directory; it never removes a caller path or a base image.
 
-The published directory contains `tahoe-pmf-runtime.qcow2` and
-`overlay-attestation.json`. The attestation contains categorical storage
+The disk-only published directory contains `tahoe-pmf-runtime.qcow2` and
+`overlay-attestation.json`. The v1 attestation contains categorical storage
 facts and metadata digests only. Image paths, wireless identities, credentials,
 addresses, routes, packets, and raw QEMU output stay local-only.
+
+When the OVMF option is present, the published directory is a disposable pair:
+the qcow2 overlay plus `OVMF_VARS-1920x1080.fd`. The helper makes that file in
+its private staging directory as a mode-0600, distinct inode copy, never a
+link to the template. It rejects a template already in use, hashes the opened
+template before and after copying, hashes the new copy, and repeats the stable
+template/copy hash check immediately before atomic publication. The v2
+attestation records only the fixed file name, categorical copy facts, the two
+matching SHA-256 values, and the positive copy size; it retains no template or
+image path.
+
+The pair is disposable rather than a recovery envelope. If a later experiment
+fails, discard the pair and prepare a new overlay and, when needed, a new OVMF
+variables copy from the last known working baseline. This helper does not
+construct a second VM, a fallback candidate, or a recovery boot path.
 
 Validate the receipt before the later guest sequence with
 `test_tahoe_disposable_overlay_evidence_contract.sh --attestation` against its
@@ -39,10 +61,18 @@ image or start a VM.
 
 ## Launcher boundary
 
-The existing Tahoe launcher already selects a disk through `ITLWM_DISK` below
-its pinned VM root. Use the newly created relative disk path with that existing
-launcher; do not edit the launcher, replace the base image, or attach the
-overlay to any other VM. Starting the guest is a separate, later action.
+The existing Tahoe launcher selects only a disk through `ITLWM_DISK` below its
+pinned VM root. That path can consume a v1 disk-only overlay, but it must not
+be used for a v2 pair: it hard-wires the shared OVMF variables file and would
+defeat the pair boundary. A v2 pair requires the later dedicated launcher to
+bind the pair-local variables file explicitly. Starting either kind of guest
+remains a separate, later action.
+
+For a v2 pair, the receipt additionally names `ITLWM_OVMF_VARS` as the future
+variables selector and binds it to the fixed file name and SHA-256 before a
+first boot. This helper neither exports that variable nor starts QEMU; it only
+prepares and attests the local storage boundary. A later launcher integration
+must verify the recorded digest before it consumes the selector.
 
 Before a guest boot, retain the fresh attestation and ensure the directory has
 not been reused. After a guest uses the overlay, its top-level data allocation

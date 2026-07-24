@@ -36,6 +36,21 @@ bash -n "$FIXTURE"
 for needle in \
     'readonly DISK_NAME="tahoe-pmf-runtime.qcow2"' \
     'readonly ATTESTATION_NAME="overlay-attestation.json"' \
+    'readonly OVMF_VARS_NAME="OVMF_VARS-1920x1080.fd"' \
+    '--ovmf-vars-template' \
+    'ovmf-vars-template-duplicate' \
+    'ovmf-vars-template-invalid' \
+    'ovmf-vars-template-empty' \
+    'ovmf-vars-template-in-use' \
+    '"$FUSER" -s "$ovmf_vars_template"' \
+    'prepare_ovmf_vars_copy' \
+    'validate_ovmf_vars_copy_before_publish' \
+    'os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_RDWR' \
+    'os.fchmod(copy_fd, 0o600)' \
+    'copy-inode-not-distinct' \
+    'template-copy-hash-mismatch' \
+    'itlwm-tahoe-disposable-overlay/v2' \
+    'ITLWM_OVMF_VARS' \
     'safe_output_leaf' \
     'fuser-unavailable' \
     'base-image-in-use' \
@@ -75,6 +90,8 @@ done
 
 forbid_literal "$HELPER" '"$FUSER" -s -- "$base_image"' \
     'unsupported fuser end-of-options separator'
+forbid_literal "$HELPER" 'export ITLWM_OVMF_VARS' \
+    'helper must not alter the future OVMF selector environment'
 
 python3 - "$HELPER" "$PROTOCOL" <<'PY'
 from pathlib import Path
@@ -104,11 +121,14 @@ if main_start < 0:
 main = helper[main_start:]
 ordered(main, "fresh-overlay transaction",
         '"$FUSER" -s "$base_image"',
+        '"$FUSER" -s "$ovmf_vars_template"',
         'mktemp -d "$vm_root/.aiam-overlay-stage.XXXXXX"',
         'base_info_path="$STAGING_DIR/base-info.json"',
+        'prepare_ovmf_vars_copy "$ovmf_vars_template"',
         'validate_base_info "$base_info_path"',
         'create -f qcow2 -F qcow2 -b "$base_image" "$overlay_image"',
         'map --output=json "$overlay_image" >"$overlay_map_path"',
+        'validate_ovmf_vars_copy_before_publish "$ovmf_vars_template"',
         'write_and_validate_attestation',
         '/usr/bin/unlink "$transient_metadata"',
         '/bin/mv -T -n -- "$STAGING_DIR" "$final_dir"',
@@ -128,7 +148,8 @@ for forbidden, label in (
 
 for token in (
     "one direct backing", "read-only", "does not boot", "does not activate",
-    "local-only", "fresh", "AP preflight",
+    "local-only", "fresh", "AP preflight", "OVMF", "template",
+    "distinct inode", "ITLWM_OVMF_VARS", "v1",
 ):
     if token not in protocol:
         fail(f"protocol omits boundary: {token}")
