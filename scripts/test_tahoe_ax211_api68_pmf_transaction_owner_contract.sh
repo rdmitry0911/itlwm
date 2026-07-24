@@ -307,6 +307,8 @@ for token in (
 order(prepare, "reply MIC state is restored before finish",
       "ieee80211_pae_mfp_txn_stage_mic_state", "ieee80211_send_4way_msg4",
       "ieee80211_pae_mfp_txn_restore_mic_state")
+forbid(prepare, "ni->ni_rsn_supp_state = RNSA_SUPP_PTKDONE;",
+       "pre-handoff PTKDONE publication")
 finish_publish = body(proto,
                       "int\nieee80211_pae_mfp_txn_finish_publish_locked",
                       "atomic PMF software publication")
@@ -325,13 +327,19 @@ for token in (
     "ni->ni_pairwise_key = txn->ptk_key;",
     "ic->ic_nw_keys[txn->gtk_key.k_id] = txn->gtk_key;",
     "ni->ni_port_valid = 1;",
+    "if (txn->reply == IEEE80211_PAE_MFP_REPLY_4WAY_MSG4)",
+    "ni->ni_rsn_supp_state = RNSA_SUPP_PTKDONE;",
     "txn->finish_published = 1;",
 ):
     require(finish_publish, token, "atomic PMF software publication")
 order(finish_publish, "BIP transfer precedes all infallible value publication",
       "ieee80211_bip_key_publish_retire_locked",
       "txn->prepared_bip_installed = 0;",
-      "ni->ni_ptk = txn->ptk;", "txn->finish_published = 1;")
+      "ni->ni_ptk = txn->ptk;",
+      "ni->ni_rsn_supp_state = RNSA_SUPP_PTKDONE;",
+      "txn->finish_published = 1;")
+if proto.count("ni->ni_rsn_supp_state = RNSA_SUPP_PTKDONE;") != 1:
+    fail("PTKDONE must be published only by the accepted atomic finish")
 
 # q0 contains value-only async metadata.  Errors are decoded after q0 is
 # unlocked; cancellation and timeout preserve the token as TIMED_OUT so that

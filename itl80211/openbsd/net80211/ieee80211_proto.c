@@ -370,6 +370,11 @@ ieee80211_pae_mfp_txn_finish_publish_locked(struct ieee80211com *ic,
 		if (ic->ic_opmode == IEEE80211_M_STA)
 			ic->ic_rsngroupcipher = ni->ni_rsngroupcipher;
 	}
+	/* prepare_reply() temporarily enters PTKDONE to build Msg4, then restores
+	 * its MIC view before the backend handoff.  Make that state durable only
+	 * after this transaction's key publication has been accepted. */
+	if (txn->reply == IEEE80211_PAE_MFP_REPLY_4WAY_MSG4)
+		ni->ni_rsn_supp_state = RNSA_SUPP_PTKDONE;
 	txn->finish_published = 1;
 	return 0;
 }
