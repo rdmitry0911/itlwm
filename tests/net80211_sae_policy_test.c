@@ -151,23 +151,29 @@ main(void)
         NULL, 1, 0, 0));
     assert(!ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
         selected_ssid, IEEE80211_PAE_SELECTED_BSS_MAX_SSID_LEN + 1, 0, 0));
+    assert(!ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
+        selected_ssid, sizeof(selected_ssid), 0, 3));
     assert(ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
         selected_ssid, sizeof(selected_ssid),
         IEEE80211_SAE_SCAN_RSNXE_H2E, 0));
     assert(selected.ssid[1] == 0);
     assert(selected.ssid[sizeof(selected_ssid)] == 0);
     assert(selected.sae_scan_flags == IEEE80211_SAE_SCAN_RSNXE_H2E);
-    assert(selected.strict_pure_sae_profile == 0);
+	assert(selected.strict_pure_sae_profile ==
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_NONE);
 	assert(ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
 	    selected_ssid, sizeof(selected_ssid),
-	    IEEE80211_SAE_SCAN_RSNXE_H2E, 2));
-	assert(selected.strict_pure_sae_profile == 1);
+	    IEEE80211_SAE_SCAN_RSNXE_H2E,
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_TRANSITION));
+	assert(selected.strict_pure_sae_profile ==
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_TRANSITION);
 	selected.epoch = 17;
 	ieee80211_pae_selected_bss_clear_payload(&selected);
 	assert(selected.epoch == 17);
 	assert(selected.ssid_len == 0);
 	assert(selected.sae_scan_flags == 0);
-	assert(selected.strict_pure_sae_profile == 0);
+	assert(selected.strict_pure_sae_profile ==
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_NONE);
 	for (index = 0; index < sizeof(selected.bssid); index++)
 		assert(selected.bssid[index] == 0);
 	for (index = 0; index < sizeof(selected.ssid); index++)
@@ -178,7 +184,8 @@ main(void)
 	    selected_bssid, selected_ssid, sizeof(selected_ssid)));
 	assert(ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
 	    selected_ssid, sizeof(selected_ssid),
-	    IEEE80211_SAE_SCAN_RSNXE_H2E, 1));
+	    IEEE80211_SAE_SCAN_RSNXE_H2E,
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE));
     selected.epoch = 17;
     assert(ieee80211_pae_selected_bss_identity_matches(&selected, 17,
         selected_bssid, selected_ssid, sizeof(selected_ssid)));
@@ -224,6 +231,17 @@ main(void)
     assert(ieee80211_sae_scan_akm_is_ambiguous(2, 2, 0));
     assert(ieee80211_sae_scan_akm_is_ambiguous(2, 1, 1));
     assert(ieee80211_sae_scan_akm_is_ambiguous(1, 0, 1));
+	assert(ieee80211_sae_scan_akm_is_exact_transition(1, 2, 2, 0));
+	assert(!ieee80211_sae_scan_akm_is_exact_transition(0, 2, 2, 0));
+	assert(!ieee80211_sae_scan_akm_is_exact_transition(1, 2, 1, 1));
+	assert(ieee80211_sae_scan_profile_is_transition(1, 1, 1, 0, 1, 0,
+	    1, 1, 1, 1, 0,
+	    IEEE80211_SAE_SCAN_CENSUS_COMPLETE |
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK));
+	assert(!ieee80211_sae_scan_profile_is_transition(1, 1, 1, 0, 1, 0,
+	    1, 1, 1, 1, 1,
+	    IEEE80211_SAE_SCAN_CENSUS_COMPLETE |
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK));
 	assert(!strict_profile(0));
 	assert(!strict_profile(IEEE80211_SAE_SCAN_RSNXE_PRESENT |
 	    IEEE80211_SAE_SCAN_RSNXE_H2E |

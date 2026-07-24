@@ -11,7 +11,8 @@ valid_selected(void)
 
 	memset(&selected, 0, sizeof(selected));
 	selected.epoch = 1;
-	selected.strict_pure_sae_profile = 1;
+	selected.strict_pure_sae_profile =
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE;
 	selected.sae_scan_flags = IEEE80211_SAE_SCAN_CENSUS_COMPLETE;
 	return selected;
 }
@@ -54,7 +55,8 @@ main(void)
 	selected.epoch = 0;
 	assert_rejected(selected);
 	selected = valid_selected();
-	selected.strict_pure_sae_profile = 0;
+	selected.strict_pure_sae_profile =
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_NONE;
 	assert_rejected(selected);
 	selected = valid_selected();
 	selected.sae_scan_flags = 0;

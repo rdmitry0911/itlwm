@@ -46,7 +46,8 @@ ieee80211_sae_admission_group19_hnp(
 		out->rsnxe_capabilities = 0;
 	}
 	if (selected == NULL || out == NULL || selected->epoch == 0 ||
-	    selected->strict_pure_sae_profile == 0)
+	    selected->strict_pure_sae_profile !=
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE)
 		return 0;
 
 	flags = selected->sae_scan_flags;

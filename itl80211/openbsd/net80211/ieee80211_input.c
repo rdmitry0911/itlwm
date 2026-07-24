@@ -2168,11 +2168,25 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
             if (ieee80211_parse_rsn(ic, rsnie, &rsn) == 0) {
                 ni->ni_supported_rsnprotos |= IEEE80211_PROTO_RSN;
                 ni->ni_supported_rsnakms |= rsn.rsn_akms;
-                if ((rsn.rsn_akms & IEEE80211_AKM_SAE) != 0 &&
-                    ieee80211_sae_scan_akm_is_ambiguous(rsn.rsn_nakms,
-                        rsn.rsn_nknownakms, rsn.rsn_nunknownakms)) {
-                    ni->ni_sae_scan_flags |=
-                        IEEE80211_SAE_SCAN_AKM_AMBIGUOUS;
+                if ((rsn.rsn_akms & IEEE80211_AKM_SAE) != 0) {
+                    /* Preserve the exact ordinary transition census as a
+                     * scan fact, not as an AKM choice.  A later direct WCL
+                     * SAE owner can admit this one shape while keeping the
+                     * local policy SAE-only; every other multi-AKM shape
+                     * remains ambiguous and fail-closed. */
+                    if (ieee80211_sae_scan_akm_is_exact_transition(
+                        rsn.rsn_akms ==
+                        (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK),
+                        rsn.rsn_nakms, rsn.rsn_nknownakms,
+                        rsn.rsn_nunknownakms)) {
+                        ni->ni_sae_scan_flags |=
+                            IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK;
+                    } else if (ieee80211_sae_scan_akm_is_ambiguous(
+                        rsn.rsn_nakms, rsn.rsn_nknownakms,
+                        rsn.rsn_nunknownakms)) {
+                        ni->ni_sae_scan_flags |=
+                            IEEE80211_SAE_SCAN_AKM_AMBIGUOUS;
+                    }
                 }
                 if (ieee80211_sae_scan_cipher_is_ambiguous(
                     (rsn.rsn_akms & IEEE80211_AKM_SAE) != 0,

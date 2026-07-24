@@ -31,6 +31,8 @@
 #define IEEE80211_SAE_SCAN_LEGACY_WPA_PRESENT		0x00008000u
 #define IEEE80211_SAE_SCAN_RSN_TAIL_MALFORMED		0x00010000u
 #define IEEE80211_SAE_SCAN_CENSUS_COMPLETE		0x00020000u
+/* Exact RSN SAE|PSK transition census: two known, non-duplicate AKMs only. */
+#define IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK		0x00040000u
 
 /*
  * Strict normal-SAE accepts a completed census and only plain optional
@@ -40,6 +42,11 @@
 	(IEEE80211_SAE_SCAN_CENSUS_COMPLETE | \
 	 IEEE80211_SAE_SCAN_RSNXE_PRESENT | IEEE80211_SAE_SCAN_RSNXE_H2E | \
 	 IEEE80211_SAE_SCAN_EXTCAP_PRESENT)
+
+/* This fact is meaningful only to an explicit local WCL SAE request. */
+#define IEEE80211_SAE_SCAN_TRANSITION_PROFILE_ALLOWED_MASK \
+	(IEEE80211_SAE_SCAN_STRICT_PROFILE_ALLOWED_MASK | \
+	 IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK)
 
 #define IEEE80211_SAE_RSNXE_FIELD_LEN_MASK	0x0fu
 #define IEEE80211_SAE_RSNXE_H2E		(1u << 5)
@@ -238,6 +245,16 @@ ieee80211_sae_scan_akm_is_ambiguous(uint16_t advertised_count,
 	return advertised_count != 1 || known_count != 1 || unknown_count != 0;
 }
 
+/* Keep the bitset comparison in the parser that owns ieee80211 AKM names. */
+static inline int
+ieee80211_sae_scan_akm_is_exact_transition(int exact_sae_psk,
+    uint16_t advertised_count, uint16_t known_count,
+    uint16_t unknown_count)
+{
+	return exact_sae_psk && advertised_count == 2 && known_count == 2 &&
+	    unknown_count == 0;
+}
+
 /*
  * Strict normal-SAE profile fact, not an association authorization.  Password
  * Identifier, SAE-PK, H2E-only, malformed/unknown, duplicate-suite, and any
@@ -254,6 +271,27 @@ ieee80211_sae_scan_profile_is_strict(int rsn_only, int exact_sae,
 	    ccmp_pairwise && ccmp_group && bip_group_mgmt && mfpc && mfpr &&
 	    (scan_flags & IEEE80211_SAE_SCAN_CENSUS_COMPLETE) != 0 &&
 	    (scan_flags & ~IEEE80211_SAE_SCAN_STRICT_PROFILE_ALLOWED_MASK) == 0;
+}
+
+/*
+ * This recognizes a capability fact of a WPA2/WPA3 transition BSS.  It is
+ * not an SAE request: only a direct WCL CIPHER_PWD request may later elect
+ * this profile, and that request configures SAE-only locally.  Transition
+ * BSSes normally advertise MFPC but not MFPR so WPA2 clients remain legal;
+ * an SAE station still sets MFPR in its own association request.
+ */
+static inline int
+ieee80211_sae_scan_profile_is_transition(int rsn_only, int exact_sae_psk,
+    int ess, int ibss, int privacy, int no_pairwise, int ccmp_pairwise,
+    int ccmp_group, int bip_group_mgmt, int mfpc, int mfpr,
+    uint32_t scan_flags)
+{
+	return rsn_only && exact_sae_psk && ess && !ibss && privacy &&
+	    !no_pairwise && ccmp_pairwise && ccmp_group && bip_group_mgmt &&
+	    mfpc && !mfpr &&
+	    (scan_flags & IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK) != 0 &&
+	    (scan_flags & IEEE80211_SAE_SCAN_CENSUS_COMPLETE) != 0 &&
+	    (scan_flags & ~IEEE80211_SAE_SCAN_TRANSITION_PROFILE_ALLOWED_MASK) == 0;
 }
 
 #endif /* _NET80211_IEEE80211_SAE_POLICY_H_ */

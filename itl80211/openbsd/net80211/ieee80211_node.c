@@ -112,12 +112,12 @@ void ieee80211_clean_inactive_nodes(struct ieee80211com *, int);
  * not an association decision; Tahoe still rejects pure WPA3 before any
  * authentication or key path begins.
  */
-static int
-ieee80211_sae_selected_bss_profile_is_strict(const struct ieee80211_node *ni)
+static uint8_t
+ieee80211_sae_selected_bss_profile(const struct ieee80211_node *ni)
 {
     if (ni == NULL)
-        return 0;
-    return ieee80211_sae_scan_profile_is_strict(
+        return IEEE80211_SAE_SELECTED_BSS_PROFILE_NONE;
+    if (ieee80211_sae_scan_profile_is_strict(
         ni->ni_supported_rsnprotos == IEEE80211_PROTO_RSN &&
         ni->ni_rsnprotos == IEEE80211_PROTO_RSN,
         ni->ni_supported_rsnakms == IEEE80211_AKM_SAE &&
@@ -131,7 +131,26 @@ ieee80211_sae_selected_bss_profile_is_strict(const struct ieee80211_node *ni)
         ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP,
         (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) != 0,
         (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPR) != 0,
-        ni->ni_sae_scan_flags);
+        ni->ni_sae_scan_flags))
+        return IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE;
+    if (ieee80211_sae_scan_profile_is_transition(
+        ni->ni_supported_rsnprotos == IEEE80211_PROTO_RSN &&
+        ni->ni_rsnprotos == IEEE80211_PROTO_RSN,
+        ni->ni_supported_rsnakms ==
+        (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK) &&
+        ni->ni_rsnakms == (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK),
+        (ni->ni_capinfo & IEEE80211_CAPINFO_ESS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_IBSS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_NOPAIRWISE) != 0,
+        ni->ni_rsnciphers == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPR) != 0,
+        ni->ni_sae_scan_flags))
+        return IEEE80211_SAE_SELECTED_BSS_PROFILE_TRANSITION;
+    return IEEE80211_SAE_SELECTED_BSS_PROFILE_NONE;
 }
 
 #ifndef IEEE80211_STA_ONLY
@@ -1180,7 +1199,7 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     struct ieee80211_node *ni;
     uint32_t assoc_fail = 0;
     u_int64_t replacement_epoch;
-    int strict_pure_sae_profile;
+    uint8_t sae_profile;
 
     AirportItlwmPostPltiTraceRecord(
         ic, kAirportItlwmPostPltiTraceEventBssSelected);
@@ -1203,8 +1222,8 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     (*ic->ic_node_copy)(ic, ic->ic_bss, selbs);
     ni = ic->ic_bss;
     /* Capture the actual post-copy BSS, never request-side candidate intent. */
-    strict_pure_sae_profile = ieee80211_sae_selected_bss_profile_is_strict(ni);
-    ieee80211_pae_selected_bss_capture(ic, ni, strict_pure_sae_profile,
+    sae_profile = ieee80211_sae_selected_bss_profile(ni);
+    ieee80211_pae_selected_bss_capture(ic, ni, sae_profile,
         replacement_epoch);
     ni->ni_assoc_fail |= assoc_fail;
     
@@ -1570,7 +1589,14 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     /* filter out unsupported AKMPs */
     ni->ni_rsnakms &= ic->ic_rsnakms;
     /* prefer SHA-256 based AKMPs */
-    if ((ic->ic_flags & IEEE80211_F_PSK) && (ni->ni_rsnakms &
+    if ((ni->ni_rsnakms & IEEE80211_AKM_SAE) != 0 &&
+        (ic->ic_flags & IEEE80211_F_PSK) == 0) {
+        /* The direct WCL SAE route deliberately configures only SAE.  Do
+         * not let the historical non-PSK fallback rewrite that negotiated
+         * intersection into 802.1X before the driver-owned AUTH owner sees
+         * it. */
+        ni->ni_rsnakms = IEEE80211_AKM_SAE;
+    } else if ((ic->ic_flags & IEEE80211_F_PSK) && (ni->ni_rsnakms &
                                              (IEEE80211_AKM_PSK | IEEE80211_AKM_SHA256_PSK))) {
         /* AP supports PSK AKMP and a PSK is configured */
         if (ni->ni_rsnakms & IEEE80211_AKM_SHA256_PSK)

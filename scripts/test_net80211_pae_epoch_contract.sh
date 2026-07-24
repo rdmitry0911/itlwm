@@ -322,8 +322,8 @@ ordered(join, "controlled BSS replacement fence",
         "(*ic->ic_node_copy)")
 ordered(join, "post-copy selected BSS snapshot",
         "(*ic->ic_node_copy)(ic, ic->ic_bss, selbs);", "ni = ic->ic_bss;",
-        "strict_pure_sae_profile = ieee80211_sae_selected_bss_profile_is_strict(ni);",
-        "ieee80211_pae_selected_bss_capture(ic, ni, strict_pure_sae_profile,",
+        "sae_profile = ieee80211_sae_selected_bss_profile(ni);",
+        "ieee80211_pae_selected_bss_capture(ic, ni, sae_profile,",
         "replacement_epoch);",
         "ieee80211_fix_rate")
 for source, label in ((input_c, "scan parser"),
