@@ -6,12 +6,15 @@
 #  Builds only AirportItlwm.kext for Tahoe and stages it into:
 #    Build/Debug/Tahoe/AirportItlwm.kext         (default STA-only build)
 #    Build/Debug/Tahoe-OptOut/AirportItlwm.kext  (IEEE80211_OPT_OUT_STA_ONLY build)
+#    Build/Debug/Tahoe-IwnSoftwarePmfLab/AirportItlwm.kext
+#                                               (physical-IWN PMF lab build)
 #  Then verifies all undefined symbols resolve against the target
 #  kernel's BootKernelExtensions.kc.
 #
 #  Usage:
-#    ./scripts/build_tahoe.sh [--opt-out] [BOOTKC_PATH]
+#    ./scripts/build_tahoe.sh [--opt-out|--iwn-software-pmf-lab] [BOOTKC_PATH]
 #    BUILD_OPT_OUT_STA_ONLY=1 ./scripts/build_tahoe.sh [BOOTKC_PATH]
+#    BUILD_IWN_SOFTWARE_PMF_LAB=1 ./scripts/build_tahoe.sh [BOOTKC_PATH]
 #
 #  --opt-out / BUILD_OPT_OUT_STA_ONLY=1 selects the AP-mode exploration
 #  build variant. The variant defines IEEE80211_OPT_OUT_STA_ONLY and
@@ -27,6 +30,13 @@
 #  separate DerivedData directory and a separate staged output root,
 #  so opt-out builds never overwrite the default STA-only artifacts.
 #
+#  --iwn-software-pmf-lab / BUILD_IWN_SOFTWARE_PMF_LAB=1 creates a separate,
+#  STA-only artifact with IWN_SOFTWARE_PMF_LAB_BUILD=1.  This is the only
+#  source-level opt-in for the experimental IWN software-PMF owner; ordinary
+#  builds still advertise no IWN MFP capability.  It is deliberately
+#  incompatible with --opt-out and is for WPA2+PMF radio validation only,
+#  never an SAE/WPA3 enablement.
+#
 #  BOOTKC_PATH defaults to /Volumes/macos-750/System/Library/KernelCollections/BootKernelExtensions.kc
 #  If the BootKC is not found, the build succeeds but the symbol check is skipped.
 
@@ -36,12 +46,20 @@ OPT_OUT_STA_ONLY=0
 if [ "${BUILD_OPT_OUT_STA_ONLY:-0}" = "1" ]; then
     OPT_OUT_STA_ONLY=1
 fi
+IWN_SOFTWARE_PMF_LAB=0
+if [ "${BUILD_IWN_SOFTWARE_PMF_LAB:-0}" = "1" ]; then
+    IWN_SOFTWARE_PMF_LAB=1
+fi
 
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --opt-out)
             OPT_OUT_STA_ONLY=1
+            shift
+            ;;
+        --iwn-software-pmf-lab)
+            IWN_SOFTWARE_PMF_LAB=1
             shift
             ;;
         *)
@@ -61,6 +79,11 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 TARGET="AirportItlwm-Tahoe"
 CONFIGURATION="Debug"
 
+if [ "$OPT_OUT_STA_ONLY" -eq 1 ] && [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]; then
+    echo "ERROR: --opt-out cannot be combined with --iwn-software-pmf-lab" >&2
+    exit 2
+fi
+
 if [ "$OPT_OUT_STA_ONLY" -eq 1 ]; then
     VARIANT_LABEL="Tahoe-OptOut"
     DERIVED_DATA="$PROJECT_DIR/DerivedData-optout"
@@ -69,6 +92,12 @@ else
     VARIANT_LABEL="Tahoe"
     DERIVED_DATA="$PROJECT_DIR/DerivedData"
     EXTRA_PP=""
+fi
+
+if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]; then
+    VARIANT_LABEL="Tahoe-IwnSoftwarePmfLab"
+    DERIVED_DATA="$PROJECT_DIR/DerivedData-iwn-software-pmf-lab"
+    EXTRA_PP="$EXTRA_PP IWN_SOFTWARE_PMF_LAB_BUILD=1"
 fi
 
 if [ -n "${ITLWM_DERIVED_DATA_OVERRIDE:-}" ]; then
@@ -244,6 +273,9 @@ fi
 
 echo ""
 echo "Building only AirportItlwm.kext via $TARGET ($CONFIGURATION/$VARIANT_LABEL) source-id=$GIT_HASH..."
+if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]; then
+    echo "IWN software-PMF lab build: WPA2+PMF validation only; SAE remains unavailable."
+fi
 mkdir -p "$DERIVED_DATA"
 BUILD_LOG="$DERIVED_DATA/${TARGET}-${CONFIGURATION}.log"
 if ! xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \

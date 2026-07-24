@@ -271,6 +271,16 @@ public:
     int        iwn_rxon_ht40_enabled(struct iwn_softc *);
     int        iwn_auth(struct iwn_softc *, int);
     int        iwn_run(struct iwn_softc *);
+    static void        iwn_mfp_pae_task(void *);
+    static int         iwn_pae_mfp_txn_submit(struct ieee80211com *,
+                u_int64_t, u_int64_t, struct ieee80211_node *,
+                const struct ieee80211_key *, u_int8_t);
+    static void        iwn_pae_mfp_txn_cancel(struct ieee80211com *,
+                u_int64_t);
+    static int         iwn_pae_mfp_txn_finish(struct ieee80211com *,
+                u_int64_t);
+    void        iwn_mfp_pae_abort_all(struct iwn_softc *);
+    void        iwn_mfp_pae_detach_begin(struct iwn_softc *);
     static int        iwn_set_key(struct ieee80211com *, struct ieee80211_node *,
                 struct ieee80211_key *);
     static void        iwn_delete_key(struct ieee80211com *, struct ieee80211_node *,

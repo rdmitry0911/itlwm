@@ -38,6 +38,7 @@
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
+#include <IOKit/IOLocks.h>
 
 struct iwn_rx_radiotap_header {
     struct ieee80211_radiotap_header wr_ihdr;
@@ -243,6 +244,33 @@ struct iwn_ops {
                 uint16_t);
 };
 
+/*
+ * IWN has no firmware transaction for protected-management keys.  The
+ * software-PMF owner keeps CCMP contexts private until the generic PAE
+ * transaction atomically publishes the corresponding live descriptors.
+ *
+ * `mfp_pae_task` is the only context allowed to allocate those contexts:
+ * ieee80211_ccmp_set_key() may wait.  The node reference belongs to this
+ * record from the first submitted stage through either cancellation or the
+ * successful generic-to-live handoff.  `lifecycle_generation` prevents a
+ * worker copied before stop/restart from touching a replacement association.
+ */
+struct iwn_mfp_pae_txn {
+    bool                    active;
+    bool                    cancelled;
+    bool                    task_active;
+    bool                    pending;
+    u_int8_t                pending_stage;
+    u_int8_t                accepted_mask;
+    u_int64_t               txn_id;
+    u_int64_t               assoc_epoch;
+    u_int32_t               lifecycle_generation;
+    struct ieee80211_node   *ni;
+    struct ieee80211_key    ptk_key;
+    struct ieee80211_key    gtk_key;
+    struct ieee80211_key    pending_key;
+};
+
 struct iwn_tx_ba {
     struct iwn_node *    wn;
 };
@@ -326,6 +354,28 @@ struct iwn_softc {
     struct iwn_calib_state    calib;
 
     struct task        init_task;
+    struct task        mfp_pae_task;
+
+    /* This leaf protects only the two value owners below; it is never held
+     * across a taskq operation or software-crypto allocation. */
+    IOSimpleLock       *sc_mfp_pae_lock;
+    struct iwn_mfp_pae_txn sc_mfp_pae_txn;
+    /* A stale reconnect can arrive while the old worker is still allocating
+     * CCMP.  It occupies this non-worker successor slot; the old worker can
+     * retire only its own main record before promoting it. */
+    struct iwn_mfp_pae_txn sc_mfp_pae_successor;
+    u_int32_t          sc_mfp_pae_lifecycle_generation;
+    /* CLOSED|active-count is an atomic callback lease.  It covers a generic
+     * PAE callback which copied a hook before detach unpublishes it.  Both
+     * admission and release are CAS-only; detach polls the count after close.
+     */
+    volatile u_int32_t sc_mfp_pae_callback_state;
+    bool                sc_mfp_pae_detaching;
+    bool                sc_mfp_pae_stopping;
+    bool                sc_mfp_pae_task_ready;
+    /* Only a separately built lab artifact may advertise this unfinished
+     * radio path; the ordinary production binary keeps it unavailable. */
+    bool                sc_mfp_pae_lab_enabled;
 
     struct iwn_fw_info    fw;
     struct iwn_calib_info    calibcmd[5];
