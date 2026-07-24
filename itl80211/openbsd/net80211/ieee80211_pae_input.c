@@ -134,6 +134,28 @@ ieee80211_pae_install_igtk(struct ieee80211com *ic,
     return error;
 }
 
+/* The async MFP ingress must not inspect a live GTK descriptor directly.
+ * Keep the legacy group-key reinstall comparison under the selected-BSS
+ * fence, matching the BIP helper used for IGTK below. */
+static int
+ieee80211_pae_mfp_gtk_needs_update(struct ieee80211com *ic, u_int8_t kid,
+    const u_int8_t *gtk, int len)
+{
+    IOSimpleLock *lock;
+    IOInterruptState irq;
+    int update;
+
+    if (ic == NULL || gtk == NULL || len <= 0 ||
+        kid >= IEEE80211_WEP_NKID ||
+        (lock = ic->ic_pae_selected_bss_lock) == NULL)
+        return -1;
+    irq = IOSimpleLockLockDisableInterrupt(lock);
+    update = ieee80211_must_update_group_key(&ic->ic_nw_keys[kid], gtk,
+        len);
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    return update;
+}
+
 /*
  * Build a value-only PMF Msg3 plan.  The raw EAPOL frame remains owned by
  * this ingress worker; the asynchronous owner receives only freshly-built
@@ -149,7 +171,8 @@ ieee80211_pae_mfp_msg3_begin(struct ieee80211com *ic,
     struct ieee80211_key ptk_key, gtk_key, igtk_key;
     u_int64_t prsc;
     u_int16_t kid;
-    int keylen, have_ptk = 0, have_gtk = 0, have_igtk = 0;
+    int keylen, gtk_update, bip_update, have_ptk = 0, have_gtk = 0,
+        have_igtk = 0;
 
     memset(&ptk_key, 0, sizeof(ptk_key));
     memset(&gtk_key, 0, sizeof(gtk_key));
@@ -174,15 +197,21 @@ ieee80211_pae_mfp_msg3_begin(struct ieee80211com *ic,
         if (gtk[1] != 6 + keylen)
             return EINVAL;
         gtk_kid = gtk[6] & 3;
-        gtk_key.k_id = gtk_kid;
-        gtk_key.k_cipher = ni->ni_rsngroupcipher;
-        gtk_key.k_flags = IEEE80211_KEY_GROUP;
-        if (gtk[6] & (1 << 2))
-            gtk_key.k_flags |= IEEE80211_KEY_TX;
-        gtk_key.k_rsc[0] = LE_READ_6(key->rsc);
-        gtk_key.k_len = keylen;
-        memcpy(gtk_key.k_key, &gtk[8], gtk_key.k_len);
-        have_gtk = 1;
+        gtk_update = ieee80211_pae_mfp_gtk_needs_update(ic, gtk_kid,
+            &gtk[8], keylen);
+        if (gtk_update < 0)
+            return EINVAL;
+        if (gtk_update) {
+            gtk_key.k_id = gtk_kid;
+            gtk_key.k_cipher = ni->ni_rsngroupcipher;
+            gtk_key.k_flags = IEEE80211_KEY_GROUP;
+            if (gtk[6] & (1 << 2))
+                gtk_key.k_flags |= IEEE80211_KEY_TX;
+            gtk_key.k_rsc[0] = LE_READ_6(key->rsc);
+            gtk_key.k_len = keylen;
+            memcpy(gtk_key.k_key, &gtk[8], gtk_key.k_len);
+            have_gtk = 1;
+        }
     }
     if (igtk != NULL) {
         if (igtk[1] != 4 + 24)
@@ -190,16 +219,22 @@ ieee80211_pae_mfp_msg3_begin(struct ieee80211com *ic,
         kid = LE_READ_2(&igtk[6]);
         if (kid != 4 && kid != 5)
             return EINVAL;
-        igtk_key.k_id = kid;
-        igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
-        igtk_key.k_flags = IEEE80211_KEY_IGTK;
-        igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
-        igtk_key.k_len = 16;
-        memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
-        have_igtk = 1;
+        bip_update = ieee80211_bip_key_needs_update(ic, kid, &igtk[14],
+            IEEE80211_BIP_KEYLEN);
+        if (bip_update < 0)
+            return EINVAL;
+        if (bip_update) {
+            igtk_key.k_id = kid;
+            igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+            igtk_key.k_flags = IEEE80211_KEY_IGTK;
+            igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
+            igtk_key.k_len = IEEE80211_BIP_KEYLEN;
+            memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
+            have_igtk = 1;
+        }
     }
     if ((ni->ni_flags & IEEE80211_NODE_RSN_NEW_PTK) &&
-        (!have_ptk || !have_gtk || !have_igtk))
+        (!have_ptk || gtk == NULL || igtk == NULL))
         return EINVAL;
     if (!have_ptk && !have_gtk && !have_igtk)
         return ENOENT;
@@ -217,7 +252,7 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
 {
     struct ieee80211_key gtk_key, igtk_key;
     u_int16_t kid;
-    int keylen, have_igtk = 0;
+    int keylen, gtk_update, bip_update, have_gtk = 0, have_igtk = 0;
 
     if (gtk == NULL || ni->ni_rsngroupmgmtcipher != IEEE80211_CIPHER_BIP)
         return EINVAL;
@@ -226,14 +261,22 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
     keylen = ieee80211_cipher_keylen(ni->ni_rsngroupcipher);
     if (gtk[1] != 6 + keylen)
         return EINVAL;
-    gtk_key.k_id = gtk[6] & 3;
-    gtk_key.k_cipher = ni->ni_rsngroupcipher;
-    gtk_key.k_flags = IEEE80211_KEY_GROUP;
-    if (gtk[6] & (1 << 2))
-        gtk_key.k_flags |= IEEE80211_KEY_TX;
-    gtk_key.k_rsc[0] = LE_READ_6(key->rsc);
-    gtk_key.k_len = keylen;
-    memcpy(gtk_key.k_key, &gtk[8], gtk_key.k_len);
+    kid = gtk[6] & 3;
+    gtk_update = ieee80211_pae_mfp_gtk_needs_update(ic, kid, &gtk[8],
+        keylen);
+    if (gtk_update < 0)
+        return EINVAL;
+    if (gtk_update) {
+        gtk_key.k_id = kid;
+        gtk_key.k_cipher = ni->ni_rsngroupcipher;
+        gtk_key.k_flags = IEEE80211_KEY_GROUP;
+        if (gtk[6] & (1 << 2))
+            gtk_key.k_flags |= IEEE80211_KEY_TX;
+        gtk_key.k_rsc[0] = LE_READ_6(key->rsc);
+        gtk_key.k_len = keylen;
+        memcpy(gtk_key.k_key, &gtk[8], gtk_key.k_len);
+        have_gtk = 1;
+    }
 
     if (igtk != NULL) {
         if (igtk[1] != 4 + 24)
@@ -241,13 +284,19 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
         kid = LE_READ_2(&igtk[6]);
         if (kid != 4 && kid != 5)
             return EINVAL;
-        igtk_key.k_id = kid;
-        igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
-        igtk_key.k_flags = IEEE80211_KEY_IGTK;
-        igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
-        igtk_key.k_len = 16;
-        memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
-        have_igtk = 1;
+        bip_update = ieee80211_bip_key_needs_update(ic, kid, &igtk[14],
+            IEEE80211_BIP_KEYLEN);
+        if (bip_update < 0)
+            return EINVAL;
+        if (bip_update) {
+            igtk_key.k_id = kid;
+            igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+            igtk_key.k_flags = IEEE80211_KEY_IGTK;
+            igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
+            igtk_key.k_len = IEEE80211_BIP_KEYLEN;
+            memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
+            have_igtk = 1;
+        }
     } else {
         /* A rekey may omit IGTK only after either retained RX IGTK slot is
          * live.  Do not observe descriptor fields or k_priv outside its
@@ -257,8 +306,11 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
             return EINVAL;
     }
 
+    if (!have_gtk && !have_igtk)
+        return ENOENT;
+
     return ieee80211_pae_mfp_txn_begin(ic, ni, &ni->ni_ptk,
-        NULL, 0, &gtk_key, 1, &igtk_key, have_igtk,
+        NULL, 0, &gtk_key, have_gtk, &igtk_key, have_igtk,
         BE_READ_8(key->replaycnt), info,
         IEEE80211_PAE_MFP_REPLY_GROUP_MSG2);
 }
@@ -1165,8 +1217,10 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
             igtk, info);
         if (mfp_error == 0 || mfp_error == EBUSY)
             return;
-        reason = IEEE80211_REASON_AUTH_LEAVE;
-        goto deauth;
+        if (mfp_error != ENOENT) {
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
     }
     
     /* check that key length matches that of group cipher */
