@@ -24,6 +24,7 @@ matrix = (root / "include/ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h")
 facade = (root / "AirportItlwm/TahoePostPltiTraceContracts.hpp").read_text()
 iwx_pmf_bip = (root / "include/ClientKit/AirportItlwmIwxPmfBipTraceContracts.h").read_text()
 iwx_pmf_bip_facade = (root / "AirportItlwm/TahoeIwxPmfBipTraceContracts.hpp").read_text()
+iwn_software_pmf = (root / "include/ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
@@ -48,6 +49,7 @@ aggregate = (root / "scripts/test_tahoe_sae_quarantine_contract.sh").read_text()
 payload_script = (root / "scripts/test_payload_builders.sh").read_text()
 payload_test = (root / "tests/tahoe_payload_builders_test.cpp").read_text()
 iwx_c_fixture = (root / "tests/iwx_pmf_bip_trace_contract_test.c").read_text()
+iwn_c_fixture = (root / "tests/iwn_software_pmf_trace_contract_test.c").read_text()
 
 
 def fail(message):
@@ -115,7 +117,7 @@ def struct_block(name):
 
 
 for needle in (
-        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 3U",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 4U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_ACK_PROPERTY",
@@ -139,6 +141,16 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published",
         "kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected",
         "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
         "kAirportItlwmPostPltiTraceEventMax",
 ):
     require(abi, needle, "safe-only public ABI")
@@ -153,7 +165,15 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published = 39",
         "kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected = 40",
         "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected = 41",
-        "kAirportItlwmPostPltiTraceEventMax = 42",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared = 42",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared = 43",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged = 44",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished = 45",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published = 46",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published = 47",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected = 48",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected = 49",
+        "kAirportItlwmPostPltiTraceEventMax = 50",
 ):
     require(abi, needle, "append-only IWX PMF observer ABI")
 
@@ -189,6 +209,7 @@ ordered(buffer_fields, "buffer ABI ordering", "version;", "captureGeneration;",
 for needle in (
         "AirportItlwmPostPltiTraceBeginEpisode",
         "AirportItlwmPostPltiTraceRecord",
+        "AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
         "AirportItlwmPostPltiTraceCompleteEpisode",
         "AirportItlwmPostPltiTraceAbortEpisode",
         "AirportItlwmPostPltiTraceNoteStateRequest",
@@ -210,7 +231,7 @@ for needle in (
         "require_external_bridge ieee80211_pae_input AirportItlwmPostPltiTraceCompleteEpisode",
         "require_external_bridge ieee80211_pae_output AirportItlwmPostPltiTraceRecord",
         "require_external_bridge ieee80211_proto AirportItlwmPostPltiTraceNoteStateRequest",
-        "require_external_bridge ieee80211_crypto_bip AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge ieee80211_crypto_bip AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
         "require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecord",
         "require_external_bridge ItlIwx AirportItlwmPostPltiTraceRecord",
         "__ZL.*AirportItlwmPostPltiTrace",
@@ -240,6 +261,12 @@ for needle in (
 ):
     require(shared, needle, "shared ordered C verdict evaluator")
 for needle in (
+        "IWN software-PMF facts are evaluated by their dedicated contract",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
+):
+    require(shared, needle, "IWN software-PMF neutral generic evaluator boundary")
+for needle in (
         "enum AirportItlwmPostPltiTraceMatrixVerdict",
         "enum AirportItlwmPostPltiTraceMissingStage",
         "airport_itlwm_post_plti_trace_matrix_classify_entries",
@@ -262,6 +289,12 @@ for needle in (
         "kAirportItlwmPostPltiTraceMatrixVerdictKernelChainObserved",
 ):
     require(matrix, needle, "v2 ordered trace matrix")
+for needle in (
+        "airport_itlwm_post_plti_trace_matrix_event_is_iwn_software_pmf",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
+):
+    require(matrix, needle, "IWN software-PMF neutral matrix boundary")
 for needle in (
         "#include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>",
         "inline Verdict\nclassifyEntries",
@@ -318,6 +351,7 @@ for needle in ("AirportItlwmRegDiag", "IWX_AUTH_DIAG", "XYLog", "setProperty",
 # through the existing dropped-entry integrity boundary before it leaves.
 for marker in (
         "AirportItlwmPostPltiTraceRecord",
+        "AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
         "AirportItlwmPostPltiTraceBeginEpisode",
         "AirportItlwmPostPltiTraceCompleteEpisode",
         "AirportItlwmPostPltiTraceAbortEpisode",
@@ -465,16 +499,81 @@ ordered(iwx_initial_prefix, "IWX initial M1/Msg3 pre-q0 progression",
         "airport_itlwm_iwx_pmf_bip_trace_phase_need_igtk_publication",
         "airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell;")
 
+# IWN has a separate, counter-only software-PMF evaluator.  It is stricter
+# than the generic association matrix: one closed episode must carry the
+# ordered local PTK/GTK/IGTK stages, a coherent selected IGTK slot, the final
+# locked software CCMP+BIP publication proof, and port-valid.
+for needle in (
+        "Counter-only evaluator for IWN's lab-gated software PMF owner",
+        "AirportItlwmIwnSoftwarePmfTraceVerdictInitialSoftwarePmfObserved",
+        "AirportItlwmIwnSoftwarePmfTraceMissingStageCaptureSeal",
+        "airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage",
+        "backend != kAirportItlwmPostPltiTraceBackendIwn",
+        "episode_count != 1 || active_episode != 0",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected",
+        "entries[i].captureGeneration != generation",
+        "entries[i].episode != episode",
+        "selected_slot != published_slot",
+        "event == kAirportItlwmPostPltiTraceEventEpisodeAborted",
+        "event == kAirportItlwmPostPltiTraceEventPortValidTransition",
+        "event == kAirportItlwmPostPltiTraceEventCaptureWindowSealed",
+):
+    require(iwn_software_pmf, needle, "IWN software-PMF evaluator fence")
+iwn_software_classifier = body(
+    iwn_software_pmf,
+    "airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage",
+    "IWN software-PMF ordered evaluator")
+ordered(iwn_software_classifier, "IWN fixed PTK/GTK/IGTK stage order",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared",
+        "!ptk_prepared || gtk_prepared || igtk_acknowledged",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged",
+        "!ptk_prepared || !gtk_prepared || igtk_acknowledged",
+        "if (publication_slot != 0)",
+        "!ptk_prepared || !gtk_prepared || !igtk_acknowledged")
+
+iwn_stage_task = body(iwn, "void ItlIwn::\niwn_mfp_pae_task",
+                      "IWN software-PMF stage worker")
+ordered(iwn_stage_task, "IWN stage fact follows durable local acceptance",
+        "txn->accepted_mask |= iwn_mfp_pae_stage_mask(stage);",
+        "iwn_mfp_pae_trace_stage_event(stage)",
+        "AirportItlwmPostPltiTraceRecord(ic, trace_stage_event)",
+        "IOSimpleLockUnlock(sc->sc_mfp_pae_lock);")
+iwn_finish = body(iwn, "int ItlIwn::\niwn_pae_mfp_txn_finish",
+                  "IWN software-PMF final publication")
+ordered(iwn_finish, "IWN final fact follows locked generic publication",
+        "ieee80211_pae_mfp_txn_finish_publish_locked(ic, txn_id);",
+        "iwn_mfp_pae_software_keyset_live_locked(ic, generic,",
+        "txn->ni))",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished",
+        "IOSimpleLockUnlock(sc->sc_mfp_pae_lock);")
+iwn_keyset = body(iwn, "iwn_mfp_pae_software_keyset_live_locked",
+                  "IWN locked software keyset verifier")
+for needle in (
+        "generic->have_ptk", "generic->have_gtk", "generic->have_igtk",
+        "generic->finish_published", "IEEE80211_KEY_SWCRYPTO",
+        "IEEE80211_KEY_PAE_MFP_LIVE", "ic->ic_igtk_kid",
+        "IEEE80211_NODE_TXMGMTPROT", "IEEE80211_NODE_RXMGMTPROT",
+):
+    require(iwn_keyset, needle, "IWN locked software keyset verifier")
+forbidden_iwn_keyset = ("ieee80211_bip_key_shape_valid", "XYLog", "setProperty",
+                        "->k_key", "k_mgmt_rsc", "firmware")
+for needle in forbidden_iwn_keyset:
+    forbid(iwn_keyset, needle, "unsafe IWN software keyset evidence")
+
 trace_publish = body(bip, "ieee80211_bip_trace_publish_locked",
                      "post-ack BIP trace publisher")
 for needle in (
         "ieee80211_bip_ctx_live_locked", "ic->ic_igtk_kid != slot->k_id",
-        "kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published",
-        "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published",
-        "kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected",
-        "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected",
-        "AirportItlwmPostPltiTraceRecord(ic, publication_event)",
-        "AirportItlwmPostPltiTraceRecord(ic, selection_event)",
+        "slot->k_id != 4 && slot->k_id != 5",
+        "AirportItlwmPostPltiTraceRecordIgtkPublicationSelection(ic, slot->k_id)",
 ):
     require(trace_publish, needle, "narrow BIP publication trace source")
 for needle in ("malloc", "free", "XYLog", "setProperty", "k_key",
@@ -488,6 +587,37 @@ ordered(bip_publish, "BIP trace follows coherent publication and TX selection",
         "ieee80211_bip_trace_publish_locked(ic, slot);")
 require(bip, "#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>",
         "BIP trace bridge include")
+
+igtk_pair = body(v2, "AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
+                 "atomic IGTK trace pair bridge")
+for needle in (
+        "airportItlwmPostPltiTraceProducerEnter",
+        "airportItlwmPostPltiTraceTryLock",
+        "airportItlwmPostPltiTraceNoteContendedProducer",
+        "airportItlwmPostPltiTraceIgtkEventsForBackend",
+        "airportItlwmPostPltiTraceRecordToken(ic, publication_event, token",
+        "airportItlwmPostPltiTraceRecordToken(ic, selection_event, token",
+        "airportItlwmPostPltiTraceUnlock",
+        "airportItlwmPostPltiTraceProducerLeave",
+):
+    require(igtk_pair, needle, "atomic IGTK trace pair bridge")
+ordered(igtk_pair, "IGTK pair remains contiguous in one recorder admission",
+        "airportItlwmPostPltiTraceTryLock",
+        "airportItlwmPostPltiTraceIgtkEventsForBackend",
+        "airportItlwmPostPltiTraceRecordToken(ic, publication_event, token",
+        "airportItlwmPostPltiTraceRecordToken(ic, selection_event, token",
+        "airportItlwmPostPltiTraceUnlock")
+igtk_mapper = body(v2, "airportItlwmPostPltiTraceIgtkEventsForBackend",
+                   "backend-specific IGTK event mapper")
+for needle in (
+        "kAirportItlwmPostPltiTraceBackendIwx",
+        "kAirportItlwmPostPltiTraceBackendIwn",
+        "kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published",
+        "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected",
+):
+    require(igtk_mapper, needle, "backend-specific IGTK event mapper")
 
 complete = body(v2, "AirportItlwmPostPltiTraceCompleteEpisode",
                 "port-valid trace lifecycle")
@@ -503,11 +633,20 @@ require(iwx_event_filter,
 require(iwx_event_filter,
         "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected",
         "explicit IWX event vocabulary upper boundary")
+iwn_event_filter = body(v2, "airportItlwmPostPltiTraceEventRequiresIwn",
+                        "IWN software-PMF event vocabulary filter")
+for needle in (
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
+):
+    require(iwn_event_filter, needle, "explicit IWN software-PMF vocabulary boundary")
 record_token = body(v2, "airportItlwmPostPltiTraceRecordToken",
                     "trace record token")
 ordered(record_token, "shared BIP producer cannot contaminate IWN traces",
         "airportItlwmPostPltiTraceEventRequiresIwx(event)",
         "kAirportItlwmPostPltiTraceBackendIwx",
+        "airportItlwmPostPltiTraceEventRequiresIwn(event)",
+        "kAirportItlwmPostPltiTraceBackendIwn",
         "airportItlwmPostPltiTraceTokenIsCurrent")
 control = body(v2, "airportItlwmPostPltiTraceApplyControl",
                "trace control acknowledgement")
@@ -719,6 +858,7 @@ require(auth, "return authtypeUpper == kAuditedWpa3PskTransitionAuth;",
 # an overflow, or a gap must therefore reach the evaluator as integrity=false.
 for needle in (
         "#include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>",
+        "#include <ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h>",
         "airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage",
         "first_missing_stage",
         "snapshot->captureGeneration != buffer->captureGeneration",
@@ -770,6 +910,28 @@ for needle in (
 ):
     require(client, needle, "IWX categorical client mapping")
 for needle in (
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared",
+        "iwn-mfp-pae-ptk-software-prepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared",
+        "iwn-mfp-pae-gtk-software-prepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged",
+        "iwn-mfp-pae-igtk-stage-acknowledged",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished",
+        "iwn-mfp-pae-software-ccmp-bip-published",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published",
+        "iwn-igtk-slot4-published",
+        "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected",
+        "iwn-igtk-slot5-tx-selected",
+        "#include <ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h>",
+        "get_iwn_software_pmf_report",
+        "iwn-software-pmf-report",
+        "iwn_software_pmf_verdict=%s first_missing_stage=%s",
+        "INITIAL_SOFTWARE_PMF_OBSERVED",
+        "kAirportItlwmPostPltiTraceBackendIwn",
+        "return \"IWN\";",
+):
+    require(client, needle, "IWN software-PMF categorical client mapping")
+for needle in (
         "-std=c11 -Wall -Wextra -Werror",
         "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c",
         "-framework IOKit",
@@ -784,8 +946,10 @@ for needle in (
 for needle in (
         "-Iinclude", "tests/iwx_pmf_bip_trace_contract_test.c",
         "iwx_pmf_bip_trace_contract_test",
+        "tests/iwn_software_pmf_trace_contract_test.c",
+        "iwn_software_pmf_trace_contract_test",
 ):
-    require(payload_script, needle, "unit build for IWX PMF/BIP C contract")
+    require(payload_script, needle, "unit build for PMF trace C contracts")
 for needle in (
         "initial slot-4 PMF transaction", "slot-4 initial followed by slot-5",
         "slot-5 initial followed by slot-4", "missing q0 completion",
@@ -802,11 +966,30 @@ for needle in (
         "IWN backend", "unknown backend",
 ):
     require(iwx_c_fixture, needle, "deterministic IWX PMF/BIP C fixture")
+for needle in (
+        "one closed initial transaction proves software PMF ownership",
+        "a sealed partial transaction cannot skip software GTK preparation",
+        "software GTK cannot precede the software PTK stage",
+        "the IGTK acknowledgement cannot precede software GTK preparation",
+        "a selected IGTK slot must match its categorical publication",
+        "final publication cannot precede an active IGTK slot",
+        "a record after the close-on-port-valid terminal is rejected",
+        "a mixed capture generation is never a PMF verdict",
+        "a caller-detected drop or overflow is fail-closed",
+        "the IWX backend cannot borrow the IWN software-PMF evaluator",
+):
+    require(iwn_c_fixture, needle, "deterministic IWN software-PMF C fixture")
 ordered(runner, "isolated Tahoe producer build precedes trace audit",
         "ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'",
         "cd '$REMOTE_DIR' && ./scripts/build_post_plti_trace.sh")
 require(aggregate, "test_tahoe_post_plti_trace_contract.sh",
         "SAE aggregate includes safe trace contract")
+for needle in (
+        "test_tahoe_iwn_software_pmf_lab_build_contract.sh",
+        "test_tahoe_iwn_software_pmf_contract.sh",
+        "test_tahoe_iwn_software_pmf_reconnect_contract.sh",
+):
+    require(aggregate, needle, "SAE aggregate includes IWN software-PMF regression gates")
 for needle in (
         "TahoePostPltiTraceContracts.hpp", "testTahoePostPltiTraceContracts",
         "wrongOrder", "mixedGeneration", "overflowGap", "BackendUnsupported",
@@ -830,6 +1013,10 @@ for needle in (
 for needle in (
         "## Sealed capture rule",
         "## Versioned synthetic scenarios",
+        "trace v4 layer",
+        "IWN software-PMF evaluator",
+        "fixed PTK-to-GTK-to-IGTK",
+        "does not claim SAE, an on-air association",
         "WCL resume followed by seal",
         "A no-candidate retry",
         "partial authentication prefix",

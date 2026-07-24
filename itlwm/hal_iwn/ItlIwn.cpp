@@ -123,6 +123,23 @@ iwn_mfp_pae_stage_mask(u_int8_t stage)
     return (u_int8_t)(1U << (stage - IEEE80211_PAE_MFP_STAGE_PTK));
 }
 
+/* A stage fact is emitted only after the worker has made the value durable in
+ * its local owner.  It is a fixed category, never the key, BSS, or txn ID. */
+static uint32_t
+iwn_mfp_pae_trace_stage_event(u_int8_t stage)
+{
+    switch (stage) {
+    case IEEE80211_PAE_MFP_STAGE_PTK:
+        return kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared;
+    case IEEE80211_PAE_MFP_STAGE_GTK:
+        return kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared;
+    case IEEE80211_PAE_MFP_STAGE_IGTK:
+        return kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged;
+    default:
+        return kAirportItlwmPostPltiTraceEventUnknown;
+    }
+}
+
 static bool
 iwn_mfp_pae_key_valid(const struct ieee80211_key *key, u_int8_t stage)
 {
@@ -142,6 +159,40 @@ iwn_mfp_pae_key_valid(const struct ieee80211_key *key, u_int8_t stage)
     if (stage == IEEE80211_PAE_MFP_STAGE_GTK)
         return (key->k_flags & IEEE80211_KEY_GROUP) != 0;
     return (key->k_flags & IEEE80211_KEY_GROUP) == 0;
+}
+
+/* Caller holds the selected-BSS fence and the IWN PMF owner lock.  The final
+ * fact is deliberately stricter than a successful callback: it describes the
+ * exact live software-CCMP plus BIP descriptor state after the atomic generic
+ * publication, without exporting any descriptor contents. */
+static bool
+iwn_mfp_pae_software_keyset_live_locked(struct ieee80211com *ic,
+    const struct ieee80211_pae_mfp_txn *generic,
+    const struct ieee80211_node *ni)
+{
+    const struct ieee80211_key *ptk, *gtk;
+    const u_int ccmp_flags = IEEE80211_KEY_SWCRYPTO |
+        IEEE80211_KEY_PAE_MFP_LIVE;
+    const u_int mgmt_flags = IEEE80211_NODE_TXMGMTPROT |
+        IEEE80211_NODE_RXMGMTPROT;
+
+    if (ic == NULL || generic == NULL || ni == NULL ||
+        !generic->have_ptk || !generic->have_gtk || !generic->have_igtk ||
+        !generic->finish_published ||
+        generic->gtk_key.k_id >= IEEE80211_WEP_NKID ||
+        generic->igtk_key.k_id < IEEE80211_WEP_NKID ||
+        generic->igtk_key.k_id >= IEEE80211_GROUP_NKID)
+        return false;
+    ptk = &ni->ni_pairwise_key;
+    gtk = &ic->ic_nw_keys[generic->gtk_key.k_id];
+    return ptk->k_priv != NULL && gtk->k_priv != NULL &&
+        (ptk->k_flags & ccmp_flags) == ccmp_flags &&
+        (gtk->k_flags & ccmp_flags) == ccmp_flags &&
+        /* A zero return from finish_publish_locked() is the authoritative
+         * locked BIP publication proof: it admits only a prepared local BIP
+         * context, publishes it into its live slot, then sets these flags. */
+        ic->ic_igtk_kid == generic->igtk_key.k_id &&
+        (ni->ni_flags & mgmt_flags) == mgmt_flags;
 }
 
 static void
@@ -7258,6 +7309,11 @@ iwn_mfp_pae_task(void *arg)
             if (error == 0) {
                 txn->accepted_mask |= iwn_mfp_pae_stage_mask(stage);
                 deliver = true;
+                const uint32_t trace_stage_event =
+                    iwn_mfp_pae_trace_stage_event(stage);
+                if (trace_stage_event !=
+                    kAirportItlwmPostPltiTraceEventUnknown)
+                    AirportItlwmPostPltiTraceRecord(ic, trace_stage_event);
             } else
                 deliver = true;
         } else {
@@ -7381,6 +7437,10 @@ iwn_pae_mfp_txn_finish(struct ieee80211com *ic, u_int64_t txn_id)
             }
             error = ieee80211_pae_mfp_txn_finish_publish_locked(ic, txn_id);
             if (error == 0) {
+                if (iwn_mfp_pae_software_keyset_live_locked(ic, generic,
+                    txn->ni))
+                    AirportItlwmPostPltiTraceRecord(ic,
+                        kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished);
                 txn->ptk_key.k_priv = NULL;
                 txn->gtk_key.k_priv = NULL;
                 release_ni = txn->ni;

@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 3U
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 4U
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY \
@@ -78,8 +78,27 @@ enum AirportItlwmPostPltiTraceEvent {
     kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published = 39,
     kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected = 40,
     kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected = 41,
-    kAirportItlwmPostPltiTraceEventMax = 42
+    /*
+     * IWN software-PMF evidence v4.  These are emitted only after a local
+     * software owner has reached the stated durable boundary; no event
+     * carries a key, transaction ID, peer identity, or firmware result.
+     * Keep this vocabulary append-only.
+     */
+    kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared = 42,
+    kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared = 43,
+    kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged = 44,
+    kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished = 45,
+    kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published = 46,
+    kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published = 47,
+    kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected = 48,
+    kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected = 49,
+    kAirportItlwmPostPltiTraceEventMax = 50
 };
+
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST \
+    kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST \
+    kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected
 
 /*
  * Categorical backend coverage, never a hardware identifier.  IWX exposes

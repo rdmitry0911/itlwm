@@ -3,7 +3,7 @@
 ## Scope
 
 This document records the verified, non-functional diagnostic scenarios that
-ship with the Tahoe post-PLTI trace v3 layer.  The generic ordered association evaluator is IWN-only.
+ship with the Tahoe post-PLTI trace v4 layer.  The generic ordered association evaluator is IWN-only.
 IWX, including AX211, remains backend-unsupported for that evaluator and
 cannot inherit an IWN verdict.
 
@@ -15,6 +15,16 @@ seal.  Its only positive outcomes are a completed initial PMF/BIP ownership
 chain or a completed cross-slot rekey.  A port-valid record intentionally
 keeps an IWX episode open until the explicit seal so the bounded rekey window
 remains attributable to the same capture generation.
+
+v4 adds a separate IWN software-PMF evaluator for the explicitly lab-gated
+WPA2+PMF owner.  Its one positive outcome requires one closed IWN episode
+with the fixed PTK-to-GTK-to-IGTK local-stage order, one coherent
+publication-and-selected IGTK slot pair, the final locked software
+CCMP+BIP publication fact, and port-valid.  A reordered stage, a mismatched
+slot, a cancellation, a mixed generation or episode, a drop, or any event
+after the terminal boundary is inconclusive.  This is implementation-local
+ownership evidence only: it does not claim SAE, an on-air association, PMF
+interoperability, protected-MPDU delivery, or traffic.
 
 The companion active-prefix classifier is narrower still: it accepts only the
 one live initial PMF/BIP chain through port-valid while the same episode remains
@@ -105,6 +115,11 @@ scenarios in the same commit as the trace implementation:
   generation or episode, post-terminal event, drop, or overflow is
   fail-closed.  The generic IWN evaluator remains BACKEND_UNSUPPORTED for
   every IWX trace, including one with all PMF/BIP observer facts.
+- An IWN software-PMF fixture requires PTK, then GTK, then IGTK local-stage
+  evidence, one matching IGTK publication-and-selection pair, final locked
+  software CCMP+BIP publication, and port-valid.  Reordered PTK/GTK/IGTK
+  stages, mismatched slots, a post-terminal record, a mixed generation, or a
+  drop are inconclusive.
 - A post-terminal event, mixed episode/generation, sequence gap, drop, or
   unsupported backend is rejected or fail-closed.
 
@@ -147,5 +162,5 @@ completed version-level layer.
 This layer does not implement or prove pure SAE, Algorithm 3 authentication,
 PMF-required association, external traffic success, candidate activation,
 WCL link publication, generic reachability, or physical-host validation.  The
-IWX observer is categorical and fail-closed; its post-acknowledgement
-publication and selected-slot facts do not upgrade those non-claims.
+IWX observer and IWN software-PMF evaluator are categorical and fail-closed;
+their post-acknowledgement/publication facts do not upgrade those non-claims.

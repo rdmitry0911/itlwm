@@ -355,9 +355,17 @@ for token in (
     "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published = 39",
     "kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected = 40",
     "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected = 41",
-    "kAirportItlwmPostPltiTraceEventMax = 42",
+    "kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared = 42",
+    "kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared = 43",
+    "kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged = 44",
+    "kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished = 45",
+    "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published = 46",
+    "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published = 47",
+    "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected = 48",
+    "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected = 49",
+    "kAirportItlwmPostPltiTraceEventMax = 50",
 ):
-    require(trace_abi, token, "append-only IWX PMF observer ABI")
+    require(trace_abi, token, "append-only PMF observer ABI")
 for token in (
     "neither allocate, log, publish",
     "nor inspect or retain frame contents",

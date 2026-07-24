@@ -80,6 +80,15 @@ airport_itlwm_post_plti_trace_classify_entries(
             selectionHeld || event == kAirportItlwmPostPltiTraceEventEpisodeAborted)
             return kAirportItlwmPostPltiTraceVerdictIntegrityInconclusive;
 
+        /* IWN software-PMF facts are evaluated by their dedicated contract.
+         * They are post-PAE evidence and must not make the established
+         * association-chain evaluator reject an otherwise coherent episode. */
+        if (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST &&
+            event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST) {
+            seen |= bit;
+            continue;
+        }
+
         switch (event) {
         case kAirportItlwmPostPltiTraceEventIwnScanCoalesced:
         case kAirportItlwmPostPltiTraceEventIwnScanStarted:

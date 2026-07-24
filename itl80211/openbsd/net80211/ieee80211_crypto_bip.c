@@ -126,31 +126,19 @@ ieee80211_bip_trace_publish_locked(struct ieee80211com *ic,
     struct ieee80211_key *slot)
 {
 	struct ieee80211_bip_ctx *ctx;
-	uint32_t publication_event, selection_event;
 
 	if (ic == NULL || slot == NULL ||
 	    !ieee80211_bip_ctx_live_locked(ic, slot, &ctx) ||
 	    ic->ic_igtk_kid != slot->k_id)
 		return;
-	if (slot->k_id == 4) {
-		publication_event =
-		    kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published;
-		selection_event =
-		    kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected;
-	} else if (slot->k_id == 5) {
-		publication_event =
-		    kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published;
-		selection_event =
-		    kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected;
-	} else {
+	if (slot->k_id != 4 && slot->k_id != 5)
 		return;
-	}
 
-	/* The bridge records only fixed event IDs and has no allocation/logging
-	 * path.  `ctx` is used solely for the live-slot ownership check above. */
+	/* The bridge uses one fixed slot category to choose the armed backend's
+	 * pair under one recorder admission.  `ctx` is used solely for the live
+	 * slot ownership check above. */
 	(void)ctx;
-	AirportItlwmPostPltiTraceRecord(ic, publication_event);
-	AirportItlwmPostPltiTraceRecord(ic, selection_event);
+	AirportItlwmPostPltiTraceRecordIgtkPublicationSelection(ic, slot->k_id);
 }
 
 /* Caller holds ic_pae_selected_bss_lock.  No allocation or free is allowed. */

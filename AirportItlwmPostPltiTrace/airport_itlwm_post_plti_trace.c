@@ -8,6 +8,7 @@
 
 #include <ClientKit/AirportItlwmPostPltiTrace.h>
 #include <ClientKit/AirportItlwmIwxPmfBipTraceContracts.h>
+#include <ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h>
 #include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>
 
 /*
@@ -177,6 +178,22 @@ event_name(uint32_t event)
         return "iwx-igtk-slot4-tx-selected";
     case kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected:
         return "iwx-igtk-slot5-tx-selected";
+    case kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared:
+        return "iwn-mfp-pae-ptk-software-prepared";
+    case kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared:
+        return "iwn-mfp-pae-gtk-software-prepared";
+    case kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged:
+        return "iwn-mfp-pae-igtk-stage-acknowledged";
+    case kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished:
+        return "iwn-mfp-pae-software-ccmp-bip-published";
+    case kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published:
+        return "iwn-igtk-slot4-published";
+    case kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published:
+        return "iwn-igtk-slot5-published";
+    case kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected:
+        return "iwn-igtk-slot4-tx-selected";
+    case kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected:
+        return "iwn-igtk-slot5-tx-selected";
     default:
         return "unknown";
     }
@@ -484,6 +501,61 @@ iwx_pmf_bip_initial_progress_name(
     return "INTEGRITY_INCONCLUSIVE";
 }
 
+static const char *
+iwn_software_pmf_verdict_name(
+    enum AirportItlwmIwnSoftwarePmfTraceVerdict verdict)
+{
+    switch (verdict) {
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive:
+        return "INTEGRITY_INCONCLUSIVE";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictBackendUnsupported:
+        return "BACKEND_UNSUPPORTED";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictBranchNotObserved:
+        return "BRANCH_NOT_OBSERVED";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictPtkSoftwareCcmpNotObserved:
+        return "PTK_SOFTWARE_CCMP_NOT_OBSERVED";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictGtkSoftwareCcmpNotObserved:
+        return "GTK_SOFTWARE_CCMP_NOT_OBSERVED";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictIgtkStageNotObserved:
+        return "IGTK_STAGE_NOT_OBSERVED";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictIgtkPublicationNotObserved:
+        return "IGTK_PUBLICATION_NOT_OBSERVED";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictKeysetPublicationNotObserved:
+        return "SOFTWARE_KEYSET_PUBLICATION_NOT_OBSERVED";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictPortValidNotObserved:
+        return "PORT_VALID_NOT_OBSERVED";
+    case kAirportItlwmIwnSoftwarePmfTraceVerdictInitialSoftwarePmfObserved:
+        return "INITIAL_SOFTWARE_PMF_OBSERVED";
+    }
+    return "INTEGRITY_INCONCLUSIVE";
+}
+
+static const char *
+iwn_software_pmf_missing_stage_name(
+    enum AirportItlwmIwnSoftwarePmfTraceMissingStage stage)
+{
+    switch (stage) {
+    case kAirportItlwmIwnSoftwarePmfTraceMissingStageNone:
+        return "none";
+    case kAirportItlwmIwnSoftwarePmfTraceMissingStageCaptureSeal:
+        return "capture-seal";
+    case kAirportItlwmIwnSoftwarePmfTraceMissingStagePtkSoftwareCcmp:
+        return "ptk-software-ccmp";
+    case kAirportItlwmIwnSoftwarePmfTraceMissingStageGtkSoftwareCcmp:
+        return "gtk-software-ccmp";
+    case kAirportItlwmIwnSoftwarePmfTraceMissingStageIgtkStage:
+        return "igtk-stage";
+    case kAirportItlwmIwnSoftwarePmfTraceMissingStageIgtkPublication:
+        return "igtk-publication";
+    case kAirportItlwmIwnSoftwarePmfTraceMissingStageKeysetPublication:
+        return "software-keyset-publication";
+    case kAirportItlwmIwnSoftwarePmfTraceMissingStagePortValid:
+        return "port-valid";
+    default:
+        return "unknown";
+    }
+}
+
 static int
 get_control(io_service_t service)
 {
@@ -637,13 +709,43 @@ get_iwx_pmf_bip_progress(io_service_t service)
     return 0;
 }
 
+static int
+get_iwn_software_pmf_report(io_service_t service)
+{
+    AirportItlwmPostPltiTraceSnapshot snapshot;
+    AirportItlwmPostPltiTraceBuffer buffer;
+    AirportItlwmPostPltiTraceEntry entries[
+        AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES];
+    uint32_t count = 0;
+    enum AirportItlwmIwnSoftwarePmfTraceMissingStage missing_stage =
+        kAirportItlwmIwnSoftwarePmfTraceMissingStageUnknown;
+
+    if (copy_snapshot(service, &snapshot) != 0 ||
+        copy_buffer(service, &buffer) != 0)
+        return 1;
+    const int integrity = collect_entries(&snapshot, &buffer, entries, &count);
+    const enum AirportItlwmIwnSoftwarePmfTraceVerdict verdict =
+        airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
+            entries, count, integrity, snapshot.backend,
+            snapshot.episodeCount, snapshot.activeEpisode, &missing_stage);
+    printf("capture_generation=%u backend=%s entries=%u integrity=%s "
+           "episode_count=%u active_episode=%u\n",
+           snapshot.captureGeneration, backend_name(snapshot.backend), count,
+           integrity ? "ok" : "inconclusive", snapshot.episodeCount,
+           snapshot.activeEpisode);
+    printf("iwn_software_pmf_verdict=%s first_missing_stage=%s\n",
+           iwn_software_pmf_verdict_name(verdict),
+           iwn_software_pmf_missing_stage_name(missing_stage));
+    return 0;
+}
+
 static void
 usage(const char *program)
 {
     fprintf(stderr,
             "usage:\n"
             "  %s reset|on|off|seal\n"
-            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress\n",
+            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress|iwn-software-pmf-report\n",
             program, program);
 }
 
@@ -682,6 +784,8 @@ main(int argc, char **argv)
             rc = get_iwx_pmf_bip_report(service);
         else if (strcmp(argv[2], "pmf-bip-progress") == 0)
             rc = get_iwx_pmf_bip_progress(service);
+        else if (strcmp(argv[2], "iwn-software-pmf-report") == 0)
+            rc = get_iwn_software_pmf_report(service);
         else
             usage(argv[0]);
     } else

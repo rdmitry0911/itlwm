@@ -83,6 +83,17 @@ enum airport_itlwm_post_plti_trace_matrix_phase {
     airport_itlwm_post_plti_trace_phase_wait_port_valid,
 };
 
+/* The dedicated IWN software-PMF evaluator consumes these facts.  The ordered
+ * association matrix retains its prior scope and treats them as neutral
+ * post-PAE corroboration rather than allowing them to perturb a scan/auth/
+ * association verdict. */
+static inline int
+airport_itlwm_post_plti_trace_matrix_event_is_iwn_software_pmf(uint32_t event)
+{
+    return event >= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST &&
+        event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST;
+}
+
 static inline enum AirportItlwmPostPltiTraceMissingStage
 airport_itlwm_post_plti_trace_matrix_phase_missing_stage(
     enum airport_itlwm_post_plti_trace_matrix_phase phase,
@@ -264,6 +275,9 @@ airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage(
                 kAirportItlwmPostPltiTraceMissingStageNone;
             continue;
         }
+        if (airport_itlwm_post_plti_trace_matrix_event_is_iwn_software_pmf(
+                event))
+            continue;
         /* Optional TX corroboration must still follow a real EAPOL enqueue. */
         if (event == kAirportItlwmPostPltiTraceEventEapolFwSubmitted) {
             if (eapol_submitted >= eapol_enqueued)

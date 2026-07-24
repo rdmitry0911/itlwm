@@ -26,6 +26,13 @@ extern "C" {
 void AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic);
 void AirportItlwmPostPltiTraceRecord(struct ieee80211com *ic,
                                      uint32_t event);
+/*
+ * Records the coherent IGTK publication-plus-TX-selection pair in one
+ * recorder admission.  `slot` is the fixed IGTK table category (4 or 5),
+ * never a descriptor, key byte, BSS identity, or pointer.
+ */
+void AirportItlwmPostPltiTraceRecordIgtkPublicationSelection(
+    struct ieee80211com *ic, uint32_t slot);
 void AirportItlwmPostPltiTraceCompleteEpisode(struct ieee80211com *ic);
 void AirportItlwmPostPltiTraceAbortEpisode(struct ieee80211com *ic);
 void AirportItlwmPostPltiTraceNoteStateRequest(struct ieee80211com *ic,
@@ -50,6 +57,14 @@ AirportItlwmPostPltiTraceRecord(struct ieee80211com *ic, uint32_t event)
 {
     (void)ic;
     (void)event;
+}
+
+static inline void
+AirportItlwmPostPltiTraceRecordIgtkPublicationSelection(
+    struct ieee80211com *ic, uint32_t slot)
+{
+    (void)ic;
+    (void)slot;
 }
 
 static inline void

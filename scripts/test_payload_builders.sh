@@ -39,3 +39,15 @@ esac
   -o "$tmpdir/iwx_pmf_bip_trace_contract_test"
 
 "$tmpdir/iwx_pmf_bip_trace_contract_test"
+
+"$cc" \
+  -std=c11 \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I. \
+  -Iinclude \
+  tests/iwn_software_pmf_trace_contract_test.c \
+  -o "$tmpdir/iwn_software_pmf_trace_contract_test"
+
+"$tmpdir/iwn_software_pmf_trace_contract_test"

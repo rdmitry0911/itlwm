@@ -2841,6 +2841,16 @@ airportItlwmPostPltiTraceEventRequiresIwx(uint32_t event)
            event <= kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected;
 }
 
+/* IWN software-PMF facts have their own vocabulary even though the BIP
+ * publication helper is shared with IWX.  Do not let one backend's report
+ * borrow the other's ownership evidence. */
+static bool
+airportItlwmPostPltiTraceEventRequiresIwn(uint32_t event)
+{
+    return event >= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST &&
+           event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST;
+}
+
 /*
  * The trace has a fixed, non-sleeping serialization gate.  A producer first
  * enters an even control epoch; reset/seal/invalidation turn that epoch odd
@@ -3020,6 +3030,9 @@ airportItlwmPostPltiTraceRecordToken(struct ieee80211com *ic, uint32_t event,
         (airportItlwmPostPltiTraceEventRequiresIwx(event) &&
          __atomic_load_n(&sPostPltiTrace.backend, __ATOMIC_ACQUIRE) !=
              kAirportItlwmPostPltiTraceBackendIwx) ||
+        (airportItlwmPostPltiTraceEventRequiresIwn(event) &&
+         __atomic_load_n(&sPostPltiTrace.backend, __ATOMIC_ACQUIRE) !=
+             kAirportItlwmPostPltiTraceBackendIwn) ||
         !airportItlwmPostPltiTraceTokenIsCurrent(ic, token, requireActive))
         return;
 
@@ -3075,6 +3088,85 @@ AirportItlwmPostPltiTraceRecord(struct ieee80211com *ic, uint32_t event)
     const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
                                            __ATOMIC_ACQUIRE);
     airportItlwmPostPltiTraceRecordToken(ic, event, token, true);
+    airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
+}
+
+/* The shared BIP publisher reaches this bridge after the selected-BSS owner
+ * has published and selected one live IGTK slot.  Keep both categorical
+ * facts in one recorder admission: a different producer cannot split the
+ * proof, and the inactive backend never contends on the ring. */
+static bool
+airportItlwmPostPltiTraceIgtkEventsForBackend(uint32_t backend, uint32_t slot,
+                                              uint32_t *publication_event,
+                                              uint32_t *selection_event)
+{
+    if (publication_event == nullptr || selection_event == nullptr)
+        return false;
+    if (backend == kAirportItlwmPostPltiTraceBackendIwx) {
+        if (slot == 4) {
+            *publication_event =
+                kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published;
+            *selection_event =
+                kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected;
+            return true;
+        }
+        if (slot == 5) {
+            *publication_event =
+                kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published;
+            *selection_event =
+                kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected;
+            return true;
+        }
+        return false;
+    }
+    if (backend == kAirportItlwmPostPltiTraceBackendIwn) {
+        if (slot == 4) {
+            *publication_event =
+                kAirportItlwmPostPltiTraceEventIwnIgtkSlot4Published;
+            *selection_event =
+                kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected;
+            return true;
+        }
+        if (slot == 5) {
+            *publication_event =
+                kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published;
+            *selection_event =
+                kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected;
+            return true;
+        }
+    }
+    return false;
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceRecordIgtkPublicationSelection(
+    struct ieee80211com *ic, uint32_t slot)
+{
+    uint32_t publication_event, selection_event;
+
+    if (slot != 4 && slot != 5)
+        return;
+    if (!airportItlwmPostPltiTraceProducerEnter())
+        return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        /* One lost paired proof is enough to make a later positive verdict
+         * inconclusive, but irrelevant backend vocabulary never reaches here. */
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, false);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
+    const uint32_t backend = __atomic_load_n(&sPostPltiTrace.backend,
+                                             __ATOMIC_ACQUIRE);
+    if (airportItlwmPostPltiTraceIgtkEventsForBackend(
+            backend, slot, &publication_event, &selection_event)) {
+        const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
+                                               __ATOMIC_ACQUIRE);
+        airportItlwmPostPltiTraceRecordToken(ic, publication_event, token,
+                                             true);
+        airportItlwmPostPltiTraceRecordToken(ic, selection_event, token,
+                                             true);
+    }
     airportItlwmPostPltiTraceUnlock();
     airportItlwmPostPltiTraceProducerLeave();
 }
