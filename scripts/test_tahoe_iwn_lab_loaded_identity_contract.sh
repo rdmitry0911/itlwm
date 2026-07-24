@@ -42,6 +42,9 @@ for needle in \
     'DOUBLE_READ_DELAY_SECONDS = 1' \
     'StrictHostKeyChecking=yes' \
     'GlobalKnownHostsFile=/dev/null' \
+    '"sudo",' \
+    '"-n",' \
+    '"/bin/bash",' \
     'reduce_guest_probe' \
     'double_read_facts' \
     'sanitized_identity_facts' \
@@ -81,7 +84,9 @@ for needle in \
     'kmutil load' \
     'kextload' \
     'kextutil' \
-    'sudo ' \
+    'sudo -n kmutil load' \
+    'sudo -n kextload' \
+    'sudo -n kextutil' \
     'networksetup -set' \
     'route add' \
     'route delete' \

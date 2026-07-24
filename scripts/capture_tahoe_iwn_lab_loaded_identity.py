@@ -241,6 +241,12 @@ def run_pinned_qemu_guest(timeout_seconds: int) -> dict[str, object]:
             "-p",
             str(PINNED_QEMU_PORT),
             PINNED_QEMU_GUEST,
+            # Transactional activation intentionally makes the canonical
+            # bundle root-owned and non-writable.  The fixed probe itself is
+            # read-only, but it must run with the already-required
+            # noninteractive authority to observe that hardened bundle.
+            "sudo",
+            "-n",
             "/bin/bash",
             "-s",
         ]
