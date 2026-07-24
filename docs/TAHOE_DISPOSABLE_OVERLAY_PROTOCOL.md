@@ -84,6 +84,13 @@ refuses an existing QEMU or fixed local management-port conflict, atomically
 marks the pair consumed, and submits one deterministic pair-derived transient
 systemd user unit with pair-local monitor, serial, disk, and private variables
 paths.
+
+The fixed launch profile gives that pair-local disk `bootindex=0` and retains
+the known-good VGA device. This gives OVMF a deterministic first disk target
+through QEMU's firmware boot-order interface rather than assuming that a copied
+variables store already has a live macOS `Boot####` entry. It does not mutate
+the template or any shared variables store; the first boot can update only the
+private copy in the consumed pair.
 It is not a recovery envelope: it does not use the old shared-variables
 launcher, does not stop an existing guest, does not construct a second VM, and
 does not provide a recovery boot path. A failed, exited, or

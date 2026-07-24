@@ -649,6 +649,11 @@ trap - EXIT HUP INT TERM
 # shared OVMF variables store, management helper, or second guest exists here.
 # The user manager owns only this newly submitted unit; a submission failure
 # leaves the pair consumed so it cannot be retried after an ambiguous start.
+# Keep the disk's firmware-visible identity aligned with the known-good Tahoe
+# profile and publish an explicit boot target through QEMU's fw_cfg boot-order
+# interface. A private OVMF variables copy can legitimately contain stale or
+# absent Boot#### entries; without bootindex the firmware may fall through to
+# its interactive shell before the disposable guest ever reaches macOS.
 "$SYSTEMD_RUN" --user --collect --quiet --unit="$PAIR_UNIT" \
     --property=Type=exec \
     --property=Restart=no \
@@ -676,10 +681,11 @@ trap - EXIT HUP INT TERM
     -smbios type=2 \
     -device ich9-ahci,id=sata \
     -drive id=MacHDD,if=none,file="$OVERLAY",format=qcow2,cache=writeback,aio=threads \
-    -device ide-hd,bus=sata.4,drive=MacHDD \
+    -device ide-hd,bus=sata.4,drive=MacHDD,bootindex=0 \
     -netdev user,id=net0,hostfwd=tcp:127.0.0.1:${MANAGEMENT_PORT}-:22 \
     -device virtio-net-pci,netdev=net0,id=net0,mac="$VIRTIO_NET_MAC" \
     -device vfio-pci,host="$VFIO_PCI" \
+    -device VGA,id=vga0,vgamem_mb=64 \
     -monitor "unix:$MONITOR,server,nowait" \
     -serial "file:$SERIAL" \
     -display none || fail "pair-unit-submit-failed"

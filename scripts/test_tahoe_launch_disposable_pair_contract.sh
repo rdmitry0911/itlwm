@@ -71,9 +71,11 @@ for needle in \
     '-drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE"' \
     '-drive if=pflash,format=raw,file="$OVMF_VARS"' \
     '-drive id=MacHDD,if=none,file="$OVERLAY",format=qcow2,cache=writeback,aio=threads' \
+    '-device ide-hd,bus=sata.4,drive=MacHDD,bootindex=0' \
     '-netdev user,id=net0,hostfwd=tcp:127.0.0.1:${MANAGEMENT_PORT}-:22' \
     '-device virtio-net-pci,netdev=net0,id=net0,mac="$VIRTIO_NET_MAC"' \
     '-device vfio-pci,host="$VFIO_PCI"' \
+    '-device VGA,id=vga0,vgamem_mb=64' \
     '-monitor "unix:$MONITOR,server,nowait"' \
     '-serial "file:$SERIAL"' \
     'DISPOSABLE_PAIR_CHECK_READY' \
