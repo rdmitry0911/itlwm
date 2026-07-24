@@ -88,14 +88,15 @@ canonical_regular_file() {
 }
 
 validate_base_info() {
-    local info_json="$1"
-    python3 - "$info_json" <<'PY'
+    local info_path="$1"
+    python3 - "$info_path" <<'PY'
 import json
 import sys
 
 try:
-    info = json.loads(sys.argv[1])
-except (IndexError, json.JSONDecodeError):
+    with open(sys.argv[1], "r", encoding="utf-8") as source:
+        info = json.load(source)
+except (IndexError, OSError, json.JSONDecodeError):
     raise SystemExit(1)
 
 if not isinstance(info, dict) or info.get("format") != "qcow2":
@@ -114,10 +115,10 @@ PY
 }
 
 write_and_validate_attestation() {
-    local base_info_json="$1" overlay_info_json="$2" overlay_map_json="$3"
+    local base_info_path="$1" overlay_info_path="$2" overlay_map_path="$3"
     local base_image="$4" overlay_image="$5" attestation="$6"
 
-    python3 - "$base_info_json" "$overlay_info_json" "$overlay_map_json" \
+    python3 - "$base_info_path" "$overlay_info_path" "$overlay_map_path" \
         "$base_image" "$overlay_image" "$attestation" <<'PY'
 import hashlib
 import json
@@ -130,10 +131,13 @@ def fail(reason: str) -> None:
 
 
 try:
-    base = json.loads(sys.argv[1])
-    overlay = json.loads(sys.argv[2])
-    mapping = json.loads(sys.argv[3])
-except (IndexError, json.JSONDecodeError):
+    with open(sys.argv[1], "r", encoding="utf-8") as source:
+        base = json.load(source)
+    with open(sys.argv[2], "r", encoding="utf-8") as source:
+        overlay = json.load(source)
+    with open(sys.argv[3], "r", encoding="utf-8") as source:
+        mapping = json.load(source)
+except (IndexError, OSError, json.JSONDecodeError):
     fail("invalid-qemu-img-json")
 
 base_path = os.path.realpath(sys.argv[4])
@@ -307,10 +311,6 @@ if "$FUSER" -s -- "$base_image" >/dev/null 2>&1; then
     fail "base-image-in-use"
 fi
 
-base_info_json="$("$QEMU_IMG" info --output=json "$base_image" 2>/dev/null)" ||
-    fail "base-image-info-unavailable"
-validate_base_info "$base_info_json" || fail "base-image-not-direct-qcow2"
-
 umask 077
 STAGING_DIR="$(mktemp -d "$vm_root/.aiam-overlay-stage.XXXXXX")" ||
     fail "staging-create-failed"
@@ -321,6 +321,15 @@ esac
 
 overlay_image="$STAGING_DIR/$DISK_NAME"
 attestation="$STAGING_DIR/$ATTESTATION_NAME"
+base_info_path="$STAGING_DIR/base-info.json"
+overlay_info_path="$STAGING_DIR/overlay-info.json"
+overlay_map_path="$STAGING_DIR/overlay-map.json"
+
+if ! "$QEMU_IMG" info --output=json "$base_image" >"$base_info_path" 2>/dev/null; then
+    fail "base-image-info-unavailable"
+fi
+validate_base_info "$base_info_path" || fail "base-image-not-direct-qcow2"
+
 if ! "$QEMU_IMG" create -f qcow2 -F qcow2 -b "$base_image" "$overlay_image" \
         >/dev/null 2>&1; then
     fail "overlay-create-failed"
@@ -328,15 +337,20 @@ fi
 [ -f "$overlay_image" ] && [ ! -L "$overlay_image" ] ||
     fail "overlay-create-invalid"
 
-overlay_info_json="$("$QEMU_IMG" info --output=json "$overlay_image" 2>/dev/null)" ||
+if ! "$QEMU_IMG" info --output=json "$overlay_image" >"$overlay_info_path" 2>/dev/null; then
     fail "overlay-info-unavailable"
-overlay_map_json="$("$QEMU_IMG" map --output=json "$overlay_image" 2>/dev/null)" ||
+fi
+if ! "$QEMU_IMG" map --output=json "$overlay_image" >"$overlay_map_path" 2>/dev/null; then
     fail "overlay-map-unavailable"
-write_and_validate_attestation "$base_info_json" "$overlay_info_json" \
-    "$overlay_map_json" "$base_image" "$overlay_image" "$attestation" ||
+fi
+write_and_validate_attestation "$base_info_path" "$overlay_info_path" \
+    "$overlay_map_path" "$base_image" "$overlay_image" "$attestation" ||
     fail "overlay-attestation-invalid"
 [ -f "$attestation" ] && [ ! -L "$attestation" ] ||
     fail "overlay-attestation-missing"
+for transient_metadata in "$base_info_path" "$overlay_info_path" "$overlay_map_path"; do
+    /usr/bin/unlink "$transient_metadata" || fail "overlay-metadata-cleanup-failed"
+done
 
 if ! /bin/mv -T -n -- "$STAGING_DIR" "$final_dir" || [ -e "$STAGING_DIR" ]; then
     # -T prevents a directory collision from becoming a nested move, and -n

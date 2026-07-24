@@ -41,6 +41,9 @@ for needle in \
     'base-image-in-use' \
     'base-image-not-direct-qcow2' \
     'mktemp -d "$vm_root/.aiam-overlay-stage.XXXXXX"' \
+    'base_info_path="$STAGING_DIR/base-info.json"' \
+    'overlay_map_path="$STAGING_DIR/overlay-map.json"' \
+    '/usr/bin/unlink "$transient_metadata"' \
     'create -f qcow2 -F qcow2 -b "$base_image" "$overlay_image"' \
     'one_direct_backing_image_verified' \
     'top_overlay_data_allocated' \
@@ -97,14 +100,27 @@ if main_start < 0:
 main = helper[main_start:]
 ordered(main, "fresh-overlay transaction",
         '"$FUSER" -s -- "$base_image"',
-        'validate_base_info "$base_info_json"',
         'mktemp -d "$vm_root/.aiam-overlay-stage.XXXXXX"',
+        'base_info_path="$STAGING_DIR/base-info.json"',
+        'validate_base_info "$base_info_path"',
         'create -f qcow2 -F qcow2 -b "$base_image" "$overlay_image"',
-        'map --output=json "$overlay_image"',
+        'map --output=json "$overlay_image" >"$overlay_map_path"',
         'write_and_validate_attestation',
+        '/usr/bin/unlink "$transient_metadata"',
         '/bin/mv -T -n -- "$STAGING_DIR" "$final_dir"',
         'STAGING_DIR=""',
         "OVERLAY_READY")
+
+for forbidden, label in (
+    ('write_and_validate_attestation "$base_info_json"',
+     "serialized qemu metadata passed through argv"),
+    ('write_and_validate_attestation "$overlay_info_json"',
+     "serialized overlay metadata passed through argv"),
+    ('write_and_validate_attestation "$overlay_map_json"',
+     "serialized overlay map passed through argv"),
+):
+    if forbidden in helper:
+        fail(f"helper retains {label}")
 
 for token in (
     "one direct backing", "read-only", "does not boot", "does not activate",
