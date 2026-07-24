@@ -73,6 +73,82 @@ fill_peer_event(struct ItlSaeAuthPeerEventV1 *event)
 }
 
 static void
+fill_epoch_cancel_event(struct ItlSaeAuthEpochCancelEventV1 *event)
+{
+    memset(event, 0, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->observed_epoch = 17;
+}
+
+static void
+fill_selected_join_event(struct ItlSaeSelectedJoinEventV1 *event)
+{
+    memset(event, 0, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->request_generation = 19;
+    event->association_epoch = 23;
+    event->sae_group = 19;
+    event->sae_method = 1;
+    event->ssid_len = 4;
+    event->bssid[0] = 0x02;
+    event->bssid[5] = 0x03;
+    event->sta[0] = 0x02;
+    event->sta[5] = 0x04;
+    event->ssid[0] = 't';
+    event->ssid[1] = 'e';
+    event->ssid[2] = 's';
+    event->ssid[3] = 't';
+}
+
+static void
+fill_auth_activated_event(struct ItlSaeAuthActivatedEventV1 *event)
+{
+    memset(event, 0, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->request_generation = 29;
+    event->association_epoch = 31;
+    event->relay_generation = 37;
+    event->bssid[0] = 0x02;
+    event->bssid[5] = 0x05;
+    event->sta[0] = 0x02;
+    event->sta[5] = 0x06;
+}
+
+static void
+fill_assoc_committed_event(struct ItlSaeAssocCommittedEventV1 *event)
+{
+    memset(event, 0, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->request_generation = 53;
+    event->association_epoch = 59;
+    event->relay_generation = 61;
+    event->event_sequence = 67;
+    event->bssid[0] = 0x02;
+    event->bssid[5] = 0x09;
+    event->sta[0] = 0x02;
+    event->sta[5] = 0x0a;
+}
+
+static void
+fill_join_resume_request(struct ItlSaeJoinResumeRequestV1 *request)
+{
+    memset(request, 0, sizeof(*request));
+    request->version = kItlSaeAuthTransportV1Version;
+    request->size = sizeof(*request);
+    request->request_generation = 41;
+    request->association_epoch = 43;
+    request->relay_generation = 47;
+    request->bssid[0] = 0x02;
+    request->bssid[5] = 0x07;
+    request->sta[0] = 0x02;
+    request->sta[5] = 0x08;
+}
+
+static void
 test_null_arguments(void)
 {
     struct ItlSaeAuthTxRequestV1 request;
@@ -354,6 +430,11 @@ test_peer_event_schema_and_exact_retransmission_identity(void)
     assert(itl_sae_auth_peer_event_is_well_formed(&peer));
 
     fill_peer_event(&peer);
+    peer.body_len = 0;
+    peer.auth_status = 126;
+    assert(itl_sae_auth_peer_event_is_well_formed(&peer));
+
+    fill_peer_event(&peer);
     peer.body_len = kItlSaeAuthTransportV1MaxBodyLength + 1u;
     assert(!itl_sae_auth_peer_event_is_well_formed(&peer));
 
@@ -366,6 +447,265 @@ test_peer_event_schema_and_exact_retransmission_identity(void)
     assert(!itl_sae_auth_peer_event_equals(&peer, &equal));
 }
 
+static void
+test_epoch_cancel_event_schema(void)
+{
+    struct ItlSaeAuthEpochCancelEventV1 event;
+
+    fill_epoch_cancel_event(&event);
+    assert(itl_sae_auth_epoch_cancel_event_is_well_formed(&event));
+    assert(!itl_sae_auth_epoch_cancel_event_is_well_formed(NULL));
+
+    fill_epoch_cancel_event(&event);
+    event.version = kItlSaeAuthTransportV1Version + 1u;
+    assert(!itl_sae_auth_epoch_cancel_event_is_well_formed(&event));
+
+    fill_epoch_cancel_event(&event);
+    event.size = sizeof(event) - 1u;
+    assert(!itl_sae_auth_epoch_cancel_event_is_well_formed(&event));
+
+    fill_epoch_cancel_event(&event);
+    event.observed_epoch = 0;
+    assert(!itl_sae_auth_epoch_cancel_event_is_well_formed(&event));
+
+    fill_epoch_cancel_event(&event);
+    event.observed_epoch = 0;
+    event.revoked_wcl_credential_generation = 23;
+    assert(itl_sae_auth_epoch_cancel_event_is_well_formed(&event));
+
+    fill_epoch_cancel_event(&event);
+    event.revoked_wcl_credential_generation = 29;
+    assert(itl_sae_auth_epoch_cancel_event_is_well_formed(&event));
+}
+
+static void
+test_selected_join_event_schema(void)
+{
+    struct ItlSaeSelectedJoinEventV1 event;
+
+    fill_selected_join_event(&event);
+    assert(itl_sae_selected_join_event_is_well_formed(&event));
+    assert(!itl_sae_selected_join_event_is_well_formed(NULL));
+
+    fill_selected_join_event(&event);
+    event.ssid_len = sizeof(event.ssid);
+    assert(itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.version = kItlSaeAuthTransportV1Version + 1u;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.size = sizeof(event) - 1u;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.request_generation = 0;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.association_epoch = 0;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.sae_group = 0;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.sae_group = 20;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.sae_method = 0;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.sae_method = 2;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.ssid_len = 0;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.ssid_len = sizeof(event.ssid) + 1u;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    memset(event.bssid, 0, sizeof(event.bssid));
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.bssid[0] |= 0x01u;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    memset(event.sta, 0, sizeof(event.sta));
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.sta[0] |= 0x01u;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.reserved0[sizeof(event.reserved0) - 1u] = 1;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+}
+
+static void
+test_auth_activated_event_schema(void)
+{
+    struct ItlSaeAuthActivatedEventV1 event;
+
+    fill_auth_activated_event(&event);
+    assert(itl_sae_auth_activated_event_is_well_formed(&event));
+    assert(!itl_sae_auth_activated_event_is_well_formed(NULL));
+
+    fill_auth_activated_event(&event);
+    event.version = kItlSaeAuthTransportV1Version + 1u;
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    event.size = sizeof(event) - 1u;
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    event.request_generation = 0;
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    event.association_epoch = 0;
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    event.relay_generation = 0;
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    memset(event.bssid, 0, sizeof(event.bssid));
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    event.bssid[0] |= 0x01u;
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    memset(event.sta, 0, sizeof(event.sta));
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    event.sta[0] |= 0x01u;
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+
+    fill_auth_activated_event(&event);
+    event.reserved[sizeof(event.reserved) - 1u] = 1;
+    assert(!itl_sae_auth_activated_event_is_well_formed(&event));
+}
+
+static void
+test_assoc_committed_event_schema(void)
+{
+    struct ItlSaeAssocCommittedEventV1 event;
+
+    fill_assoc_committed_event(&event);
+    assert(itl_sae_assoc_committed_event_is_well_formed(&event));
+    assert(!itl_sae_assoc_committed_event_is_well_formed(NULL));
+
+    fill_assoc_committed_event(&event);
+    event.version = kItlSaeAuthTransportV1Version + 1u;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    event.size = sizeof(event) - 1u;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    event.request_generation = 0;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    event.association_epoch = 0;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    event.relay_generation = 0;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    event.event_sequence = 0;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    memset(event.bssid, 0, sizeof(event.bssid));
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    event.bssid[0] |= 0x01u;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    memset(event.sta, 0, sizeof(event.sta));
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    event.sta[0] |= 0x01u;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+
+    fill_assoc_committed_event(&event);
+    event.reserved[sizeof(event.reserved) - 1u] = 1;
+    assert(!itl_sae_assoc_committed_event_is_well_formed(&event));
+}
+
+static void
+test_join_resume_request_schema(void)
+{
+    struct ItlSaeJoinResumeRequestV1 request;
+
+    fill_join_resume_request(&request);
+    assert(itl_sae_join_resume_request_is_well_formed(&request));
+    assert(!itl_sae_join_resume_request_is_well_formed(NULL));
+
+    fill_join_resume_request(&request);
+    request.version = kItlSaeAuthTransportV1Version + 1u;
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    request.size = sizeof(request) - 1u;
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    request.request_generation = 0;
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    request.association_epoch = 0;
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    request.relay_generation = 0;
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    memset(request.bssid, 0, sizeof(request.bssid));
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    request.bssid[0] |= 0x01u;
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    memset(request.sta, 0, sizeof(request.sta));
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    request.sta[0] |= 0x01u;
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+
+    fill_join_resume_request(&request);
+    request.reserved[sizeof(request.reserved) - 1u] = 1;
+    assert(!itl_sae_join_resume_request_is_well_formed(&request));
+}
+
 int
 main(void)
 {
@@ -375,6 +715,11 @@ main(void)
     test_event_request_identity_matching();
     test_semantic_phase_and_wire_sequence_mapping();
     test_peer_event_schema_and_exact_retransmission_identity();
+    test_epoch_cancel_event_schema();
+    test_selected_join_event_schema();
+    test_auth_activated_event_schema();
+    test_assoc_committed_event_schema();
+    test_join_resume_request_schema();
 
     return 0;
 }
