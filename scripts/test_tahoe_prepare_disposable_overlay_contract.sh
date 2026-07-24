@@ -39,6 +39,7 @@ for needle in \
     'safe_output_leaf' \
     'fuser-unavailable' \
     'base-image-in-use' \
+    '"$FUSER" -s "$base_image"' \
     'base-image-not-direct-qcow2' \
     'mktemp -d "$vm_root/.aiam-overlay-stage.XXXXXX"' \
     'base_info_path="$STAGING_DIR/base-info.json"' \
@@ -72,6 +73,9 @@ for needle in \
     forbid_literal "$HELPER" "$needle" "helper capability: $needle"
 done
 
+forbid_literal "$HELPER" '"$FUSER" -s -- "$base_image"' \
+    'unsupported fuser end-of-options separator'
+
 python3 - "$HELPER" "$PROTOCOL" <<'PY'
 from pathlib import Path
 import re
@@ -99,7 +103,7 @@ if main_start < 0:
     fail("helper main entry is missing")
 main = helper[main_start:]
 ordered(main, "fresh-overlay transaction",
-        '"$FUSER" -s -- "$base_image"',
+        '"$FUSER" -s "$base_image"',
         'mktemp -d "$vm_root/.aiam-overlay-stage.XXXXXX"',
         'base_info_path="$STAGING_DIR/base-info.json"',
         'validate_base_info "$base_info_path"',

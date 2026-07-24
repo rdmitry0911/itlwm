@@ -307,7 +307,10 @@ final_dir="$vm_root/$OUT_DIR_NAME"
 
 # A running QEMU holding the root image is a hard stop.  The helper does not
 # attempt to reason about a live guest or force its shutdown.
-if "$FUSER" -s -- "$base_image" >/dev/null 2>&1; then
+# PSmisc fuser treats `--` as an absent process specification on the host
+# version used for this lab.  Keep the absolute, validated regular-file path
+# as the sole operand so a running QEMU holding the root image is a hard stop.
+if "$FUSER" -s "$base_image" >/dev/null 2>&1; then
     fail "base-image-in-use"
 fi
 

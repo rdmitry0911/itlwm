@@ -7,6 +7,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 HELPER="$ROOT/scripts/tahoe_prepare_disposable_overlay.sh"
 EVIDENCE_CONTRACT="$ROOT/scripts/test_tahoe_disposable_overlay_evidence_contract.sh"
 TMP=""
+BASE_HOLDER=""
 
 fail() {
     printf 'FAIL: Tahoe disposable-overlay fixture: %s\n' "$*" >&2
@@ -16,6 +17,10 @@ fail() {
 cleanup() {
     local status="$?"
     trap - EXIT HUP INT TERM
+    if [ -n "$BASE_HOLDER" ]; then
+        kill "$BASE_HOLDER" >/dev/null 2>&1 || true
+        wait "$BASE_HOLDER" 2>/dev/null || true
+    fi
     if [ -n "$TMP" ] && [ -d "$TMP" ]; then
         /usr/bin/find -P "$TMP" -depth -delete >/dev/null 2>&1 || true
     fi
@@ -92,6 +97,26 @@ if "$HELPER" --base-image "$CHAINED" --vm-root "$VM_ROOT" \
         --out-dir pmf-runtime-chain >/dev/null 2>&1; then
     fail 'helper accepted a backing-image chain'
 fi
+
+# Hold the root image open in a child process.  This exercises the actual
+# fuser invocation rather than merely asserting that the source mentions the
+# rejection label; a live QEMU root image must be rejected before staging.
+( exec 9<"$BASE"; sleep 60 ) &
+BASE_HOLDER="$!"
+for _ in $(seq 1 20); do
+    if fuser -s "$BASE" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.1
+done
+fuser -s "$BASE" >/dev/null 2>&1 || fail 'fixture could not hold base image open'
+if "$HELPER" --base-image "$BASE" --vm-root "$VM_ROOT" \
+        --out-dir pmf-runtime-in-use >/dev/null 2>&1; then
+    fail 'helper accepted an in-use base image'
+fi
+kill "$BASE_HOLDER" >/dev/null 2>&1 || true
+wait "$BASE_HOLDER" 2>/dev/null || true
+BASE_HOLDER=""
 
 ln -s "$TMP/absent" "$VM_ROOT/pmf-runtime-symlink"
 if "$HELPER" --base-image "$BASE" --vm-root "$VM_ROOT" \
