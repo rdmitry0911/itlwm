@@ -2,8 +2,9 @@
 # Run one narrowly bounded, release-bound post-PLTI trace experiment.
 #
 # This is deliberately not a generic Wi-Fi helper.  It can contact only the
-# pinned disposable Tahoe QEMU guest, and it performs exactly one public radio
-# OFF/ON transition on its fixed Wi-Fi interface.  It never asks for a
+# pinned disposable Tahoe QEMU guest, and an admitted experiment performs
+# exactly one public radio OFF/ON transition on its fixed Wi-Fi interface.
+# A strict backend preflight can stop before that transition. It never asks for a
 # credential, scans, joins by name, enumerates wireless identities, changes a
 # route/address/DHCP state, installs/loads a kext, or reboots anything.
 #
@@ -28,6 +29,8 @@ PINNED_WIFI_INTERFACE="en1"
 TRACE_TOOL=""
 OUT_DIR=""
 IDENTITY_EVIDENCE=""
+TRACE_CLIENT_SHA256=""
+ARM_WHILE_RADIO_OFF=0
 SOURCE_COMMIT=""
 SOURCE_IDENTITY_SHA256=""
 SETTLE_SECONDS=15
@@ -59,6 +62,8 @@ RADIO_OFF_PENDING=0
 RADIO_OFF_OBSERVED=0
 RADIO_ON_OBSERVED=0
 RADIO_RECOVERY_ATTEMPTED=0
+TRACE_ARMED_WHILE_RADIO_OFF=0
+BACKEND_PREFLIGHT_IWN=0
 FAILURE_PHASE="preflight"
 RUN_COMPLETE=0
 
@@ -70,6 +75,8 @@ usage: run_tahoe_post_plti_trace_runtime.sh \
   --trace-tool /private/tmp/aiam-post-plti-trace-CANDIDATE/airport_itlwm_post_plti_trace \
   --identity-evidence /local/path/tahoe_lab_kext_identity.json \
   --out /fresh/local/evidence/dir \
+  [--trace-client-sha256 lowercase-hex-digest] \
+  [--arm-while-radio-off] \
   [--settle-seconds 1..120] [--ack-attempts 1..60] \
   [--radio-attempts 1..60] [--stable-read-delay-seconds 1..10]
 
@@ -87,6 +94,14 @@ The runner fails closed if any precondition, control generation, IWN backend,
 snapshot/buffer synchronization, radio transition, stable double-read, or
 trace classifier result is unavailable.  It never accepts credentials or
 wireless names as arguments.
+
+`--arm-while-radio-off` is a stricter causal mode for a caller that needs the
+capture reset to happen after the one radio-OFF observation and before the
+only radio-ON trigger. It does not add another radio cycle. A cold trace has
+no read-only backend probe, so strict mode first binds and disables a
+diagnostic-only preflight capture while the radio remains On; an unsupported
+backend stops before any radio transition. Its final evidence generation is
+then reset only after the controlled radio-OFF observation.
 EOF
 }
 
@@ -106,14 +121,23 @@ valid_trace_tool_path() {
     [[ "$1" =~ ^/private/tmp/aiam-post-plti-trace(-[A-Za-z0-9._-]+)?/airport_itlwm_post_plti_trace$ ]]
 }
 
+valid_trace_client_sha256() {
+    [[ "$1" =~ ^[0-9a-f]{64}$ ]]
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --trace-tool|--identity-evidence|--out|--settle-seconds|--ack-attempts|--radio-attempts|--stable-read-delay-seconds)
+        --arm-while-radio-off)
+            ARM_WHILE_RADIO_OFF=1
+            shift
+            ;;
+        --trace-tool|--identity-evidence|--out|--trace-client-sha256|--settle-seconds|--ack-attempts|--radio-attempts|--stable-read-delay-seconds)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             case "$1" in
                 --trace-tool) TRACE_TOOL="$2" ;;
                 --identity-evidence) IDENTITY_EVIDENCE="$2" ;;
                 --out) OUT_DIR="$2" ;;
+                --trace-client-sha256) TRACE_CLIENT_SHA256="$2" ;;
                 --settle-seconds) SETTLE_SECONDS="$2" ;;
                 --ack-attempts) ACK_ATTEMPTS="$2" ;;
                 --radio-attempts) RADIO_ATTEMPTS="$2" ;;
@@ -138,6 +162,10 @@ done
 }
 valid_trace_tool_path "$TRACE_TOOL" || {
     printf 'ERROR: --trace-tool must be the restricted private temporary client path\n' >&2
+    exit 2
+}
+[ -z "$TRACE_CLIENT_SHA256" ] || valid_trace_client_sha256 "$TRACE_CLIENT_SHA256" || {
+    printf 'ERROR: --trace-client-sha256 must be one lowercase SHA-256 digest\n' >&2
     exit 2
 }
 [ -f "$IDENTITY_EVIDENCE" ] || {
@@ -229,7 +257,8 @@ write_safe_attestation() {
         "$TRACE_ENTRY_COUNT" "$TRACE_EPISODE_COUNT" "$TRACE_DROPPED_ENTRIES" "$TRACE_VERDICT" \
         "$TRACE_FIRST_MISSING_STAGE" "$RESET_ACK_SYNC" "$INITIAL_SNAPSHOT_BUFFER_SYNC" "$DOUBLE_READ_STABLE" \
         "$TRACE_SEAL_ACKNOWLEDGED" "$FINAL_CONTROL_DISABLED" "$RADIO_OFF_OBSERVED" "$RADIO_ON_OBSERVED" \
-        "$RADIO_RECOVERY_ATTEMPTED" "$FAILURE_PHASE" "$RUN_COMPLETE" <<'PY'
+        "$RADIO_RECOVERY_ATTEMPTED" "$TRACE_ARMED_WHILE_RADIO_OFF" "$BACKEND_PREFLIGHT_IWN" \
+        "$FAILURE_PHASE" "$RUN_COMPLETE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -239,7 +268,7 @@ from pathlib import Path
     reset_sequence, capture_generation, backend, integrity, entry_count,
     episode_count, dropped_entries, verdict, first_missing_stage, reset_sync,
     initial_sync, double_stable, seal_acknowledged, final_disabled, radio_off, radio_on, recovery_attempted,
-    failure_phase, run_complete,
+    armed_while_radio_off, backend_preflight_iwn, failure_phase, run_complete,
 ) = sys.argv[1:]
 
 def as_bool(value: str) -> bool:
@@ -284,6 +313,7 @@ document = {
         "radio_off_observed": as_bool(radio_off),
         "radio_on_observed": as_bool(radio_on),
         "radio_recovery_attempted": as_bool(recovery_attempted),
+        "trace_armed_while_radio_off": as_bool(armed_while_radio_off),
         "explicit_join_command": False,
         "explicit_route_command": False,
         "explicit_address_command": False,
@@ -292,6 +322,7 @@ document = {
     "trace": {
         "reset_control_sequence": int(reset_sequence),
         "reset_ack_generation": int(capture_generation),
+        "backend_preflight_iwn": as_bool(backend_preflight_iwn),
         "backend": backend,
         "reset_ack_generation_synchronized": as_bool(reset_sync),
         "initial_snapshot_buffer_generation_synchronized": as_bool(initial_sync),
@@ -331,28 +362,68 @@ PY
 }
 
 remote_trace() {
-    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" "$@" <<'REMOTE'
+    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" "$TRACE_CLIENT_SHA256" "$@" <<'REMOTE'
 set -euo pipefail
 tool="$1"
-shift
+expected_sha256="$2"
+shift 2
 case "$tool" in
     /private/tmp/aiam-post-plti-trace/airport_itlwm_post_plti_trace|/private/tmp/aiam-post-plti-trace-*/airport_itlwm_post_plti_trace) ;;
     *) exit 64 ;;
 esac
-test -x "$tool"
+test -f "$tool" && test ! -L "$tool" && test -x "$tool"
+if [ -n "$expected_sha256" ]; then
+    [[ "$expected_sha256" =~ ^[0-9a-f]{64}$ ]]
+    parent="${tool%/airport_itlwm_post_plti_trace}"
+    test -d "$parent" && test ! -L "$parent"
+    physical_parent="$(CDPATH= cd -P -- "$parent" && pwd -P)"
+    case "$physical_parent" in
+        /private/tmp/aiam-post-plti-trace|/private/tmp/aiam-post-plti-trace-*) ;;
+        *) exit 65 ;;
+    esac
+    [ "$physical_parent" = "$parent" ]
+    observed="$(LC_ALL=C PATH=/usr/bin:/bin /usr/bin/shasum -a 256 "$tool" |
+        /usr/bin/awk -v path="$tool" '
+            function is_lower_hex64(value) { return length(value) == 64 && value !~ /[^0-9a-f]/ }
+            NR == 1 && NF == 2 && is_lower_hex64($1) && $2 == path { value = $1; next }
+            { invalid = 1 }
+            END { if (NR != 1 || invalid || value == "") exit 1; print value }
+        ')"
+    [ "$observed" = "$expected_sha256" ]
+fi
 exec "$tool" "$@"
 REMOTE
 }
 
 remote_trace_client_exists() {
-    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" <<'REMOTE'
+    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" "$TRACE_CLIENT_SHA256" <<'REMOTE'
 set -euo pipefail
 tool="$1"
+expected_sha256="$2"
 case "$tool" in
     /private/tmp/aiam-post-plti-trace/airport_itlwm_post_plti_trace|/private/tmp/aiam-post-plti-trace-*/airport_itlwm_post_plti_trace) ;;
     *) exit 64 ;;
 esac
-test -x "$tool"
+test -f "$tool" && test ! -L "$tool" && test -x "$tool"
+if [ -n "$expected_sha256" ]; then
+    [[ "$expected_sha256" =~ ^[0-9a-f]{64}$ ]]
+    parent="${tool%/airport_itlwm_post_plti_trace}"
+    test -d "$parent" && test ! -L "$parent"
+    physical_parent="$(CDPATH= cd -P -- "$parent" && pwd -P)"
+    case "$physical_parent" in
+        /private/tmp/aiam-post-plti-trace|/private/tmp/aiam-post-plti-trace-*) ;;
+        *) exit 65 ;;
+    esac
+    [ "$physical_parent" = "$parent" ]
+    observed="$(LC_ALL=C PATH=/usr/bin:/bin /usr/bin/shasum -a 256 "$tool" |
+        /usr/bin/awk -v path="$tool" '
+            function is_lower_hex64(value) { return length(value) == 64 && value !~ /[^0-9a-f]/ }
+            NR == 1 && NF == 2 && is_lower_hex64($1) && $2 == path { value = $1; next }
+            { invalid = 1 }
+            END { if (NR != 1 || invalid || value == "") exit 1; print value }
+        ')"
+    [ "$observed" = "$expected_sha256" ]
+fi
 REMOTE
 }
 
@@ -555,13 +626,13 @@ read_trace_once() {
 }
 
 disable_trace() {
-    local off_sequence
-    if ! capture_trace_client final-off off; then
+    local label="${1:-final-off}" off_sequence
+    if ! capture_trace_client "$label" off; then
         return 1
     fi
-    off_sequence="$(extract_u32 "$OUT_DIR/final-off.stdout" seq || true)"
+    off_sequence="$(extract_u32 "$OUT_DIR/$label.stdout" seq || true)"
     [ -n "$off_sequence" ] || return 1
-    if wait_for_control_ack final-off-ack "$off_sequence" 0 0 0; then
+    if wait_for_control_ack "$label-ack" "$off_sequence" 0 0 0; then
         FINAL_CONTROL_DISABLED=1
         TRACE_MAY_BE_ARMED=0
         return 0
@@ -601,6 +672,11 @@ cleanup() {
     local rc=$?
     trap - EXIT HUP INT TERM
     set +e
+    # Quiesce a possibly armed capture before restoring the radio: otherwise a
+    # saved profile could add post-failure events during recovery.
+    if [ "$TRACE_MAY_BE_ARMED" -eq 1 ]; then
+        disable_trace >/dev/null 2>&1
+    fi
     if [ "$RADIO_OFF_PENDING" -eq 1 ]; then
         RADIO_RECOVERY_ATTEMPTED=1
         remote_radio_power on >/dev/null 2>&1
@@ -608,9 +684,6 @@ cleanup() {
             RADIO_ON_OBSERVED=1
             RADIO_OFF_PENDING=0
         fi
-    fi
-    if [ "$TRACE_MAY_BE_ARMED" -eq 1 ]; then
-        disable_trace >/dev/null 2>&1
     fi
     write_safe_attestation
     [ -z "$KNOWN_HOSTS" ] || rm -f "$KNOWN_HOSTS"
@@ -641,12 +714,48 @@ guest_build="$("${SSH[@]}" 'sw_vers -buildVersion' 2>/dev/null || true)"
 [ "$guest_build" = "$PINNED_GUEST_BUILD" ] || fail_phase guest-build-pin
 remote_trace_client_exists || fail_phase trace-client-preflight
 
+# A normal generic trace preserves its historical arm-then-radio ordering.
+# The IWN-only PMF wrapper selects the stricter branch: it first binds and
+# immediately disables a diagnostic-only preflight capture while the radio is
+# still on. That is the only existing way to discover a cold backend without
+# an association or radio transition. An IWX/unsupported result stops there.
+# Only a confirmed IWN then gets one OFF/ON, followed by the second reset
+# while Off; that second generation is the sole experiment evidence.
+wait_for_radio_state on || fail_phase radio-precondition-on
+if [ "$ARM_WHILE_RADIO_OFF" -eq 1 ]; then
+    TRACE_MAY_BE_ARMED=1
+    if ! capture_trace_client preflight-reset reset; then
+        fail_phase trace-preflight-reset-request
+    fi
+    preflight_sequence="$(extract_u32 "$OUT_DIR/preflight-reset.stdout" seq || true)"
+    [ "$preflight_sequence" -gt 0 ] 2>/dev/null ||
+        fail_phase trace-preflight-reset-sequence
+    if wait_for_control_ack preflight-reset-ack "$preflight_sequence" 1 1 0; then
+        BACKEND_PREFLIGHT_IWN=1
+    else
+        case "$TRACE_BACKEND" in
+            iwx) fail_phase trace-backend-iwx-ordered-unsupported ;;
+            unsupported) fail_phase trace-backend-unsupported ;;
+            *) fail_phase trace-preflight-reset-ack ;;
+        esac
+    fi
+    disable_trace preflight-off || fail_phase trace-preflight-final-off
+    # The preflight is not the experiment's final control lifecycle.
+    FINAL_CONTROL_DISABLED=0
+    wait_for_radio_state on || fail_phase radio-precondition-on
+    RADIO_OFF_PENDING=1
+    remote_radio_power off >/dev/null 2>&1 || fail_phase radio-off-request
+    wait_for_radio_state off || fail_phase radio-off-observation
+    RADIO_OFF_OBSERVED=1
+    wait_for_radio_state off || fail_phase radio-off-before-final-reset
+fi
+
+TRACE_MAY_BE_ARMED=1
 if ! capture_trace_client reset reset; then
     fail_phase trace-reset-request
 fi
 RESET_SEQUENCE="$(extract_u32 "$OUT_DIR/reset.stdout" seq || true)"
 [ "$RESET_SEQUENCE" -gt 0 ] 2>/dev/null || fail_phase trace-reset-sequence
-TRACE_MAY_BE_ARMED=1
 if wait_for_control_ack reset-ack "$RESET_SEQUENCE" 1 1 0; then
     :
 else
@@ -657,15 +766,22 @@ else
     esac
 fi
 RESET_ACK_SYNC=1
-wait_for_reset_snapshot_buffer_sync || fail_phase trace-reset-snapshot-buffer-sync
-
-if ! wait_for_radio_state on; then
-    fail_phase radio-precondition-on
+if [ "$ARM_WHILE_RADIO_OFF" -eq 1 ]; then
+    wait_for_radio_state off || fail_phase radio-off-after-final-reset-ack
 fi
-RADIO_OFF_PENDING=1
-remote_radio_power off >/dev/null 2>&1 || fail_phase radio-off-request
-wait_for_radio_state off || fail_phase radio-off-observation
-RADIO_OFF_OBSERVED=1
+wait_for_reset_snapshot_buffer_sync || fail_phase trace-reset-snapshot-buffer-sync
+if [ "$ARM_WHILE_RADIO_OFF" -eq 1 ]; then
+    wait_for_radio_state off || fail_phase radio-off-after-final-reset-sync
+    TRACE_ARMED_WHILE_RADIO_OFF=1
+fi
+
+if [ "$ARM_WHILE_RADIO_OFF" -eq 0 ]; then
+    wait_for_radio_state on || fail_phase radio-precondition-on
+    RADIO_OFF_PENDING=1
+    remote_radio_power off >/dev/null 2>&1 || fail_phase radio-off-request
+    wait_for_radio_state off || fail_phase radio-off-observation
+    RADIO_OFF_OBSERVED=1
+fi
 remote_radio_power on >/dev/null 2>&1 || fail_phase radio-on-request
 wait_for_radio_state on || fail_phase radio-on-observation
 RADIO_ON_OBSERVED=1

@@ -68,11 +68,72 @@ def require(condition: bool, message: str) -> None:
         fail(message)
 
 
+def require_exact_mapping(actual: object, expected: dict, label: str) -> None:
+    require(isinstance(actual, dict) and set(actual) == set(expected),
+            f"{label} shape malformed")
+    for key, wanted in expected.items():
+        observed = actual[key]
+        require(type(observed) is type(wanted) and observed == wanted,
+                f"{label}.{key} malformed")
+
+
+def require_u32(section: dict, key: str) -> None:
+    value = section.get(key)
+    require(type(value) is int and 0 <= value <= 4294967295,
+            f"trace scalar malformed: {key}")
+
+
+def reject_duplicate_object_keys(pairs):
+    document = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("duplicate JSON key")
+        document[key] = value
+    return document
+
+
+def parse_evidence(text: str) -> dict:
+    return json.loads(text, object_pairs_hook=reject_duplicate_object_keys)
+
+
+FAILURE_PHASES = {
+    "none", "preflight", "identity-attestation", "hostkey-pin",
+    "guest-build-pin", "trace-client-preflight", "radio-precondition-on",
+    "trace-preflight-reset-request", "trace-preflight-reset-sequence",
+    "trace-preflight-reset-ack", "trace-preflight-final-off",
+    "radio-off-request", "radio-off-observation", "trace-reset-request",
+    "radio-off-before-final-reset", "radio-off-after-final-reset-ack",
+    "radio-off-after-final-reset-sync",
+    "trace-reset-sequence", "trace-backend-iwx-ordered-unsupported",
+    "trace-backend-unsupported", "trace-reset-ack",
+    "trace-reset-snapshot-buffer-sync", "radio-on-request",
+    "radio-on-observation", "trace-pre-seal-observation", "trace-seal",
+    "trace-first-read", "trace-second-read", "trace-double-read-unstable",
+    "trace-final-off", "trace-success-invariants", "trace-verdict-diagnostic",
+}
+NON_CLAIMS = [
+    "pure SAE or PMF functionality",
+    "generic Internet reachability",
+    "physical-host validation",
+    "proof beyond the categorical post-PLTI trace verdict",
+]
+
+
 def validate(document: dict, record=None) -> None:
+    require(isinstance(document, dict), "document malformed")
+    require(set(document) == {
+        "schema", "candidate", "scope", "radio_cycle", "trace", "result",
+        "failure_phase", "local_only_raw_artifacts", "commit_safety", "non_claims",
+    }, "unexpected top-level evidence field")
     require(document.get("schema") == "itlwm-tahoe-post-plti-trace-runtime/v3",
             "unexpected schema")
     candidate = document.get("candidate")
     require(isinstance(candidate, dict), "candidate section missing")
+    require(set(candidate) == {
+        "source_commit", "source_identity_sha256", "release_tag",
+        "release_publication_model", "archive_sha256", "binary_sha256",
+        "macho_uuid", "identity_binding_precondition",
+    }, "unexpected candidate evidence field")
     require(re.fullmatch(r"[0-9a-f]{40}", str(candidate.get("source_commit", ""))) is not None,
             "identity-bound source commit is not exact")
     require(re.fullmatch(r"[0-9a-f]{64}", str(candidate.get("source_identity_sha256", ""))) is not None,
@@ -92,39 +153,57 @@ def validate(document: dict, record=None) -> None:
     require(candidate.get("identity_binding_precondition") == "PASS",
             "exact loaded-candidate identity was not a precondition")
 
-    scope = document.get("scope")
-    require(scope == {
+    require_exact_mapping(document.get("scope"), {
         "environment": "pinned_disposable_qemu_guest",
         "physical_host_touched": False,
         "physical_host_rebooted": False,
         "guest_rebooted_by_runner": False,
         "guest_network_identity_collected": False,
-    }, "scope is not the isolated no-identity QEMU scope")
+    }, "scope")
 
     radio = document.get("radio_cycle")
-    require(isinstance(radio, dict), "radio section missing")
-    require(radio.get("requested_cycles") == 1, "not exactly one bounded radio cycle")
-    require(radio.get("connection_trigger") == "saved_profile_autojoin_only",
+    require(isinstance(radio, dict) and set(radio) == {
+        "requested_cycles", "connection_trigger", "saved_profile_precondition",
+        "radio_off_observed", "radio_on_observed", "radio_recovery_attempted",
+        "trace_armed_while_radio_off", "explicit_join_command",
+        "explicit_route_command", "explicit_address_command",
+        "explicit_dhcp_state_mutating_command",
+    }, "radio cycle shape malformed")
+    require(type(radio["requested_cycles"]) is int and radio["requested_cycles"] == 1,
+            "not exactly one bounded radio cycle")
+    require(radio["connection_trigger"] == "saved_profile_autojoin_only",
             "connection trigger exceeded saved-profile autojoin")
-    require(radio.get("saved_profile_precondition") == "external",
+    require(radio["saved_profile_precondition"] == "external",
             "runner must not claim to enumerate a profile")
+    for key in ("radio_off_observed", "radio_on_observed",
+                "radio_recovery_attempted", "trace_armed_while_radio_off",
+                "explicit_join_command", "explicit_route_command",
+                "explicit_address_command", "explicit_dhcp_state_mutating_command"):
+        require(type(radio[key]) is bool, f"radio boolean malformed: {key}")
     for key in ("explicit_join_command", "explicit_route_command",
                 "explicit_address_command", "explicit_dhcp_state_mutating_command"):
-        require(radio.get(key) is False, f"network mutation/non-autojoin claim is wrong: {key}")
+        require(radio[key] is False, f"network mutation/non-autojoin claim is wrong: {key}")
 
     trace = document.get("trace")
     require(isinstance(trace, dict), "trace section missing")
+    require(set(trace) == {
+        "reset_control_sequence", "reset_ack_generation", "backend_preflight_iwn",
+        "backend", "reset_ack_generation_synchronized",
+        "initial_snapshot_buffer_generation_synchronized", "double_read_stable",
+        "capture_generation", "integrity", "entry_count", "episode_count",
+        "dropped_entries", "verdict", "first_missing_stage",
+        "seal_control_acknowledged", "final_control_disabled",
+    }, "unexpected trace evidence field")
     require(trace.get("backend") in {"iwn", "iwx", "unsupported", "unknown"},
             "trace backend category is invalid")
     for key in ("reset_ack_generation_synchronized",
                 "initial_snapshot_buffer_generation_synchronized",
                 "double_read_stable", "seal_control_acknowledged",
-                "final_control_disabled"):
-        require(isinstance(trace.get(key), bool), f"trace boolean missing: {key}")
+                "final_control_disabled", "backend_preflight_iwn"):
+        require(type(trace.get(key)) is bool, f"trace boolean missing: {key}")
     for key in ("reset_control_sequence", "reset_ack_generation", "capture_generation",
                 "entry_count", "episode_count", "dropped_entries"):
-        require(isinstance(trace.get(key), int) and trace[key] >= 0,
-                f"trace scalar malformed: {key}")
+        require_u32(trace, key)
     require(trace.get("integrity") in {"ok", "inconclusive"}, "unknown trace integrity")
     allowed_verdicts = {
         "KERNEL_CHAIN_OBSERVED", "BRANCH_NOT_OBSERVED", "RESUME_NO_SCAN",
@@ -144,23 +223,28 @@ def validate(document: dict, record=None) -> None:
         "eapol-kernel-pae", "eapol-enqueue", "port-valid", "unknown",
     }, "unknown categorical first missing stage")
 
-    local_only = document.get("local_only_raw_artifacts")
-    require(local_only == {
+    require_exact_mapping(document.get("local_only_raw_artifacts"), {
         "client_output_retained_local_only": True,
         "raw_output_committed": False,
-    }, "raw trace handling is not local-only")
-    safety = document.get("commit_safety")
-    require(safety == {
+    }, "local raw artifacts")
+    require_exact_mapping(document.get("commit_safety"), {
         "wireless_identity_committed": False,
         "ip_or_route_committed": False,
         "secret_material_committed": False,
         "raw_capture_committed": False,
-    }, "committed evidence is not fully sanitized")
-    require("pure SAE or PMF functionality" in document.get("non_claims", []),
-            "pure-SAE non-claim is missing")
+    }, "commit safety")
+    require(document.get("non_claims") == NON_CLAIMS,
+            "fixed non-claims malformed")
 
     result = document.get("result")
     require(result in {"PASS", "INCONCLUSIVE"}, "result is invalid")
+    require(document.get("failure_phase") in FAILURE_PHASES,
+            "failure phase is invalid")
+    if result == "PASS":
+        require(document.get("failure_phase") == "none", "PASS retains a failure phase")
+    else:
+        require(document.get("failure_phase") != "none",
+                "INCONCLUSIVE lacks a failure phase")
     if trace.get("backend") == "iwx":
         require(result == "INCONCLUSIVE",
                 "the IWN-only runner cannot pass an IWX ordered trace")
@@ -169,9 +253,10 @@ def validate(document: dict, record=None) -> None:
         require(document.get("failure_phase") ==
                 "trace-backend-iwx-ordered-unsupported",
                 "IWX ordered trace lacks its explicit boundary")
-        require(radio.get("radio_off_observed") is False and
-                radio.get("radio_on_observed") is False,
-                "IWX ordered mismatch must stop before the radio cycle")
+        if trace.get("backend_preflight_iwn") is False:
+            require(radio.get("radio_off_observed") is False and
+                    radio.get("radio_on_observed") is False,
+                    "IWX preflight mismatch must stop before the radio cycle")
     if result == "PASS":
         require(trace.get("backend") == "iwn", "PASS is not on the supported legacy IWN backend")
         require(radio.get("radio_off_observed") is True and radio.get("radio_on_observed") is True,
@@ -243,6 +328,7 @@ if mode == "self-test":
             "radio_off_observed": True,
             "radio_on_observed": True,
             "radio_recovery_attempted": False,
+            "trace_armed_while_radio_off": False,
             "explicit_join_command": False,
             "explicit_route_command": False,
             "explicit_address_command": False,
@@ -251,6 +337,7 @@ if mode == "self-test":
         "trace": {
             "reset_control_sequence": 1,
             "reset_ack_generation": 7,
+            "backend_preflight_iwn": False,
             "backend": "iwn",
             "reset_ack_generation_synchronized": True,
             "initial_snapshot_buffer_generation_synchronized": True,
@@ -319,9 +406,26 @@ if mode == "self-test":
     else:
         fail("self-test accepted IWX ordered trace as PASS")
 
+    forged = json.loads(json.dumps(fixture))
+    forged["result"] = "INCONCLUSIVE"
+    forged["failure_phase"] = "trace-verdict-diagnostic"
+    forged["radio_cycle"]["requested_cycles"] = True
+    try:
+        validate(forged)
+    except SystemExit:
+        pass
+    else:
+        fail("self-test accepted boolean requested cycle")
+    try:
+        parse_evidence('{"schema":"first","schema":"second"}')
+    except ValueError:
+        pass
+    else:
+        fail("self-test accepted a duplicate JSON key")
+
     print("PASS: post-PLTI runtime evidence contract skeleton")
 else:
-    evidence = json.loads(Path(evidence_path).read_text(encoding="utf-8"))
+    evidence = parse_evidence(Path(evidence_path).read_text(encoding="utf-8"))
     record = Path(record_path).read_text(encoding="utf-8") if record_path else None
     validate(evidence, record)
     print("PASS: post-PLTI runtime evidence contract")

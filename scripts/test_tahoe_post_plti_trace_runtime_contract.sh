@@ -34,6 +34,11 @@ for needle in \
     'PINNED_WIFI_INTERFACE="en1"' \
     'PINNED_GUEST_BUILD="25C56"' \
     '--identity-evidence' \
+    '--trace-client-sha256' \
+    'valid_trace_client_sha256' \
+    'TRACE_CLIENT_SHA256' \
+    'expected_sha256' \
+    '/usr/bin/shasum -a 256' \
     'itlwm-tahoe-lab-kext-identity-binding/v2' \
     'candidate_kext_bound' \
     'all(value is True for value in checks.values())' \
@@ -47,7 +52,8 @@ for needle in \
     'get snapshot' \
     'get trace' \
     'get report' \
-    'final-off off' \
+    'local label="${1:-final-off}" off_sequence' \
+    'capture_trace_client "$label" off' \
     'wait_for_control_ack' \
     'seal_trace' \
     'observe_trace_before_seal' \
@@ -76,7 +82,18 @@ for needle in \
     'client_output_retained_local_only' \
     'networksetup -setairportpower en1' \
     'RADIO_OFF_PENDING=1' \
-    'RADIO_RECOVERY_ATTEMPTED=1'; do
+    'RADIO_RECOVERY_ATTEMPTED=1' \
+    '--arm-while-radio-off' \
+    'preflight-reset reset' \
+    'preflight-reset-ack' \
+    'preflight-off' \
+    'BACKEND_PREFLIGHT_IWN=1' \
+    'backend_preflight_iwn' \
+    'TRACE_ARMED_WHILE_RADIO_OFF=1' \
+    'trace_armed_while_radio_off' \
+    'radio-off-before-final-reset' \
+    'radio-off-after-final-reset-ack' \
+    'radio-off-after-final-reset-sync'; do
     require_literal "$needle" "required safety/sequence token: $needle"
 done
 
@@ -116,32 +133,67 @@ from pathlib import Path
 import sys
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-ordered = (
-    'capture_trace_client reset reset',
-    'wait_for_control_ack reset-ack',
-    'wait_for_reset_snapshot_buffer_sync',
-    'remote_radio_power off',
-    'remote_radio_power on',
+
+def index_after(needle: str, start: int = 0) -> int:
+    position = text.find(needle, start)
+    if position < 0:
+        raise SystemExit(f"FAIL: post-PLTI runtime order missing {needle}")
+    return position
+
+strict_start = index_after('if [ "$ARM_WHILE_RADIO_OFF" -eq 1 ]; then',
+                           index_after('wait_for_radio_state on || fail_phase radio-precondition-on'))
+strict_end = index_after('\nfi\n\nTRACE_MAY_BE_ARMED=1', strict_start)
+preflight_reset = index_after('capture_trace_client preflight-reset reset', strict_start)
+preflight_ack = index_after('wait_for_control_ack preflight-reset-ack', preflight_reset)
+preflight_disable = index_after('disable_trace preflight-off', preflight_ack)
+fresh_on = index_after('wait_for_radio_state on || fail_phase radio-precondition-on', preflight_disable)
+strict_off = index_after('remote_radio_power off', fresh_on)
+if not strict_start < preflight_reset < preflight_ack < preflight_disable < fresh_on < strict_off < strict_end:
+    raise SystemExit('FAIL: strict IWN backend preflight must finish before its radio OFF')
+
+iwx_boundary = index_after('fail_phase trace-backend-iwx-ordered-unsupported', preflight_ack)
+if not preflight_ack < iwx_boundary < strict_off:
+    raise SystemExit('FAIL: strict IWX boundary must precede strict radio OFF')
+
+final_reset = index_after('capture_trace_client reset reset', strict_end)
+reset_ack = index_after('wait_for_control_ack reset-ack', final_reset)
+reset_sync = index_after('wait_for_reset_snapshot_buffer_sync', reset_ack)
+legacy_start = index_after('if [ "$ARM_WHILE_RADIO_OFF" -eq 0 ]; then', reset_sync)
+legacy_off = index_after('remote_radio_power off', legacy_start)
+radio_on = index_after('remote_radio_power on', legacy_off)
+if not final_reset < reset_ack < reset_sync < legacy_off < radio_on:
+    raise SystemExit('FAIL: legacy arm-then-radio ordering regressed')
+if not strict_off < final_reset < radio_on:
+    raise SystemExit('FAIL: strict final reset must occur after OFF and before the only ON')
+off_before_reset = index_after(
+    'wait_for_radio_state off || fail_phase radio-off-before-final-reset', strict_off)
+off_after_ack = index_after(
+    'wait_for_radio_state off || fail_phase radio-off-after-final-reset-ack', reset_ack)
+off_after_sync = index_after(
+    'wait_for_radio_state off || fail_phase radio-off-after-final-reset-sync', reset_sync)
+armed_while_off = index_after('TRACE_ARMED_WHILE_RADIO_OFF=1', off_after_sync)
+if not (strict_off < off_before_reset < final_reset < reset_ack < off_after_ack <
+        reset_sync < off_after_sync < armed_while_off < radio_on):
+    raise SystemExit('FAIL: strict causal radio-OFF checks are not ordered around final reset')
+for item in (
     'observe_trace_before_seal',
     'seal_trace || fail_phase trace-seal',
     'read_trace_once read-1 0',
     'read_trace_once read-2 0',
     'disable_trace || fail_phase trace-final-off',
-)
-cursor = 0
-for item in ordered:
-    cursor = text.find(item, cursor)
-    if cursor < 0:
-        raise SystemExit(f"FAIL: post-PLTI runtime order missing {item}")
-    cursor += len(item)
+):
+    index_after(item, radio_on)
 if 'EapolTxDone' in text or 'eapol-txdone' in text:
     raise SystemExit('FAIL: shell runner must not independently require asynchronous EAPOL TX completion')
 iwx = text.find('TRACE_BACKEND="iwx"')
-iwx_boundary = text.find('fail_phase trace-backend-iwx-ordered-unsupported')
-radio = text.find('remote_radio_power off')
-if iwx < 0 or iwx_boundary < 0:
+if iwx < 0:
     raise SystemExit('FAIL: post-PLTI runtime runner lacks an explicit IWX ordered boundary')
-if radio < 0 or iwx >= radio or iwx_boundary >= radio:
-    raise SystemExit('FAIL: IWX ordered boundary must precede the radio cycle')
+remote_trace = text.find('remote_trace() {')
+remote_exists = text.find('remote_trace_client_exists() {')
+if remote_trace < 0 or remote_exists < 0:
+    raise SystemExit('FAIL: post-PLTI runtime runner lacks trace-client helpers')
+for helper in (text[remote_trace:remote_exists], text[remote_exists:text.find('remote_radio_state()', remote_exists)]):
+    if '"$TRACE_CLIENT_SHA256"' not in helper or 'expected_sha256' not in helper or 'shasum -a 256' not in helper:
+        raise SystemExit('FAIL: trace-client digest is not checked on every generic client invocation')
 print('PASS: post-PLTI runtime runner static safety contract')
 PY
