@@ -89,6 +89,14 @@ main(void)
         "one closed initial transaction proves software PMF ownership");
 
     begin(&fixture);
+    append(&fixture, kAirportItlwmPostPltiTraceEventEapolTxEnqueued);
+    append(&fixture, kAirportItlwmPostPltiTraceEventPortValidTransition);
+    expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwn, 0,
+        kAirportItlwmIwnSoftwarePmfTraceVerdictPtkSoftwareCcmpNotObserved,
+        kAirportItlwmIwnSoftwarePmfTraceMissingStagePtkSoftwareCcmp,
+        "a completed generic association reports absent software PMF at PTK");
+
+    begin(&fixture);
     append(&fixture,
         kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared);
     append(&fixture, kAirportItlwmPostPltiTraceEventCaptureWindowSealed);

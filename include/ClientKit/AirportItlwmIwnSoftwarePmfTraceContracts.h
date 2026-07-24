@@ -164,7 +164,10 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
             continue;
         }
         if (event == kAirportItlwmPostPltiTraceEventPortValidTransition) {
-            if (!keyset_published || port_valid)
+            /* A valid generic association may close without entering the
+             * optional IWN software-PMF branch.  That is a deterministic
+             * first-missing-stage result, not a torn PMF trace. */
+            if (port_valid)
                 return kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive;
             port_valid = 1;
             terminal = 1;
