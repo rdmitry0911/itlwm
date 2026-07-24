@@ -54,7 +54,8 @@ import sys
 from pathlib import Path
 
 
-SCHEMA = "itlwm-tahoe-iwn-direct-sae-runtime/v2"
+RUNTIME_SCHEMA = "itlwm-tahoe-iwn-direct-sae-runtime/v2"
+READBACK_SCHEMA = "itlwm-tahoe-iwn-direct-sae-readback/v1"
 LAB_KIND = "local-unpublished-iwn-lab-candidate"
 LAB_PROFILE = "iwn-software-pmf-lab"
 LAB_STAGED_KEXT_REPO_PATH = (
@@ -178,16 +179,21 @@ RUNTIME_FAILURE_PHASES = {
     "none", "preflight", "candidate-receipt", "candidate-identity-before",
     "hostkey-pin", "guest-build-pin", "trace-client-preflight",
     "delegated-runner-attestation", "delegated-runner-failed",
+    "existing-delegated-attestation-validation",
     "iwn-direct-sae-report-first-read", "iwn-direct-sae-report-first-parse",
     "iwn-direct-sae-report-second-read", "iwn-direct-sae-report-second-parse",
     "iwn-direct-sae-report-double-read-unstable", "candidate-identity-after",
-    "trace-client-postflight", "trace-verdict-diagnostic",
+    "trace-client-postflight", "existing-delegated-attestation-lifecycle",
+    "trace-verdict-diagnostic",
 }
 NON_CLAIMS = [
     "application or data-plane traffic verification",
     "group rekey, reconnect, roaming, or multi-AP replacement",
     "physical-host validation",
     "proof beyond one sealed direct-SAE four-way port-valid trace",
+]
+READBACK_NON_CLAIMS = NON_CLAIMS + [
+    "fresh radio, scan, or association action by this readback",
 ]
 
 
@@ -226,10 +232,10 @@ def validate_candidate(candidate: object) -> dict:
     return candidate
 
 
-def validate_generic_trace(generic: object) -> dict:
+def validate_generic_trace(generic: object, readback: bool) -> dict:
     require(isinstance(generic, dict), "generic trace missing")
     expected = {
-        "delegated_runner_exit", "result", "failure_phase",
+        "result", "failure_phase",
         "reset_control_sequence", "capture_generation", "backend", "integrity",
         "entry_count", "episode_count", "dropped_entries", "verdict",
         "first_missing_stage", "radio_off_observed", "radio_on_observed",
@@ -238,10 +244,18 @@ def validate_generic_trace(generic: object) -> dict:
         "seal_control_acknowledged", "final_control_disabled", "double_read_stable",
         "trace_armed_while_radio_off", "backend_preflight_iwn",
     }
+    expected.add(
+        "sealed_delegated_attestation_validated" if readback else
+        "delegated_runner_exit"
+    )
     require(set(generic) == expected, "unexpected generic trace field")
-    delegated_exit = generic.get("delegated_runner_exit")
-    require(type(delegated_exit) is int and 0 <= delegated_exit <= 255,
-            "generic delegated runner exit malformed")
+    if readback:
+        require(generic.get("sealed_delegated_attestation_validated") is True,
+                "readback generic attestation validation malformed")
+    else:
+        delegated_exit = generic.get("delegated_runner_exit")
+        require(type(delegated_exit) is int and 0 <= delegated_exit <= 255,
+                "generic delegated runner exit malformed")
     require(generic.get("result") in {"PASS", "INCONCLUSIVE"},
             "generic result malformed")
     require(generic.get("failure_phase") in GENERIC_FAILURE_PHASES,
@@ -301,7 +315,7 @@ def validate_direct_trace(direct: object) -> dict:
     return direct
 
 
-def generic_sealed_lifecycle_is_complete(generic: dict) -> bool:
+def generic_sealed_lifecycle_is_complete(generic: dict, readback: bool) -> bool:
     result_and_diagnostic = (
         (generic["result"] == "PASS" and generic["failure_phase"] == "none" and
          generic["verdict"] == "KERNEL_CHAIN_OBSERVED" and
@@ -311,7 +325,9 @@ def generic_sealed_lifecycle_is_complete(generic: dict) -> bool:
          generic["failure_phase"] == "trace-verdict-diagnostic")
     )
     return (
-        generic["delegated_runner_exit"] == 0 and result_and_diagnostic and
+        (generic["sealed_delegated_attestation_validated"] is True if readback
+         else generic["delegated_runner_exit"] == 0) and
+        result_and_diagnostic and
         generic["backend"] == "iwn" and generic["integrity"] == "ok" and
         generic["reset_control_sequence"] > 0 and
         generic["capture_generation"] > 0 and generic["entry_count"] > 0 and
@@ -379,12 +395,17 @@ def reject_sensitive_values(document: dict) -> None:
 
 def validate(document: object) -> None:
     require(isinstance(document, dict), "document malformed")
-    require(set(document) == {
+    schema = document.get("schema")
+    readback = schema == READBACK_SCHEMA
+    expected = {
         "schema", "candidate", "scope", "wcl_trigger", "generic_trace",
         "iwn_direct_sae_trace", "result", "failure_phase",
         "local_only_raw_artifacts", "commit_safety", "non_claims",
-    }, "unexpected top-level evidence field")
-    require(document.get("schema") == SCHEMA, "unexpected schema")
+    }
+    if readback:
+        expected.add("readback_origin")
+    require(set(document) == expected, "unexpected top-level evidence field")
+    require(schema in {RUNTIME_SCHEMA, READBACK_SCHEMA}, "unexpected schema")
     candidate = validate_candidate(document.get("candidate"))
     require_exact_mapping(document.get("scope"), {
         "environment": "pinned_disposable_qemu_guest",
@@ -394,19 +415,40 @@ def validate(document: object) -> None:
         "wireless_identity_collected": False,
         "network_secret_collected": False,
     }, "scope")
-    require_exact_mapping(document.get("wcl_trigger"), {
-        "requested_cycles": 1,
-        "connection_trigger": "saved_profile_autojoin_only",
-        "secret_argument": "none",
-        "fresh_scan_state": "delegated_radio_off_on_trace_reset_while_off",
-        "explicit_join_command": False,
-        "explicit_scan_command": False,
-        "explicit_profile_command": False,
-        "explicit_route_command": False,
-        "explicit_address_command": False,
-        "explicit_dhcp_state_mutating_command": False,
-    }, "WCL trigger")
-    generic = validate_generic_trace(document.get("generic_trace"))
+    if readback:
+        require_exact_mapping(document.get("readback_origin"), {
+            "mode": "existing-sealed-delegated-attestation",
+            "existing_attestation_read_only": True,
+            "radio_cycle_requested_by_this_invocation": False,
+            "association_or_scan_requested_by_this_invocation": False,
+            "delegated_runner_exit_observed_by_this_invocation": False,
+        }, "readback origin")
+        require_exact_mapping(document.get("wcl_trigger"), {
+            "requested_cycles": 0,
+            "connection_trigger": "sealed_trace_readback_only",
+            "secret_argument": "none",
+            "fresh_scan_state": "not-invoked-by-this-run",
+            "explicit_join_command": False,
+            "explicit_scan_command": False,
+            "explicit_profile_command": False,
+            "explicit_route_command": False,
+            "explicit_address_command": False,
+            "explicit_dhcp_state_mutating_command": False,
+        }, "readback WCL trigger")
+    else:
+        require_exact_mapping(document.get("wcl_trigger"), {
+            "requested_cycles": 1,
+            "connection_trigger": "saved_profile_autojoin_only",
+            "secret_argument": "none",
+            "fresh_scan_state": "delegated_radio_off_on_trace_reset_while_off",
+            "explicit_join_command": False,
+            "explicit_scan_command": False,
+            "explicit_profile_command": False,
+            "explicit_route_command": False,
+            "explicit_address_command": False,
+            "explicit_dhcp_state_mutating_command": False,
+        }, "WCL trigger")
+    generic = validate_generic_trace(document.get("generic_trace"), readback)
     direct = validate_direct_trace(document.get("iwn_direct_sae_trace"))
     require(document.get("result") in {"PASS", "INCONCLUSIVE"},
             "result malformed")
@@ -418,7 +460,7 @@ def validate(document: object) -> None:
             "identity_before_bound", "identity_after_bound",
             "trace_client_pre_bound", "trace_client_post_bound",
         )), "PASS lacks exact candidate/client binding")
-        require(generic_sealed_lifecycle_is_complete(generic),
+        require(generic_sealed_lifecycle_is_complete(generic, readback),
                 "PASS lacks sealed generic lifecycle")
         require(direct_chain_is_positive(generic, direct),
                 "PASS lacks complete direct SAE chain")
@@ -435,11 +477,13 @@ def validate(document: object) -> None:
         "secret_material_committed": False,
         "raw_capture_committed": False,
     }, "commit safety")
-    require(document.get("non_claims") == NON_CLAIMS, "fixed non-claims malformed")
+    require(document.get("non_claims") ==
+            (READBACK_NON_CLAIMS if readback else NON_CLAIMS),
+            "fixed non-claims malformed")
     reject_sensitive_values(document)
 
 
-def fixture() -> dict:
+def fixture(readback: bool = False) -> dict:
     candidate = {
         "kind": LAB_KIND,
         "profile": LAB_PROFILE,
@@ -460,7 +504,6 @@ def fixture() -> dict:
         "trace_client_post_bound": True,
     }
     generic = {
-        "delegated_runner_exit": 0,
         "result": "PASS",
         "failure_phase": "none",
         "reset_control_sequence": 1,
@@ -482,6 +525,10 @@ def fixture() -> dict:
         "trace_armed_while_radio_off": True,
         "backend_preflight_iwn": True,
     }
+    if readback:
+        generic["sealed_delegated_attestation_validated"] = True
+    else:
+        generic["delegated_runner_exit"] = 0
     direct = {
         "report_one_read": True,
         "report_two_read": True,
@@ -495,8 +542,8 @@ def fixture() -> dict:
         "verdict": "DIRECT_SAE_4WAY_PORT_VALID",
         "first_missing_stage": "none",
     }
-    return {
-        "schema": SCHEMA,
+    document = {
+        "schema": READBACK_SCHEMA if readback else RUNTIME_SCHEMA,
         "candidate": candidate,
         "scope": {
             "environment": "pinned_disposable_qemu_guest",
@@ -506,7 +553,18 @@ def fixture() -> dict:
             "wireless_identity_collected": False,
             "network_secret_collected": False,
         },
-        "wcl_trigger": {
+        "wcl_trigger": ({
+            "requested_cycles": 0,
+            "connection_trigger": "sealed_trace_readback_only",
+            "secret_argument": "none",
+            "fresh_scan_state": "not-invoked-by-this-run",
+            "explicit_join_command": False,
+            "explicit_scan_command": False,
+            "explicit_profile_command": False,
+            "explicit_route_command": False,
+            "explicit_address_command": False,
+            "explicit_dhcp_state_mutating_command": False,
+        } if readback else {
             "requested_cycles": 1,
             "connection_trigger": "saved_profile_autojoin_only",
             "secret_argument": "none",
@@ -517,7 +575,7 @@ def fixture() -> dict:
             "explicit_route_command": False,
             "explicit_address_command": False,
             "explicit_dhcp_state_mutating_command": False,
-        },
+        }),
         "generic_trace": generic,
         "iwn_direct_sae_trace": direct,
         "result": "PASS",
@@ -532,8 +590,17 @@ def fixture() -> dict:
             "secret_material_committed": False,
             "raw_capture_committed": False,
         },
-        "non_claims": NON_CLAIMS,
+        "non_claims": READBACK_NON_CLAIMS if readback else NON_CLAIMS,
     }
+    if readback:
+        document["readback_origin"] = {
+            "mode": "existing-sealed-delegated-attestation",
+            "existing_attestation_read_only": True,
+            "radio_cycle_requested_by_this_invocation": False,
+            "association_or_scan_requested_by_this_invocation": False,
+            "delegated_runner_exit_observed_by_this_invocation": False,
+        }
+    return document
 
 
 def expect_rejected(document: object, label: str) -> None:
@@ -548,6 +615,8 @@ mode, evidence_path = sys.argv[1:]
 if mode == "self-test":
     valid = fixture()
     validate(valid)
+    valid_readback = fixture(readback=True)
+    validate(valid_readback)
 
     incomplete = fixture()
     incomplete["result"] = "INCONCLUSIVE"
@@ -586,6 +655,20 @@ if mode == "self-test":
     )
     for mutate, label in negative_cases:
         forged = fixture()
+        mutate(forged)
+        expect_rejected(forged, label)
+    readback_negative_cases = (
+        (lambda value: value["readback_origin"].__setitem__(
+            "radio_cycle_requested_by_this_invocation", True),
+         "readback claimed a radio cycle"),
+        (lambda value: value["generic_trace"].__setitem__(
+            "sealed_delegated_attestation_validated", False),
+         "unvalidated delegated attestation accepted as readback"),
+        (lambda value: value["wcl_trigger"].__setitem__("requested_cycles", 1),
+         "readback requested a radio cycle"),
+    )
+    for mutate, label in readback_negative_cases:
+        forged = fixture(readback=True)
         mutate(forged)
         expect_rejected(forged, label)
     try:

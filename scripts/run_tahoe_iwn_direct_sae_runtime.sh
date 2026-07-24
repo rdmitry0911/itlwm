@@ -17,6 +17,7 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 POST_PLTI_RUNNER="$ROOT/scripts/run_tahoe_post_plti_trace_runtime.sh"
 IDENTITY_CAPTURE="$ROOT/scripts/capture_tahoe_iwn_lab_loaded_identity.py"
+GENERIC_EVIDENCE_CONTRACT="$ROOT/scripts/test_tahoe_post_plti_trace_runtime_evidence_contract.sh"
 
 PINNED_GUEST="devops@127.0.0.1"
 PINNED_PORT=3322
@@ -27,11 +28,14 @@ PINNED_GUEST_HOSTKEY_SHA256="SHA256:4Q/9OkSwSE09YhXRdAbdbPl7WTqRNJHyn+vAM6p8QiY"
 TRACE_TOOL=""
 CANDIDATE_RECEIPT=""
 OUT_DIR=""
+ANALYZE_EXISTING=""
 TRACE_CLIENT_SHA256=""
 SETTLE_SECONDS=15
 ACK_ATTEMPTS=20
 RADIO_ATTEMPTS=30
 STABLE_READ_DELAY_SECONDS=2
+CYCLE_TUNING_ARGUMENT_SEEN=0
+RUN_MODE="new-delegated-radio-cycle"
 
 KNOWN_HOSTS=""
 declare -a SSH
@@ -97,6 +101,7 @@ usage: run_tahoe_iwn_direct_sae_runtime.sh \
   --trace-tool /private/tmp/aiam-post-plti-trace-CANDIDATE/airport_itlwm_post_plti_trace \
   --candidate-receipt /local/safe/iwn-lab-candidate-receipt-v2.json \
   --out /fresh/local/evidence/dir \
+  [--analyze-existing /local/safe/delegated-runtime-attestation-v4.json] \
   [--settle-seconds 1..120] [--ack-attempts 1..60] \
   [--radio-attempts 1..60] [--stable-read-delay-seconds 1..10]
 
@@ -116,6 +121,13 @@ It then requires two identical sealed IWN direct-SAE aggregate reports with
 DIRECT_SAE_4WAY_PORT_VALID.  A PASS is limited to that one local driver trace;
 it is not a data-plane, rekey, reconnect, roaming, multi-AP, or physical-host
 claim.
+
+--analyze-existing consumes one regular, local-only delegated v4 attestation
+from an already completed sealed experiment.  It never starts the delegated
+runner or sends radio, scan, association, profile, route, address, or reboot
+controls.  In that mode only --stable-read-delay-seconds is accepted from the
+cycle tuning options, and the resulting receipt is explicitly a readback,
+not a new radio-cycle claim.
 EOF
 }
 
@@ -151,15 +163,25 @@ valid_trace_client_sha256() {
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --trace-tool|--candidate-receipt|--out|--settle-seconds|--ack-attempts|--radio-attempts|--stable-read-delay-seconds)
+        --trace-tool|--candidate-receipt|--out|--analyze-existing|--settle-seconds|--ack-attempts|--radio-attempts|--stable-read-delay-seconds)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             case "$1" in
                 --trace-tool) TRACE_TOOL="$2" ;;
                 --candidate-receipt) CANDIDATE_RECEIPT="$2" ;;
                 --out) OUT_DIR="$2" ;;
-                --settle-seconds) SETTLE_SECONDS="$2" ;;
-                --ack-attempts) ACK_ATTEMPTS="$2" ;;
-                --radio-attempts) RADIO_ATTEMPTS="$2" ;;
+                --analyze-existing) ANALYZE_EXISTING="$2" ;;
+                --settle-seconds)
+                    SETTLE_SECONDS="$2"
+                    CYCLE_TUNING_ARGUMENT_SEEN=1
+                    ;;
+                --ack-attempts)
+                    ACK_ATTEMPTS="$2"
+                    CYCLE_TUNING_ARGUMENT_SEEN=1
+                    ;;
+                --radio-attempts)
+                    RADIO_ATTEMPTS="$2"
+                    CYCLE_TUNING_ARGUMENT_SEEN=1
+                    ;;
                 --stable-read-delay-seconds) STABLE_READ_DELAY_SECONDS="$2" ;;
             esac
             shift 2
@@ -187,8 +209,8 @@ valid_trace_tool_path "$TRACE_TOOL" || {
     printf 'ERROR: --candidate-receipt must be a regular local file\n' >&2
     exit 2
 }
-[ -x "$POST_PLTI_RUNNER" ] && [ -x "$IDENTITY_CAPTURE" ] || {
-    printf 'ERROR: required runtime or read-only identity helper is unavailable\n' >&2
+[ -x "$IDENTITY_CAPTURE" ] || {
+    printf 'ERROR: required read-only identity helper is unavailable\n' >&2
     exit 2
 }
 for value_range in \
@@ -201,6 +223,35 @@ done
     printf 'ERROR: --out must name a fresh path; refusing to overwrite evidence\n' >&2
     exit 2
 }
+if [ -n "$ANALYZE_EXISTING" ]; then
+    case "$ANALYZE_EXISTING" in /*) ;; *)
+        printf 'ERROR: --analyze-existing must be an absolute local path\n' >&2
+        exit 2
+        ;;
+    esac
+    [ -f "$ANALYZE_EXISTING" ] && [ ! -L "$ANALYZE_EXISTING" ] || {
+        printf 'ERROR: --analyze-existing must be a regular local file\n' >&2
+        exit 2
+    }
+    [ "$CYCLE_TUNING_ARGUMENT_SEEN" -eq 0 ] || {
+        printf 'ERROR: --analyze-existing forbids radio-cycle tuning options\n' >&2
+        exit 2
+    }
+    [ -x "$GENERIC_EVIDENCE_CONTRACT" ] || {
+        printf 'ERROR: delegated runtime evidence validator is unavailable\n' >&2
+        exit 2
+    }
+    "$GENERIC_EVIDENCE_CONTRACT" --evidence "$ANALYZE_EXISTING" >/dev/null || {
+        printf 'ERROR: --analyze-existing is not a valid sealed delegated v4 attestation\n' >&2
+        exit 2
+    }
+    RUN_MODE="existing-sealed-delegated-attestation-readback"
+else
+    [ -x "$POST_PLTI_RUNNER" ] || {
+        printf 'ERROR: delegated runtime helper is unavailable\n' >&2
+        exit 2
+    }
+fi
 
 read_candidate_receipt() {
     local -a fields
@@ -452,7 +503,7 @@ REMOTE
 }
 
 read_generic_attestation() {
-    local path="$OUT_DIR/post-plti/runtime-attestation.json" values
+    local path="${1:-$OUT_DIR/post-plti/runtime-attestation.json}" values
     [ -f "$path" ] || return 1
     values="$(python3 - "$path" "$SOURCE_COMMIT" "$SOURCE_IDENTITY_SHA256" \
         "$SOURCE_IDENTITY_PATHS_COUNT" "$LAB_PROFILE" \
@@ -625,12 +676,11 @@ read_direct_report() {
     [[ "$DIRECT_FIRST_MISSING_STAGE" =~ ^[a-z0-9-]+$ ]] || return 1
 }
 
-delegated_fresh_scan_lifecycle_is_complete() {
-    [ "$GENERIC_RUNNER_EXIT" = 0 ] &&
-        {
-            { [ "$GENERIC_RESULT" = PASS ] && [ "$GENERIC_FAILURE_PHASE" = none ]; } ||
-            { [ "$GENERIC_RESULT" = INCONCLUSIVE ] && [ "$GENERIC_FAILURE_PHASE" = trace-verdict-diagnostic ]; }
-        } &&
+delegated_sealed_lifecycle_is_complete() {
+    {
+        { [ "$GENERIC_RESULT" = PASS ] && [ "$GENERIC_FAILURE_PHASE" = none ]; } ||
+        { [ "$GENERIC_RESULT" = INCONCLUSIVE ] && [ "$GENERIC_FAILURE_PHASE" = trace-verdict-diagnostic ]; }
+    } &&
         [ "$GENERIC_BACKEND" = iwn ] &&
         [ "$GENERIC_INTEGRITY" = ok ] &&
         [ "$GENERIC_RESET_SEQUENCE" -gt 0 ] &&
@@ -644,6 +694,14 @@ delegated_fresh_scan_lifecycle_is_complete() {
         [ "$GENERIC_DOUBLE_READ" = 1 ] &&
         [ "$GENERIC_ARMED_WHILE_RADIO_OFF" = 1 ] &&
         [ "$GENERIC_BACKEND_PREFLIGHT_IWN" = 1 ]
+}
+
+delegated_fresh_scan_lifecycle_is_complete() {
+    [ "$GENERIC_RUNNER_EXIT" = 0 ] && delegated_sealed_lifecycle_is_complete
+}
+
+delegated_existing_sealed_lifecycle_is_complete() {
+    delegated_sealed_lifecycle_is_complete
 }
 
 direct_chain_is_positive() {
@@ -663,7 +721,7 @@ direct_chain_is_positive() {
 write_safe_attestation() {
     [ "$ATTESTATION_WRITTEN" -eq 0 ] || return 0
     [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ] || return 0
-    python3 - "$OUT_DIR/runtime-attestation.json" \
+    python3 - "$OUT_DIR/runtime-attestation.json" "$RUN_MODE" \
         "$SOURCE_COMMIT" "$SOURCE_IDENTITY_SHA256" \
         "$SOURCE_IDENTITY_PATHS_COUNT" "$LAB_PROFILE" \
         "$LAB_STAGED_KEXT_REPO_PATH" "$ARCHIVE_SHA256" \
@@ -689,7 +747,7 @@ import sys
 from pathlib import Path
 
 (
-    output, source_commit, source_identity, source_identity_paths_count,
+    output, run_mode, source_commit, source_identity, source_identity_paths_count,
     profile, staged_kext_repo_path, archive_sha256, info_plist_sha256,
     bundle_tree_sha256, binary_sha256, macho_uuid, bundle_id,
     trace_client_sha256, identity_before, identity_after, client_pre,
@@ -738,8 +796,7 @@ candidate = {
     "trace_client_pre_bound": b(client_pre),
     "trace_client_post_bound": b(client_post),
 }
-generic = {
-    "delegated_runner_exit": integer(generic_exit),
+common_generic = {
     "result": generic_result,
     "failure_phase": generic_failure,
     "reset_control_sequence": integer(reset_sequence),
@@ -761,6 +818,22 @@ generic = {
     "trace_armed_while_radio_off": b(armed_while_off),
     "backend_preflight_iwn": b(backend_preflight_iwn),
 }
+readback = run_mode == "existing-sealed-delegated-attestation-readback"
+if run_mode not in {
+    "new-delegated-radio-cycle",
+    "existing-sealed-delegated-attestation-readback",
+}:
+    raise SystemExit("direct runtime mode is invalid")
+if readback:
+    generic = {
+        "sealed_delegated_attestation_validated": True,
+        **common_generic,
+    }
+else:
+    generic = {
+        "delegated_runner_exit": integer(generic_exit),
+        **common_generic,
+    }
 direct = {
     "report_one_read": b(direct_read_one),
     "report_two_read": b(direct_read_two),
@@ -810,18 +883,28 @@ positive = (
         "trace_client_pre_bound", "trace_client_post_bound",
     ))
 )
-document = {
-    "schema": "itlwm-tahoe-iwn-direct-sae-runtime/v2",
-    "candidate": candidate,
-    "scope": {
-        "environment": "pinned_disposable_qemu_guest",
-        "physical_host_touched": False,
-        "physical_host_rebooted": False,
-        "guest_rebooted_by_runner": False,
-        "wireless_identity_collected": False,
-        "network_secret_collected": False,
-    },
-    "wcl_trigger": {
+if readback:
+    wcl_trigger = {
+        "requested_cycles": 0,
+        "connection_trigger": "sealed_trace_readback_only",
+        "secret_argument": "none",
+        "fresh_scan_state": "not-invoked-by-this-run",
+        "explicit_join_command": False,
+        "explicit_scan_command": False,
+        "explicit_profile_command": False,
+        "explicit_route_command": False,
+        "explicit_address_command": False,
+        "explicit_dhcp_state_mutating_command": False,
+    }
+    non_claims = [
+        "application or data-plane traffic verification",
+        "group rekey, reconnect, roaming, or multi-AP replacement",
+        "physical-host validation",
+        "proof beyond one sealed direct-SAE four-way port-valid trace",
+        "fresh radio, scan, or association action by this readback",
+    ]
+else:
+    wcl_trigger = {
         "requested_cycles": 1,
         "connection_trigger": "saved_profile_autojoin_only",
         "secret_argument": "none",
@@ -832,7 +915,26 @@ document = {
         "explicit_route_command": False,
         "explicit_address_command": False,
         "explicit_dhcp_state_mutating_command": False,
+    }
+    non_claims = [
+        "application or data-plane traffic verification",
+        "group rekey, reconnect, roaming, or multi-AP replacement",
+        "physical-host validation",
+        "proof beyond one sealed direct-SAE four-way port-valid trace",
+    ]
+document = {
+    "schema": ("itlwm-tahoe-iwn-direct-sae-readback/v1" if readback else
+               "itlwm-tahoe-iwn-direct-sae-runtime/v2"),
+    "candidate": candidate,
+    "scope": {
+        "environment": "pinned_disposable_qemu_guest",
+        "physical_host_touched": False,
+        "physical_host_rebooted": False,
+        "guest_rebooted_by_runner": False,
+        "wireless_identity_collected": False,
+        "network_secret_collected": False,
     },
+    "wcl_trigger": wcl_trigger,
     "generic_trace": generic,
     "iwn_direct_sae_trace": direct,
     "result": "PASS" if positive else "INCONCLUSIVE",
@@ -847,13 +949,16 @@ document = {
         "secret_material_committed": False,
         "raw_capture_committed": False,
     },
-    "non_claims": [
-        "application or data-plane traffic verification",
-        "group rekey, reconnect, roaming, or multi-AP replacement",
-        "physical-host validation",
-        "proof beyond one sealed direct-SAE four-way port-valid trace",
-    ],
+    "non_claims": non_claims,
 }
+if readback:
+    document["readback_origin"] = {
+        "mode": "existing-sealed-delegated-attestation",
+        "existing_attestation_read_only": True,
+        "radio_cycle_requested_by_this_invocation": False,
+        "association_or_scan_requested_by_this_invocation": False,
+        "delegated_runner_exit_observed_by_this_invocation": False,
+    }
 Path(output).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n",
                         encoding="utf-8")
 PY
@@ -909,22 +1014,33 @@ capture_identity before || fail_phase candidate-identity-before
 remote_trace_client_exists || fail_phase trace-client-preflight
 TRACE_CLIENT_PRE_BOUND=1
 
-# The delegated runner is the only network-control owner.  In strict mode it
-# proves IWN first, then resets the final trace while the radio is Off, so the
-# sole saved-profile autojoin is causally after a fresh SCAN state.
-set +e
-"$POST_PLTI_RUNNER" --trace-tool "$TRACE_TOOL" \
-    --lab-identity-evidence "$OUT_DIR/identity-before.json" \
-    --trace-client-sha256 "$TRACE_CLIENT_SHA256" \
-    --out "$OUT_DIR/post-plti" --arm-while-radio-off \
-    --settle-seconds "$SETTLE_SECONDS" --ack-attempts "$ACK_ATTEMPTS" \
-    --radio-attempts "$RADIO_ATTEMPTS" \
-    --stable-read-delay-seconds "$STABLE_READ_DELAY_SECONDS" \
-    >"$OUT_DIR/delegated-runner.stdout" 2>"$OUT_DIR/delegated-runner.stderr"
-GENERIC_RUNNER_EXIT=$?
-set -e
-read_generic_attestation || fail_phase delegated-runner-attestation
-[ "$GENERIC_RUNNER_EXIT" = 0 ] || fail_phase delegated-runner-failed
+if [ -n "$ANALYZE_EXISTING" ]; then
+    # This branch has no delegated-runner invocation.  It validates only the
+    # sealed v4 aggregate supplied locally, then makes the same receipt-bound
+    # direct-report reads as a fresh cycle.  Its output therefore names a
+    # readback schema rather than claiming a newly requested radio cycle.
+    read_generic_attestation "$ANALYZE_EXISTING" ||
+        fail_phase existing-delegated-attestation-validation
+    delegated_existing_sealed_lifecycle_is_complete ||
+        fail_phase existing-delegated-attestation-lifecycle
+else
+    # The delegated runner is the only network-control owner.  In strict mode
+    # it proves IWN first, then resets the final trace while the radio is Off,
+    # so the sole saved-profile autojoin is causally after a fresh SCAN state.
+    set +e
+    "$POST_PLTI_RUNNER" --trace-tool "$TRACE_TOOL" \
+        --lab-identity-evidence "$OUT_DIR/identity-before.json" \
+        --trace-client-sha256 "$TRACE_CLIENT_SHA256" \
+        --out "$OUT_DIR/post-plti" --arm-while-radio-off \
+        --settle-seconds "$SETTLE_SECONDS" --ack-attempts "$ACK_ATTEMPTS" \
+        --radio-attempts "$RADIO_ATTEMPTS" \
+        --stable-read-delay-seconds "$STABLE_READ_DELAY_SECONDS" \
+        >"$OUT_DIR/delegated-runner.stdout" 2>"$OUT_DIR/delegated-runner.stderr"
+    GENERIC_RUNNER_EXIT=$?
+    set -e
+    read_generic_attestation || fail_phase delegated-runner-attestation
+    [ "$GENERIC_RUNNER_EXIT" = 0 ] || fail_phase delegated-runner-failed
+fi
 
 capture_direct_report direct-sae-report-read-1 || fail_phase iwn-direct-sae-report-first-read
 read_direct_report "$OUT_DIR/direct-sae-report-read-1.stdout" ||
@@ -944,15 +1060,32 @@ capture_identity after || fail_phase candidate-identity-after
 remote_trace_client_exists || fail_phase trace-client-postflight
 TRACE_CLIENT_POST_BOUND=1
 
-if delegated_fresh_scan_lifecycle_is_complete && direct_chain_is_positive; then
+if { [ "$RUN_MODE" = existing-sealed-delegated-attestation-readback ] &&
+        delegated_existing_sealed_lifecycle_is_complete; } ||
+    { [ "$RUN_MODE" = new-delegated-radio-cycle ] &&
+        delegated_fresh_scan_lifecycle_is_complete; }; then
+    LIFECYCLE_COMPLETE=1
+else
+    LIFECYCLE_COMPLETE=0
+fi
+
+if [ "$LIFECYCLE_COMPLETE" = 1 ] && direct_chain_is_positive; then
     RESULT="PASS"
     FAILURE_PHASE="none"
     FINAL_EXIT=0
-    printf 'PASS: one sealed direct IWN SAE four-way port-valid trace observed\n'
+    if [ "$RUN_MODE" = existing-sealed-delegated-attestation-readback ]; then
+        printf 'PASS: existing sealed direct IWN SAE trace read back\n'
+    else
+        printf 'PASS: one sealed direct IWN SAE four-way port-valid trace observed\n'
+    fi
 else
     RESULT="INCONCLUSIVE"
     FAILURE_PHASE="trace-verdict-diagnostic"
     FINAL_EXIT=0
-    printf 'INCONCLUSIVE: sealed direct IWN SAE aggregate retained as local-only diagnostic evidence\n'
+    if [ "$RUN_MODE" = existing-sealed-delegated-attestation-readback ]; then
+        printf 'INCONCLUSIVE: existing sealed direct IWN SAE aggregate retained as local-only readback evidence\n'
+    else
+        printf 'INCONCLUSIVE: sealed direct IWN SAE aggregate retained as local-only diagnostic evidence\n'
+    fi
 fi
 exit "$FINAL_EXIT"

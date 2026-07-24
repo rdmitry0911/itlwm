@@ -44,7 +44,9 @@ for needle in \
     'PINNED_GUEST_HOSTKEY_SHA256' \
     'StrictHostKeyChecking=yes' \
     'IDENTITY_CAPTURE=' \
+    'GENERIC_EVIDENCE_CONTRACT=' \
     '--candidate-receipt' \
+    '--analyze-existing' \
     'load_direct_runtime_candidate_receipt' \
     'itlwm-tahoe-iwn-lab-loaded-identity/v1' \
     'expected_local_lab_candidate' \
@@ -56,6 +58,7 @@ for needle in \
     'itlwm-tahoe-post-plti-trace-runtime/v4' \
     'local-unpublished-iwn-lab-candidate' \
     'itlwm-tahoe-iwn-direct-sae-runtime/v2' \
+    'itlwm-tahoe-iwn-direct-sae-readback/v1' \
     '--trace-client-sha256' \
     '--arm-while-radio-off' \
     'get iwn-direct-sae-report' \
@@ -64,12 +67,18 @@ for needle in \
     'DIRECT_REPORT_TWO_READ=1' \
     'DIRECT_DOUBLE_READ_STABLE=1' \
     'delegated_fresh_scan_lifecycle_is_complete' \
+    'delegated_existing_sealed_lifecycle_is_complete' \
     'direct_chain_is_positive' \
     'DIRECT_CAPTURE_GENERATION" = "$GENERIC_CAPTURE_GENERATION' \
     'DIRECT_ENTRY_COUNT" = "$GENERIC_ENTRY_COUNT' \
     'trace_armed_while_radio_off' \
     'expected[2] = int(expected[2])' \
     'saved_profile_autojoin_only' \
+    'sealed_trace_readback_only' \
+    'readback_origin' \
+    'sealed_delegated_attestation_validated' \
+    'existing-delegated-attestation-validation' \
+    'existing-delegated-attestation-lifecycle' \
     'fresh_scan_state' \
     'secret_argument": "none"' \
     'wireless_identity_collected": False' \
@@ -125,7 +134,7 @@ ordered = (
     'capture_direct_report direct-sae-report-read-2',
     'capture_identity after || fail_phase candidate-identity-after',
     'remote_trace_client_exists || fail_phase trace-client-postflight',
-    'if delegated_fresh_scan_lifecycle_is_complete && direct_chain_is_positive; then',
+    'if [ "$LIFECYCLE_COMPLETE" = 1 ] && direct_chain_is_positive; then',
 )
 cursor = 0
 for token in ordered:
@@ -146,6 +155,38 @@ if 'DIRECT_CAPTURE_GENERATION" = "$GENERIC_CAPTURE_GENERATION' not in text:
     raise SystemExit('FAIL: direct report is not generation-bound to the reset trace')
 if 'DIRECT_ENTRY_COUNT" = "$GENERIC_ENTRY_COUNT' not in text:
     raise SystemExit('FAIL: direct report is not bound to the sealed trace buffer')
+
+# Readback is deliberately a validation-only path over a pre-existing sealed
+# v4 aggregate.  Its branch must end before direct reports and cannot acquire
+# the delegated runner or any radio-cycle tuning/control surface.
+readback_marker = (
+    'if [ -n "$ANALYZE_EXISTING" ]; then\n'
+    '    # This branch has no delegated-runner invocation.'
+)
+readback_start = text.find(readback_marker)
+readback_end = text.find('\nelse\n', readback_start)
+if readback_start < 0 or readback_end < 0:
+    raise SystemExit('FAIL: direct-SAE readback branch missing or unterminated')
+readback_branch = text[readback_start:readback_end]
+for token in (
+    'read_generic_attestation "$ANALYZE_EXISTING"',
+    'fail_phase existing-delegated-attestation-validation',
+    'delegated_existing_sealed_lifecycle_is_complete',
+    'fail_phase existing-delegated-attestation-lifecycle',
+):
+    if token not in readback_branch:
+        raise SystemExit(f'FAIL: direct-SAE readback branch lacks {token}')
+for token in (
+    '"$POST_PLTI_RUNNER"', '--arm-while-radio-off', '--settle-seconds',
+    '--ack-attempts', '--radio-attempts', 'capture_direct_report',
+):
+    if token in readback_branch:
+        raise SystemExit(f'FAIL: direct-SAE readback branch grew control surface: {token}')
+generic_evidence_validation = text.find(
+    '"$GENERIC_EVIDENCE_CONTRACT" --evidence "$ANALYZE_EXISTING"'
+)
+if generic_evidence_validation < 0 or generic_evidence_validation > readback_start:
+    raise SystemExit('FAIL: readback does not fully validate supplied delegated v4 evidence before guest contact')
 
 # The direct runner must derive the guest executable digest solely from the
 # receipt v2 it validates locally.  A caller-controlled digest or a release
@@ -299,12 +340,14 @@ for required in ('"wireless_identity_collected": False', '"network_secret_collec
     if required not in attestation:
         raise SystemExit(f'FAIL: direct-SAE attestation lacks privacy assertion: {required}')
 for required in (
-    '"schema": "itlwm-tahoe-iwn-direct-sae-runtime/v2"',
+    '"itlwm-tahoe-iwn-direct-sae-runtime/v2"',
+    '"itlwm-tahoe-iwn-direct-sae-readback/v1"',
     '"kind": "local-unpublished-iwn-lab-candidate"',
     '"identity_before_bound"',
     '"identity_after_bound"',
     '"trace_client_pre_bound"',
     '"trace_client_post_bound"',
+    '"readback_origin"',
 ):
     if required not in attestation:
         raise SystemExit(f'FAIL: direct-SAE attestation lacks receipt-bound candidate field: {required}')
