@@ -45,6 +45,8 @@ for token in \
     'GUEST_TRACE_PREFIX="/private/tmp/aiam-post-plti-trace-"' \
     'parse_gate_build_dir()' \
     'parse_guest_pair()' \
+    'stage_values_shape_valid()' \
+    "IFS='|' read -r -a fields" \
     'require_clean_committed_source()' \
     'status --porcelain=v1 --untracked-files=all' \
     'git -C "$ROOT" diff --quiet' \

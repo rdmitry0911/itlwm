@@ -708,6 +708,17 @@ print("|".join((
 PY
 }
 
+stage_values_shape_valid() {
+    local values="$1" field
+    local -a fields=()
+
+    IFS='|' read -r -a fields <<<"$values"
+    [ "${#fields[@]}" -eq 13 ] || return 1
+    for field in "${fields[@]}"; do
+        [ -n "$field" ] || return 1
+    done
+}
+
 create_remote_stage_directories() {
     "${SSH[@]}" "set -eu
 [ -d /private ] && [ ! -L /private ]
@@ -1012,15 +1023,26 @@ stage_candidate() {
     parse_guest_pair "$GUEST_CANDIDATE_DIR" "$GUEST_TRACE_DIR" ||
         fail "guest-private-paths-must-be-fresh-matching-safe-token-pair"
     local stage_parent values
+    local -a stage_fields=()
     stage_parent="$(dirname -- "$STAGE_REPORT")"
     STAGE_STAGING="$(mktemp -d "$stage_parent/.aiam-iwn-lab-stage.XXXXXX")"
     chmod 700 "$STAGE_STAGING"
     values="$(validate_stage_inputs_and_write_manifest "$STAGE_STAGING/$MANIFEST_NAME")"
-    IFS='|' read -r _source_commit _source_identity _source_path_count _profile \
-        _staged_path _archive_sha _info_sha _binary_sha _tree_sha _macho_uuid \
-        _bundle_id _trace_sha _receipt_sha <<< "$values"
-    [ -n "${_receipt_sha:-}" ] && [ -z "${values#*|*|*|*|*|*|*|*|*|*|*|*|*}" ] ||
-        fail "stage-input-value-shape"
+    stage_values_shape_valid "$values" || fail "stage-input-value-shape"
+    IFS='|' read -r -a stage_fields <<<"$values"
+    _source_commit="${stage_fields[0]}"
+    _source_identity="${stage_fields[1]}"
+    _source_path_count="${stage_fields[2]}"
+    _profile="${stage_fields[3]}"
+    _staged_path="${stage_fields[4]}"
+    _archive_sha="${stage_fields[5]}"
+    _info_sha="${stage_fields[6]}"
+    _binary_sha="${stage_fields[7]}"
+    _tree_sha="${stage_fields[8]}"
+    _macho_uuid="${stage_fields[9]}"
+    _bundle_id="${stage_fields[10]}"
+    _trace_sha="${stage_fields[11]}"
+    _receipt_sha="${stage_fields[12]}"
     if [ "$DRY_RUN" -eq 1 ]; then
         printf 'STAGE_DRY_RUN_READY source_commit=%s stage_token=%s\n' \
             "$SOURCE_HEAD" "$GUEST_TOKEN"
@@ -1045,6 +1067,7 @@ stage_candidate() {
 self_test() {
     local original_gate="$GATE_BUILD_DIR" original_candidate="$GUEST_CANDIDATE_DIR"
     local original_trace="$GUEST_TRACE_DIR"
+    local valid_stage_values='one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen'
     GATE_BUILD_DIR="${GATE_DIR_PREFIX}Ab9_-.z"
     parse_gate_build_dir "$GATE_BUILD_DIR" || fail "self-test-safe-gate-token"
     [ "$GATE_BUILD_TOKEN" = "Ab9_-.z" ] || fail "self-test-gate-token-round-trip"
@@ -1057,6 +1080,14 @@ self_test() {
         fail "self-test-safe-private-pair"
     if parse_guest_pair "${GUEST_CANDIDATE_PREFIX}one" "${GUEST_TRACE_PREFIX}two"; then
         fail "self-test-mismatched-private-token-accepted"
+    fi
+    stage_values_shape_valid "$valid_stage_values" ||
+        fail "self-test-valid-stage-values-rejected"
+    if stage_values_shape_valid 'one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve'; then
+        fail "self-test-short-stage-values-accepted"
+    fi
+    if stage_values_shape_valid 'one|two||four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen'; then
+        fail "self-test-empty-stage-value-accepted"
     fi
     safe_leaf "fresh-artifacts.1" || fail "self-test-safe-leaf"
     if safe_leaf "../not-safe"; then
