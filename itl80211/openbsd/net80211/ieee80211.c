@@ -222,6 +222,10 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     memset(&ic->ic_pae_selected_bss, 0, sizeof(ic->ic_pae_selected_bss));
     memset(&ic->ic_sae_peer_rx_admission, 0,
            sizeof(ic->ic_sae_peer_rx_admission));
+    ic->ic_sae_wcl_request_next_generation = 0;
+    memset(&ic->ic_sae_wcl_request, 0,
+           sizeof(ic->ic_sae_wcl_request));
+    ic->ic_sae_wcl_request_join_active = 0;
     memset(ic->ic_bss_blacklist_requested, 0,
            sizeof(ic->ic_bss_blacklist_requested));
     ic->ic_bss_blacklist_count = 0;

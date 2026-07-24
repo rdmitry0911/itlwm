@@ -1200,7 +1200,12 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     uint32_t assoc_fail = 0;
     u_int64_t replacement_epoch;
     uint8_t sae_profile;
+    int sae_wcl_bind;
 
+    /* Hold a short leaf-lock marker through the whole selected-BSS to AUTH
+     * handoff.  A concurrent direct-WCL request must fail busy rather than
+     * replace a legacy candidate after it has already been chosen. */
+    ieee80211_sae_wcl_request_join_begin(ic);
     AirportItlwmPostPltiTraceRecord(
         ic, kAirportItlwmPostPltiTraceEventBssSelected);
     AirportItlwmPostPltiTraceRecord(
@@ -1225,6 +1230,17 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     sae_profile = ieee80211_sae_selected_bss_profile(ni);
     ieee80211_pae_selected_bss_capture(ic, ni, sae_profile,
         replacement_epoch);
+    /* A direct WCL SAE request is not a broad AKM preference.  Bind it only
+     * after this exact candidate became ic_bss and its scan-derived profile
+     * was captured.  A mismatched or unsupported live request must restart
+     * normal scanning before any historical Open-System AUTH path can run. */
+    sae_wcl_bind = ieee80211_sae_wcl_request_bind_selected_bss(ic, ni,
+        replacement_epoch);
+    if (sae_wcl_bind == IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED) {
+        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+        ieee80211_sae_wcl_request_join_end(ic);
+        return;
+    }
     ni->ni_assoc_fail |= assoc_fail;
     
     ic->ic_curmode = ieee80211_chan2mode(ic, ni->ni_chan);
@@ -1247,6 +1263,7 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
                            IEEE80211_F_DONEGO | IEEE80211_F_DODEL);
         if (ni->ni_rates.rs_nrates == 0) {
             ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+            ieee80211_sae_wcl_request_join_end(ic);
             return;
         }
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
@@ -1287,6 +1304,7 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
         
         ieee80211_new_state(ic, IEEE80211_S_AUTH, mgt);
     }
+    ieee80211_sae_wcl_request_join_end(ic);
 }
 
 struct ieee80211_node *
@@ -1590,11 +1608,12 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     ni->ni_rsnakms &= ic->ic_rsnakms;
     /* prefer SHA-256 based AKMPs */
     if ((ni->ni_rsnakms & IEEE80211_AKM_SAE) != 0 &&
+        ieee80211_sae_wcl_request_bound_current(ic, ni) &&
         (ic->ic_flags & IEEE80211_F_PSK) == 0) {
-        /* The direct WCL SAE route deliberately configures only SAE.  Do
-         * not let the historical non-PSK fallback rewrite that negotiated
-         * intersection into 802.1X before the driver-owned AUTH owner sees
-         * it. */
+        /* The direct WCL SAE route deliberately configures only SAE.  This
+         * exact current-BSS predicate prevents an AP's advertised SAE bit
+         * from turning into a global non-PSK preference before the
+         * driver-owned AUTH owner sees it. */
         ni->ni_rsnakms = IEEE80211_AKM_SAE;
     } else if ((ic->ic_flags & IEEE80211_F_PSK) && (ni->ni_rsnakms &
                                              (IEEE80211_AKM_PSK | IEEE80211_AKM_SHA256_PSK))) {

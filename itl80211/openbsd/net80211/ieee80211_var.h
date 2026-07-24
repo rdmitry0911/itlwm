@@ -484,6 +484,42 @@ struct ieee80211_sae_peer_rx_admission {
 	u_int8_t		reserved[3];
 };
 
+/*
+ * One explicit direct-WCL SAE request, kept separately from both the
+ * selected scan BSS and the private driver credential staging slot.  This is
+ * public association identity only: it contains no passphrase, PMK, PWE,
+ * node, IE, or callback.  The same selected-BSS leaf lock serializes every
+ * field, including generation allocation and phase changes.
+ *
+ * PENDING is published by WCL before it asks the normal scan path to choose
+ * a BSS.  SCAN_ISSUED is the single controlled SCAN resume that may survive
+ * the immediately following selected-BSS replacement.  BOUND is valid only
+ * for the exact post-copy BSS and association epoch; every ordinary epoch
+ * cancellation erases it.  No generic transition infers SAE from this
+ * record: it merely makes an explicit request observable at its exact BSS.
+ */
+enum ieee80211_sae_wcl_request_phase {
+	IEEE80211_SAE_WCL_REQUEST_NONE = 0,
+	IEEE80211_SAE_WCL_REQUEST_PENDING,
+	IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED,
+	IEEE80211_SAE_WCL_REQUEST_BOUND,
+};
+
+enum ieee80211_sae_wcl_request_bind_result {
+	IEEE80211_SAE_WCL_REQUEST_BIND_NONE = 0,
+	IEEE80211_SAE_WCL_REQUEST_BIND_BOUND = 1,
+	IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED = -1,
+};
+
+struct ieee80211_sae_wcl_request {
+	u_int64_t		generation;
+	u_int64_t		association_epoch;
+	u_int8_t		bssid[IEEE80211_ADDR_LEN];
+	u_int8_t		ssid_len;
+	u_int8_t		ssid[IEEE80211_NWID_LEN];
+	u_int8_t		phase;
+};
+
 struct ItlSaeAuthPeerEventV1;
 
 struct ieee80211com {
@@ -673,6 +709,15 @@ struct ieee80211com {
 	IOSimpleLock		*ic_pae_selected_bss_lock;
 	/* Same leaf lock as the selected-BSS value above/below. */
 	struct ieee80211_sae_peer_rx_admission ic_sae_peer_rx_admission;
+	/* Direct-WCL SAE request identity and monotonic nonzero generation.  The
+	 * fixed record is public control-plane state only; credentials remain in
+	 * the driver's separately scrubbed private staging slot. */
+	u_int64_t		ic_sae_wcl_request_next_generation;
+	struct ieee80211_sae_wcl_request ic_sae_wcl_request;
+	/* node_join_bss() owns this short publication fence under the same leaf
+	 * lock.  A late direct-WCL request must fail busy rather than preempt an
+	 * already selected legacy join between BSS copy and S_AUTH. */
+	u_int8_t		ic_sae_wcl_request_join_active;
 	/*
 	 * BIP's two IGTK slots are independently published under the same leaf
 	 * lock.  Retired software contexts remain off-table until the timeout

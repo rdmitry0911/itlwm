@@ -157,6 +157,37 @@ extern	void ieee80211_pae_selected_bss_capture(struct ieee80211com *,
 extern	int ieee80211_pae_selected_bss_copyout_current(struct ieee80211com *,
 	    u_int64_t, struct ieee80211_pae_selected_bss *);
 /*
+ * Direct-WCL SAE policy carries only an exact public SSID+BSSID selection.
+ * publish() allocates a strictly increasing, nonzero generation and does not
+ * retain a credential.  A caller that cannot stage its separate private
+ * credential slot must clear the same generation explicitly.  resume_scan()
+ * is a one-shot PENDING -> SCAN_ISSUED transition; it invokes the driver's
+ * ic_newstate directly so the ordinary SCAN -> SCAN cancellation fence cannot
+ * erase the controlled request before node_join_bss binds it.
+ */
+extern	u_int64_t ieee80211_sae_wcl_request_publish(struct ieee80211com *,
+	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int);
+extern	int ieee80211_sae_wcl_request_clear_if_generation(
+	    struct ieee80211com *, u_int64_t);
+extern	int ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *,
+	    u_int64_t);
+/* node_join_bss() brackets its copy-to-S_AUTH window with this leaf-lock
+ * fence so a concurrent direct-WCL publication fails busy rather than
+ * preempting an already selected legacy join. */
+extern	void ieee80211_sae_wcl_request_join_begin(struct ieee80211com *);
+extern	void ieee80211_sae_wcl_request_join_end(struct ieee80211com *);
+/* Bind only after node_join_bss copied its chosen BSS and published the
+ * selected-BSS value for expected_epoch.  A live request that does not match
+ * exactly is erased and returns BIND_REJECTED; no request returns BIND_NONE.
+ */
+extern	int ieee80211_sae_wcl_request_bind_selected_bss(
+	    struct ieee80211com *, const struct ieee80211_node *, u_int64_t);
+/* Read-side predicate for choose_rsnparams() and the eventual direct SAE
+ * owner.  It succeeds only for the exact current BSS, selected profile, and
+ * association epoch bound above. */
+extern	int ieee80211_sae_wcl_request_bound_current(struct ieee80211com *,
+	    const struct ieee80211_node *);
+/*
  * A controller may admit exactly one bounded Algorithm-3 peer-RX relay for
  * the current selected BSS.  The RX path receives a copied epoch/generation
  * only after snapshot_admission() validates that admission under the same

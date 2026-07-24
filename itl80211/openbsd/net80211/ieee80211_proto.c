@@ -897,6 +897,101 @@ ieee80211_sae_peer_rx_admission_clear_locked(struct ieee80211com *ic)
 }
 
 static int
+ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(
+    const u_int8_t bssid[IEEE80211_ADDR_LEN])
+{
+	size_t index;
+	int nonzero = 0;
+
+	if (bssid == NULL || (bssid[0] & 0x01) != 0)
+		return 0;
+	for (index = 0; index < IEEE80211_ADDR_LEN; index++) {
+		if (bssid[index] != 0) {
+			nonzero = 1;
+			break;
+		}
+	}
+	return nonzero;
+}
+
+static int
+ieee80211_sae_wcl_request_phase_is_active(u_int8_t phase)
+{
+	return phase == IEEE80211_SAE_WCL_REQUEST_PENDING ||
+	    phase == IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED ||
+	    phase == IEEE80211_SAE_WCL_REQUEST_BOUND;
+}
+
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
+static void
+ieee80211_sae_wcl_request_clear_locked(struct ieee80211com *ic)
+{
+	if (ic == NULL)
+		return;
+	explicit_bzero(&ic->ic_sae_wcl_request,
+	    sizeof(ic->ic_sae_wcl_request));
+}
+
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
+static int
+ieee80211_sae_wcl_request_identity_is_valid_locked(
+    const struct ieee80211_sae_wcl_request *request)
+{
+	return request != NULL && request->generation != 0 &&
+	    request->ssid_len != 0 && request->ssid_len <= IEEE80211_NWID_LEN &&
+	    ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(request->bssid);
+}
+
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
+static int
+ieee80211_sae_wcl_request_scan_issued_locked(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	const struct ieee80211_sae_wcl_request *request;
+
+	if (ic == NULL || generation == 0)
+		return 0;
+	request = &ic->ic_sae_wcl_request;
+	return request->phase == IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED &&
+	    request->generation == generation &&
+	    request->association_epoch == 0 &&
+	    ieee80211_sae_wcl_request_identity_is_valid_locked(request);
+}
+
+/* Caller holds ic_pae_selected_bss_lock.  node_join_bss() sets its explicit
+ * fence before the BSS copy and leaves it active through the synchronous
+ * driver's S_AUTH request.  The selected-BSS check is a defensive second
+ * fence for the S_SCAN tail if a caller ever reaches it without the marker. */
+static int
+ieee80211_sae_wcl_request_join_active_locked(struct ieee80211com *ic)
+{
+	return ic != NULL && (ic->ic_sae_wcl_request_join_active != 0 ||
+	    (ic->ic_state == IEEE80211_S_SCAN &&
+	    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+	    __ATOMIC_ACQUIRE) != 0));
+}
+
+/* Caller holds ic_pae_selected_bss_lock.  A direct reconnect may originate
+ * from a stable RUN association, but not in the short macro window after an
+ * ordinary RUN -> AUTH transition invalidated its selected-BSS epoch and
+ * before the driver receives that transition.  This is a publication fence,
+ * not an SAE admission predicate. */
+static int
+ieee80211_sae_wcl_request_run_is_stable_locked(struct ieee80211com *ic)
+{
+	u_int64_t epoch;
+
+	if (ic == NULL || ic->ic_state != IEEE80211_S_RUN)
+		return 0;
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	return epoch != 0 &&
+	    __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+	    __ATOMIC_ACQUIRE) == 0 &&
+	    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+	    __ATOMIC_ACQUIRE) == epoch;
+}
+
+static int
 ieee80211_sae_peer_rx_mac_is_unicast_nonzero(const u_int8_t *mac)
 {
 	size_t index;
@@ -1180,6 +1275,10 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	/* Every ordinary association cancellation invalidates a WCL SAE request.
+	 * The one SCAN_ISSUED exception lives solely in the controlled replacement
+	 * helper below, never in this general retry/reset path. */
+	ieee80211_sae_wcl_request_clear_locked(ic);
 	if (lock != NULL) {
 		txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 		cancel = ic->ic_pae_mfp_txn_cancel;
@@ -1217,6 +1316,19 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	/* The direct WCL resume has exactly one permitted bind handoff: its
+	 * SCAN_ISSUED request survives this post-scan replacement long enough to
+	 * bind the BSS copied below.  A PENDING request is retained only through
+	 * this replacement so bind_selected_bss() can reject the old scan result
+	 * before it reaches the historical Open/PSK path; it is never bindable.
+	 * BOUND, malformed, and every other phase are ordinary cancellation state
+	 * and therefore fail closed. */
+	if (ieee80211_sae_wcl_request_scan_issued_locked(ic,
+	    ic->ic_sae_wcl_request.generation) ||
+	    ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_PENDING)
+		ic->ic_sae_wcl_request.association_epoch = 0;
+	else
+		ieee80211_sae_wcl_request_clear_locked(ic);
 	txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 	cancel = ic->ic_pae_mfp_txn_cancel;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
@@ -1224,6 +1336,53 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	if (txn_id != 0 && cancel != NULL)
 		(*cancel)(ic, txn_id);
 	return epoch;
+}
+
+/*
+ * A direct WCL resume may begin while a prior association is in RUN.  It must
+ * retire that old epoch before invoking the driver's raw SCAN callback, but
+ * the just-issued request itself is the one controlled replacement handoff
+ * that must survive.  This stays callback-free under the leaf lock; any PMF
+ * backend cancellation is delivered only after dropping it.
+ */
+static int
+ieee80211_sae_wcl_request_fence_run_resume(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	u_int64_t txn_id;
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	void (*cancel)(struct ieee80211com *, u_int64_t);
+	struct ieee80211_pae_mfp_prepared prepared;
+
+	if (ic == NULL || generation == 0 ||
+	    ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	bzero(&prepared, sizeof(prepared));
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_RUN ||
+	    !ieee80211_sae_wcl_request_scan_issued_locked(ic, generation)) {
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		return 0;
+	}
+	(void)ieee80211_pae_assoc_epoch_advance_locked(ic);
+	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
+	    __ATOMIC_RELEASE);
+	ieee80211_pae_selected_bss_invalidate(ic);
+	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	/* Do not bind an old RUN epoch to the resumed request. */
+	ic->ic_sae_wcl_request.association_epoch = 0;
+	txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
+	cancel = ic->ic_pae_mfp_txn_cancel;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
+	if (txn_id != 0 && cancel != NULL)
+		(*cancel)(ic, txn_id);
+	return 1;
 }
 
 /*
@@ -1250,6 +1409,8 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	ieee80211_sae_wcl_request_clear_locked(ic);
+	ic->ic_sae_wcl_request_join_active = 0;
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELEASE);
 	ic->ic_pae_selected_bss_lock = NULL;
@@ -1282,6 +1443,308 @@ ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
 	     nstate == IEEE80211_S_RUN))
 		return;
 	(void)ieee80211_pae_assoc_epoch_begin(ic);
+}
+
+/*
+ * Publish public, exact WCL target identity before the separately-owned HAL
+ * copies a CIPHER_PWD credential.  A newer request may atomically supersede
+ * only PENDING or SCAN_ISSUED public state; the private driver slot performs
+ * its matching newer-generation replacement independently.  Once BOUND, an
+ * attempt is in flight and a second request fails closed rather than changing
+ * the BSS beneath it.
+ */
+u_int64_t
+ieee80211_sae_wcl_request_publish(struct ieee80211com *ic,
+    const u_int8_t bssid[IEEE80211_ADDR_LEN], const u_int8_t *ssid,
+    u_int ssid_len)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request *request;
+	u_int64_t generation = 0;
+
+	if (ic == NULL || bssid == NULL || ssid == NULL || ssid_len == 0 ||
+	    ssid_len > IEEE80211_NWID_LEN ||
+	    !ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(bssid) ||
+	    ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    (ic->ic_state != IEEE80211_S_SCAN &&
+	     ic->ic_state != IEEE80211_S_RUN) ||
+	    (ic->ic_state == IEEE80211_S_RUN &&
+	    !ieee80211_sae_wcl_request_run_is_stable_locked(ic)) ||
+	    ieee80211_sae_wcl_request_join_active_locked(ic) ||
+	    ic->ic_sae_wcl_request_next_generation == (u_int64_t)-1 ||
+	    (ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_NONE &&
+	     ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_PENDING &&
+	     ic->ic_sae_wcl_request.phase !=
+	     IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED))
+		goto out;
+	if (ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_NONE)
+		ieee80211_sae_wcl_request_clear_locked(ic);
+	generation = ++ic->ic_sae_wcl_request_next_generation;
+	/* A nonzero counter cannot become zero because the overflow edge above
+	 * refuses publication rather than wrapping and reusing a backend fence. */
+	_KASSERT(generation != 0);
+	request = &ic->ic_sae_wcl_request;
+	explicit_bzero(request, sizeof(*request));
+	request->generation = generation;
+	IEEE80211_ADDR_COPY(request->bssid, bssid);
+	request->ssid_len = (u_int8_t)ssid_len;
+	memcpy(request->ssid, ssid, ssid_len);
+	request->phase = IEEE80211_SAE_WCL_REQUEST_PENDING;
+out:
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return generation;
+}
+
+/* Bracket the full node-copy/RSN-select/S_AUTH handoff.  The marker carries
+ * no association identity and never authorizes SAE; it solely makes a late
+ * WCL publication fail busy while a legacy join is already committed. */
+void
+ieee80211_sae_wcl_request_join_begin(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
+		return;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_opmode == IEEE80211_M_STA)
+		ic->ic_sae_wcl_request_join_active = 1;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+void
+ieee80211_sae_wcl_request_join_end(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL)
+		return;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ic->ic_sae_wcl_request_join_active = 0;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+/*
+ * Clear one public request only when its generation still matches.  This is
+ * intentionally a leaf/value operation: a caller that owns a private driver
+ * credential slot invokes that driver's cancellation separately and no
+ * callback, password, PMK, or node crosses this generic boundary.
+ */
+int
+ieee80211_sae_wcl_request_clear_if_generation(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int cleared = 0;
+
+	if (ic == NULL || generation == 0)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_sae_wcl_request.generation == generation &&
+	    ieee80211_sae_wcl_request_phase_is_active(
+	    ic->ic_sae_wcl_request.phase)) {
+		ieee80211_sae_wcl_request_clear_locked(ic);
+		cleared = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return cleared;
+}
+
+/*
+ * Resume exactly one normal scan selection after WCL published an explicit
+ * target.  Do not use the ordinary state-transition macro: its SCAN -> SCAN
+ * fence correctly erases arbitrary stale attempts, while this request must
+ * remain SCAN_ISSUED through one controlled node replacement so it can bind
+ * the exact selected BSS.  A RUN origin first fences the old association with
+ * the dedicated preserve-only helper above.
+ */
+int
+ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	enum ieee80211_state origin;
+	int resumed = 0;
+
+	if (ic == NULL || generation == 0 ||
+	    ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_opmode != IEEE80211_M_STA || ic->ic_newstate == NULL ||
+	    ieee80211_sae_wcl_request_join_active_locked(ic) ||
+	    ic->ic_sae_wcl_request.generation != generation ||
+	    ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_PENDING ||
+	    !ieee80211_sae_wcl_request_identity_is_valid_locked(
+	    &ic->ic_sae_wcl_request) ||
+	    (ic->ic_state != IEEE80211_S_SCAN &&
+	     ic->ic_state != IEEE80211_S_RUN)) {
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		(void)ieee80211_sae_wcl_request_clear_if_generation(ic,
+		    generation);
+		return 0;
+	}
+	origin = ic->ic_state;
+	ic->ic_sae_wcl_request.association_epoch = 0;
+	ic->ic_sae_wcl_request.phase = IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+
+	if (origin == IEEE80211_S_RUN &&
+	    !ieee80211_sae_wcl_request_fence_run_resume(ic, generation))
+		goto out;
+
+	/* Recheck after the out-of-lock RUN cancellation before calling the raw
+	 * state method.  A competing ordinary transition wins by clearing this
+	 * generation instead of receiving an unsolicited second scan request. */
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (!ieee80211_sae_wcl_request_scan_issued_locked(ic, generation) ||
+	    ic->ic_newstate == NULL || ic->ic_state != origin) {
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		goto out;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+
+	/* This is deliberately the raw driver state method, not the epoch macro.
+	 * A newer WCL publication may supersede this request after the final
+	 * pre-call check, so success is acknowledged only if this same generation
+	 * is still the issued scan handoff after the driver returns. */
+	if ((*ic->ic_newstate)(ic, IEEE80211_S_SCAN, -1) == 0) {
+		irq = IOSimpleLockLockDisableInterrupt(lock);
+		if (ieee80211_sae_wcl_request_scan_issued_locked(ic, generation) ||
+		    (ic->ic_sae_wcl_request.phase ==
+		    IEEE80211_SAE_WCL_REQUEST_BOUND &&
+		    ic->ic_sae_wcl_request.generation == generation &&
+		    ieee80211_sae_wcl_request_identity_is_valid_locked(
+		    &ic->ic_sae_wcl_request)))
+			resumed = 1;
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	}
+out:
+	if (!resumed)
+		(void)ieee80211_sae_wcl_request_clear_if_generation(ic,
+		    generation);
+	return resumed;
+}
+
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
+static int
+ieee80211_sae_wcl_request_matches_current_locked(struct ieee80211com *ic,
+    const struct ieee80211_sae_wcl_request *request,
+    const struct ieee80211_node *ni, u_int64_t expected_epoch)
+{
+	const struct ieee80211_pae_selected_bss *selected;
+	u_int8_t profile;
+
+	if (ic == NULL || request == NULL || ni == NULL ||
+	    expected_epoch == 0 || ic->ic_opmode != IEEE80211_M_STA ||
+	    !ieee80211_sae_wcl_request_identity_is_valid_locked(request) ||
+	    ic->ic_bss != ni ||
+	    __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) !=
+		expected_epoch ||
+	    __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+		__ATOMIC_ACQUIRE) != 0 ||
+	    !IEEE80211_ADDR_EQ(request->bssid, ni->ni_bssid) ||
+	    request->ssid_len != ni->ni_esslen ||
+	    memcmp(request->ssid, ni->ni_essid, request->ssid_len) != 0)
+		return 0;
+	selected = &ic->ic_pae_selected_bss;
+	profile = selected->strict_pure_sae_profile;
+	return ieee80211_pae_selected_bss_identity_matches(selected,
+	    expected_epoch, request->bssid, request->ssid, request->ssid_len) &&
+	    (profile == IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE ||
+	     profile == IEEE80211_SAE_SELECTED_BSS_PROFILE_TRANSITION);
+}
+
+/*
+ * Consume the sole controlled SCAN_ISSUED handoff after node_join_bss copied
+ * its choice and selected-BSS capture published the same epoch.  Anything
+ * other than an exact selected pure/transition profile clears the live
+ * request and makes the caller return to SCAN before generic Open auth.
+ */
+int
+ieee80211_sae_wcl_request_bind_selected_bss(struct ieee80211com *ic,
+    const struct ieee80211_node *ni, u_int64_t expected_epoch)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int result = IEEE80211_SAE_WCL_REQUEST_BIND_NONE;
+
+	if (ic == NULL)
+		return IEEE80211_SAE_WCL_REQUEST_BIND_NONE;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return IEEE80211_SAE_WCL_REQUEST_BIND_NONE;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_NONE) {
+		if (ic->ic_sae_wcl_request.generation != 0 ||
+		    ic->ic_sae_wcl_request.association_epoch != 0) {
+			ieee80211_sae_wcl_request_clear_locked(ic);
+			result = IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED;
+		}
+		goto out;
+	}
+	if (ic->ic_state == IEEE80211_S_SCAN &&
+	    ieee80211_sae_wcl_request_scan_issued_locked(ic,
+	    ic->ic_sae_wcl_request.generation) &&
+	    ieee80211_sae_wcl_request_matches_current_locked(ic,
+	    &ic->ic_sae_wcl_request, ni, expected_epoch)) {
+		ic->ic_sae_wcl_request.association_epoch = expected_epoch;
+		ic->ic_sae_wcl_request.phase = IEEE80211_SAE_WCL_REQUEST_BOUND;
+		result = IEEE80211_SAE_WCL_REQUEST_BIND_BOUND;
+	} else {
+		ieee80211_sae_wcl_request_clear_locked(ic);
+		result = IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED;
+	}
+out:
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return result;
+}
+
+int
+ieee80211_sae_wcl_request_bound_current(struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	u_int64_t epoch;
+	int bound = 0;
+
+	if (ic == NULL || ni == NULL || ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (epoch != 0 &&
+	    ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
+	    ic->ic_sae_wcl_request.association_epoch == epoch &&
+	    ieee80211_sae_wcl_request_matches_current_locked(ic,
+	    &ic->ic_sae_wcl_request, ni, epoch))
+		bound = 1;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return bound;
 }
 
 void
