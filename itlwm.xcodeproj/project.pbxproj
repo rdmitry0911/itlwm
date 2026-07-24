@@ -1101,6 +1101,24 @@
 		F8E94CED2B9ABFE20081A3C4 /* IOPCIEDeviceWrapper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8A0287D2A4A80EA00C6DE90 /* IOPCIEDeviceWrapper.cpp */; };
 		F8E94CEE2B9ABFE20081A3C4 /* ItlIwm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8AF3A2F24F9F35B008911C1 /* ItlIwm.cpp */; };
 		F8E94CF02B9ABFE20081A3C4 /* libkmod.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5088ECBC252884870068A63D /* libkmod.a */; };
+		A7E5B0012E01000100A11001 /* ieee80211_sae_engine.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0012E01000100A11001 /* ieee80211_sae_engine.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0022E01000100A11001 /* ieee80211_sae_platform.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0022E01000100A11001 /* ieee80211_sae_platform.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0032E01000100A11001 /* ieee80211_sae_mbedtls_adapter.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0032E01000100A11001 /* ieee80211_sae_mbedtls_adapter.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0112E01000100A11001 /* hostapd dragonfly.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0112E01000100A11001 /* hostapd dragonfly.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0122E01000100A11001 /* hostapd sae.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0122E01000100A11001 /* hostapd sae.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0132E01000100A11001 /* hostapd sha256-internal.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0132E01000100A11001 /* hostapd sha256-internal.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0142E01000100A11001 /* hostapd sha256-kdf.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0142E01000100A11001 /* hostapd sha256-kdf.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0152E01000100A11001 /* hostapd sha256-prf.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0152E01000100A11001 /* hostapd sha256-prf.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0162E01000100A11001 /* hostapd sha256.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0162E01000100A11001 /* hostapd sha256.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0172E01000100A11001 /* hostapd wpabuf.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0172E01000100A11001 /* hostapd wpabuf.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0212E01000100A11001 /* mbedTLS bignum.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0212E01000100A11001 /* mbedTLS bignum.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0222E01000100A11001 /* mbedTLS bignum_core.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0222E01000100A11001 /* mbedTLS bignum_core.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0232E01000100A11001 /* mbedTLS constant_time.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0232E01000100A11001 /* mbedTLS constant_time.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0242E01000100A11001 /* mbedTLS ecp.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0242E01000100A11001 /* mbedTLS ecp.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0252E01000100A11001 /* mbedTLS ecp_curves.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0252E01000100A11001 /* mbedTLS ecp_curves.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0262E01000100A11001 /* mbedTLS platform.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0262E01000100A11001 /* mbedTLS platform.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5B0272E01000100A11001 /* mbedTLS platform_util.c in Sources */ = {isa = PBXBuildFile; fileRef = A7E5A0272E01000100A11001 /* mbedTLS platform_util.c */; settings = {COMPILER_FLAGS = "-DCONFIG_ITL_SAE_DRIVER -DMBEDTLS_CONFIG_FILE=\\\"net80211/ieee80211_sae_mbedtls_config.h\\\" -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src -I$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include -I$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library"; }; };
+		A7E5D0012E01000100A11001 /* libItlSaeCryptoTahoe.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A7E5D0032E01000100A11001 /* libItlSaeCryptoTahoe.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1173,6 +1191,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 5066D63825287F7900EE6F38;
 			remoteInfo = fw_gen;
+		};
+		A7E5D0022E01000100A11001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 024A07A323FCBC3C009FBA6C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A7E5D0042E01000100A11001;
+			remoteInfo = ItlSaeCryptoTahoe;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -1424,6 +1449,24 @@
 		F8FA0EEB2501E7EE00B1822E /* zutil.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = zutil.h; sourceTree = "<group>"; };
 		F8FA0EED2501E8C100B1822E /* zutil.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = zutil.c; sourceTree = "<group>"; };
 		F8E94CF52B9ABFE20081A3C4 /* AirportItlwm.kext */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AirportItlwm.kext; sourceTree = BUILT_PRODUCTS_DIR; };
+		A7E5A0012E01000100A11001 /* ieee80211_sae_engine.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = itl80211/openbsd/net80211/ieee80211_sae_engine.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0022E01000100A11001 /* ieee80211_sae_platform.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = itl80211/openbsd/net80211/ieee80211_sae_platform.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0032E01000100A11001 /* ieee80211_sae_mbedtls_adapter.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = itl80211/openbsd/net80211/ieee80211_sae_mbedtls_adapter.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0112E01000100A11001 /* hostapd dragonfly.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "hostapd dragonfly.c"; path = third_party/sae/driver/hostapd/src/common/dragonfly.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0122E01000100A11001 /* hostapd sae.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "hostapd sae.c"; path = third_party/sae/driver/hostapd/src/common/sae.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0132E01000100A11001 /* hostapd sha256-internal.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "hostapd sha256-internal.c"; path = third_party/sae/driver/hostapd/src/crypto/sha256-internal.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0142E01000100A11001 /* hostapd sha256-kdf.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "hostapd sha256-kdf.c"; path = third_party/sae/driver/hostapd/src/crypto/sha256-kdf.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0152E01000100A11001 /* hostapd sha256-prf.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "hostapd sha256-prf.c"; path = third_party/sae/driver/hostapd/src/crypto/sha256-prf.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0162E01000100A11001 /* hostapd sha256.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "hostapd sha256.c"; path = third_party/sae/driver/hostapd/src/crypto/sha256.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0172E01000100A11001 /* hostapd wpabuf.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "hostapd wpabuf.c"; path = third_party/sae/driver/hostapd/src/utils/wpabuf.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0212E01000100A11001 /* mbedTLS bignum.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "mbedTLS bignum.c"; path = third_party/sae/driver/mbedtls/library/bignum.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0222E01000100A11001 /* mbedTLS bignum_core.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "mbedTLS bignum_core.c"; path = third_party/sae/driver/mbedtls/library/bignum_core.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0232E01000100A11001 /* mbedTLS constant_time.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "mbedTLS constant_time.c"; path = third_party/sae/driver/mbedtls/library/constant_time.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0242E01000100A11001 /* mbedTLS ecp.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "mbedTLS ecp.c"; path = third_party/sae/driver/mbedtls/library/ecp.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0252E01000100A11001 /* mbedTLS ecp_curves.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "mbedTLS ecp_curves.c"; path = third_party/sae/driver/mbedtls/library/ecp_curves.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0262E01000100A11001 /* mbedTLS platform.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "mbedTLS platform.c"; path = third_party/sae/driver/mbedtls/library/platform.c; sourceTree = SOURCE_ROOT; };
+		A7E5A0272E01000100A11001 /* mbedTLS platform_util.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "mbedTLS platform_util.c"; path = third_party/sae/driver/mbedtls/library/platform_util.c; sourceTree = SOURCE_ROOT; };
+		A7E5D0032E01000100A11001 /* libItlSaeCryptoTahoe.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libItlSaeCryptoTahoe.a; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1503,6 +1546,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A7E5D0012E01000100A11001 /* libItlSaeCryptoTahoe.a in Frameworks */,
 				F8E94CF02B9ABFE20081A3C4 /* libkmod.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1519,6 +1563,7 @@
 				F8B8F1622493C28B0059FAA8 /* include */,
 				024A07AE23FCBC3C009FBA6C /* itlwm */,
 				F8D6CD4F2442E0D100D2A454 /* itl80211 */,
+				A7E5C0012E01000100A11001 /* SAE driver crypto */,
 				F89B6BBA25021C9C000F77FF /* AirportItlwm */,
 				024A07AD23FCBC3C009FBA6C /* Products */,
 				5088ECBB252884870068A63D /* Frameworks */,
@@ -1538,6 +1583,7 @@
 				F8B2110A2A2EC2680043ECBD /* AirportItlwm.kext */,
 				F8D94CF52B9ABFE20081A3C4 /* AirportItlwm.kext */,
 				F8E94CF52B9ABFE20081A3C4 /* AirportItlwm.kext */,
+				A7E5D0032E01000100A11001 /* libItlSaeCryptoTahoe.a */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -1905,6 +1951,30 @@
 				F8F9257B240974EF0088B8D5 /* types.h */,
 			);
 			path = linux;
+			sourceTree = "<group>";
+		};
+		A7E5C0012E01000100A11001 /* SAE driver crypto */ = {
+			isa = PBXGroup;
+			children = (
+				A7E5A0012E01000100A11001 /* ieee80211_sae_engine.c */,
+				A7E5A0022E01000100A11001 /* ieee80211_sae_platform.c */,
+				A7E5A0032E01000100A11001 /* ieee80211_sae_mbedtls_adapter.c */,
+				A7E5A0112E01000100A11001 /* hostapd dragonfly.c */,
+				A7E5A0122E01000100A11001 /* hostapd sae.c */,
+				A7E5A0132E01000100A11001 /* hostapd sha256-internal.c */,
+				A7E5A0142E01000100A11001 /* hostapd sha256-kdf.c */,
+				A7E5A0152E01000100A11001 /* hostapd sha256-prf.c */,
+				A7E5A0162E01000100A11001 /* hostapd sha256.c */,
+				A7E5A0172E01000100A11001 /* hostapd wpabuf.c */,
+				A7E5A0212E01000100A11001 /* mbedTLS bignum.c */,
+				A7E5A0222E01000100A11001 /* mbedTLS bignum_core.c */,
+				A7E5A0232E01000100A11001 /* mbedTLS constant_time.c */,
+				A7E5A0242E01000100A11001 /* mbedTLS ecp.c */,
+				A7E5A0252E01000100A11001 /* mbedTLS ecp_curves.c */,
+				A7E5A0262E01000100A11001 /* mbedTLS platform.c */,
+				A7E5A0272E01000100A11001 /* mbedTLS platform_util.c */,
+			);
+			name = "SAE driver crypto";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -2491,6 +2561,21 @@
 			productReference = F8D94CF52B9ABFE20081A3C4 /* AirportItlwm.kext */;
 			productType = "com.apple.product-type.kernel-extension";
 		};
+		A7E5D0042E01000100A11001 /* ItlSaeCryptoTahoe */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A7E5D0092E01000100A11001 /* Build configuration list for PBXNativeTarget "ItlSaeCryptoTahoe" */;
+			buildPhases = (
+				A7E5D0052E01000100A11001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ItlSaeCryptoTahoe;
+			productName = ItlSaeCryptoTahoe;
+			productReference = A7E5D0032E01000100A11001 /* libItlSaeCryptoTahoe.a */;
+			productType = "com.apple.product-type.library.static";
+		};
 		F8E94C802B9ABFE20081A3C4 /* AirportItlwm-Tahoe */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F8E94CF22B9ABFE20081A3C4 /* Build configuration list for PBXNativeTarget "AirportItlwm-Tahoe" */;
@@ -2504,6 +2589,7 @@
 			);
 			dependencies = (
 				F8E94C812B9ABFE20081A3C4 /* PBXTargetDependency */,
+				A7E5D0062E01000100A11001 /* PBXTargetDependency */,
 			);
 			name = "AirportItlwm-Tahoe";
 			productName = AirportItlwm;
@@ -2549,10 +2635,13 @@
 					F8B210A72A2EC2680043ECBD = {
 						ProvisioningStyle = Manual;
 					};
-					F8D94C802B9ABFE20081A3C4 = {
-						ProvisioningStyle = Manual;
-					};
-					F8E94C802B9ABFE20081A3C4 = {
+				F8D94C802B9ABFE20081A3C4 = {
+					ProvisioningStyle = Manual;
+				};
+				A7E5D0042E01000100A11001 = {
+					ProvisioningStyle = Manual;
+				};
+				F8E94C802B9ABFE20081A3C4 = {
 						ProvisioningStyle = Manual;
 					};
 				};
@@ -2579,6 +2668,7 @@
 				F8AE64F5285471560085B4CF /* AirportItlwm-Ventura */,
 				F8B210A72A2EC2680043ECBD /* AirportItlwm-Sonoma14.0 */,
 				F8D94C802B9ABFE20081A3C4 /* AirportItlwm-Sonoma14.4 */,
+				A7E5D0042E01000100A11001 /* ItlSaeCryptoTahoe */,
 				F8E94C802B9ABFE20081A3C4 /* AirportItlwm-Tahoe */,
 				5066D63825287F7900EE6F38 /* fw_gen */,
 			);
@@ -3484,6 +3574,30 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A7E5D0052E01000100A11001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A7E5B0012E01000100A11001 /* ieee80211_sae_engine.c in Sources */,
+				A7E5B0022E01000100A11001 /* ieee80211_sae_platform.c in Sources */,
+				A7E5B0032E01000100A11001 /* ieee80211_sae_mbedtls_adapter.c in Sources */,
+				A7E5B0112E01000100A11001 /* hostapd dragonfly.c in Sources */,
+				A7E5B0122E01000100A11001 /* hostapd sae.c in Sources */,
+				A7E5B0132E01000100A11001 /* hostapd sha256-internal.c in Sources */,
+				A7E5B0142E01000100A11001 /* hostapd sha256-kdf.c in Sources */,
+				A7E5B0152E01000100A11001 /* hostapd sha256-prf.c in Sources */,
+				A7E5B0162E01000100A11001 /* hostapd sha256.c in Sources */,
+				A7E5B0172E01000100A11001 /* hostapd wpabuf.c in Sources */,
+				A7E5B0212E01000100A11001 /* mbedTLS bignum.c in Sources */,
+				A7E5B0222E01000100A11001 /* mbedTLS bignum_core.c in Sources */,
+				A7E5B0232E01000100A11001 /* mbedTLS constant_time.c in Sources */,
+				A7E5B0242E01000100A11001 /* mbedTLS ecp.c in Sources */,
+				A7E5B0252E01000100A11001 /* mbedTLS ecp_curves.c in Sources */,
+				A7E5B0262E01000100A11001 /* mbedTLS platform.c in Sources */,
+				A7E5B0272E01000100A11001 /* mbedTLS platform_util.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -3536,6 +3650,11 @@
 			isa = PBXTargetDependency;
 			target = 5066D63825287F7900EE6F38 /* fw_gen */;
 			targetProxy = F8E94C822B9ABFE20081A3C4 /* PBXContainerItemProxy */;
+		};
+		A7E5D0062E01000100A11001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A7E5D0042E01000100A11001 /* ItlSaeCryptoTahoe */;
+			targetProxy = A7E5D0022E01000100A11001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -4255,6 +4374,7 @@
 					AIRPORT,
 					USE_APPLE_SUPPLICANT,
 					"__IO80211_TARGET=__MAC_26_0",
+					"ITL_SAE_DRIVER_CRYPTO=1",
 					__PRIVATE_SPI__,
 					IO80211FAMILY_V3,
 				);
@@ -4287,6 +4407,7 @@
 					"__IO80211_TARGET=__MAC_26_0",
 					AIRPORT,
 					USE_APPLE_SUPPLICANT,
+					"ITL_SAE_DRIVER_CRYPTO=1",
 					__PRIVATE_SPI__,
 					"$(inherited)",
 					IO80211FAMILY_V3,
@@ -4306,6 +4427,108 @@
 				PRODUCT_NAME = AirportItlwm;
 				SYSTEM_HEADER_SEARCH_PATHS = "itl80211/openbsd itl80211 include";
 				WRAPPER_EXTENSION = kext;
+			};
+			name = Release;
+		};
+		A7E5D0072E01000100A11001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = x86_64;
+				CLANG_ENABLE_MODULES = NO;
+				CONFIGURATION_BUILD_DIR = "$(SYMROOT)/$(CONFIGURATION)/Tahoe";
+				EXECUTABLE_PREFIX = lib;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_ENABLE_BUILTIN_FUNCTIONS = NO;
+				GCC_ENABLE_KERNEL_DEVELOPMENT = YES;
+				GCC_INPUT_FILETYPE = sourcecode.c.c;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PRECOMPILE_PREFIX_HEADER = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					AIRPORT,
+					USE_APPLE_SUPPLICANT,
+					"ITL_SAE_DRIVER_CRYPTO=1",
+					"__IO80211_TARGET=__MAC_26_0",
+					__PRIVATE_SPI__,
+					IO80211FAMILY_V3,
+				);
+				HEADERMAP_INCLUDES_FLAT_ENTRIES_FOR_TARGET_BEING_BUILT = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/include",
+					"$(PROJECT_DIR)/itl80211",
+					"$(PROJECT_DIR)/itl80211/openbsd",
+					"$(PROJECT_DIR)/third_party/sae/driver/kernel_compat",
+					"$(PROJECT_DIR)/MacKernelSDK/Headers",
+					"$(PROJECT_DIR)/third_party/sae/driver/hostapd/src",
+					"$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils",
+					"$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include",
+					"$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library",
+				);
+				KERNEL_EXTENSION_HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/MacKernelSDK/Headers";
+				KERNEL_FRAMEWORK_HEADERS = "$(PROJECT_DIR)/MacKernelSDK/Headers";
+				MACOSX_DEPLOYMENT_TARGET = 10.15;
+				OTHER_CFLAGS = (
+					"$(inherited)",
+					"-Wno-macro-redefined",
+				);
+				PRODUCT_NAME = ItlSaeCryptoTahoe;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SYSTEM_HEADER_SEARCH_PATHS = "itl80211/openbsd itl80211 include";
+				USE_HEADERMAP = NO;
+			};
+			name = Debug;
+		};
+		A7E5D0082E01000100A11001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = x86_64;
+				CLANG_ENABLE_MODULES = NO;
+				CONFIGURATION_BUILD_DIR = "$(SYMROOT)/$(CONFIGURATION)/Tahoe";
+				EXECUTABLE_PREFIX = lib;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_ENABLE_BUILTIN_FUNCTIONS = NO;
+				GCC_ENABLE_KERNEL_DEVELOPMENT = YES;
+				GCC_INPUT_FILETYPE = sourcecode.c.c;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PRECOMPILE_PREFIX_HEADER = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					AIRPORT,
+					USE_APPLE_SUPPLICANT,
+					"ITL_SAE_DRIVER_CRYPTO=1",
+					"__IO80211_TARGET=__MAC_26_0",
+					__PRIVATE_SPI__,
+					IO80211FAMILY_V3,
+				);
+				HEADERMAP_INCLUDES_FLAT_ENTRIES_FOR_TARGET_BEING_BUILT = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/include",
+					"$(PROJECT_DIR)/itl80211",
+					"$(PROJECT_DIR)/itl80211/openbsd",
+					"$(PROJECT_DIR)/third_party/sae/driver/kernel_compat",
+					"$(PROJECT_DIR)/MacKernelSDK/Headers",
+					"$(PROJECT_DIR)/third_party/sae/driver/hostapd/src",
+					"$(PROJECT_DIR)/third_party/sae/driver/hostapd/src/utils",
+					"$(PROJECT_DIR)/third_party/sae/driver/mbedtls/include",
+					"$(PROJECT_DIR)/third_party/sae/driver/mbedtls/library",
+				);
+				KERNEL_EXTENSION_HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/MacKernelSDK/Headers";
+				KERNEL_FRAMEWORK_HEADERS = "$(PROJECT_DIR)/MacKernelSDK/Headers";
+				MACOSX_DEPLOYMENT_TARGET = 10.15;
+				OTHER_CFLAGS = (
+					"$(inherited)",
+					"-Wno-macro-redefined",
+				);
+				PRODUCT_NAME = ItlSaeCryptoTahoe;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SYSTEM_HEADER_SEARCH_PATHS = "itl80211/openbsd itl80211 include";
+				USE_HEADERMAP = NO;
 			};
 			name = Release;
 		};
@@ -4416,6 +4639,15 @@
 			buildConfigurations = (
 				F8E94CF32B9ABFE20081A3C4 /* Debug */,
 				F8E94CF42B9ABFE20081A3C4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A7E5D0092E01000100A11001 /* Build configuration list for PBXNativeTarget "ItlSaeCryptoTahoe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A7E5D0072E01000100A11001 /* Debug */,
+				A7E5D0082E01000100A11001 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
