@@ -164,18 +164,18 @@
       "invalid_semantics": "null, zero PMK length, or absent proximity owner returns 0xe0000001"
     },
     {
-      "name": "association-candidates-hidden",
-      "shape": "0x3ad8 hidden WCL association candidate carrier",
+      "name": "association-candidates-direct-wcl",
+      "shape": "0x6fc direct WCL association candidate; WOW is a separate carrier",
       "producer": "AirportItlwmSkywalkInterface::setWCL_ASSOCIATE",
-      "consumer": "AirportItlwmSkywalkInterface::getAWDL_PEER_TRAFFIC_STATS",
+      "consumer": "AirportItlwmSkywalkInterface::setWCL_ASSOCIATEImpl",
       "implementation_paths": [
         "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
         "AirportItlwm/TahoeAssociationContracts.hpp"
       ],
       "apple_reference_case_ids": [
-        "apple-hidden-association-rsn"
+        "tahoe-wcl-associate-cipher-pwd"
       ],
-      "invalid_semantics": "hidden fallback routes only exact 0x3ad8 carrier; direct null WCL associate returns 0xe00002c2"
+      "invalid_semantics": "WOW 0x45/0x46 and 0x3ad8 never route to association; null direct WCL associate returns 0xe00002c2"
     },
     {
       "name": "bss-blacklist-async-owner",
@@ -312,9 +312,9 @@
       "assertions_checked": 4
     },
     {
-      "id": "apple-hidden-association-rsn",
-      "path": "docs/reference/AppleBCMWLAN_hidden_assoc_rsn_carrier_2026_04_27.md",
-      "assertions_checked": 3
+      "id": "tahoe-wcl-associate-cipher-pwd",
+      "path": "docs/reference/TAHOE_WCL_ASSOCIATE_CIPHER_PWD_25C56_20260722.md",
+      "assertions_checked": 4
     },
     {
       "id": "apple-event-three-abis",
@@ -422,10 +422,10 @@
       ]
     },
     {
-      "id": "hidden-assoc-exact-length",
-      "expected": "route-only-0x3ad8",
+      "id": "direct-wcl-associate-no-wow-fallback",
+      "expected": "direct-0x1ba-0x6fc-only",
       "paths": [
-        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "docs/reference/TAHOE_WCL_ASSOCIATE_CIPHER_PWD_25C56_20260722.md",
         "AirportItlwm/TahoeAssociationContracts.hpp"
       ]
     },

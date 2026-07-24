@@ -10,9 +10,18 @@
 
 namespace TahoeAssociationContracts {
 
-static constexpr uint32_t kHiddenAssociateSelector = 0x45;
-static constexpr uint32_t kHiddenAssociateCompleteSelector = 0x46;
-static constexpr uint32_t kAssocCandidatesPayloadLength = 0x3ad8;
+/*
+ * Tahoe has two similarly-shaped private carriers which must not be
+ * conflated.  The direct WCL association virtual receives IOC 0x1ba and its
+ * 0x6fc candidate.  The older 0x45/0x46 pair carries WOW parameters; its
+ * 0x3ad8 payload has no association-key provenance and must never reach an
+ * association or credential parser.
+ */
+static constexpr uint32_t kWclAssociateIoucSelector = 0x1ba;
+static constexpr uint32_t kWclAssociatePayloadLength = 0x6fc;
+static constexpr uint32_t kWowParametersSelector = 0x45;
+static constexpr uint32_t kWowParametersCompleteSelector = 0x46;
+static constexpr uint32_t kWowParametersPayloadLength = 0x3ad8;
 
 static constexpr uint32_t kUnassocDwellOffset = 0x04;
 static constexpr uint32_t kApModeOffset = 0x0c;
@@ -26,7 +35,11 @@ static constexpr uint32_t kAssociatedAuthTypePayloadLength = 0x0c;
 static constexpr uint32_t kSsidLengthOffset = 0x1c;
 static constexpr uint32_t kSsidOffset = 0x20;
 static constexpr uint32_t kKeyOffset = 0x40;
-static constexpr uint32_t kKeyLengthOffset = 0x48;
+static constexpr uint32_t kWclKeyLengthOffset = 0x44;
+static constexpr uint32_t kWclKeyCipherTypeOffset = 0x48;
+static constexpr uint32_t kWclKeyPasswordOffset = 0x50;
+static constexpr uint32_t kWclKeyPasswordWindowLength = 64;
+static constexpr uint32_t kWclKeyCarrierLength = 0x94;
 static constexpr uint32_t kRsnIeLengthOffset = 0xd4;
 static constexpr uint32_t kRsnIeOffset = 0xd6;
 static constexpr uint32_t kInstantHotspotFlagsOffset = 0x1e0;
@@ -58,15 +71,15 @@ static constexpr uint32_t kPublicSetRsnIeMutationCount = 0;
 static constexpr uint8_t kPmfCapableBit = 0x40;
 static constexpr uint16_t kInstantHotspotFlagMask = 0x0006;
 
-inline bool isHiddenAssocCommand(int command)
+inline bool isTahoeWowParametersCommand(int command)
 {
-    return command == static_cast<int>(kHiddenAssociateSelector) ||
-           command == static_cast<int>(kHiddenAssociateCompleteSelector);
+    return command == static_cast<int>(kWowParametersSelector) ||
+           command == static_cast<int>(kWowParametersCompleteSelector);
 }
 
-inline bool isAssocCandidatesPayloadLength(uint32_t length)
+inline bool isWclAssociatePayloadLength(uint32_t length)
 {
-    return length == kAssocCandidatesPayloadLength;
+    return length == kWclAssociatePayloadLength;
 }
 
 inline uint16_t boundedRsnIeLength(uint16_t length, uint16_t capacity)
@@ -92,6 +105,15 @@ static_assert(kFirstCandidateChannelOffset - kFirstCandidateBssidOffset == 0x0c,
               "Tahoe WCL candidate channel offset mismatch");
 static_assert(kCandidateCountOffset + 0x08 == kFirstCandidateBssidOffset,
               "Tahoe WCL candidate list follows count plus reserved dword");
+static_assert(kWclKeyLengthOffset == kKeyOffset + 0x04,
+              "Tahoe WCL key length offset mismatch");
+static_assert(kWclKeyCipherTypeOffset == kKeyOffset + 0x08,
+              "Tahoe WCL key cipher offset mismatch");
+static_assert(kWclKeyPasswordOffset + kWclKeyPasswordWindowLength <=
+                  kWclKeyCarrierLength,
+              "Tahoe WCL password input window exceeds key carrier");
+static_assert(kWclKeyCarrierLength <= kWclAssociatePayloadLength,
+              "Tahoe WCL key carrier exceeds direct WCL payload");
 
 } // namespace TahoeAssociationContracts
 

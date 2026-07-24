@@ -361,9 +361,9 @@ static uint16_t airportItlwmHostEtherType(const ether_header *eh)
     return static_cast<uint16_t>((raw << 8) | (raw >> 8));
 }
 
-static bool isTahoeHiddenAssocCommand(int command)
+static bool isTahoeWowParametersCommand(int command)
 {
-    return TahoeAssociationContracts::isHiddenAssocCommand(command);
+    return TahoeAssociationContracts::isTahoeWowParametersCommand(command);
 }
 
 static uint32_t tahoeBssManagerBandInfoBitmap(uint32_t band)
@@ -1594,11 +1594,13 @@ void *AirportItlwmSkywalkInterface::getController(void)
 
 bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 {
-    // Only the hidden association carriers are proven owners for this gate.
+    // WOW parameter carriers are separate from direct WCL association.
+    // They remain prohibited here because this interface has no recovered
+    // WOW owner; do not mistake their large opaque payload for a candidate.
     // Public current-link requests are already routed through the recovered
     // BSD Apple80211 dispatcher; admitting them here returns the family helper
     // boolean as a raw Apple80211 status for callers such as CoreWLAN GET CHANNEL.
-    if (isTahoeHiddenAssocCommand(command))
+    if (isTahoeWowParametersCommand(command))
         return true;
 
     return super::isCommandProhibited(command);
@@ -4062,31 +4064,6 @@ IOReturn AirportItlwmSkywalkInterface::
 getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
-    // Tahoe visible APPLE80211_IOC_ASSOCIATE does not fall into the public
-    // `setASSOCIATE(...)` path. Family `getSetHandler(20)` first emits the
-    // hidden carrier `0x45` with the full `0x3ad8` assoc-candidates blob and,
-    // when WCL does not absorb it, the fallback lands on this slot. Live
-    // runtime proves that exact seam by logging `[470] getAWDL_PEER_TRAFFIC_STATS`
-    // in the same cycle as `Exit-setASSOCIATE:153 ret:-536870201`.
-    //
-    // Reuse the already recovered public owner instead of leaking generic
-    // unsupported from this hidden fallback. Non-association callers keep the
-    // prior unsupported contract.
-    if (data != nullptr &&
-        TahoeAssociationContracts::isAssocCandidatesPayloadLength(length)) {
-        if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockHiddenAssoc)) {
-            airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockHiddenAssoc,
-                                           kAirportItlwmRegDiagPathHiddenAssoc,
-                                           length);
-            airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
-                                           nullptr, 0, nullptr, 0, 0, 0,
-                                           kIOReturnUnsupported);
-            return kIOReturnUnsupported;
-        }
-        return setWCL_ASSOCIATEImpl(
-            reinterpret_cast<apple80211AssocCandidates *>(data));
-    }
-
     if (data != nullptr && length == sizeof(apple80211_set_mac_address_data)) {
         return setSET_MAC_ADDRESSImpl(
             reinterpret_cast<apple80211_set_mac_address_data *>(data));

@@ -106,12 +106,12 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
             "null or zero PMK length returns 0xe0000001; role 4 posts callback only with a proximity owner"
         },
         {
-            "association-candidates-hidden",
+            "association-candidates-direct-wcl",
             "AirportItlwmSkywalkInterface::setWCL_ASSOCIATE",
-            "AirportItlwmSkywalkInterface::getAWDL_PEER_TRAFFIC_STATS",
-            "apple-hidden-association-rsn",
-            0x3ad8,
-            "hidden carrier is accepted only at length 0x3ad8; null direct WCL associate returns 0xe00002c2"
+            "AirportItlwmSkywalkInterface::setWCL_ASSOCIATEImpl",
+            "apple-wcl-association-candidate",
+            0x6fc,
+            "direct WCL IOC 0x1ba owns the 0x6fc candidate; WOW 0x45/0x46 and 0x3ad8 never enter association"
         },
         {
             "bss-blacklist-async-owner",

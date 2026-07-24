@@ -1,10 +1,12 @@
-# AppleBCMWLAN hidden association / RSN carrier contracts
+# Superseded: pre-25C56 hidden association / RSN carrier interpretation
 
 Date: 2026-04-27
 
-Scope: hidden Tahoe WCL association carrier and the local RSN IE compatibility
-handoff used by itlwm. This note records field offsets and bounded-copy
-contracts only. It does not claim final RSN/EAPOL/key/DHCP completion.
+> For the pinned Tahoe 25C56 target, this interpretation is superseded by
+> `TAHOE_WCL_ASSOCIATE_CIPHER_PWD_25C56_20260722.md`: `0x45/0x46` plus
+> `0x3ad8` are WOW parameters, not a WCL association candidate.  This file is
+> retained only as historical recovery provenance and must not be used to
+> authorize an association or credential parser.
 
 ## Hidden association selectors
 

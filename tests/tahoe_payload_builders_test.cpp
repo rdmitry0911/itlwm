@@ -595,7 +595,7 @@ void testPayloadContractInventory()
         "wcl-action-frame-v1-v2",
         "action-frame-progress",
         "ranging-authenticate",
-        "association-candidates-hidden",
+        "association-candidates-direct-wcl",
         "bss-blacklist-async-owner",
         "txrx-chain-info",
         "link-changed-32",
@@ -686,12 +686,20 @@ void testTahoeAssociationContracts()
 {
     using namespace TahoeAssociationContracts;
 
-    require(kHiddenAssociateSelector == 0x45,
-            "hidden associate selector is 0x45");
-    require(kHiddenAssociateCompleteSelector == 0x46,
-            "hidden associate complete selector is 0x46");
-    require(kAssocCandidatesPayloadLength == 0x3ad8,
-            "hidden associate carrier length is 0x3ad8");
+    require(kWclAssociateIoucSelector == 0x1ba,
+            "direct WCL associate IOC is 0x1ba");
+    require(kWclAssociatePayloadLength == 0x6fc,
+            "direct WCL associate carrier length is 0x6fc");
+    require(kWowParametersSelector == 0x45 &&
+                kWowParametersCompleteSelector == 0x46 &&
+                kWowParametersPayloadLength == 0x3ad8,
+            "WOW parameters remain distinct from association");
+    require(kWclKeyLengthOffset == 0x44 &&
+                kWclKeyCipherTypeOffset == 0x48 &&
+                kWclKeyPasswordOffset == 0x50 &&
+                kWclKeyPasswordWindowLength == 64 &&
+                kWclKeyCarrierLength == 0x94,
+            "direct WCL password carrier offsets match Tahoe ABI");
     require(kPublicProtmodeUnsupportedStatus == 0xe00002c7,
             "public PROTMODE getter is an Apple unsupported shim");
     require(kPublicRsnIeGateSelector == 0x29 &&

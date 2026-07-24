@@ -30,7 +30,7 @@ DETERMINISTIC_TESTS = [
             "testTahoeDriverAvailabilityContracts",
             "frameLen > 0x707",
             "rejects zero PMK length",
-            "29 contracts",
+            "34 contracts",
         ],
         "runner_tokens": [
             "TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST",
@@ -46,9 +46,9 @@ REFERENCE_CASES = [
         "tokens": ["0xe00002bc", "0x708", "0x724", "0x15"],
     },
     {
-        "id": "apple-hidden-association-rsn",
-        "path": "docs/reference/AppleBCMWLAN_hidden_assoc_rsn_carrier_2026_04_27.md",
-        "tokens": ["assoc-candidates payload length `0x3ad8`", "+0x220", "PMF"],
+        "id": "tahoe-wcl-associate-cipher-pwd",
+        "path": "docs/reference/TAHOE_WCL_ASSOCIATE_CIPHER_PWD_25C56_20260722.md",
+        "tokens": ["IOC `0x1ba`", "length `0x6fc`", "CIPHER_PWD", "0x45/0x46"],
     },
     {
         "id": "apple-event-three-abis",
@@ -339,22 +339,22 @@ PAYLOAD_TYPES = [
         "invalid_semantics": "null, zero PMK length, or absent proximity owner returns 0xe0000001",
     },
     {
-        "name": "association-candidates-hidden",
-        "shape": "0x3ad8 hidden WCL association candidate carrier",
+        "name": "association-candidates-direct-wcl",
+        "shape": "0x6fc direct WCL association candidate; WOW is a separate carrier",
         "producer": "AirportItlwmSkywalkInterface::setWCL_ASSOCIATE",
-        "consumer": "AirportItlwmSkywalkInterface::getAWDL_PEER_TRAFFIC_STATS",
-        "reference_ids": ["apple-hidden-association-rsn"],
+        "consumer": "AirportItlwmSkywalkInterface::setWCL_ASSOCIATEImpl",
+        "reference_ids": ["tahoe-wcl-associate-cipher-pwd"],
         "implementation_checks": [
             {
                 "path": "AirportItlwm/TahoeAssociationContracts.hpp",
-                "tokens": ["kAssocCandidatesPayloadLength = 0x3ad8", "kFirstCandidateBssidOffset = 0x220", "kPmfCapabilityOffset = 0x217"],
+                "tokens": ["kWclAssociateIoucSelector = 0x1ba", "kWclAssociatePayloadLength = 0x6fc", "kWclKeyPasswordOffset = 0x50"],
             },
             {
                 "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
-                "tokens": ["isAssocCandidatesPayloadLength(length)", "setWCL_ASSOCIATE", "boundedRsnIeLength", "instantHotspotAppleDeviceFlags"],
+                "tokens": ["isTahoeWowParametersCommand", "setWCL_ASSOCIATE", "boundedRsnIeLength", "instantHotspotAppleDeviceFlags"],
             },
         ],
-        "invalid_semantics": "hidden fallback routes only exact 0x3ad8 carrier; direct null WCL associate returns 0xe00002c2",
+        "invalid_semantics": "WOW 0x45/0x46 and 0x3ad8 never route to association; null direct WCL associate returns 0xe00002c2",
     },
     {
         "name": "bss-blacklist-async-owner",
@@ -601,16 +601,16 @@ ERROR_CASES = [
         ],
     },
     {
-        "id": "hidden-assoc-exact-length",
-        "expected": "route-only-0x3ad8",
+        "id": "direct-wcl-associate-no-wow-fallback",
+        "expected": "direct-0x1ba-0x6fc-only",
         "checks": [
             {
-                "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
-                "tokens": ["isAssocCandidatesPayloadLength(length)"],
+                "path": "docs/reference/TAHOE_WCL_ASSOCIATE_CIPHER_PWD_25C56_20260722.md",
+                "tokens": ["IOC `0x1ba`", "length `0x6fc`", "0x45/0x46"],
             },
             {
                 "path": "AirportItlwm/TahoeAssociationContracts.hpp",
-                "tokens": ["kAssocCandidatesPayloadLength = 0x3ad8"],
+                "tokens": ["kWclAssociatePayloadLength = 0x6fc", "kWowParametersPayloadLength = 0x3ad8"],
             },
         ],
     },
