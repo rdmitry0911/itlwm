@@ -133,6 +133,16 @@ main(void)
 
     begin(&fixture);
     append(&fixture,
+        kAirportItlwmPostPltiTraceEventWclPmfRequestRetained);
+    append(&fixture, kAirportItlwmPostPltiTraceEventNodeMfpNegotiated);
+    append_complete_initial_transaction(&fixture);
+    expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwn, 0,
+        kAirportItlwmIwnSoftwarePmfTraceVerdictInitialSoftwarePmfObserved,
+        kAirportItlwmIwnSoftwarePmfTraceMissingStageNone,
+        "PMF ingress categories cannot perturb the software-PMF owner verdict");
+
+    begin(&fixture);
+    append(&fixture,
         kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared);
     append(&fixture, kAirportItlwmPostPltiTraceEventPortValidTransition);
     expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwn, 0,

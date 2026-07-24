@@ -1603,8 +1603,14 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     /* use MFP if we both support it */
     ni->ni_flags &= ~IEEE80211_NODE_MFP;
     if ((ic->ic_caps & IEEE80211_C_MFP) && ic->ic_pae_mfp_requested &&
-        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC))
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC)) {
         ni->ni_flags |= IEEE80211_NODE_MFP;
+        /* This is a category-only proof of the negotiated node boundary;
+         * it exports no RSN capability bitset, selected-BSS identity, or
+         * key/peer material. */
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventNodeMfpNegotiated);
+    }
 }
 
 int

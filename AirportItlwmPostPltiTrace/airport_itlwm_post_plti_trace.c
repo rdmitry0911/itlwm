@@ -7,6 +7,7 @@
 #include <sys/time.h>
 
 #include <ClientKit/AirportItlwmPostPltiTrace.h>
+#include <ClientKit/AirportItlwmIwnPmfIngressTraceContracts.h>
 #include <ClientKit/AirportItlwmIwxPmfBipTraceContracts.h>
 #include <ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h>
 #include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>
@@ -194,6 +195,10 @@ event_name(uint32_t event)
         return "iwn-igtk-slot4-tx-selected";
     case kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected:
         return "iwn-igtk-slot5-tx-selected";
+    case kAirportItlwmPostPltiTraceEventWclPmfRequestRetained:
+        return "wcl-pmf-request-retained";
+    case kAirportItlwmPostPltiTraceEventNodeMfpNegotiated:
+        return "node-mfp-negotiated";
     default:
         return "unknown";
     }
@@ -556,6 +561,51 @@ iwn_software_pmf_missing_stage_name(
     }
 }
 
+static const char *
+iwn_pmf_ingress_verdict_name(
+    enum AirportItlwmIwnPmfIngressTraceVerdict verdict)
+{
+    switch (verdict) {
+    case kAirportItlwmIwnPmfIngressTraceVerdictIntegrityInconclusive:
+        return "INTEGRITY_INCONCLUSIVE";
+    case kAirportItlwmIwnPmfIngressTraceVerdictBackendUnsupported:
+        return "BACKEND_UNSUPPORTED";
+    case kAirportItlwmIwnPmfIngressTraceVerdictBranchNotObserved:
+        return "BRANCH_NOT_OBSERVED";
+    case kAirportItlwmIwnPmfIngressTraceVerdictWclPmfRequestNotObserved:
+        return "WCL_PMF_REQUEST_NOT_OBSERVED";
+    case kAirportItlwmIwnPmfIngressTraceVerdictBssSelectionNotObserved:
+        return "BSS_SELECTION_NOT_OBSERVED";
+    case kAirportItlwmIwnPmfIngressTraceVerdictJoinBssNotObserved:
+        return "JOIN_BSS_NOT_OBSERVED";
+    case kAirportItlwmIwnPmfIngressTraceVerdictNodeMfpNotNegotiated:
+        return "NODE_MFP_NOT_NEGOTIATED";
+    case kAirportItlwmIwnPmfIngressTraceVerdictNodeMfpNegotiated:
+        return "NODE_MFP_NEGOTIATED";
+    }
+    return "INTEGRITY_INCONCLUSIVE";
+}
+
+static const char *
+iwn_pmf_ingress_missing_stage_name(
+    enum AirportItlwmIwnPmfIngressTraceMissingStage stage)
+{
+    switch (stage) {
+    case kAirportItlwmIwnPmfIngressTraceMissingStageNone: return "none";
+    case kAirportItlwmIwnPmfIngressTraceMissingStageCaptureSeal:
+        return "capture-seal";
+    case kAirportItlwmIwnPmfIngressTraceMissingStageWclPmfRequest:
+        return "wcl-pmf-request";
+    case kAirportItlwmIwnPmfIngressTraceMissingStageBssSelection:
+        return "bss-selection";
+    case kAirportItlwmIwnPmfIngressTraceMissingStageJoinBss:
+        return "join-bss";
+    case kAirportItlwmIwnPmfIngressTraceMissingStageNodeMfp:
+        return "node-mfp";
+    default: return "unknown";
+    }
+}
+
 static int
 get_control(io_service_t service)
 {
@@ -739,13 +789,43 @@ get_iwn_software_pmf_report(io_service_t service)
     return 0;
 }
 
+static int
+get_iwn_pmf_ingress_report(io_service_t service)
+{
+    AirportItlwmPostPltiTraceSnapshot snapshot;
+    AirportItlwmPostPltiTraceBuffer buffer;
+    AirportItlwmPostPltiTraceEntry entries[
+        AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES];
+    uint32_t count = 0;
+    enum AirportItlwmIwnPmfIngressTraceMissingStage missing_stage =
+        kAirportItlwmIwnPmfIngressTraceMissingStageUnknown;
+
+    if (copy_snapshot(service, &snapshot) != 0 ||
+        copy_buffer(service, &buffer) != 0)
+        return 1;
+    const int integrity = collect_entries(&snapshot, &buffer, entries, &count);
+    const enum AirportItlwmIwnPmfIngressTraceVerdict verdict =
+        airport_itlwm_iwn_pmf_ingress_trace_classify_entries_with_stage(
+            entries, count, integrity, snapshot.backend,
+            snapshot.episodeCount, snapshot.activeEpisode, &missing_stage);
+    printf("capture_generation=%u backend=%s entries=%u integrity=%s "
+           "episode_count=%u active_episode=%u\n",
+           snapshot.captureGeneration, backend_name(snapshot.backend), count,
+           integrity ? "ok" : "inconclusive", snapshot.episodeCount,
+           snapshot.activeEpisode);
+    printf("iwn_pmf_ingress_verdict=%s first_missing_stage=%s\n",
+           iwn_pmf_ingress_verdict_name(verdict),
+           iwn_pmf_ingress_missing_stage_name(missing_stage));
+    return 0;
+}
+
 static void
 usage(const char *program)
 {
     fprintf(stderr,
             "usage:\n"
             "  %s reset|on|off|seal\n"
-            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress|iwn-software-pmf-report\n",
+            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress|iwn-software-pmf-report|iwn-pmf-ingress-report\n",
             program, program);
 }
 
@@ -786,6 +866,8 @@ main(int argc, char **argv)
             rc = get_iwx_pmf_bip_progress(service);
         else if (strcmp(argv[2], "iwn-software-pmf-report") == 0)
             rc = get_iwn_software_pmf_report(service);
+        else if (strcmp(argv[2], "iwn-pmf-ingress-report") == 0)
+            rc = get_iwn_pmf_ingress_report(service);
         else
             usage(argv[0]);
     } else

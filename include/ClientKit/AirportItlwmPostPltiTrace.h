@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 4U
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 5U
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY \
@@ -92,13 +92,27 @@ enum AirportItlwmPostPltiTraceEvent {
     kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published = 47,
     kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected = 48,
     kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected = 49,
-    kAirportItlwmPostPltiTraceEventMax = 50
+    /*
+     * IWN PMF ingress evidence v5.  These two net80211/WCL boundaries
+     * establish only whether a PMF request survived WCL and whether MFP was
+     * negotiated for the selected BSS.  They carry no capability bitset,
+     * BSS identity, key, status, or peer data.  Keep this vocabulary
+     * append-only.
+     */
+    kAirportItlwmPostPltiTraceEventWclPmfRequestRetained = 50,
+    kAirportItlwmPostPltiTraceEventNodeMfpNegotiated = 51,
+    kAirportItlwmPostPltiTraceEventMax = 52
 };
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST \
     kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST \
     kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected
+
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST \
+    kAirportItlwmPostPltiTraceEventWclPmfRequestRetained
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST \
+    kAirportItlwmPostPltiTraceEventNodeMfpNegotiated
 
 /*
  * Categorical backend coverage, never a hardware identifier.  IWX exposes

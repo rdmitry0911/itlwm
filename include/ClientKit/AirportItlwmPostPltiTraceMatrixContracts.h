@@ -94,6 +94,17 @@ airport_itlwm_post_plti_trace_matrix_event_is_iwn_software_pmf(uint32_t event)
         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST;
 }
 
+/* The PMF-ingress evaluator consumes these early category-only facts.  The
+ * established ordered association matrix remains deliberately unchanged: a
+ * PMF request or negotiated-MFP marker cannot manufacture its success. */
+static inline int
+airport_itlwm_post_plti_trace_matrix_event_is_pmf_ingress_diagnostic(
+    uint32_t event)
+{
+    return event >= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST &&
+        event <= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST;
+}
+
 static inline enum AirportItlwmPostPltiTraceMissingStage
 airport_itlwm_post_plti_trace_matrix_phase_missing_stage(
     enum airport_itlwm_post_plti_trace_matrix_phase phase,
@@ -276,6 +287,8 @@ airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage(
             continue;
         }
         if (airport_itlwm_post_plti_trace_matrix_event_is_iwn_software_pmf(
+                event) ||
+            airport_itlwm_post_plti_trace_matrix_event_is_pmf_ingress_diagnostic(
                 event))
             continue;
         /* Optional TX corroboration must still follow a real EAPOL enqueue. */

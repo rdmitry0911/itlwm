@@ -83,8 +83,10 @@ airport_itlwm_iwn_software_pmf_trace_selected_slot(uint32_t event)
 static inline int
 airport_itlwm_iwn_software_pmf_trace_event_is_neutral(uint32_t event)
 {
-    return event >= kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume &&
-        event <= kAirportItlwmPostPltiTraceEventCaptureWindowSealed;
+    return (event >= kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume &&
+            event <= kAirportItlwmPostPltiTraceEventCaptureWindowSealed) ||
+        (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST &&
+         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST);
 }
 
 static inline enum AirportItlwmIwnSoftwarePmfTraceMissingStage

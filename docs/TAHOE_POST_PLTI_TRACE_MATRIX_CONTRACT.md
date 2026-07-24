@@ -3,7 +3,7 @@
 ## Scope
 
 This document records the verified, non-functional diagnostic scenarios that
-ship with the Tahoe post-PLTI trace v4 layer.  The generic ordered association evaluator is IWN-only.
+ship with the Tahoe post-PLTI trace v5 layer.  The generic ordered association evaluator is IWN-only.
 IWX, including AX211, remains backend-unsupported for that evaluator and
 cannot inherit an IWN verdict.
 
@@ -25,6 +25,18 @@ slot, a cancellation, a mixed generation or episode, a drop, or any event
 after the terminal boundary is inconclusive.  This is implementation-local
 ownership evidence only: it does not claim SAE, an on-air association, PMF
 interoperability, protected-MPDU delivery, or traffic.
+
+v5 adds an IWN-gated PMF-ingress evaluator with two safe categorical
+boundaries: WCL retained its explicit per-association PMF request immediately
+after trace begin, and net80211 set `NODE_MFP` immediately after the selected
+BSS joined.  Its positive result establishes only those two local boundaries.
+An absent WCL fact directly localises the carrier boundary.  An absent
+`NODE_MFP` fact after a sealed join does not identify a cause: it may reflect
+local MFP capability, retained request state, or the selected BSS's MFPC
+negotiation.  The evaluator separately reports no selected BSS or no join, so
+it never re-labels scan failure as an MFP result.  Neither fact proves a PMF
+key transaction, protected-frame interoperability, SAE, association, or
+traffic.
 
 The companion active-prefix classifier is narrower still: it accepts only the
 one live initial PMF/BIP chain through port-valid while the same episode remains
@@ -120,6 +132,10 @@ scenarios in the same commit as the trace implementation:
   software CCMP+BIP publication, and port-valid.  Reordered PTK/GTK/IGTK
   stages, mismatched slots, a post-terminal record, a mixed generation, or a
   drop are inconclusive.
+- The IWN PMF-ingress fixture accepts only WCL's immediate retained-request
+  fact followed by the immediate post-join `NODE_MFP` fact.  Repeated BSS
+  selection, a late node fact, a missing selected BSS/join, an unsealed
+  capture, a mixed generation, or any IWX attempt is fail-closed.
 - A post-terminal event, mixed episode/generation, sequence gap, drop, or
   unsupported backend is rejected or fail-closed.
 

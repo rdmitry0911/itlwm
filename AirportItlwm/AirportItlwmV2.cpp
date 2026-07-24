@@ -2841,14 +2841,16 @@ airportItlwmPostPltiTraceEventRequiresIwx(uint32_t event)
            event <= kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected;
 }
 
-/* IWN software-PMF facts have their own vocabulary even though the BIP
- * publication helper is shared with IWX.  Do not let one backend's report
- * borrow the other's ownership evidence. */
+/* IWN software-PMF and PMF-ingress facts have their own vocabulary even
+ * though their WCL/net80211 producers are shared with IWX.  Do not let one
+ * backend's report borrow the other's ownership evidence. */
 static bool
 airportItlwmPostPltiTraceEventRequiresIwn(uint32_t event)
 {
-    return event >= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST &&
-           event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST;
+    return (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST &&
+            event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST) ||
+        (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST &&
+         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST);
 }
 
 /*

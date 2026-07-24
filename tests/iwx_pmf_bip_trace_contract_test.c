@@ -148,6 +148,14 @@ main(void)
         "initial slot-4 PMF transaction reaches a sealed initial verdict");
 
     begin(&fixture);
+    append(&fixture,
+        kAirportItlwmPostPltiTraceEventWclPmfRequestRetained);
+    expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwx, 0,
+        kAirportItlwmIwxPmfBipTraceVerdictIntegrityInconclusive,
+        kAirportItlwmIwxPmfBipTraceMissingStageUnknown,
+        "a forged IWN PMF-ingress fact is never neutral for IWX");
+
+    begin(&fixture);
     append_initial_mfp_msg3_chain(&fixture,
         kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
         kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected);

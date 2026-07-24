@@ -25,6 +25,7 @@ facade = (root / "AirportItlwm/TahoePostPltiTraceContracts.hpp").read_text()
 iwx_pmf_bip = (root / "include/ClientKit/AirportItlwmIwxPmfBipTraceContracts.h").read_text()
 iwx_pmf_bip_facade = (root / "AirportItlwm/TahoeIwxPmfBipTraceContracts.hpp").read_text()
 iwn_software_pmf = (root / "include/ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h").read_text()
+iwn_pmf_ingress = (root / "include/ClientKit/AirportItlwmIwnPmfIngressTraceContracts.h").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
@@ -50,6 +51,7 @@ payload_script = (root / "scripts/test_payload_builders.sh").read_text()
 payload_test = (root / "tests/tahoe_payload_builders_test.cpp").read_text()
 iwx_c_fixture = (root / "tests/iwx_pmf_bip_trace_contract_test.c").read_text()
 iwn_c_fixture = (root / "tests/iwn_software_pmf_trace_contract_test.c").read_text()
+iwn_ingress_c_fixture = (root / "tests/iwn_pmf_ingress_trace_contract_test.c").read_text()
 
 
 def fail(message):
@@ -117,7 +119,7 @@ def struct_block(name):
 
 
 for needle in (
-        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 4U",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 5U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_ACK_PROPERTY",
@@ -149,8 +151,12 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published",
         "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected",
         "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected",
+        "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained",
+        "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
         "kAirportItlwmPostPltiTraceEventMax",
 ):
     require(abi, needle, "safe-only public ABI")
@@ -173,7 +179,9 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published = 47",
         "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected = 48",
         "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected = 49",
-        "kAirportItlwmPostPltiTraceEventMax = 50",
+        "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained = 50",
+        "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated = 51",
+        "kAirportItlwmPostPltiTraceEventMax = 52",
 ):
     require(abi, needle, "append-only IWX PMF observer ABI")
 
@@ -264,6 +272,8 @@ for needle in (
         "IWN software-PMF facts are evaluated by their dedicated contract",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
 ):
     require(shared, needle, "IWN software-PMF neutral generic evaluator boundary")
 for needle in (
@@ -291,8 +301,11 @@ for needle in (
     require(matrix, needle, "v2 ordered trace matrix")
 for needle in (
         "airport_itlwm_post_plti_trace_matrix_event_is_iwn_software_pmf",
+        "airport_itlwm_post_plti_trace_matrix_event_is_pmf_ingress_diagnostic",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
 ):
     require(matrix, needle, "IWN software-PMF neutral matrix boundary")
 for needle in (
@@ -524,6 +537,8 @@ for needle in (
         "event == kAirportItlwmPostPltiTraceEventEpisodeAborted",
         "event == kAirportItlwmPostPltiTraceEventPortValidTransition",
         "event == kAirportItlwmPostPltiTraceEventCaptureWindowSealed",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
 ):
     require(iwn_software_pmf, needle, "IWN software-PMF evaluator fence")
 iwn_software_classifier = body(
@@ -538,6 +553,36 @@ ordered(iwn_software_classifier, "IWN fixed PTK/GTK/IGTK stage order",
         "!ptk_prepared || !gtk_prepared || igtk_acknowledged",
         "if (publication_slot != 0)",
         "!ptk_prepared || !gtk_prepared || !igtk_acknowledged")
+
+# The IWN ingress evaluator owns only the WCL-request and post-join NODE_MFP
+# boundaries.  It requires their exact producer placement but never upgrades
+# either one into a PMF key or SAE claim.
+for needle in (
+        "Counter-only evaluator for the two safe IWN PMF ingress boundaries",
+        "AirportItlwmIwnPmfIngressTraceVerdictNodeMfpNegotiated",
+        "AirportItlwmIwnPmfIngressTraceMissingStageWclPmfRequest",
+        "airport_itlwm_iwn_pmf_ingress_trace_classify_entries_with_stage",
+        "backend != kAirportItlwmPostPltiTraceBackendIwn",
+        "i != 1 || wcl_pmf_request",
+        "previous_event !=",
+        "kAirportItlwmPostPltiTraceEventJoinBssEntered",
+        "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained",
+        "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated",
+        "bss_selected",
+        "join_bss",
+        "node_mfp",
+):
+    require(iwn_pmf_ingress, needle, "IWN PMF-ingress evaluator fence")
+iwn_ingress_classifier = body(
+    iwn_pmf_ingress,
+    "airport_itlwm_iwn_pmf_ingress_trace_classify_entries_with_stage",
+    "IWN PMF-ingress ordered evaluator")
+ordered(iwn_ingress_classifier, "IWN ingress order is WCL then join then node MFP",
+        "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained",
+        "i != 1 || wcl_pmf_request",
+        "kAirportItlwmPostPltiTraceEventJoinBssEntered",
+        "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated",
+        "previous_event !=")
 
 iwn_stage_task = body(iwn, "void ItlIwn::\niwn_mfp_pae_task",
                       "IWN software-PMF stage worker")
@@ -634,12 +679,14 @@ require(iwx_event_filter,
         "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected",
         "explicit IWX event vocabulary upper boundary")
 iwn_event_filter = body(v2, "airportItlwmPostPltiTraceEventRequiresIwn",
-                        "IWN software-PMF event vocabulary filter")
+                        "IWN PMF event vocabulary filter")
 for needle in (
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
 ):
-    require(iwn_event_filter, needle, "explicit IWN software-PMF vocabulary boundary")
+    require(iwn_event_filter, needle, "explicit IWN PMF vocabulary boundary")
 record_token = body(v2, "airportItlwmPostPltiTraceRecordToken",
                     "trace record token")
 ordered(record_token, "shared BIP producer cannot contaminate IWN traces",
@@ -788,6 +835,24 @@ join_bss = body(node, "void\nieee80211_node_join_bss", "net80211 BSS join")
 ordered(join_bss, "selection before join marker",
         "kAirportItlwmPostPltiTraceEventBssSelected",
         "kAirportItlwmPostPltiTraceEventJoinBssEntered")
+choose_rsnparams = body(node, "void\nieee80211_choose_rsnparams",
+                        "net80211 RSN selection")
+ordered(choose_rsnparams, "NODE_MFP fact follows the negotiated node flag",
+        "ni->ni_flags |= IEEE80211_NODE_MFP;",
+        "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated")
+require_categorical_record(
+    choose_rsnparams, "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated",
+    "ic", "negotiated NODE_MFP boundary")
+hidden_assoc = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
+                    "hidden WCL association")
+ordered(hidden_assoc, "retained WCL PMF request follows episode begin",
+        "AirportItlwmPostPltiTraceBeginEpisode(ic);",
+        "if (ic->ic_pae_mfp_requested)",
+        "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained",
+        "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);")
+require_categorical_record(
+    hidden_assoc, "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained",
+    "ic", "retained WCL PMF request boundary")
 require(iwx, "#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>",
         "IWX safe trace bridge")
 iwx_rx_task = body(iwx, "void ItlIwx::\niwx_security_rx_task(void *arg)",
@@ -860,6 +925,7 @@ require(auth, "return authtypeUpper == kAuditedWpa3PskTransitionAuth;",
 for needle in (
         "#include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>",
         "#include <ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h>",
+        "#include <ClientKit/AirportItlwmIwnPmfIngressTraceContracts.h>",
         "airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage",
         "first_missing_stage",
         "snapshot->captureGeneration != buffer->captureGeneration",
@@ -933,6 +999,19 @@ for needle in (
 ):
     require(client, needle, "IWN software-PMF categorical client mapping")
 for needle in (
+        "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained",
+        "wcl-pmf-request-retained",
+        "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated",
+        "node-mfp-negotiated",
+        "#include <ClientKit/AirportItlwmIwnPmfIngressTraceContracts.h>",
+        "get_iwn_pmf_ingress_report",
+        "iwn-pmf-ingress-report",
+        "iwn_pmf_ingress_verdict=%s first_missing_stage=%s",
+        "NODE_MFP_NEGOTIATED",
+        "WCL_PMF_REQUEST_NOT_OBSERVED",
+):
+    require(client, needle, "IWN PMF-ingress categorical client mapping")
+for needle in (
         "-std=c11 -Wall -Wextra -Werror",
         "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c",
         "-framework IOKit",
@@ -949,6 +1028,8 @@ for needle in (
         "iwx_pmf_bip_trace_contract_test",
         "tests/iwn_software_pmf_trace_contract_test.c",
         "iwn_software_pmf_trace_contract_test",
+        "tests/iwn_pmf_ingress_trace_contract_test.c",
+        "iwn_pmf_ingress_trace_contract_test",
 ):
     require(payload_script, needle, "unit build for PMF trace C contracts")
 for needle in (
@@ -980,6 +1061,19 @@ for needle in (
         "the IWX backend cannot borrow the IWN software-PMF evaluator",
 ):
     require(iwn_c_fixture, needle, "deterministic IWN software-PMF C fixture")
+for needle in (
+        "one sealed WCL-to-node MFP boundary is observed",
+        "a node-MFP fact cannot exist without the retained WCL request",
+        "a retained request cannot infer an MFP result without a BSS",
+        "a selected BSS without join cannot infer negotiated MFP",
+        "join without the immediate node-MFP fact stays a negative result",
+        "an unsealed closed episode cannot establish PMF ingress",
+        "node-MFP must be recorded at the choose-RSN join boundary",
+        "repeated BSS selection cannot manufacture a PMF ingress verdict",
+        "IWX cannot borrow the IWN PMF ingress evaluator",
+        "mixed generations are never an ingress verdict",
+):
+    require(iwn_ingress_c_fixture, needle, "deterministic IWN PMF-ingress C fixture")
 ordered(runner, "isolated Tahoe producer build precedes trace audit",
         "ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'",
         "cd '$REMOTE_DIR' && ./scripts/build_post_plti_trace.sh")
@@ -1004,6 +1098,7 @@ for needle in (
         "sole rekey authorization progress state",
         "CaptureWindowSealed", "ScanCommandRejected", "ScanNoCandidate",
         "JoinBss", "AuthDequeue", "PortValid",
+        "pmfIngress", "WclPmfRequestRetained", "NodeMfpNegotiated",
         "safe post-PLTI and IWX PMF/BIP trace matrices",
 ):
     require(payload_test, needle, "ordered safe trace unit matrix")
@@ -1014,8 +1109,9 @@ for needle in (
 for needle in (
         "## Sealed capture rule",
         "## Versioned synthetic scenarios",
-        "trace v4 layer",
+        "trace v5 layer",
         "IWN software-PMF evaluator",
+        "IWN-gated PMF-ingress evaluator",
         "fixed PTK-to-GTK-to-IGTK",
         "does not claim SAE, an on-air association",
         "WCL resume followed by seal",

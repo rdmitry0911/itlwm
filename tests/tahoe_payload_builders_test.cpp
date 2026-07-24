@@ -1812,6 +1812,35 @@ void testTahoePostPltiTraceContracts()
         Verdict::KernelChainObserved,
         "the minimal closed IWN kernel chain reaches the kernel-only verdict");
 
+    AirportItlwmPostPltiTraceEntry pmfIngress[32] = {};
+    uint32_t pmfIngressCount = 0;
+    for (uint32_t index = 0; index < count; index++) {
+        pmfIngress[pmfIngressCount] = {
+            kFirstSequence + pmfIngressCount, kGeneration, kEpisode,
+            entries[index].event,
+        };
+        pmfIngressCount++;
+        if (index == 0) {
+            pmfIngress[pmfIngressCount] = {
+                kFirstSequence + pmfIngressCount, kGeneration, kEpisode,
+                kAirportItlwmPostPltiTraceEventWclPmfRequestRetained,
+            };
+            pmfIngressCount++;
+        }
+        if (entries[index].event ==
+            kAirportItlwmPostPltiTraceEventJoinBssEntered) {
+            pmfIngress[pmfIngressCount] = {
+                kFirstSequence + pmfIngressCount, kGeneration, kEpisode,
+                kAirportItlwmPostPltiTraceEventNodeMfpNegotiated,
+            };
+            pmfIngressCount++;
+        }
+    }
+    require(classifyEntries(pmfIngress, pmfIngressCount, true,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::KernelChainObserved,
+            "the PMF ingress categories cannot perturb the generic IWN chain");
+
     AirportItlwmPostPltiTraceEntry completedBeforePortValid[32] = {};
     std::memcpy(completedBeforePortValid, entries, sizeof(entries));
     const uint32_t terminal = count - 1;

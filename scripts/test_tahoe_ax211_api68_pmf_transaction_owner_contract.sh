@@ -363,7 +363,9 @@ for token in (
     "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5Published = 47",
     "kAirportItlwmPostPltiTraceEventIwnIgtkSlot4TxSelected = 48",
     "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected = 49",
-    "kAirportItlwmPostPltiTraceEventMax = 50",
+    "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained = 50",
+    "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated = 51",
+    "kAirportItlwmPostPltiTraceEventMax = 52",
 ):
     require(trace_abi, token, "append-only PMF observer ABI")
 for token in (

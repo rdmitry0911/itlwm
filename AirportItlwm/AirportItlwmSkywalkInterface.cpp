@@ -6391,6 +6391,13 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
             // selection.
             XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
             AirportItlwmPostPltiTraceBeginEpisode(ic);
+            /* Safe-only PMF ingress boundary: the event means that WCL's
+             * explicit per-association PMF request still reaches the normal
+             * scan-resume path.  It exposes neither the opaque request value
+             * nor any selected-network information. */
+            if (ic->ic_pae_mfp_requested)
+                AirportItlwmPostPltiTraceRecord(
+                    ic, kAirportItlwmPostPltiTraceEventWclPmfRequestRetained);
             ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
         }
     }

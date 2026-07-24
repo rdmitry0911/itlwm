@@ -88,6 +88,14 @@ airport_itlwm_post_plti_trace_classify_entries(
             seen |= bit;
             continue;
         }
+        /* PMF ingress facts have their own evaluator.  They are categorical
+         * diagnostic boundaries only and cannot perturb the older ordered
+         * association verdict. */
+        if (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST &&
+            event <= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST) {
+            seen |= bit;
+            continue;
+        }
 
         switch (event) {
         case kAirportItlwmPostPltiTraceEventIwnScanCoalesced:
