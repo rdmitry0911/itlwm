@@ -2721,7 +2721,7 @@ iwn_sae_engine_task(void *arg)
                 if (peer.phase == kItlSaeAuthTransportPhaseCommit &&
                     peer.wire_transaction ==
                         kItlSaeAuthTransportPeerWireTransactionCommit &&
-                    peer.auth_status == WLAN_STATUS_SUCCESS)
+                    peer.auth_status == IEEE80211_STATUS_SUCCESS)
                     IWN_DIRECT_SAE_TRACE(&sc->sc_ic,
                         kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted);
                 submit_result = iwn_sae_engine_submit_prepared(sc);

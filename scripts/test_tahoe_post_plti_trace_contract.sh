@@ -676,7 +676,7 @@ ordered(iwn_direct_sae_task,
         "peer_result == IEEE80211_SAE_ENGINE_PEER_TX_READY",
         "peer.phase == kItlSaeAuthTransportPhaseCommit",
         "kItlSaeAuthTransportPeerWireTransactionCommit",
-        "peer.auth_status == WLAN_STATUS_SUCCESS",
+        "peer.auth_status == IEEE80211_STATUS_SUCCESS",
         "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted",
         "iwn_sae_engine_submit_prepared(sc)")
 
