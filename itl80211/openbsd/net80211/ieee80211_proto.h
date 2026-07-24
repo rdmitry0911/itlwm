@@ -198,6 +198,15 @@ extern	int ieee80211_sae_wcl_request_copyout_bound_current(
 	    struct ieee80211com *, u_int64_t,
 	    struct ieee80211_sae_wcl_bound_request *);
 /*
+ * Admit one driver-owned Algorithm-3 peer-RX path for an exact direct-WCL
+ * request already bound to the current BSS.  Unlike the controller-facing
+ * admission below, this narrow owner path may use a scan-proven SAE|PSK
+ * transition BSS, but only after it rechecks the copied BOUND request under
+ * the selected-BSS leaf lock.  The request is public value data only.
+ */
+extern	int ieee80211_sae_wcl_peer_rx_admit(struct ieee80211com *,
+	    const struct ieee80211_sae_wcl_bound_request *, u_int64_t);
+/*
  * A controller may admit exactly one bounded Algorithm-3 peer-RX relay for
  * the current selected BSS.  The RX path receives a copied epoch/generation
  * only after snapshot_admission() validates that admission under the same

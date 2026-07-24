@@ -1879,6 +1879,116 @@ ieee80211_sae_wcl_request_copyout_bound_current(struct ieee80211com *ic,
 	return copied;
 }
 
+/*
+ * Direct WCL keeps the controller-facing peer-RX admission pure-SAE-only.
+ * A transition BSS reaches this companion predicate only after an exact WCL
+ * request bound it to the selected BSS.  It preserves the current HnP-only
+ * aperture: transition adds the exact SAE|PSK census fact, not H2E, SAE-PK,
+ * password identifiers, or any other unmodeled scan capability.
+ *
+ * Caller holds ic_pae_selected_bss_lock.  selected is the live fixed-byte
+ * record and out is a stack-owned value; neither may retain a node, IE, or
+ * credential.
+ */
+static int
+ieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked(
+    const struct ieee80211_pae_selected_bss *selected,
+    struct ieee80211_sae_admission *out)
+{
+	u_int32_t flags;
+
+	if (out != NULL)
+		explicit_bzero(out, sizeof(*out));
+	if (selected == NULL || out == NULL || selected->epoch == 0)
+		return 0;
+	if (selected->strict_pure_sae_profile ==
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE)
+		return ieee80211_sae_admission_group19_hnp(selected, out);
+	if (selected->strict_pure_sae_profile !=
+	    IEEE80211_SAE_SELECTED_BSS_PROFILE_TRANSITION)
+		return 0;
+
+	flags = selected->sae_scan_flags;
+	if ((flags & IEEE80211_SAE_SCAN_CENSUS_COMPLETE) == 0 ||
+	    (flags & IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK) == 0 ||
+	    (flags & ~(IEEE80211_SAE_ADMISSION_GROUP19_HNP_ALLOWED_FLAGS |
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK)) != 0)
+		return 0;
+
+	out->group = IEEE80211_SAE_ADMISSION_GROUP_19;
+	out->method = IEEE80211_SAE_ADMISSION_METHOD_HNP;
+	return 1;
+}
+
+/*
+ * Admit one exact driver-owned direct-WCL SAE peer-RX path after S_AUTH has
+ * begun.  The driver supplies only the value copied by
+ * ieee80211_sae_wcl_request_copyout_bound_current(); this leaf rechecks it
+ * against the live BOUND request and selected BSS before publishing the
+ * generic RX admission.  It does not retain the caller's value, a node, an
+ * IE, or any private SAE material.
+ */
+int
+ieee80211_sae_wcl_peer_rx_admit(struct ieee80211com *ic,
+    const struct ieee80211_sae_wcl_bound_request *bound,
+    u_int64_t relay_generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_sae_wcl_request *request;
+	const struct ieee80211_pae_selected_bss *selected;
+	struct ieee80211_sae_admission profile;
+	u_int64_t epoch;
+	int admitted = 0;
+
+	if (ic == NULL || bound == NULL || relay_generation == 0 ||
+	    bound->generation == 0 || bound->association_epoch == 0 ||
+	    bound->ssid_len == 0 || bound->ssid_len > IEEE80211_NWID_LEN ||
+	    !ieee80211_sae_peer_rx_mac_is_unicast_nonzero(bound->bssid) ||
+	    !ieee80211_sae_peer_rx_mac_is_unicast_nonzero(bound->sta) ||
+	    ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	explicit_bzero(&profile, sizeof(profile));
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	/* A failed exact replacement must never leave a former direct owner RX-live. */
+	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	request = &ic->ic_sae_wcl_request;
+	selected = &ic->ic_pae_selected_bss;
+	if (ic->ic_opmode == IEEE80211_M_STA &&
+	    ic->ic_state == IEEE80211_S_AUTH && ic->ic_bss != NULL &&
+	    epoch == bound->association_epoch &&
+	    request->generation == bound->generation &&
+	    request->phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
+	    request->association_epoch == epoch &&
+	    ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    IEEE80211_ADDR_EQ(request->bssid, bound->bssid) &&
+	    request->ssid_len == bound->ssid_len &&
+	    memcmp(request->ssid, bound->ssid, sizeof(request->ssid)) == 0 &&
+	    IEEE80211_ADDR_EQ(ic->ic_myaddr, bound->sta) &&
+	    selected->sae_scan_flags == bound->sae_scan_flags &&
+	    selected->strict_pure_sae_profile == bound->sae_profile &&
+	    ieee80211_sae_wcl_request_matches_current_locked(ic, request,
+	    ic->ic_bss, epoch) &&
+	    ieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked(selected,
+	    &profile)) {
+		ic->ic_sae_peer_rx_admission.association_epoch = epoch;
+		ic->ic_sae_peer_rx_admission.relay_generation = relay_generation;
+		IEEE80211_ADDR_COPY(ic->ic_sae_peer_rx_admission.bssid,
+		    bound->bssid);
+		IEEE80211_ADDR_COPY(ic->ic_sae_peer_rx_admission.sta,
+		    bound->sta);
+		ic->ic_sae_peer_rx_admission.active = 1;
+		admitted = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	explicit_bzero(&profile, sizeof(profile));
+	return admitted;
+}
+
 enum ieee80211_sae_wcl_request_auth_owner_state {
 	IEEE80211_SAE_WCL_AUTH_OWNER_NONE = 0,
 	IEEE80211_SAE_WCL_AUTH_OWNER_READY = 1,
