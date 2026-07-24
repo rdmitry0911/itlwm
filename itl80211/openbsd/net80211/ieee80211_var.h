@@ -484,6 +484,8 @@ struct ieee80211_sae_peer_rx_admission {
 	u_int8_t		reserved[3];
 };
 
+struct ItlSaeAuthPeerEventV1;
+
 struct ieee80211com {
 	struct arpcom		ic_ac;
 	LIST_ENTRY(ieee80211com) ic_list;	/* chain of all ieee80211com */
@@ -557,6 +559,36 @@ struct ieee80211com {
     /* The channel width has changed (20<->2040) */
     void            (*ic_update_chw)(struct ieee80211com *);
     void            (*ic_event_handler)(struct ieee80211com *, int, void *);
+    /*
+     * Optional private owner for an already-selected SAE S_AUTH attempt.
+     * generic ieee80211_newstate() calls ic_sae_auth_hold only after it has
+     * committed S_AUTH and before any historic Open-System AUTH branch can
+     * send.  A nonzero return owns that transition and requires the driver
+     * to arrange either Algorithm-3 progress or its own fail-closed return
+     * to SCAN.  The callback must not retain ni or invoke generic newstate
+     * synchronously.
+     *
+     * ic_sae_auth_owned is the matching read-side predicate for the exact
+     * current BSS.  It prevents a late Open-System response or generic
+     * watchdog retry from bypassing a driver-owned SAE attempt.  Both hooks
+     * default to NULL, preserving every non-SAE caller's historical path.
+     */
+    int             (*ic_sae_auth_hold)(struct ieee80211com *,
+                            struct ieee80211_node *,
+                            enum ieee80211_state, int);
+    int             (*ic_sae_auth_owned)(struct ieee80211com *,
+                            const struct ieee80211_node *);
+    /*
+     * Optional private consumer for an already-admitted Algorithm-3 peer
+     * frame.  It is separate from ic_event_handler so a driver-owned SAE
+     * engine receives its bounded public RX value without recreating an
+     * Agent/controller cryptographic relay.  Return 1 after copying or
+     * enqueueing, 0 when no direct engine owns this session (so the legacy
+     * controller event path may run), or -1 when the direct owner consumes
+     * a rejected frame without fallback.
+     */
+    int             (*ic_sae_engine_peer_event)(struct ieee80211com *,
+                            const struct ItlSaeAuthPeerEventV1 *);
     /*
      * Host-owned WCL reassociation owner state (see contract notes near
      * IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT). active is set

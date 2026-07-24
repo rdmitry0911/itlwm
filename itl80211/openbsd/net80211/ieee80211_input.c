@@ -2438,6 +2438,7 @@ ieee80211_recv_sae_peer_auth(struct ieee80211com *ic, mbuf_t m,
 	size_t body_len;
 	u_int64_t expected_epoch;
 	u_int16_t phase;
+	int engine_result;
 	int accepted = 0;
 
 	if (ic == NULL || m == NULL || ni == NULL || wh == NULL ||
@@ -2489,8 +2490,36 @@ ieee80211_recv_sae_peer_auth(struct ieee80211com *ic, mbuf_t m,
 	if (body_len != 0 &&
 	    mbuf_copydata(m, sizeof(*wh) + 6, body_len, event.body) != 0)
 		goto out_event;
-	if (!itl_sae_auth_peer_event_is_well_formed(&event) ||
-	    ic->ic_event_handler == NULL)
+	if (!itl_sae_auth_peer_event_is_well_formed(&event))
+		goto out_event;
+	/*
+	 * A live driver engine owns its own bounded queue and has no controller
+	 * or Agent cryptographic relay.  A negative return is deliberately
+	 * consumed: a late/malformed frame for that active engine must not fall
+	 * back into the legacy mailbox merely because it lost a local race.
+	 */
+	if (ic->ic_sae_engine_peer_event != NULL) {
+		engine_result = ic->ic_sae_engine_peer_event(ic, &event);
+		if (engine_result != 0) {
+			accepted = 1;
+			goto out_event;
+		}
+	}
+	/*
+	 * A live direct owner must never recreate the controller/Agent relay just
+	 * because its bounded RX queue closed between the generic admission and
+	 * this callback.  It will arrange its own terminal failure after dropping
+	 * RX context.  Use the authoritative current BSS, not the RX node: a
+	 * late frame can have reached a stale cache node.
+	 */
+	if (ic->ic_opmode == IEEE80211_M_STA &&
+	    ic->ic_state == IEEE80211_S_AUTH && ic->ic_bss != NULL &&
+	    ic->ic_sae_auth_owned != NULL &&
+	    ic->ic_sae_auth_owned(ic, ic->ic_bss) != 0) {
+		accepted = 1;
+		goto out_event;
+	}
+	if (ic->ic_event_handler == NULL)
 		goto out_event;
 
 	/* Borrowed value is copied by the controller's nonblocking peer mailbox. */
@@ -2566,7 +2595,7 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
         return;
 
     /* only "open" auth mode is supported outside that narrow relay aperture */
-    if (algo != IEEE80211_AUTH_ALG_OPEN) {
+	if (algo != IEEE80211_AUTH_ALG_OPEN) {
         if (ieee80211_record_sta_auth_failure(ic, wh, ni, algo, seq,
             status))
             (void)ieee80211_pae_assoc_epoch_begin(ic);
@@ -2581,9 +2610,25 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
                                 IEEE80211_STATUS_ALG << 16 | ((seq + 1) & 0xfff));
         }
 #endif
-        return;
-    }
-    ic->ic_deauth_reason = IEEE80211_REASON_UNSPECIFIED;
+		return;
+	}
+	/*
+	 * A driver-owned SAE attempt owns S_AUTH until its exact engine outcome.
+	 * Do this before the historic Open handler: that handler accepts an
+	 * Open-System response in STA mode and could otherwise advance a held SAE
+	 * selection to S_ASSOC.  The owner predicate is BSS-specific and defaults
+	 * to false for every legacy connection.
+	 */
+	if (ic->ic_opmode == IEEE80211_M_STA &&
+	    ic->ic_state == IEEE80211_S_AUTH &&
+	    seq == IEEE80211_AUTH_OPEN_RESPONSE &&
+	    ic->ic_bss != NULL &&
+	    ic->ic_sae_auth_owned != NULL &&
+	    ic->ic_sae_auth_owned(ic, ic->ic_bss) != 0) {
+		ic->ic_stats.is_rx_bad_auth++;
+		return;
+	}
+	ic->ic_deauth_reason = IEEE80211_REASON_UNSPECIFIED;
     ic->ic_assoc_status = 0xffff;
     (void)ieee80211_record_sta_auth_failure(ic, wh, ni, algo, seq, status);
     ieee80211_auth_open(ic, wh, ni, rxi, seq, status);

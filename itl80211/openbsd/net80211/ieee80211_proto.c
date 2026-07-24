@@ -2587,6 +2587,7 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 	struct _ifnet *ifp = &ic->ic_if;
 	struct ieee80211_node *ni;
 	enum ieee80211_state ostate;
+	int sae_auth_hold;
 #ifndef IEEE80211_STA_ONLY
 	int s;
 #endif
@@ -2746,6 +2747,22 @@ justcleanup:
 		}
 		break;
 	case IEEE80211_S_AUTH:
+		/*
+		 * A selected driver-owned SAE attempt may enter S_AUTH only after
+		 * its lower HAL has prepared pre-association RX/TX context.  Give
+		 * that owner the first decision after the state has committed and
+		 * before any generic Open-System AUTH branch can send.  The normal
+		 * management watchdog remains armed; a failed owner must return to
+		 * SCAN rather than allowing an Open-System downgrade.
+		 */
+		sae_auth_hold = 0;
+		if (ic->ic_opmode == IEEE80211_M_STA && ni != NULL &&
+		    ic->ic_sae_auth_hold != NULL)
+			sae_auth_hold = ic->ic_sae_auth_hold(ic, ni, ostate, mgt);
+		if (sae_auth_hold != 0) {
+			ic->ic_mgt_timer = IEEE80211_TRANS_WAIT;
+			break;
+		}
         ieee80211_clean_sta_bss_node(ic);
 		if (ostate == IEEE80211_S_RUN)
 			ieee80211_check_wpa_supplicant_failure(ic, ni);
