@@ -428,17 +428,22 @@ sudo -n ditto "$candidate" "$private_candidate"
 sudo -n chown -R root:wheel "$private_candidate"
 sudo -n chmod -R go-w "$private_candidate"
 private_binary="$private_candidate/Contents/MacOS/AirportItlwm"
-candidate_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$private_candidate/Contents/Info.plist")"
+# The copied bundle is deliberately root-owned and non-writable before it is
+# admitted to kmutil.  Read every post-copy identity witness with the same
+# non-interactive authority; otherwise a restrictive source bundle mode makes
+# this private-only preflight fail before it can inspect the candidate.
+candidate_id="$(sudo -n /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$private_candidate/Contents/Info.plist")"
 [ "$candidate_id" = "$AIRPORT_ID" ] || fail "candidate bundle identifier is $candidate_id"
-candidate_uuid="$(dwarfdump --uuid "$private_binary" | awk '/UUID:/{print $2; exit}')"
+candidate_uuid="$(sudo -n dwarfdump --uuid "$private_binary" | awk '/UUID:/{print $2; exit}')"
 [ -n "$candidate_uuid" ] || fail "candidate Mach-O has no UUID"
-if nm -u "$private_binary" | grep -qx '_thread_call_cancel_wait'; then
+sudo -n nm -u "$private_binary" > "$out/private-undefined-symbols.txt"
+if grep -qx '_thread_call_cancel_wait' "$out/private-undefined-symbols.txt"; then
     fail "candidate still imports _thread_call_cancel_wait"
 fi
-candidate_sha="$(shasum -a 256 "$private_binary" | awk '{print $1}')"
+candidate_sha="$(sudo -n shasum -a 256 "$private_binary" | awk '{print $1}')"
 [ "$source_candidate_sha" = "$candidate_sha" ] || fail "private candidate copy changed Mach-O bytes"
 set +e
-codesign --verify --deep --strict "$private_candidate" > "$out/private-candidate-codesign.txt" 2>&1
+sudo -n codesign --verify --deep --strict "$private_candidate" > "$out/private-candidate-codesign.txt" 2>&1
 private_codesign_status=$?
 set -e
 before_airport_sha="$(sudo -n shasum -a 256 "$INSTALLED_AIRPORT_BINARY" | awk '{print $1}')"
