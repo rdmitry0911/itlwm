@@ -119,21 +119,13 @@ NON_CLAIMS = [
 ]
 
 
-def validate(document: dict, record=None) -> None:
-    require(isinstance(document, dict), "document malformed")
-    require(set(document) == {
-        "schema", "candidate", "scope", "radio_cycle", "trace", "result",
-        "failure_phase", "local_only_raw_artifacts", "commit_safety", "non_claims",
-    }, "unexpected top-level evidence field")
-    require(document.get("schema") == "itlwm-tahoe-post-plti-trace-runtime/v3",
-            "unexpected schema")
-    candidate = document.get("candidate")
+def validate_release_candidate(candidate: object) -> None:
     require(isinstance(candidate, dict), "candidate section missing")
     require(set(candidate) == {
         "source_commit", "source_identity_sha256", "release_tag",
         "release_publication_model", "archive_sha256", "binary_sha256",
         "macho_uuid", "identity_binding_precondition",
-    }, "unexpected candidate evidence field")
+    }, "unexpected release candidate evidence field")
     require(re.fullmatch(r"[0-9a-f]{40}", str(candidate.get("source_commit", ""))) is not None,
             "identity-bound source commit is not exact")
     require(re.fullmatch(r"[0-9a-f]{64}", str(candidate.get("source_identity_sha256", ""))) is not None,
@@ -152,6 +144,69 @@ def validate(document: dict, record=None) -> None:
             "candidate Mach-O UUID is malformed")
     require(candidate.get("identity_binding_precondition") == "PASS",
             "exact loaded-candidate identity was not a precondition")
+
+
+def validate_local_iwn_lab_candidate(candidate: object) -> None:
+    require(isinstance(candidate, dict), "local lab candidate section missing")
+    require(set(candidate) == {
+        "kind", "source_commit", "source_identity_sha256",
+        "source_identity_paths_count", "profile", "staged_kext_repo_path",
+        "archive_sha256", "info_plist_sha256", "binary_sha256",
+        "bundle_tree_sha256", "macho_uuid", "bundle_id",
+        "trace_client_sha256", "identity_binding_precondition",
+        "trace_client_receipt_binding_precondition",
+    }, "unexpected local lab candidate evidence field")
+    require(candidate.get("kind") == "local-unpublished-iwn-lab-candidate",
+            "local lab candidate kind is invalid")
+    for key, width in (
+        ("source_commit", 40),
+        ("source_identity_sha256", 64),
+        ("archive_sha256", 64),
+        ("info_plist_sha256", 64),
+        ("binary_sha256", 64),
+        ("bundle_tree_sha256", 64),
+        ("trace_client_sha256", 64),
+    ):
+        value = candidate.get(key)
+        require(isinstance(value, str) and
+                re.fullmatch(rf"[0-9a-f]{{{width}}}", value) is not None,
+                f"local lab candidate {key} is malformed")
+    path_count = candidate.get("source_identity_paths_count")
+    require(type(path_count) is int and 1 <= path_count <= 4294967295,
+            "local lab candidate source path count is malformed")
+    require(candidate.get("profile") == "iwn-software-pmf-lab",
+            "local lab candidate profile is invalid")
+    require(candidate.get("staged_kext_repo_path") ==
+            "Build/Debug/Tahoe-IwnSoftwarePmfLab/AirportItlwm.kext",
+            "local lab candidate staged kext path is invalid")
+    require(candidate.get("bundle_id") == "com.zxystd.AirportItlwm",
+            "local lab candidate bundle identifier is invalid")
+    require(isinstance(candidate.get("macho_uuid"), str) and re.fullmatch(
+        r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}",
+        candidate["macho_uuid"],
+    ) is not None, "local lab candidate Mach-O UUID is malformed")
+    require(candidate.get("identity_binding_precondition") == "PASS",
+            "local lab loaded-candidate identity was not a precondition")
+    require(candidate.get("trace_client_receipt_binding_precondition") == "PASS",
+            "local lab trace-client receipt binding was not a precondition")
+
+
+def validate(document: dict, record=None) -> None:
+    require(isinstance(document, dict), "document malformed")
+    require(set(document) == {
+        "schema", "candidate", "scope", "radio_cycle", "trace", "result",
+        "failure_phase", "local_only_raw_artifacts", "commit_safety", "non_claims",
+    }, "unexpected top-level evidence field")
+    schema = document.get("schema")
+    candidate = document.get("candidate")
+    if schema == "itlwm-tahoe-post-plti-trace-runtime/v3":
+        evidence_lane = "release-v2"
+        validate_release_candidate(candidate)
+    elif schema == "itlwm-tahoe-post-plti-trace-runtime/v4":
+        evidence_lane = "local-iwn-lab-v1"
+        validate_local_iwn_lab_candidate(candidate)
+    else:
+        fail("unexpected schema")
 
     require_exact_mapping(document.get("scope"), {
         "environment": "pinned_disposable_qemu_guest",
@@ -283,6 +338,10 @@ def validate(document: dict, record=None) -> None:
         require(document.get("failure_phase") == "none", "PASS retains a failure phase")
 
     serialized = json.dumps(document, sort_keys=True)
+    if evidence_lane == "local-iwn-lab-v1":
+        require("\"release_tag\"" not in serialized and
+                "single_mutable_release_per_semantic_version" not in serialized,
+                "local untagged lab evidence leaked a release identity")
     require(re.search(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b", serialized) is None,
             "literal IPv4 address escaped into evidence")
     require(re.search(r"(?i)\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b", serialized) is None,
@@ -372,6 +431,47 @@ if mode == "self-test":
         ],
     }
     validate(fixture, "one radio OFF/ON; does not prove pure SAE; local-only")
+
+    local_lab_fixture = json.loads(json.dumps(fixture))
+    local_lab_fixture["schema"] = "itlwm-tahoe-post-plti-trace-runtime/v4"
+    local_lab_fixture["candidate"] = {
+        "kind": "local-unpublished-iwn-lab-candidate",
+        "source_commit": "a" * 40,
+        "source_identity_sha256": "d" * 64,
+        "source_identity_paths_count": 7,
+        "profile": "iwn-software-pmf-lab",
+        "staged_kext_repo_path":
+            "Build/Debug/Tahoe-IwnSoftwarePmfLab/AirportItlwm.kext",
+        "archive_sha256": "b" * 64,
+        "info_plist_sha256": "e" * 64,
+        "binary_sha256": "c" * 64,
+        "bundle_tree_sha256": "f" * 64,
+        "macho_uuid": "01234567-89AB-CDEF-0123-456789ABCDEF",
+        "bundle_id": "com.zxystd.AirportItlwm",
+        "trace_client_sha256": "1" * 64,
+        "identity_binding_precondition": "PASS",
+        "trace_client_receipt_binding_precondition": "PASS",
+    }
+    validate(local_lab_fixture)
+    receipt_mismatch = json.loads(json.dumps(local_lab_fixture))
+    receipt_mismatch["candidate"][
+        "trace_client_receipt_binding_precondition"
+    ] = "FAIL"
+    try:
+        validate(receipt_mismatch)
+    except SystemExit:
+        pass
+    else:
+        fail("self-test accepted an unbound local lab trace client")
+    leaked_release = json.loads(json.dumps(local_lab_fixture))
+    leaked_release["candidate"]["release_tag"] = "v2.4.0-alpha"
+    try:
+        validate(leaked_release)
+    except SystemExit:
+        pass
+    else:
+        fail("self-test accepted a release tag in local untagged lab evidence")
+
     fixture["trace"]["verdict"] = "BRANCH_NOT_OBSERVED"
     try:
         validate(fixture)

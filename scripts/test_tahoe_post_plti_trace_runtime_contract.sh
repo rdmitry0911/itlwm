@@ -34,12 +34,16 @@ for needle in \
     'PINNED_WIFI_INTERFACE="en1"' \
     'PINNED_GUEST_BUILD="25C56"' \
     '--identity-evidence' \
+    '--lab-identity-evidence' \
     '--trace-client-sha256' \
     'valid_trace_client_sha256' \
     'TRACE_CLIENT_SHA256' \
     'expected_sha256' \
     '/usr/bin/shasum -a 256' \
     'itlwm-tahoe-lab-kext-identity-binding/v2' \
+    'itlwm-tahoe-iwn-lab-loaded-identity/v1' \
+    'expected_local_lab_candidate' \
+    'ready_for_exact_local_lab_candidate_runtime_experiment' \
     'candidate_kext_bound' \
     'all(value is True for value in checks.values())' \
     'ready_for_exact_candidate_runtime_experiment' \
@@ -47,6 +51,11 @@ for needle in \
     'source_identity_sha256' \
     'semantic release tag' \
     'single_mutable_release_per_semantic_version' \
+    'local-unpublished-iwn-lab-candidate' \
+    'trace_client_receipt_binding_precondition' \
+    'LAB_RECEIPT_TRACE_CLIENT_SHA256' \
+    'trace-client-identity-binding' \
+    'itlwm-tahoe-post-plti-trace-runtime/v4' \
     'reset reset' \
     'get control' \
     'get snapshot' \
@@ -195,5 +204,63 @@ if remote_trace < 0 or remote_exists < 0:
 for helper in (text[remote_trace:remote_exists], text[remote_exists:text.find('remote_radio_state()', remote_exists)]):
     if '"$TRACE_CLIENT_SHA256"' not in helper or 'expected_sha256' not in helper or 'shasum -a 256' not in helper:
         raise SystemExit('FAIL: trace-client digest is not checked on every generic client invocation')
+
+release_reader = text.find('read_release_identity_attestation() {')
+lab_reader = text.find('read_lab_identity_attestation() {')
+identity_dispatch = text.find('read_identity_attestation() {')
+if min(release_reader, lab_reader, identity_dispatch) < 0:
+    raise SystemExit('FAIL: generic runner lacks distinct release and local-lab identity lanes')
+if not release_reader < lab_reader < identity_dispatch:
+    raise SystemExit('FAIL: generic runner identity lanes are not separately defined')
+lab_reader_end = text.find('\n}\n\nread_identity_attestation()', lab_reader)
+if lab_reader_end < 0:
+    raise SystemExit('FAIL: local-lab identity reader is unterminated')
+lab_reader_text = text[lab_reader:lab_reader_end]
+for token in (
+    'expected_local_lab_candidate',
+    'local-unpublished-iwn-lab-loaded-candidate',
+    'itlwm-tahoe-iwn-lab-candidate-receipt/v2',
+    'candidate_kext_bound',
+    'all(value is True for value in checks.values())',
+    'ready_for_exact_local_lab_candidate_runtime_experiment',
+    'trace_client_sha256',
+    'staged_kext_repo_path',
+    'reject_duplicate_keys',
+):
+    if token not in lab_reader_text:
+        raise SystemExit(f'FAIL: local-lab identity reader lacks {token}')
+if 'release_tag' in lab_reader_text:
+    raise SystemExit('FAIL: local-lab identity reader must not infer a release tag')
+receipt_compare = text.find(
+    '[ "$LAB_RECEIPT_TRACE_CLIENT_SHA256" != "$TRACE_CLIENT_SHA256" ]')
+ssh_setup = text.find('SSH=(')
+if receipt_compare < 0 or ssh_setup < 0:
+    raise SystemExit('FAIL: local-lab trace-client receipt binding is missing')
+if not identity_dispatch < receipt_compare < ssh_setup:
+    raise SystemExit('FAIL: local-lab trace-client receipt binding must precede guest contact')
+release_writer = text.find('if evidence_kind == "release-v2":')
+lab_writer = text.find('elif evidence_kind == "local-iwn-lab-v1":', release_writer)
+writer_end = text.find('\nelse:\n    raise SystemExit("runtime attestation identity lane is unavailable")',
+                       lab_writer)
+if min(release_writer, lab_writer, writer_end) < 0:
+    raise SystemExit('FAIL: generic runtime evidence lanes are missing')
+release_writer_text = text[release_writer:lab_writer]
+for token in (
+    'schema = "itlwm-tahoe-post-plti-trace-runtime/v3"',
+    '"release_tag": release_tag',
+    '"release_publication_model": "single_mutable_release_per_semantic_version"',
+):
+    if token not in release_writer_text:
+        raise SystemExit(f'FAIL: release v2 to v3 evidence compatibility lacks {token}')
+lab_writer_text = text[lab_writer:writer_end]
+for token in (
+    'schema = "itlwm-tahoe-post-plti-trace-runtime/v4"',
+    '"kind": "local-unpublished-iwn-lab-candidate"',
+    '"trace_client_receipt_binding_precondition"',
+):
+    if token not in lab_writer_text:
+        raise SystemExit(f'FAIL: local untagged v4 evidence lacks {token}')
+if 'release_tag' in lab_writer_text or 'single_mutable_release_per_semantic_version' in lab_writer_text:
+    raise SystemExit('FAIL: local untagged v4 evidence must not carry release semantics')
 print('PASS: post-PLTI runtime runner static safety contract')
 PY

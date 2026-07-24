@@ -3,9 +3,10 @@
 
 This tool intentionally does *not* use the release-candidate provenance
 format: a locally staged lab build is not a tagged release.  It binds the
-known IWN software-PMF lab output path, a local ZIP archive, and a clean
-committed source HEAD.  It never installs or loads a kext, contacts a guest,
-changes networking, or performs an authentication attempt.
+known IWN software-PMF lab output path, a local ZIP archive, one local regular
+executable trace-client artifact, and a clean committed source HEAD.  It never
+installs or loads a kext, contacts a guest, changes networking, or performs an
+authentication attempt.
 
 The resulting schema is deliberately narrow and typed so a later read-only
 installed/loaded identity verifier can consume it without inferring release
@@ -18,6 +19,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import plistlib
 import re
 import stat
@@ -34,7 +36,14 @@ from typing import Any
 from tahoe_source_identity import source_identity
 
 
-SCHEMA_VERSION = "itlwm-tahoe-iwn-lab-candidate-receipt/v1"
+RECEIPT_SCHEMA_V1 = "itlwm-tahoe-iwn-lab-candidate-receipt/v1"
+RECEIPT_SCHEMA_V2 = "itlwm-tahoe-iwn-lab-candidate-receipt/v2"
+# New receipts always use v2.  Keep the v1 spelling below because an
+# installed/loaded identity verifier may need to read a historic local
+# candidate receipt even though that receipt is not sufficient for the direct
+# SAE runtime lane.
+SCHEMA_VERSION = RECEIPT_SCHEMA_V2
+SUPPORTED_RECEIPT_SCHEMAS = frozenset((RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2))
 RECEIPT_KIND = "local-unpublished-iwn-lab-candidate"
 BUNDLE_ID = "com.zxystd.AirportItlwm"
 BUNDLE_ROOT = "AirportItlwm.kext"
@@ -45,6 +54,21 @@ MACHO_64_LE_MAGIC = 0xFEEDFACF
 SOURCE_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 UUID_RE = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}")
+
+BASE_VALIDATION_KEYS = (
+    "source_tree_clean_before_capture",
+    "source_tree_clean_after_capture",
+    "source_head_stable_during_capture",
+    "staged_kext_path_matches_profile",
+    "archive_validated",
+    "staged_bundle_validated",
+    "archive_and_staged_bundle_match",
+    "artifact_stable_during_capture",
+)
+DIRECT_RUNTIME_VALIDATION_KEYS = (
+    "trace_client_regular_executable",
+    "trace_client_stable_during_capture",
+)
 
 # This is an assertion about the build output selected by build_tahoe.sh, not
 # a claim that this receipt observed the compiler invocation or preprocessor
@@ -256,6 +280,24 @@ def staged_bundle_identity(root: Path, profile: str, staged_kext: Path) -> dict[
     return artifact_identity(info_plist, binary, staged_bundle_files(staged_kext))
 
 
+def trace_client_identity(trace_client: Path) -> dict[str, str]:
+    """Bind one local executable that will interpret direct-SAE traces.
+
+    The receipt records only its bytes, never a guest path.  The runtime
+    runner owns its separate restricted guest-path policy and must compare the
+    copied executable to this digest before every invocation.  The source
+    client and its build script remain covered by the committed source
+    identity; hashing the executable here prevents confusing that source
+    digest with the parser bytes that actually run on Tahoe.
+    """
+    trace_client = require_regular_file(trace_client, "direct-SAE trace client")
+    if not os.access(trace_client, os.X_OK):
+        raise ValueError("direct-SAE trace client must be executable")
+    return {
+        "trace_client_sha256": sha256_file(trace_client),
+    }
+
+
 def repository_root() -> Path:
     script_root = Path(__file__).resolve().parent.parent
     result = subprocess.run(
@@ -307,28 +349,33 @@ def identities_match(archive: dict[str, str], staged: dict[str, str]) -> bool:
 
 
 def make_receipt(
-    root: Path, profile: str, staged_kext: Path, archive_path: Path
+    root: Path, profile: str, staged_kext: Path, archive_path: Path,
+    trace_client: Path,
 ) -> dict[str, object]:
     if profile not in PROFILE_STAGED_KEXT_PATHS:
         raise ValueError("unsupported Tahoe lab profile")
     root = root.resolve(strict=True)
     head_before = require_clean_head(root)
     source = source_identity(root, "HEAD")
+    trace_client_before = trace_client_identity(trace_client)
     archive_before = archive_identity(archive_path)
     staged_before = staged_bundle_identity(root, profile, staged_kext)
     if not identities_match(archive_before, staged_before):
         raise ValueError("archive and staged kext bundle do not have the same identity")
 
-    # Re-read both inputs and the source boundary before writing a receipt, so
-    # a concurrently replaced archive, staged bundle, or source tree cannot be
-    # represented as one coherent candidate.
+    # Re-read every artifact and the source boundary before writing a receipt,
+    # so a concurrently replaced archive, staged bundle, trace client, or
+    # source tree cannot be represented as one coherent candidate.
     archive_after = archive_identity(archive_path)
     staged_after = staged_bundle_identity(root, profile, staged_kext)
+    trace_client_after = trace_client_identity(trace_client)
     head_after = require_clean_head(root)
     if head_before != head_after:
         raise ValueError("candidate source HEAD changed during receipt capture")
     if archive_before != archive_after or staged_before != staged_after:
         raise ValueError("candidate artifact changed during receipt capture")
+    if trace_client_before != trace_client_after:
+        raise ValueError("direct-SAE trace client changed during receipt capture")
 
     candidate = {
         "source_commit": head_after,
@@ -336,6 +383,7 @@ def make_receipt(
         "source_identity_paths_count": int(source["included_paths_count"]),
         "profile": profile,
         "staged_kext_repo_path": PROFILE_STAGED_KEXT_PATHS[profile],
+        **trace_client_after,
         **archive_after,
     }
     return {
@@ -352,6 +400,8 @@ def make_receipt(
             "staged_bundle_validated": True,
             "archive_and_staged_bundle_match": True,
             "artifact_stable_during_capture": True,
+            "trace_client_regular_executable": True,
+            "trace_client_stable_during_capture": True,
         },
         "non_claims": {
             "release_tag_claimed": False,
@@ -373,10 +423,28 @@ def make_receipt(
     }
 
 
-def candidate_from_receipt(document: object) -> dict[str, Any]:
-    """Validate and return the typed candidate section for a future verifier."""
-    if not isinstance(document, dict) or document.get("schema") != SCHEMA_VERSION:
+def receipt_schema(document: object) -> str:
+    """Return one supported receipt schema without silently upgrading it."""
+    if not isinstance(document, dict):
+        raise ValueError("IWN lab candidate receipt document")
+    schema = document.get("schema")
+    if schema not in SUPPORTED_RECEIPT_SCHEMAS:
         raise ValueError("IWN lab candidate receipt schema")
+    return schema
+
+
+def candidate_from_receipt(document: object) -> dict[str, Any]:
+    """Validate a v1/v2 receipt and return its typed candidate section.
+
+    This generic reader intentionally remains able to interpret historic v1
+    receipts for non-direct identity work.  Call
+    ``direct_runtime_candidate_from_receipt`` when the result could authorize
+    a direct-SAE runtime observation; that lane requires v2's trace-client
+    binding and rejects v1 explicitly.
+    """
+    schema = receipt_schema(document)
+    if not isinstance(document, dict):
+        raise ValueError("IWN lab candidate receipt document")
     if document.get("receipt_kind") != RECEIPT_KIND:
         raise ValueError("IWN lab candidate receipt kind")
     candidate = document.get("candidate")
@@ -398,6 +466,11 @@ def candidate_from_receipt(document: object) -> dict[str, Any]:
         raise ValueError("IWN lab candidate receipt profile")
     if staged_path != PROFILE_STAGED_KEXT_PATHS[profile]:
         raise ValueError("IWN lab candidate receipt staged path")
+    if schema == RECEIPT_SCHEMA_V2:
+        trace_client_sha256 = candidate.get("trace_client_sha256")
+        if (not isinstance(trace_client_sha256, str) or
+                SHA256_RE.fullmatch(trace_client_sha256) is None):
+            raise ValueError("IWN lab candidate receipt trace-client digest")
     for key in (
         "archive_sha256",
         "info_plist_sha256",
@@ -416,18 +489,11 @@ def candidate_from_receipt(document: object) -> dict[str, Any]:
         if not isinstance(candidate.get(key), str):
             raise ValueError(f"IWN lab candidate receipt {key}")
     validation = document.get("validation")
+    validation_keys = BASE_VALIDATION_KEYS
+    if schema == RECEIPT_SCHEMA_V2:
+        validation_keys += DIRECT_RUNTIME_VALIDATION_KEYS
     if not isinstance(validation, dict) or not all(
-        validation.get(key) is True
-        for key in (
-            "source_tree_clean_before_capture",
-            "source_tree_clean_after_capture",
-            "source_head_stable_during_capture",
-            "staged_kext_path_matches_profile",
-            "archive_validated",
-            "staged_bundle_validated",
-            "archive_and_staged_bundle_match",
-            "artifact_stable_during_capture",
-        )
+        validation.get(key) is True for key in validation_keys
     ):
         raise ValueError("IWN lab candidate receipt validation")
     non_claims = document.get("non_claims")
@@ -449,12 +515,47 @@ def candidate_from_receipt(document: object) -> dict[str, Any]:
     return candidate.copy()
 
 
-def load_candidate_receipt(path: Path) -> dict[str, Any]:
+def direct_runtime_candidate_from_receipt(document: object) -> dict[str, Any]:
+    """Validate the narrow v2 receipt required by the direct-SAE runtime lane.
+
+    v1 parsing remains available through ``candidate_from_receipt`` to avoid
+    invalidating historic local evidence.  It cannot be used here because it
+    carries no immutable identity for the trace client that interprets the
+    candidate's direct-SAE result.
+    """
+    if receipt_schema(document) != RECEIPT_SCHEMA_V2:
+        raise ValueError("IWN lab direct-runtime receipt requires schema v2")
+    candidate = candidate_from_receipt(document)
+    if not isinstance(document, dict):
+        raise ValueError("IWN lab candidate receipt document")
+    verdict = document.get("verdict")
+    if not isinstance(verdict, dict) or any(
+        verdict.get(key) is not expected
+        for key, expected in (
+            ("local_candidate_identity_captured", True),
+            ("suitable_for_later_identity_verification", True),
+            ("runtime_experiment_performed", False),
+        )
+    ):
+        raise ValueError("IWN lab direct-runtime receipt verdict")
+    return candidate
+
+
+def receipt_document_from_path(path: Path) -> object:
+    receipt = require_regular_file(path, "IWN lab candidate receipt")
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(receipt.read_text(encoding="utf-8"))
     except Exception as error:
         raise ValueError(f"IWN lab candidate receipt read: {error}") from error
-    return candidate_from_receipt(document)
+
+
+def load_candidate_receipt(path: Path) -> dict[str, Any]:
+    return candidate_from_receipt(receipt_document_from_path(path))
+
+
+def load_direct_runtime_candidate_receipt(path: Path) -> dict[str, Any]:
+    """Load only a regular-file v2 receipt safe for direct-SAE runtime use."""
+    return direct_runtime_candidate_from_receipt(receipt_document_from_path(path))
 
 
 def output_path_is_inside_root(root: Path, output: Path) -> bool:
@@ -503,10 +604,20 @@ def self_test() -> int:
         (root / "scripts" / "build_tahoe.sh").write_text(
             "#!/usr/bin/env bash\n", encoding="utf-8"
         )
+        source_trace_client = (
+            root / "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c"
+        )
+        source_trace_client.parent.mkdir(parents=True)
+        source_trace_client.write_text(
+            "/* fixture direct-SAE trace client */\n", encoding="utf-8"
+        )
         (root / ".gitignore").write_text("Build/\n", encoding="utf-8")
         subprocess.run(["git", "init", "-q"], cwd=str(root), check=True)
         subprocess.run(
-            ["git", "add", ".gitignore", "scripts/build_tahoe.sh"],
+            [
+                "git", "add", ".gitignore", "scripts/build_tahoe.sh",
+                "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c",
+            ],
             cwd=str(root),
             check=True,
         )
@@ -526,7 +637,10 @@ def self_test() -> int:
             bundle.writestr(ZIP_INFO, info)
             bundle.writestr(ZIP_BINARY, binary)
 
-        document = make_receipt(root, profile, staged, archive)
+        trace_client = temporary / "airport_itlwm_post_plti_trace"
+        trace_client.write_bytes(b"fixture direct-SAE trace client executable\n")
+        trace_client.chmod(0o700)
+        document = make_receipt(root, profile, staged, archive, trace_client)
         candidate = candidate_from_receipt(document)
         if candidate["macho_uuid"] != expected_uuid:
             raise SystemExit("self-test: Mach-O UUID did not round-trip")
@@ -534,10 +648,80 @@ def self_test() -> int:
             raise SystemExit("self-test: archive digest did not round-trip")
         if candidate["staged_kext_repo_path"] != expected_path:
             raise SystemExit("self-test: staged profile path did not round-trip")
+        if candidate["trace_client_sha256"] != sha256_file(trace_client):
+            raise SystemExit("self-test: trace-client digest did not round-trip")
         receipt = temporary / "receipt.json"
         write_new_json(root, document, str(receipt))
         if load_candidate_receipt(receipt)["binary_sha256"] != sha256_bytes(binary):
             raise SystemExit("self-test: typed receipt loader did not round-trip")
+        if (load_direct_runtime_candidate_receipt(receipt)["trace_client_sha256"]
+                != sha256_file(trace_client)):
+            raise SystemExit("self-test: direct-runtime receipt loader did not round-trip")
+        receipt_symlink = temporary / "receipt-symlink.json"
+        receipt_symlink.symlink_to(receipt)
+        try:
+            load_direct_runtime_candidate_receipt(receipt_symlink)
+        except ValueError as error:
+            if "must not be a symlink" not in str(error):
+                raise
+        else:
+            raise SystemExit("self-test: symlinked direct-runtime receipt accepted")
+        trace_client_symlink = temporary / "trace-client-symlink"
+        trace_client_symlink.symlink_to(trace_client)
+        try:
+            trace_client_identity(trace_client_symlink)
+        except ValueError as error:
+            if "must not be a symlink" not in str(error):
+                raise
+        else:
+            raise SystemExit("self-test: symlinked trace client accepted")
+        non_executable_trace_client = temporary / "non-executable-trace-client"
+        non_executable_trace_client.write_bytes(b"not executable\n")
+        non_executable_trace_client.chmod(0o600)
+        try:
+            trace_client_identity(non_executable_trace_client)
+        except ValueError as error:
+            if "must be executable" not in str(error):
+                raise
+        else:
+            raise SystemExit("self-test: non-executable trace client accepted")
+
+        # Historic v1 receipts retain their generic identity-reader path, but
+        # must never silently authorize the direct-SAE runtime lane because
+        # they predate the immutable trace-client binding.
+        v1_document = json.loads(json.dumps(document))
+        v1_document["schema"] = RECEIPT_SCHEMA_V1
+        v1_candidate = v1_document["candidate"]
+        if not isinstance(v1_candidate, dict):
+            raise SystemExit("self-test: v1 candidate fixture is malformed")
+        del v1_candidate["trace_client_sha256"]
+        v1_validation = v1_document["validation"]
+        if not isinstance(v1_validation, dict):
+            raise SystemExit("self-test: v1 validation fixture is malformed")
+        for key in DIRECT_RUNTIME_VALIDATION_KEYS:
+            del v1_validation[key]
+        if candidate_from_receipt(v1_document)["binary_sha256"] != sha256_bytes(binary):
+            raise SystemExit("self-test: v1 generic receipt compatibility failed")
+        try:
+            direct_runtime_candidate_from_receipt(v1_document)
+        except ValueError as error:
+            if "requires schema v2" not in str(error):
+                raise
+        else:
+            raise SystemExit("self-test: v1 receipt authorized direct runtime")
+
+        malformed_v2 = json.loads(json.dumps(document))
+        malformed_candidate = malformed_v2["candidate"]
+        if not isinstance(malformed_candidate, dict):
+            raise SystemExit("self-test: v2 candidate fixture is malformed")
+        malformed_candidate["trace_client_sha256"] = "not-a-digest"
+        try:
+            direct_runtime_candidate_from_receipt(malformed_v2)
+        except ValueError as error:
+            if "trace-client digest" not in str(error):
+                raise
+        else:
+            raise SystemExit("self-test: malformed trace-client digest accepted")
         try:
             write_new_json(root, document, str(receipt))
         except ValueError:
@@ -547,7 +731,7 @@ def self_test() -> int:
 
         (root / "dirty-source-file").write_text("dirty\n", encoding="utf-8")
         try:
-            make_receipt(root, profile, staged, archive)
+            make_receipt(root, profile, staged, archive, trace_client)
         except ValueError as error:
             if "worktree is not clean" not in str(error):
                 raise
@@ -562,16 +746,26 @@ def main() -> int:
     parser.add_argument("--profile", choices=sorted(PROFILE_STAGED_KEXT_PATHS))
     parser.add_argument("--staged-kext", type=Path)
     parser.add_argument("--archive", type=Path)
+    parser.add_argument(
+        "--trace-client", type=Path,
+        help="local regular executable Tahoe trace client built for this candidate",
+    )
     parser.add_argument("--output", default="-")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
-    if args.profile is None or args.staged_kext is None or args.archive is None:
-        parser.error("--profile, --staged-kext, and --archive are required unless --self-test is used")
+    if (args.profile is None or args.staged_kext is None or args.archive is None
+            or args.trace_client is None):
+        parser.error(
+            "--profile, --staged-kext, --archive, and --trace-client are required "
+            "unless --self-test is used"
+        )
     try:
         root = repository_root()
-        document = make_receipt(root, args.profile, args.staged_kext, args.archive)
+        document = make_receipt(
+            root, args.profile, args.staged_kext, args.archive, args.trace_client
+        )
         write_new_json(root, document, args.output)
     except (OSError, ValueError, subprocess.CalledProcessError, zipfile.BadZipFile) as error:
         print(f"FAIL: Tahoe IWN lab candidate receipt: {error}", file=sys.stderr)

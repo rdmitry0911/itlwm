@@ -29,8 +29,10 @@ PINNED_WIFI_INTERFACE="en1"
 TRACE_TOOL=""
 OUT_DIR=""
 IDENTITY_EVIDENCE=""
+LAB_IDENTITY_EVIDENCE=""
 TRACE_CLIENT_SHA256=""
 ARM_WHILE_RADIO_OFF=0
+IDENTITY_EVIDENCE_KIND=""
 SOURCE_COMMIT=""
 SOURCE_IDENTITY_SHA256=""
 SETTLE_SECONDS=15
@@ -43,6 +45,13 @@ RELEASE_TAG=""
 ARCHIVE_SHA256=""
 BINARY_SHA256=""
 MACHO_UUID=""
+SOURCE_IDENTITY_PATHS_COUNT=0
+LAB_PROFILE=""
+LAB_STAGED_KEXT_REPO_PATH=""
+INFO_PLIST_SHA256=""
+BUNDLE_TREE_SHA256=""
+BUNDLE_ID=""
+LAB_RECEIPT_TRACE_CLIENT_SHA256=""
 RESET_SEQUENCE=0
 CAPTURE_GENERATION=0
 TRACE_BACKEND="unknown"
@@ -73,7 +82,8 @@ usage() {
     cat >&2 <<'EOF'
 usage: run_tahoe_post_plti_trace_runtime.sh \
   --trace-tool /private/tmp/aiam-post-plti-trace-CANDIDATE/airport_itlwm_post_plti_trace \
-  --identity-evidence /local/path/tahoe_lab_kext_identity.json \
+  (--identity-evidence /local/path/tahoe_release_identity.json | \
+   --lab-identity-evidence /local/path/tahoe_iwn_lab_loaded_identity.json) \
   --out /fresh/local/evidence/dir \
   [--trace-client-sha256 lowercase-hex-digest] \
   [--arm-while-radio-off] \
@@ -83,9 +93,13 @@ usage: run_tahoe_post_plti_trace_runtime.sh \
 Preconditions, deliberately outside this runner:
   * the exact candidate has passed private AuxKC admission, transactional
     guest-only activation, and a guest-only reboot;
-  * --identity-evidence is the read-only pinned-guest v2 identity capture for
-    that exact archive, source commit, and source identity, and reports every
-    candidate-binding check true;
+  * --identity-evidence is the read-only pinned-guest release v2 identity
+    capture for that exact archive, source commit, and source identity, and
+    reports every candidate-binding check true; or
+  * --lab-identity-evidence is the read-only local-unpublished-IWN-lab loaded
+    identity v1 capture.  It must report every candidate-binding check true;
+    its receipt-bound trace-client digest must equal the mandatory
+    --trace-client-sha256 value.  This lane has no release tag;
   * the trace client was built for Tahoe and copied beforehand to the exact
     /private/tmp/aiam-post-plti-trace-CANDIDATE/ path supplied above;
   * the QEMU guest already has an authorized saved profile and its radio is On.
@@ -131,11 +145,12 @@ while [ "$#" -gt 0 ]; do
             ARM_WHILE_RADIO_OFF=1
             shift
             ;;
-        --trace-tool|--identity-evidence|--out|--trace-client-sha256|--settle-seconds|--ack-attempts|--radio-attempts|--stable-read-delay-seconds)
+        --trace-tool|--identity-evidence|--lab-identity-evidence|--out|--trace-client-sha256|--settle-seconds|--ack-attempts|--radio-attempts|--stable-read-delay-seconds)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             case "$1" in
                 --trace-tool) TRACE_TOOL="$2" ;;
                 --identity-evidence) IDENTITY_EVIDENCE="$2" ;;
+                --lab-identity-evidence) LAB_IDENTITY_EVIDENCE="$2" ;;
                 --out) OUT_DIR="$2" ;;
                 --trace-client-sha256) TRACE_CLIENT_SHA256="$2" ;;
                 --settle-seconds) SETTLE_SECONDS="$2" ;;
@@ -156,8 +171,13 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$TRACE_TOOL" ] && [ -n "$IDENTITY_EVIDENCE" ] && [ -n "$OUT_DIR" ] || {
+[ -n "$TRACE_TOOL" ] && [ -n "$OUT_DIR" ] &&
+    { [ -n "$IDENTITY_EVIDENCE" ] || [ -n "$LAB_IDENTITY_EVIDENCE" ]; } || {
     usage
+    exit 2
+}
+[ -z "$IDENTITY_EVIDENCE" ] || [ -z "$LAB_IDENTITY_EVIDENCE" ] || {
+    printf 'ERROR: --identity-evidence and --lab-identity-evidence are mutually exclusive\n' >&2
     exit 2
 }
 valid_trace_tool_path "$TRACE_TOOL" || {
@@ -168,10 +188,23 @@ valid_trace_tool_path "$TRACE_TOOL" || {
     printf 'ERROR: --trace-client-sha256 must be one lowercase SHA-256 digest\n' >&2
     exit 2
 }
-[ -f "$IDENTITY_EVIDENCE" ] || {
-    printf 'ERROR: --identity-evidence is not a regular local file\n' >&2
-    exit 2
-}
+if [ -n "$IDENTITY_EVIDENCE" ]; then
+    [ -f "$IDENTITY_EVIDENCE" ] || {
+        printf 'ERROR: --identity-evidence is not a regular local file\n' >&2
+        exit 2
+    }
+    IDENTITY_EVIDENCE_KIND="release-v2"
+else
+    [ -f "$LAB_IDENTITY_EVIDENCE" ] && [ ! -L "$LAB_IDENTITY_EVIDENCE" ] || {
+        printf 'ERROR: --lab-identity-evidence must be a regular non-symlink local file\n' >&2
+        exit 2
+    }
+    [ -n "$TRACE_CLIENT_SHA256" ] || {
+        printf 'ERROR: --lab-identity-evidence requires --trace-client-sha256\n' >&2
+        exit 2
+    }
+    IDENTITY_EVIDENCE_KIND="local-iwn-lab-v1"
+fi
 is_decimal_in_range "$SETTLE_SECONDS" 1 120 || { usage; exit 2; }
 is_decimal_in_range "$ACK_ATTEMPTS" 1 60 || { usage; exit 2; }
 is_decimal_in_range "$RADIO_ATTEMPTS" 1 60 || { usage; exit 2; }
@@ -181,7 +214,7 @@ is_decimal_in_range "$STABLE_READ_DELAY_SECONDS" 1 10 || { usage; exit 2; }
     exit 2
 }
 
-read_identity_attestation() {
+read_release_identity_attestation() {
     local -a fields
     mapfile -t fields < <(python3 - "$IDENTITY_EVIDENCE" <<'PY'
 import json
@@ -249,10 +282,169 @@ PY
     MACHO_UUID="${fields[5]}"
 }
 
+read_lab_identity_attestation() {
+    local -a fields
+    mapfile -t fields < <(python3 - "$LAB_IDENTITY_EVIDENCE" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+LAB_SCHEMA = "itlwm-tahoe-iwn-lab-loaded-identity/v1"
+LAB_PROFILE = "iwn-software-pmf-lab"
+LAB_STAGED_KEXT_REPO_PATH = (
+    "Build/Debug/Tahoe-IwnSoftwarePmfLab/AirportItlwm.kext"
+)
+LAB_BUNDLE_ID = "com.zxystd.AirportItlwm"
+HEX40 = re.compile(r"[0-9a-f]{40}")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+UUID = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}")
+
+
+def reject_duplicate_keys(pairs):
+    document = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("duplicate JSON key")
+        document[key] = value
+    return document
+
+
+path = Path(sys.argv[1])
+try:
+    evidence = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=reject_duplicate_keys,
+    )
+    if not isinstance(evidence, dict) or evidence.get("schema_version") != LAB_SCHEMA:
+        raise ValueError("lab identity schema")
+    if evidence.get("capture_kind") != "local-unpublished-iwn-lab-loaded-candidate":
+        raise ValueError("lab identity capture kind")
+    if evidence.get("capture_mode") != "read-only-pinned-qemu-guest":
+        raise ValueError("lab identity capture mode")
+    if evidence.get("candidate_receipt_schema") != (
+        "itlwm-tahoe-iwn-lab-candidate-receipt/v2"
+    ):
+        raise ValueError("lab identity candidate receipt schema")
+    if evidence.get("candidate_receipt_kind") != "local-unpublished-iwn-lab-candidate":
+        raise ValueError("lab identity candidate receipt kind")
+    candidate = evidence.get("expected_local_lab_candidate")
+    expected_fields = {
+        "source_commit",
+        "source_identity_sha256",
+        "source_identity_paths_count",
+        "profile",
+        "staged_kext_repo_path",
+        "archive_sha256",
+        "info_plist_sha256",
+        "binary_sha256",
+        "bundle_tree_sha256",
+        "macho_uuid",
+        "bundle_id",
+        "trace_client_sha256",
+    }
+    if not isinstance(candidate, dict) or set(candidate) != expected_fields:
+        raise ValueError("lab candidate fields")
+    source_commit = candidate.get("source_commit")
+    source_identity = candidate.get("source_identity_sha256")
+    source_path_count = candidate.get("source_identity_paths_count")
+    profile = candidate.get("profile")
+    staged_kext_repo_path = candidate.get("staged_kext_repo_path")
+    archive = candidate.get("archive_sha256")
+    info_plist = candidate.get("info_plist_sha256")
+    binary = candidate.get("binary_sha256")
+    bundle_tree = candidate.get("bundle_tree_sha256")
+    uuid = candidate.get("macho_uuid")
+    bundle_id = candidate.get("bundle_id")
+    trace_client = candidate.get("trace_client_sha256")
+    if not isinstance(source_commit, str) or HEX40.fullmatch(source_commit) is None:
+        raise ValueError("lab identity source commit")
+    if not isinstance(source_identity, str) or HEX64.fullmatch(source_identity) is None:
+        raise ValueError("lab identity source identity")
+    if (type(source_path_count) is not int or source_path_count < 1 or
+            source_path_count > 4294967295):
+        raise ValueError("lab identity source path count")
+    if profile != LAB_PROFILE:
+        raise ValueError("lab identity profile")
+    if staged_kext_repo_path != LAB_STAGED_KEXT_REPO_PATH:
+        raise ValueError("lab identity staged kext path")
+    for value, label in (
+        (archive, "archive digest"),
+        (info_plist, "Info.plist digest"),
+        (binary, "binary digest"),
+        (bundle_tree, "bundle tree digest"),
+        (trace_client, "receipt-bound trace-client digest"),
+    ):
+        if not isinstance(value, str) or HEX64.fullmatch(value) is None:
+            raise ValueError(f"lab identity {label}")
+    if not isinstance(uuid, str) or UUID.fullmatch(uuid) is None:
+        raise ValueError("lab identity Mach-O UUID")
+    if bundle_id != LAB_BUNDLE_ID:
+        raise ValueError("lab identity bundle identifier")
+    binding = evidence.get("candidate_binding")
+    if not isinstance(binding, dict) or binding.get("candidate_kext_bound") is not True:
+        raise ValueError("lab identity candidate binding")
+    checks = binding.get("checks")
+    if (not isinstance(checks, dict) or not checks or
+            not all(value is True for value in checks.values())):
+        raise ValueError("lab identity candidate binding checks")
+    verdict = evidence.get("verdict")
+    if (not isinstance(verdict, dict) or
+            verdict.get(
+                "ready_for_exact_local_lab_candidate_runtime_experiment"
+            ) is not True):
+        raise ValueError("lab identity readiness verdict")
+except Exception as exc:
+    raise SystemExit(f"lab identity attestation rejected: {exc}")
+
+for value in (
+    source_commit,
+    source_identity,
+    str(source_path_count),
+    profile,
+    staged_kext_repo_path,
+    archive,
+    info_plist,
+    binary,
+    bundle_tree,
+    uuid,
+    bundle_id,
+    trace_client,
+):
+    print(value)
+PY
+)
+    [ "${#fields[@]}" -eq 12 ] || return 1
+    SOURCE_COMMIT="${fields[0]}"
+    SOURCE_IDENTITY_SHA256="${fields[1]}"
+    SOURCE_IDENTITY_PATHS_COUNT="${fields[2]}"
+    LAB_PROFILE="${fields[3]}"
+    LAB_STAGED_KEXT_REPO_PATH="${fields[4]}"
+    ARCHIVE_SHA256="${fields[5]}"
+    INFO_PLIST_SHA256="${fields[6]}"
+    BINARY_SHA256="${fields[7]}"
+    BUNDLE_TREE_SHA256="${fields[8]}"
+    MACHO_UUID="${fields[9]}"
+    BUNDLE_ID="${fields[10]}"
+    LAB_RECEIPT_TRACE_CLIENT_SHA256="${fields[11]}"
+}
+
+read_identity_attestation() {
+    case "$IDENTITY_EVIDENCE_KIND" in
+        release-v2) read_release_identity_attestation ;;
+        local-iwn-lab-v1) read_lab_identity_attestation ;;
+        *) return 1 ;;
+    esac
+}
+
 write_safe_attestation() {
     [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ] || return 0
     python3 - "$OUT_DIR/runtime-attestation.json" \
+        "$IDENTITY_EVIDENCE_KIND" \
         "$SOURCE_COMMIT" "$SOURCE_IDENTITY_SHA256" "$RELEASE_TAG" "$ARCHIVE_SHA256" "$BINARY_SHA256" "$MACHO_UUID" \
+        "$SOURCE_IDENTITY_PATHS_COUNT" "$LAB_PROFILE" "$LAB_STAGED_KEXT_REPO_PATH" \
+        "$INFO_PLIST_SHA256" "$BUNDLE_TREE_SHA256" "$BUNDLE_ID" \
+        "$LAB_RECEIPT_TRACE_CLIENT_SHA256" \
         "$RESET_SEQUENCE" "$CAPTURE_GENERATION" "$TRACE_BACKEND" "$TRACE_INTEGRITY" \
         "$TRACE_ENTRY_COUNT" "$TRACE_EPISODE_COUNT" "$TRACE_DROPPED_ENTRIES" "$TRACE_VERDICT" \
         "$TRACE_FIRST_MISSING_STAGE" "$RESET_ACK_SYNC" "$INITIAL_SNAPSHOT_BUFFER_SYNC" "$DOUBLE_READ_STABLE" \
@@ -264,7 +456,10 @@ import sys
 from pathlib import Path
 
 (
-    output, source_commit, source_identity_sha256, release_tag, archive_sha256, binary_sha256, macho_uuid,
+    output, evidence_kind, source_commit, source_identity_sha256, release_tag,
+    archive_sha256, binary_sha256, macho_uuid, source_identity_paths_count,
+    lab_profile, lab_staged_kext_repo_path, info_plist_sha256, bundle_tree_sha256,
+    bundle_id, trace_client_sha256,
     reset_sequence, capture_generation, backend, integrity, entry_count,
     episode_count, dropped_entries, verdict, first_missing_stage, reset_sync,
     initial_sync, double_stable, seal_acknowledged, final_disabled, radio_off, radio_on, recovery_attempted,
@@ -287,9 +482,9 @@ trace_pass = (
     and as_bool(radio_on)
     and as_bool(run_complete)
 )
-document = {
-    "schema": "itlwm-tahoe-post-plti-trace-runtime/v3",
-    "candidate": {
+if evidence_kind == "release-v2":
+    schema = "itlwm-tahoe-post-plti-trace-runtime/v3"
+    candidate = {
         "source_commit": source_commit,
         "source_identity_sha256": source_identity_sha256,
         "release_tag": release_tag,
@@ -298,7 +493,35 @@ document = {
         "binary_sha256": binary_sha256,
         "macho_uuid": macho_uuid,
         "identity_binding_precondition": "PASS",
-    },
+    }
+elif evidence_kind == "local-iwn-lab-v1":
+    try:
+        safe_source_identity_paths_count = int(source_identity_paths_count)
+    except ValueError:
+        safe_source_identity_paths_count = 0
+    schema = "itlwm-tahoe-post-plti-trace-runtime/v4"
+    candidate = {
+        "kind": "local-unpublished-iwn-lab-candidate",
+        "source_commit": source_commit,
+        "source_identity_sha256": source_identity_sha256,
+        "source_identity_paths_count": safe_source_identity_paths_count,
+        "profile": lab_profile,
+        "staged_kext_repo_path": lab_staged_kext_repo_path,
+        "archive_sha256": archive_sha256,
+        "info_plist_sha256": info_plist_sha256,
+        "binary_sha256": binary_sha256,
+        "bundle_tree_sha256": bundle_tree_sha256,
+        "macho_uuid": macho_uuid,
+        "bundle_id": bundle_id,
+        "trace_client_sha256": trace_client_sha256,
+        "identity_binding_precondition": "PASS",
+        "trace_client_receipt_binding_precondition": "PASS",
+    }
+else:
+    raise SystemExit("runtime attestation identity lane is unavailable")
+document = {
+    "schema": schema,
+    "candidate": candidate,
     "scope": {
         "environment": "pinned_disposable_qemu_guest",
         "physical_host_touched": False,
@@ -695,6 +918,10 @@ trap 'exit 130' HUP INT
 trap 'exit 143' TERM
 
 read_identity_attestation || fail_phase identity-attestation
+if [ "$IDENTITY_EVIDENCE_KIND" = local-iwn-lab-v1 ] &&
+    [ "$LAB_RECEIPT_TRACE_CLIENT_SHA256" != "$TRACE_CLIENT_SHA256" ]; then
+    fail_phase trace-client-identity-binding
+fi
 umask 077
 mkdir -p "$OUT_DIR"
 chmod 700 "$OUT_DIR"
