@@ -57,7 +57,321 @@
 /* CCMP software crypto context */
 struct ieee80211_ccmp_ctx {
 	AES_CTX		aesctx;
+	u_int64_t	publication_generation;
+	int		retired;
+	TAILQ_ENTRY(ieee80211_ccmp_ctx) retired_entry;
 };
+
+static void
+ieee80211_ccmp_ctx_free(struct ieee80211_ccmp_ctx *ctx)
+{
+	if (ctx == NULL)
+		return;
+	explicit_bzero(ctx, sizeof(*ctx));
+	free(ctx);
+}
+
+/* Caller holds ic_pae_selected_bss_lock. */
+static int
+ieee80211_ccmp_key_live_locked(struct ieee80211com *ic,
+    const struct ieee80211_key *key, struct ieee80211_ccmp_ctx **out)
+{
+	struct ieee80211_ccmp_ctx *ctx;
+
+	if (ic == NULL || key == NULL || out == NULL ||
+	    (key->k_flags & (IEEE80211_KEY_PAE_MFP_LIVE |
+	    IEEE80211_KEY_SWCRYPTO)) !=
+	    (IEEE80211_KEY_PAE_MFP_LIVE | IEEE80211_KEY_SWCRYPTO) ||
+	    key->k_cipher != IEEE80211_CIPHER_CCMP || key->k_priv == NULL)
+		return 0;
+	ctx = (struct ieee80211_ccmp_ctx *)key->k_priv;
+	if (ctx->retired || ctx->publication_generation == 0)
+		return 0;
+	*out = ctx;
+	return 1;
+}
+
+void
+ieee80211_ccmp_crypto_attach(struct ieee80211com *ic)
+{
+	if (ic != NULL) {
+		TAILQ_INIT(&ic->ic_ccmp_retired);
+		ic->ic_ccmp_next_generation = 0;
+	}
+}
+
+void
+ieee80211_ccmp_crypto_detach(struct ieee80211com *ic)
+{
+	/* The BSS node survives crypto_detach() and owns a possible live PTK.
+	 * Reap only contexts already removed from a descriptor; final ownership is
+	 * checked after node teardown by ieee80211_ccmp_lifetime_drain(). */
+	if (ic != NULL)
+		(void)ieee80211_ccmp_reap(ic);
+}
+
+int
+ieee80211_ccmp_key_publishable_locked(struct ieee80211com *ic,
+    const struct ieee80211_key *slot, const struct ieee80211_key *new_key)
+{
+	struct ieee80211_ccmp_ctx *ctx;
+
+	if (ic == NULL || slot == NULL || new_key == NULL ||
+	    new_key->k_cipher != IEEE80211_CIPHER_CCMP ||
+	    (new_key->k_flags & IEEE80211_KEY_SWCRYPTO) == 0 ||
+	    new_key->k_priv == NULL)
+		return EINVAL;
+	ctx = (struct ieee80211_ccmp_ctx *)new_key->k_priv;
+	if (ctx->retired || ctx->publication_generation != 0 ||
+	    (new_key->k_flags & IEEE80211_KEY_PAE_MFP_LIVE) != 0)
+		return EBUSY;
+	/* A hardware descriptor has no local context and can be replaced by the
+	 * negotiated software owner.  A pre-existing unmanaged software context
+	 * cannot: freeing or overwriting it would have no reader-lifetime proof. */
+	if (slot->k_priv != NULL &&
+	    !ieee80211_ccmp_key_live_locked(ic, slot, &ctx))
+		return EBUSY;
+	return 0;
+}
+
+int
+ieee80211_ccmp_key_publish_retire_locked(struct ieee80211com *ic,
+    struct ieee80211_key *slot, struct ieee80211_key *new_key)
+{
+	struct ieee80211_ccmp_ctx *newctx, *oldctx = NULL;
+	int error;
+
+	error = ieee80211_ccmp_key_publishable_locked(ic, slot, new_key);
+	if (error != 0)
+		return error;
+	if (slot->k_priv != NULL) {
+		if (!ieee80211_ccmp_key_live_locked(ic, slot, &oldctx))
+			return EBUSY;
+		if (oldctx == new_key->k_priv)
+			return EBUSY;
+	}
+	newctx = (struct ieee80211_ccmp_ctx *)new_key->k_priv;
+	do {
+		newctx->publication_generation = ++ic->ic_ccmp_next_generation;
+	} while (newctx->publication_generation == 0);
+	*slot = *new_key;
+	slot->k_flags |= IEEE80211_KEY_PAE_MFP_LIVE |
+	    IEEE80211_KEY_SWCRYPTO;
+	new_key->k_priv = NULL;
+	new_key->k_flags &= ~IEEE80211_KEY_PAE_MFP_LIVE;
+	if (oldctx != NULL) {
+		oldctx->retired = 1;
+		TAILQ_INSERT_TAIL(&ic->ic_ccmp_retired, oldctx, retired_entry);
+	}
+	return 0;
+}
+
+int
+ieee80211_ccmp_key_unpublish_retire(struct ieee80211com *ic,
+    struct ieee80211_key *key, struct ieee80211_key *out)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_ccmp_ctx *ctx;
+	int error = 0;
+
+	if (ic == NULL || key == NULL || out == NULL || key == out)
+		return EINVAL;
+	explicit_bzero(out, sizeof(*out));
+	/* No selected-BSS leaf means no PAE-live descriptor could have crossed
+	 * publication.  Let the historical generic delete path own this key. */
+	if ((lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return EOPNOTSUPP;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	/* This negative decision must be made under the same lock as publication:
+	 * an unlocked LIVE test can race the multi-field value copy in finish().
+	 * Claim a non-PAE value too: the caller must never dereference the source
+	 * descriptor after a concurrent publisher is allowed to reuse it. */
+	if ((key->k_flags & IEEE80211_KEY_PAE_MFP_LIVE) == 0) {
+		*out = *key;
+		explicit_bzero(key, sizeof(*key));
+		error = ENOENT;
+	} else if (!ieee80211_ccmp_key_live_locked(ic, key, &ctx)) {
+		error = EBUSY;
+	} else {
+		ctx->retired = 1;
+		TAILQ_INSERT_TAIL(&ic->ic_ccmp_retired, ctx, retired_entry);
+		explicit_bzero(key, sizeof(*key));
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (error == 0)
+		(void)ieee80211_ccmp_reap(ic);
+	return error;
+}
+
+int
+ieee80211_ccmp_reap(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_ccmp_retired_head retired;
+	struct ieee80211_ccmp_ctx *ctx;
+
+	if (ic == NULL)
+		return EINVAL;
+	if ((lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	TAILQ_INIT(&retired);
+	/* Every live PAE CCMP reader copies aesctx and the required counter while
+	 * holding this same leaf lock.  Thus no reader retains/dereferences ctx
+	 * after the following unlock, unlike BIP's stack-CMAC reader protocol. */
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	while ((ctx = TAILQ_FIRST(&ic->ic_ccmp_retired)) != NULL) {
+		TAILQ_REMOVE(&ic->ic_ccmp_retired, ctx, retired_entry);
+		TAILQ_INSERT_TAIL(&retired, ctx, retired_entry);
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	while ((ctx = TAILQ_FIRST(&retired)) != NULL) {
+		TAILQ_REMOVE(&retired, ctx, retired_entry);
+		ieee80211_ccmp_ctx_free(ctx);
+	}
+	return 0;
+}
+
+int
+ieee80211_ccmp_lifetime_drain(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int i, error;
+
+	if (ic == NULL)
+		return EINVAL;
+	if ((lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	if ((error = ieee80211_ccmp_reap(ic)) != 0)
+		return error;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	error = TAILQ_FIRST(&ic->ic_ccmp_retired) != NULL ? EBUSY : 0;
+	if (error == 0 && ic->ic_bss != NULL &&
+	    (ic->ic_bss->ni_pairwise_key.k_flags &
+	    IEEE80211_KEY_PAE_MFP_LIVE) != 0)
+		error = EBUSY;
+	for (i = 0; error == 0 && i < IEEE80211_WEP_NKID; i++) {
+		if (ic->ic_nw_keys[i].k_flags & IEEE80211_KEY_PAE_MFP_LIVE)
+			error = EBUSY;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return error;
+}
+
+/* Return 1 after a PAE-live key snapshot, 0 for the historical direct path,
+ * and -1 for a malformed/unpublished PAE descriptor. */
+static int
+ieee80211_ccmp_pae_tx_snapshot(struct ieee80211com *ic,
+    struct ieee80211_key *key, struct ieee80211_key *snapshot,
+    struct ieee80211_ccmp_ctx *ctx_snapshot)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_ccmp_ctx *ctx;
+	int result = 0;
+
+	if (ic == NULL || key == NULL || snapshot == NULL ||
+	    ctx_snapshot == NULL)
+		return -1;
+	/*
+	 * Do not decide that this is the legacy path from an unlocked marker
+	 * read.  Teardown clears a PAE descriptor under this same lock before it
+	 * reaps its context; on a weakly ordered CPU an unlocked reader could
+	 * otherwise observe the cleared bit while retaining a stale k_priv.  The
+	 * lock makes the no-marker result an ordered observation too.  A missing
+	 * lock is the one attach-unwind state in which no PAE-live descriptor can
+	 * have been published.
+	 */
+	if ((lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if ((key->k_flags & IEEE80211_KEY_PAE_MFP_LIVE) == 0) {
+		result = 0;
+	} else if (ieee80211_ccmp_key_live_locked(ic, key, &ctx)) {
+		*snapshot = *key;
+		snapshot->k_tsc = ++key->k_tsc;
+		*ctx_snapshot = *ctx;
+		result = 1;
+	} else
+		result = -1;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return result;
+}
+
+static int
+ieee80211_ccmp_pae_rx_snapshot(struct ieee80211com *ic,
+    struct ieee80211_key *key, struct ieee80211_key *snapshot,
+    struct ieee80211_ccmp_ctx *ctx_snapshot,
+    u_int64_t *generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_ccmp_ctx *ctx;
+	int result = 0;
+
+	if (ic == NULL || key == NULL || snapshot == NULL ||
+	    ctx_snapshot == NULL || generation == NULL)
+		return -1;
+	*generation = 0;
+	/* See the matching TX helper: an unlocked cleared marker is not enough
+	 * to route a formerly PAE-live descriptor to the historical raw-k_priv
+	 * path.  The selected-BSS lock orders deletion/publication and this
+	 * negative observation alike. */
+	if ((lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if ((key->k_flags & IEEE80211_KEY_PAE_MFP_LIVE) == 0) {
+		result = 0;
+	} else if (ieee80211_ccmp_key_live_locked(ic, key, &ctx)) {
+		*snapshot = *key;
+		*ctx_snapshot = *ctx;
+		*generation = ctx->publication_generation;
+		result = 1;
+	} else
+		result = -1;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return result;
+}
+
+/* The publication generation is copied under the leaf lock.  It cannot be
+ * reused after an old context is immediately reaped, unlike its allocator
+ * address, so a fast double rekey cannot pass an ABA identity comparison. */
+static int
+ieee80211_ccmp_pae_rx_commit(struct ieee80211com *ic,
+    struct ieee80211_key *key, u_int64_t generation,
+    mbuf_t m, u_int64_t pn)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_ccmp_ctx *ctx;
+	struct ieee80211_frame *wh;
+	u_int64_t *rsc;
+	int accept = 0;
+
+	if (ic == NULL || key == NULL || generation == 0 || m == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	wh = mtod(m, struct ieee80211_frame *);
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ieee80211_ccmp_key_live_locked(ic, key, &ctx) &&
+	    ctx->publication_generation == generation) {
+		if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
+		    IEEE80211_FC0_TYPE_DATA) {
+			u_int8_t tid = ieee80211_has_qos(wh) ?
+			    ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
+			rsc = &key->k_rsc[tid];
+		} else
+			rsc = &key->k_mgmt_rsc;
+		if (pn > *rsc) {
+			*rsc = pn;
+			accept = 1;
+		}
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return accept;
+}
 
 /*
  * Initialize software crypto context.  This function can be overridden
@@ -71,6 +385,7 @@ ieee80211_ccmp_set_key(struct ieee80211com *ic, struct ieee80211_key *k)
 	ctx = (struct ieee80211_ccmp_ctx *)malloc(sizeof(*ctx), 0, 0);
 	if (ctx == NULL)
 		return ENOMEM;
+	bzero(ctx, sizeof(*ctx));
 	AES_Setkey(&ctx->aesctx, k->k_key, 16);
 	k->k_priv = ctx;
 	return 0;
@@ -79,10 +394,14 @@ ieee80211_ccmp_set_key(struct ieee80211com *ic, struct ieee80211_key *k)
 void
 ieee80211_ccmp_delete_key(struct ieee80211com *ic, struct ieee80211_key *k)
 {
-	if (k->k_priv != NULL) {
-		explicit_bzero(k->k_priv, sizeof(struct ieee80211_ccmp_ctx));
-		free(k->k_priv);
-	}
+	struct ieee80211_ccmp_ctx *ctx;
+
+	if (k == NULL)
+		return;
+	ctx = (struct ieee80211_ccmp_ctx *)k->k_priv;
+	/* A retired context belongs to the out-of-lock reaper. */
+	if (ctx != NULL && !ctx->retired)
+		ieee80211_ccmp_ctx_free(ctx);
 	k->k_priv = NULL;
 }
 
@@ -179,17 +498,23 @@ mbuf_t
 ieee80211_ccmp_encrypt(struct ieee80211com *ic, mbuf_t m0,
     struct ieee80211_key *k)
 {
-	struct ieee80211_ccmp_ctx *ctx = (struct ieee80211_ccmp_ctx *)k->k_priv;
+	struct ieee80211_ccmp_ctx *ctx;
+	struct ieee80211_ccmp_ctx ctx_snapshot;
+	struct ieee80211_key key_snapshot;
+	struct ieee80211_key *txkey;
 	const struct ieee80211_frame *wh;
 	const u_int8_t *src;
 	u_int8_t *ivp, *mic, *dst;
 	u_int8_t a[16], b[16], s0[16], s[16];
-	mbuf_t n0, m, n;
+	mbuf_t n0 = NULL, m, n;
 	int hdrlen, left, moff, noff, len;
 	u_int16_t ctr;
-	int i, j;
+	int i, j, managed;
     mbuf_t temp;
     unsigned int max_chunks = 1;
+
+	bzero(&ctx_snapshot, sizeof(ctx_snapshot));
+	bzero(&key_snapshot, sizeof(key_snapshot));
 
     mbuf_get(MBUF_DONTWAIT, mbuf_type(m0), &n0);
 	if (n0 == NULL)
@@ -211,21 +536,37 @@ ieee80211_ccmp_encrypt(struct ieee80211com *ic, mbuf_t m0,
 	hdrlen = ieee80211_get_hdrlen(wh);
 	memcpy(mtod(n0, caddr_t), wh, hdrlen);
 
-	k->k_tsc++;	/* increment the 48-bit PN */
+	/* A live PAE software key is immutable to this reader after the snapshot:
+	 * reserve its PN and copy the AES schedule while the publisher uses the
+	 * same selected-BSS lock.  Legacy software-CCMP retains its old path. */
+	managed = ieee80211_ccmp_pae_tx_snapshot(ic, k, &key_snapshot,
+	    &ctx_snapshot);
+	if (managed < 0)
+		goto drop;
+	if (managed != 0) {
+		txkey = &key_snapshot;
+		ctx = &ctx_snapshot;
+	} else {
+		txkey = k;
+		ctx = (struct ieee80211_ccmp_ctx *)txkey->k_priv;
+		if (ctx == NULL)
+			goto drop;
+		txkey->k_tsc++;	/* increment the legacy 48-bit PN */
+	}
 
 	/* construct CCMP header */
 	ivp = mtod(n0, u_int8_t *) + hdrlen;
-	ivp[0] = k->k_tsc;		/* PN0 */
-	ivp[1] = k->k_tsc >> 8;		/* PN1 */
+	ivp[0] = txkey->k_tsc;		/* PN0 */
+	ivp[1] = txkey->k_tsc >> 8;		/* PN1 */
 	ivp[2] = 0;			/* Rsvd */
-	ivp[3] = k->k_id << 6 | IEEE80211_WEP_EXTIV;	/* KeyID | ExtIV */
-	ivp[4] = k->k_tsc >> 16;	/* PN2 */
-	ivp[5] = k->k_tsc >> 24;	/* PN3 */
-	ivp[6] = k->k_tsc >> 32;	/* PN4 */
-	ivp[7] = k->k_tsc >> 40;	/* PN5 */
+	ivp[3] = txkey->k_id << 6 | IEEE80211_WEP_EXTIV;	/* KeyID | ExtIV */
+	ivp[4] = txkey->k_tsc >> 16;	/* PN2 */
+	ivp[5] = txkey->k_tsc >> 24;	/* PN3 */
+	ivp[6] = txkey->k_tsc >> 32;	/* PN4 */
+	ivp[7] = txkey->k_tsc >> 40;	/* PN5 */
 
 	/* construct initial B, A and S_0 blocks */
-	ieee80211_ccmp_phase1(&ctx->aesctx, wh, k->k_tsc,
+	ieee80211_ccmp_phase1(&ctx->aesctx, wh, txkey->k_tsc,
 	    mbuf_pkthdr_len(m0) - hdrlen, b, a, s0);
 
 	/* construct S_1 */
@@ -308,14 +649,24 @@ ieee80211_ccmp_encrypt(struct ieee80211com *ic, mbuf_t m0,
 	for (i = 0; i < IEEE80211_CCMP_MICLEN; i++)
 		mic[i] = b[i] ^ s0[i];
     mbuf_setlen(n, mbuf_len(n) + IEEE80211_CCMP_MICLEN);
-    mbuf_pkthdr_setlen(n0, mbuf_pkthdr_len(n0) + IEEE80211_CCMP_MICLEN);
+	mbuf_pkthdr_setlen(n0, mbuf_pkthdr_len(n0) + IEEE80211_CCMP_MICLEN);
 
 	mbuf_freem(m0);
+	explicit_bzero(&key_snapshot, sizeof(key_snapshot));
+	explicit_bzero(&ctx_snapshot, sizeof(ctx_snapshot));
 	return n0;
+ drop:
+	mbuf_freem(m0);
+	mbuf_freem(n0);
+	explicit_bzero(&key_snapshot, sizeof(key_snapshot));
+	explicit_bzero(&ctx_snapshot, sizeof(ctx_snapshot));
+	return NULL;
  nospace:
 	ic->ic_stats.is_tx_nombuf++;
 	mbuf_freem(m0);
 	mbuf_freem(n0);
+	explicit_bzero(&key_snapshot, sizeof(key_snapshot));
+	explicit_bzero(&ctx_snapshot, sizeof(ctx_snapshot));
 	return NULL;
 }
 
@@ -362,42 +713,58 @@ mbuf_t
 ieee80211_ccmp_decrypt(struct ieee80211com *ic, mbuf_t m0,
     struct ieee80211_key *k)
 {
-	struct ieee80211_ccmp_ctx *ctx = (struct ieee80211_ccmp_ctx *)k->k_priv;
+	struct ieee80211_ccmp_ctx *ctx;
+	struct ieee80211_ccmp_ctx ctx_snapshot;
+	struct ieee80211_key key_snapshot;
+	struct ieee80211_key *rxkey;
 	struct ieee80211_frame *wh;
-	u_int64_t pn, *prsc;
+	u_int64_t generation = 0, pn, *prsc;
     const u_int8_t *src;
 	u_int8_t *dst;
 	u_int8_t mic0[IEEE80211_CCMP_MICLEN];
 	u_int8_t a[16], b[16], s0[16], s[16];
-	mbuf_t n0, m, n;
+	mbuf_t n0 = NULL, m, n;
 	int hdrlen, left, moff, noff, len;
 	u_int16_t ctr;
-	int i, j;
+	int i, j, managed;
     mbuf_t temp;
     unsigned int max_chunks = 1;
+
+	bzero(&ctx_snapshot, sizeof(ctx_snapshot));
+	bzero(&key_snapshot, sizeof(key_snapshot));
 
 	wh = mtod(m0, struct ieee80211_frame *);
     hdrlen = ieee80211_get_hdrlen(wh);
     if (mbuf_pkthdr_len(m0) < hdrlen + IEEE80211_CCMP_HDRLEN +
         IEEE80211_CCMP_MICLEN) {
-        mbuf_freem(m0);
-        return NULL;
-    }
+	        goto drop;
+	    }
+	/* The PAE software-CCMP path never dereferences a live k_priv after the
+	 * selected-BSS lock drops.  Its copied AES schedule remains valid even if
+	 * a concurrent rekey immediately retires the old descriptor. */
+	managed = ieee80211_ccmp_pae_rx_snapshot(ic, k, &key_snapshot,
+	    &ctx_snapshot, &generation);
+	if (managed < 0)
+		goto drop;
+	if (managed != 0) {
+		rxkey = &key_snapshot;
+		ctx = &ctx_snapshot;
+	} else {
+		rxkey = k;
+		ctx = (struct ieee80211_ccmp_ctx *)rxkey->k_priv;
+		if (ctx == NULL)
+			goto drop;
+	}
     
-    /*
+	    /*
      * Get the frame's Packet Number (PN) and a pointer to our last-seen
      * Receive Sequence Counter (RSC) which we can use to detect replays.
      */
-    if (ieee80211_ccmp_get_pn(&pn, &prsc, m0, k) != 0) {
-        mbuf_freem(m0);
-        return NULL;
-    }
+	    if (ieee80211_ccmp_get_pn(&pn, &prsc, m0, rxkey) != 0)
+	        goto drop;
 
 	if (pn <= *prsc) {
-		/* replayed frame, discard */
-		ic->ic_stats.is_ccmp_replays++;
-		mbuf_freem(m0);
-		return NULL;
+		goto replay;
 	}
 
     mbuf_get(MBUF_DONTWAIT, mbuf_type(m0), &n0);
@@ -497,20 +864,39 @@ ieee80211_ccmp_decrypt(struct ieee80211com *ic, mbuf_t m0,
 	/* check that it matches the MIC in received frame */
 	mbuf_copydata(m, moff, IEEE80211_CCMP_MICLEN, mic0);
 	if (timingsafe_bcmp(mic0, b, IEEE80211_CCMP_MICLEN) != 0) {
-		ic->ic_stats.is_ccmp_dec_errs++;
-		mbuf_freem(m0);
-		mbuf_freem(n0);
-		return NULL;
+		goto badmic;
 	}
 
-	/* update last seen packet number (MIC is validated) */
-	*prsc = pn;
+	/* Commit a validated RSC only if the same descriptor still owns it.  A
+	 * rekey that won the interval intentionally drops this old-key frame. */
+	if (managed != 0) {
+		if (!ieee80211_ccmp_pae_rx_commit(ic, k, generation, m0, pn))
+			goto replay;
+	} else
+		*prsc = pn;
 
 	mbuf_freem(m0);
+	explicit_bzero(&key_snapshot, sizeof(key_snapshot));
+	explicit_bzero(&ctx_snapshot, sizeof(ctx_snapshot));
 	return n0;
+ badmic:
+	ic->ic_stats.is_ccmp_dec_errs++;
+	goto drop;
+ replay:
+	/* A rekey race is fail-closed just like a stale replay counter. */
+	ic->ic_stats.is_ccmp_replays++;
+	goto drop;
+ drop:
+	mbuf_freem(m0);
+	mbuf_freem(n0);
+	explicit_bzero(&key_snapshot, sizeof(key_snapshot));
+	explicit_bzero(&ctx_snapshot, sizeof(ctx_snapshot));
+	return NULL;
  nospace:
 	ic->ic_stats.is_rx_nombuf++;
 	mbuf_freem(m0);
 	mbuf_freem(n0);
+	explicit_bzero(&key_snapshot, sizeof(key_snapshot));
+	explicit_bzero(&ctx_snapshot, sizeof(ctx_snapshot));
 	return NULL;
 }

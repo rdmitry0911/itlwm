@@ -1635,6 +1635,9 @@ static void
 ieee80211_node_cleanup_internal(struct ieee80211com *ic,
     struct ieee80211_node *ni, int cancel_current_bss)
 {
+	struct ieee80211_key detached_key;
+	int error;
+
     if (ni == NULL) {
         return;
     }
@@ -1642,6 +1645,23 @@ ieee80211_node_cleanup_internal(struct ieee80211com *ic,
     if (cancel_current_bss && ic != NULL &&
         ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss)
         (void)ieee80211_pae_assoc_epoch_begin(ic);
+	/* A normal RSN leave reaches the driver's delete callback, but final node
+	 * destruction can run after the HAL rings have already gone away.  Ask the
+	 * PAE owner under its leaf lock instead of probing LIVE here: publication
+	 * is a multi-field handoff and an unlocked negative probe could free the
+	 * just-published CCMP context through the legacy path. */
+	if (ic != NULL) {
+		bzero(&detached_key, sizeof(detached_key));
+		error = ieee80211_ccmp_key_unpublish_retire(ic,
+		    &ni->ni_pairwise_key, &detached_key);
+		if (error == ENOENT)
+			ieee80211_delete_key(ic, ni, &detached_key);
+		else if (error == EOPNOTSUPP)
+			ieee80211_delete_key(ic, ni, &ni->ni_pairwise_key);
+		else if (error != 0)
+			panic("ieee80211_node_cleanup CCMP %d", error);
+		explicit_bzero(&detached_key, sizeof(detached_key));
+	}
     if (ni->ni_rsnie != NULL) {
         free(ni->ni_rsnie);
         ni->ni_rsnie = NULL;

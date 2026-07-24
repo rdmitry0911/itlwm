@@ -653,6 +653,14 @@ struct ieee80211com {
 	CTimeout		*ic_bip_reap_to;
 	struct ieee80211_key	ic_bip_pending_key;
 	int			ic_bip_pending_valid;
+	/* Software-CCMP contexts retired by the asynchronous MFP PAE handoff.
+	 * Unlike BIP, CCMP readers leave no context pointer after dropping the
+	 * selected-BSS lock, so this list is reaped synchronously out of lock. */
+	struct ieee80211_ccmp_retired_head ic_ccmp_retired;
+	/* Monotonic publication token for software-CCMP snapshots.  It prevents
+	 * an RX commit from accepting an ABA-reused context address after a fast
+	 * rekey/reap cycle.  The selected-BSS leaf lock protects it. */
+	u_int64_t		ic_ccmp_next_generation;
 	/*
 	 * Writer-only canonical identity of the BSS actually copied into ic_bss.
 	 * Its epoch is zeroed on every association fence and published only after

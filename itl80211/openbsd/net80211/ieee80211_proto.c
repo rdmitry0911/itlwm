@@ -317,7 +317,7 @@ ieee80211_pae_mfp_txn_finish_publish_locked(struct ieee80211com *ic,
 {
 	struct ieee80211_pae_mfp_txn *txn;
 	struct ieee80211_node *ni;
-	int error;
+	int error, ptk_software = 0, gtk_software = 0;
 
 	if (ic == NULL)
 		return EINVAL;
@@ -332,6 +332,31 @@ ieee80211_pae_mfp_txn_finish_publish_locked(struct ieee80211com *ic,
 	     !ieee80211_pae_mfp_igtk_shape_valid(&txn->prepared_bip_key) ||
 	     txn->prepared_bip_key.k_priv == NULL))
 		return EIO;
+	/* Validate every software-CCMP replacement before the BIP transfer below.
+	 * The subsequent CCMP moves cannot fail under this same leaf lock, so the
+	 * final handoff remains all-or-nothing rather than publishing an IGTK next
+	 * to a half-replaced PTK/GTK lifetime. */
+	if (txn->have_ptk && txn->ptk_key.k_priv != NULL) {
+		error = ieee80211_ccmp_key_publishable_locked(ic,
+		    &ni->ni_pairwise_key, &txn->ptk_key);
+		if (error != 0)
+			return error;
+		ptk_software = 1;
+	} else if (txn->have_ptk &&
+	    (ni->ni_pairwise_key.k_flags & IEEE80211_KEY_PAE_MFP_LIVE))
+		return EBUSY;
+	if (txn->have_gtk && txn->gtk_key.k_id >= IEEE80211_WEP_NKID)
+		return EINVAL;
+	if (txn->have_gtk && txn->gtk_key.k_priv != NULL) {
+		error = ieee80211_ccmp_key_publishable_locked(ic,
+		    &ic->ic_nw_keys[txn->gtk_key.k_id], &txn->gtk_key);
+		if (error != 0)
+			return error;
+		gtk_software = 1;
+	} else if (txn->have_gtk &&
+	    (ic->ic_nw_keys[txn->gtk_key.k_id].k_flags &
+	    IEEE80211_KEY_PAE_MFP_LIVE))
+		return EBUSY;
 
 	/* Do the only fallible transfer first: every remaining publication below
 	 * is a value copy under this lock.  On error the helper leaves both slots
@@ -348,13 +373,24 @@ ieee80211_pae_mfp_txn_finish_publish_locked(struct ieee80211com *ic,
 	}
 	if (txn->have_ptk) {
 		ni->ni_ptk = txn->ptk;
-		ni->ni_pairwise_key = txn->ptk_key;
+		if (ptk_software) {
+			error = ieee80211_ccmp_key_publish_retire_locked(ic,
+			    &ni->ni_pairwise_key, &txn->ptk_key);
+			_KASSERT(error == 0);
+		} else
+			ni->ni_pairwise_key = txn->ptk_key;
 		ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
 		ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
 		ni->ni_flags |= IEEE80211_NODE_RXPROT;
 	}
-	if (txn->have_gtk)
-		ic->ic_nw_keys[txn->gtk_key.k_id] = txn->gtk_key;
+	if (txn->have_gtk) {
+		if (gtk_software) {
+			error = ieee80211_ccmp_key_publish_retire_locked(ic,
+			    &ic->ic_nw_keys[txn->gtk_key.k_id], &txn->gtk_key);
+			_KASSERT(error == 0);
+		} else
+			ic->ic_nw_keys[txn->gtk_key.k_id] = txn->gtk_key;
+	}
 	if (txn->have_igtk)
 		ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT |
 		    IEEE80211_NODE_RXMGMTPROT;
@@ -718,8 +754,10 @@ ieee80211_pae_mfp_txn_complete(struct ieee80211com *ic, u_int64_t id,
 		/* finish_publish_locked() may have retired the destination slot's old
 		 * context.  Queue its out-of-lock reap before re-entering the PAE
 		 * leaf lock; reader exits themselves never free/reap. */
-		if (finish_error == 0)
+		if (finish_error == 0) {
 			ieee80211_bip_reap_schedule(ic);
+			(void)ieee80211_ccmp_reap(ic);
+		}
 
 		irq = IOSimpleLockLockDisableInterrupt(lock);
 		txn = &ic->ic_pae_mfp_txn;
@@ -1147,6 +1185,11 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock == NULL)
 		return;
+	/* Node teardown is complete and all owners have drained before this
+	 * terminal lock destruction, so no reader can retain a CCMP snapshot. */
+	if (ieee80211_ccmp_lifetime_drain(ic) != 0)
+		panic("ieee80211_pae_selected_bss_lock_destroy CCMP lifetime");
+
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);

@@ -71,8 +71,9 @@ ieee80211_crypto_attach(struct _ifnet *ifp)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
 
-    TAILQ_INIT(&ic->ic_pmksa);
-    ieee80211_bip_crypto_attach(ic);
+	TAILQ_INIT(&ic->ic_pmksa);
+	ieee80211_ccmp_crypto_attach(ic);
+	ieee80211_bip_crypto_attach(ic);
     if (ic->ic_caps & IEEE80211_C_RSN) {
         ic->ic_rsnprotos = IEEE80211_PROTO_RSN;
         ic->ic_rsnakms = IEEE80211_AKM_PSK;
@@ -105,6 +106,10 @@ ieee80211_crypto_detach(struct _ifnet *ifp)
 
 	/* clear all group keys from memory */
 	ieee80211_crypto_clear_groupkeys(ic);
+	/* The selected-BSS lock remains alive through node teardown.  Retired
+	 * software-CCMP contexts have no raw reader after its snapshot boundary,
+	 * so reclaim every context already detached from a live descriptor. */
+	ieee80211_ccmp_crypto_detach(ic);
 	/* A quiescent teardown can reclaim old IGTK contexts now; an active
 	 * reader intentionally leaves them for the terminal driver drain. */
 	ieee80211_bip_crypto_detach(ic);
@@ -149,6 +154,26 @@ ieee80211_crypto_clear_groupkeys(struct ieee80211com *ic)
 			explicit_bzero(&callback_key, sizeof(callback_key));
 			continue;
 		}
+		/* Ask the CCMP owner under its publication lock rather than probing
+		 * LIVE here: finish() publishes a descriptor by several value writes,
+		 * and an unlocked negative marker could free its newly copied context.
+		 * On ENOENT the helper has moved a legacy value into callback_key, so
+		 * any later PAE publication reuses only the cleared table descriptor. */
+		bzero(&callback_key, sizeof(callback_key));
+		error = ieee80211_ccmp_key_unpublish_retire(ic, k, &callback_key);
+		if (error == 0) {
+			explicit_bzero(&callback_key, sizeof(callback_key));
+			continue;
+		}
+		if (error == ENOENT) {
+			if (callback_key.k_cipher != IEEE80211_CIPHER_NONE)
+				(*ic->ic_delete_key)(ic, NULL, &callback_key);
+			explicit_bzero(&callback_key, sizeof(callback_key));
+			continue;
+		}
+		explicit_bzero(&callback_key, sizeof(callback_key));
+		if (error != EOPNOTSUPP)
+			panic("ieee80211_crypto_clear_groupkeys CCMP %d", error);
         if (k->k_cipher != IEEE80211_CIPHER_NONE)
             (*ic->ic_delete_key)(ic, NULL, k);
         explicit_bzero(k, sizeof(*k));
@@ -216,6 +241,7 @@ ieee80211_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct ieee80211_key *k)
 {
 	struct ieee80211_key callback_key;
+	struct ieee80211_key *delete_key = k;
 	int error;
 
 	/* Table BIP contexts are reader-visible and cannot use the ordinary
@@ -233,25 +259,37 @@ ieee80211_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
 		explicit_bzero(&callback_key, sizeof(callback_key));
 		return;
 	}
-	switch (k->k_cipher) {
+	/* The marker must not be inspected unlocked: PAE publication is a
+	 * multi-field value handoff.  ENOENT returns an atomically detached legacy
+	 * value, so a later publisher can never race this switch/free against the
+	 * source descriptor. */
+	bzero(&callback_key, sizeof(callback_key));
+	error = ieee80211_ccmp_key_unpublish_retire(ic, k, &callback_key);
+	if (error == 0)
+		return;
+	if (error == ENOENT)
+		delete_key = &callback_key;
+	else if (error != EOPNOTSUPP)
+		panic("ieee80211_delete_key live CCMP %d", error);
+	switch (delete_key->k_cipher) {
     case IEEE80211_CIPHER_WEP40:
     case IEEE80211_CIPHER_WEP104:
-        ieee80211_wep_delete_key(ic, k);
+        ieee80211_wep_delete_key(ic, delete_key);
         break;
     case IEEE80211_CIPHER_TKIP:
-        ieee80211_tkip_delete_key(ic, k);
+        ieee80211_tkip_delete_key(ic, delete_key);
         break;
     case IEEE80211_CIPHER_CCMP:
-        ieee80211_ccmp_delete_key(ic, k);
+        ieee80211_ccmp_delete_key(ic, delete_key);
         break;
     case IEEE80211_CIPHER_BIP:
-        ieee80211_bip_delete_key(ic, k);
+        ieee80211_bip_delete_key(ic, delete_key);
         break;
     default:
         /* should not get there */
         break;
     }
-    explicit_bzero(k, sizeof(*k));
+	explicit_bzero(delete_key, sizeof(*delete_key));
 }
 
 struct ieee80211_key *

@@ -111,6 +111,13 @@ struct ieee80211_key {
 #define IEEE80211_KEY_SWCRYPTO	0x00000080	/* loaded for software crypto */
 /* A BIP context belongs to a private, not-yet-published key descriptor. */
 #define IEEE80211_KEY_BIP_LOCAL	0x00000100
+/*
+ * A software-CCMP context has crossed the asynchronous PAE handoff and is
+ * now reachable from a live PTK/GTK descriptor.  Unlike KEY_SWCRYPTO alone,
+ * this bit requires the selected-BSS snapshot/retirement protocol before the
+ * descriptor can be replaced or destroyed.
+ */
+#define IEEE80211_KEY_PAE_MFP_LIVE	0x00000200
 
 	u_int			k_len;
 	u_int64_t		k_rsc[IEEE80211_NUM_TID];
@@ -212,6 +219,35 @@ int    ieee80211_ccmp_get_pn(uint64_t *, uint64_t **, mbuf_t,
                              struct ieee80211_key *);
 mbuf_t ieee80211_ccmp_decrypt(struct ieee80211com *, mbuf_t,
 	    struct ieee80211_key *);
+
+/*
+ * A software-CCMP PTK/GTK becomes reader-visible only through the async MFP
+ * PAE transaction.  CCMP readers copy the immutable AES schedule and their
+ * counter snapshot while holding ic_pae_selected_bss_lock; retirement may
+ * therefore free an old context after dropping that lock without relying on
+ * driver workloop serialization.
+ */
+struct ieee80211_ccmp_ctx;
+TAILQ_HEAD(ieee80211_ccmp_retired_head, ieee80211_ccmp_ctx);
+
+void	ieee80211_ccmp_crypto_attach(struct ieee80211com *);
+void	ieee80211_ccmp_crypto_detach(struct ieee80211com *);
+/* Caller holds ic_pae_selected_bss_lock. */
+int	ieee80211_ccmp_key_publishable_locked(struct ieee80211com *,
+	    const struct ieee80211_key *, const struct ieee80211_key *);
+/* Caller holds ic_pae_selected_bss_lock.  On success new_key is consumed. */
+int	ieee80211_ccmp_key_publish_retire_locked(struct ieee80211com *,
+	    struct ieee80211_key *, struct ieee80211_key *);
+/* Atomically unpublish a live PAE software-CCMP descriptor, then reap out
+ * of lock.  For a non-PAE descriptor, it atomically moves the value into
+ * `out` and clears the original before returning ENOENT; a caller must free
+ * only that detached value, so a concurrent PAE publish can never be freed
+ * through a stale legacy pointer.  EOPNOTSUPP means no selected-BSS lock
+ * exists and the historical direct path remains safe (early attach unwind). */
+int	ieee80211_ccmp_key_unpublish_retire(struct ieee80211com *,
+	    struct ieee80211_key *, struct ieee80211_key *);
+int	ieee80211_ccmp_reap(struct ieee80211com *);
+int	ieee80211_ccmp_lifetime_drain(struct ieee80211com *);
 
 int	ieee80211_bip_set_key(struct ieee80211com *, struct ieee80211_key *);
 void	ieee80211_bip_delete_key(struct ieee80211com *,
