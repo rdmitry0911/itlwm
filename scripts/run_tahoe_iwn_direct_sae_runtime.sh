@@ -465,7 +465,7 @@ import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-expected = sys.argv[2:]
+expected = list(sys.argv[2:])
 
 
 def reject_duplicate_keys(pairs):
@@ -478,6 +478,14 @@ def reject_duplicate_keys(pairs):
 
 
 try:
+    if (len(expected) != 12 or not expected[2].isdecimal() or
+            int(expected[2]) < 1):
+        raise ValueError("candidate source identity path count")
+    # The receipt reader crosses this value through Bash, while the delegated
+    # v4 JSON attestation intentionally carries it as a JSON number. Normalize
+    # before the exact candidate comparison so a valid trace is not rejected
+    # solely for a string-versus-integer representation difference.
+    expected[2] = int(expected[2])
     data = json.loads(
         path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys
     )

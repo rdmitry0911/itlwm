@@ -68,6 +68,7 @@ for needle in \
     'DIRECT_CAPTURE_GENERATION" = "$GENERIC_CAPTURE_GENERATION' \
     'DIRECT_ENTRY_COUNT" = "$GENERIC_ENTRY_COUNT' \
     'trace_armed_while_radio_off' \
+    'expected[2] = int(expected[2])' \
     'saved_profile_autojoin_only' \
     'fresh_scan_state' \
     'secret_argument": "none"' \
@@ -194,6 +195,8 @@ for token in (
     'local-unpublished-iwn-lab-candidate',
     'trace_client_receipt_binding_precondition',
     'trace_client_sha256',
+    'candidate source identity path count',
+    'expected[2] = int(expected[2])',
 ):
     if token not in generic_text:
         raise SystemExit(f'FAIL: direct generic v4 binding lacks {token}')
