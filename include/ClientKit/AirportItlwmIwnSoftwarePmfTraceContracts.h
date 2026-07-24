@@ -118,6 +118,7 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
     uint32_t ptk_prepared = 0, gtk_prepared = 0, igtk_acknowledged = 0;
     uint32_t published_slot = 0, active_slot = 0;
     uint32_t keyset_published = 0, port_valid = 0, terminal = 0;
+    uint32_t saw_iwn_software_pmf_event = 0;
 
     airport_itlwm_iwn_software_pmf_trace_set_stage(
         out_stage, kAirportItlwmIwnSoftwarePmfTraceMissingStageUnknown);
@@ -166,8 +167,11 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
         if (event == kAirportItlwmPostPltiTraceEventPortValidTransition) {
             /* A valid generic association may close without entering the
              * optional IWN software-PMF branch.  That is a deterministic
-             * first-missing-stage result, not a torn PMF trace. */
-            if (port_valid)
+             * first-missing-stage result, not a torn PMF trace.  Once that
+             * branch has begun, however, an incomplete keyset remains an
+             * integrity failure rather than a benign negative observation. */
+            if (port_valid || (saw_iwn_software_pmf_event &&
+                               !keyset_published))
                 return kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive;
             port_valid = 1;
             terminal = 1;
@@ -181,6 +185,7 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
             if (ptk_prepared || gtk_prepared || igtk_acknowledged ||
                 published_slot != 0 || active_slot != 0 || keyset_published)
                 return kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive;
+            saw_iwn_software_pmf_event = 1;
             ptk_prepared = 1;
             continue;
         }
@@ -189,6 +194,7 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
             if (!ptk_prepared || gtk_prepared || igtk_acknowledged ||
                 published_slot != 0 || active_slot != 0 || keyset_published)
                 return kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive;
+            saw_iwn_software_pmf_event = 1;
             gtk_prepared = 1;
             continue;
         }
@@ -197,6 +203,7 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
             if (!ptk_prepared || !gtk_prepared || igtk_acknowledged ||
                 published_slot != 0 || active_slot != 0 || keyset_published)
                 return kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive;
+            saw_iwn_software_pmf_event = 1;
             igtk_acknowledged = 1;
             continue;
         }
@@ -204,6 +211,7 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
             if (!ptk_prepared || !gtk_prepared || !igtk_acknowledged ||
                 published_slot != 0 || active_slot != 0 || keyset_published)
                 return kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive;
+            saw_iwn_software_pmf_event = 1;
             published_slot = publication_slot;
             continue;
         }
@@ -211,6 +219,7 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
             if (published_slot == 0 || selected_slot != published_slot ||
                 active_slot != 0 || keyset_published)
                 return kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive;
+            saw_iwn_software_pmf_event = 1;
             active_slot = selected_slot;
             published_slot = 0;
             continue;
@@ -220,6 +229,7 @@ airport_itlwm_iwn_software_pmf_trace_classify_entries_with_stage(
             if (!ptk_prepared || !gtk_prepared || !igtk_acknowledged ||
                 active_slot == 0 || keyset_published)
                 return kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive;
+            saw_iwn_software_pmf_event = 1;
             keyset_published = 1;
             continue;
         }

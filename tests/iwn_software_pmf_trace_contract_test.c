@@ -5,7 +5,7 @@
 #include <ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h>
 
 struct fixture {
-    AirportItlwmPostPltiTraceEntry entries[32];
+    AirportItlwmPostPltiTraceEntry entries[64];
     uint32_t count;
 };
 
@@ -39,6 +39,42 @@ begin(struct fixture *fixture)
     append(fixture, kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume);
     append(fixture,
         kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved);
+}
+
+static void
+append_observed_generic_wpa2_chain(struct fixture *fixture)
+{
+    append(fixture, kAirportItlwmPostPltiTraceEventIwnScanStateEntered);
+    append(fixture, kAirportItlwmPostPltiTraceEventIwnScanCoalesced);
+    append(fixture, kAirportItlwmPostPltiTraceEventIwnScanStarted);
+    append(fixture, kAirportItlwmPostPltiTraceEventScanCompleted);
+    append(fixture, kAirportItlwmPostPltiTraceEventBssSelected);
+    append(fixture, kAirportItlwmPostPltiTraceEventJoinBssEntered);
+    append(fixture, kAirportItlwmPostPltiTraceEventAuthStateEntered);
+    append(fixture, kAirportItlwmPostPltiTraceEventAuthEnqueued);
+    append(fixture, kAirportItlwmPostPltiTraceEventAuthDequeued);
+    append(fixture, kAirportItlwmPostPltiTraceEventAuthFwSubmitted);
+    append(fixture, kAirportItlwmPostPltiTraceEventAuthTxDone);
+    append(fixture, kAirportItlwmPostPltiTraceEventAuthRxFromFirmware);
+    append(fixture, kAirportItlwmPostPltiTraceEventAuthRxNet80211);
+    append(fixture, kAirportItlwmPostPltiTraceEventAssocStateEntered);
+    append(fixture, kAirportItlwmPostPltiTraceEventAssocEnqueued);
+    append(fixture, kAirportItlwmPostPltiTraceEventAssocDequeued);
+    append(fixture, kAirportItlwmPostPltiTraceEventAssocFwSubmitted);
+    append(fixture, kAirportItlwmPostPltiTraceEventAssocTxDone);
+    append(fixture, kAirportItlwmPostPltiTraceEventAssocRxFromFirmware);
+    append(fixture, kAirportItlwmPostPltiTraceEventAssocRxNet80211);
+    append(fixture, kAirportItlwmPostPltiTraceEventRunEntered);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolRxDecapped);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolRxKernelPae);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolTxEnqueued);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolFwSubmitted);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolTxDone);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolRxDecapped);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolRxKernelPae);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolTxEnqueued);
+    append(fixture, kAirportItlwmPostPltiTraceEventEapolFwSubmitted);
+    append(fixture, kAirportItlwmPostPltiTraceEventPortValidTransition);
 }
 
 static void
@@ -89,12 +125,20 @@ main(void)
         "one closed initial transaction proves software PMF ownership");
 
     begin(&fixture);
-    append(&fixture, kAirportItlwmPostPltiTraceEventEapolTxEnqueued);
-    append(&fixture, kAirportItlwmPostPltiTraceEventPortValidTransition);
+    append_observed_generic_wpa2_chain(&fixture);
     expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwn, 0,
         kAirportItlwmIwnSoftwarePmfTraceVerdictPtkSoftwareCcmpNotObserved,
         kAirportItlwmIwnSoftwarePmfTraceMissingStagePtkSoftwareCcmp,
-        "a completed generic association reports absent software PMF at PTK");
+        "the observed generic WPA2 chain reports absent software PMF at PTK");
+
+    begin(&fixture);
+    append(&fixture,
+        kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared);
+    append(&fixture, kAirportItlwmPostPltiTraceEventPortValidTransition);
+    expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwn, 0,
+        kAirportItlwmIwnSoftwarePmfTraceVerdictIntegrityInconclusive,
+        kAirportItlwmIwnSoftwarePmfTraceMissingStageUnknown,
+        "a partial IWN software-PMF branch cannot close at port-valid");
 
     begin(&fixture);
     append(&fixture,
