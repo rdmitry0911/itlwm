@@ -77,6 +77,7 @@ struct ieee80211_node;
 struct ieee80211_rxinfo;
 struct ieee80211_rsnparams;
 struct ieee80211_pae_selected_bss;
+struct ieee80211_sae_wcl_bound_request;
 struct ItlSaeAuthTxRequestV1;
 extern	void ieee80211_set_link_state(struct ieee80211com *, int);
 extern	u_int ieee80211_get_hdrlen(const struct ieee80211_frame *);
@@ -187,6 +188,15 @@ extern	int ieee80211_sae_wcl_request_bind_selected_bss(
  * association epoch bound above. */
 extern	int ieee80211_sae_wcl_request_bound_current(struct ieee80211com *,
 	    const struct ieee80211_node *);
+/* Copy an exact BOUND direct-WCL request into caller-owned value storage.
+ * expected_generation == 0 atomically captures whichever exact current BOUND
+ * request the first driver owner sees; a nonzero value is a stale-worker
+ * fence.  The output contains only generation/epoch, BSSID/STA/SSID, and
+ * selected scan profile facts; it never retains a node or credential/key
+ * material. */
+extern	int ieee80211_sae_wcl_request_copyout_bound_current(
+	    struct ieee80211com *, u_int64_t,
+	    struct ieee80211_sae_wcl_bound_request *);
 /*
  * A controller may admit exactly one bounded Algorithm-3 peer-RX relay for
  * the current selected BSS.  The RX path receives a copied epoch/generation

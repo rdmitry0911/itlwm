@@ -520,6 +520,29 @@ struct ieee80211_sae_wcl_request {
 	u_int8_t		phase;
 };
 
+/*
+ * A caller-owned copy-out of one BOUND direct-WCL SAE request.  It contains
+ * only fixed public association facts: the request generation, the selected
+ * BSS identity/profile, and the local STA address that an owner needs for a
+ * bounded join event.  It deliberately carries neither a node reference nor
+ * any credential, PMK, PWE, IE pointer, callback, or engine object.
+ *
+ * sae_scan_flags and sae_profile are scan-derived facts, not an admission.
+ * In particular, a transition profile still requires its own narrow direct
+ * owner policy; this record does not broaden the existing pure-only helper.
+ */
+struct ieee80211_sae_wcl_bound_request {
+	u_int64_t		generation;
+	u_int64_t		association_epoch;
+	u_int32_t		sae_scan_flags;
+	u_int8_t		bssid[IEEE80211_ADDR_LEN];
+	u_int8_t		sta[IEEE80211_ADDR_LEN];
+	u_int8_t		ssid_len;
+	u_int8_t		ssid[IEEE80211_NWID_LEN];
+	u_int8_t		sae_profile;
+	u_int8_t		reserved[3];
+};
+
 struct ItlSaeAuthPeerEventV1;
 
 struct ieee80211com {
@@ -625,6 +648,16 @@ struct ieee80211com {
      */
     int             (*ic_sae_engine_peer_event)(struct ieee80211com *,
                             const struct ItlSaeAuthPeerEventV1 *);
+    /*
+     * Optional nonblocking revocation notification for a direct-WCL SAE
+     * request.  generic net80211 captures only this callback and its
+     * generation while holding the selected-BSS leaf lock, then invokes the
+     * copied callback after dropping that lock.  A driver uses it to cancel
+     * or scrub its separately-owned private credential/engine state; it
+     * receives no node, credential, PMK, or selected-BSS pointer.
+     */
+    void            (*ic_sae_wcl_request_revoke)(struct ieee80211com *,
+                            u_int64_t);
     /*
      * Host-owned WCL reassociation owner state (see contract notes near
      * IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT). active is set

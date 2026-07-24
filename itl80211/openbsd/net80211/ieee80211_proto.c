@@ -922,14 +922,64 @@ ieee80211_sae_wcl_request_phase_is_active(u_int8_t phase)
 	    phase == IEEE80211_SAE_WCL_REQUEST_BOUND;
 }
 
+/*
+ * A leaf-lock clear may revoke a separately-owned driver credential or SAE
+ * engine.  The generic record has no private material, so it copies only the
+ * driver's nonblocking callback and the public generation.  Delivery is
+ * always deferred until after the selected-BSS leaf lock is dropped.
+ */
+struct ieee80211_sae_wcl_request_revocation {
+	void		(*callback)(struct ieee80211com *, u_int64_t);
+	u_int64_t	generation;
+};
+
+static void
+ieee80211_sae_wcl_request_revocation_deliver(struct ieee80211com *ic,
+    struct ieee80211_sae_wcl_request_revocation *revocation)
+{
+	void (*callback)(struct ieee80211com *, u_int64_t);
+	u_int64_t generation;
+
+	if (revocation == NULL)
+		return;
+	callback = revocation->callback;
+	generation = revocation->generation;
+	explicit_bzero(revocation, sizeof(*revocation));
+	if (ic != NULL && generation != 0 && callback != NULL)
+		(*callback)(ic, generation);
+}
+
 /* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
 static void
-ieee80211_sae_wcl_request_clear_locked(struct ieee80211com *ic)
+ieee80211_sae_wcl_request_clear_locked(struct ieee80211com *ic,
+    struct ieee80211_sae_wcl_request_revocation *revocation)
 {
+	u_int64_t generation;
+
 	if (ic == NULL)
 		return;
+	generation = ic->ic_sae_wcl_request.generation;
+	if (generation != 0 && revocation != NULL &&
+	    revocation->generation == 0) {
+		revocation->callback = ic->ic_sae_wcl_request_revoke;
+		revocation->generation = generation;
+	}
 	explicit_bzero(&ic->ic_sae_wcl_request,
 	    sizeof(ic->ic_sae_wcl_request));
+}
+
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
+static int
+ieee80211_sae_wcl_request_owner_hooks_ready_locked(
+    const struct ieee80211com *ic)
+{
+	/* A direct request must own TX initiation, late Open suppression, RX, and
+	 * private-state revocation as one unit.  Partial hook registration must
+	 * never turn a selected SAE BSS into the historical Open-System path. */
+	return ic != NULL && ic->ic_sae_auth_hold != NULL &&
+	    ic->ic_sae_auth_owned != NULL &&
+	    ic->ic_sae_engine_peer_event != NULL &&
+	    ic->ic_sae_wcl_request_revoke != NULL;
 }
 
 /* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
@@ -1263,10 +1313,12 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	IOInterruptState irq;
 	void (*cancel)(struct ieee80211com *, u_int64_t) = NULL;
 	struct ieee80211_pae_mfp_prepared prepared;
+	struct ieee80211_sae_wcl_request_revocation revocation;
 
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return 0;
 	bzero(&prepared, sizeof(prepared));
+	bzero(&revocation, sizeof(revocation));
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock != NULL)
 		irq = IOSimpleLockLockDisableInterrupt(lock);
@@ -1278,13 +1330,14 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	/* Every ordinary association cancellation invalidates a WCL SAE request.
 	 * The one SCAN_ISSUED exception lives solely in the controlled replacement
 	 * helper below, never in this general retry/reset path. */
-	ieee80211_sae_wcl_request_clear_locked(ic);
+	ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 	if (lock != NULL) {
 		txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 		cancel = ic->ic_pae_mfp_txn_cancel;
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	}
 	/* Epoch cancellation only marks and notifies after the leaf lock. */
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
 	ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
 	if (txn_id != 0 && cancel != NULL)
 		(*cancel)(ic, txn_id);
@@ -1301,6 +1354,7 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	IOInterruptState irq;
 	void (*cancel)(struct ieee80211com *, u_int64_t);
 	struct ieee80211_pae_mfp_prepared prepared;
+	struct ieee80211_sae_wcl_request_revocation revocation;
 
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return 0;
@@ -1310,6 +1364,7 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 		return 0;
 	}
 	bzero(&prepared, sizeof(prepared));
+	bzero(&revocation, sizeof(revocation));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, epoch,
@@ -1328,10 +1383,11 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	    ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_PENDING)
 		ic->ic_sae_wcl_request.association_epoch = 0;
 	else
-		ieee80211_sae_wcl_request_clear_locked(ic);
+		ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 	txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 	cancel = ic->ic_pae_mfp_txn_cancel;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
 	ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
 	if (txn_id != 0 && cancel != NULL)
 		(*cancel)(ic, txn_id);
@@ -1395,6 +1451,7 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 {
 	IOSimpleLock *lock;
 	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request_revocation revocation;
 
 	if (ic == NULL)
 		return;
@@ -1406,15 +1463,17 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 	if (ieee80211_ccmp_lifetime_drain(ic) != 0)
 		panic("ieee80211_pae_selected_bss_lock_destroy CCMP lifetime");
 
+	bzero(&revocation, sizeof(revocation));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
-	ieee80211_sae_wcl_request_clear_locked(ic);
+	ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 	ic->ic_sae_wcl_request_join_active = 0;
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELEASE);
 	ic->ic_pae_selected_bss_lock = NULL;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
 	IOSimpleLockFree(lock);
 }
 
@@ -1461,6 +1520,7 @@ ieee80211_sae_wcl_request_publish(struct ieee80211com *ic,
 	IOSimpleLock *lock;
 	IOInterruptState irq;
 	struct ieee80211_sae_wcl_request *request;
+	struct ieee80211_sae_wcl_request_revocation revocation;
 	u_int64_t generation = 0;
 
 	if (ic == NULL || bssid == NULL || ssid == NULL || ssid_len == 0 ||
@@ -1471,6 +1531,7 @@ ieee80211_sae_wcl_request_publish(struct ieee80211com *ic,
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock == NULL)
 		return 0;
+	bzero(&revocation, sizeof(revocation));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	if (ic->ic_opmode != IEEE80211_M_STA ||
 	    (ic->ic_state != IEEE80211_S_SCAN &&
@@ -1485,7 +1546,7 @@ ieee80211_sae_wcl_request_publish(struct ieee80211com *ic,
 	     IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED))
 		goto out;
 	if (ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_NONE)
-		ieee80211_sae_wcl_request_clear_locked(ic);
+		ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 	generation = ++ic->ic_sae_wcl_request_next_generation;
 	/* A nonzero counter cannot become zero because the overflow edge above
 	 * refuses publication rather than wrapping and reusing a backend fence. */
@@ -1499,6 +1560,7 @@ ieee80211_sae_wcl_request_publish(struct ieee80211com *ic,
 	request->phase = IEEE80211_SAE_WCL_REQUEST_PENDING;
 out:
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
 	return generation;
 }
 
@@ -1540,9 +1602,10 @@ ieee80211_sae_wcl_request_join_end(struct ieee80211com *ic)
 
 /*
  * Clear one public request only when its generation still matches.  This is
- * intentionally a leaf/value operation: a caller that owns a private driver
- * credential slot invokes that driver's cancellation separately and no
- * callback, password, PMK, or node crosses this generic boundary.
+ * intentionally a leaf/value operation: it captures only the driver's
+ * generation-only revocation callback under the leaf lock, then tells that
+ * separately-owned credential slot to cancel after unlock.  No password,
+ * PMK, node, or other private state crosses this generic boundary.
  */
 int
 ieee80211_sae_wcl_request_clear_if_generation(struct ieee80211com *ic,
@@ -1550,6 +1613,7 @@ ieee80211_sae_wcl_request_clear_if_generation(struct ieee80211com *ic,
 {
 	IOSimpleLock *lock;
 	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request_revocation revocation;
 	int cleared = 0;
 
 	if (ic == NULL || generation == 0)
@@ -1557,14 +1621,16 @@ ieee80211_sae_wcl_request_clear_if_generation(struct ieee80211com *ic,
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock == NULL)
 		return 0;
+	bzero(&revocation, sizeof(revocation));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	if (ic->ic_sae_wcl_request.generation == generation &&
 	    ieee80211_sae_wcl_request_phase_is_active(
 	    ic->ic_sae_wcl_request.phase)) {
-		ieee80211_sae_wcl_request_clear_locked(ic);
+		ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 		cleared = 1;
 	}
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
 	return cleared;
 }
 
@@ -1593,6 +1659,7 @@ ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *ic,
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	if (ic->ic_opmode != IEEE80211_M_STA || ic->ic_newstate == NULL ||
+	    !ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) ||
 	    ieee80211_sae_wcl_request_join_active_locked(ic) ||
 	    ic->ic_sae_wcl_request.generation != generation ||
 	    ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_PENDING ||
@@ -1619,6 +1686,7 @@ ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *ic,
 	 * generation instead of receiving an unsolicited second scan request. */
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	if (!ieee80211_sae_wcl_request_scan_issued_locked(ic, generation) ||
+	    !ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) ||
 	    ic->ic_newstate == NULL || ic->ic_state != origin) {
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 		goto out;
@@ -1631,12 +1699,13 @@ ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *ic,
 	 * is still the issued scan handoff after the driver returns. */
 	if ((*ic->ic_newstate)(ic, IEEE80211_S_SCAN, -1) == 0) {
 		irq = IOSimpleLockLockDisableInterrupt(lock);
-		if (ieee80211_sae_wcl_request_scan_issued_locked(ic, generation) ||
+		if (ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+		    (ieee80211_sae_wcl_request_scan_issued_locked(ic, generation) ||
 		    (ic->ic_sae_wcl_request.phase ==
 		    IEEE80211_SAE_WCL_REQUEST_BOUND &&
 		    ic->ic_sae_wcl_request.generation == generation &&
 		    ieee80211_sae_wcl_request_identity_is_valid_locked(
-		    &ic->ic_sae_wcl_request)))
+		    &ic->ic_sae_wcl_request))))
 			resumed = 1;
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	}
@@ -1688,6 +1757,7 @@ ieee80211_sae_wcl_request_bind_selected_bss(struct ieee80211com *ic,
 {
 	IOSimpleLock *lock;
 	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request_revocation revocation;
 	int result = IEEE80211_SAE_WCL_REQUEST_BIND_NONE;
 
 	if (ic == NULL)
@@ -1695,16 +1765,18 @@ ieee80211_sae_wcl_request_bind_selected_bss(struct ieee80211com *ic,
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock == NULL)
 		return IEEE80211_SAE_WCL_REQUEST_BIND_NONE;
+	bzero(&revocation, sizeof(revocation));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	if (ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_NONE) {
 		if (ic->ic_sae_wcl_request.generation != 0 ||
 		    ic->ic_sae_wcl_request.association_epoch != 0) {
-			ieee80211_sae_wcl_request_clear_locked(ic);
+			ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 			result = IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED;
 		}
 		goto out;
 	}
 	if (ic->ic_state == IEEE80211_S_SCAN &&
+	    ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
 	    ieee80211_sae_wcl_request_scan_issued_locked(ic,
 	    ic->ic_sae_wcl_request.generation) &&
 	    ieee80211_sae_wcl_request_matches_current_locked(ic,
@@ -1713,11 +1785,12 @@ ieee80211_sae_wcl_request_bind_selected_bss(struct ieee80211com *ic,
 		ic->ic_sae_wcl_request.phase = IEEE80211_SAE_WCL_REQUEST_BOUND;
 		result = IEEE80211_SAE_WCL_REQUEST_BIND_BOUND;
 	} else {
-		ieee80211_sae_wcl_request_clear_locked(ic);
+		ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 		result = IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED;
 	}
 out:
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
 	return result;
 }
 
@@ -1740,11 +1813,122 @@ ieee80211_sae_wcl_request_bound_current(struct ieee80211com *ic,
 	if (epoch != 0 &&
 	    ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
 	    ic->ic_sae_wcl_request.association_epoch == epoch &&
+	    ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
 	    ieee80211_sae_wcl_request_matches_current_locked(ic,
 	    &ic->ic_sae_wcl_request, ni, epoch))
 		bound = 1;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	return bound;
+}
+
+/*
+ * Copy a BOUND direct-WCL request only after the same exact current-BSS and
+ * owner-hook checks that gate RSN output.  expected_generation == 0 lets the
+ * first driver owner atomically capture the sole current BOUND request;
+ * nonzero is an exact stale-worker fence.  The caller owns the surrounding
+ * HAL/lifecycle claim that keeps ic and its leaf lock alive; this function
+ * serializes fields but never creates a node lifetime claim.  The group and
+ * method remain deliberately absent: pure SAE may use the existing narrow
+ * admission helper, while transition SAE needs a later explicit helper.
+ */
+int
+ieee80211_sae_wcl_request_copyout_bound_current(struct ieee80211com *ic,
+    u_int64_t expected_generation,
+    struct ieee80211_sae_wcl_bound_request *out)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_sae_wcl_request *request;
+	const struct ieee80211_pae_selected_bss *selected;
+	u_int64_t epoch;
+	int copied = 0;
+
+	if (out == NULL)
+		return 0;
+	explicit_bzero(out, sizeof(*out));
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	request = &ic->ic_sae_wcl_request;
+	selected = &ic->ic_pae_selected_bss;
+	if (epoch != 0 && request->generation != 0 &&
+	    (expected_generation == 0 ||
+	    request->generation == expected_generation) &&
+	    request->phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
+	    request->association_epoch == epoch &&
+	    ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    ic->ic_bss != NULL &&
+	    ieee80211_sae_peer_rx_mac_is_unicast_nonzero(ic->ic_myaddr) &&
+	    ieee80211_sae_wcl_request_matches_current_locked(ic, request,
+	    ic->ic_bss, epoch)) {
+		out->generation = request->generation;
+		out->association_epoch = epoch;
+		out->sae_scan_flags = selected->sae_scan_flags;
+		IEEE80211_ADDR_COPY(out->bssid, request->bssid);
+		IEEE80211_ADDR_COPY(out->sta, ic->ic_myaddr);
+		out->ssid_len = request->ssid_len;
+		memcpy(out->ssid, request->ssid, request->ssid_len);
+		out->sae_profile = selected->strict_pure_sae_profile;
+		copied = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return copied;
+}
+
+enum ieee80211_sae_wcl_request_auth_owner_state {
+	IEEE80211_SAE_WCL_AUTH_OWNER_NONE = 0,
+	IEEE80211_SAE_WCL_AUTH_OWNER_READY = 1,
+	IEEE80211_SAE_WCL_AUTH_OWNER_REJECTED = -1,
+};
+
+/*
+ * S_AUTH is the final generic boundary before historic Open-System handling.
+ * A live direct-WCL request must be exact and fully driver-owned here.  A
+ * missing hook, stale identity, or incomplete handoff is revoked and forces
+ * the caller back to SCAN; it cannot fall through to an Open AUTH frame.
+ */
+static int
+ieee80211_sae_wcl_request_auth_owner_state(struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request_revocation revocation;
+	u_int64_t epoch;
+	int state = IEEE80211_SAE_WCL_AUTH_OWNER_NONE;
+
+	if (ic == NULL || ni == NULL || ic->ic_opmode != IEEE80211_M_STA)
+		return IEEE80211_SAE_WCL_AUTH_OWNER_NONE;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return IEEE80211_SAE_WCL_AUTH_OWNER_NONE;
+	bzero(&revocation, sizeof(revocation));
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_NONE) {
+		if (ic->ic_sae_wcl_request.generation != 0 ||
+		    ic->ic_sae_wcl_request.association_epoch != 0) {
+			ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
+			state = IEEE80211_SAE_WCL_AUTH_OWNER_REJECTED;
+		}
+	} else if (epoch != 0 &&
+	    ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
+	    ic->ic_sae_wcl_request.association_epoch == epoch &&
+	    ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    ieee80211_sae_wcl_request_matches_current_locked(ic,
+	    &ic->ic_sae_wcl_request, ni, epoch)) {
+		state = IEEE80211_SAE_WCL_AUTH_OWNER_READY;
+	} else {
+		ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
+		state = IEEE80211_SAE_WCL_AUTH_OWNER_REJECTED;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
+	return state;
 }
 
 void
@@ -3051,6 +3235,7 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 	struct ieee80211_node *ni;
 	enum ieee80211_state ostate;
 	int sae_auth_hold;
+	int sae_wcl_owner;
 #ifndef IEEE80211_STA_ONLY
 	int s;
 #endif
@@ -3218,10 +3403,32 @@ justcleanup:
 		 * management watchdog remains armed; a failed owner must return to
 		 * SCAN rather than allowing an Open-System downgrade.
 		 */
+		sae_wcl_owner = IEEE80211_SAE_WCL_AUTH_OWNER_NONE;
+		if (ic->ic_opmode == IEEE80211_M_STA && ni != NULL)
+			sae_wcl_owner = ieee80211_sae_wcl_request_auth_owner_state(
+			    ic, ni);
+		if (sae_wcl_owner == IEEE80211_SAE_WCL_AUTH_OWNER_REJECTED) {
+			/* The generic leaf gate already revoked any private driver state
+			 * after dropping its lock.  Enter the ordinary cancellation path
+			 * rather than sending a historic Open-System AUTH frame. */
+			ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+			break;
+		}
 		sae_auth_hold = 0;
-		if (ic->ic_opmode == IEEE80211_M_STA && ni != NULL &&
-		    ic->ic_sae_auth_hold != NULL)
+		if (sae_wcl_owner == IEEE80211_SAE_WCL_AUTH_OWNER_READY) {
+			/* A direct-WCL request must be claimed by its prepared driver
+			 * owner.  If a late lifecycle change makes hold unavailable, or
+			 * that owner declines it, fail closed before the legacy branch. */
+			if (ic->ic_sae_auth_hold != NULL)
+				sae_auth_hold = ic->ic_sae_auth_hold(ic, ni, ostate, mgt);
+			if (sae_auth_hold == 0) {
+				ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+				break;
+			}
+		} else if (ic->ic_opmode == IEEE80211_M_STA && ni != NULL &&
+		    ic->ic_sae_auth_hold != NULL) {
 			sae_auth_hold = ic->ic_sae_auth_hold(ic, ni, ostate, mgt);
+		}
 		if (sae_auth_hold != 0) {
 			ic->ic_mgt_timer = IEEE80211_TRANS_WAIT;
 			break;
