@@ -54,6 +54,9 @@ static constexpr uint32_t kFirstCandidateBssidOffset = 0x220;
 static constexpr uint32_t kFirstCandidatePairedMacOffset = 0x226;
 static constexpr uint32_t kFirstCandidateChannelOffset = 0x22c;
 static constexpr uint32_t kCandidateStride = 0x12;
+static constexpr uint32_t kMaximumCandidateCount =
+    (kWclAssociatePayloadLength - kFirstCandidateBssidOffset) /
+    kCandidateStride;
 
 static constexpr uint32_t kJoinIoctlBssTypeSelector = 0x14;
 static constexpr uint32_t kJoinIoctlAuthTypeSelector = 0x16;
@@ -105,6 +108,8 @@ static_assert(kFirstCandidateChannelOffset - kFirstCandidateBssidOffset == 0x0c,
               "Tahoe WCL candidate channel offset mismatch");
 static_assert(kCandidateCountOffset + 0x08 == kFirstCandidateBssidOffset,
               "Tahoe WCL candidate list follows count plus reserved dword");
+static_assert(kMaximumCandidateCount == 69,
+              "Tahoe WCL candidate capacity mismatch");
 static_assert(kWclKeyLengthOffset == kKeyOffset + 0x04,
               "Tahoe WCL key length offset mismatch");
 static_assert(kWclKeyCipherTypeOffset == kKeyOffset + 0x08,

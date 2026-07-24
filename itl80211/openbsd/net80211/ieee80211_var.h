@@ -746,7 +746,16 @@ struct ieee80211com {
 	 * fixed record is public control-plane state only; credentials remain in
 	 * the driver's separately scrubbed private staging slot. */
 	u_int64_t		ic_sae_wcl_request_next_generation;
+	/* The same selected-BSS leaf owns the direct SAE-only RSN/MFP policy.
+	 * This generation is zero unless that policy belongs to the exact live
+	 * request below, so an ordinary cancellation clears MFPR before a later
+	 * WPA2 request can observe it. */
+	u_int64_t		ic_sae_wcl_policy_generation;
 	struct ieee80211_sae_wcl_request ic_sae_wcl_request;
+	/* begin() sets this brief leaf-owned reservation before it invalidates a
+	 * prior RSN policy.  A concurrent legacy node_join_bss() then yields back
+	 * to SCAN rather than letting a busy direct request erase its selection. */
+	u_int8_t		ic_sae_wcl_request_policy_starting;
 	/* node_join_bss() owns this short publication fence under the same leaf
 	 * lock.  A late direct-WCL request must fail busy rather than preempt an
 	 * already selected legacy join between BSS copy and S_AUTH. */

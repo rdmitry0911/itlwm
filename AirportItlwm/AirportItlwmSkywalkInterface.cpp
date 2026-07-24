@@ -26,6 +26,8 @@
 #include "TahoeTxRxChainContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
+#include <HAL/ItlSaeDriverTarget.h>
+#include <HAL/ItlSaeWclCredentialV1.h>
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
@@ -36,6 +38,16 @@
 
 #define super IO80211InfraProtocol
 OSDefineMetaClassAndStructors(AirportItlwmSkywalkInterface, IO80211InfraProtocol);
+
+/* The private CIPHER_PWD parser is physically absent from the ordinary
+ * artifact.  The extra defined() guard keeps this shared source warning-free
+ * outside the deliberately separate IWN laboratory build. */
+#if defined(IWN_SOFTWARE_PMF_LAB_BUILD) && IWN_SOFTWARE_PMF_LAB_BUILD && \
+    ITL_SAE_DRIVER_CRYPTO_AVAILABLE
+#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 1
+#else
+#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 0
+#endif
 
 static_assert(TahoeAssociationAuthContracts::kAuthWpa2Psk ==
                   APPLE80211_AUTHTYPE_WPA2_PSK,
@@ -6209,28 +6221,50 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
 
     // Extract fields from the apple80211AssocCandidates carrier recovered from IO80211Family.
-    uint16_t ap_mode = *reinterpret_cast<const uint16_t *>(
-        raw + TahoeAssociationContracts::kApModeOffset);
-    uint32_t auth_lower = *reinterpret_cast<const uint32_t *>(
-        raw + TahoeAssociationContracts::kAuthLowerOffset);
-    uint32_t auth_upper = *reinterpret_cast<const uint32_t *>(
-        raw + TahoeAssociationContracts::kAuthUpperOffset);
-    uint32_t auth_flags = *reinterpret_cast<const uint32_t *>(
-        raw + TahoeAssociationContracts::kAuthFlagsOffset);
-    uint32_t ssid_len = *reinterpret_cast<const uint32_t *>(
-        raw + TahoeAssociationContracts::kSsidLengthOffset);
+    uint16_t ap_mode = 0;
+    uint32_t auth_lower = 0;
+    uint32_t auth_upper = 0;
+    uint32_t auth_flags = 0;
+    memcpy(&ap_mode, raw + TahoeAssociationContracts::kApModeOffset,
+           sizeof(ap_mode));
+    memcpy(&auth_lower, raw + TahoeAssociationContracts::kAuthLowerOffset,
+           sizeof(auth_lower));
+    memcpy(&auth_upper, raw + TahoeAssociationContracts::kAuthUpperOffset,
+           sizeof(auth_upper));
+    memcpy(&auth_flags, raw + TahoeAssociationContracts::kAuthFlagsOffset,
+           sizeof(auth_flags));
+    uint32_t raw_ssid_len = 0;
+    memcpy(&raw_ssid_len,
+           raw + TahoeAssociationContracts::kSsidLengthOffset,
+           sizeof(raw_ssid_len));
+    uint32_t ssid_len = raw_ssid_len;
     const uint8_t *ssid = raw + TahoeAssociationContracts::kSsidOffset;
-    uint16_t rsn_ie_len = *reinterpret_cast<const uint16_t *>(
-        raw + TahoeAssociationContracts::kRsnIeLengthOffset);
+    uint32_t wcl_key_len = 0;
+    uint32_t wcl_key_cipher = 0;
+    memcpy(&wcl_key_len,
+           raw + TahoeAssociationContracts::kWclKeyLengthOffset,
+           sizeof(wcl_key_len));
+    memcpy(&wcl_key_cipher,
+           raw + TahoeAssociationContracts::kWclKeyCipherTypeOffset,
+           sizeof(wcl_key_cipher));
+    uint16_t rsn_ie_len = 0;
+    memcpy(&rsn_ie_len,
+           raw + TahoeAssociationContracts::kRsnIeLengthOffset,
+           sizeof(rsn_ie_len));
     const uint8_t *rsn_ie = raw + TahoeAssociationContracts::kRsnIeOffset;
-    uint16_t instant_hotspot_flags = *reinterpret_cast<const uint16_t *>(
-        raw + TahoeAssociationContracts::kInstantHotspotFlagsOffset);
+    uint16_t instant_hotspot_flags = 0;
+    memcpy(&instant_hotspot_flags,
+           raw + TahoeAssociationContracts::kInstantHotspotFlagsOffset,
+           sizeof(instant_hotspot_flags));
     uint8_t pmf_capability = *(raw + TahoeAssociationContracts::kPmfCapabilityOffset);
-    uint32_t bss_info_flags = *reinterpret_cast<const uint32_t *>(
-        raw + TahoeAssociationContracts::kBssInfoFlagsOffset);
-    uint32_t candidate_count =
-        *reinterpret_cast<const uint32_t *>(
-            raw + TahoeAssociationContracts::kCandidateCountOffset);
+    uint32_t bss_info_flags = 0;
+    memcpy(&bss_info_flags,
+           raw + TahoeAssociationContracts::kBssInfoFlagsOffset,
+           sizeof(bss_info_flags));
+    uint32_t candidate_count = 0;
+    memcpy(&candidate_count,
+           raw + TahoeAssociationContracts::kCandidateCountOffset,
+           sizeof(candidate_count));
     const struct ether_addr *context_bssid =
         reinterpret_cast<const struct ether_addr *>(
             raw + TahoeAssociationContracts::kContextBssidOffset);
@@ -6242,10 +6276,174 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
     if (ssid_len > APPLE80211_MAX_SSID_LEN)
         ssid_len = APPLE80211_MAX_SSID_LEN;
 
+    uint32_t assocPolicyFlags = tahoeAssociationRegDiagPolicyFlags(auth_upper);
+#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
+    /* The ordinary product still reports this vector as quarantined.  The
+     * separately compiled IWN lab artifact admits one exact pure-SAE carrier
+     * below, so do not label that controlled path as a diagnostic reject. */
+    if (auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae)
+        assocPolicyFlags &= ~kAirportItlwmRegDiagAssocPolicyRejectWpa3;
+#endif
     airportItlwmRegDiagRecordAssocPolicy(
         kAirportItlwmRegDiagPathHiddenAssoc, auth_lower, auth_upper,
         rsn_ie_len, pmf_capability, auth_flags, candidate_count,
-        tahoeAssociationRegDiagPolicyFlags(auth_upper));
+        assocPolicyFlags);
+
+#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
+    /*
+     * The first live ingress is intentionally one narrow path: a pure SAE
+     * WCL candidate while the interface is already scanning.  It is not the
+     * old SAE|PSK transition/PLTI route, does not consume a raw RSN IE, and
+     * does not call associateSSID(), whose generic WPA parameters cannot
+     * express SAE without an Open/PSK fallback.  The driver copies the
+     * bounded CIPHER_PWD record synchronously and later rebinds this public
+     * SSID+BSSID identity to the selected scan BSS before it sends Commit.
+     */
+    if (auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae) {
+        struct ItlSaeWclCredentialV1 saeCredential;
+        struct apple80211_authtype_data authType;
+        uint8_t saeBssid[IEEE80211_ADDR_LEN];
+        const uint8_t *saePassword = nullptr;
+        uint64_t saeGeneration = 0;
+        IOReturn saeResult = kIOReturnBadArgumentTahoe;
+
+        explicit_bzero(&saeCredential, sizeof(saeCredential));
+        memset(&authType, 0, sizeof(authType));
+        explicit_bzero(saeBssid, sizeof(saeBssid));
+
+        /* Do not clamp an identity-bearing WCL field: malformed length,
+         * missing candidate, non-password carrier, or a malformed first
+         * candidate never reaches the private credential parser. */
+        if (ap_mode != APPLE80211_AP_MODE_INFRA || raw_ssid_len == 0 ||
+            raw_ssid_len > kItlSaeWclCredentialV1SsidMaxLength ||
+            candidate_count == 0 ||
+            candidate_count > TahoeAssociationContracts::kMaximumCandidateCount ||
+            wcl_key_cipher != APPLE80211_CIPHER_PWD ||
+            wcl_key_len < kItlSaeWclCredentialV1PassphraseMinLength ||
+            wcl_key_len > kItlSaeWclCredentialV1PassphraseMaxLength)
+            goto sae_out;
+        if (ic->ic_state != IEEE80211_S_SCAN) {
+            saeResult = kIOReturnNotReady;
+            goto sae_out;
+        }
+        memcpy(saeBssid,
+               raw + TahoeAssociationContracts::kFirstCandidateBssidOffset,
+               sizeof(saeBssid));
+        if (!itl_sae_wcl_credential_bssid_is_unicast_nonzero(saeBssid))
+            goto sae_out;
+
+        /* Keep the existing fault-injection gate meaningful for the separate
+         * lab ingress too.  It runs before a password byte is read or a
+         * direct policy is published. */
+        if (airportItlwmRegDiagShouldBlock(
+                kAirportItlwmRegDiagBlockHiddenAssoc)) {
+            airportItlwmRegDiagRecordBlock(
+                kAirportItlwmRegDiagBlockHiddenAssoc,
+                kAirportItlwmRegDiagPathHiddenAssoc, raw_ssid_len);
+            saeResult = kIOReturnUnsupported;
+            goto sae_out;
+        }
+
+        /* This is the lifecycle/PMK reset edge.  begin() itself does not
+         * invoke ieee80211_disable_rsn(), because that generic epoch reset
+         * would revoke the generation it is about to publish. */
+        clearExternalPmkEligibilityLocked("setWCL_ASSOCIATE_pure_SAE");
+        saeGeneration = ieee80211_sae_wcl_request_begin(
+            ic, saeBssid, ssid, raw_ssid_len);
+        if (saeGeneration == 0) {
+            saeResult = kIOReturnNotReady;
+            goto sae_out;
+        }
+
+        /* A direct request must never leave an old WCL carrier visible while
+         * it owns this generation.  Only AssociationOwner is reset here;
+         * TahoeOwnerRegistry::reset() would erase unrelated controller
+         * state. */
+        if (instance != nullptr)
+            instance->getTahoeOwnerRegistry().association =
+                TahoeOwnerRegistry::AssociationOwner{};
+
+        /* Do not copy a CIPHER_PWD byte until exact public identity and the
+         * RSN/SAE policy have both accepted the generation. */
+        saePassword = raw + TahoeAssociationContracts::kWclKeyPasswordOffset;
+        saeCredential.version = kItlSaeWclCredentialV1Version;
+        saeCredential.size = sizeof(saeCredential);
+        saeCredential.request_generation = saeGeneration;
+        saeCredential.password_len = wcl_key_len;
+        saeCredential.ssid_len = static_cast<uint8_t>(raw_ssid_len);
+        memcpy(saeCredential.bssid, saeBssid, sizeof(saeCredential.bssid));
+        memcpy(saeCredential.ssid, ssid, saeCredential.ssid_len);
+        memcpy(saeCredential.password, saePassword, saeCredential.password_len);
+        if (!itl_sae_wcl_credential_is_well_formed(&saeCredential))
+            goto sae_out;
+
+        saeResult = fHalService->stageSaeWclCredential(&saeCredential);
+        if (saeResult != kIOReturnSuccess)
+            goto sae_out;
+
+        authType.version = APPLE80211_VERSION;
+        authType.authtype_lower = auth_lower;
+        authType.authtype_upper = auth_upper;
+        saeResult = setAUTH_TYPE(&authType);
+        if (saeResult != kIOReturnSuccess)
+            goto sae_out;
+        disassocIsVoluntary = false;
+
+        /* This metadata is deliberately public-only.  The selected scan BSS
+         * remains authoritative for RSN IEs; raw WCL RSN and CIPHER_PWD never
+         * enter AssociationOwner.  Publishing before resume matters because
+         * raw ic_newstate(SCAN) may synchronously drive BSS selection. */
+        if (instance != nullptr) {
+            auto &saeAssociationOwner =
+                instance->getTahoeOwnerRegistry().association;
+            saeAssociationOwner.hasCarrier = true;
+            saeAssociationOwner.selectedFromCandidate = true;
+            saeAssociationOwner.apMode = ap_mode;
+            saeAssociationOwner.authLower = auth_lower;
+            saeAssociationOwner.authUpper = auth_upper;
+            saeAssociationOwner.authFlags = auth_flags;
+            saeAssociationOwner.ssidLength = raw_ssid_len;
+            saeAssociationOwner.instantHotspotFlags = instant_hotspot_flags;
+            saeAssociationOwner.instantHotspotAppleDeviceFlags =
+                TahoeAssociationContracts::instantHotspotAppleDeviceFlags(
+                    instant_hotspot_flags);
+            saeAssociationOwner.pmfCapabilityField = pmf_capability;
+            saeAssociationOwner.bssInfoFlags = bss_info_flags;
+            saeAssociationOwner.candidateCount = candidate_count;
+            memcpy(saeAssociationOwner.ssid, ssid, raw_ssid_len);
+            memcpy(saeAssociationOwner.selectedBssid, saeBssid,
+                   sizeof(saeAssociationOwner.selectedBssid));
+            memcpy(saeAssociationOwner.candidateBssid, saeBssid,
+                   sizeof(saeAssociationOwner.candidateBssid));
+        }
+
+        if (!ieee80211_sae_wcl_request_resume_scan(ic, saeGeneration)) {
+            saeResult = kIOReturnAborted;
+            goto sae_out;
+        }
+        saeResult = kIOReturnSuccess;
+
+sae_out:
+        if (saeResult != kIOReturnSuccess && saeGeneration != 0) {
+            (void)ieee80211_sae_wcl_request_clear_if_generation(
+                ic, saeGeneration);
+            /* The generic request revoke reaches IWN too; call the backend
+             * directly as an immediate idempotent scrub for failures after a
+             * successful staging copy. */
+            fHalService->cancelSaeWclCredential(saeGeneration);
+            if (instance != nullptr)
+                instance->getTahoeOwnerRegistry().association =
+                    TahoeOwnerRegistry::AssociationOwner{};
+        }
+        explicit_bzero(&saeCredential, sizeof(saeCredential));
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                       ssid, ssid_len, saeBssid,
+                                       auth_lower, auth_upper, rsn_ie_len,
+                                       saeResult);
+        explicit_bzero(saeBssid, sizeof(saeBssid));
+        return saeResult;
+    }
+#endif
 
     if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
             auth_upper)) {

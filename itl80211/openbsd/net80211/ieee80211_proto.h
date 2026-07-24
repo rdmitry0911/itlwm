@@ -187,16 +187,35 @@ extern	void ieee80211_sae_driver_hook_snapshot_copyout(
  * ic_newstate directly so the ordinary SCAN -> SCAN cancellation fence cannot
  * erase the controlled request before node_join_bss binds it.
  */
+/* begin() is the narrow pure-SAE policy entry: it configures only RSN/SAE,
+ * CCMP/BIP and required MFP for one exact S_SCAN WCL request, then returns
+ * the public generation to which the separately-owned credential must bind.
+ * It carries no password or raw RSN IE and never starts a scan itself. */
+extern	u_int64_t ieee80211_sae_wcl_request_begin(struct ieee80211com *,
+	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int);
 extern	u_int64_t ieee80211_sae_wcl_request_publish(struct ieee80211com *,
 	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int);
 extern	int ieee80211_sae_wcl_request_clear_if_generation(
 	    struct ieee80211com *, u_int64_t);
 extern	int ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *,
 	    u_int64_t);
+/* During the one direct pure-SAE scan handoff the historical ESS list must
+ * not overwrite the already-published RSN/SAE policy before BSS selection.
+ * HOLD is the pre-publication/PENDING half: end_scan() must return without
+ * choosing an old result.  It is deliberately separate from the issued
+ * selection predicate below, which allows exactly the new scan to choose its
+ * BSS.  Both are read-only, credential-free, and false for ordinary WCL. */
+extern	int ieee80211_sae_wcl_request_scan_selection_held(
+	    struct ieee80211com *);
+extern	int ieee80211_sae_wcl_request_scan_selection_owned(
+	    struct ieee80211com *);
 /* node_join_bss() brackets its copy-to-S_AUTH window with this leaf-lock
  * fence so a concurrent direct-WCL publication fails busy rather than
  * preempting an already selected legacy join. */
-extern	void ieee80211_sae_wcl_request_join_begin(struct ieee80211com *);
+/* Returns zero when a direct pure-SAE policy reservation has already won the
+ * same pre-selection window; node_join_bss() must return to SCAN in that
+ * case without touching the legacy candidate. */
+extern	int ieee80211_sae_wcl_request_join_begin(struct ieee80211com *);
 extern	void ieee80211_sae_wcl_request_join_end(struct ieee80211com *);
 /* Bind only after node_join_bss copied its chosen BSS and published the
  * selected-BSS value for expected_epoch.  A live request that does not match

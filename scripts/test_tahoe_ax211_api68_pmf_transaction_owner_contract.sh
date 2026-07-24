@@ -2,8 +2,9 @@
 # Source-and-model contract for the AX211/API-68 PMF transaction owner.
 #
 # This is deliberately a fail-closed admission test.  A PASS proves that the
-# staged PSK+PMF path retains its ownership, epoch, q0, and rollback fences;
-# it does not claim functional pure SAE support.
+# staged AX211/IWX PSK+PMF path retains its ownership, epoch, q0, and rollback
+# fences; it does not claim a functional WPA3 association or broaden IWX into
+# the separately lab-gated IWN pure-SAE ingress.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -74,6 +75,24 @@ def body(text, marker, label):
     fail(f"unterminated {label}")
 
 
+def preprocessor_block(text, marker, label):
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing {label}")
+    depth = 0
+    offset = start
+    for line in text[start:].splitlines(keepends=True):
+        directive = line.lstrip()
+        if directive.startswith("#if"):
+            depth += 1
+        elif directive.startswith("#endif"):
+            depth -= 1
+            if depth == 0:
+                return text[start:offset + len(line)]
+        offset += len(line)
+    fail(f"unterminated {label}")
+
+
 def require_categorical_record(text, event, controller, label):
     match = re.search(
         r"AirportItlwmPostPltiTraceRecord\(\s*([^,]+),\s*" +
@@ -122,15 +141,46 @@ for token in (
 ):
     require(proto_h, token, "generic PMF owner API")
 
-# WCL opts in only for the exact audited PSK PMK carrier, after pure SAE has
-# already been rejected.  Public/leave/disassociate ingress clear stale state.
+# The ordinary and AX211/IWX WCL carrier opts in only for the exact audited
+# PSK PMK route.  A separate IWN-only compile gate may admit pure SAE, but it
+# must neither reuse this PSK PMF assignment nor make IWX a SAE backend.
+# Public/leave/disassociate ingress still clear stale state.
 auth = source["auth"]
 require(auth, "inline bool requiresUnsupportedWpa3Auth", "pure-SAE gate")
 require(auth, "inline bool isAuditedPskPmkAuth", "audited PSK classifier")
 sky = source["sky"]
 hidden = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
               "hidden WCL association")
-order(hidden, "hidden PMF admission",
+direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
+                 "    /*\n"
+                 "     * The first live ingress")
+direct_lab = preprocessor_block(hidden, direct_marker,
+                                "IWN lab pure-SAE WCL block")
+for token in (
+    "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
+    "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
+    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 0",
+):
+    require(sky, token, "IWN-only compile fence")
+for token in (
+    "ieee80211_sae_wcl_request_begin",
+    "stageSaeWclCredential",
+    "ieee80211_sae_wcl_request_resume_scan",
+):
+    require(direct_lab, token, "direct IWN pure-SAE handoff")
+for token in (
+    "TahoeAssociationAuthContracts::isAuditedPskPmkAuth",
+    "TahoeAssociationContracts::pmfCapable(pmf_capability)",
+    "publishPendingAssocTarget(",
+    "assocResult = associateSSID",
+):
+    forbid(direct_lab, token, "AX211/PLTI PMF carrier reuse")
+legacy_start = hidden.find(
+    "if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(")
+if legacy_start < 0:
+    fail("missing ordinary WCL PMF admission after IWN lab gate")
+ordinary_hidden = hidden[legacy_start:]
+order(ordinary_hidden, "ordinary hidden PMF admission",
       "requiresUnsupportedWpa3Auth", "return kIOReturnUnsupported;",
       "ic->ic_pae_mfp_requested =",
       "TahoeAssociationContracts::pmfCapable(pmf_capability)",
@@ -509,9 +559,10 @@ class PmfModel:
         self.events = []
         self.live_igtk = False
 
-    def begin(self, *, pure_sae=False, requested=True, initial=True,
+    def begin(self, *, iwx_pure_sae=False, requested=True, initial=True,
               includes_igtk=True, group=False):
-        assert not pure_sae, "pure SAE must be rejected before PMF admission"
+        assert not iwx_pure_sae, \
+            "AX211/IWX PMF model has no pure-SAE ingress"
         assert requested, "PMF requires exact WCL request"
         if initial:
             assert includes_igtk, "initial Msg3 requires IGTK"
@@ -836,8 +887,8 @@ l.queued_cleanup_pass()
 assert l.delete_started and not l.reset
 
 try:
-    PmfModel().begin(pure_sae=True)
-    raise AssertionError("pure SAE unexpectedly admitted")
+    PmfModel().begin(iwx_pure_sae=True)
+    raise AssertionError("pure SAE unexpectedly admitted into AX211/IWX PMF")
 except AssertionError:
     pass
 

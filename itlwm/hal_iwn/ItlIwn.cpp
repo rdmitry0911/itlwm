@@ -3115,8 +3115,8 @@ iwn_mfp_pae_publish_hooks(struct iwn_softc *sc, bool enabled)
 }
 
 /* Capability publication is intentionally independent of SAE.  It admits
- * only the completed software PMF owner; pure WPA3 remains gated on the
- * absent selected-BSS SAE state owner and association bridge. */
+ * only the completed software PMF owner; the separately lab-gated selected-
+ * BSS SAE bridge decides whether an exact pure-WCL request may use it. */
 static void
 iwn_publish_mfp_capability(struct iwn_softc *sc)
 {

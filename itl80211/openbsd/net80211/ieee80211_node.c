@@ -109,8 +109,9 @@ void ieee80211_clean_inactive_nodes(struct ieee80211com *, int);
 /*
  * Preserve an exact AP-profile fact before ieee80211_choose_rsnparams()
  * intersects mutable node fields with local legacy configuration.  This is
- * not an association decision; Tahoe still rejects pure WPA3 before any
- * authentication or key path begins.
+ * not an association decision.  The ordinary product still rejects pure
+ * WPA3 before any authentication or key path begins; the separately gated
+ * IWN laboratory WCL route may bind an exact driver-owned SAE request here.
  */
 static uint8_t
 ieee80211_sae_selected_bss_profile(const struct ieee80211_node *ni)
@@ -1205,7 +1206,14 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     /* Hold a short leaf-lock marker through the whole selected-BSS to AUTH
      * handoff.  A concurrent direct-WCL request must fail busy rather than
      * replace a legacy candidate after it has already been chosen. */
-    ieee80211_sae_wcl_request_join_begin(ic);
+    if (!ieee80211_sae_wcl_request_join_begin(ic)) {
+        /* A pure-SAE WCL policy owns the tiny pre-selection window while it
+         * retires stale WEP state.  Do not copy or mutate this legacy BSS:
+         * ic is already in SCAN, and its owner will resume selection after
+         * publication.  A normal SCAN->SCAN macro here would cancel the
+         * reservation before the direct policy reaches publication. */
+        return;
+    }
     AirportItlwmPostPltiTraceRecord(
         ic, kAirportItlwmPostPltiTraceEventBssSelected);
     AirportItlwmPostPltiTraceRecord(
@@ -1403,6 +1411,15 @@ ieee80211_end_scan(struct _ifnet *ifp)
     
     if (ic->ic_opmode == IEEE80211_M_STA)
         ieee80211_clean_inactive_nodes(ic, IEEE80211_INACT_SCAN);
+
+    /* begin() may be between its short policy reservation and the explicit
+     * replacement scan, or the request may be PENDING while its private
+     * driver credential is staged.  This completed result belongs to the
+     * preceding scan; do not let it select an old BSS (or run switch_ess())
+     * before resume_scan() issues the exact direct-WCL scan. */
+    if (ic->ic_opmode == IEEE80211_M_STA &&
+        ieee80211_sae_wcl_request_scan_selection_held(ic))
+        return;
     
     ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
     
@@ -1467,8 +1484,11 @@ ieee80211_end_scan(struct _ifnet *ifp)
         return;
     }
     
-    /* Possibly switch which ssid we are associated with */
-    if (!bgscan && ic->ic_opmode == IEEE80211_M_STA)
+    /* An issued direct pure-SAE WCL replacement scan owns one exact RSN
+     * policy.  switch_ess() would replace it from a saved legacy ESS and
+     * cancel its generation before node_join_bss can bind the scan BSS. */
+    if (!bgscan && ic->ic_opmode == IEEE80211_M_STA &&
+        !ieee80211_sae_wcl_request_scan_selection_owned(ic))
         ieee80211_switch_ess(ic);
 
     /*

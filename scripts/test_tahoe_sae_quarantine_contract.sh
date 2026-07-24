@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# One-pass contract gate for the pure-SAE quarantine and audited PMF owner.
+# One-pass contract gate for the ordinary pure-SAE quarantine, the narrow
+# IWN lab ingress exception, and the audited PMF owner.
 #
 # This intentionally combines semantic mask tests, every association ingress,
 # PLTI/Agent PMK boundaries, net80211's Open-System limitation, and the AX211
 # PMF transaction owner.  It is a source-and-build admission gate, not a
-# claim that pure SAE itself is implemented.
+# claim that a complete WPA3 association is implemented.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -78,6 +79,24 @@ def body(text, marker, label):
     fail(f"unterminated {label}")
 
 
+def preprocessor_block(text, marker, label):
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing {label}")
+    depth = 0
+    offset = start
+    for line in text[start:].splitlines(keepends=True):
+        directive = line.lstrip()
+        if directive.startswith("#if"):
+            depth += 1
+        elif directive.startswith("#endif"):
+            depth -= 1
+            if depth == 0:
+                return text[start:offset + len(line)]
+        offset += len(line)
+    fail(f"unterminated {label}")
+
+
 def require(text, needle, label):
     if needle not in text:
         fail(f"missing {label}: {needle}")
@@ -98,8 +117,10 @@ def ordered(text, label, *needles):
 
 
 # Mask model: exact 0x1008 is the one deliberately permitted transition
-# carrier. A pure SAE carrier and every other WPA3-containing vector fail
-# closed before reaching legacy auth or the PBKDF2 PMK carrier.
+# carrier.  The regular product, public ingress, legacy ingress, IWX, and
+# every PLTI/Agent PMK carrier reject a pure SAE vector before legacy auth or
+# PBKDF2.  One separately compiled IWN-only WCL branch below is deliberately
+# outside those carriers and still stops before PMK-to-RSN continuation.
 for needle in (
     "kAuthWpa3Sae = 1U << 12",
     "kAuthWpa2Psk = 1U << 3",
@@ -128,9 +149,10 @@ ordered(audited_psk, "exact PLTI PSK allow-list",
 forbid(audited_psk, "usesLocalPskAkm(",
        "broad PSK authorization in exact PLTI allow-list")
 
-# Both Tahoe ingress routes must reject before any association state or RSN
-# mutation. The legacy route is kept in the same gate so a future target
-# switch cannot re-open the unsafe path unnoticed.
+# The generic Skywalk/public and legacy Tahoe routes must reject before any
+# association state or RSN mutation.  The WCL handler contains one separately
+# preprocessor-gated IWN exception, which is checked as a self-contained
+# direct carrier below; its ordinary tail must keep the same reject ordering.
 sky_assoc = body(sky, "IOReturn AirportItlwmSkywalkInterface::associateSSID",
                  "Skywalk associateSSID")
 ordered(sky_assoc, "Skywalk associate ingress",
@@ -158,11 +180,49 @@ require(public_assoc, "return assocResult;", "public association error propagati
 hidden_assoc = body(sky,
                     "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
                     "hidden setWCL_ASSOCIATEImpl")
-ordered(hidden_assoc, "hidden association ingress",
+direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
+                 "    /*\n"
+                 "     * The first live ingress")
+direct_lab = preprocessor_block(hidden_assoc, direct_marker,
+                                "IWN lab pure-SAE WCL block")
+for token in (
+    "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
+    "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
+    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 1",
+    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 0",
+):
+    require(sky, token, "IWN lab-only compile gate")
+for token in (
+    "if (auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae)",
+    "ieee80211_sae_wcl_request_begin",
+    "stageSaeWclCredential",
+    "ieee80211_sae_wcl_request_resume_scan",
+):
+    require(direct_lab, token, "pure-SAE direct IWN ingress")
+ordered(direct_lab, "IWN direct pure-SAE ordering",
+        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_pure_SAE\")",
+        "ieee80211_sae_wcl_request_begin", "stageSaeWclCredential",
+        "ieee80211_sae_wcl_request_resume_scan")
+for token in (
+    "kAuditedWpa3PskTransitionAuth",
+    "TahoeAssociationAuthContracts::mayUseLocalPskPmk",
+    "publishPendingAssocTarget(",
+    "waitForExternalPmkReady",
+    "assocResult = associateSSID",
+    "installExternalPmkLocked",
+):
+    forbid(direct_lab, token, "PLTI/legacy association reuse in IWN ingress")
+legacy_start = hidden_assoc.find(
+    "if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(")
+if legacy_start < 0:
+    fail("missing ordinary hidden pure-SAE rejection after lab gate")
+legacy_hidden_assoc = hidden_assoc[legacy_start:]
+ordered(legacy_hidden_assoc, "ordinary hidden association ingress",
         "requiresUnsupportedWpa3Auth", "kIOReturnUnsupported",
         "auto &associationOwner", "setAUTH_TYPE",
         "assocResult = associateSSID")
-require(hidden_assoc, "return assocResult;", "hidden association error propagation")
+require(legacy_hidden_assoc, "return assocResult;",
+        "ordinary hidden association error propagation")
 
 legacy_assoc = body(legacy, "IOReturn AirportItlwm::associateSSID",
                     "legacy associateSSID")
@@ -531,10 +591,10 @@ for needle in (
 ):
     require(transport_doc, needle, "transport-pinned gate evidence document")
 
-# Passive BSS discovery recognizes the RSN SAE suite and an exact
-# selected-BSS/controller admission may now carry one bounded peer
-# Authentication value. Active configuration remains PSK-only: no association
-# ingress, PMK/AKM selection, or PMF activation is enabled by this bridge.
+# The historic generic crypto carrier remains PSK-only.  Passive BSS discovery
+# recognizes the RSN SAE suite and an exact selected-BSS/controller admission
+# may carry one bounded peer Authentication value, but neither the controller
+# relay nor IWX gets an active SAE/PMK/PMF path from the IWN-only lab ingress.
 require(crypto, "IEEE80211_AKM_SAE", "passive net80211 SAE AKM taxonomy")
 require(crypto_source, "ic->ic_rsnakms = IEEE80211_AKM_PSK;",
         "PSK-only active net80211 configuration")
@@ -560,7 +620,7 @@ auth_rx = body(input_source, "void\nieee80211_recv_auth", "net80211 auth RX")
 require(auth_rx, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
         "generic Open-System auth RX fallback")
 
-print("PASS: Tahoe pure-SAE quarantine and audited PMF-owner contracts")
+print("PASS: Tahoe ordinary pure-SAE quarantine, narrow IWN lab ingress, and audited PMF-owner contracts")
 PY
 
 python3 "$root/scripts/evaluate_tahoe_sae_capture.py" --self-test

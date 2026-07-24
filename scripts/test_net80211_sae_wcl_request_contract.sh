@@ -9,6 +9,7 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 
@@ -56,6 +57,10 @@ def body(text, marker, label):
     fail(f"unterminated {label}")
 
 
+def strip_comments(text):
+    return re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
+
+
 for token in (
     "IEEE80211_SAE_WCL_REQUEST_NONE = 0",
     "IEEE80211_SAE_WCL_REQUEST_PENDING",
@@ -71,7 +76,9 @@ for token in (
     "u_int8_t\t\tssid[IEEE80211_NWID_LEN];",
     "u_int8_t\t\tphase;",
     "u_int64_t\t\tic_sae_wcl_request_next_generation;",
+    "u_int64_t\t\tic_sae_wcl_policy_generation;",
     "struct ieee80211_sae_wcl_request ic_sae_wcl_request;",
+    "u_int8_t\t\tic_sae_wcl_request_policy_starting;",
     "u_int8_t\t\tic_sae_wcl_request_join_active;",
     "ic_sae_wcl_request_revoke",
 ):
@@ -101,8 +108,11 @@ for forbidden in ("password", "pmk", "pwe", "kck", "callback", "node", "ieee8021
 
 for token in (
     "ieee80211_sae_wcl_request_publish",
+    "ieee80211_sae_wcl_request_begin",
     "ieee80211_sae_wcl_request_clear_if_generation",
     "ieee80211_sae_wcl_request_resume_scan",
+    "ieee80211_sae_wcl_request_scan_selection_held",
+    "ieee80211_sae_wcl_request_scan_selection_owned",
     "ieee80211_sae_wcl_request_join_begin",
     "ieee80211_sae_wcl_request_join_end",
     "ieee80211_sae_wcl_request_bind_selected_bss",
@@ -133,6 +143,8 @@ for token in (
 for forbidden in ("ic_psk", "password", "PMK", "PWE", "ic_newstate("):
     if forbidden in publish:
         fail(f"publish must remain public identity only: {forbidden}")
+require(publish, "ic->ic_sae_wcl_request_policy_starting != 0",
+        "publish rejects an in-progress pure-SAE policy reservation")
 ordered(publish, "publish supersede revokes after the leaf lock",
         "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
         "IOSimpleLockUnlockEnableInterrupt",
@@ -149,15 +161,80 @@ for token in (
     require(join_fence, token, "selected-BSS join fence")
 
 join_begin = body(proto_c,
-                  "void\nieee80211_sae_wcl_request_join_begin",
+                  "int\nieee80211_sae_wcl_request_join_begin",
                   "join publication fence begin")
 join_end = body(proto_c,
                 "void\nieee80211_sae_wcl_request_join_end",
                 "join publication fence end")
-require(join_begin, "ic->ic_sae_wcl_request_join_active = 1",
-        "join publication fence begin")
+for token in ("int begun = 0", "ic->ic_sae_wcl_request_policy_starting == 0",
+              "ic->ic_sae_wcl_request_join_active = 1", "return begun"):
+    require(join_begin, token, "join publication fence begin")
 require(join_end, "ic->ic_sae_wcl_request_join_active = 0",
         "join publication fence end")
+
+policy_begin = body(proto_c,
+                    "u_int64_t\nieee80211_sae_wcl_request_begin",
+                    "pure-SAE policy begin")
+for token in (
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "(ic->ic_caps & IEEE80211_C_RSN) == 0",
+        "ic->ic_sae_wcl_request_policy_starting != 0",
+        "ieee80211_sae_wcl_request_join_active_locked(ic)",
+        "ic->ic_sae_wcl_request_policy_starting = 1",
+        "ieee80211_disable_wep(ic)",
+        "ic->ic_sae_wcl_request_policy_starting == 0",
+        "ic->ic_rsnprotos = IEEE80211_PROTO_RSN",
+        "ic->ic_rsnakms = IEEE80211_AKM_SAE",
+        "ic->ic_rsnciphers = IEEE80211_CIPHER_CCMP",
+        "ic->ic_rsngroupcipher = IEEE80211_CIPHER_CCMP",
+        "ic->ic_rsngroupmgmtcipher = IEEE80211_CIPHER_BIP",
+        "IEEE80211_F_RSNON | IEEE80211_F_MFPR",
+        "ic->ic_pae_mfp_requested = 1",
+        "ic->ic_external_pmk_owner = 0",
+        "explicit_bzero(ic->ic_psk",
+        "ic->ic_sae_wcl_policy_generation = generation",
+        "request->phase = IEEE80211_SAE_WCL_REQUEST_PENDING",
+        "ic->ic_sae_wcl_request_policy_starting = 0",
+):
+    require(policy_begin, token, "pure-SAE policy begin fence")
+ordered(policy_begin, "reservation protects out-of-lock WEP teardown",
+        "ic->ic_sae_wcl_request_policy_starting = 1",
+        "ieee80211_disable_wep(ic)",
+        "ic->ic_sae_wcl_request_policy_starting == 0",
+        "ic->ic_sae_wcl_policy_generation = generation",
+        "request->phase = IEEE80211_SAE_WCL_REQUEST_PENDING",
+        "ic->ic_sae_wcl_request_policy_starting = 0",
+        "IOSimpleLockUnlockEnableInterrupt")
+policy_begin_code = strip_comments(policy_begin)
+if "IEEE80211_C_MFP" in policy_begin_code:
+    fail("pure-SAE policy begin must not require a hardware-MFP capability bit")
+if "ieee80211_disable_rsn(" in policy_begin_code:
+    fail("pure-SAE policy begin must not destroy its own upcoming generation")
+
+policy_clear = body(proto_c,
+                    "static void\nieee80211_sae_wcl_request_policy_clear_locked",
+                    "generation-owned pure-SAE policy clear")
+for token in (
+        "ic->ic_sae_wcl_policy_generation = 0",
+        "ic->ic_pae_mfp_requested = 0",
+        "IEEE80211_F_PSK | IEEE80211_F_RSNON |",
+        "IEEE80211_F_MFPR | IEEE80211_F_DESBSSID",
+        "explicit_bzero(ic->ic_psk",
+        "ic->ic_external_pmk_owner = 0",
+        "ic->ic_rsnprotos = 0",
+        "ic->ic_rsnakms = 0",
+        "ic->ic_rsngroupmgmtcipher = (enum ieee80211_cipher)0",
+        "explicit_bzero(ic->ic_des_bssid",
+):
+    require(policy_clear, token, "generation-owned pure-SAE policy cleanup")
+clear_locked = body(proto_c,
+                    "static void\nieee80211_sae_wcl_request_clear_locked",
+                    "request/policy generation pairing")
+ordered(clear_locked, "request clear only tears down its own policy",
+        "generation = ic->ic_sae_wcl_request.generation",
+        "ic->ic_sae_wcl_policy_generation == generation",
+        "ieee80211_sae_wcl_request_policy_clear_locked(ic)",
+        "explicit_bzero(&ic->ic_sae_wcl_request")
 
 run_publish_fence = body(proto_c,
                          "static int\nieee80211_sae_wcl_request_run_is_stable_locked",
@@ -227,6 +304,8 @@ if "ieee80211_sae_wcl_request_clear_locked" in run_fence:
     fail("RUN resume fence must preserve its one SCAN_ISSUED request")
 
 begin = body(proto_c, "u_int64_t\nieee80211_pae_assoc_epoch_begin", "ordinary epoch begin")
+require(begin, "ic->ic_sae_wcl_request_policy_starting = 0",
+        "ordinary epoch cancels a policy reservation")
 require(begin, "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
         "ordinary epoch request cancellation")
 ordered(begin, "ordinary epoch revokes after the leaf lock",
@@ -236,6 +315,8 @@ ordered(begin, "ordinary epoch revokes after the leaf lock",
 replacement = body(proto_c,
                    "u_int64_t\nieee80211_pae_assoc_epoch_begin_replacement",
                    "controlled replacement")
+require(replacement, "ic->ic_sae_wcl_request_policy_starting = 0",
+        "controlled replacement cancels a policy reservation")
 ordered(replacement, "controlled replacement preserves its one bind handoff",
         "ieee80211_sae_wcl_request_scan_issued_locked",
         "IEEE80211_SAE_WCL_REQUEST_PENDING",
@@ -247,6 +328,8 @@ require(destroy, "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
         "terminal request scrub")
 require(destroy, "ic->ic_sae_wcl_request_join_active = 0",
         "terminal join-fence scrub")
+require(destroy, "ic->ic_sae_wcl_request_policy_starting = 0",
+        "terminal policy-reservation scrub")
 ordered(destroy, "terminal scrub revokes after the leaf lock",
         "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
         "IOSimpleLockUnlockEnableInterrupt",
@@ -255,7 +338,9 @@ ordered(destroy, "terminal scrub revokes after the leaf lock",
 attach = body(ieee_c, "void\nieee80211_ifattach", "net80211 attach")
 for token in (
         "ic->ic_sae_wcl_request_next_generation = 0;",
+        "ic->ic_sae_wcl_policy_generation = 0;",
         "memset(&ic->ic_sae_wcl_request, 0,",
+        "ic->ic_sae_wcl_request_policy_starting = 0;",
         "ic->ic_sae_wcl_request_join_active = 0;",
 ):
     require(attach, token, "direct-WCL request attach initialization")
@@ -446,7 +531,8 @@ ordered(auth_tail, "direct-WCL S_AUTH gate precedes historical Open auth",
 
 join = body(node_c, "void\nieee80211_node_join_bss", "BSS join")
 ordered(join, "bind after post-copy capture before RSN selection",
-        "ieee80211_sae_wcl_request_join_begin(ic);",
+        "if (!ieee80211_sae_wcl_request_join_begin(ic))",
+        "return;",
         "(*ic->ic_node_copy)(ic, ic->ic_bss, selbs);",
         "ieee80211_pae_selected_bss_capture(ic, ni, sae_profile,",
         "ieee80211_sae_wcl_request_bind_selected_bss(ic, ni,",
@@ -462,6 +548,66 @@ ordered(choose, "SAE preservation requires exact bound request",
         "ieee80211_sae_wcl_request_bound_current(ic, ni)",
         "ni->ni_rsnakms = IEEE80211_AKM_SAE;")
 
+scan_policy = body(proto_c,
+                   "static int\nieee80211_sae_wcl_request_scan_policy_matches_locked",
+                   "exact pure-SAE scan policy predicate")
+for token in (
+        "request->generation == ic->ic_sae_wcl_policy_generation",
+        "ieee80211_sae_wcl_request_identity_is_valid_locked(request)",
+        "IEEE80211_F_RSNON | IEEE80211_F_MFPR",
+        "(ic->ic_flags & IEEE80211_F_PSK) == 0",
+        "ic->ic_pae_mfp_requested != 0",
+        "ic->ic_rsnakms == IEEE80211_AKM_SAE",
+        "ic->ic_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP",
+):
+    require(scan_policy, token, "exact pure-SAE scan policy fence")
+
+# HOLD and SELECT are intentionally separate.  A policy reservation or a
+# PENDING request can only stop an old scan result from being consumed; only a
+# later SCAN_ISSUED request may suppress switch_ess() and proceed to BSS bind.
+scan_held = body(proto_c,
+                 "int\nieee80211_sae_wcl_request_scan_selection_held",
+                 "pure-SAE scan HOLD predicate")
+for token in (
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "ic->ic_sae_wcl_request_policy_starting != 0",
+        "request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING",
+        "ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request)",
+):
+    require(scan_held, token, "pure-SAE scan HOLD fence")
+scan_held_code = strip_comments(scan_held)
+if "IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED" in scan_held_code:
+    fail("scan HOLD must not consume or select an issued replacement scan")
+
+scan_owned = body(proto_c,
+                  "int\nieee80211_sae_wcl_request_scan_selection_owned",
+                  "pure-SAE scan SELECT predicate")
+for token in (
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "request->phase == IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED",
+        "ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request)",
+):
+    require(scan_owned, token, "pure-SAE scan SELECT fence")
+scan_owned_code = strip_comments(scan_owned)
+if "IEEE80211_SAE_WCL_REQUEST_PENDING" in scan_owned_code:
+    fail("scan SELECT must not treat a PENDING request as selectable")
+for predicate, label in ((scan_policy, "scan policy"),
+                         (scan_held, "scan HOLD"),
+                         (scan_owned, "scan SELECT")):
+    for forbidden in ("ieee80211_new_state", "ieee80211_disable_rsn",
+                      "ieee80211_disable_wep", "ic_newstate"):
+        if forbidden in predicate:
+            fail(f"{label} predicate must be side-effect free: {forbidden}")
+
+end_scan = body(node_c, "void\nieee80211_end_scan", "scan completion")
+ordered(end_scan, "scan HOLD returns before consuming a historical result",
+        "ieee80211_sae_wcl_request_scan_selection_held(ic)",
+        "return;",
+        "ni = RB_MIN(ieee80211_tree, &ic->ic_tree);")
+ordered(end_scan, "issued scan alone suppresses legacy ESS overwrite",
+        "!ieee80211_sae_wcl_request_scan_selection_owned(ic)",
+        "ieee80211_switch_ess(ic)")
+
 
 class RequestModel:
     NONE, PENDING, SCAN_ISSUED, BOUND = range(4)
@@ -476,6 +622,8 @@ class RequestModel:
         self.epoch = 0
         self.identity = None
         self.join_active = False
+        self.policy_starting = False
+        self.policy_generation = 0
         self.run_stable = True
         self.owner_ready = True
         self.revoked = []
@@ -484,13 +632,15 @@ class RequestModel:
         if self.generation:
             # Model the copied generation-only callback after the leaf lock.
             self.revoked.append(self.generation)
+        if self.policy_generation == self.generation:
+            self.policy_generation = 0
         self.phase = self.NONE
         self.generation = 0
         self.epoch = 0
         self.identity = None
 
     def publish(self, identity):
-        if not self.run_stable or self.join_active or self.phase == self.BOUND or self.phase not in {
+        if not self.run_stable or self.join_active or self.policy_starting or self.phase == self.BOUND or self.phase not in {
                 self.NONE, self.PENDING, self.SCAN_ISSUED} or \
                 self.next_generation == (1 << 64) - 1:
             return 0
@@ -510,14 +660,50 @@ class RequestModel:
         return True
 
     def resume(self):
-        if not self.owner_ready or self.join_active or self.phase != self.PENDING:
+        if not self.owner_ready or self.join_active or self.policy_starting or self.phase != self.PENDING:
             self.clear()
             return False
         self.phase = self.SCAN_ISSUED
         return True
 
     def ordinary_cancel(self):
+        self.policy_starting = False
+        self.policy_generation = 0
         self.clear()
+
+    def policy_begin(self, identity):
+        if self.policy_starting or self.join_active or self.phase == self.BOUND:
+            return 0
+        self.policy_starting = True
+        # The out-of-lock WEP teardown has no authority to publish; a real
+        # cancellation clears this reservation before the second leaf check.
+        if not self.run_stable:
+            self.policy_starting = False
+            return 0
+        if self.phase != self.NONE:
+            self.clear()
+        self.next_generation += 1
+        self.generation = self.next_generation
+        self.phase = self.PENDING
+        self.identity = identity
+        self.policy_generation = self.generation
+        self.policy_starting = False
+        return self.generation
+
+    def join_begin(self):
+        if self.policy_starting:
+            return False
+        self.join_active = True
+        return True
+
+    def policy_held_for_scan(self):
+        return self.policy_starting or (
+            self.phase == self.PENDING and self.generation != 0 and
+            self.policy_generation == self.generation)
+
+    def policy_selects_scan(self):
+        return (not self.policy_starting and self.phase == self.SCAN_ISSUED and
+                self.generation != 0 and self.policy_generation == self.generation)
 
     def controlled_replacement(self):
         if self.phase in {self.PENDING, self.SCAN_ISSUED}:
@@ -606,6 +792,11 @@ assert model.revoked[-1] == generation_b2
 model.join_active = True
 assert model.publish(target_a) == 0
 model.join_active = False
+model.policy_starting = True
+assert model.publish(target_a) == 0
+assert not model.join_begin()
+assert not model.resume()
+model.policy_starting = False
 generation_c = model.publish(target_a)
 assert generation_c == 6
 model.join_active = True
@@ -633,6 +824,18 @@ assert model.publish(target_a) == 0
 model.run_stable = True
 model.next_generation = (1 << 64) - 1
 assert model.publish(target_b) == 0
+
+reservation = RequestModel()
+reservation.join_active = True
+assert reservation.policy_begin(target_a) == 0
+reservation.join_active = False
+policy_generation = reservation.policy_begin(target_a)
+assert policy_generation == 1 and reservation.policy_held_for_scan()
+assert not reservation.policy_selects_scan()
+assert reservation.resume()
+assert not reservation.policy_held_for_scan() and reservation.policy_selects_scan()
+reservation.ordinary_cancel()
+assert not reservation.policy_held_for_scan() and not reservation.policy_selects_scan()
 
 print("net80211 direct-WCL SAE request contract: passed")
 PY

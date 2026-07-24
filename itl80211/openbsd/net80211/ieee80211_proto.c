@@ -975,6 +975,36 @@ ieee80211_sae_wcl_request_revocation_deliver(struct ieee80211com *ic,
 		(*callback)(ic, generation);
 }
 
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists.  This is
+ * the only direct-WCL policy owner: it has already invalidated the preceding
+ * RSN/PMK attempt before publication, so clearing it cannot restore a
+ * credential or a broader AKM.  Keep the teardown value-only and bounded so
+ * ordinary epoch cancellation may perform it under the selected-BSS leaf. */
+static void
+ieee80211_sae_wcl_request_policy_clear_locked(struct ieee80211com *ic)
+{
+	if (ic == NULL)
+		return;
+	ic->ic_sae_wcl_policy_generation = 0;
+	ic->ic_pae_mfp_requested = 0;
+	ic->ic_flags &= ~(IEEE80211_F_PSK | IEEE80211_F_RSNON |
+	    IEEE80211_F_MFPR | IEEE80211_F_DESBSSID);
+	explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
+	ic->ic_external_pmk_owner = 0;
+	ic->ic_rsnprotos = 0;
+	ic->ic_rsnakms = 0;
+	ic->ic_rsnciphers = 0;
+	ic->ic_rsngroupcipher = (enum ieee80211_cipher)0;
+	ic->ic_rsngroupmgmtcipher = (enum ieee80211_cipher)0;
+	ic->ic_des_esslen = 0;
+	explicit_bzero(ic->ic_des_essid, sizeof(ic->ic_des_essid));
+	explicit_bzero(ic->ic_des_bssid, sizeof(ic->ic_des_bssid));
+#ifdef USE_APPLE_SUPPLICANT
+	explicit_bzero(ic->ic_rsn_ie_override,
+	    sizeof(ic->ic_rsn_ie_override));
+#endif
+}
+
 /* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
 static void
 ieee80211_sae_wcl_request_clear_locked(struct ieee80211com *ic,
@@ -990,6 +1020,9 @@ ieee80211_sae_wcl_request_clear_locked(struct ieee80211com *ic,
 		revocation->callback = ic->ic_sae_wcl_request_revoke;
 		revocation->generation = generation;
 	}
+	if (generation != 0 &&
+	    ic->ic_sae_wcl_policy_generation == generation)
+		ieee80211_sae_wcl_request_policy_clear_locked(ic);
 	explicit_bzero(&ic->ic_sae_wcl_request,
 	    sizeof(ic->ic_sae_wcl_request));
 }
@@ -1353,6 +1386,10 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	/* A real cancellation wins over the brief pre-policy reservation too.
+	 * begin() rechecks this value after its out-of-lock WEP teardown before
+	 * it can publish any new direct request. */
+	ic->ic_sae_wcl_request_policy_starting = 0;
 	/* Every ordinary association cancellation invalidates a WCL SAE request.
 	 * The one SCAN_ISSUED exception lives solely in the controlled replacement
 	 * helper below, never in this general retry/reset path. */
@@ -1397,6 +1434,7 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	ic->ic_sae_wcl_request_policy_starting = 0;
 	/* The direct WCL resume has exactly one permitted bind handoff: its
 	 * SCAN_ISSUED request survives this post-scan replacement long enough to
 	 * bind the BSS copied below.  A PENDING request is retained only through
@@ -1494,6 +1532,7 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
 	ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
+	ic->ic_sae_wcl_request_policy_starting = 0;
 	ic->ic_sae_wcl_request_join_active = 0;
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELEASE);
@@ -1531,6 +1570,122 @@ ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
 }
 
 /*
+ * Begin the one pure-SAE WCL route.  Unlike publish(), this owns the local
+ * RSN policy too: the generic WPA parameter carrier cannot express SAE and
+ * must not silently fall back to PSK or 802.1X.  The caller has already
+ * invalidated any host-owned PMK before entering here; this helper adds no
+ * credential, no raw RSN IE and no state transition.
+ *
+ * The request is deliberately S_SCAN-only for now.  Replacing a live RUN
+ * owner needs a separate request-preserving PMK reset path; using the normal
+ * epoch reset after publication would erase the just-created generation.
+ */
+u_int64_t
+ieee80211_sae_wcl_request_begin(struct ieee80211com *ic,
+    const u_int8_t bssid[IEEE80211_ADDR_LEN], const u_int8_t *ssid,
+    u_int ssid_len)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request *request;
+	struct ieee80211_sae_wcl_request_revocation revocation;
+	u_int64_t generation = 0;
+
+	if (ic == NULL || bssid == NULL || ssid == NULL || ssid_len == 0 ||
+	    ssid_len > IEEE80211_NWID_LEN ||
+	    !ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(bssid) ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN ||
+	    (ic->ic_caps & IEEE80211_C_RSN) == 0)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+
+	bzero(&revocation, sizeof(revocation));
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN ||
+	    ic->ic_sae_wcl_request_policy_starting != 0 ||
+	    ieee80211_sae_wcl_request_join_active_locked(ic) ||
+	    ic->ic_sae_wcl_request_next_generation == (u_int64_t)-1 ||
+	    (ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_NONE &&
+	     ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_PENDING &&
+	     ic->ic_sae_wcl_request.phase !=
+	     IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED))
+		goto out_unlock;
+	/* The Skywalk ingress has already called clearExternalPmkEligibilityLocked,
+	 * including its epoch reset.  Own this narrow interval before deleting a
+	 * stale WEP key so a concurrent legacy node_join_bss() cannot begin after
+	 * the non-destructive precheck and then lose its RSN policy beneath it. */
+	ic->ic_sae_wcl_request_policy_starting = 1;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+
+	/* WEP teardown invokes the ordinary driver key callback, so never hold the
+	 * leaf spin lock across it.  It does not advance the association epoch;
+	 * any genuine lifecycle edge clears policy_starting and makes the recheck
+	 * below fail closed. */
+	ieee80211_disable_wep(ic);
+
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN ||
+	    ic->ic_sae_wcl_request_policy_starting == 0 ||
+	    ieee80211_sae_wcl_request_join_active_locked(ic) ||
+	    ic->ic_sae_wcl_request_next_generation == (u_int64_t)-1 ||
+	    (ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_NONE &&
+	     ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_PENDING &&
+	     ic->ic_sae_wcl_request.phase !=
+	     IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED))
+		goto out_clear_reservation;
+	if (ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_NONE)
+		ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
+	generation = ++ic->ic_sae_wcl_request_next_generation;
+	_KASSERT(generation != 0);
+
+	/* RSN from the selected scan BSS remains authoritative.  In particular,
+	 * no opaque WCL RSN override or PSK/PLTI owner is carried into this path.
+	 * MFP is a required association policy, but no IEEE80211_C_MFP test is an
+	 * SAE admission gate here: the separately opted-in backend owns whatever
+	 * protected-management transport is available after authentication. */
+	ic->ic_rsnprotos = IEEE80211_PROTO_RSN;
+	ic->ic_rsnakms = IEEE80211_AKM_SAE;
+	ic->ic_rsnciphers = IEEE80211_CIPHER_CCMP;
+	ic->ic_rsngroupcipher = IEEE80211_CIPHER_CCMP;
+	ic->ic_rsngroupmgmtcipher = IEEE80211_CIPHER_BIP;
+	ic->ic_flags &= ~(IEEE80211_F_PSK | IEEE80211_F_WEPON);
+	ic->ic_flags |= IEEE80211_F_RSNON | IEEE80211_F_MFPR |
+	    IEEE80211_F_DESBSSID;
+	ic->ic_pae_mfp_requested = 1;
+	ic->ic_external_pmk_owner = 0;
+	explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
+	ic->ic_des_esslen = (u_int8_t)ssid_len;
+	explicit_bzero(ic->ic_des_essid, sizeof(ic->ic_des_essid));
+	memcpy(ic->ic_des_essid, ssid, ssid_len);
+	IEEE80211_ADDR_COPY(ic->ic_des_bssid, bssid);
+#ifdef USE_APPLE_SUPPLICANT
+	explicit_bzero(ic->ic_rsn_ie_override,
+	    sizeof(ic->ic_rsn_ie_override));
+#endif
+	ic->ic_sae_wcl_policy_generation = generation;
+
+	request = &ic->ic_sae_wcl_request;
+	explicit_bzero(request, sizeof(*request));
+	request->generation = generation;
+	IEEE80211_ADDR_COPY(request->bssid, bssid);
+	request->ssid_len = (u_int8_t)ssid_len;
+	memcpy(request->ssid, ssid, ssid_len);
+	request->phase = IEEE80211_SAE_WCL_REQUEST_PENDING;
+
+out_clear_reservation:
+	ic->ic_sae_wcl_request_policy_starting = 0;
+	out_unlock:
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
+	return generation;
+}
+
+/*
  * Publish public, exact WCL target identity before the separately-owned HAL
  * copies a CIPHER_PWD credential.  A newer request may atomically supersede
  * only PENDING or SCAN_ISSUED public state; the private driver slot performs
@@ -1564,6 +1719,7 @@ ieee80211_sae_wcl_request_publish(struct ieee80211com *ic,
 	     ic->ic_state != IEEE80211_S_RUN) ||
 	    (ic->ic_state == IEEE80211_S_RUN &&
 	    !ieee80211_sae_wcl_request_run_is_stable_locked(ic)) ||
+	    ic->ic_sae_wcl_request_policy_starting != 0 ||
 	    ieee80211_sae_wcl_request_join_active_locked(ic) ||
 	    ic->ic_sae_wcl_request_next_generation == (u_int64_t)-1 ||
 	    (ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_NONE &&
@@ -1593,21 +1749,31 @@ out:
 /* Bracket the full node-copy/RSN-select/S_AUTH handoff.  The marker carries
  * no association identity and never authorizes SAE; it solely makes a late
  * WCL publication fail busy while a legacy join is already committed. */
-void
+int
 ieee80211_sae_wcl_request_join_begin(struct ieee80211com *ic)
 {
 	IOSimpleLock *lock;
 	IOInterruptState irq;
+	int begun = 0;
 
-	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
-		return;
+	if (ic == NULL)
+		return 0;
+	/* This fence has no meaning for legacy non-STA joins or before the leaf
+	 * lock exists.  Preserve their historical no-op/allow behavior; zero is
+	 * reserved for a live pure-SAE policy reservation that actually won. */
+	if (ic->ic_opmode != IEEE80211_M_STA)
+		return 1;
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock == NULL)
-		return;
+		return 1;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
-	if (ic->ic_opmode == IEEE80211_M_STA)
+	if (ic->ic_opmode == IEEE80211_M_STA &&
+	    ic->ic_sae_wcl_request_policy_starting == 0) {
 		ic->ic_sae_wcl_request_join_active = 1;
+		begun = 1;
+	}
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return begun;
 }
 
 void
@@ -1686,6 +1852,7 @@ ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *ic,
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	if (ic->ic_opmode != IEEE80211_M_STA || ic->ic_newstate == NULL ||
 	    !ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) ||
+	    ic->ic_sae_wcl_request_policy_starting != 0 ||
 	    ieee80211_sae_wcl_request_join_active_locked(ic) ||
 	    ic->ic_sae_wcl_request.generation != generation ||
 	    ic->ic_sae_wcl_request.phase != IEEE80211_SAE_WCL_REQUEST_PENDING ||
@@ -1740,6 +1907,91 @@ out:
 		(void)ieee80211_sae_wcl_request_clear_if_generation(ic,
 		    generation);
 	return resumed;
+}
+
+/* Caller holds ic_pae_selected_bss_lock.  This recognizes only begin()'s
+ * complete, exact public policy; it does not infer ownership from a generic
+ * WCL request or from a credential-bearing driver slot. */
+static int
+ieee80211_sae_wcl_request_scan_policy_matches_locked(
+    const struct ieee80211com *ic,
+    const struct ieee80211_sae_wcl_request *request)
+{
+	return ic != NULL && request != NULL && request->generation != 0 &&
+	    request->generation == ic->ic_sae_wcl_policy_generation &&
+	    ieee80211_sae_wcl_request_identity_is_valid_locked(request) &&
+	    (ic->ic_flags & (IEEE80211_F_RSNON | IEEE80211_F_MFPR)) ==
+	    (IEEE80211_F_RSNON | IEEE80211_F_MFPR) &&
+	    (ic->ic_flags & IEEE80211_F_PSK) == 0 &&
+	    ic->ic_pae_mfp_requested != 0 &&
+	    ic->ic_rsnprotos == IEEE80211_PROTO_RSN &&
+	    ic->ic_rsnakms == IEEE80211_AKM_SAE &&
+	    ic->ic_rsnciphers == IEEE80211_CIPHER_CCMP &&
+	    ic->ic_rsngroupcipher == IEEE80211_CIPHER_CCMP &&
+	    ic->ic_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP;
+}
+
+/*
+ * A scan can finish between begin() reserving its short WEP-teardown window
+ * and resume_scan() issuing the replacement scan.  Neither that reservation
+ * nor a PENDING request may let end_scan() choose a historical BSS: the
+ * result belongs to the old scan and switch_ess() would also erase the new
+ * RSN/SAE policy.  HOLD merely returns from end_scan(); resume_scan() starts
+ * the sole new scan after the private credential has staged.
+ */
+int
+ieee80211_sae_wcl_request_scan_selection_held(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_sae_wcl_request *request;
+	int held = 0;
+
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	request = &ic->ic_sae_wcl_request;
+	if (ic->ic_sae_wcl_request_policy_starting != 0 ||
+	    (request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING &&
+	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request)))
+		held = 1;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return held;
+}
+
+/*
+ * The old OpenBSD ESS list predates WCL's exact preselection policy.  Its
+ * switch_ess() helper calls ieee80211_set_ess(), which in turn disables RSN
+ * and starts a fresh association epoch.  After resume_scan() issued the one
+ * exact direct policy, suppress only that ESS overwrite while allowing the
+ * replacement scan to select and bind its BSS.  PENDING is intentionally not
+ * selection-owned: scan_selection_held() handles it without a false join.
+ */
+int
+ieee80211_sae_wcl_request_scan_selection_owned(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_sae_wcl_request *request;
+	int owned = 0;
+
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	request = &ic->ic_sae_wcl_request;
+	if (request->phase == IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED &&
+	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request))
+		owned = 1;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return owned;
 }
 
 /* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */

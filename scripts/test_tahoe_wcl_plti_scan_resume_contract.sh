@@ -3,8 +3,9 @@
 #
 # This is intentionally a source and pure-unit test only.  It proves that the
 # repair resumes the ordinary net80211 scan pipeline after its paired PLTI
-# wait observes PMK readiness; it neither claims nor exercises pure SAE/PMF
-# support.
+# wait observes PMK readiness.  It covers only the audited PSK/PLTI carrier:
+# the separately compiled IWN pure-SAE ingress is prohibited from borrowing
+# this PMK route and is not a completed WPA3 association claim.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -69,6 +70,24 @@ def body(text, marker, label):
     fail(f"unterminated {label}")
 
 
+def preprocessor_block(text, marker, label):
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing {label}")
+    depth = 0
+    offset = start
+    for line in text[start:].splitlines(keepends=True):
+        directive = line.lstrip()
+        if directive.startswith("#if"):
+            depth += 1
+        elif directive.startswith("#endif"):
+            depth -= 1
+            if depth == 0:
+                return text[start:offset + len(line)]
+        offset += len(line)
+    fail(f"unterminated {label}")
+
+
 predicate = body(
     contracts, "constexpr bool shouldResumeScanAfterExternalPmk",
     "pure scan-resume predicate")
@@ -99,7 +118,44 @@ require(associate, "Control-flow result only: never expose PMK material",
 hidden_assoc = body(
     sky, "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
     "WCL association ingress")
-ordered(hidden_assoc, "WCL PMK scan-resume ordering",
+direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
+                 "    /*\n"
+                 "     * The first live ingress")
+direct_lab = preprocessor_block(hidden_assoc, direct_marker,
+                                "lab-gated pure-SAE WCL ingress")
+require(sky, "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
+        "compile-time IWN laboratory gate")
+require(sky, "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
+        "driver-crypto laboratory gate")
+for token in (
+        "if (auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae)",
+        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_pure_SAE\")",
+        "ieee80211_sae_wcl_request_begin",
+        "stageSaeWclCredential",
+        "ieee80211_sae_wcl_request_resume_scan",
+):
+    require(direct_lab, token, "narrow IWN pure-SAE ingress")
+ordered(direct_lab, "IWN pure-SAE avoids PLTI PMK handoff",
+        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_pure_SAE\")",
+        "ieee80211_sae_wcl_request_begin", "stageSaeWclCredential",
+        "ieee80211_sae_wcl_request_resume_scan")
+for token in (
+        "TahoeAssociationAuthContracts::mayUseLocalPskPmk",
+        "publishPendingAssocTarget(",
+        "waitForExternalPmkReady",
+        "assocResult = associateSSID",
+        "installExternalPmkLocked",
+):
+    forbid(direct_lab, token, "PLTI/PMK reuse in IWN pure-SAE ingress")
+
+# The ordinary source path follows the lab-only block.  It must retain the
+# historical pure-SAE reject before it evaluates the PSK/PLTI resume edge.
+legacy_start = hidden_assoc.find(
+    "if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(")
+if legacy_start < 0:
+    fail("missing ordinary WCL pure-SAE rejection after lab gate")
+legacy_hidden_assoc = hidden_assoc[legacy_start:]
+ordered(legacy_hidden_assoc, "WCL PMK scan-resume ordering",
         "requiresUnsupportedWpa3Auth", "return kIOReturnUnsupported;",
         "bool externalPmkReadyObserved = false;",
         "&externalPmkReadyObserved);",
@@ -108,12 +164,12 @@ ordered(hidden_assoc, "WCL PMK scan-resume ordering",
         "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);")
 require(hidden_assoc, "TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper)",
         "exact existing PLTI PSK policy at scan-resume edge")
-resume_start = hidden_assoc.find(
+resume_start = legacy_hidden_assoc.find(
     "const TahoeExternalPmkScanResumeContracts::Facts scanResumeFacts")
-resume_end = hidden_assoc.find("airportItlwmRegDiagRecordAssoc", resume_start)
+resume_end = legacy_hidden_assoc.find("airportItlwmRegDiagRecordAssoc", resume_start)
 if resume_start < 0 or resume_end < 0:
     fail("missing bounded WCL scan-resume block")
-resume = hidden_assoc[resume_start:resume_end]
+resume = legacy_hidden_assoc[resume_start:resume_end]
 for token in (
         "ieee80211_node_choose_bss",
         "ieee80211_node_join_bss",
@@ -146,8 +202,10 @@ ordered(end_scan, "Apple AUTO_JOIN empty-ESS hold",
         "IEEE80211_F_AUTO_JOIN", "ic->ic_des_esslen == 0", "return;",
         "ieee80211_node_choose_bss")
 
-# Pure SAE remains a reject-only path.  The resume predicate only consumes
-# the pre-existing exact PLTI policy, so it cannot reopen an SAE carrier.
+# Ordinary builds and the audited PLTI path retain pure-SAE rejection.  The
+# resume predicate only consumes the pre-existing exact PSK policy, so the
+# lab-gated IWN direct route cannot reopen a PLTI carrier or claim PMK-to-RSN
+# continuation.
 require(auth, "kAuthWpa3Sae | kAuthWpa2Psk",
         "sole audited WPA3 transition selector")
 require(auth, "return (authtypeUpper & kWpa3OnlyAuthMask) != 0 &&",
