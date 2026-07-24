@@ -153,6 +153,19 @@ order(detach, "detach producer quiescence",
       "task_del(systq, &sc->mfp_pae_task);",
       "taskq_barrier(systq);")
 
+irq_teardown = body("iwn_interrupt_teardown(struct iwn_softc *sc)",
+                    "IWN interrupt teardown")
+order(irq_teardown, "direct RX source withdrawal",
+      "ih->disable();", "pci.workloop->removeEventSource(ih);",
+      "ih->release();", "sc->sc_ih = NULL;")
+outer_detach = body("detach(IOPCIDevice *device)", "IWN outer detach")
+order(outer_detach, "IRQ drain before PMF lock and DMA release",
+      "iwn_mfp_pae_detach_begin(sc);", "iwn_interrupt_teardown(sc);",
+      "iwn_free_tx_ring(sc", "IOSimpleLockFree(sc->sc_mfp_pae_lock);")
+attach = body("iwn_attach(struct iwn_softc *sc", "IWN attach")
+order(attach, "early-unwind interrupt initialization", "sc->sc_ih = NULL;",
+      "sc->ih = NULL;", "pci_intr_map_msi(pa, &sc->ih)")
+
 init = body("iwn_init(struct _ifnet *ifp)", "IWN init")
 order(init, "restart only reopens after hardware config",
       "iwn_config(sc)", "iwn_mfp_pae_reopen(sc);", "ieee80211_begin_scan(ifp);")

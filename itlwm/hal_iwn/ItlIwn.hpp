@@ -281,6 +281,7 @@ public:
                 u_int64_t);
     void        iwn_mfp_pae_abort_all(struct iwn_softc *);
     void        iwn_mfp_pae_detach_begin(struct iwn_softc *);
+    void        iwn_interrupt_teardown(struct iwn_softc *);
     static int        iwn_set_key(struct ieee80211com *, struct ieee80211_node *,
                 struct ieee80211_key *);
     static void        iwn_delete_key(struct ieee80211com *, struct ieee80211_node *,

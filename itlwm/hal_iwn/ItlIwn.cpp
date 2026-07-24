@@ -470,6 +470,11 @@ detach(IOPCIDevice *device)
      * disappear.  This is safe on an early attach unwind as every helper
      * tolerates an uninitialised PMF lock. */
     iwn_mfp_pae_detach_begin(sc);
+    /* PMF close/drain covers admitted callbacks, but a direct IWN RX action
+     * can still hold a copied generic hook just before callback admission.
+     * Removing this source synchronously acknowledges that action before any
+     * PMF lock, DMA ring, or net80211 state below is released. */
+    iwn_interrupt_teardown(sc);
     
     for (int txq_i = 0; txq_i < nitems(sc->txq); txq_i++)
         iwn_free_tx_ring(sc, &sc->txq[txq_i]);
@@ -488,6 +493,20 @@ detach(IOPCIDevice *device)
         sc->sc_mfp_pae_lock = NULL;
     }
     releaseAll();
+}
+
+void ItlIwn::
+iwn_interrupt_teardown(struct iwn_softc *sc)
+{
+    IOInterruptEventSource *ih;
+
+    if (sc == NULL || (ih = sc->sc_ih) == NULL)
+        return;
+    ih->disable();
+    if (pci.workloop != NULL)
+        pci.workloop->removeEventSource(ih);
+    ih->release();
+    sc->sc_ih = NULL;
 }
 
 void ItlIwn::
@@ -854,6 +873,9 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     pcireg_t memtype, reg;
     int i, error;
 
+    /* detach() owns every early-attach unwind below. */
+    sc->sc_ih = NULL;
+    sc->ih = NULL;
     sc->sc_pct = pa->pa_pc;
     sc->sc_pcitag = pa->pa_tag;
     sc->sc_dmat = pa->pa_dmat;
