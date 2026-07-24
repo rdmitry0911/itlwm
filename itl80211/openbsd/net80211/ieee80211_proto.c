@@ -458,6 +458,47 @@ ieee80211_pae_mfp_txn_abort(struct ieee80211com *ic)
 		(*cancel)(ic, id);
 }
 
+/*
+ * A submit callback runs after the selected-BSS leaf has dropped.  A roam can
+ * therefore replace the generic value record before the old callback reports
+ * failure.  Never let that old failure abort whichever transaction happened
+ * to become current in the meantime: remove only the exact id/epoch/BSS
+ * record that this caller created.  A false result is an expected stale
+ * completion, not a reason to tear down the replacement association.
+ */
+static int
+ieee80211_pae_mfp_txn_abort_exact(struct ieee80211com *ic, u_int64_t id,
+	u_int64_t epoch, struct ieee80211_node *ni)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	void (*cancel)(struct ieee80211com *, u_int64_t);
+	struct ieee80211_pae_mfp_prepared prepared;
+	u_int64_t cancel_id = 0;
+	int current = 0;
+
+	if (ic == NULL || ni == NULL || id == 0 || epoch == 0 ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	bzero(&prepared, sizeof(prepared));
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_pae_mfp_txn.active && ic->ic_pae_mfp_txn.id == id &&
+	    ic->ic_pae_mfp_txn.assoc_epoch == epoch &&
+	    ic->ic_pae_mfp_txn.ni == ni) {
+		current = ic->ic_bss == ni &&
+		    __atomic_load_n(&ic->ic_pae_assoc_epoch,
+		    __ATOMIC_ACQUIRE) == epoch;
+		cancel = ic->ic_pae_mfp_txn_cancel;
+		cancel_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
+	} else
+		cancel = NULL;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
+	if (cancel_id != 0 && cancel != NULL)
+		(*cancel)(ic, cancel_id);
+	return cancel_id != 0 && current;
+}
+
 int
 ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 	struct ieee80211_node *ni, const struct ieee80211_ptk *ptk,
@@ -494,15 +535,23 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 	if (have_igtk && !ieee80211_pae_mfp_igtk_shape_valid(igtk_key))
 		return EINVAL;
 	lock = ic->ic_pae_selected_bss_lock;
-	submit = ic->ic_pae_mfp_txn_submit;
-	cancel = ic->ic_pae_mfp_txn_cancel;
-	finish = ic->ic_pae_mfp_txn_finish;
-	if (lock == NULL || submit == NULL || cancel == NULL || finish == NULL)
+	if (lock == NULL)
 		return EOPNOTSUPP;
 
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	submit = ic->ic_pae_mfp_txn_submit;
+	cancel = ic->ic_pae_mfp_txn_cancel;
+	finish = ic->ic_pae_mfp_txn_finish;
+	if (submit == NULL || cancel == NULL || finish == NULL) {
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		return EOPNOTSUPP;
+	}
 	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
-	if (epoch == 0 || ic->ic_bss != ni || ic->ic_pae_mfp_txn.active) {
+	if (epoch == 0 || ic->ic_bss != ni) {
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		return ECANCELED;
+	}
+	if (ic->ic_pae_mfp_txn.active) {
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 		return EBUSY;
 	}
@@ -545,8 +594,16 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 
 	error = (*submit)(ic, id, epoch, ni, &key_copy, stage);
 	explicit_bzero(&key_copy, sizeof(key_copy));
-	if (error != 0)
-		ieee80211_pae_mfp_txn_abort(ic);
+	if (error != 0) {
+		if (!ieee80211_pae_mfp_txn_abort_exact(ic, id, epoch, ni))
+			return ECANCELED;
+		/* EBUSY is reserved for an already-live generic record above.  A
+		 * backend that rejected this newly-created record did not accept an
+		 * owner, so make the current-BSS failure explicit instead of letting
+		 * ingress mistake it for an accepted asynchronous handoff. */
+		if (error == EBUSY)
+			return EIO;
+	}
 	return error;
 }
 

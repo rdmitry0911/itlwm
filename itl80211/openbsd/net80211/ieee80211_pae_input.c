@@ -832,6 +832,11 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             gtk, igtk, info);
         if (mfp_error == 0 || mfp_error == EBUSY)
             return;
+        /* A stale submit belongs to a replaced BSS.  It must not deauth or
+         * globally scan the new association, and it cannot use the legacy
+         * synchronous key path after the epoch fence has moved. */
+        if (mfp_error == ECANCELED)
+            return;
         if (mfp_error != ENOENT) {
             reason = IEEE80211_REASON_AUTH_LEAVE;
             goto deauth;
@@ -1216,6 +1221,10 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         mfp_error = ieee80211_pae_mfp_group_begin(ic, ni, key, gtk,
             igtk, info);
         if (mfp_error == 0 || mfp_error == EBUSY)
+            return;
+        /* Same stale-owner rule as Msg3: a previous BSS cannot drive the
+         * replacement owner through the generic deauth/SCAN terminal. */
+        if (mfp_error == ECANCELED)
             return;
         if (mfp_error != ENOENT) {
             reason = IEEE80211_REASON_AUTH_LEAVE;
