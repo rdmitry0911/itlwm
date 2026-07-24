@@ -26,6 +26,7 @@ iwx_pmf_bip = (root / "include/ClientKit/AirportItlwmIwxPmfBipTraceContracts.h")
 iwx_pmf_bip_facade = (root / "AirportItlwm/TahoeIwxPmfBipTraceContracts.hpp").read_text()
 iwn_software_pmf = (root / "include/ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h").read_text()
 iwn_pmf_ingress = (root / "include/ClientKit/AirportItlwmIwnPmfIngressTraceContracts.h").read_text()
+iwn_direct_sae = (root / "include/ClientKit/AirportItlwmIwnDirectSaeTraceContracts.h").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
@@ -52,6 +53,7 @@ payload_test = (root / "tests/tahoe_payload_builders_test.cpp").read_text()
 iwx_c_fixture = (root / "tests/iwx_pmf_bip_trace_contract_test.c").read_text()
 iwn_c_fixture = (root / "tests/iwn_software_pmf_trace_contract_test.c").read_text()
 iwn_ingress_c_fixture = (root / "tests/iwn_pmf_ingress_trace_contract_test.c").read_text()
+iwn_direct_sae_c_fixture = (root / "tests/iwn_direct_sae_trace_contract_test.c").read_text()
 
 
 def fail(message):
@@ -119,7 +121,7 @@ def struct_block(name):
 
 
 for needle in (
-        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 5U",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 6U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_ACK_PROPERTY",
@@ -157,6 +159,8 @@ for needle in (
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST",
         "kAirportItlwmPostPltiTraceEventMax",
 ):
     require(abi, needle, "safe-only public ABI")
@@ -181,7 +185,14 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected = 49",
         "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained = 50",
         "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated = 51",
-        "kAirportItlwmPostPltiTraceEventMax = 52",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted = 52",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeCommitTxComplete = 53",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted = 54",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeConfirmTxComplete = 55",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated = 56",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed = 57",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted = 58",
+        "kAirportItlwmPostPltiTraceEventMax = 59",
 ):
     require(abi, needle, "append-only IWX PMF observer ABI")
 
@@ -216,6 +227,7 @@ ordered(buffer_fields, "buffer ABI ordering", "version;", "captureGeneration;",
 
 for needle in (
         "AirportItlwmPostPltiTraceBeginEpisode",
+        "AirportItlwmPostPltiTraceBeginDirectSaeEpisode",
         "AirportItlwmPostPltiTraceRecord",
         "AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
         "AirportItlwmPostPltiTraceCompleteEpisode",
@@ -232,6 +244,10 @@ forbid(bridge, "defined(__MAC_26_0)",
 for needle in (
         "OBJECT_DIR=",
         "require_external_bridge()",
+        "--iwn-software-pmf-lab",
+        "BUILD_IWN_SOFTWARE_PMF_LAB",
+        "Tahoe-IwnSoftwarePmfLab",
+        "DerivedData-iwn-software-pmf-lab",
         "AirportItlwm-Tahoe.build/Objects-normal/x86_64",
         "require_external_bridge ieee80211_input AirportItlwmPostPltiTraceRecord",
         "require_external_bridge ieee80211_node AirportItlwmPostPltiTraceRecord",
@@ -242,6 +258,8 @@ for needle in (
         "require_external_bridge ieee80211_crypto_bip AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
         "require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecord",
         "require_external_bridge ItlIwx AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge AirportItlwmSkywalkInterface",
+        "AirportItlwmPostPltiTraceBeginDirectSaeEpisode",
         "__ZL.*AirportItlwmPostPltiTrace",
         "external trace bridge",
         "ITLWM_DERIVED_DATA_OVERRIDE",
@@ -365,7 +383,7 @@ for needle in ("AirportItlwmRegDiag", "IWX_AUTH_DIAG", "XYLog", "setProperty",
 for marker in (
         "AirportItlwmPostPltiTraceRecord",
         "AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
-        "AirportItlwmPostPltiTraceBeginEpisode",
+        "airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent",
         "AirportItlwmPostPltiTraceCompleteEpisode",
         "AirportItlwmPostPltiTraceAbortEpisode",
         "AirportItlwmPostPltiTraceNoteStateRequest",
@@ -401,15 +419,35 @@ ordered(close, "terminal token detached before terminal event",
 may_begin = body(v2, "airportItlwmPostPltiTraceMayBegin",
                  "episode admission gate")
 require(may_begin, "admitEpisodes", "episode admission state")
-begin = body(v2, "AirportItlwmPostPltiTraceBeginEpisode",
-             "safe episode begin bridge")
+legacy_begin = body(v2, "AirportItlwmPostPltiTraceBeginEpisode",
+                    "legacy safe episode begin bridge")
+require(legacy_begin, "airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent",
+        "legacy begin delegates to epoch-guarded implementation")
+require(legacy_begin,
+        "kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume",
+        "legacy begin initial event")
+direct_begin = body(v2, "AirportItlwmPostPltiTraceBeginDirectSaeEpisode",
+                    "direct SAE episode begin bridge")
+require(direct_begin, "airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent",
+        "direct SAE begin delegates to epoch-guarded implementation")
+require(direct_begin,
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted",
+        "direct SAE begin initial event")
+begin = body(v2, "airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent",
+             "shared safe episode begin implementation")
 for needle in (
         "activeToken", "airportItlwmPostPltiTraceMayBegin", "episodeCount",
-        "kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume",
+        "airportItlwmPostPltiTraceEventIsKnown(initial_event)",
         "airportItlwmPostPltiTraceTryLock",
         "airportItlwmPostPltiTraceUnlock",
 ):
     require(begin, needle, "one-token episode begin")
+ordered(begin, "episode backend check follows its epoch and recorder lock",
+        "airportItlwmPostPltiTraceProducerEnter",
+        "airportItlwmPostPltiTraceTryLock",
+        "const uint32_t backend",
+        "airportItlwmPostPltiTraceEventRequiresIwn",
+        "airportItlwmPostPltiTraceMayBegin")
 for needle in ("AirportItlwmRegDiag", "IWX_AUTH_DIAG", "XYLog", "setProperty",
                "OSData", "OSString"):
     forbid(begin, needle, "unsafe episode begin dependency")
@@ -584,6 +622,64 @@ ordered(iwn_ingress_classifier, "IWN ingress order is WCL then join then node MF
         "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated",
         "previous_event !=")
 
+# Direct SAE has a separate evaluator because its first event is an in-kext
+# WCL request, not the legacy PMK/PLTI scan-resume episode.  It requires the
+# actual SAE worker boundaries, the real Association descriptor fence, and the
+# complete local PMF keyset before it can accept the ordinary in-kernel
+# four-way completion.
+for needle in (
+        "Safe, categorical evaluator for one direct IWN SAE laboratory attempt",
+        "AirportItlwmIwnDirectSaeTraceVerdictDirectSae4WayPortValid",
+        "AirportItlwmIwnDirectSaeTraceMissingStagePmkClaim",
+        "AirportItlwmIwnDirectSaeTraceMissingStagePmfKeysetPublication",
+        "airport_itlwm_iwn_direct_sae_trace_classify_entries_with_stage",
+        "backend != kAirportItlwmPostPltiTraceBackendIwn",
+        "episode_count != 1 || active_episode != 0",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeCommitTxComplete",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeConfirmTxComplete",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished",
+        "airport_itlwm_iwn_direct_sae_trace_published_igtk_slot",
+        "airport_itlwm_iwn_direct_sae_trace_selected_igtk_slot",
+        "kAirportItlwmPostPltiTraceEventPortValidTransition",
+        "eapol_rx < 2 || eapol_kernel < 2 || eapol_tx < 2",
+):
+    require(iwn_direct_sae, needle, "IWN direct-SAE evaluator fence")
+iwn_direct_sae_classifier = body(
+    iwn_direct_sae,
+    "airport_itlwm_iwn_direct_sae_trace_classify_entries_with_stage",
+    "IWN direct-SAE ordered evaluator")
+ordered(iwn_direct_sae_classifier, "IWN direct SAE boundary order",
+        "kAirportItlwmPostPltiTraceEventIwnScanStarted",
+        "fresh_scan_started || bss_selected || join_bss || auth_state",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeCommitTxComplete",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeConfirmTxComplete",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaePtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeGtkSoftwarePrepared",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeIgtkStageAcknowledged",
+        "kAirportItlwmPostPltiTraceEventIwnMfpPaeSoftwareCcmpBipPublished")
+iwn_direct_sae_task = body(iwn, "void ItlIwn::\niwn_sae_engine_task",
+                           "IWN direct-SAE worker")
+ordered(iwn_direct_sae_task,
+        "IWN direct SAE peer-Commit evidence excludes anti-clogging retry",
+        "peer_result == IEEE80211_SAE_ENGINE_PEER_TX_READY",
+        "peer.phase == kItlSaeAuthTransportPhaseCommit",
+        "kItlSaeAuthTransportPeerWireTransactionCommit",
+        "peer.auth_status == WLAN_STATUS_SUCCESS",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted",
+        "iwn_sae_engine_submit_prepared(sc)")
+
 iwn_stage_task = body(iwn, "void ItlIwn::\niwn_mfp_pae_task",
                       "IWN software-PMF stage worker")
 ordered(iwn_stage_task, "IWN stage fact follows durable local acceptance",
@@ -685,6 +781,8 @@ for needle in (
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST",
 ):
     require(iwn_event_filter, needle, "explicit IWN PMF vocabulary boundary")
 record_token = body(v2, "airportItlwmPostPltiTraceRecordToken",
@@ -1012,6 +1110,33 @@ for needle in (
 ):
     require(client, needle, "IWN PMF-ingress categorical client mapping")
 for needle in (
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted",
+        "iwn-direct-sae-request-accepted",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeCommitTxComplete",
+        "iwn-direct-sae-commit-tx-complete",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted",
+        "iwn-direct-sae-peer-commit-accepted",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeConfirmTxComplete",
+        "iwn-direct-sae-confirm-tx-complete",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated",
+        "iwn-direct-sae-peer-confirm-validated",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed",
+        "iwn-direct-sae-pmk-claimed",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted",
+        "iwn-direct-sae-assoc-descriptor-accepted",
+        "#include <ClientKit/AirportItlwmIwnDirectSaeTraceContracts.h>",
+        "get_iwn_direct_sae_report",
+        "iwn-direct-sae-report",
+        "iwn_direct_sae_verdict=%s first_missing_stage=%s",
+        "DIRECT_SAE_4WAY_PORT_VALID",
+        "PMF_PTK_SOFTWARE_CCMP_NOT_OBSERVED",
+        "PMF_GTK_SOFTWARE_CCMP_NOT_OBSERVED",
+        "PMF_IGTK_STAGE_NOT_OBSERVED",
+        "PMF_IGTK_PUBLICATION_NOT_OBSERVED",
+        "PMF_KEYSET_PUBLICATION_NOT_OBSERVED",
+):
+    require(client, needle, "IWN direct-SAE categorical client mapping")
+for needle in (
         "-std=c11 -Wall -Wextra -Werror",
         "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c",
         "-framework IOKit",
@@ -1030,6 +1155,8 @@ for needle in (
         "iwn_software_pmf_trace_contract_test",
         "tests/iwn_pmf_ingress_trace_contract_test.c",
         "iwn_pmf_ingress_trace_contract_test",
+        "tests/iwn_direct_sae_trace_contract_test.c",
+        "iwn_direct_sae_trace_contract_test",
 ):
     require(payload_script, needle, "unit build for PMF trace C contracts")
 for needle in (
@@ -1074,6 +1201,20 @@ for needle in (
         "mixed generations are never an ingress verdict",
 ):
     require(iwn_ingress_c_fixture, needle, "deterministic IWN PMF-ingress C fixture")
+for needle in (
+        "one direct IWN SAE four-way chain reaches port valid",
+        "a direct SAE four-way cannot claim WPA3 success without the PMF keyset",
+        "a mismatched IGTK publication/selection pair cannot manufacture PMF evidence",
+        "a late scan cannot retroactively satisfy the selected-BSS boundary",
+        "a claimed PMK cannot infer an accepted Association descriptor",
+        "raw Confirm progress cannot claim the PMF-gated continuation",
+        "peer Commit cannot precede a completed local Commit",
+        "a dropped categorical record is fail-closed",
+        "an aborted direct SAE attempt is never success",
+        "IWX cannot borrow the IWN direct SAE report",
+):
+    require(iwn_direct_sae_c_fixture, needle,
+            "deterministic IWN direct-SAE C fixture")
 ordered(runner, "isolated Tahoe producer build precedes trace audit",
         "ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'",
         "cd '$REMOTE_DIR' && ./scripts/build_post_plti_trace.sh")
@@ -1109,7 +1250,8 @@ for needle in (
 for needle in (
         "## Sealed capture rule",
         "## Versioned synthetic scenarios",
-        "trace v5 layer",
+        "trace v6 layer",
+        "v6 adds a separate IWN direct-SAE evaluator",
         "IWN software-PMF evaluator",
         "IWN-gated PMF-ingress evaluator",
         "fixed PTK-to-GTK-to-IGTK",

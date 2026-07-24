@@ -415,7 +415,14 @@ for token in (
     "kAirportItlwmPostPltiTraceEventIwnIgtkSlot5TxSelected = 49",
     "kAirportItlwmPostPltiTraceEventWclPmfRequestRetained = 50",
     "kAirportItlwmPostPltiTraceEventNodeMfpNegotiated = 51",
-    "kAirportItlwmPostPltiTraceEventMax = 52",
+    "kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted = 52",
+    "kAirportItlwmPostPltiTraceEventIwnDirectSaeCommitTxComplete = 53",
+    "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted = 54",
+    "kAirportItlwmPostPltiTraceEventIwnDirectSaeConfirmTxComplete = 55",
+    "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated = 56",
+    "kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed = 57",
+    "kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted = 58",
+    "kAirportItlwmPostPltiTraceEventMax = 59",
 ):
     require(trace_abi, token, "append-only PMF observer ABI")
 for token in (

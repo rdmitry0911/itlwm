@@ -7,6 +7,7 @@ set -euo pipefail
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 bash -n "$root/scripts/build_tahoe.sh"
+bash -n "$root/scripts/build_post_plti_trace.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
@@ -14,6 +15,7 @@ import sys
 
 
 source = (Path(sys.argv[1]) / "scripts/build_tahoe.sh").read_text()
+trace_build = (Path(sys.argv[1]) / "scripts/build_post_plti_trace.sh").read_text()
 
 
 def fail(message: str) -> None:
@@ -64,6 +66,17 @@ if "#define IWN_SOFTWARE_PMF_LAB_BUILD 0" not in iwn:
     fail("missing safe production default")
 if "#if IWN_SOFTWARE_PMF_LAB_BUILD" not in iwn:
     fail("missing lab-build capability predicate")
+
+for token in (
+    "BUILD_IWN_SOFTWARE_PMF_LAB",
+    "--iwn-software-pmf-lab",
+    "Tahoe-IwnSoftwarePmfLab",
+    "DerivedData-iwn-software-pmf-lab",
+    "AirportItlwmSkywalkInterface",
+    "AirportItlwmPostPltiTraceBeginDirectSaeEpisode",
+):
+    if token not in trace_build:
+        fail(f"lab trace-client linkage gate lacks {token}")
 
 print("PASS: IWN software-PMF lab build is isolated, STA-only, and makes no on-air WPA3 success claim")
 PY

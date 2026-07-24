@@ -3,7 +3,7 @@
 ## Scope
 
 This document records the verified, non-functional diagnostic scenarios that
-ship with the Tahoe post-PLTI trace v5 layer.  The generic ordered association evaluator is IWN-only.
+ship with the Tahoe post-PLTI trace v6 layer.  The generic ordered association evaluator is IWN-only.
 IWX, including AX211, remains backend-unsupported for that evaluator and
 cannot inherit an IWN verdict.
 
@@ -37,6 +37,21 @@ negotiation.  The evaluator separately reports no selected BSS or no join, so
 it never re-labels scan failure as an MFP result.  Neither fact proves a PMF
 key transaction, protected-frame interoperability, SAE, association, or
 traffic.
+
+v6 adds a separate IWN direct-SAE evaluator for the separately compiled
+laboratory route.  Its initial fact is an accepted direct WCL request, not
+the legacy PMK/PLTI scan-resume fact.  A positive result requires the actual
+driver-local Commit TX completion, a successful peer Commit (not an
+anti-clogging retry), Confirm TX completion, verified peer Confirm, the
+one-shot local PMK claim, the real IWN Association descriptor fence, two
+ordered local EAPOL rounds, negotiated `NODE_MFP`, and the fixed software-PMF
+PTK-to-GTK-to-IGTK acknowledgement, matching IGTK publication/selection, and
+locked CCMP+BIP keyset publication before port-valid.  It carries only
+categorical facts and is valid only for one closed IWN episode with no dropped
+entries.  The direct SAE policy deliberately requires MFP itself; this trace
+does not relabel that driver policy as an optional WCL PMF-field assertion. It
+does not prove an application/data-plane exchange, rekey, reconnect, roaming,
+multi-AP behavior, physical-host behavior, or broader WPA3 interoperability.
 
 The companion active-prefix classifier is narrower still: it accepts only the
 one live initial PMF/BIP chain through port-valid while the same episode remains

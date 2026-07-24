@@ -2850,7 +2850,9 @@ airportItlwmPostPltiTraceEventRequiresIwn(uint32_t event)
     return (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST &&
             event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_LAST) ||
         (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST &&
-         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST);
+         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST) ||
+        (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_FIRST &&
+         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST);
 }
 
 /*
@@ -3173,13 +3175,32 @@ AirportItlwmPostPltiTraceRecordIgtkPublicationSelection(
     airportItlwmPostPltiTraceProducerLeave();
 }
 
-extern "C" void
-AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
+/* Both episode classes share recorder lifetime/overflow mechanics, but their
+ * first facts have deliberately different meanings.  In particular the
+ * direct SAE route never inherits the legacy PMK-ready/PLTI label. */
+static void
+airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent(
+    struct ieee80211com *ic, uint32_t initial_event)
 {
+    if (!airportItlwmPostPltiTraceEventIsKnown(initial_event))
+        return;
     if (!airportItlwmPostPltiTraceProducerEnter())
         return;
     if (!airportItlwmPostPltiTraceTryLock()) {
         airportItlwmPostPltiTraceNoteContendedProducer(ic, true);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
+    /* The producer epoch and recorder lock together freeze the backend for
+     * this admission.  Checking it before entering would let a control-plane
+     * rebinding manufacture an empty, misclassified episode. */
+    const uint32_t backend = __atomic_load_n(&sPostPltiTrace.backend,
+                                             __ATOMIC_ACQUIRE);
+    if ((airportItlwmPostPltiTraceEventRequiresIwn(initial_event) &&
+         backend != kAirportItlwmPostPltiTraceBackendIwn) ||
+        (airportItlwmPostPltiTraceEventRequiresIwx(initial_event) &&
+         backend != kAirportItlwmPostPltiTraceBackendIwx)) {
+        airportItlwmPostPltiTraceUnlock();
         airportItlwmPostPltiTraceProducerLeave();
         return;
     }
@@ -3230,10 +3251,23 @@ AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
         return;
     }
     __atomic_add_fetch(&sPostPltiTrace.episodeCount, 1, __ATOMIC_RELAXED);
-    airportItlwmPostPltiTraceRecordToken(
-        ic, kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume, token, true);
+    airportItlwmPostPltiTraceRecordToken(ic, initial_event, token, true);
     airportItlwmPostPltiTraceUnlock();
     airportItlwmPostPltiTraceProducerLeave();
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
+{
+    airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent(
+        ic, kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume);
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceBeginDirectSaeEpisode(struct ieee80211com *ic)
+{
+    airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent(
+        ic, kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted);
 }
 
 extern "C" void

@@ -24,6 +24,13 @@ extern "C" {
  * is ignored unless the currently armed safe trace is bound to `ic`.
  */
 void AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic);
+/*
+ * Starts the distinct direct-IWN-SAE laboratory episode.  This shares only
+ * the preallocated, identity-free recorder mechanics with the older PMK
+ * scan-resume trace; its first categorical fact has its own ABI value and
+ * never implies that a PMK came from WCL, PLTI, an Agent, or a controller.
+ */
+void AirportItlwmPostPltiTraceBeginDirectSaeEpisode(struct ieee80211com *ic);
 void AirportItlwmPostPltiTraceRecord(struct ieee80211com *ic,
                                      uint32_t event);
 /*
@@ -48,6 +55,12 @@ void AirportItlwmPostPltiTraceNoteStateRequest(struct ieee80211com *ic,
 /* Shared net80211/HAL sources compile into pre-Tahoe targets as well. */
 static inline void
 AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
+{
+    (void)ic;
+}
+
+static inline void
+AirportItlwmPostPltiTraceBeginDirectSaeEpisode(struct ieee80211com *ic)
 {
     (void)ic;
 }

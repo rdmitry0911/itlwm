@@ -7,6 +7,7 @@
 #include <sys/time.h>
 
 #include <ClientKit/AirportItlwmPostPltiTrace.h>
+#include <ClientKit/AirportItlwmIwnDirectSaeTraceContracts.h>
 #include <ClientKit/AirportItlwmIwnPmfIngressTraceContracts.h>
 #include <ClientKit/AirportItlwmIwxPmfBipTraceContracts.h>
 #include <ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h>
@@ -199,6 +200,20 @@ event_name(uint32_t event)
         return "wcl-pmf-request-retained";
     case kAirportItlwmPostPltiTraceEventNodeMfpNegotiated:
         return "node-mfp-negotiated";
+    case kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted:
+        return "iwn-direct-sae-request-accepted";
+    case kAirportItlwmPostPltiTraceEventIwnDirectSaeCommitTxComplete:
+        return "iwn-direct-sae-commit-tx-complete";
+    case kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted:
+        return "iwn-direct-sae-peer-commit-accepted";
+    case kAirportItlwmPostPltiTraceEventIwnDirectSaeConfirmTxComplete:
+        return "iwn-direct-sae-confirm-tx-complete";
+    case kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated:
+        return "iwn-direct-sae-peer-confirm-validated";
+    case kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed:
+        return "iwn-direct-sae-pmk-claimed";
+    case kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted:
+        return "iwn-direct-sae-assoc-descriptor-accepted";
     default:
         return "unknown";
     }
@@ -606,6 +621,108 @@ iwn_pmf_ingress_missing_stage_name(
     }
 }
 
+static const char *
+iwn_direct_sae_verdict_name(enum AirportItlwmIwnDirectSaeTraceVerdict verdict)
+{
+    switch (verdict) {
+    case kAirportItlwmIwnDirectSaeTraceVerdictIntegrityInconclusive:
+        return "INTEGRITY_INCONCLUSIVE";
+    case kAirportItlwmIwnDirectSaeTraceVerdictBackendUnsupported:
+        return "BACKEND_UNSUPPORTED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictBranchNotObserved:
+        return "BRANCH_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictFreshScanNotObserved:
+        return "FRESH_SCAN_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictRequestNoBssSelection:
+        return "REQUEST_NO_BSS_SELECTION";
+    case kAirportItlwmIwnDirectSaeTraceVerdictJoinBssNotObserved:
+        return "JOIN_BSS_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictNodeMfpNotNegotiated:
+        return "NODE_MFP_NOT_NEGOTIATED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictAuthStateNotObserved:
+        return "AUTH_STATE_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictCommitTxNotComplete:
+        return "COMMIT_TX_NOT_COMPLETE";
+    case kAirportItlwmIwnDirectSaeTraceVerdictPeerCommitNotAccepted:
+        return "PEER_COMMIT_NOT_ACCEPTED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictConfirmTxNotComplete:
+        return "CONFIRM_TX_NOT_COMPLETE";
+    case kAirportItlwmIwnDirectSaeTraceVerdictPeerConfirmNotValidated:
+        return "PEER_CONFIRM_NOT_VALIDATED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictPmkNotClaimed:
+        return "PMK_NOT_CLAIMED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictAssocDescriptorNotAccepted:
+        return "ASSOC_DESCRIPTOR_NOT_ACCEPTED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictAssocExchangeNotComplete:
+        return "ASSOC_EXCHANGE_NOT_COMPLETE";
+    case kAirportItlwmIwnDirectSaeTraceVerdictFourWayNotComplete:
+        return "FOUR_WAY_NOT_COMPLETE";
+    case kAirportItlwmIwnDirectSaeTraceVerdictPmfPtkSoftwareCcmpNotObserved:
+        return "PMF_PTK_SOFTWARE_CCMP_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictPmfGtkSoftwareCcmpNotObserved:
+        return "PMF_GTK_SOFTWARE_CCMP_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictPmfIgtkStageNotObserved:
+        return "PMF_IGTK_STAGE_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictPmfIgtkPublicationNotObserved:
+        return "PMF_IGTK_PUBLICATION_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictPmfKeysetPublicationNotObserved:
+        return "PMF_KEYSET_PUBLICATION_NOT_OBSERVED";
+    case kAirportItlwmIwnDirectSaeTraceVerdictDirectSae4WayPortValid:
+        return "DIRECT_SAE_4WAY_PORT_VALID";
+    }
+    return "INTEGRITY_INCONCLUSIVE";
+}
+
+static const char *
+iwn_direct_sae_missing_stage_name(
+    enum AirportItlwmIwnDirectSaeTraceMissingStage stage)
+{
+    switch (stage) {
+    case kAirportItlwmIwnDirectSaeTraceMissingStageNone: return "none";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageCaptureSeal:
+        return "capture-seal";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageFreshScan:
+        return "fresh-scan";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageBssSelection:
+        return "bss-selection";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageJoinBss:
+        return "join-bss";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageNodeMfp:
+        return "node-mfp";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageAuthState:
+        return "auth-state";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageCommitTx:
+        return "commit-tx";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePeerCommit:
+        return "peer-commit";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageConfirmTx:
+        return "confirm-tx";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePeerConfirm:
+        return "peer-confirm";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePmkClaim:
+        return "pmk-claim";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageAssocDescriptor:
+        return "assoc-descriptor";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageAssocExchange:
+        return "assoc-exchange";
+    case kAirportItlwmIwnDirectSaeTraceMissingStageFourWay:
+        return "four-way";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePmfPtkSoftwareCcmp:
+        return "pmf-ptk-software-ccmp";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePmfGtkSoftwareCcmp:
+        return "pmf-gtk-software-ccmp";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePmfIgtkStage:
+        return "pmf-igtk-stage";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePmfIgtkPublication:
+        return "pmf-igtk-publication";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePmfKeysetPublication:
+        return "pmf-keyset-publication";
+    case kAirportItlwmIwnDirectSaeTraceMissingStagePortValid:
+        return "port-valid";
+    default: return "unknown";
+    }
+}
+
 static int
 get_control(io_service_t service)
 {
@@ -819,13 +936,43 @@ get_iwn_pmf_ingress_report(io_service_t service)
     return 0;
 }
 
+static int
+get_iwn_direct_sae_report(io_service_t service)
+{
+    AirportItlwmPostPltiTraceSnapshot snapshot;
+    AirportItlwmPostPltiTraceBuffer buffer;
+    AirportItlwmPostPltiTraceEntry entries[
+        AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES];
+    uint32_t count = 0;
+    enum AirportItlwmIwnDirectSaeTraceMissingStage missing_stage =
+        kAirportItlwmIwnDirectSaeTraceMissingStageUnknown;
+
+    if (copy_snapshot(service, &snapshot) != 0 ||
+        copy_buffer(service, &buffer) != 0)
+        return 1;
+    const int integrity = collect_entries(&snapshot, &buffer, entries, &count);
+    const enum AirportItlwmIwnDirectSaeTraceVerdict verdict =
+        airport_itlwm_iwn_direct_sae_trace_classify_entries_with_stage(
+            entries, count, integrity, snapshot.backend,
+            snapshot.episodeCount, snapshot.activeEpisode, &missing_stage);
+    printf("capture_generation=%u backend=%s entries=%u integrity=%s "
+           "episode_count=%u active_episode=%u\n",
+           snapshot.captureGeneration, backend_name(snapshot.backend), count,
+           integrity ? "ok" : "inconclusive", snapshot.episodeCount,
+           snapshot.activeEpisode);
+    printf("iwn_direct_sae_verdict=%s first_missing_stage=%s\n",
+           iwn_direct_sae_verdict_name(verdict),
+           iwn_direct_sae_missing_stage_name(missing_stage));
+    return 0;
+}
+
 static void
 usage(const char *program)
 {
     fprintf(stderr,
             "usage:\n"
             "  %s reset|on|off|seal\n"
-            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress|iwn-software-pmf-report|iwn-pmf-ingress-report\n",
+            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress|iwn-software-pmf-report|iwn-pmf-ingress-report|iwn-direct-sae-report\n",
             program, program);
 }
 
@@ -868,6 +1015,8 @@ main(int argc, char **argv)
             rc = get_iwn_software_pmf_report(service);
         else if (strcmp(argv[2], "iwn-pmf-ingress-report") == 0)
             rc = get_iwn_pmf_ingress_report(service);
+        else if (strcmp(argv[2], "iwn-direct-sae-report") == 0)
+            rc = get_iwn_direct_sae_report(service);
         else
             usage(argv[0]);
     } else

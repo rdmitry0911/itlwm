@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 5U
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 6U
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY \
@@ -101,7 +101,21 @@ enum AirportItlwmPostPltiTraceEvent {
      */
     kAirportItlwmPostPltiTraceEventWclPmfRequestRetained = 50,
     kAirportItlwmPostPltiTraceEventNodeMfpNegotiated = 51,
-    kAirportItlwmPostPltiTraceEventMax = 52
+    /*
+     * IWN direct-SAE evidence v6.  These facts are emitted only by the
+     * separately built IWN laboratory route after the named driver-local
+     * boundary has actually completed.  They carry no network identity,
+     * credential, PMK/PMKID, ticket, status, descriptor, or frame bytes.
+     * Keep this vocabulary append-only.
+     */
+    kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted = 52,
+    kAirportItlwmPostPltiTraceEventIwnDirectSaeCommitTxComplete = 53,
+    kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted = 54,
+    kAirportItlwmPostPltiTraceEventIwnDirectSaeConfirmTxComplete = 55,
+    kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated = 56,
+    kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed = 57,
+    kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted = 58,
+    kAirportItlwmPostPltiTraceEventMax = 59
 };
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST \
@@ -113,6 +127,11 @@ enum AirportItlwmPostPltiTraceEvent {
     kAirportItlwmPostPltiTraceEventWclPmfRequestRetained
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST \
     kAirportItlwmPostPltiTraceEventNodeMfpNegotiated
+
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_FIRST \
+    kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST \
+    kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted
 
 /*
  * Categorical backend coverage, never a hardware identifier.  IWX exposes

@@ -91,6 +91,18 @@ static void iwn_post_plti_trace_record_completion(struct ieee80211com *ic,
 #define IWN_SOFTWARE_PMF_LAB_BUILD 0
 #endif
 
+/* Direct-SAE runtime evidence exists only in the separately compiled lab
+ * artifact.  Its recorder receives categorical facts after the real driver
+ * boundary, never a peer identity, secret, ticket, status, descriptor, or
+ * frame. */
+#if IWN_SOFTWARE_PMF_LAB_BUILD
+#define IWN_DIRECT_SAE_TRACE(_ic, _event) \
+    AirportItlwmPostPltiTraceRecord((_ic), (_event))
+#else
+#define IWN_DIRECT_SAE_TRACE(_ic, _event) \
+    do { (void)(_ic); (void)(_event); } while (0)
+#endif
+
 static bool
 iwn_mfp_pae_lab_opted_in(void)
 {
@@ -2678,6 +2690,13 @@ iwn_sae_engine_task(void *arg)
             &terminal) != 0) {
             fail = true;
         } else {
+            if (terminal.phase == kItlSaeAuthTransportPhaseCommit) {
+                IWN_DIRECT_SAE_TRACE(&sc->sc_ic,
+                    kAirportItlwmPostPltiTraceEventIwnDirectSaeCommitTxComplete);
+            } else if (terminal.phase == kItlSaeAuthTransportPhaseConfirm) {
+                IWN_DIRECT_SAE_TRACE(&sc->sc_ic,
+                    kAirportItlwmPostPltiTraceEventIwnDirectSaeConfirmTxComplete);
+            }
             IOSimpleLockLock(sc->sc_sae_engine_lock);
             owner = &sc->sc_sae_engine_owner;
             if (owner->active && owner->in_flight_ticket == terminal.ticket)
@@ -2693,14 +2712,29 @@ iwn_sae_engine_task(void *arg)
         } else {
             peer_result = ieee80211_sae_engine_handle_peer(engine, &peer,
                 &continuation);
-            if (peer_result == IEEE80211_SAE_ENGINE_PEER_TX_READY)
+            if (peer_result == IEEE80211_SAE_ENGINE_PEER_TX_READY) {
+                /* `PEER_TX_READY` also covers an anti-clogging token retry,
+                 * which prepares a second local Commit but has not accepted
+                 * a peer Commit.  Record this boundary only after the engine
+                 * accepted the successful wire-sequence-2 peer Commit and
+                 * prepared our Confirm; no peer bytes leave the recorder. */
+                if (peer.phase == kItlSaeAuthTransportPhaseCommit &&
+                    peer.wire_transaction ==
+                        kItlSaeAuthTransportPeerWireTransactionCommit &&
+                    peer.auth_status == WLAN_STATUS_SUCCESS)
+                    IWN_DIRECT_SAE_TRACE(&sc->sc_ic,
+                        kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted);
                 submit_result = iwn_sae_engine_submit_prepared(sc);
-            else if (peer_result == IEEE80211_SAE_ENGINE_PEER_COMPLETE) {
+            } else if (peer_result == IEEE80211_SAE_ENGINE_PEER_COMPLETE) {
                 IOSimpleLock *bss_lock;
                 IOInterruptState irq;
                 bool pmk_claimed = false;
                 bool assoc_started = false;
 
+                /* `PEER_COMPLETE` is the in-kext engine's verified peer
+                 * Confirm boundary; it carries no value out of the engine. */
+                IWN_DIRECT_SAE_TRACE(&sc->sc_ic,
+                    kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated);
                 /* The engine generated a PMK Name itself.  Recompute it at
                  * the IWN/net80211 boundary before a single PMK byte can
                  * enter the local PAE; a malformed or mismatched result is
@@ -2739,10 +2773,15 @@ iwn_sae_engine_task(void *arg)
                     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
                     IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
 
-                    if (pmk_claimed)
+                    if (pmk_claimed) {
+                        /* This is after the selected-BSS + engine leaves
+                         * released their one-shot local PMK claim. */
+                        IWN_DIRECT_SAE_TRACE(&sc->sc_ic,
+                            kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed);
                         assoc_started =
                             ieee80211_sae_wcl_request_pmk_continue_assoc(
                             &sc->sc_ic, &continuation.identity) != 0;
+                    }
                     /* A driver newstate override can run before generic's
                      * sentinel.  Confirm that it actually left us in the
                      * claimed S_ASSOC state; otherwise retire deterministically. */
@@ -7979,6 +8018,8 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
         /* Task admission occurs only after the descriptor fence releases its
          * leaves.  The worker may now destroy the SAE engine but never before
          * this accepted Association Request is firmware-owned. */
+        IWN_DIRECT_SAE_TRACE(ic,
+            kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted);
         iwn_sae_engine_schedule_task(sc);
     } else {
         /* Existing non-SAE output keeps its historical scheduler ordering. */

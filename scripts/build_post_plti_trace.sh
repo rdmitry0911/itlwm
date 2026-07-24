@@ -3,9 +3,34 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-OUTPUT_DIR="$PROJECT_DIR/Build/Debug/Tahoe"
+IWN_SOFTWARE_PMF_LAB=0
+if [ "${BUILD_IWN_SOFTWARE_PMF_LAB:-0}" = "1" ]; then
+    IWN_SOFTWARE_PMF_LAB=1
+fi
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --iwn-software-pmf-lab)
+            IWN_SOFTWARE_PMF_LAB=1
+            ;;
+        *)
+            echo "usage: $0 [--iwn-software-pmf-lab]" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+VARIANT_LABEL="Tahoe"
+DEFAULT_DERIVED_DATA="$PROJECT_DIR/DerivedData"
+if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]; then
+    VARIANT_LABEL="Tahoe-IwnSoftwarePmfLab"
+    DEFAULT_DERIVED_DATA="$PROJECT_DIR/DerivedData-iwn-software-pmf-lab"
+fi
+
+OUTPUT_DIR="$PROJECT_DIR/Build/Debug/$VARIANT_LABEL"
 OUTPUT="$OUTPUT_DIR/airport_itlwm_post_plti_trace"
-DERIVED_DATA="${ITLWM_DERIVED_DATA_OVERRIDE:-$PROJECT_DIR/DerivedData}"
+DERIVED_DATA="${ITLWM_DERIVED_DATA_OVERRIDE:-$DEFAULT_DERIVED_DATA}"
 OBJECT_DIR="$DERIVED_DATA/Build/Intermediates.noindex/itlwm.build/Debug/AirportItlwm-Tahoe.build/Objects-normal/x86_64"
 
 case "$DERIVED_DATA" in
@@ -58,5 +83,17 @@ require_external_bridge ieee80211_crypto_bip AirportItlwmPostPltiTraceRecordIgtk
 require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecord
 require_external_bridge ItlIwx AirportItlwmPostPltiTraceRecord
 
+# The pure-SAE WCL entry is not compiled in the ordinary product artifact, so
+# prove its external bridge only against the separately built lab object.
+# This makes the runtime client and its candidate kext use the same lab
+# DerivedData lineage without making a normal build depend on a lab-only call.
+if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]; then
+    require_external_bridge AirportItlwmSkywalkInterface \
+        AirportItlwmPostPltiTraceBeginDirectSaeEpisode
+fi
+
 echo "Built $OUTPUT"
 echo "OK: all Tahoe trace producer objects link external trace bridges"
+if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]; then
+    echo "OK: IWN direct-SAE WCL producer links the lab trace begin bridge"
+fi

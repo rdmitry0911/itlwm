@@ -63,3 +63,15 @@ esac
   -o "$tmpdir/iwn_pmf_ingress_trace_contract_test"
 
 "$tmpdir/iwn_pmf_ingress_trace_contract_test"
+
+"$cc" \
+  -std=c11 \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I. \
+  -Iinclude \
+  tests/iwn_direct_sae_trace_contract_test.c \
+  -o "$tmpdir/iwn_direct_sae_trace_contract_test"
+
+"$tmpdir/iwn_direct_sae_trace_contract_test"
