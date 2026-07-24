@@ -18,6 +18,12 @@
 #define kItlSaeAuthTransportV1Version 1u
 #define kItlSaeAuthTransportV1MacLength 6u
 #define kItlSaeAuthTransportV1MaxBodyLength 768u
+/* The controller relay remains in the low numeric domain.  A direct
+ * driver-owned SAE worker reserves the high-bit domain so its cancellation
+ * fence cannot poison a subsequent controller ticket (or vice versa). */
+#define kItlSaeAuthTransportV1DriverTicketBit (UINT64_C(1) << 63)
+#define kItlSaeAuthTransportV1ControllerTicketMax \
+    (kItlSaeAuthTransportV1DriverTicketBit - UINT64_C(1))
 
 /*
  * Relay phase is deliberately distinct from the Authentication transaction
@@ -38,10 +44,11 @@ enum ItlSaeAuthTransportEventKindV1 {
 };
 
 /*
- * The controller creates this only after it has validated an Agent semantic
- * reply.  `ticket` is monotonically allocated by that controller and is the
- * sole completion/cancellation identity; it is never derived from a wire
- * sequence number or carried in an mbuf metadata field.
+ * The controller creates its low-domain ticket only after it has validated an
+ * Agent semantic reply.  A driver-owned SAE worker may instead use the
+ * reserved high domain.  In both cases it is the sole local
+ * completion/cancellation identity; it is never derived from a wire sequence
+ * number or carried in an mbuf metadata field.
  */
 struct ItlSaeAuthTxRequestV1 {
     uint32_t version;

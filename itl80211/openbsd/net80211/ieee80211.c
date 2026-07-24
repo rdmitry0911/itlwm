@@ -918,15 +918,21 @@ ieee80211_watchdog(struct _ifnet *ifp)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     if (ic->ic_mgt_timer && --ic->ic_mgt_timer == 0) {
+        struct ieee80211_sae_driver_hook_snapshot sae_hooks;
         int sae_timeout_owned = 0;
+
+        explicit_bzero(&sae_hooks, sizeof(sae_hooks));
 
         /* Capture ownership before the association fence below revokes the
          * driver's exact attempt.  The historical AUTH retry must not turn
          * a timed-out SAE exchange into Open-System authentication. */
         if (ic->ic_opmode == IEEE80211_M_STA &&
-            ic->ic_state == IEEE80211_S_AUTH && ic->ic_bss != NULL &&
-            ic->ic_sae_auth_owned != NULL)
-            sae_timeout_owned = ic->ic_sae_auth_owned(ic, ic->ic_bss);
+            ic->ic_state == IEEE80211_S_AUTH && ic->ic_bss != NULL) {
+            ieee80211_sae_driver_hook_snapshot_copyout(ic, &sae_hooks);
+            if (sae_hooks.auth_owned != NULL)
+                sae_timeout_owned = sae_hooks.auth_owned(ic, ic->ic_bss);
+        }
+		explicit_bzero(&sae_hooks, sizeof(sae_hooks));
         /* The timeout callback publishes failure before its newstate call. */
         if (ic->ic_opmode == IEEE80211_M_STA &&
             (ic->ic_state == IEEE80211_S_AUTH ||

@@ -923,6 +923,32 @@ ieee80211_sae_wcl_request_phase_is_active(u_int8_t phase)
 }
 
 /*
+ * Hook publication shares ic_pae_selected_bss_lock with the exact WCL/BSS
+ * owner.  Take the callback values under that same leaf, then invoke only
+ * the local values after unlocking: IWN's callback lease owns the remaining
+ * close/drain lifetime.  In particular, never turn a NULL check plus a
+ * second direct field load into a stop/detach NULL-call race.
+ */
+void
+ieee80211_sae_driver_hook_snapshot_copyout(struct ieee80211com *ic,
+    struct ieee80211_sae_driver_hook_snapshot *out)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (out == NULL)
+		return;
+	explicit_bzero(out, sizeof(*out));
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	out->auth_hold = ic->ic_sae_auth_hold;
+	out->auth_owned = ic->ic_sae_auth_owned;
+	out->engine_peer_event = ic->ic_sae_engine_peer_event;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+/*
  * A leaf-lock clear may revoke a separately-owned driver credential or SAE
  * engine.  The generic record has no private material, so it copies only the
  * driver's nonblocking callback and the public generation.  Delivery is
@@ -3343,6 +3369,7 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 {
 	struct _ifnet *ifp = &ic->ic_if;
 	struct ieee80211_node *ni;
+	struct ieee80211_sae_driver_hook_snapshot sae_hooks;
 	enum ieee80211_state ostate;
 	int sae_auth_hold;
 	int sae_wcl_owner;
@@ -3351,6 +3378,7 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 #endif
 
 	ostate = ic->ic_state;
+	explicit_bzero(&sae_hooks, sizeof(sae_hooks));
 	ic->ic_state = nstate;			/* state transition */
 	ni = ic->ic_bss;			/* NB: no reference held */
 	ieee80211_set_link_state(ic, LINK_STATE_DOWN);
@@ -3525,20 +3553,23 @@ justcleanup:
 			break;
 		}
 		sae_auth_hold = 0;
+		if (ic->ic_opmode == IEEE80211_M_STA && ni != NULL)
+			ieee80211_sae_driver_hook_snapshot_copyout(ic, &sae_hooks);
 		if (sae_wcl_owner == IEEE80211_SAE_WCL_AUTH_OWNER_READY) {
 			/* A direct-WCL request must be claimed by its prepared driver
 			 * owner.  If a late lifecycle change makes hold unavailable, or
 			 * that owner declines it, fail closed before the legacy branch. */
-			if (ic->ic_sae_auth_hold != NULL)
-				sae_auth_hold = ic->ic_sae_auth_hold(ic, ni, ostate, mgt);
+			if (sae_hooks.auth_hold != NULL)
+				sae_auth_hold = sae_hooks.auth_hold(ic, ni, ostate, mgt);
 			if (sae_auth_hold == 0) {
 				ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
 				break;
 			}
 		} else if (ic->ic_opmode == IEEE80211_M_STA && ni != NULL &&
-		    ic->ic_sae_auth_hold != NULL) {
-			sae_auth_hold = ic->ic_sae_auth_hold(ic, ni, ostate, mgt);
+		    sae_hooks.auth_hold != NULL) {
+			sae_auth_hold = sae_hooks.auth_hold(ic, ni, ostate, mgt);
 		}
+		explicit_bzero(&sae_hooks, sizeof(sae_hooks));
 		if (sae_auth_hold != 0) {
 			ic->ic_mgt_timer = IEEE80211_TRANS_WAIT;
 			break;

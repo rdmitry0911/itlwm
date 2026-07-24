@@ -98,9 +98,38 @@ enum iwn_post_plti_trace_tx_class {
  */
 #define IWN_SAE_TX_EVENTQ_LEN 4
 
+/* A direct SAE exchange has one worker-owned crypto core.  RX and native
+ * TX_DONE may only append public, bounded values here; they never hold a
+ * password, PMK, PWE, or engine pointer. */
+#define IWN_SAE_ENGINE_PEERQ_LEN 4
+
+struct ieee80211_sae_engine;
+
 struct iwn_sae_tx_event_entry {
     struct ItlSaeAuthTransportEventV1 event;
     bool                              is_reset;
+};
+
+struct iwn_sae_engine_owner {
+    bool                              active;
+    bool                              start_pending;
+    bool                              cancelled;
+    bool                              suppress_scan;
+    bool                              terminal_valid;
+    bool                              peer_overflow;
+    bool                              submit_retry_pending;
+    u_int8_t                           submit_retry_count;
+    u_int64_t                         request_generation;
+    u_int64_t                         association_epoch;
+    u_int64_t                         relay_generation;
+    u_int64_t                         in_flight_ticket;
+    struct ItlSaeSelectedJoinEventV1  selected;
+    struct ItlSaeAuthActivatedEventV1 activated;
+    struct ItlSaeAuthTransportEventV1 terminal;
+    struct ItlSaeAuthPeerEventV1      peerq[IWN_SAE_ENGINE_PEERQ_LEN];
+    u_int8_t                          peer_head;
+    u_int8_t                          peer_tail;
+    u_int8_t                          peer_count;
 };
 
 struct iwn_tx_data {
@@ -386,6 +415,7 @@ struct iwn_softc {
 
     struct task        init_task;
     struct task        sae_tx_task;
+    struct task        sae_engine_task;
     struct task        mfp_pae_task;
 
     /*
@@ -412,6 +442,9 @@ struct iwn_softc {
     bool                sc_sae_tx_stopping;
     uint64_t            sc_sae_tx_active_ticket;
     uint64_t            sc_sae_tx_cancel_through;
+    /* Driver-owned SAE uses the high ticket domain below, so cancellation
+     * cannot advance the historical controller relay's numeric fence. */
+    uint64_t            sc_sae_tx_direct_cancel_through;
     uint32_t            sc_sae_tx_generation;
     uint32_t            sc_sae_tx_active_generation;
     struct ItlSaeAuthTransportEventV1 sc_sae_tx_active_event;
@@ -421,6 +454,35 @@ struct iwn_softc {
     uint8_t             sc_sae_tx_event_head;
     uint8_t             sc_sae_tx_event_tail;
     uint8_t             sc_sae_tx_event_count;
+
+    /*
+     * Driver-owned SAE core.  Only sae_engine_task calls the crypto engine;
+     * the leaf below accepts fixed public TX terminal and peer-RX values.
+     * The WCL password remains solely in the separately scrubbed staging
+     * record below and is copied into worker-local storage only for
+     * ieee80211_sae_engine_begin_hnp().
+     */
+    IOSimpleLock       *sc_sae_engine_lock;
+    struct iwn_sae_engine_owner sc_sae_engine_owner;
+    struct ieee80211_sae_engine *sc_sae_engine;
+    /* Highest WCL request generation whose private staging slot the worker
+     * must revoke.  Generic callbacks write only this public fence. */
+    u_int64_t            sc_sae_engine_wcl_cancel_generation;
+    /* Advances on close/stop so a stale reopen cannot republish hooks. */
+    volatile u_int32_t   sc_sae_engine_lifecycle_generation;
+    u_int64_t            sc_sae_engine_next_ticket;
+    u_int64_t            sc_sae_engine_next_relay_generation;
+    /* CLOSED|active-count lease for generic hooks that can be copied into
+     * RX-adjacent context before detach unpublishes them. */
+    volatile u_int32_t   sc_sae_engine_callback_state;
+    /* A separate CLOSED|active-count lease makes the task_ready check and
+     * task_add admission linearizable against detach's task_del()+barrier.
+     * It never owns engine work itself; systq's barrier drains that side. */
+    volatile u_int32_t   sc_sae_engine_task_admission_state;
+    bool                 sc_sae_engine_task_ready;
+    bool                 sc_sae_engine_stopping;
+    bool                 sc_sae_engine_detaching;
+    bool                 sc_sae_engine_lab_enabled;
 
     /*
      * A private CIPHER_PWD record is allowed only before this request gains

@@ -10270,8 +10270,10 @@ airportItlwmSubmitSaeReplyAction(OSObject * /*owner*/, void *arg0,
             (void)airportItlwmClearSaeRelayLocked(s, true);
         return kIOReturnSuccess;
     }
-    if (s->fSaeNextTxTicket == UINT64_MAX) {
-        /* IWX cancellation uses a monotonic numerical reject-through fence. */
+    if (s->fSaeNextTxTicket >=
+        kItlSaeAuthTransportV1ControllerTicketMax) {
+        /* Keep the controller in its low ticket domain.  IWN's direct SAE
+         * owner reserves the high bit for an independent cancellation fence. */
         a->rc = kIOReturnNoResources;
         return kIOReturnSuccess;
     }

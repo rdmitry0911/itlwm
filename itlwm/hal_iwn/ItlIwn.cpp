@@ -51,6 +51,7 @@
 #include <net/if_llc.h>
 #include <net80211/ieee80211_crypto.h>
 #include <net80211/ieee80211_proto.h>
+#include <net80211/ieee80211_sae_engine.h>
 
 #include <sys/_task.h>
 #include <kern/clock.h>
@@ -128,6 +129,9 @@ iwn_sae_wcl_credential_lab_opted_in(void)
 }
 
 namespace {
+
+static bool iwn_sae_engine_queue_terminal(struct iwn_softc *,
+    const struct ItlSaeAuthTransportEventV1 *);
 
 struct IwnSaeTxGateArgs {
     struct ItlSaeAuthTxRequestV1 request;
@@ -261,6 +265,46 @@ iwn_sae_wcl_credential_cancel_through_locked(struct iwn_softc *sc,
         iwn_sae_wcl_credential_clear_locked(sc);
 }
 
+/* Consume a staged CIPHER_PWD only after a driver-owned selected join has
+ * rebound every public identity.  The copy is worker-local: clear the sole
+ * staging slot before returning so reset, cancellation and a later request
+ * cannot observe or reuse this password. */
+static bool
+iwn_sae_wcl_credential_take_bound(struct iwn_softc *sc,
+    const struct ItlSaeSelectedJoinEventV1 *selected,
+    struct ItlSaeWclCredentialV1 *credential)
+{
+    bool taken = false;
+
+    if (credential != NULL)
+        explicit_bzero(credential, sizeof(*credential));
+    if (sc == NULL || selected == NULL || credential == NULL ||
+        sc->sc_sae_wcl_credential_lock == NULL ||
+        !itl_sae_selected_join_event_is_well_formed(selected) ||
+        selected->credential_source != 1u)
+        return false;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_wcl_credential_staged &&
+        !iwn_sae_wcl_credential_cancelled_locked(sc,
+            selected->request_generation) &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential) &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            selected->request_generation &&
+        sc->sc_sae_wcl_credential.ssid_len == selected->ssid_len &&
+        IEEE80211_ADDR_EQ(sc->sc_sae_wcl_credential.bssid,
+            selected->bssid) &&
+        memcmp(sc->sc_sae_wcl_credential.ssid, selected->ssid,
+            selected->ssid_len) == 0) {
+        *credential = sc->sc_sae_wcl_credential;
+        iwn_sae_wcl_credential_clear_locked(sc);
+        taken = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    return taken;
+}
+
 /* S_SCAN is the ordinary pre-selection path.  S_RUN is permitted only for a
  * live STA reconnect request: it records a future candidate while preserving
  * the current BSS unchanged.  The staging method never starts a scan,
@@ -358,6 +402,50 @@ iwn_sae_tx_generation_advance_locked(struct iwn_softc *sc)
         ++sc->sc_sae_tx_generation;
 }
 
+/* The historical controller owns its monotonically increasing low ticket
+ * domain.  A driver-owned engine must not advance that cancellation fence:
+ * doing so would make a later controller request appear already cancelled.
+ * The high bit is therefore a private, wire-invisible IWN domain; only the
+ * existing local descriptor/event correlation observes it. */
+#define IWN_SAE_ENGINE_TICKET_DIRECT_BIT \
+    ((u_int64_t)kItlSaeAuthTransportV1DriverTicketBit)
+#define IWN_SAE_ENGINE_TICKET_COUNTER_MASK \
+    (~IWN_SAE_ENGINE_TICKET_DIRECT_BIT)
+
+static bool
+iwn_sae_tx_ticket_is_direct(u_int64_t ticket)
+{
+    return (ticket & IWN_SAE_ENGINE_TICKET_DIRECT_BIT) != 0;
+}
+
+static bool
+iwn_sae_tx_ticket_cancelled_locked(const struct iwn_softc *sc,
+    u_int64_t ticket)
+{
+    if (sc == NULL || ticket == 0)
+        return true;
+    if (iwn_sae_tx_ticket_is_direct(ticket))
+        return (ticket & IWN_SAE_ENGINE_TICKET_COUNTER_MASK) <=
+            sc->sc_sae_tx_direct_cancel_through;
+    return ticket <= sc->sc_sae_tx_cancel_through;
+}
+
+static void
+iwn_sae_tx_cancel_ticket_locked(struct iwn_softc *sc, u_int64_t ticket)
+{
+    u_int64_t counter;
+
+    if (sc == NULL || ticket == 0)
+        return;
+    if (iwn_sae_tx_ticket_is_direct(ticket)) {
+        counter = ticket & IWN_SAE_ENGINE_TICKET_COUNTER_MASK;
+        if (counter > sc->sc_sae_tx_direct_cancel_through)
+            sc->sc_sae_tx_direct_cancel_through = counter;
+    } else if (ticket > sc->sc_sae_tx_cancel_through) {
+        sc->sc_sae_tx_cancel_through = ticket;
+    }
+}
+
 static bool
 iwn_sae_tx_request_is_live(struct iwn_softc *sc, uint64_t ticket)
 {
@@ -372,7 +460,7 @@ iwn_sae_tx_request_is_live(struct iwn_softc *sc, uint64_t ticket)
         live = !sc->sc_sae_tx_stopping && sc->sc_sae_tx_active &&
             sc->sc_sae_tx_active_ticket == ticket &&
             sc->sc_sae_tx_active_generation == sc->sc_sae_tx_generation &&
-            ticket > sc->sc_sae_tx_cancel_through;
+            !iwn_sae_tx_ticket_cancelled_locked(sc, ticket);
         IOSimpleLockUnlock(sc->sc_sae_tx_lock);
     }
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
@@ -393,6 +481,377 @@ iwn_sae_tx_schedule_task(struct iwn_softc *sc, bool allow_closed)
         !sc->sc_sae_tx_detaching && sc->sc_sae_tx_task_ready)
         (void)task_add(systq, &sc->sae_tx_task);
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+#define IWN_SAE_ENGINE_CALLBACK_CLOSED      0x80000000U
+#define IWN_SAE_ENGINE_CALLBACK_COUNT_MASK  0x7fffffffU
+#define IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED      0x80000000U
+#define IWN_SAE_ENGINE_TASK_ADMISSION_COUNT_MASK  0x7fffffffU
+
+/* Generic net80211 can retain a hook pointer briefly after it has dropped
+ * its selected-BSS lock.  RX may invoke that copied pointer adjacent to an
+ * interrupt, so admission uses a CAS lease rather than the sleeping SAE-TX
+ * lifecycle mutex.  Detach closes first and drains only already-admitted
+ * callbacks before it frees the private owner leaf. */
+static bool
+iwn_sae_engine_callback_enter(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return false;
+    state = __atomic_load_n(&sc->sc_sae_engine_callback_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SAE_ENGINE_CALLBACK_CLOSED) != 0 ||
+            (state & IWN_SAE_ENGINE_CALLBACK_COUNT_MASK) ==
+            IWN_SAE_ENGINE_CALLBACK_COUNT_MASK)
+            return false;
+        next = state + 1;
+        if (__atomic_compare_exchange_n(&sc->sc_sae_engine_callback_state,
+            &state, next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return true;
+    }
+}
+
+static void
+iwn_sae_engine_callback_leave(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return;
+    state = __atomic_load_n(&sc->sc_sae_engine_callback_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SAE_ENGINE_CALLBACK_COUNT_MASK) == 0)
+            return;
+        next = state - 1;
+        if (__atomic_compare_exchange_n(&sc->sc_sae_engine_callback_state,
+            &state, next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+    }
+}
+
+static void
+iwn_sae_engine_callback_close(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return;
+    state = __atomic_load_n(&sc->sc_sae_engine_callback_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SAE_ENGINE_CALLBACK_CLOSED) != 0)
+            return;
+        next = state | IWN_SAE_ENGINE_CALLBACK_CLOSED;
+        if (__atomic_compare_exchange_n(&sc->sc_sae_engine_callback_state,
+            &state, next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+    }
+}
+
+static bool
+iwn_sae_engine_callback_open(struct iwn_softc *sc)
+{
+    u_int32_t expected = IWN_SAE_ENGINE_CALLBACK_CLOSED;
+
+    return sc != NULL && __atomic_compare_exchange_n(
+        &sc->sc_sae_engine_callback_state, &expected, 0, false,
+        __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
+}
+
+static void
+iwn_sae_engine_callback_drain(struct iwn_softc *sc)
+{
+    if (sc == NULL)
+        return;
+    while ((__atomic_load_n(&sc->sc_sae_engine_callback_state,
+        __ATOMIC_ACQUIRE) & IWN_SAE_ENGINE_CALLBACK_COUNT_MASK) != 0)
+        IOSleep(1);
+}
+
+/* task_add() takes the taskq's sleeping lock, so it cannot run beneath the
+ * engine simple lock.  This tiny CAS lease is instead the explicit handoff
+ * between an RX/terminal producer and detach: close+drain guarantees every
+ * pre-close task_add finished before detach removes its task and queues the
+ * barrier, while a post-close producer cannot enqueue at all. */
+static bool
+iwn_sae_engine_task_admission_enter(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return false;
+    state = __atomic_load_n(&sc->sc_sae_engine_task_admission_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED) != 0 ||
+            (state & IWN_SAE_ENGINE_TASK_ADMISSION_COUNT_MASK) ==
+            IWN_SAE_ENGINE_TASK_ADMISSION_COUNT_MASK)
+            return false;
+        next = state + 1;
+        if (__atomic_compare_exchange_n(
+            &sc->sc_sae_engine_task_admission_state, &state, next, false,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return true;
+    }
+}
+
+static void
+iwn_sae_engine_task_admission_leave(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return;
+    state = __atomic_load_n(&sc->sc_sae_engine_task_admission_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SAE_ENGINE_TASK_ADMISSION_COUNT_MASK) == 0)
+            return;
+        next = state - 1;
+        if (__atomic_compare_exchange_n(
+            &sc->sc_sae_engine_task_admission_state, &state, next, false,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+    }
+}
+
+static void
+iwn_sae_engine_task_admission_close(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return;
+    state = __atomic_load_n(&sc->sc_sae_engine_task_admission_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED) != 0)
+            return;
+        next = state | IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED;
+        if (__atomic_compare_exchange_n(
+            &sc->sc_sae_engine_task_admission_state, &state, next, false,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+    }
+}
+
+static void
+iwn_sae_engine_task_admission_drain(struct iwn_softc *sc)
+{
+    if (sc == NULL)
+        return;
+    while ((__atomic_load_n(&sc->sc_sae_engine_task_admission_state,
+        __ATOMIC_ACQUIRE) & IWN_SAE_ENGINE_TASK_ADMISSION_COUNT_MASK) != 0)
+        IOSleep(1);
+}
+
+static bool
+iwn_sae_engine_runtime_enabled(const struct iwn_softc *sc)
+{
+#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
+    return sc != NULL && sc->sc_sae_engine_lab_enabled &&
+        sc->sc_sae_engine_lock != NULL &&
+        sc->sc_sae_wcl_credential_lock != NULL &&
+        sc->sc_sae_tx_lifecycle_lock != NULL && sc->sc_sae_tx_lock != NULL &&
+        sc->sc_sae_tx_task_ready &&
+        sc->sc_ic.ic_pae_selected_bss_lock != NULL;
+#else
+    (void)sc;
+    return false;
+#endif
+}
+
+/* No secret belongs to this record.  The crypto engine itself is worker-only
+ * and destroyed separately by that worker after this public identity has
+ * been retired. */
+static void
+iwn_sae_engine_owner_clear_locked(struct iwn_softc *sc)
+{
+    if (sc == NULL)
+        return;
+    explicit_bzero(&sc->sc_sae_engine_owner,
+        sizeof(sc->sc_sae_engine_owner));
+}
+
+/* Generic selected-BSS callbacks must never enter the TX gate or the WCL
+ * leaf.  They queue this monotonic public cancellation fence; the worker
+ * performs the actual credential revoke after it owns task context. */
+static void
+iwn_sae_engine_queue_wcl_cancel_locked(struct iwn_softc *sc,
+    u_int64_t request_generation)
+{
+    if (sc != NULL && request_generation != 0 &&
+        request_generation > sc->sc_sae_engine_wcl_cancel_generation)
+        sc->sc_sae_engine_wcl_cancel_generation = request_generation;
+}
+
+static u_int64_t
+iwn_sae_engine_generation_advance_locked(struct iwn_softc *sc)
+{
+    u_int32_t generation;
+
+    if (sc == NULL)
+        return 0;
+    generation = __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
+        __ATOMIC_ACQUIRE);
+    if (++generation == 0)
+        ++generation;
+    __atomic_store_n(&sc->sc_sae_engine_lifecycle_generation, generation,
+        __ATOMIC_RELEASE);
+    return generation;
+}
+
+static bool
+iwn_sae_engine_owner_matches_node_locked(const struct iwn_softc *sc,
+    const struct ieee80211com *ic, const struct ieee80211_node *ni)
+{
+    const struct iwn_sae_engine_owner *owner;
+
+    if (sc == NULL || ic == NULL || ni == NULL)
+        return false;
+    owner = &sc->sc_sae_engine_owner;
+    return owner->active && owner->association_epoch != 0 &&
+        owner->selected.request_generation == owner->request_generation &&
+        owner->selected.association_epoch == owner->association_epoch &&
+        owner->activated.request_generation == owner->request_generation &&
+        owner->activated.association_epoch == owner->association_epoch &&
+        owner->activated.relay_generation == owner->relay_generation &&
+        ic->ic_bss == ni &&
+        IEEE80211_ADDR_EQ(ni->ni_bssid, owner->selected.bssid) &&
+        IEEE80211_ADDR_EQ(ic->ic_myaddr, owner->selected.sta) &&
+        /* ieee80211_new_state advances its epoch before it calls the state
+         * hook which finally leaves S_AUTH.  Keep a cancelled tombstone
+         * authoritative over that narrow pre-transition window; otherwise a
+         * late Open response could bypass the driver owner. */
+        (ic->ic_state == IEEE80211_S_AUTH ||
+         ieee80211_pae_assoc_epoch_current((struct ieee80211com *)ic) ==
+         owner->association_epoch);
+}
+
+static bool
+iwn_sae_engine_owner_matches_terminal_locked(const struct iwn_softc *sc,
+    const struct ItlSaeAuthTransportEventV1 *event)
+{
+    const struct iwn_sae_engine_owner *owner;
+
+    if (sc == NULL || event == NULL ||
+        !itl_sae_auth_transport_event_is_well_formed(event))
+        return false;
+    owner = &sc->sc_sae_engine_owner;
+    return owner->active && owner->in_flight_ticket != 0 &&
+        owner->in_flight_ticket == event->ticket &&
+        owner->association_epoch == event->association_epoch &&
+        owner->relay_generation == event->relay_generation &&
+        IEEE80211_ADDR_EQ(owner->selected.bssid, event->bssid) &&
+        IEEE80211_ADDR_EQ(owner->selected.sta, event->sta);
+}
+
+static bool
+iwn_sae_engine_owner_matches_peer_locked(const struct iwn_softc *sc,
+    const struct ItlSaeAuthPeerEventV1 *event)
+{
+    const struct iwn_sae_engine_owner *owner;
+
+    if (sc == NULL || event == NULL ||
+        !itl_sae_auth_peer_event_is_well_formed(event))
+        return false;
+    owner = &sc->sc_sae_engine_owner;
+    return owner->active && owner->association_epoch ==
+        event->association_epoch && owner->relay_generation ==
+        event->relay_generation &&
+        IEEE80211_ADDR_EQ(owner->selected.bssid, event->bssid) &&
+        IEEE80211_ADDR_EQ(owner->selected.sta, event->sta);
+}
+
+/* Caller holds ic_pae_selected_bss_lock followed by the engine leaf.  RX
+ * first snapshots generic admission, then drops that leaf before it invokes
+ * the hook.  Taking the same leaf here serializes enqueue against a WCL
+ * clear/revoke which otherwise could win in that gap without changing BSS or
+ * epoch.  Lock order is selected-BSS -> engine -> TX simple fence; no IWN
+ * path takes the selected-BSS leaf while it holds the engine leaf. */
+static bool
+iwn_sae_engine_peer_owner_current_locked(const struct iwn_softc *sc,
+    const struct iwn_sae_engine_owner *owner)
+{
+    const struct ieee80211com *ic;
+    const struct ieee80211_sae_peer_rx_admission *admission;
+    const struct ieee80211_sae_wcl_request *request;
+
+    if (sc == NULL || owner == NULL || !owner->active)
+        return false;
+    ic = &sc->sc_ic;
+    admission = &ic->ic_sae_peer_rx_admission;
+    request = &ic->ic_sae_wcl_request;
+    return ic->ic_state == IEEE80211_S_AUTH && ic->ic_bss != NULL &&
+        ieee80211_pae_assoc_epoch_current((struct ieee80211com *)ic) ==
+        owner->association_epoch &&
+        __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+            __ATOMIC_ACQUIRE) == 0 &&
+        __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+            __ATOMIC_ACQUIRE) == owner->association_epoch &&
+        IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, owner->selected.bssid) &&
+        IEEE80211_ADDR_EQ(ic->ic_myaddr, owner->selected.sta) &&
+        admission->active != 0 &&
+        admission->association_epoch == owner->association_epoch &&
+        admission->relay_generation == owner->relay_generation &&
+        IEEE80211_ADDR_EQ(admission->bssid, owner->selected.bssid) &&
+        IEEE80211_ADDR_EQ(admission->sta, owner->selected.sta) &&
+        request->phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
+        request->generation == owner->request_generation &&
+        request->association_epoch == owner->association_epoch &&
+        request->ssid_len == owner->selected.ssid_len &&
+        IEEE80211_ADDR_EQ(request->bssid, owner->selected.bssid) &&
+        memcmp(request->ssid, owner->selected.ssid,
+            owner->selected.ssid_len) == 0;
+}
+
+/* Caller holds the engine leaf.  This is the one deliberate engine -> TX
+ * simple-lock nesting: it raises the real descriptor cancellation fence
+ * before a concurrent IWN doorbell can linearize a now-revoked Commit or
+ * Confirm.  No lifecycle lock, taskq operation, generic callback or WCL
+ * leaf may occur under either lock. */
+static void
+iwn_sae_engine_fence_inflight_ticket_locked(struct iwn_softc *sc,
+    const struct iwn_sae_engine_owner *owner)
+{
+    u_int64_t ticket;
+
+    if (sc == NULL || owner == NULL ||
+        (ticket = owner->in_flight_ticket) == 0 ||
+        sc->sc_sae_tx_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    iwn_sae_tx_cancel_ticket_locked(sc, ticket);
+    if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled &&
+        sc->sc_sae_tx_active_ticket == ticket) {
+        sc->sc_sae_tx_active = false;
+        sc->sc_sae_tx_active_ticket = 0;
+        sc->sc_sae_tx_active_generation = 0;
+        explicit_bzero(&sc->sc_sae_tx_active_event,
+            sizeof(sc->sc_sae_tx_active_event));
+    }
+    if (sc->sc_sae_tx_last_event_valid &&
+        iwn_sae_tx_ticket_cancelled_locked(sc,
+            sc->sc_sae_tx_last_event.ticket)) {
+        sc->sc_sae_tx_last_event_valid = false;
+        explicit_bzero(&sc->sc_sae_tx_last_event,
+            sizeof(sc->sc_sae_tx_last_event));
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+static void
+iwn_sae_engine_schedule_task(struct iwn_softc *sc)
+{
+    if (sc == NULL || !iwn_sae_engine_task_admission_enter(sc))
+        return;
+    if (sc->sc_sae_engine_task_ready && systq != NULL)
+        (void)task_add(systq, &sc->sae_engine_task);
+    iwn_sae_engine_task_admission_leave(sc);
 }
 
 } // namespace
@@ -422,7 +881,7 @@ submitSaeAuthFrame(const struct ItlSaeAuthTxRequestV1 *request)
         sc->sc_sae_tx_task_ready && fSaeTxGate != NULL &&
         sc->sc_sae_tx_lock != NULL) {
         IOSimpleLockLock(sc->sc_sae_tx_lock);
-        if (request->ticket <= sc->sc_sae_tx_cancel_through)
+        if (iwn_sae_tx_ticket_cancelled_locked(sc, request->ticket))
             rc = kIOReturnAborted;
         else if (sc->sc_sae_tx_stopping || sc->sc_sae_tx_active ||
                  sc->sc_sae_tx_event_count != 0)
@@ -481,8 +940,7 @@ cancelSaeAuthFrame(uint64_t ticket)
     }
 
     IOSimpleLockLock(sc->sc_sae_tx_lock);
-    if (ticket > sc->sc_sae_tx_cancel_through)
-        sc->sc_sae_tx_cancel_through = ticket;
+    iwn_sae_tx_cancel_ticket_locked(sc, ticket);
     /* A pre-doorbell reservation owns no descriptor and has no event. */
     if (sc->sc_sae_tx_active &&
         sc->sc_sae_tx_active_ticket == ticket &&
@@ -494,7 +952,8 @@ cancelSaeAuthFrame(uint64_t ticket)
             sizeof(sc->sc_sae_tx_active_event));
     }
     if (sc->sc_sae_tx_last_event_valid &&
-        sc->sc_sae_tx_last_event.ticket <= sc->sc_sae_tx_cancel_through) {
+        iwn_sae_tx_ticket_cancelled_locked(sc,
+            sc->sc_sae_tx_last_event.ticket)) {
         sc->sc_sae_tx_last_event_valid = false;
         explicit_bzero(&sc->sc_sae_tx_last_event,
             sizeof(sc->sc_sae_tx_last_event));
@@ -759,7 +1218,7 @@ iwn_sae_tx_commit_doorbell(struct iwn_softc *sc, uint64_t ticket,
             !sc->sc_sae_tx_doorbelled &&
             sc->sc_sae_tx_active_ticket == ticket &&
             sc->sc_sae_tx_active_generation == sc->sc_sae_tx_generation &&
-            ticket > sc->sc_sae_tx_cancel_through;
+            !iwn_sae_tx_ticket_cancelled_locked(sc, ticket);
         if (committed) {
             sc->ops.update_sched(sc, qid, descriptor_idx, station_id, length);
             sc->sc_sae_tx_doorbelled = true;
@@ -798,7 +1257,7 @@ iwn_sae_tx_queue_terminal(struct iwn_softc *sc,
     sc->sc_sae_tx_active_generation = 0;
     explicit_bzero(&sc->sc_sae_tx_active_event,
         sizeof(sc->sc_sae_tx_active_event));
-    if (event->ticket > sc->sc_sae_tx_cancel_through) {
+    if (!iwn_sae_tx_ticket_cancelled_locked(sc, event->ticket)) {
         /* One live descriptor means FIFO saturation is an ownership bug,
          * not backpressure.  Preserve the present identity as a reset so
          * the controller cannot wait forever behind stale queued records. */
@@ -866,8 +1325,7 @@ iwn_sae_tx_retire_unsubmitted(struct iwn_softc *sc, uint64_t ticket)
         return;
 
     IOSimpleLockLock(sc->sc_sae_tx_lock);
-    if (ticket > sc->sc_sae_tx_cancel_through)
-        sc->sc_sae_tx_cancel_through = ticket;
+    iwn_sae_tx_cancel_ticket_locked(sc, ticket);
     /* This helper is only valid before the hardware doorbell. */
     if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled &&
         sc->sc_sae_tx_active_ticket == ticket) {
@@ -878,7 +1336,8 @@ iwn_sae_tx_retire_unsubmitted(struct iwn_softc *sc, uint64_t ticket)
             sizeof(sc->sc_sae_tx_active_event));
     }
     if (sc->sc_sae_tx_last_event_valid &&
-        sc->sc_sae_tx_last_event.ticket <= sc->sc_sae_tx_cancel_through) {
+        iwn_sae_tx_ticket_cancelled_locked(sc,
+            sc->sc_sae_tx_last_event.ticket)) {
         sc->sc_sae_tx_last_event_valid = false;
         explicit_bzero(&sc->sc_sae_tx_last_event,
             sizeof(sc->sc_sae_tx_last_event));
@@ -901,8 +1360,8 @@ iwn_sae_tx_stop_begin(struct iwn_softc *sc)
     iwn_sae_tx_generation_advance_locked(sc);
     /* A reservation not yet doorbelled has no physical owner to retain. */
     if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled) {
-        if (sc->sc_sae_tx_active_ticket > sc->sc_sae_tx_cancel_through)
-            sc->sc_sae_tx_cancel_through = sc->sc_sae_tx_active_ticket;
+        iwn_sae_tx_cancel_ticket_locked(sc,
+            sc->sc_sae_tx_active_ticket);
         sc->sc_sae_tx_active = false;
         sc->sc_sae_tx_active_ticket = 0;
         sc->sc_sae_tx_active_generation = 0;
@@ -959,8 +1418,7 @@ iwn_sae_tx_cancel_all(struct iwn_softc *sc)
         return;
 
     IOSimpleLockLock(sc->sc_sae_tx_lock);
-    if (sc->sc_sae_tx_active_ticket > sc->sc_sae_tx_cancel_through)
-        sc->sc_sae_tx_cancel_through = sc->sc_sae_tx_active_ticket;
+    iwn_sae_tx_cancel_ticket_locked(sc, sc->sc_sae_tx_active_ticket);
     if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled) {
         sc->sc_sae_tx_active = false;
         sc->sc_sae_tx_active_ticket = 0;
@@ -1008,7 +1466,8 @@ iwn_sae_tx_snapshot_reset(struct iwn_softc *sc,
     explicit_bzero(snapshot, sizeof(*snapshot));
     IOSimpleLockLock(sc->sc_sae_tx_lock);
     if (sc->sc_sae_tx_active && sc->sc_sae_tx_doorbelled &&
-        sc->sc_sae_tx_active_ticket > sc->sc_sae_tx_cancel_through &&
+        !iwn_sae_tx_ticket_cancelled_locked(sc,
+            sc->sc_sae_tx_active_ticket) &&
         itl_sae_auth_transport_event_is_well_formed(
             &sc->sc_sae_tx_active_event)) {
         *snapshot = sc->sc_sae_tx_active_event;
@@ -1017,14 +1476,15 @@ iwn_sae_tx_snapshot_reset(struct iwn_softc *sc,
     } else if (sc->sc_sae_tx_event_count != 0) {
         const struct ItlSaeAuthTransportEventV1 *event =
             &sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_head].event;
-        if (event->ticket > sc->sc_sae_tx_cancel_through &&
+        if (!iwn_sae_tx_ticket_cancelled_locked(sc, event->ticket) &&
             itl_sae_auth_transport_event_is_well_formed(event)) {
             *snapshot = *event;
             snapshot->result = EIO;
             have_snapshot = true;
         }
     } else if (sc->sc_sae_tx_last_event_valid &&
-        sc->sc_sae_tx_last_event.ticket > sc->sc_sae_tx_cancel_through &&
+        !iwn_sae_tx_ticket_cancelled_locked(sc,
+            sc->sc_sae_tx_last_event.ticket) &&
         itl_sae_auth_transport_event_is_well_formed(
             &sc->sc_sae_tx_last_event)) {
         *snapshot = sc->sc_sae_tx_last_event;
@@ -1101,6 +1561,7 @@ iwn_sae_tx_task(void *arg)
     bool suppressed = false;
     bool more = false;
     bool deliver_normal = false;
+    bool engine_consumed = false;
 
     if (sc == NULL || !iwn_sae_tx_lifecycle_enter(sc, true))
         return;
@@ -1119,7 +1580,7 @@ iwn_sae_tx_task(void *arg)
                 IWN_SAE_TX_EVENTQ_LEN;
             sc->sc_sae_tx_event_count--;
             suppressed = !is_reset &&
-                event.ticket <= sc->sc_sae_tx_cancel_through;
+                iwn_sae_tx_ticket_cancelled_locked(sc, event.ticket);
             more = sc->sc_sae_tx_event_count != 0;
             have_event = true;
         }
@@ -1129,12 +1590,26 @@ iwn_sae_tx_task(void *arg)
 
     if (have_event && !suppressed &&
         (is_reset || deliver_normal) &&
-        itl_sae_auth_transport_event_is_well_formed(&event) &&
-        ic->ic_event_handler != NULL) {
-        /* Deferred task context only; never firmware completion/IRQ context. */
-        (*ic->ic_event_handler)(ic,
-            is_reset ? IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET :
-            IEEE80211_EVT_SAE_AUTH_TRANSPORT, &event);
+        itl_sae_auth_transport_event_is_well_formed(&event)) {
+        /* A direct engine gets the native terminal value first and never
+         * recreates an Agent/controller cryptographic relay. */
+        if (iwn_sae_engine_callback_enter(sc)) {
+            bool queued_direct = iwn_sae_engine_queue_terminal(sc, &event);
+            engine_consumed = iwn_sae_tx_ticket_is_direct(event.ticket) ||
+                queued_direct;
+            iwn_sae_engine_callback_leave(sc);
+        } else if (iwn_sae_tx_ticket_is_direct(event.ticket)) {
+            /* A copied terminal producer raced close/unpublication.  This
+             * can only be the direct laboratory owner; consume it rather
+             * than leaking its live exchange into the old relay path. */
+            engine_consumed = true;
+        }
+        if (!engine_consumed && ic->ic_event_handler != NULL) {
+            /* Deferred task context only; never firmware completion/IRQ context. */
+            (*ic->ic_event_handler)(ic,
+                is_reset ? IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET :
+                IEEE80211_EVT_SAE_AUTH_TRANSPORT, &event);
+        }
     }
     explicit_bzero(&event, sizeof(event));
     /* Keep the lease until any requeue is admitted or rejected by close().
@@ -1177,6 +1652,1092 @@ iwn_sae_tx_detach_begin(struct iwn_softc *sc)
             pci.workloop->removeEventSource(gate);
         gate->release();
     }
+}
+
+namespace {
+
+struct IwnSaeEngineCancellation {
+    bool      active;
+    u_int64_t request_generation;
+    u_int64_t association_epoch;
+    u_int64_t relay_generation;
+    u_int64_t ticket;
+};
+
+/* Mark only public owner state under the interrupt-safe leaf.  The worker
+ * remains the sole destroyer of sc_sae_engine, so cancellation can safely
+ * race peer RX, native completion and a selected-BSS reset. */
+static bool
+iwn_sae_engine_mark_cancelled_locked(struct iwn_softc *sc,
+    u_int64_t expected_generation, bool suppress_scan,
+    struct IwnSaeEngineCancellation *cancel)
+{
+    struct iwn_sae_engine_owner *owner;
+
+    if (cancel != NULL)
+        explicit_bzero(cancel, sizeof(*cancel));
+    if (sc == NULL || cancel == NULL || sc->sc_sae_engine_lock == NULL)
+        return false;
+    owner = &sc->sc_sae_engine_owner;
+    /* A revoke can precede selected-BSS ownership; preserve that generation
+     * for the worker even when no active engine record matches it yet. */
+    iwn_sae_engine_queue_wcl_cancel_locked(sc, expected_generation);
+    if (owner->active && (expected_generation == 0 ||
+        owner->request_generation == expected_generation)) {
+        cancel->active = true;
+        cancel->request_generation = owner->request_generation;
+        cancel->association_epoch = owner->association_epoch;
+        cancel->relay_generation = owner->relay_generation;
+        cancel->ticket = owner->in_flight_ticket;
+        owner->cancelled = true;
+        iwn_sae_engine_queue_wcl_cancel_locked(sc,
+            owner->request_generation);
+        iwn_sae_engine_fence_inflight_ticket_locked(sc, owner);
+        if (suppress_scan)
+            owner->suppress_scan = true;
+        owner->start_pending = false;
+        owner->submit_retry_pending = false;
+        owner->terminal_valid = false;
+        explicit_bzero(&owner->terminal, sizeof(owner->terminal));
+        explicit_bzero(owner->peerq, sizeof(owner->peerq));
+        owner->peer_head = 0;
+        owner->peer_tail = 0;
+        owner->peer_count = 0;
+    }
+    return cancel->active;
+}
+
+static bool
+iwn_sae_engine_mark_cancelled(struct iwn_softc *sc,
+    u_int64_t expected_generation, bool suppress_scan,
+    struct IwnSaeEngineCancellation *cancel)
+{
+    bool marked;
+
+    if (cancel != NULL)
+        explicit_bzero(cancel, sizeof(*cancel));
+    if (sc == NULL || cancel == NULL || sc->sc_sae_engine_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    marked = iwn_sae_engine_mark_cancelled_locked(sc, expected_generation,
+        suppress_scan, cancel);
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    return marked;
+}
+
+/* All calls below are after the owner leaf is released: generic selected-BSS
+ * state, the private credential leaf, the TX gate and taskq must never nest
+ * below the engine leaf. */
+static void
+iwn_sae_engine_cancel_owned(struct iwn_softc *sc,
+    const struct IwnSaeEngineCancellation *cancel)
+{
+    ItlIwn *that;
+
+    if (sc == NULL || cancel == NULL || !cancel->active)
+        return;
+    that = container_of(sc, ItlIwn, com);
+    if (cancel->ticket != 0)
+        that->cancelSaeAuthFrame(cancel->ticket);
+    if (cancel->association_epoch != 0 && cancel->relay_generation != 0)
+        ieee80211_sae_peer_rx_revoke(&sc->sc_ic,
+            cancel->association_epoch, cancel->relay_generation);
+    if (cancel->request_generation != 0)
+        that->cancelSaeWclCredential(cancel->request_generation);
+}
+
+/* The existing SAE TX task invokes this in deferred context before it can
+ * offer a terminal event to the controller mailbox.  A matching live engine
+ * consumes the value privately; unrelated legacy SAE transport remains
+ * unchanged. */
+static bool
+iwn_sae_engine_queue_terminal(struct iwn_softc *sc,
+    const struct ItlSaeAuthTransportEventV1 *event)
+{
+    struct iwn_sae_engine_owner *owner;
+    bool consumed = false;
+
+    if (sc == NULL || event == NULL || sc->sc_sae_engine_lock == NULL ||
+        !itl_sae_auth_transport_event_is_well_formed(event))
+        return false;
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (iwn_sae_engine_owner_matches_terminal_locked(sc, event)) {
+        consumed = true;
+        if (owner->cancelled || sc->sc_sae_engine_stopping ||
+            sc->sc_sae_engine_detaching) {
+            /* Keep a cancelled owner's tombstone authoritative until the
+             * generic S_AUTH boundary has moved. */
+        } else if (owner->terminal_valid) {
+            /* One physical descriptor is live at a time.  A second terminal
+             * value is an ownership violation, not a retry opportunity. */
+            owner->cancelled = true;
+            owner->submit_retry_pending = false;
+            iwn_sae_engine_queue_wcl_cancel_locked(sc,
+                owner->request_generation);
+            iwn_sae_engine_fence_inflight_ticket_locked(sc, owner);
+        } else {
+            owner->terminal = *event;
+            owner->terminal_valid = true;
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (consumed)
+        iwn_sae_engine_schedule_task(sc);
+    return consumed;
+}
+
+/* Returns 1 when a matching owner copied the peer value, -1 when a live
+ * owner consumes a late/invalid/overflow value, and 0 only when no direct
+ * owner exists so the historical controller route may still decide. */
+static int
+iwn_sae_engine_queue_peer(struct iwn_softc *sc,
+    const struct ItlSaeAuthPeerEventV1 *event)
+{
+    struct iwn_sae_engine_owner *owner;
+    IOSimpleLock *bss_lock;
+    IOInterruptState irq;
+    bool matching_peer;
+    bool current_owner;
+    int result = 0;
+
+    if (sc == NULL || event == NULL || sc->sc_sae_engine_lock == NULL ||
+        !itl_sae_auth_peer_event_is_well_formed(event))
+        return -1;
+    bss_lock = sc->sc_ic.ic_pae_selected_bss_lock;
+    if (bss_lock == NULL)
+        return -1;
+    irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (owner->active) {
+        result = -1;
+        matching_peer = iwn_sae_engine_owner_matches_peer_locked(sc, event);
+        current_owner = iwn_sae_engine_peer_owner_current_locked(sc, owner);
+        if (matching_peer && current_owner && !owner->cancelled &&
+            owner->peer_count < IWN_SAE_ENGINE_PEERQ_LEN) {
+            owner->peerq[owner->peer_tail] = *event;
+            owner->peer_tail = (owner->peer_tail + 1) %
+                IWN_SAE_ENGINE_PEERQ_LEN;
+            owner->peer_count++;
+            result = 1;
+        } else {
+            /* A direct owner never hands a suspicious peer frame back to
+             * the controller route.  The generic admission fence should
+             * already exclude an identity mismatch; treating one as a
+             * terminal local failure keeps that invariant fail-closed. */
+            if (matching_peer && current_owner)
+                owner->peer_overflow = true;
+            owner->cancelled = true;
+            owner->submit_retry_pending = false;
+            iwn_sae_engine_queue_wcl_cancel_locked(sc,
+                owner->request_generation);
+            iwn_sae_engine_fence_inflight_ticket_locked(sc, owner);
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+    if (result != 0)
+        iwn_sae_engine_schedule_task(sc);
+    return result;
+}
+
+/* Writers share generic's selected-BSS leaf so a request cannot observe a
+ * partial four-hook owner.  The independent callback lease protects a hook
+ * copied immediately before this writer removes it. */
+static bool
+iwn_sae_engine_publish_hooks(struct iwn_softc *sc, bool enabled,
+    bool retain_auth_tombstone, u_int32_t expected_generation)
+{
+    struct ieee80211com *ic;
+    IOSimpleLock *lock;
+    IOInterruptState irq;
+    bool retain_owner = false;
+
+    if (sc == NULL)
+        return false;
+    if (enabled && (!iwn_sae_engine_runtime_enabled(sc) ||
+        expected_generation == 0 ||
+        __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
+            __ATOMIC_ACQUIRE) != expected_generation ||
+        (__atomic_load_n(&sc->sc_sae_engine_callback_state,
+            __ATOMIC_ACQUIRE) & IWN_SAE_ENGINE_CALLBACK_CLOSED) != 0))
+        return false;
+    ic = &sc->sc_ic;
+    lock = ic->ic_pae_selected_bss_lock;
+    if (lock != NULL)
+        irq = IOSimpleLockLockDisableInterrupt(lock);
+    /* The second token check is under the same generic hook writer leaf as
+     * publication.  A stop which won in between leaves its own unpublish
+     * authoritative; this older reopen never resurrects a hook. */
+    if (enabled && (!iwn_sae_engine_runtime_enabled(sc) ||
+        __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
+            __ATOMIC_ACQUIRE) != expected_generation ||
+        (__atomic_load_n(&sc->sc_sae_engine_callback_state,
+            __ATOMIC_ACQUIRE) & IWN_SAE_ENGINE_CALLBACK_CLOSED) != 0)) {
+        if (lock != NULL)
+            IOSimpleLockUnlockEnableInterrupt(lock, irq);
+        return false;
+    }
+    if (enabled) {
+        ic->ic_sae_auth_hold = ItlIwn::iwn_sae_auth_hold;
+        ic->ic_sae_auth_owned = ItlIwn::iwn_sae_auth_owned;
+        ic->ic_sae_engine_peer_event = ItlIwn::iwn_sae_engine_peer_event;
+        ic->ic_sae_wcl_request_revoke = ItlIwn::iwn_sae_wcl_request_revoke;
+    } else {
+        ic->ic_sae_auth_hold = NULL;
+        /* A closing S_AUTH owner must remain visible even after the other
+         * hooks are withdrawn.  Generic RX checks this predicate separately
+         * and therefore cannot turn a fresh late Open response into ASSOC.
+         * Final detach/ifdetach passes false once RX can no longer observe
+         * this softc. */
+        if (retain_auth_tombstone && sc->sc_sae_engine_lock != NULL) {
+            /* The hook writer lock precedes the engine leaf everywhere it
+             * nests.  Do not publish a closed predicate for an ordinary
+             * non-SAE AUTH attempt: retain only an actual S_AUTH tombstone. */
+            IOSimpleLockLock(sc->sc_sae_engine_lock);
+            retain_owner = sc->sc_sae_engine_owner.active;
+            IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        }
+        ic->ic_sae_auth_owned = retain_owner ?
+            ItlIwn::iwn_sae_auth_owned : NULL;
+        ic->ic_sae_engine_peer_event = NULL;
+        ic->ic_sae_wcl_request_revoke = NULL;
+    }
+    if (lock != NULL)
+        IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    return enabled;
+}
+
+} // namespace
+
+int ItlIwn::
+iwn_sae_auth_owned(struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+    struct iwn_softc *sc;
+    int owned = 0;
+
+    if (ic == NULL || ni == NULL)
+        return 0;
+    sc = (struct iwn_softc *)ic->ic_softc;
+    /* A selected-BSS reader may have copied this hook immediately before
+     * stop/detach closes it.  Returning ownership on that closed edge is a
+     * fail-closed tombstone: a late Open response must not revive S_AUTH. */
+    if (!iwn_sae_engine_callback_enter(sc))
+        return 1;
+    if (iwn_sae_engine_runtime_enabled(sc) &&
+        sc->sc_sae_engine_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        owned = iwn_sae_engine_owner_matches_node_locked(sc, ic, ni) ? 1 : 0;
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    }
+    iwn_sae_engine_callback_leave(sc);
+    return owned;
+}
+
+int ItlIwn::
+iwn_sae_engine_peer_event(struct ieee80211com *ic,
+    const struct ItlSaeAuthPeerEventV1 *event)
+{
+    struct iwn_softc *sc;
+    int result = 0;
+
+    if (ic == NULL || event == NULL)
+        return 0;
+    sc = (struct iwn_softc *)ic->ic_softc;
+    /* Do not turn a copied hook which lost the close race into a controller
+     * fallback.  -1 is the generic contract's consumed/rejected result. */
+    if (!iwn_sae_engine_callback_enter(sc))
+        return -1;
+    if (iwn_sae_engine_runtime_enabled(sc))
+        result = iwn_sae_engine_queue_peer(sc, event);
+    iwn_sae_engine_callback_leave(sc);
+    return result;
+}
+
+void ItlIwn::
+iwn_sae_wcl_request_revoke(struct ieee80211com *ic,
+    u_int64_t request_generation)
+{
+    struct iwn_softc *sc;
+    struct IwnSaeEngineCancellation cancel;
+
+    if (ic == NULL || request_generation == 0)
+        return;
+    sc = (struct iwn_softc *)ic->ic_softc;
+    if (!iwn_sae_engine_callback_enter(sc))
+        return;
+    explicit_bzero(&cancel, sizeof(cancel));
+    (void)iwn_sae_engine_mark_cancelled(sc, request_generation, false,
+        &cancel);
+    /* This callback is admitted from generic/RX-adjacent paths.  It has
+     * recorded all public cancellation identity under an interrupt-safe leaf
+     * and must not take the sleeping TX lifecycle lock or WCL leaf here. */
+    iwn_sae_engine_schedule_task(sc);
+    explicit_bzero(&cancel, sizeof(cancel));
+    iwn_sae_engine_callback_leave(sc);
+}
+
+int ItlIwn::
+iwn_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
+    enum ieee80211_state /*oldstate*/, int /*mgt*/)
+{
+    struct iwn_softc *sc;
+    struct ieee80211_sae_wcl_bound_request bound;
+    struct ItlSaeSelectedJoinEventV1 selected;
+    struct ItlSaeAuthActivatedEventV1 activated;
+    struct IwnSaeEngineCancellation cancel;
+    struct iwn_sae_engine_owner *owner;
+    u_int64_t relay_generation = 0;
+    int held = 0;
+
+    explicit_bzero(&bound, sizeof(bound));
+    explicit_bzero(&selected, sizeof(selected));
+    explicit_bzero(&activated, sizeof(activated));
+    explicit_bzero(&cancel, sizeof(cancel));
+    if (ic == NULL || ni == NULL)
+        goto out;
+    sc = (struct iwn_softc *)ic->ic_softc;
+    if (!iwn_sae_engine_callback_enter(sc)) {
+        /* generic may have copied auth_hold immediately before a stop/detach
+         * close.  Preserve S_AUTH until the already-scheduled cancellation
+         * edge runs; returning zero here would fall through to Open-System. */
+        if (sc != NULL && (__atomic_load_n(
+            &sc->sc_sae_engine_callback_state, __ATOMIC_ACQUIRE) &
+            IWN_SAE_ENGINE_CALLBACK_CLOSED) != 0)
+            held = 1;
+        goto out;
+    }
+    if (!iwn_sae_engine_runtime_enabled(sc) ||
+        sc->sc_sae_engine_lock == NULL ||
+        !ieee80211_sae_wcl_request_copyout_bound_current(ic, 0, &bound) ||
+        !IEEE80211_ADDR_EQ(ni->ni_bssid, bound.bssid) ||
+        !IEEE80211_ADDR_EQ(ic->ic_myaddr, bound.sta))
+        goto leave;
+
+    selected.version = kItlSaeAuthTransportV1Version;
+    selected.size = sizeof(selected);
+    selected.request_generation = bound.generation;
+    selected.association_epoch = bound.association_epoch;
+    selected.sae_group = IEEE80211_SAE_ENGINE_GROUP19;
+    selected.sae_method = IEEE80211_SAE_ENGINE_HNP_METHOD;
+    /* The current scan census intentionally exposes only the bounded HnP
+     * decision, not raw RSNXE bytes; zero is the sole modeled capability. */
+    selected.rsnxe_capabilities = 0;
+    selected.ssid_len = bound.ssid_len;
+    selected.credential_source = 1u; /* private WCL CIPHER_PWD slot */
+    IEEE80211_ADDR_COPY(selected.bssid, bound.bssid);
+    IEEE80211_ADDR_COPY(selected.sta, bound.sta);
+    memcpy(selected.ssid, bound.ssid, bound.ssid_len);
+    if (!itl_sae_selected_join_event_is_well_formed(&selected))
+        goto leave;
+
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (!sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        !owner->active && sc->sc_sae_engine == NULL &&
+        sc->sc_sae_engine_next_relay_generation != (u_int64_t)-1) {
+        relay_generation = ++sc->sc_sae_engine_next_relay_generation;
+        explicit_bzero(owner, sizeof(*owner));
+        activated.version = kItlSaeAuthTransportV1Version;
+        activated.size = sizeof(activated);
+        activated.request_generation = selected.request_generation;
+        activated.association_epoch = selected.association_epoch;
+        activated.relay_generation = relay_generation;
+        IEEE80211_ADDR_COPY(activated.bssid, selected.bssid);
+        IEEE80211_ADDR_COPY(activated.sta, selected.sta);
+        if (itl_sae_auth_activated_event_is_well_formed(&activated)) {
+            owner->active = true;
+            owner->start_pending = true;
+            owner->request_generation = selected.request_generation;
+            owner->association_epoch = selected.association_epoch;
+            owner->relay_generation = relay_generation;
+            owner->selected = selected;
+            owner->activated = activated;
+            held = 1;
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (!held)
+        goto leave;
+
+    /* Admission rechecks the exact public BOUND snapshot under generic's
+     * leaf and is the only route that permits a direct SAE|PSK transition
+     * BSS.  A local failure still holds S_AUTH until the worker scans away. */
+    if (!ieee80211_sae_wcl_peer_rx_admit(ic, &bound, relay_generation)) {
+        (void)iwn_sae_engine_mark_cancelled(sc, bound.generation, false,
+            &cancel);
+        /* The reservation has already held S_AUTH.  Whether a concurrent
+         * revoke won the owner leaf or this admission check did, give the
+         * sole worker a chance to retire it and scan away. */
+        iwn_sae_engine_schedule_task(sc);
+    } else {
+        iwn_sae_engine_schedule_task(sc);
+    }
+leave:
+    iwn_sae_engine_callback_leave(sc);
+out:
+    explicit_bzero(&cancel, sizeof(cancel));
+    explicit_bzero(&activated, sizeof(activated));
+    explicit_bzero(&selected, sizeof(selected));
+    explicit_bzero(&bound, sizeof(bound));
+    return held;
+}
+
+namespace {
+
+static bool
+iwn_sae_engine_selected_matches_bound(
+    const struct ItlSaeSelectedJoinEventV1 *selected,
+    const struct ieee80211_sae_wcl_bound_request *bound)
+{
+    return selected != NULL && bound != NULL &&
+        selected->request_generation == bound->generation &&
+        selected->association_epoch == bound->association_epoch &&
+        selected->ssid_len == bound->ssid_len &&
+        IEEE80211_ADDR_EQ(selected->bssid, bound->bssid) &&
+        IEEE80211_ADDR_EQ(selected->sta, bound->sta) &&
+        memcmp(selected->ssid, bound->ssid, sizeof(selected->ssid)) == 0;
+}
+
+enum IwnSaeEngineSubmitResult {
+    IWN_SAE_ENGINE_SUBMIT_OK = 0,
+    /* The private workloop gate rejected us before a doorbell.  The engine
+     * rollback is therefore exact and one bounded deferred retry is safe. */
+    IWN_SAE_ENGINE_SUBMIT_RETRY = 1,
+    IWN_SAE_ENGINE_SUBMIT_FAIL = -1,
+};
+
+/* Worker-only: materialize one prepared engine frame, then send it through
+ * the existing IWN gate/descriptor/doorbell path.  A submit failure is known
+ * to be pre-doorbell, so the engine's rollback API is safe; this owner then
+ * takes at most one bounded retry for a private-gate busy result and fails
+ * closed for every ambiguous radio state. */
+static int
+iwn_sae_engine_submit_prepared(struct iwn_softc *sc)
+{
+    struct iwn_sae_engine_owner *owner;
+    struct ItlSaeAuthTxRequestV1 request;
+    struct ieee80211_sae_engine *engine;
+    ItlIwn *that;
+    u_int64_t ticket = 0;
+    IOReturn rc = kIOReturnError;
+    bool rearm_mgt_timer = false;
+
+    if (sc == NULL || sc->sc_sae_engine_lock == NULL)
+        return -1;
+    explicit_bzero(&request, sizeof(request));
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    engine = sc->sc_sae_engine;
+    if (owner->active && !owner->cancelled && !owner->suppress_scan &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        engine != NULL && owner->in_flight_ticket == 0 &&
+        sc->sc_sae_engine_next_ticket !=
+        IWN_SAE_ENGINE_TICKET_COUNTER_MASK) {
+        ticket = IWN_SAE_ENGINE_TICKET_DIRECT_BIT |
+            ++sc->sc_sae_engine_next_ticket;
+        owner->in_flight_ticket = ticket;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (ticket == 0 || ieee80211_sae_engine_prepare_tx(engine, ticket,
+        &request) != 0)
+        goto fail;
+
+    that = container_of(sc, ItlIwn, com);
+    rc = that->submitSaeAuthFrame(&request);
+    if (rc == kIOReturnSuccess) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        owner = &sc->sc_sae_engine_owner;
+        rearm_mgt_timer = owner->active && !owner->cancelled &&
+            !owner->suppress_scan && !sc->sc_sae_engine_stopping &&
+            !sc->sc_sae_engine_detaching &&
+            owner->in_flight_ticket == ticket &&
+            sc->sc_ic.ic_state == IEEE80211_S_AUTH &&
+            sc->sc_ic.ic_bss != NULL &&
+            iwn_sae_engine_owner_matches_node_locked(sc, &sc->sc_ic,
+                sc->sc_ic.ic_bss);
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        if (rearm_mgt_timer)
+            sc->sc_ic.ic_mgt_timer = IEEE80211_TRANS_WAIT;
+        explicit_bzero(&request, sizeof(request));
+        return IWN_SAE_ENGINE_SUBMIT_OK;
+    }
+    (void)ieee80211_sae_engine_tx_rollback_unsubmitted(engine, ticket);
+fail:
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (owner->active && owner->in_flight_ticket == ticket)
+        owner->in_flight_ticket = 0;
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    explicit_bzero(&request, sizeof(request));
+    return rc == kIOReturnNotReady ? IWN_SAE_ENGINE_SUBMIT_RETRY :
+        IWN_SAE_ENGINE_SUBMIT_FAIL;
+}
+
+/* Worker-only start: two current-bound checks bracket private credential
+ * consumption.  Thus a cancellation that wins either before or during the
+ * bounded password copy cannot cause a Commit for a former BSS/request. */
+static int
+iwn_sae_engine_start(struct iwn_softc *sc)
+{
+    struct ieee80211com *ic;
+    struct iwn_sae_engine_owner *owner;
+    struct ieee80211_sae_wcl_bound_request bound;
+    struct ItlSaeSelectedJoinEventV1 selected;
+    struct ItlSaeAuthActivatedEventV1 activated;
+    struct ItlSaeWclCredentialV1 credential;
+    struct ieee80211_sae_engine *engine = NULL;
+    u_int64_t generation = 0;
+    int result = -1;
+
+    if (sc == NULL || sc->sc_sae_engine_lock == NULL)
+        return -1;
+    ic = &sc->sc_ic;
+    explicit_bzero(&bound, sizeof(bound));
+    explicit_bzero(&selected, sizeof(selected));
+    explicit_bzero(&activated, sizeof(activated));
+    explicit_bzero(&credential, sizeof(credential));
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (owner->active && !owner->cancelled && !owner->suppress_scan &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        sc->sc_sae_engine == NULL) {
+        selected = owner->selected;
+        activated = owner->activated;
+        generation = owner->request_generation;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (generation == 0 ||
+        !ieee80211_sae_wcl_request_copyout_bound_current(ic, generation,
+            &bound) || !iwn_sae_engine_selected_matches_bound(&selected,
+            &bound) || !iwn_sae_wcl_credential_take_bound(sc, &selected,
+            &credential) ||
+        !ieee80211_sae_wcl_request_copyout_bound_current(ic, generation,
+            &bound) || !iwn_sae_engine_selected_matches_bound(&selected,
+            &bound))
+        goto out;
+    if (ieee80211_sae_engine_begin_hnp(&selected, &activated,
+        credential.password, credential.password_len, &engine) != 0)
+        goto out;
+    /* begin_hnp consumes its password synchronously; no secret remains in
+     * this driver after the immediately following scrub. */
+    explicit_bzero(&credential, sizeof(credential));
+
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (owner->active && !owner->cancelled && !owner->suppress_scan &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        owner->request_generation == generation && sc->sc_sae_engine == NULL) {
+        sc->sc_sae_engine = engine;
+        engine = NULL;
+        result = 0;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (result == 0)
+        result = iwn_sae_engine_submit_prepared(sc);
+out:
+    if (engine != NULL)
+        ieee80211_sae_engine_destroy(&engine);
+    explicit_bzero(&credential, sizeof(credential));
+    explicit_bzero(&activated, sizeof(activated));
+    explicit_bzero(&selected, sizeof(selected));
+    explicit_bzero(&bound, sizeof(bound));
+    return result;
+}
+
+/* A normal engine retirement may make a fresh direct request possible.  It
+ * must not clear a stop flag or reopen after a newer stop/reset generation:
+ * only iwn_init() is authorized to reopen hardware lifecycle admission. */
+static void
+iwn_sae_engine_reopen_if_current(struct iwn_softc *sc,
+    u_int32_t expected_generation)
+{
+    struct iwn_sae_engine_owner *owner;
+    u_int32_t callback_state;
+    bool may_publish = false;
+
+    if (sc == NULL || expected_generation == 0 ||
+        !iwn_sae_engine_runtime_enabled(sc) ||
+        !iwn_sae_tx_lifecycle_is_open(sc))
+        return;
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (!sc->sc_sae_engine_detaching && !sc->sc_sae_engine_stopping &&
+        __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
+            __ATOMIC_ACQUIRE) == expected_generation && !owner->active &&
+        sc->sc_sae_engine == NULL)
+        may_publish = true;
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (!may_publish)
+        return;
+    /* This worker does not reopen a callback lease that stop closed.  A
+     * concurrent close either remains visible here or makes publication's
+     * second token check fail under the generic hook writer leaf. */
+    callback_state = __atomic_load_n(&sc->sc_sae_engine_callback_state,
+        __ATOMIC_ACQUIRE);
+    if ((callback_state & IWN_SAE_ENGINE_CALLBACK_CLOSED) != 0)
+        return;
+    (void)iwn_sae_engine_publish_hooks(sc, true, false,
+        expected_generation);
+}
+
+/* This runs only on sae_engine_task after detach has drained that task.  It
+ * may call generic state transitions only after it has scrubbed every local
+ * SAE identity and released the engine leaf. */
+static void
+iwn_sae_engine_worker_retire(struct iwn_softc *sc, bool request_scan)
+{
+    struct iwn_sae_engine_owner *owner;
+    struct ieee80211_sae_engine *engine = NULL;
+    struct IwnSaeEngineCancellation cancel;
+    bool suppress_scan = true;
+    bool issue_scan = false;
+    bool reopen_hooks = false;
+    u_int32_t reopen_generation = 0;
+
+    if (sc == NULL || sc->sc_sae_engine_lock == NULL)
+        return;
+    explicit_bzero(&cancel, sizeof(cancel));
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (owner->active) {
+        cancel.active = true;
+        cancel.request_generation = owner->request_generation;
+        cancel.association_epoch = owner->association_epoch;
+        cancel.relay_generation = owner->relay_generation;
+        cancel.ticket = owner->in_flight_ticket;
+        suppress_scan = owner->suppress_scan || sc->sc_sae_engine_stopping ||
+            sc->sc_sae_engine_detaching;
+        /* Preserve this cancelled public identity as an S_AUTH tombstone.
+         * auth_owned() must remain true until generic has crossed its state
+         * boundary, otherwise a late Open response can downgrade the exact
+         * SAE attempt while its worker is still unwinding. */
+        owner->cancelled = true;
+        owner->start_pending = false;
+        owner->submit_retry_pending = false;
+        owner->terminal_valid = false;
+        explicit_bzero(&owner->terminal, sizeof(owner->terminal));
+        explicit_bzero(owner->peerq, sizeof(owner->peerq));
+        owner->peer_head = 0;
+        owner->peer_tail = 0;
+        owner->peer_count = 0;
+    }
+    engine = sc->sc_sae_engine;
+    sc->sc_sae_engine = NULL;
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+
+    if (engine != NULL)
+        ieee80211_sae_engine_destroy(&engine);
+    iwn_sae_engine_cancel_owned(sc, &cancel);
+    issue_scan = request_scan && cancel.active && !suppress_scan &&
+        (IC2IFP(&sc->sc_ic)->if_flags & IFF_RUNNING) != 0 &&
+        sc->sc_ic.ic_state == IEEE80211_S_AUTH;
+    if (issue_scan)
+        ieee80211_new_state(&sc->sc_ic, IEEE80211_S_SCAN, -1);
+
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (owner->active && cancel.active &&
+        owner->request_generation == cancel.request_generation &&
+        owner->association_epoch == cancel.association_epoch &&
+        owner->relay_generation == cancel.relay_generation &&
+        /* A stopped exchange stays a tombstone until its later safe reopen;
+         * detach owns its final explicit destroy below. */
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        sc->sc_ic.ic_state != IEEE80211_S_AUTH) {
+        iwn_sae_engine_owner_clear_locked(sc);
+    } else if (!owner->active && !sc->sc_sae_engine_stopping &&
+        !sc->sc_sae_engine_detaching) {
+        /* A start failure before publishing an owner has no tombstone. */
+        iwn_sae_engine_owner_clear_locked(sc);
+    }
+    reopen_hooks = !sc->sc_sae_engine_stopping &&
+        !sc->sc_sae_engine_detaching && !owner->active &&
+        sc->sc_sae_engine == NULL;
+    if (reopen_hooks)
+        reopen_generation = __atomic_load_n(
+            &sc->sc_sae_engine_lifecycle_generation, __ATOMIC_ACQUIRE);
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (reopen_hooks)
+        iwn_sae_engine_reopen_if_current(sc, reopen_generation);
+    explicit_bzero(&cancel, sizeof(cancel));
+}
+
+} // namespace
+
+void ItlIwn::
+iwn_sae_engine_task(void *arg)
+{
+    struct iwn_softc *sc = (struct iwn_softc *)arg;
+    struct iwn_sae_engine_owner *owner;
+    struct ItlSaeAuthTransportEventV1 terminal;
+    struct ItlSaeAuthPeerEventV1 peer;
+    struct ItlSaePmkContinuationV1 continuation;
+    struct ieee80211_sae_engine *engine;
+    enum ieee80211_sae_engine_peer_result peer_result;
+    u_int64_t wcl_cancel_generation = 0;
+    bool start = false;
+    bool retry_submit = false;
+    bool have_terminal = false;
+    bool have_peer = false;
+    bool cancel = false;
+    bool more = false;
+    bool fail = false;
+    int submit_result = IWN_SAE_ENGINE_SUBMIT_OK;
+
+    if (sc == NULL || !iwn_sae_tx_lifecycle_enter(sc, true))
+        return;
+    explicit_bzero(&terminal, sizeof(terminal));
+    explicit_bzero(&peer, sizeof(peer));
+    explicit_bzero(&continuation, sizeof(continuation));
+    if (sc->sc_sae_engine_lock == NULL)
+        goto out;
+
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    /* A generic callback can revoke a staged password before selected-BSS
+     * ownership exists.  Drain that public fence even with no active engine. */
+    wcl_cancel_generation = sc->sc_sae_engine_wcl_cancel_generation;
+    sc->sc_sae_engine_wcl_cancel_generation = 0;
+    if (owner->active) {
+        cancel = owner->cancelled || owner->suppress_scan ||
+            sc->sc_sae_engine_stopping || sc->sc_sae_engine_detaching;
+        if (!cancel && owner->start_pending) {
+            owner->start_pending = false;
+            start = true;
+        } else if (!cancel && owner->submit_retry_pending) {
+            owner->submit_retry_pending = false;
+            retry_submit = true;
+        } else if (!cancel && owner->terminal_valid) {
+            terminal = owner->terminal;
+            owner->terminal_valid = false;
+            explicit_bzero(&owner->terminal, sizeof(owner->terminal));
+            have_terminal = true;
+        } else if (!cancel && owner->peer_count != 0 &&
+            owner->in_flight_ticket == 0) {
+            peer = owner->peerq[owner->peer_head];
+            explicit_bzero(&owner->peerq[owner->peer_head],
+                sizeof(owner->peerq[owner->peer_head]));
+            owner->peer_head = (owner->peer_head + 1) %
+                IWN_SAE_ENGINE_PEERQ_LEN;
+            owner->peer_count--;
+            have_peer = true;
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+
+    if (wcl_cancel_generation != 0) {
+        ItlIwn *that = container_of(sc, ItlIwn, com);
+        that->cancelSaeWclCredential(wcl_cancel_generation);
+    }
+
+    if (cancel) {
+        iwn_sae_engine_worker_retire(sc, true);
+        goto out;
+    }
+    if (start || retry_submit) {
+        /* attemptAction() can reject a task solely because the private IWN
+         * gate is occupied.  That is pre-doorbell and gets only this short,
+         * bounded deferred retry; all other submission failures retire. */
+        if (retry_submit)
+            IOSleep(1);
+        submit_result = start ? iwn_sae_engine_start(sc) :
+            iwn_sae_engine_submit_prepared(sc);
+    } else if (have_terminal) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        engine = sc->sc_sae_engine;
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        if (engine == NULL || ieee80211_sae_engine_tx_complete(engine,
+            &terminal) != 0) {
+            fail = true;
+        } else {
+            IOSimpleLockLock(sc->sc_sae_engine_lock);
+            owner = &sc->sc_sae_engine_owner;
+            if (owner->active && owner->in_flight_ticket == terminal.ticket)
+                owner->in_flight_ticket = 0;
+            IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        }
+    } else if (have_peer) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        engine = sc->sc_sae_engine;
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        if (engine == NULL) {
+            fail = true;
+        } else {
+            peer_result = ieee80211_sae_engine_handle_peer(engine, &peer,
+                &continuation);
+            if (peer_result == IEEE80211_SAE_ENGINE_PEER_TX_READY)
+                submit_result = iwn_sae_engine_submit_prepared(sc);
+            else if (peer_result == IEEE80211_SAE_ENGINE_PEER_COMPLETE) {
+                /* No PMK-to-RSN continuation exists yet.  Scrub this secret
+                 * immediately and return to SCAN rather than claim WPA3. */
+                explicit_bzero(&continuation, sizeof(continuation));
+                fail = true;
+            } else if (peer_result == IEEE80211_SAE_ENGINE_PEER_ABORT ||
+                peer_result == IEEE80211_SAE_ENGINE_PEER_AP_REJECT) {
+                fail = true;
+            }
+        }
+    }
+    if (submit_result == IWN_SAE_ENGINE_SUBMIT_RETRY) {
+        bool retry_admitted = false;
+
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        owner = &sc->sc_sae_engine_owner;
+        if (owner->active && !owner->cancelled && !owner->suppress_scan &&
+            !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+            owner->in_flight_ticket == 0 &&
+            owner->submit_retry_count < 2) {
+            owner->submit_retry_count++;
+            owner->submit_retry_pending = true;
+            retry_admitted = true;
+        }
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        if (retry_admitted) {
+            iwn_sae_engine_schedule_task(sc);
+            goto out;
+        }
+        fail = true;
+    } else if (submit_result != IWN_SAE_ENGINE_SUBMIT_OK) {
+        fail = true;
+    }
+    if (fail) {
+        iwn_sae_engine_worker_retire(sc, true);
+        goto out;
+    }
+
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    more = owner->active && (owner->cancelled || owner->start_pending ||
+        owner->submit_retry_pending || owner->terminal_valid ||
+        (owner->peer_count != 0 && owner->in_flight_ticket == 0));
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (more)
+        iwn_sae_engine_schedule_task(sc);
+out:
+    explicit_bzero(&continuation, sizeof(continuation));
+    explicit_bzero(&peer, sizeof(peer));
+    explicit_bzero(&terminal, sizeof(terminal));
+    iwn_sae_tx_lifecycle_leave(sc);
+}
+
+/* Stop may be reached from IWN notification/IRQ-adjacent paths.  It closes
+ * admission, records cancellation and queues the worker only; no generic
+ * revoke, WCL leaf, workloop gate, sleep or task barrier is permitted here. */
+void ItlIwn::
+iwn_sae_engine_stop_begin(struct iwn_softc *sc)
+{
+    struct IwnSaeEngineCancellation cancel;
+    bool schedule = false;
+
+    if (sc == NULL)
+        return;
+    explicit_bzero(&cancel, sizeof(cancel));
+    if (sc->sc_sae_engine_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        sc->sc_sae_engine_stopping = true;
+        (void)iwn_sae_engine_generation_advance_locked(sc);
+        (void)iwn_sae_engine_mark_cancelled_locked(sc, 0, true, &cancel);
+        schedule = sc->sc_sae_engine_task_ready;
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    }
+    /* Cancellation/fence linearizes before close.  A hook which had already
+     * entered can now only observe the cancelled owner, never progress it. */
+    iwn_sae_engine_callback_close(sc);
+    (void)iwn_sae_engine_publish_hooks(sc, false, true, 0);
+    if (schedule)
+        iwn_sae_engine_schedule_task(sc);
+    explicit_bzero(&cancel, sizeof(cancel));
+}
+
+/* This is called only after a completed hardware init.  It is the sole
+ * lifecycle path allowed to clear the stop flag and reopen a closed hook
+ * lease; deferred engine retirement uses reopen_if_current() above. */
+void ItlIwn::
+iwn_sae_engine_reopen(struct iwn_softc *sc)
+{
+    struct iwn_sae_engine_owner *owner;
+    u_int32_t generation = 0;
+    u_int32_t callback_state;
+    bool pending_retire = false;
+    bool may_publish = false;
+    bool may_open_callback = false;
+
+    if (sc == NULL)
+        return;
+    if (!iwn_sae_engine_runtime_enabled(sc) ||
+        !iwn_sae_tx_lifecycle_is_open(sc)) {
+        bool detaching = false;
+
+        /* A queued init task can reach this edge after detach has closed
+         * task admission but before its final IRQ quiescence.  It must not
+         * withdraw auth_owned: only final detach unpublishes that tombstone. */
+        if (sc->sc_sae_engine_lock != NULL) {
+            IOSimpleLockLock(sc->sc_sae_engine_lock);
+            detaching = sc->sc_sae_engine_detaching;
+            IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        }
+        if (detaching)
+            return;
+        iwn_sae_engine_callback_close(sc);
+        (void)iwn_sae_engine_publish_hooks(sc, false, true, 0);
+        return;
+    }
+
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    if (!sc->sc_sae_engine_detaching) {
+        sc->sc_sae_engine_stopping = false;
+        generation = __atomic_load_n(
+            &sc->sc_sae_engine_lifecycle_generation, __ATOMIC_ACQUIRE);
+        owner = &sc->sc_sae_engine_owner;
+        /* A stop-suppressed tombstone becomes safe to retire once generic
+         * has already changed its epoch/state.  If it is still S_AUTH, let
+         * the worker drive the explicit fail-closed SCAN edge now that the
+         * radio is usable again. */
+        if (owner->active && owner->cancelled) {
+            owner->suppress_scan = false;
+            pending_retire = true;
+        }
+        may_publish = !owner->active && sc->sc_sae_engine == NULL;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+
+    if (generation == 0 || (!pending_retire && !may_publish))
+        return;
+
+    callback_state = __atomic_load_n(&sc->sc_sae_engine_callback_state,
+        __ATOMIC_ACQUIRE);
+    if ((callback_state & IWN_SAE_ENGINE_CALLBACK_CLOSED) != 0) {
+        iwn_sae_engine_callback_drain(sc);
+        /* Drain is deliberately outside the engine leaf, so a concurrent
+         * stop/detach may win while we wait.  Revalidate its generation and
+         * reopen the lease while that same leaf is held: a stale init must
+         * never reopen a copied peer hook after detach has closed it.
+         *
+         * An explicit hardware init is also allowed to reopen the lease for
+         * one still-active cancelled tombstone.  It leaves the other hooks
+         * withdrawn, schedules retirement, and lets that worker publish only
+         * after it has released the old owner (and SCAN when still in AUTH). */
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        owner = &sc->sc_sae_engine_owner;
+        pending_retire = false;
+        may_publish = false;
+        if (!sc->sc_sae_engine_detaching && !sc->sc_sae_engine_stopping &&
+            __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
+                __ATOMIC_ACQUIRE) == generation) {
+            if (owner->active && owner->cancelled) {
+                owner->suppress_scan = false;
+                pending_retire = true;
+            }
+            may_publish = !owner->active && sc->sc_sae_engine == NULL;
+            may_open_callback = pending_retire || may_publish;
+            if (may_open_callback)
+                may_open_callback = iwn_sae_engine_callback_open(sc);
+        }
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        if (!may_open_callback)
+            return;
+    }
+
+    /* The callback may already have been open when this init entered.  Take
+     * one fresh owner snapshot so a worker which retired during the drain
+     * cannot leave a lease open without either scheduling retirement or
+     * restoring the complete direct-owner hook set. */
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    pending_retire = false;
+    may_publish = false;
+    if (!sc->sc_sae_engine_detaching && !sc->sc_sae_engine_stopping &&
+        __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
+            __ATOMIC_ACQUIRE) == generation) {
+        if (owner->active && owner->cancelled) {
+            owner->suppress_scan = false;
+            pending_retire = true;
+        }
+        may_publish = !owner->active && sc->sc_sae_engine == NULL;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+
+    if (pending_retire) {
+        iwn_sae_engine_schedule_task(sc);
+        return;
+    }
+    if (may_publish)
+        (void)iwn_sae_engine_publish_hooks(sc, true, false, generation);
+}
+
+/* Detach is process context and executes before the IWN TX gate/lifecycle is
+ * removed.  The engine worker can therefore retire a doorbelled descriptor,
+ * revoke peer RX and scrub staged WCL state before the final task barrier
+ * permits its private engine/leaf to disappear. */
+void ItlIwn::
+iwn_sae_engine_detach_begin(struct iwn_softc *sc)
+{
+    struct IwnSaeEngineCancellation cancel;
+    struct ieee80211_sae_engine *engine = NULL;
+    u_int64_t wcl_cancel_generation = 0;
+    bool task_ready = false;
+
+    if (sc == NULL)
+        return;
+    explicit_bzero(&cancel, sizeof(cancel));
+    if (sc->sc_sae_engine_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        sc->sc_sae_engine_detaching = true;
+        sc->sc_sae_engine_stopping = true;
+        (void)iwn_sae_engine_generation_advance_locked(sc);
+        (void)iwn_sae_engine_mark_cancelled_locked(sc, 0, true, &cancel);
+        task_ready = sc->sc_sae_engine_task_ready;
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    }
+    /* Close copied generic hooks before task admission.  Otherwise a hook
+     * which enters in the small CLOSED-task window sees runtime disabled and
+     * could return the legacy-fallback value instead of the fail-closed SAE
+     * tombstone result. */
+    iwn_sae_engine_callback_close(sc);
+    /* Detaching is visible before task admission closes, so a stale init
+     * worker cannot interpret CLOSED as a normal runtime-unavailable state
+     * and withdraw the S_AUTH tombstone.  A producer which already won this
+     * lease finishes task_add before task_del()+barrier below. */
+    iwn_sae_engine_task_admission_close(sc);
+    iwn_sae_engine_task_admission_drain(sc);
+    if (sc->sc_sae_engine_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        /* Enqueue admission is closed and drained above, so no producer can
+         * add the task after the task_del()+barrier snapshot below. */
+        sc->sc_sae_engine_task_ready = false;
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    }
+    (void)iwn_sae_engine_publish_hooks(sc, false, true, 0);
+    /* Callback drain protects copied generic/TX hook bodies; the independent
+     * task-admission drain above already fenced every task_add before the
+     * task_del()+barrier snapshot below. */
+    iwn_sae_engine_callback_drain(sc);
+    if (task_ready && systq != NULL) {
+        (void)task_del(systq, &sc->sae_engine_task);
+        taskq_barrier(systq);
+    }
+
+    if (sc->sc_sae_engine_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        engine = sc->sc_sae_engine;
+        sc->sc_sae_engine = NULL;
+        wcl_cancel_generation = sc->sc_sae_engine_wcl_cancel_generation;
+        sc->sc_sae_engine_wcl_cancel_generation = 0;
+        iwn_sae_engine_owner_clear_locked(sc);
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    }
+    if (engine != NULL)
+        ieee80211_sae_engine_destroy(&engine);
+    if (cancel.active)
+        iwn_sae_engine_cancel_owned(sc, &cancel);
+    if (wcl_cancel_generation != 0) {
+        ItlIwn *that = container_of(sc, ItlIwn, com);
+        that->cancelSaeWclCredential(wcl_cancel_generation);
+    }
+    explicit_bzero(&cancel, sizeof(cancel));
 }
 
 /*
@@ -1598,6 +3159,10 @@ detach(IOPCIDevice *device)
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     struct iwn_softc *sc = &com;
 
+    /* Retire the direct crypto owner while its native TX cancellation gate
+     * still exists; it keeps only an auth-owned tombstone until IRQ teardown
+     * makes a fresh RX fallback impossible. */
+    iwn_sae_engine_detach_begin(sc);
     /* Close direct Algorithm-3 TX before its gate, IRQ or DMA disappear. */
     iwn_sae_tx_detach_begin(sc);
     /* The shared SAE lifecycle is now closed and drained, so the private
@@ -1612,6 +3177,11 @@ detach(IOPCIDevice *device)
      * Removing this source synchronously acknowledges that action before any
      * PMF lock, DMA ring, or net80211 state below is released. */
     iwn_interrupt_teardown(sc);
+    /* No hardware RX producer remains.  Drop the closing auth-owned hook
+     * before generic ifdetach destroys its selected-BSS leaf. */
+    iwn_sae_engine_callback_close(sc);
+    iwn_sae_engine_callback_drain(sc);
+    (void)iwn_sae_engine_publish_hooks(sc, false, false, 0);
     
     for (int txq_i = 0; txq_i < nitems(sc->txq); txq_i++)
         iwn_free_tx_ring(sc, &sc->txq[txq_i]);
@@ -1633,6 +3203,10 @@ detach(IOPCIDevice *device)
     if (sc->sc_sae_tx_lock != NULL) {
         IOSimpleLockFree(sc->sc_sae_tx_lock);
         sc->sc_sae_tx_lock = NULL;
+    }
+    if (sc->sc_sae_engine_lock != NULL) {
+        IOSimpleLockFree(sc->sc_sae_engine_lock);
+        sc->sc_sae_engine_lock = NULL;
     }
     if (sc->sc_sae_wcl_credential_lock != NULL) {
         IOSimpleLockFree(sc->sc_sae_wcl_credential_lock);
@@ -2033,6 +3607,23 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
      * CLOSED is safe in that case: no hook has been published yet. */
     __atomic_store_n(&sc->sc_mfp_pae_callback_state,
         IWN_MFP_PAE_CALLBACK_CLOSED, __ATOMIC_RELEASE);
+    __atomic_store_n(&sc->sc_sae_engine_callback_state,
+        IWN_SAE_ENGINE_CALLBACK_CLOSED, __ATOMIC_RELEASE);
+    __atomic_store_n(&sc->sc_sae_engine_task_admission_state,
+        IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
+    sc->sc_sae_engine_lock = NULL;
+    explicit_bzero(&sc->sc_sae_engine_owner,
+        sizeof(sc->sc_sae_engine_owner));
+    sc->sc_sae_engine = NULL;
+    sc->sc_sae_engine_wcl_cancel_generation = 0;
+    __atomic_store_n(&sc->sc_sae_engine_lifecycle_generation, 1,
+        __ATOMIC_RELEASE);
+    sc->sc_sae_engine_next_ticket = 0;
+    sc->sc_sae_engine_next_relay_generation = 0;
+    sc->sc_sae_engine_task_ready = false;
+    sc->sc_sae_engine_stopping = true;
+    sc->sc_sae_engine_detaching = false;
+    sc->sc_sae_engine_lab_enabled = false;
 
     /*
      * Get the offset of the PCI Express Capability Structure in PCI
@@ -2194,6 +3785,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_tx_stopping = true;
     sc->sc_sae_tx_active_ticket = 0;
     sc->sc_sae_tx_cancel_through = 0;
+    sc->sc_sae_tx_direct_cancel_through = 0;
     sc->sc_sae_tx_generation = 1;
     sc->sc_sae_tx_active_generation = 0;
     sc->sc_sae_tx_last_event_valid = false;
@@ -2205,6 +3797,28 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_tx_event_head = 0;
     sc->sc_sae_tx_event_tail = 0;
     sc->sc_sae_tx_event_count = 0;
+
+    /* The direct engine remains inert until a completed hardware init opens
+     * its callback lease.  Initialize every field before any later attach
+     * failure can enter detach(). */
+    sc->sc_sae_engine_lock = IOSimpleLockAlloc();
+    if (sc->sc_sae_engine_lock == NULL)
+        XYLog("%s: direct SAE owner unavailable\n", DEVNAME(sc));
+    explicit_bzero(&sc->sc_sae_engine_owner,
+        sizeof(sc->sc_sae_engine_owner));
+    sc->sc_sae_engine = NULL;
+    sc->sc_sae_engine_wcl_cancel_generation = 0;
+    __atomic_store_n(&sc->sc_sae_engine_lifecycle_generation, 1,
+        __ATOMIC_RELEASE);
+    __atomic_store_n(&sc->sc_sae_engine_task_admission_state,
+        IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
+    sc->sc_sae_engine_next_ticket = 0;
+    sc->sc_sae_engine_next_relay_generation = 0;
+    sc->sc_sae_engine_task_ready = false;
+    sc->sc_sae_engine_stopping = true;
+    sc->sc_sae_engine_detaching = false;
+    sc->sc_sae_engine_lab_enabled = iwn_sae_auth_transport_lab_opted_in() &&
+        iwn_sae_wcl_credential_lab_opted_in();
 
     /* The normal binary will never admit this slot, but allocate and zero it
      * with the SAE lifecycle so a separately built lab artifact has one
@@ -2367,8 +3981,14 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
 //    rw_init(&sc->sc_rwlock, "iwnlock");
     task_set(&sc->init_task, iwn_init_task, sc, "iwn_init_task");
     task_set(&sc->sae_tx_task, iwn_sae_tx_task, sc, "iwn_sae_tx_task");
+    task_set(&sc->sae_engine_task, iwn_sae_engine_task, sc,
+        "iwn_sae_engine_task");
     task_set(&sc->mfp_pae_task, iwn_mfp_pae_task, sc, "iwn_mfp_pae_task");
     sc->sc_sae_tx_task_ready = true;
+    sc->sc_sae_engine_task_ready = sc->sc_sae_engine_lock != NULL;
+    if (sc->sc_sae_engine_task_ready)
+        __atomic_store_n(&sc->sc_sae_engine_task_admission_state, 0,
+            __ATOMIC_RELEASE);
     sc->sc_mfp_pae_task_ready = sc->sc_mfp_pae_lock != NULL;
     iwn_publish_mfp_capability(sc);
 
@@ -10328,6 +11948,7 @@ iwn_hw_stop(struct iwn_softc *sc)
      * A direct frame already owned by firmware is snapshotted before reset;
      * a controller-cancelled ticket remains deliberately silent.
      */
+    that->iwn_sae_engine_stop_begin(sc);
     that->iwn_sae_tx_stop_begin(sc);
     that->iwn_sae_wcl_stop_begin(sc);
     emit_reset_event = that->iwn_sae_tx_snapshot_reset(sc, &reset_event);
@@ -10444,6 +12065,7 @@ iwn_init(struct _ifnet *ifp)
      * usable.  Reopening creates a new generation for future PMF workers. */
     iwn_mfp_pae_reopen(sc);
     iwn_sae_tx_reopen(sc);
+    iwn_sae_engine_reopen(sc);
 
     if (ic->ic_opmode != IEEE80211_M_MONITOR)
         ieee80211_begin_scan(ifp);
@@ -10471,6 +12093,7 @@ iwn_stop(struct _ifnet *ifp)
      * it before the usual state-machine cancellation edge.  Close local PMF
      * first: generic abort then cannot promote a reconnect successor while
      * this interrupt/timer path is powering the radio down. */
+    iwn_sae_engine_stop_begin(sc);
     iwn_sae_tx_stop_begin(sc);
     iwn_sae_wcl_stop_begin(sc);
     iwn_mfp_pae_abort_all(sc);

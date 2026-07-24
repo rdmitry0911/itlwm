@@ -2448,6 +2448,7 @@ ieee80211_recv_sae_peer_auth(struct ieee80211com *ic, mbuf_t m,
 {
 	struct ItlSaeAuthPeerEventV1 event;
 	struct ieee80211_pae_selected_bss selected;
+	struct ieee80211_sae_driver_hook_snapshot hooks;
 	size_t frame_len;
 	size_t body_len;
 	u_int64_t expected_epoch;
@@ -2481,6 +2482,7 @@ ieee80211_recv_sae_peer_auth(struct ieee80211com *ic, mbuf_t m,
 	if (expected_epoch == 0)
 		return 0;
 	explicit_bzero(&selected, sizeof(selected));
+	explicit_bzero(&hooks, sizeof(hooks));
 	if (!ieee80211_pae_selected_bss_copyout_current(ic, expected_epoch,
 	    &selected) ||
 	    !IEEE80211_ADDR_EQ(selected.bssid, wh->i_addr2) ||
@@ -2512,8 +2514,9 @@ ieee80211_recv_sae_peer_auth(struct ieee80211com *ic, mbuf_t m,
 	 * consumed: a late/malformed frame for that active engine must not fall
 	 * back into the legacy mailbox merely because it lost a local race.
 	 */
-	if (ic->ic_sae_engine_peer_event != NULL) {
-		engine_result = ic->ic_sae_engine_peer_event(ic, &event);
+	ieee80211_sae_driver_hook_snapshot_copyout(ic, &hooks);
+	if (hooks.engine_peer_event != NULL) {
+		engine_result = hooks.engine_peer_event(ic, &event);
 		if (engine_result != 0) {
 			accepted = 1;
 			goto out_event;
@@ -2528,8 +2531,8 @@ ieee80211_recv_sae_peer_auth(struct ieee80211com *ic, mbuf_t m,
 	 */
 	if (ic->ic_opmode == IEEE80211_M_STA &&
 	    ic->ic_state == IEEE80211_S_AUTH && ic->ic_bss != NULL &&
-	    ic->ic_sae_auth_owned != NULL &&
-	    ic->ic_sae_auth_owned(ic, ic->ic_bss) != 0) {
+	    hooks.auth_owned != NULL &&
+	    hooks.auth_owned(ic, ic->ic_bss) != 0) {
 		accepted = 1;
 		goto out_event;
 	}
@@ -2540,6 +2543,7 @@ ieee80211_recv_sae_peer_auth(struct ieee80211com *ic, mbuf_t m,
 	ic->ic_event_handler(ic, IEEE80211_EVT_SAE_AUTH_PEER, &event);
 	accepted = 1;
 out_event:
+	explicit_bzero(&hooks, sizeof(hooks));
 	explicit_bzero(&event, sizeof(event));
 out:
 	explicit_bzero(&selected, sizeof(selected));
@@ -2552,7 +2556,10 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
 {
     const struct ieee80211_frame *wh;
     const u_int8_t *frm;
+	struct ieee80211_sae_driver_hook_snapshot hooks;
     u_int16_t algo, seq, status;
+
+    explicit_bzero(&hooks, sizeof(hooks));
 
     /* make sure all mandatory fixed fields are present */
     if (mbuf_len(m) < sizeof(*wh) + 6) {
@@ -2636,12 +2643,19 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
 	if (ic->ic_opmode == IEEE80211_M_STA &&
 	    ic->ic_state == IEEE80211_S_AUTH &&
 	    seq == IEEE80211_AUTH_OPEN_RESPONSE &&
-	    ic->ic_bss != NULL &&
-	    ic->ic_sae_auth_owned != NULL &&
-	    ic->ic_sae_auth_owned(ic, ic->ic_bss) != 0) {
+	    ic->ic_bss != NULL) {
+		ieee80211_sae_driver_hook_snapshot_copyout(ic, &hooks);
+	}
+	if (ic->ic_opmode == IEEE80211_M_STA &&
+	    ic->ic_state == IEEE80211_S_AUTH &&
+	    seq == IEEE80211_AUTH_OPEN_RESPONSE &&
+	    ic->ic_bss != NULL && hooks.auth_owned != NULL &&
+	    hooks.auth_owned(ic, ic->ic_bss) != 0) {
 		ic->ic_stats.is_rx_bad_auth++;
+		explicit_bzero(&hooks, sizeof(hooks));
 		return;
 	}
+	explicit_bzero(&hooks, sizeof(hooks));
 	ic->ic_deauth_reason = IEEE80211_REASON_UNSPECIFIED;
     ic->ic_assoc_status = 0xffff;
     (void)ieee80211_record_sta_auth_failure(ic, wh, ni, algo, seq, status);

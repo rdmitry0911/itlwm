@@ -79,6 +79,25 @@ struct ieee80211_rsnparams;
 struct ieee80211_pae_selected_bss;
 struct ieee80211_sae_wcl_bound_request;
 struct ItlSaeAuthTxRequestV1;
+struct ItlSaeAuthPeerEventV1;
+/*
+ * The four direct-SAE hook fields are published and withdrawn under the
+ * selected-BSS leaf.  Readers must take one coherent value snapshot before
+ * dropping that leaf: a separate NULL check followed by a second field load
+ * can otherwise race an IWN stop/detach unpublish into a NULL call.
+ *
+ * A copied function pointer remains valid only for the duration of the
+ * callback itself.  The IWN owner supplies its own close/drain lease for
+ * that interval; this structure deliberately carries no driver state.
+ */
+struct ieee80211_sae_driver_hook_snapshot {
+	int	(*auth_hold)(struct ieee80211com *, struct ieee80211_node *,
+		    enum ieee80211_state, int);
+	int	(*auth_owned)(struct ieee80211com *,
+		    const struct ieee80211_node *);
+	int	(*engine_peer_event)(struct ieee80211com *,
+		    const struct ItlSaeAuthPeerEventV1 *);
+};
 extern	void ieee80211_set_link_state(struct ieee80211com *, int);
 extern	u_int ieee80211_get_hdrlen(const struct ieee80211_frame *);
 extern	int ieee80211_classify(struct ieee80211com *, mbuf_t);
@@ -157,6 +176,8 @@ extern	void ieee80211_pae_selected_bss_capture(struct ieee80211com *,
 	    const struct ieee80211_node *, int, u_int64_t);
 extern	int ieee80211_pae_selected_bss_copyout_current(struct ieee80211com *,
 	    u_int64_t, struct ieee80211_pae_selected_bss *);
+extern	void ieee80211_sae_driver_hook_snapshot_copyout(
+	    struct ieee80211com *, struct ieee80211_sae_driver_hook_snapshot *);
 /*
  * Direct-WCL SAE policy carries only an exact public SSID+BSSID selection.
  * publish() allocates a strictly increasing, nonzero generation and does not

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Source-level contract for the lab-gated IWN software-PMF backend.  This is
 # intentionally an owner/lifetime test, not a claim that an on-air WPA3 join
-# has passed: IWN still lacks the selected-BSS SAE state owner and association
-# bridge, and physical protected-MPDU delivery needs a separately opted-in
-# radio run.
+# has passed: driver-owned SAE and PMK-to-RSN association continuation remain
+# separately bounded layers, and physical protected-MPDU delivery needs a
+# separately opted-in radio run.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -105,7 +105,18 @@ for token in (
     "ic->ic_pae_mfp_txn_finish = ItlIwn::iwn_pae_mfp_txn_finish;",
 ):
     require(hooks, token, "MFP owner callback")
-forbid(cpp, "ic_sae_engine_peer_event =", "IWN SAE capability publication")
+# Direct SAE is a separate lab-gated owner.  It may publish its own hooks,
+# but the PMF publisher must neither depend on nor wire those hooks, and the
+# SAE publisher must not use the PMF capability bit as its admission gate.
+forbid(hooks, "ic_sae_", "SAE cross-wiring in PMF publisher")
+sae_hooks = body("iwn_sae_engine_publish_hooks(", "SAE hook publication")
+for token in (
+    "ic->ic_sae_auth_hold = ItlIwn::iwn_sae_auth_hold;",
+    "ic->ic_sae_auth_owned = ItlIwn::iwn_sae_auth_owned;",
+    "ic->ic_sae_engine_peer_event = ItlIwn::iwn_sae_engine_peer_event;",
+):
+    require(sae_hooks, token, "direct SAE hook")
+forbid(sae_hooks, "IEEE80211_C_MFP", "MFP gate in SAE publication")
 
 # Context allocation cannot run in the RX action.  The serial systq worker
 # owns it, while the generic PAE transaction remains the only publisher.

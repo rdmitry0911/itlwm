@@ -305,6 +305,18 @@ public:
     void       iwn_sae_tx_emit_reset_event(struct iwn_softc *,
                 const struct ItlSaeAuthTransportEventV1 *);
     void       iwn_sae_tx_purge(struct iwn_softc *);
+    static int iwn_sae_auth_hold(struct ieee80211com *,
+                struct ieee80211_node *, enum ieee80211_state, int);
+    static int iwn_sae_auth_owned(struct ieee80211com *,
+                const struct ieee80211_node *);
+    static int iwn_sae_engine_peer_event(struct ieee80211com *,
+                const struct ItlSaeAuthPeerEventV1 *);
+    static void iwn_sae_wcl_request_revoke(struct ieee80211com *,
+                u_int64_t);
+    static void iwn_sae_engine_task(void *);
+    void       iwn_sae_engine_stop_begin(struct iwn_softc *);
+    void       iwn_sae_engine_reopen(struct iwn_softc *);
+    void       iwn_sae_engine_detach_begin(struct iwn_softc *);
     void       iwn_sae_wcl_stop_begin(struct iwn_softc *);
     void       iwn_sae_wcl_detach_begin(struct iwn_softc *);
     static void        iwn_mfp_pae_task(void *);

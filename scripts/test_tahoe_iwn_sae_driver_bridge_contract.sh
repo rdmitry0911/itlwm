@@ -15,6 +15,7 @@ root = Path(sys.argv[1])
 var = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 inp = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 proto = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
+proto_h = (root / "itl80211/openbsd/net80211/ieee80211_proto.h").read_text()
 core = (root / "itl80211/openbsd/net80211/ieee80211.c").read_text()
 
 
@@ -38,18 +39,58 @@ def ordered(text: str, label: str, *needles: str) -> None:
         cursor = position + len(needle)
 
 
+def block_after(source: str, opening: int, label: str) -> str:
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening + 1:index]
+    fail(f"unterminated {label}")
+
+
+def body(source: str, name: str, label: str) -> str:
+    marker = require(source, name, label)
+    opening = source.find("{", marker)
+    if opening < 0:
+        fail(f"missing body for {label}")
+    return block_after(source, opening, label)
+
+
 for token in (
         "ic_sae_auth_hold", "ic_sae_auth_owned",
         "ic_sae_engine_peer_event"):
     require(var, token, "dormant generic hook")
 
+# Hook writers share selected-BSS ownership with direct-WCL state.  Every
+# generic reader must copy the coherent callback values under that same leaf,
+# then invoke local pointers after dropping it so IWN's callback lease can
+# safely close/drain the engine without a NULL-call race.
+for token in (
+        "struct ieee80211_sae_driver_hook_snapshot",
+        "ieee80211_sae_driver_hook_snapshot_copyout"):
+    require(proto_h, token, "generic SAE hook snapshot ABI")
+snapshot = body(proto, "ieee80211_sae_driver_hook_snapshot_copyout",
+                "generic SAE hook snapshot")
+ordered(snapshot, "snapshot leaf ordering",
+        "IOSimpleLockLockDisableInterrupt(lock)",
+        "out->auth_hold = ic->ic_sae_auth_hold;",
+        "out->auth_owned = ic->ic_sae_auth_owned;",
+        "out->engine_peer_event = ic->ic_sae_engine_peer_event;",
+        "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
+
 # S_AUTH must offer the private owner before any generic Open-System sender.
 auth_case = require(proto, "case IEEE80211_S_AUTH:\n\t\t/*\n\t\t * A selected driver-owned SAE attempt",
                     "S_AUTH direct-owner state")
-hold = proto.find("ic_sae_auth_hold", auth_case)
+hold = proto.find("sae_hooks.auth_hold", auth_case)
 open_sender = proto.find("IEEE80211_FC0_SUBTYPE_AUTH, 1);", auth_case)
 if hold < 0 or open_sender < 0 or hold > open_sender:
     fail("S_AUTH does not hold direct SAE before generic Open-System AUTH")
+require(proto[auth_case:open_sender],
+        "ieee80211_sae_driver_hook_snapshot_copyout(ic, &sae_hooks);",
+        "S_AUTH coherent hook snapshot")
 require(proto[auth_case:open_sender], "ic->ic_mgt_timer = IEEE80211_TRANS_WAIT;",
         "held AUTH watchdog")
 
@@ -58,17 +99,20 @@ require(proto[auth_case:open_sender], "ic->ic_mgt_timer = IEEE80211_TRANS_WAIT;"
 peer = require(inp, "ieee80211_recv_sae_peer_auth", "peer RX leaf")
 peer_tail = inp[peer:]
 ordered(peer_tail, "peer RX ownership order",
-        "ic->ic_sae_engine_peer_event", "engine_result != 0",
-        "ic->ic_sae_auth_owned(ic, ic->ic_bss)",
+        "ieee80211_sae_driver_hook_snapshot_copyout(ic, &hooks);",
+        "hooks.engine_peer_event", "engine_result != 0",
+        "hooks.auth_owned(ic, ic->ic_bss)",
         "ic->ic_event_handler")
 
 # Historic Open-System success must be rejected against the authoritative BSS,
 # not an arbitrary RX node that may be stale.
 open = require(inp, "/* only \"open\" auth mode is supported", "Open RX branch")
 open_tail = inp[open:]
-require(open_tail, "ic_sae_auth_owned(ic, ic->ic_bss)",
+require(open_tail, "ieee80211_sae_driver_hook_snapshot_copyout(ic, &hooks);",
+        "Open-System coherent hook snapshot")
+require(open_tail, "hooks.auth_owned(ic, ic->ic_bss)",
         "authoritative BSS Open fence")
-if "ic_sae_auth_owned(ic, ni)" in open_tail[:2500]:
+if "hooks.auth_owned(ic, ni)" in open_tail[:2500]:
     fail("Open-System fence uses the untrusted RX node")
 
 # The watchdog snapshots ownership before it invalidates the association
@@ -76,9 +120,10 @@ if "ic_sae_auth_owned(ic, ni)" in open_tail[:2500]:
 watchdog = require(core, "ieee80211_watchdog", "watchdog")
 watchdog_tail = core[watchdog:]
 ordered(watchdog_tail, "watchdog ownership fence",
-        "sae_timeout_owned = ic->ic_sae_auth_owned(ic, ic->ic_bss);",
+        "ieee80211_sae_driver_hook_snapshot_copyout(ic, &sae_hooks);",
+        "sae_timeout_owned = sae_hooks.auth_owned(ic, ic->ic_bss);",
         "ieee80211_pae_assoc_epoch_begin(ic);",
         "!sae_timeout_owned")
 
-print("PASS: generic IWN SAE bridge holds S_AUTH and rejects controller/Open-System fallback")
+print("PASS: generic IWN SAE bridge snapshots hooks, holds S_AUTH, and rejects controller/Open-System fallback")
 PY

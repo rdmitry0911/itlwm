@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Static contract for the lab-gated, one-ticket IWN SAE Authentication TX
-# transport.  It proves only the physical TX/completion spine: it is not an
-# SAE or WPA3 association claim.  The selected-BSS state owner, Open-System
-# suppression, AKM/PMK activation and on-air association proof remain
-# separate work.
+# Static contract for the lab-gated IWN SAE Authentication TX transport and
+# its direct driver-owned Commit/Confirm worker.  It proves the physical
+# TX/RX handshake spine only: PMK-to-RSN association continuation remains a
+# separate layer, so this is not a WPA3 association claim.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -19,6 +18,8 @@ hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 hpp = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
 cpp = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 var = (root / "itlwm/hal_iwn/if_iwnvar.h").read_text()
+transport = (root / "include/HAL/ItlSaeAuthTransportV1.h").read_text()
+controller = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 build = (root / "scripts/build_tahoe.sh").read_text()
 
 
@@ -92,14 +93,24 @@ for token in (
         "sc_sae_tx_lifecycle_active", "sc_sae_tx_lifecycle_closed",
         "sc_sae_tx_lock", "sc_sae_tx_active", "sc_sae_tx_doorbelled",
         "sc_sae_tx_stopping", "sc_sae_tx_active_ticket",
-        "sc_sae_tx_cancel_through", "sc_sae_tx_generation",
+        "sc_sae_tx_cancel_through", "sc_sae_tx_direct_cancel_through",
+        "sc_sae_tx_generation",
         "sc_sae_tx_active_generation", "sc_sae_tx_eventq",
         "IWN_SAE_TX_EVENTQ_LEN", "sae_lifecycle_generation",
         "sae_association_epoch", "sae_relay_generation", "sae_bssid",
-        "sae_sta"):
+        "sae_sta", "sc_sae_engine_lock", "sc_sae_engine_owner",
+        "sc_sae_engine_task_admission_state", "sc_sae_engine_task_ready"):
     require(var, token, "IWN bounded SAE owner storage")
 for secret in ("sae_body", "sae_password", "sae_pmk", "sae_pwe", "sae_kck"):
     forbid(var, secret, "secret descriptor storage")
+for token in (
+        "kItlSaeAuthTransportV1DriverTicketBit",
+        "kItlSaeAuthTransportV1ControllerTicketMax"):
+    require(transport, token, "separate controller/direct ticket domain")
+ordered(controller, "controller stays below direct ticket domain",
+        "s->fSaeNextTxTicket >=",
+        "kItlSaeAuthTransportV1ControllerTicketMax",
+        "a->ticket = ++s->fSaeNextTxTicket")
 
 # Direct physical Algorithm-3 admission is an opt-in laboratory feature,
 # never a surprise in the ordinary production IWN artifact.
@@ -126,7 +137,7 @@ for token in ("getMainCommandGate", "runAction", "commandSleep", "iwn_start(",
     forbid(submit, token, "controller/generic TX reentry in submission")
 cancel = iwn_method("cancelSaeAuthFrame")
 for token in ("iwn_sae_tx_lifecycle_enter(sc, true)",
-              "iwn_sae_tx_lifecycle_leave(sc);", "sc_sae_tx_cancel_through",
+              "iwn_sae_tx_lifecycle_leave(sc);", "iwn_sae_tx_cancel_ticket_locked",
               "!sc->sc_sae_tx_doorbelled"):
     require(cancel, token, "IWN cancellation fence")
 forbid(cancel, "ic_event_handler", "terminal callback from cancellation")
@@ -205,7 +216,7 @@ commit = iwn_method("iwn_sae_tx_commit_doorbell")
 ordered(commit, "doorbell cancellation fence", "IOLockLock(sc->sc_sae_tx_lifecycle_lock)",
         "IOSimpleLockLock(sc->sc_sae_tx_lock)", "sc->sc_sae_tx_active_ticket == ticket",
         "sc->sc_sae_tx_active_generation == sc->sc_sae_tx_generation",
-        "ticket > sc->sc_sae_tx_cancel_through",
+        "!iwn_sae_tx_ticket_cancelled_locked(sc, ticket)",
         "sc->ops.update_sched(sc, qid, descriptor_idx, station_id, length)",
         "sc->sc_sae_tx_doorbelled = true",
         "IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR", "IOSimpleLockUnlock",
@@ -268,6 +279,136 @@ ordered(hw_stop, "hardware-reset ownership", "iwn_sae_tx_stop_begin(sc)",
         "iwn_sae_tx_purge(sc)", "iwn_sae_tx_emit_reset_event(sc, &reset_event)")
 forbid(hw_stop, "taskq_barrier", "blocking barrier in calibration reset")
 
+# Direct driver-owned SAE uses a high ticket namespace, so its cancellation
+# can never advance the historical controller relay's numeric fence.  The
+# worker alone owns password consumption, HnP engine state and raw
+# Commit/Confirm progress; TX_DONE and peer RX remain native IWN/net80211
+# paths rather than a controller/Agent crypto relay.
+ticket_cancel = body(cpp, "iwn_sae_tx_ticket_cancelled_locked",
+                     "ticket-domain cancellation helper")
+ordered(ticket_cancel, "ticket-domain cancellation branches",
+        "if (iwn_sae_tx_ticket_is_direct(ticket))",
+        "IWN_SAE_ENGINE_TICKET_COUNTER_MASK",
+        "sc->sc_sae_tx_direct_cancel_through",
+        "return ticket <= sc->sc_sae_tx_cancel_through")
+ticket_cancel_write = body(cpp, "iwn_sae_tx_cancel_ticket_locked",
+                            "ticket-domain cancellation writer")
+ordered(ticket_cancel_write, "ticket-domain cancellation writes",
+        "if (iwn_sae_tx_ticket_is_direct(ticket))",
+        "counter = ticket & IWN_SAE_ENGINE_TICKET_COUNTER_MASK",
+        "sc->sc_sae_tx_direct_cancel_through = counter",
+        "sc->sc_sae_tx_cancel_through = ticket")
+ticket_fence = body(cpp, "iwn_sae_engine_fence_inflight_ticket_locked",
+                    "direct engine TX fence")
+ordered(ticket_fence, "direct cancellation before doorbell",
+        "IOSimpleLockLock(sc->sc_sae_tx_lock)",
+        "iwn_sae_tx_cancel_ticket_locked(sc, ticket)",
+        "!sc->sc_sae_tx_doorbelled",
+        "IOSimpleLockUnlock(sc->sc_sae_tx_lock)")
+
+for token in (
+        "iwn_sae_auth_hold", "iwn_sae_auth_owned",
+        "iwn_sae_engine_peer_event", "iwn_sae_engine_task"):
+    require(hpp, token, "direct SAE engine declaration")
+hold = iwn_method("iwn_sae_auth_hold")
+for token in (
+        "ieee80211_sae_wcl_request_copyout_bound_current",
+        "ieee80211_sae_wcl_peer_rx_admit",
+        "owner->start_pending = true",
+        "iwn_sae_engine_schedule_task(sc)"):
+    require(hold, token, "direct SAE S_AUTH ownership")
+start = body(cpp, "iwn_sae_engine_start", "direct SAE engine start")
+ordered(start, "direct credential-to-engine path",
+        "ieee80211_sae_wcl_request_copyout_bound_current",
+        "iwn_sae_wcl_credential_take_bound",
+        "ieee80211_sae_engine_begin_hnp",
+        "explicit_bzero(&credential, sizeof(credential))",
+        "iwn_sae_engine_submit_prepared(sc)")
+submit_prepared = body(cpp, "iwn_sae_engine_submit_prepared",
+                       "direct SAE engine submit")
+for token in (
+        "IWN_SAE_ENGINE_TICKET_DIRECT_BIT",
+        "++sc->sc_sae_engine_next_ticket",
+        "ieee80211_sae_engine_prepare_tx",
+        "that->submitSaeAuthFrame(&request)",
+        "ieee80211_sae_engine_tx_rollback_unsubmitted",
+        "sc->sc_ic.ic_mgt_timer = IEEE80211_TRANS_WAIT"):
+    require(submit_prepared, token, "direct SAE frame submission")
+ordered(submit_prepared, "direct high-bit ticket allocation is bounded",
+        "sc->sc_sae_engine_next_ticket !=",
+        "IWN_SAE_ENGINE_TICKET_COUNTER_MASK",
+        "ticket = IWN_SAE_ENGINE_TICKET_DIRECT_BIT |",
+        "++sc->sc_sae_engine_next_ticket",
+        "owner->in_flight_ticket = ticket;")
+engine_task = iwn_method("iwn_sae_engine_task")
+for token in (
+        "ieee80211_sae_engine_tx_complete",
+        "ieee80211_sae_engine_handle_peer",
+        "IEEE80211_SAE_ENGINE_PEER_TX_READY",
+        "IEEE80211_SAE_ENGINE_PEER_COMPLETE",
+        "explicit_bzero(&continuation, sizeof(continuation))"):
+    require(engine_task, token, "direct SAE Commit/Confirm worker")
+require(engine_task, "fail = true;", "honest no-PMK-continuation failure")
+tx_task = iwn_method("iwn_sae_tx_task")
+ordered(tx_task, "native terminal direct routing",
+        "iwn_sae_engine_callback_enter(sc)",
+        "iwn_sae_engine_queue_terminal(sc, &event)",
+        "iwn_sae_tx_ticket_is_direct(event.ticket)",
+        "ic->ic_event_handler")
+require(tx_task, "engine_consumed = iwn_sae_tx_ticket_is_direct(event.ticket) ||",
+        "direct terminal swallow before controller relay")
+
+# A task-queue admission lease closes before task_del()+barrier, while the
+# callback lease closes first so copied RX hooks remain fail-closed during
+# detach.  Worker retirement is generation-fenced and cannot reopen hooks
+# after a newer stop/reset/detach.
+engine_schedule = body(cpp, "iwn_sae_engine_schedule_task",
+                       "direct SAE task scheduler")
+ordered(engine_schedule, "direct task admission lease",
+        "iwn_sae_engine_task_admission_enter(sc)",
+        "sc->sc_sae_engine_task_ready", "task_add(systq, &sc->sae_engine_task)",
+        "iwn_sae_engine_task_admission_leave(sc)")
+engine_detach = iwn_method("iwn_sae_engine_detach_begin")
+ordered(engine_detach, "direct SAE detach ordering",
+        "sc->sc_sae_engine_detaching = true;",
+        "iwn_sae_engine_callback_close(sc);",
+        "iwn_sae_engine_task_admission_close(sc);",
+        "iwn_sae_engine_task_admission_drain(sc);",
+        "sc->sc_sae_engine_task_ready = false;",
+        "task_del(systq, &sc->sae_engine_task)", "taskq_barrier(systq)")
+reopen_current = body(cpp, "iwn_sae_engine_reopen_if_current",
+                      "generation-fenced direct SAE reopen")
+for token in (
+        "expected_generation", "!sc->sc_sae_engine_detaching",
+        "!sc->sc_sae_engine_stopping",
+        "sc->sc_sae_engine_lifecycle_generation",
+        "iwn_sae_engine_publish_hooks(sc, true, false"):
+    require(reopen_current, token, "stale direct SAE reopen fence")
+reopen = iwn_method("iwn_sae_engine_reopen")
+ordered(reopen, "init-authorized tombstone lease reopen",
+        "iwn_sae_engine_callback_drain(sc);",
+        "sc->sc_sae_engine_lifecycle_generation",
+        "iwn_sae_engine_callback_open(sc)",
+        "iwn_sae_engine_schedule_task(sc)",
+        "iwn_sae_engine_publish_hooks(sc, true, false, generation)")
+ordered(reopen, "cancelled tombstone retires before hook publication",
+        "if (owner->active && owner->cancelled) {",
+        "pending_retire = true;",
+        "may_open_callback = pending_retire || may_publish;",
+        "iwn_sae_engine_callback_open(sc)",
+        "if (pending_retire) {",
+        "iwn_sae_engine_schedule_task(sc);",
+        "return;")
+attach_engine = iwn_method("iwn_attach")
+ordered(attach_engine, "engine task admission opens only after task setup",
+        "IWN_SAE_ENGINE_CALLBACK_CLOSED",
+        "IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED",
+        "task_set(&sc->sae_engine_task, iwn_sae_engine_task",
+        "sc->sc_sae_engine_task_ready = sc->sc_sae_engine_lock != NULL;",
+        "sc->sc_sae_engine_task_admission_state, 0")
+require(hw_stop, "iwn_sae_engine_stop_begin(sc)",
+        "engine stop before physical reset")
+
 
 class TicketModel:
     """Small model for the source's cancel/reset terminal ownership rule."""
@@ -318,5 +459,5 @@ model.doorbelled = True
 model.reset()
 assert model.events == [("reset", 12, "EIO")]
 
-print("PASS: IWN lab-gated SAE transport owns one real TX descriptor and deferred terminal completion")
+print("PASS: IWN lab-gated SAE transport and direct Commit/Confirm worker own native TX/RX without a controller relay")
 PY
