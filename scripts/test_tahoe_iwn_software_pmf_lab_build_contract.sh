@@ -40,7 +40,7 @@ for token in (
     "IWN_SOFTWARE_PMF_LAB_BUILD=1",
     "Tahoe-IwnSoftwarePmfLab",
     "DerivedData-iwn-software-pmf-lab",
-    "IWN SAE transport and pure-WCL handshake are compiled; PMK-to-4-way continuation remains disabled.",
+    "IWN software-PMF lab build: direct SAE transport and PMK-to-RSN continuation are compiled; on-air WPA3/4-way success still requires physical validation.",
 ):
     require(token, "lab-only build surface")
 
@@ -65,5 +65,5 @@ if "#define IWN_SOFTWARE_PMF_LAB_BUILD 0" not in iwn:
 if "#if IWN_SOFTWARE_PMF_LAB_BUILD" not in iwn:
     fail("missing lab-build capability predicate")
 
-print("PASS: IWN software-PMF lab build is isolated, STA-only, and makes no PMK-to-4-way or completed-WPA3 claim")
+print("PASS: IWN software-PMF lab build is isolated, STA-only, and makes no on-air WPA3 success claim")
 PY

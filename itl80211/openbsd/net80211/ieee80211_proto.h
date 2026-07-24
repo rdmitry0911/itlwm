@@ -80,6 +80,13 @@ struct ieee80211_pae_selected_bss;
 struct ieee80211_sae_wcl_bound_request;
 struct ItlSaeAuthTxRequestV1;
 struct ItlSaeAuthPeerEventV1;
+struct ItlSaePmkContinuationV1;
+struct ItlSaePmkContinuationIdentityV1;
+
+/* Private generic state argument for the direct SAE PMK continuation.  It is
+ * never an on-air management subtype and may enter S_ASSOC only after the
+ * exact local claim checks below succeed. */
+#define IEEE80211_SAE_WCL_MGMT_PMK_CONTINUE 0x534145u
 /*
  * The four direct-SAE hook fields are published and withdrawn under the
  * selected-BSS leaf.  Readers must take one coherent value snapshot before
@@ -246,6 +253,27 @@ extern	int ieee80211_sae_wcl_request_copyout_bound_current(
  */
 extern	int ieee80211_sae_wcl_peer_rx_admit(struct ieee80211com *,
 	    const struct ieee80211_sae_wcl_bound_request *, u_int64_t);
+/* Claim a verified direct-SAE completion while the caller holds
+ * ic_pae_selected_bss_lock.  The continuation is copied only into the local
+ * PAE/node stores; no callback, state transition, or controller handoff is
+ * permitted under that leaf. */
+extern	int ieee80211_sae_wcl_request_pmk_claim_locked(
+	    struct ieee80211com *, const struct ItlSaePmkContinuationV1 *,
+	    const u_int8_t[IEEE80211_PMKID_LEN]);
+/* Check the one-shot claim for the exact current Association Request.  The
+ * locked form is for IWN's final descriptor admission; the wrapper takes the
+ * selected-BSS leaf itself. */
+extern	int ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(
+	    struct ieee80211com *, const struct ieee80211_node *,
+	    const struct ItlSaePmkContinuationIdentityV1 *);
+extern	int ieee80211_sae_wcl_request_pmk_claim_assoc_current(
+	    struct ieee80211com *, const struct ieee80211_node *,
+	    const struct ItlSaePmkContinuationIdentityV1 *);
+/* Enter S_ASSOC through the private continuation sentinel after a successful
+ * claim.  The generic S_ASSOC handler repeats current-BSS validation before
+ * it can enqueue Association Request. */
+extern	int ieee80211_sae_wcl_request_pmk_continue_assoc(
+	    struct ieee80211com *, const struct ItlSaePmkContinuationIdentityV1 *);
 /*
  * A controller may admit exactly one bounded Algorithm-3 peer-RX relay for
  * the current selected BSS.  The RX path receives a copied epoch/generation

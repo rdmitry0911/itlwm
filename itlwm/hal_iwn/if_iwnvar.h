@@ -36,6 +36,7 @@
 #include <net80211/ieee80211_radiotap.h>
 #include <net80211/ieee80211_priv.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
+#include <HAL/ItlSaePmkContinuationV1.h>
 #include <HAL/ItlSaeWclCredentialV1.h>
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
@@ -115,6 +116,13 @@ struct iwn_sae_engine_owner {
     bool                              start_pending;
     bool                              cancelled;
     bool                              suppress_scan;
+    /* A verified Confirm has claimed local RSN PMK state.  Keep this public
+     * tombstone until the queued Association Request has crossed the real
+     * IWN descriptor doorbell; no password, PMK, PWE, or key bytes live
+     * here. */
+    bool                              completion_claimed;
+    bool                              assoc_tx_pending;
+    bool                              assoc_tx_accepted;
     bool                              terminal_valid;
     bool                              peer_overflow;
     bool                              submit_retry_pending;
@@ -125,6 +133,7 @@ struct iwn_sae_engine_owner {
     u_int64_t                         in_flight_ticket;
     struct ItlSaeSelectedJoinEventV1  selected;
     struct ItlSaeAuthActivatedEventV1 activated;
+    struct ItlSaePmkContinuationIdentityV1 completion;
     struct ItlSaeAuthTransportEventV1 terminal;
     struct ItlSaeAuthPeerEventV1      peerq[IWN_SAE_ENGINE_PEERQ_LEN];
     u_int8_t                          peer_head;

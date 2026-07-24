@@ -204,8 +204,8 @@ ordered(end_scan, "Apple AUTO_JOIN empty-ESS hold",
 
 # Ordinary builds and the audited PLTI path retain pure-SAE rejection.  The
 # resume predicate only consumes the pre-existing exact PSK policy, so the
-# lab-gated IWN direct route cannot reopen a PLTI carrier or claim PMK-to-RSN
-# continuation.
+# lab-gated IWN direct route cannot reopen a PLTI carrier; its PMK-to-RSN
+# continuation is local to the driver and cannot enter this resume path.
 require(auth, "kAuthWpa3Sae | kAuthWpa2Psk",
         "sole audited WPA3 transition selector")
 require(auth, "return (authtypeUpper & kWpa3OnlyAuthMask) != 0 &&",

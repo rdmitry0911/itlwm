@@ -496,16 +496,16 @@ ieee80211_recv_4way_msg1(struct ieee80211com *ic,
             return;
         }
         memcpy(ni->ni_pmk, pmk->pmk_key, IEEE80211_PMK_LEN);
-    } else {    /* use pre-shared key */
-        /* PSK-AKM first-M1 owner routing.
+    } else {    /* use a locally retained non-802.1X PMK */
+        /* Local-PMK first-M1 owner routing.
          *
-         * The recovered Apple/Tahoe WCL contract distinguishes three
-         * PSK association ownership states for the first 4-way M1:
-         *   1. Local PAE owns the PMK: ic_psk holds non-zero PSK PMK
-         *      bytes delivered through the public ASSOCIATE / ad_key
-         *      path or through an explicit installExternalPmkLocked
-         *      ingress. The local PAE consumes M1, copies ic_psk into
-         *      ni_pmk, derives a PTK, and sends M2.
+         * The recovered Apple/Tahoe WCL contract distinguishes three local
+         * PMK ownership states for the first 4-way M1:
+         *   1. Local PAE owns the PMK: ic_psk holds non-zero key bytes from
+         *      the public PSK ingress or from the verified direct-SAE PMK
+         *      continuation.  SAE leaves IEEE80211_F_PSK clear because its
+         *      AKM is SAE, not legacy PSK.  The local PAE consumes M1,
+         *      copies ic_psk into ni_pmk, derives a PTK, and sends M2.
          *   2. External Apple/user supplicant owns the PMK: ic_psk is
          *      all zero and ic_external_pmk_owner is set on a hidden
          *      WCL_ASSOCIATE entry that delivers no PMK bytes. The

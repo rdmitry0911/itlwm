@@ -94,6 +94,13 @@ int ieee80211_sae_engine_tx_rollback_unsubmitted(
 int ieee80211_sae_engine_tx_complete(struct ieee80211_sae_engine *engine,
 	const struct ItlSaeAuthTransportEventV1 *event);
 
+/* Derive the RSN PMK Name used by the direct continuation.  This remains a
+ * C-linkage boundary so the engine and the Tahoe net80211 source do not rely
+ * on a compiler-specific crypto symbol name. */
+int ieee80211_sae_engine_derive_rsn_pmkid(const uint8_t *pmk,
+	const uint8_t *authenticator, const uint8_t *supplicant,
+	uint8_t *pmkid);
+
 /*
  * Consume one exact selected-BSS peer Commit/Confirm.  A TX_READY result
  * requires prepare_tx(); COMPLETE fills a secret continuation which must be
@@ -157,6 +164,18 @@ ieee80211_sae_engine_tx_complete(struct ieee80211_sae_engine *engine,
 {
     (void)engine;
     (void)event;
+    return -1;
+}
+
+static inline int
+ieee80211_sae_engine_derive_rsn_pmkid(const uint8_t *pmk,
+    const uint8_t *authenticator, const uint8_t *supplicant,
+    uint8_t *pmkid)
+{
+    (void)pmk;
+    (void)authenticator;
+    (void)supplicant;
+    (void)pmkid;
     return -1;
 }
 

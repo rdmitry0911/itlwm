@@ -93,7 +93,7 @@ for token in (
         "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 1",
         "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 0",
         "IWN_SOFTWARE_PMF_LAB_BUILD=1",
-        "IWN SAE transport and pure-WCL handshake are compiled; PMK-to-4-way continuation remains disabled.",
+        "IWN software-PMF lab build: direct SAE transport and PMK-to-RSN continuation are compiled; on-air WPA3/4-way success still requires physical validation.",
 ):
     require(sky if token.startswith(("#include", "#if", "ITL_", "#define")) else build,
             token, "laboratory-only ingress gate")
@@ -299,5 +299,5 @@ assert not model.begin("pure-sae", "scan", "pwd", 7, 1, True)
 assert not model.begin("pure-sae", "scan", "pwd", 12, 0, True)
 assert not model.begin("pure-sae", "scan", "pwd", 12, 1, False)
 
-print("PASS: lab-gated pure-SAE WCL ingress reaches only bounded staging/scan handoff; PMK-to-4-way continuation is not claimed")
+print("PASS: lab-gated pure-SAE WCL ingress reaches bounded staging/scan handoff; this ingress test alone does not claim on-air WPA3")
 PY

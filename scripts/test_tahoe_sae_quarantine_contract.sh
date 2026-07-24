@@ -120,7 +120,8 @@ def ordered(text, label, *needles):
 # carrier.  The regular product, public ingress, legacy ingress, IWX, and
 # every PLTI/Agent PMK carrier reject a pure SAE vector before legacy auth or
 # PBKDF2.  One separately compiled IWN-only WCL branch below is deliberately
-# outside those carriers and still stops before PMK-to-RSN continuation.
+# outside those carriers and owns its PMK-to-RSN continuation wholly inside
+# the lab-gated driver path.
 for needle in (
     "kAuthWpa3Sae = 1U << 12",
     "kAuthWpa2Psk = 1U << 3",

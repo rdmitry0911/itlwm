@@ -35,8 +35,9 @@
 #  source-level opt-in for the experimental IWN software-PMF owner and SAE
 #  transport admission; ordinary builds still advertise no IWN MFP capability
 #  and reject direct SAE transport.  It is deliberately incompatible with
-#  --opt-out and enables only the pure-WCL SAE handshake: PMK-to-4-way
-#  continuation and a completed WPA3 association remain unavailable.
+#  --opt-out.  It compiles the direct SAE PMK-to-RSN continuation too, but a
+#  successful build is never evidence of an on-air WPA3 association or
+#  protected 4-way completion.
 #
 #  BOOTKC_PATH defaults to /Volumes/macos-750/System/Library/KernelCollections/BootKernelExtensions.kc
 #  If the BootKC is not found, the build succeeds but the symbol check is skipped.
@@ -275,7 +276,7 @@ fi
 echo ""
 echo "Building only AirportItlwm.kext via $TARGET ($CONFIGURATION/$VARIANT_LABEL) source-id=$GIT_HASH..."
 if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]; then
-    echo "IWN software-PMF lab build: IWN SAE transport and pure-WCL handshake are compiled; PMK-to-4-way continuation remains disabled."
+    echo "IWN software-PMF lab build: direct SAE transport and PMK-to-RSN continuation are compiled; on-air WPA3/4-way success still requires physical validation."
 fi
 mkdir -p "$DERIVED_DATA"
 BUILD_LOG="$DERIVED_DATA/${TARGET}-${CONFIGURATION}.log"

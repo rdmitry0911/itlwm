@@ -69,6 +69,7 @@
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_sae_admission.h>
+#include <HAL/ItlSaePmkContinuationV1.h>
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 #if defined(__IO80211_TARGET) && __IO80211_TARGET >= __MAC_26_0
@@ -983,8 +984,31 @@ ieee80211_sae_wcl_request_revocation_deliver(struct ieee80211com *ic,
 static void
 ieee80211_sae_wcl_request_policy_clear_locked(struct ieee80211com *ic)
 {
+	struct ieee80211_sae_wcl_request *request;
+	struct ieee80211_node *ni;
+
 	if (ic == NULL)
 		return;
+	request = &ic->ic_sae_wcl_request;
+	ni = ic->ic_bss;
+	/* A completion may have copied the derived PMK into the ordinary local
+	 * PAE store so its first M1 path can remain untouched.  It belongs only to
+	 * this exact direct request.  Tear it down before the public request value
+	 * disappears; a later association must never inherit either a PMK or its
+	 * PMK Name. */
+	if (ic->ic_sae_wcl_pmk_claim.active != 0 && ni != NULL &&
+	    IEEE80211_ADDR_EQ(ni->ni_bssid,
+	    ic->ic_sae_wcl_pmk_claim.bssid) &&
+	    IEEE80211_ADDR_EQ(ic->ic_myaddr,
+	    ic->ic_sae_wcl_pmk_claim.sta) &&
+	    request->ssid_len == ni->ni_esslen &&
+	    memcmp(request->ssid, ni->ni_essid, request->ssid_len) == 0) {
+		explicit_bzero(ni->ni_pmk, sizeof(ni->ni_pmk));
+		explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
+		ni->ni_flags &= ~(IEEE80211_NODE_PMK | IEEE80211_NODE_PMKID);
+	}
+	explicit_bzero(&ic->ic_sae_wcl_pmk_claim,
+	    sizeof(ic->ic_sae_wcl_pmk_claim));
 	ic->ic_sae_wcl_policy_generation = 0;
 	ic->ic_pae_mfp_requested = 0;
 	ic->ic_flags &= ~(IEEE80211_F_PSK | IEEE80211_F_RSNON |
@@ -2265,6 +2289,244 @@ ieee80211_sae_wcl_peer_rx_admit(struct ieee80211com *ic,
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	explicit_bzero(&profile, sizeof(profile));
 	return admitted;
+}
+
+/* Caller holds ic_pae_selected_bss_lock.  This checks the public part of a
+ * completed direct-SAE continuation before any PMK bytes can enter the local
+ * PAE.  The raw Algorithm-3 admission deliberately did not require a PMF
+ * backend; this later RSN/4-way continuation does, because MFPR cannot
+ * complete an association without the selected software-PMF owner. */
+static int
+ieee80211_sae_wcl_request_pmk_base_current_locked(
+    struct ieee80211com *ic, const struct ieee80211_node *ni,
+    const struct ItlSaePmkContinuationIdentityV1 *identity,
+    enum ieee80211_state expected_state)
+{
+	const struct ieee80211_sae_wcl_request *request;
+	u_int64_t epoch;
+
+	if (ic == NULL || ni == NULL || identity == NULL ||
+	    !itl_sae_pmk_continuation_identity_is_well_formed(identity) ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != expected_state || ic->ic_bss != ni)
+		return 0;
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	request = &ic->ic_sae_wcl_request;
+	return epoch != 0 && identity->association_epoch == epoch &&
+	    identity->request_generation != 0 &&
+	    request->generation == identity->request_generation &&
+	    request->phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
+	    request->association_epoch == epoch &&
+	    ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request) &&
+	    ieee80211_sae_wcl_request_matches_current_locked(ic, request, ni,
+	    epoch) &&
+	    __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+	    __ATOMIC_ACQUIRE) == 0 &&
+	    IEEE80211_ADDR_EQ(identity->bssid, request->bssid) &&
+	    IEEE80211_ADDR_EQ(identity->bssid, ni->ni_bssid) &&
+	    IEEE80211_ADDR_EQ(identity->sta, ic->ic_myaddr) &&
+	    ni->ni_rsnprotos == IEEE80211_PROTO_RSN &&
+	    ni->ni_rsnakms == IEEE80211_AKM_SAE &&
+	    ni->ni_rsncipher == IEEE80211_CIPHER_CCMP &&
+	    ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP &&
+	    (ic->ic_flags & (IEEE80211_F_RSNON | IEEE80211_F_MFPR)) ==
+	    (IEEE80211_F_RSNON | IEEE80211_F_MFPR) &&
+	    (ic->ic_flags & IEEE80211_F_PSK) == 0 &&
+	    (ic->ic_caps & IEEE80211_C_MFP) != 0 &&
+	    ic->ic_pae_mfp_requested != 0 &&
+	    (ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+	    ic->ic_pae_mfp_txn_submit != NULL &&
+	    ic->ic_pae_mfp_txn_cancel != NULL &&
+	    ic->ic_pae_mfp_txn_finish != NULL;
+}
+
+/* Caller holds ic_pae_selected_bss_lock. */
+static int
+ieee80211_sae_wcl_request_pmk_claim_matches_locked(
+    struct ieee80211com *ic, const struct ieee80211_node *ni,
+    const struct ItlSaePmkContinuationIdentityV1 *identity,
+    enum ieee80211_state expected_state)
+{
+	const struct ieee80211_sae_wcl_pmk_claim *claim;
+
+	if (!ieee80211_sae_wcl_request_pmk_base_current_locked(ic, ni, identity,
+	    expected_state))
+		return 0;
+	claim = &ic->ic_sae_wcl_pmk_claim;
+	return claim->active != 0 &&
+	    itl_sae_pmk_continuation_bytes_all_zero(claim->reserved,
+	    sizeof(claim->reserved)) &&
+	    claim->generation == identity->request_generation &&
+	    claim->association_epoch == identity->association_epoch &&
+	    claim->relay_generation == identity->relay_generation &&
+	    claim->event_sequence == identity->event_sequence &&
+	    IEEE80211_ADDR_EQ(claim->bssid, identity->bssid) &&
+	    IEEE80211_ADDR_EQ(claim->sta, identity->sta) &&
+	    !itl_sae_pmk_continuation_bytes_all_zero(ic->ic_psk,
+	    sizeof(ic->ic_psk)) &&
+	    (ni->ni_flags & IEEE80211_NODE_PMKID) != 0;
+}
+
+/*
+ * Claim one verified direct-SAE PMK under the selected-BSS leaf.  The caller
+ * has independently recomputed the canonical RSN PMK Name in the same
+ * direct SAE crypto domain.  This leaf checks that value again before it
+ * makes the existing local PAE the only M1 owner.  It intentionally leaves
+ * IEEE80211_F_PSK clear: SAE is an AKM, not a legacy PSK selection policy.
+ */
+int
+ieee80211_sae_wcl_request_pmk_claim_locked(struct ieee80211com *ic,
+    const struct ItlSaePmkContinuationV1 *continuation,
+    const u_int8_t canonical_pmkid[IEEE80211_PMKID_LEN])
+{
+	const struct ieee80211_sae_peer_rx_admission *admission;
+	struct ieee80211_sae_wcl_pmk_claim *claim;
+	struct ieee80211_node *ni;
+
+	if (ic == NULL || continuation == NULL || canonical_pmkid == NULL ||
+	    !itl_sae_pmk_continuation_is_well_formed(continuation) ||
+	    timingsafe_bcmp(continuation->pmkid, canonical_pmkid,
+	    IEEE80211_PMKID_LEN) != 0)
+		return 0;
+	ni = ic->ic_bss;
+	if (!ieee80211_sae_wcl_request_pmk_base_current_locked(ic, ni,
+	    &continuation->identity, IEEE80211_S_AUTH))
+		return 0;
+	admission = &ic->ic_sae_peer_rx_admission;
+	claim = &ic->ic_sae_wcl_pmk_claim;
+	if (claim->active != 0 || admission->active == 0 ||
+	    admission->association_epoch != continuation->identity.association_epoch ||
+	    admission->relay_generation != continuation->identity.relay_generation ||
+	    !IEEE80211_ADDR_EQ(admission->bssid, continuation->identity.bssid) ||
+	    !IEEE80211_ADDR_EQ(admission->sta, continuation->identity.sta))
+		return 0;
+
+	/* The only retained PMK copy is the pre-existing local PAE store.  Its
+	 * matching WCL policy clear erases it before any new association can use
+	 * it.  Do not route this through WCL/PLTI or a controller PMK installer. */
+	explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
+	memcpy(ic->ic_psk, continuation->pmk, sizeof(ic->ic_psk));
+	ic->ic_flags &= ~IEEE80211_F_PSK;
+	ic->ic_external_pmk_owner = 0;
+	explicit_bzero(ni->ni_pmk, sizeof(ni->ni_pmk));
+	explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
+	ni->ni_flags &= ~(IEEE80211_NODE_PMK | IEEE80211_NODE_PMKID);
+	memcpy(ni->ni_pmkid, canonical_pmkid, sizeof(ni->ni_pmkid));
+	ni->ni_flags |= IEEE80211_NODE_PMKID;
+	explicit_bzero(claim, sizeof(*claim));
+	claim->generation = continuation->identity.request_generation;
+	claim->association_epoch = continuation->identity.association_epoch;
+	claim->relay_generation = continuation->identity.relay_generation;
+	claim->event_sequence = continuation->identity.event_sequence;
+	IEEE80211_ADDR_COPY(claim->bssid, continuation->identity.bssid);
+	IEEE80211_ADDR_COPY(claim->sta, continuation->identity.sta);
+	claim->active = 1;
+	return 1;
+}
+
+int
+ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(
+    struct ieee80211com *ic, const struct ieee80211_node *ni,
+    const struct ItlSaePmkContinuationIdentityV1 *identity)
+{
+	return ieee80211_sae_wcl_request_pmk_claim_matches_locked(ic, ni,
+	    identity, IEEE80211_S_ASSOC);
+}
+
+int
+ieee80211_sae_wcl_request_pmk_claim_assoc_current(struct ieee80211com *ic,
+    const struct ieee80211_node *ni,
+    const struct ItlSaePmkContinuationIdentityV1 *identity)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int current = 0;
+
+	if (ic == NULL || ni == NULL || identity == NULL)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	current = ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(ic,
+	    ni, identity);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return current;
+}
+
+/* ieee80211_newstate() carries only its private continuation sentinel, never
+ * a secret or an IWN owner pointer.  Reconstruct the public identity from the
+ * one-shot claim while holding the selected-BSS leaf, then reuse the same
+ * exact current-BSS predicate as IWN's descriptor fence. */
+static int
+ieee80211_sae_wcl_request_pmk_claim_assoc_sentinel_current(
+    struct ieee80211com *ic, const struct ieee80211_node *ni)
+{
+	struct ItlSaePmkContinuationIdentityV1 identity;
+	const struct ieee80211_sae_wcl_pmk_claim *claim;
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int current = 0;
+
+	if (ic == NULL || ni == NULL)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	explicit_bzero(&identity, sizeof(identity));
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	claim = &ic->ic_sae_wcl_pmk_claim;
+	if (claim->active != 0) {
+		identity.version = kItlSaePmkContinuationV1Version;
+		identity.size = sizeof(identity);
+		identity.request_generation = claim->generation;
+		identity.association_epoch = claim->association_epoch;
+		identity.relay_generation = claim->relay_generation;
+		identity.event_sequence = claim->event_sequence;
+		IEEE80211_ADDR_COPY(identity.bssid, claim->bssid);
+		IEEE80211_ADDR_COPY(identity.sta, claim->sta);
+		current = ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(
+		    ic, ni, &identity);
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	explicit_bzero(&identity, sizeof(identity));
+	return current;
+}
+
+int
+ieee80211_sae_wcl_request_pmk_continue_assoc(struct ieee80211com *ic,
+    const struct ItlSaePmkContinuationIdentityV1 *identity)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_node *ni;
+	int claimed = 0;
+	int error;
+
+	if (ic == NULL || identity == NULL ||
+	    !itl_sae_pmk_continuation_identity_is_well_formed(identity) ||
+	    ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ni = ic->ic_bss;
+	claimed = ieee80211_sae_wcl_request_pmk_claim_matches_locked(ic, ni,
+	    identity, IEEE80211_S_AUTH);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (!claimed || ic->ic_newstate == NULL)
+		return 0;
+
+	/* The standard forward AUTH -> ASSOC edge preserves this epoch.  The
+	 * private argument makes ieee80211_newstate() repeat the exact claim check
+	 * after it has committed S_ASSOC and immediately before it queues the
+	 * ordinary Association Request. */
+	ieee80211_pae_assoc_epoch_note_newstate(ic, IEEE80211_S_ASSOC);
+	error = (*ic->ic_newstate)(ic, IEEE80211_S_ASSOC,
+	    IEEE80211_SAE_WCL_MGMT_PMK_CONTINUE);
+	return error == 0;
 }
 
 enum ieee80211_sae_wcl_request_auth_owner_state {
@@ -3879,6 +4141,19 @@ justcleanup:
 		}
 		break;
 	case IEEE80211_S_ASSOC:
+		/* Direct SAE reaches Association only through its private PMK
+		 * continuation sentinel.  Recheck the exact public claim after the
+		 * state has committed and immediately before generic code can enqueue
+		 * an Association Request.  In particular, a late S_AUTH replacement
+		 * cannot turn a stale Confirm into an on-air association. */
+		if (mgt == IEEE80211_SAE_WCL_MGMT_PMK_CONTINUE &&
+		    (ostate != IEEE80211_S_AUTH ||
+		    ic->ic_opmode != IEEE80211_M_STA || ni == NULL ||
+		    !ieee80211_sae_wcl_request_pmk_claim_assoc_sentinel_current(ic,
+		    ni))) {
+			ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+			break;
+		}
 		switch (ostate) {
 		case IEEE80211_S_INIT:
 		case IEEE80211_S_SCAN:

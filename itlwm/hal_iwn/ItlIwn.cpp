@@ -1725,6 +1725,218 @@ iwn_sae_engine_mark_cancelled(struct iwn_softc *sc,
     return marked;
 }
 
+enum IwnSaeAssocTxAdmission {
+    IWN_SAE_ASSOC_TX_NOT_DIRECT = 0,
+    IWN_SAE_ASSOC_TX_ADMITTED = 1,
+    IWN_SAE_ASSOC_TX_REJECTED = -1,
+};
+
+/* The descriptor fence retains only this public completion identity between
+ * the pre-trim Association Request check and the final firmware doorbell. */
+struct IwnSaeAssocTxClaim {
+    struct ItlSaePmkContinuationIdentityV1 identity;
+    bool                                    active;
+};
+
+static bool
+iwn_sae_engine_pmk_identity_equal(
+    const struct ItlSaePmkContinuationIdentityV1 *left,
+    const struct ItlSaePmkContinuationIdentityV1 *right)
+{
+    return left != NULL && right != NULL &&
+        left->version == right->version && left->size == right->size &&
+        left->request_generation == right->request_generation &&
+        left->association_epoch == right->association_epoch &&
+        left->relay_generation == right->relay_generation &&
+        left->event_sequence == right->event_sequence &&
+        IEEE80211_ADDR_EQ(left->bssid, right->bssid) &&
+        IEEE80211_ADDR_EQ(left->sta, right->sta) &&
+        itl_sae_pmk_continuation_bytes_all_zero(left->reserved,
+            sizeof(left->reserved)) &&
+        itl_sae_pmk_continuation_bytes_all_zero(right->reserved,
+            sizeof(right->reserved));
+}
+
+/* Caller holds the engine leaf.  This identity has no PMK bytes: it binds the
+ * driver owner to exactly one Confirm result before generic code may queue an
+ * Association Request. */
+static bool
+iwn_sae_engine_owner_matches_pmk_identity_locked(
+    const struct iwn_softc *sc, const struct iwn_sae_engine_owner *owner,
+    const struct ItlSaePmkContinuationIdentityV1 *identity)
+{
+    return sc != NULL && owner != NULL && identity != NULL &&
+        itl_sae_pmk_continuation_identity_is_well_formed(identity) &&
+        owner->active && !owner->cancelled && !owner->suppress_scan &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        owner->request_generation == identity->request_generation &&
+        owner->association_epoch == identity->association_epoch &&
+        owner->relay_generation == identity->relay_generation &&
+        owner->selected.request_generation == identity->request_generation &&
+        owner->selected.association_epoch == identity->association_epoch &&
+        owner->activated.request_generation == identity->request_generation &&
+        owner->activated.association_epoch == identity->association_epoch &&
+        owner->activated.relay_generation == identity->relay_generation &&
+        IEEE80211_ADDR_EQ(owner->selected.bssid, identity->bssid) &&
+        IEEE80211_ADDR_EQ(owner->selected.sta, identity->sta) &&
+        IEEE80211_ADDR_EQ(owner->activated.bssid, identity->bssid) &&
+        IEEE80211_ADDR_EQ(owner->activated.sta, identity->sta);
+}
+
+static bool
+iwn_sae_engine_assoc_tx_frame_matches_identity(
+    const struct ieee80211_frame *wh,
+    const struct ItlSaePmkContinuationIdentityV1 *identity)
+{
+    return wh != NULL && identity != NULL &&
+        itl_sae_pmk_continuation_identity_is_well_formed(identity) &&
+        (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT &&
+        (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+        IEEE80211_FC0_SUBTYPE_ASSOC_REQ &&
+        IEEE80211_ADDR_EQ(wh->i_addr1, identity->bssid) &&
+        IEEE80211_ADDR_EQ(wh->i_addr2, identity->sta) &&
+        IEEE80211_ADDR_EQ(wh->i_addr3, identity->bssid);
+}
+
+/* A stale queued frame for a former BSS must not cancel a newer direct SAE
+ * owner.  This looser match decides only whether an invalid Association
+ * Request is about the current owner and is therefore allowed to retire it. */
+static bool
+iwn_sae_engine_assoc_tx_frame_matches_selected(
+    const struct ieee80211_frame *wh,
+    const struct iwn_sae_engine_owner *owner)
+{
+    return wh != NULL && owner != NULL && owner->active &&
+        (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT &&
+        (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+        IEEE80211_FC0_SUBTYPE_ASSOC_REQ &&
+        IEEE80211_ADDR_EQ(wh->i_addr1, owner->selected.bssid) &&
+        IEEE80211_ADDR_EQ(wh->i_addr2, owner->selected.sta) &&
+        IEEE80211_ADDR_EQ(wh->i_addr3, owner->selected.bssid);
+}
+
+/* Pre-trim admission for a generic Association Request.  It leaves ordinary
+ * traffic untouched when there is no direct SAE owner, rejects an old queued
+ * frame without cancelling a newer owner, and snapshots only public state for
+ * the final descriptor fence below. */
+static enum IwnSaeAssocTxAdmission
+iwn_sae_engine_assoc_tx_preflight(struct iwn_softc *sc,
+    const struct ieee80211_node *ni, const struct ieee80211_frame *wh,
+    struct IwnSaeAssocTxClaim *claim)
+{
+    struct iwn_sae_engine_owner *owner;
+    struct IwnSaeEngineCancellation cancel;
+    IOSimpleLock *bss_lock;
+    IOInterruptState irq;
+    enum IwnSaeAssocTxAdmission result = IWN_SAE_ASSOC_TX_NOT_DIRECT;
+    bool schedule = false;
+
+    if (claim != NULL)
+        explicit_bzero(claim, sizeof(*claim));
+    if (sc == NULL || ni == NULL || wh == NULL || claim == NULL ||
+        sc->sc_sae_engine_lock == NULL)
+        return IWN_SAE_ASSOC_TX_NOT_DIRECT;
+    bss_lock = sc->sc_ic.ic_pae_selected_bss_lock;
+    if (bss_lock == NULL)
+        return IWN_SAE_ASSOC_TX_NOT_DIRECT;
+
+    explicit_bzero(&cancel, sizeof(cancel));
+    irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (owner->active) {
+        result = IWN_SAE_ASSOC_TX_REJECTED;
+        if (owner->completion_claimed && owner->assoc_tx_pending &&
+            !owner->assoc_tx_accepted &&
+            iwn_sae_engine_owner_matches_pmk_identity_locked(sc, owner,
+            &owner->completion) &&
+            iwn_sae_engine_assoc_tx_frame_matches_identity(wh,
+            &owner->completion) &&
+            ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(
+            &sc->sc_ic, ni, &owner->completion)) {
+            claim->identity = owner->completion;
+            claim->active = true;
+            result = IWN_SAE_ASSOC_TX_ADMITTED;
+        } else if (iwn_sae_engine_assoc_tx_frame_matches_selected(wh,
+            owner)) {
+            /* This is an invalid request for the current owner, not a stale
+             * descriptor from a former BSS.  Retire only its exact
+             * generation; never use the broad generation-zero cancel. */
+            schedule = iwn_sae_engine_mark_cancelled_locked(sc,
+                owner->request_generation, false, &cancel);
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+    if (schedule)
+        iwn_sae_engine_schedule_task(sc);
+    explicit_bzero(&cancel, sizeof(cancel));
+    return result;
+}
+
+/* Final Association Request linearization.  The generic mgtq can delay this
+ * far beyond S_ASSOC, so no earlier PMK claim is sufficient: the exact same
+ * public identity must still be live when scheduler state and WRPTR become
+ * visible to firmware. */
+static bool
+iwn_sae_engine_assoc_tx_commit(struct iwn_softc *sc,
+    struct iwn_tx_ring *ring, int descriptor_idx, uint8_t station_id,
+    uint16_t length, const struct ieee80211_node *ni,
+    const struct IwnSaeAssocTxClaim *claim)
+{
+    struct iwn_sae_engine_owner *owner;
+    struct IwnSaeEngineCancellation cancel;
+    IOSimpleLock *bss_lock;
+    IOInterruptState irq;
+    bool committed = false;
+    bool schedule = false;
+
+    if (sc == NULL || ring == NULL || ni == NULL || claim == NULL ||
+        !claim->active || sc->sc_sae_engine_lock == NULL)
+        return false;
+    bss_lock = sc->sc_ic.ic_pae_selected_bss_lock;
+    if (bss_lock == NULL)
+        return false;
+
+    explicit_bzero(&cancel, sizeof(cancel));
+    irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    owner = &sc->sc_sae_engine_owner;
+    if (iwn_sae_engine_pmk_identity_equal(&owner->completion,
+        &claim->identity)) {
+        if (owner->completion_claimed && owner->assoc_tx_pending &&
+            !owner->assoc_tx_accepted &&
+            iwn_sae_engine_owner_matches_pmk_identity_locked(sc, owner,
+            &claim->identity) &&
+            iwn_sae_engine_owner_matches_node_locked(sc, &sc->sc_ic, ni) &&
+            ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(
+            &sc->sc_ic, ni, &claim->identity) &&
+            ring->cur == descriptor_idx && sc->ops.update_sched != NULL) {
+            const int next_cur = (descriptor_idx + 1) % IWN_TX_RING_COUNT;
+
+            sc->ops.update_sched(sc, ring->qid, descriptor_idx, station_id,
+                length);
+            ring->cur = next_cur;
+            IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR,
+                ring->qid << 8 | ring->cur);
+            owner->assoc_tx_pending = false;
+            owner->assoc_tx_accepted = true;
+            committed = true;
+        } else {
+            /* The matching owner lost one of its current-BSS/PMK fences
+             * before the doorbell.  Let the sole worker scrub and scan. */
+            schedule = iwn_sae_engine_mark_cancelled_locked(sc,
+                owner->request_generation, false, &cancel);
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+    if (schedule)
+        iwn_sae_engine_schedule_task(sc);
+    explicit_bzero(&cancel, sizeof(cancel));
+    return committed;
+}
+
 /* All calls below are after the owner leaf is released: generic selected-BSS
  * state, the private credential leaf, the TX gate and taskq must never nest
  * below the engine leaf. */
@@ -2333,7 +2545,8 @@ iwn_sae_engine_worker_retire(struct iwn_softc *sc, bool request_scan)
     iwn_sae_engine_cancel_owned(sc, &cancel);
     issue_scan = request_scan && cancel.active && !suppress_scan &&
         (IC2IFP(&sc->sc_ic)->if_flags & IFF_RUNNING) != 0 &&
-        sc->sc_ic.ic_state == IEEE80211_S_AUTH;
+        (sc->sc_ic.ic_state == IEEE80211_S_AUTH ||
+        sc->sc_ic.ic_state == IEEE80211_S_ASSOC);
     if (issue_scan)
         ieee80211_new_state(&sc->sc_ic, IEEE80211_S_SCAN, -1);
 
@@ -2375,6 +2588,7 @@ iwn_sae_engine_task(void *arg)
     struct ItlSaeAuthTransportEventV1 terminal;
     struct ItlSaeAuthPeerEventV1 peer;
     struct ItlSaePmkContinuationV1 continuation;
+    u_int8_t canonical_pmkid[IEEE80211_PMKID_LEN];
     struct ieee80211_sae_engine *engine;
     enum ieee80211_sae_engine_peer_result peer_result;
     u_int64_t wcl_cancel_generation = 0;
@@ -2383,6 +2597,7 @@ iwn_sae_engine_task(void *arg)
     bool have_terminal = false;
     bool have_peer = false;
     bool cancel = false;
+    bool assoc_tx_accepted = false;
     bool more = false;
     bool fail = false;
     int submit_result = IWN_SAE_ENGINE_SUBMIT_OK;
@@ -2392,6 +2607,7 @@ iwn_sae_engine_task(void *arg)
     explicit_bzero(&terminal, sizeof(terminal));
     explicit_bzero(&peer, sizeof(peer));
     explicit_bzero(&continuation, sizeof(continuation));
+    explicit_bzero(canonical_pmkid, sizeof(canonical_pmkid));
     if (sc->sc_sae_engine_lock == NULL)
         goto out;
 
@@ -2415,6 +2631,8 @@ iwn_sae_engine_task(void *arg)
             owner->terminal_valid = false;
             explicit_bzero(&owner->terminal, sizeof(owner->terminal));
             have_terminal = true;
+        } else if (!cancel && owner->assoc_tx_accepted) {
+            assoc_tx_accepted = true;
         } else if (!cancel && owner->peer_count != 0 &&
             owner->in_flight_ticket == 0) {
             peer = owner->peerq[owner->peer_head];
@@ -2435,6 +2653,13 @@ iwn_sae_engine_task(void *arg)
 
     if (cancel) {
         iwn_sae_engine_worker_retire(sc, true);
+        goto out;
+    }
+    /* The engine remains alive until generic's asynchronously queued
+     * Association Request has crossed the real descriptor doorbell.  Only
+     * that accepted doorbell may retire the direct SAE owner without a scan. */
+    if (assoc_tx_accepted) {
+        iwn_sae_engine_worker_retire(sc, false);
         goto out;
     }
     if (start || retry_submit) {
@@ -2471,10 +2696,68 @@ iwn_sae_engine_task(void *arg)
             if (peer_result == IEEE80211_SAE_ENGINE_PEER_TX_READY)
                 submit_result = iwn_sae_engine_submit_prepared(sc);
             else if (peer_result == IEEE80211_SAE_ENGINE_PEER_COMPLETE) {
-                /* No PMK-to-RSN continuation exists yet.  Scrub this secret
-                 * immediately and return to SCAN rather than claim WPA3. */
-                explicit_bzero(&continuation, sizeof(continuation));
-                fail = true;
+                IOSimpleLock *bss_lock;
+                IOInterruptState irq;
+                bool pmk_claimed = false;
+                bool assoc_started = false;
+
+                /* The engine generated a PMK Name itself.  Recompute it at
+                 * the IWN/net80211 boundary before a single PMK byte can
+                 * enter the local PAE; a malformed or mismatched result is
+                 * terminal and never reaches WCL, PLTI, or an Agent route. */
+                if (ieee80211_sae_engine_derive_rsn_pmkid(
+                    continuation.pmk, continuation.identity.bssid,
+                    continuation.identity.sta, canonical_pmkid) != 0 ||
+                    timingsafe_bcmp(canonical_pmkid, continuation.pmkid,
+                    sizeof(canonical_pmkid)) != 0) {
+                    fail = true;
+                } else if ((bss_lock = sc->sc_ic.ic_pae_selected_bss_lock) ==
+                    NULL) {
+                    fail = true;
+                } else {
+                    /* The selected-BSS leaf precedes the engine leaf.  This
+                     * one short critical section claims the public direct
+                     * request and stores only its completion identity; state
+                     * transition and all callbacks occur after both unlock. */
+                    irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+                    IOSimpleLockLock(sc->sc_sae_engine_lock);
+                    owner = &sc->sc_sae_engine_owner;
+                    if (sc->sc_sae_engine == engine &&
+                        !owner->completion_claimed &&
+                        !owner->assoc_tx_pending &&
+                        !owner->assoc_tx_accepted &&
+                        iwn_sae_engine_owner_matches_pmk_identity_locked(sc,
+                        owner, &continuation.identity) &&
+                        iwn_sae_engine_peer_owner_current_locked(sc, owner) &&
+                        ieee80211_sae_wcl_request_pmk_claim_locked(
+                        &sc->sc_ic, &continuation, canonical_pmkid)) {
+                        owner->completion = continuation.identity;
+                        owner->completion_claimed = true;
+                        owner->assoc_tx_pending = true;
+                        pmk_claimed = true;
+                    }
+                    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+                    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+
+                    if (pmk_claimed)
+                        assoc_started =
+                            ieee80211_sae_wcl_request_pmk_continue_assoc(
+                            &sc->sc_ic, &continuation.identity) != 0;
+                    /* A driver newstate override can run before generic's
+                     * sentinel.  Confirm that it actually left us in the
+                     * claimed S_ASSOC state; otherwise retire deterministically. */
+                    if (assoc_started) {
+                        irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+                        assoc_started = sc->sc_ic.ic_state ==
+                            IEEE80211_S_ASSOC &&
+                            ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(
+                            &sc->sc_ic, sc->sc_ic.ic_bss,
+                            &continuation.identity);
+                        IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+                    }
+                    if (!assoc_started)
+                        fail = true;
+                }
             } else if (peer_result == IEEE80211_SAE_ENGINE_PEER_ABORT ||
                 peer_result == IEEE80211_SAE_ENGINE_PEER_AP_REJECT) {
                 fail = true;
@@ -2512,11 +2795,13 @@ iwn_sae_engine_task(void *arg)
     owner = &sc->sc_sae_engine_owner;
     more = owner->active && (owner->cancelled || owner->start_pending ||
         owner->submit_retry_pending || owner->terminal_valid ||
+        owner->assoc_tx_accepted ||
         (owner->peer_count != 0 && owner->in_flight_ticket == 0));
     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
     if (more)
         iwn_sae_engine_schedule_task(sc);
 out:
+    explicit_bzero(canonical_pmkid, sizeof(canonical_pmkid));
     explicit_bzero(&continuation, sizeof(continuation));
     explicit_bzero(&peer, sizeof(peer));
     explicit_bzero(&terminal, sizeof(terminal));
@@ -7172,8 +7457,11 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
     bool tx_apple_nrate_valid = false;
     uint8_t *ivp, tid, ridx, txant, type, subtype;
     uint8_t post_plti_trace_class;
+    struct IwnSaeAssocTxClaim sae_assoc_claim;
+    enum IwnSaeAssocTxAdmission sae_assoc_tx = IWN_SAE_ASSOC_TX_NOT_DIRECT;
     int i, totlen, hasqos, error, pad;
 
+    explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
     wh = mtod(m, struct ieee80211_frame *);
     type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
     subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
@@ -7213,6 +7501,20 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
                 sae_request->body_len) != 0) {
             mbuf_freem(m);
             return EINVAL;
+        }
+    }
+    /* Generic S_ASSOC output is asynchronous.  A direct SAE owner admits
+     * only its exact Association Request here, while a final fence below
+     * repeats the claim immediately before scheduler publication. */
+    if (sae_request == NULL && type == IEEE80211_FC0_TYPE_MGT &&
+        (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+        subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ)) {
+        sae_assoc_tx = iwn_sae_engine_assoc_tx_preflight(sc, ni, wh,
+            &sae_assoc_claim);
+        if (sae_assoc_tx == IWN_SAE_ASSOC_TX_REJECTED) {
+            mbuf_freem(m);
+            explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
+            return ECANCELED;
         }
     }
     post_plti_trace_class = iwn_post_plti_trace_classify_tx(
@@ -7649,12 +7951,42 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
             iwn_sae_tx_data_clear(data);
             return EIO;
         }
+    } else if (sae_assoc_tx == IWN_SAE_ASSOC_TX_ADMITTED) {
+        const int descriptor_idx = ring->cur;
+
+        /* This is the actual direct-SAE Association Request linearization.
+         * The helper repeats the public PMK claim under selected-BSS then
+         * engine leaves before it publishes scheduler state and WRPTR. */
+        if (!iwn_sae_engine_assoc_tx_commit(sc, ring, descriptor_idx,
+            tx->id, totlen, ni, &sae_assoc_claim)) {
+            explicit_bzero(desc, sizeof(*desc));
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->ni = NULL;
+            data->totlen = 0;
+            data->ampdu_nframes = 0;
+            data->ampdu_txmcs = 0;
+            data->tx_apple_nrate = 0;
+            data->tx_apple_nrate_valid = 0;
+            data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+            data->diag_subtype = 0xff;
+            data->diag_auth_seq = 0xffff;
+            explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
+            iwn_sae_tx_data_clear(data);
+            explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
+            return ECANCELED;
+        }
+        /* Task admission occurs only after the descriptor fence releases its
+         * leaves.  The worker may now destroy the SAE engine but never before
+         * this accepted Association Request is firmware-owned. */
+        iwn_sae_engine_schedule_task(sc);
     } else {
         /* Existing non-SAE output keeps its historical scheduler ordering. */
         ops->update_sched(sc, ring->qid, ring->cur, tx->id, totlen);
         ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
         IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
     }
+    explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
     iwn_post_plti_trace_record_submit(ic, data->post_plti_trace_class);
     /* Legacy Open-System AUTH telemetry must not claim SAE Commit(seq=1). */
     if (sae_request == NULL && diag_subtype == IEEE80211_FC0_SUBTYPE_AUTH) {

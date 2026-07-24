@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Static contract for the lab-gated IWN SAE Authentication TX transport and
 # its direct driver-owned Commit/Confirm worker.  It proves the physical
-# TX/RX handshake spine only: PMK-to-RSN association continuation remains a
-# separate layer, so this is not a WPA3 association claim.
+# TX/RX handshake spine only; PMK-to-RSN continuation is asserted by its
+# own contract, so this is not an on-air WPA3 association claim.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -348,7 +348,8 @@ for token in (
         "IEEE80211_SAE_ENGINE_PEER_COMPLETE",
         "explicit_bzero(&continuation, sizeof(continuation))"):
     require(engine_task, token, "direct SAE Commit/Confirm worker")
-require(engine_task, "fail = true;", "honest no-PMK-continuation failure")
+require(engine_task, "iwn_sae_engine_worker_retire(sc, true);",
+        "fail-closed direct SAE retirement")
 tx_task = iwn_method("iwn_sae_tx_task")
 ordered(tx_task, "native terminal direct routing",
         "iwn_sae_engine_callback_enter(sc)",

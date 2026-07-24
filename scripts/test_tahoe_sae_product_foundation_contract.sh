@@ -108,6 +108,7 @@ bash "$root/scripts/test_tahoe_iwn_sae_auth_transport_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_wcl_credential_contract.sh"
 bash "$root/scripts/test_net80211_sae_wcl_request_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_wcl_ingress_contract.sh"
+bash "$root/scripts/test_tahoe_iwn_sae_pmk_continuation_contract.sh"
 bash "$root/scripts/test_net80211_sae_rsn_output_contract.sh"
 
 python3 - "$root" <<'PY'

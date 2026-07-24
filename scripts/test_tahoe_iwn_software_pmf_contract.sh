@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Source-level contract for the lab-gated IWN software-PMF backend.  This is
 # intentionally an owner/lifetime test, not a claim that an on-air WPA3 join
-# has passed: driver-owned SAE and PMK-to-RSN association continuation remain
-# separately bounded layers, and physical protected-MPDU delivery needs a
-# separately opted-in radio run.
+# has passed: the direct SAE PMK-to-RSN bridge is separately contract-tested,
+# and physical protected-MPDU delivery needs a separately opted-in radio run.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"

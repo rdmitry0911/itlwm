@@ -3,9 +3,10 @@
  *
  * This is intentionally separate from ItlSaeAuthTransportV1.h.  The latter
  * remains a credential-free Algorithm-3/selected-BSS transport boundary;
- * this record crosses only the controller -> HAL handoff after the relay FSM
- * has accepted a verified completion.  It is never a UserClient ABI, mailbox
- * payload, log value, or generic PMK carrier.
+ * this record crosses only the direct in-kext SAE engine -> net80211
+ * continuation after the driver has accepted a verified Confirm.  It is
+ * never a UserClient ABI, controller/mailbox payload, log value, or generic
+ * PMK carrier.
  */
 #ifndef _HAL_ITL_SAE_PMK_CONTINUATION_V1_H_
 #define _HAL_ITL_SAE_PMK_CONTINUATION_V1_H_
@@ -35,9 +36,10 @@ struct ItlSaePmkContinuationIdentityV1 {
 /*
  * Secret one-shot handoff.  The HAL must copy it before returning and scrub
  * every retained/local copy on claim, cancellation, failure, stop, and
- * detach.  PMKID is supplied by the Agent but is canonicalized and checked by
- * net80211 before it can reach a node; an all-zero PMKID is not rejected at
- * syntax-validation time because V1 has no "pmkid present" field.
+ * detach.  The direct SAE engine derives PMKID; the IWN owner independently
+ * canonicalizes and checks it before net80211 can copy it to a node.  An
+ * all-zero PMKID is not rejected at syntax-validation time because V1 has no
+ * "pmkid present" field.
  */
 struct ItlSaePmkContinuationV1 {
     struct ItlSaePmkContinuationIdentityV1 identity;

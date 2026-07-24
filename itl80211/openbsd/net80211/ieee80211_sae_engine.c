@@ -96,7 +96,7 @@ ieee80211_sae_engine_fail(struct ieee80211_sae_engine *engine)
  * mangled symbol.  Keep the archive's C boundary self-contained instead of
  * relying on an ABI-unsafe C-to-C++ external call.
  */
-static int
+int
 ieee80211_sae_engine_derive_rsn_pmkid(const uint8_t *pmk,
 	const uint8_t *authenticator, const uint8_t *supplicant,
 	uint8_t *pmkid)

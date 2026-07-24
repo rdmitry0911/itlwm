@@ -521,6 +521,24 @@ struct ieee80211_sae_wcl_request {
 };
 
 /*
+ * One verified direct-SAE completion that has claimed the local RSN PAE.
+ * This is a public, one-shot cancellation identity only: PMK bytes live in
+ * the existing local PAE store and are erased by the matching WCL policy
+ * teardown.  The selected-BSS leaf lock serializes this record with the
+ * request, RX admission, and current-BSS replacement.
+ */
+struct ieee80211_sae_wcl_pmk_claim {
+	u_int64_t		generation;
+	u_int64_t		association_epoch;
+	u_int64_t		relay_generation;
+	u_int64_t		event_sequence;
+	u_int8_t		bssid[IEEE80211_ADDR_LEN];
+	u_int8_t		sta[IEEE80211_ADDR_LEN];
+	u_int8_t		active;
+	u_int8_t		reserved[3];
+};
+
+/*
  * A caller-owned copy-out of one BOUND direct-WCL SAE request.  It contains
  * only fixed public association facts: the request generation, the selected
  * BSS identity/profile, and the local STA address that an owner needs for a
@@ -752,6 +770,8 @@ struct ieee80211com {
 	 * WPA2 request can observe it. */
 	u_int64_t		ic_sae_wcl_policy_generation;
 	struct ieee80211_sae_wcl_request ic_sae_wcl_request;
+	/* A public direct-SAE completion fence; it never retains key material. */
+	struct ieee80211_sae_wcl_pmk_claim ic_sae_wcl_pmk_claim;
 	/* begin() sets this brief leaf-owned reservation before it invalidates a
 	 * prior RSN policy.  A concurrent legacy node_join_bss() then yields back
 	 * to SCAN rather than letting a busy direct request erase its selection. */
