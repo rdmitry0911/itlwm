@@ -3,8 +3,8 @@
 # controller-owned bounded Algorithm-3 TX-completion transport.
 #
 # This proves discovery/ABI, relay lifecycle, and one physical outbound-frame
-# spine while retaining the non-enable boundary: generic Open-System auth,
-# pure-SAE ingress quarantine, and PSK-only configuration remain unchanged.
+# spine while retaining the narrow enable boundary: generic Open-System auth
+# remains unchanged, and RSN SAE output is limited to a bound direct-WCL BSS.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -106,6 +106,8 @@ bash "$root/scripts/test_tahoe_sae_controller_relay_contract.sh"
 bash "$root/scripts/test_tahoe_iwx_sae_auth_transport_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_auth_transport_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_wcl_credential_contract.sh"
+bash "$root/scripts/test_net80211_sae_wcl_request_contract.sh"
+bash "$root/scripts/test_net80211_sae_rsn_output_contract.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
@@ -328,9 +330,9 @@ for token in ("itl_sae_auth_transport_request_is_well_formed",
 if output_c.count("IEEE80211_AUTH_ALG_SAE") != 1:
     fail("only the isolated transport builder may emit Algorithm 3")
 
-# RSN AKM type 8 is recognized only as a discovery/KDF taxonomy. The active
-# device configuration remains PSK-only, and no association output advertises
-# an AKM it cannot execute.
+# RSN AKM type 8 remains unavailable through raw configuration.  The one
+# output exception is a bound direct-WCL request for the exact current BSS;
+# it cannot appear in a WPA1 vendor IE or from passive SAE discovery alone.
 require(crypto_h, "IEEE80211_AKM_SAE", "RSN SAE AKM taxonomy")
 sha256_start = crypto_h.find("ieee80211_is_sha256_akm")
 require(crypto_h[sha256_start:], "akm == IEEE80211_AKM_SAE",
@@ -349,7 +351,14 @@ require(crypto_c, "ic->ic_rsnakms = IEEE80211_AKM_PSK;",
         "active PSK-only AKM configuration")
 forbid(crypto_c, "IEEE80211_AKM_SAE", "active SAE AKM configuration")
 forbid(ioctl_h, "IEEE80211_WPA_AKM_SAE", "raw ioctl SAE enable")
-forbid(output_c, "IEEE80211_AKM_SAE", "premature RSN SAE output")
+rsn_output = function_body(output_c,
+                           "u_int8_t *\nieee80211_add_rsn_body(")
+for token in (
+        "!wpa && (ni->ni_rsnakms & IEEE80211_AKM_SAE)",
+        "ieee80211_sae_wcl_request_bound_current(ic, ni)",
+        "*frm++ = 8;",
+):
+    require(rsn_output, token, "bound direct-WCL RSN SAE output gate")
 
 # RSNXE, ExtCap, raw rate membership selectors, and SAE_EXT_KEY are parsed
 # only from scan input and stored as fixed facts. Malformed, duplicate,

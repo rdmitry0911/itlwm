@@ -1140,6 +1140,16 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
         *frm++ = 6;
         count++;
     }
+    /* SAE is not a generally configured AKM.  Advertise its RSN suite only
+     * for the driver-owned direct-WCL request after that request has bound
+     * this exact current BSS and association epoch.  In particular, a WPA1
+     * vendor IE must never gain the RSN-only SAE suite type. */
+    if (!wpa && (ni->ni_rsnakms & IEEE80211_AKM_SAE) &&
+        ieee80211_sae_wcl_request_bound_current(ic, ni)) {
+        memcpy(frm, oui, 3); frm += 3;
+        *frm++ = 8;
+        count++;
+    }
     /* write AKM Suite List Count field */
     LE_WRITE_2(pcount, count);
 
