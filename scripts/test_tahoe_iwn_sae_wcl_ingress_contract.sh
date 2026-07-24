@@ -200,9 +200,10 @@ ordered(pure, "pure-SAE begin/stage/resume order",
         "fHalService->stageSaeWclCredential(&saeCredential)",
         "setAUTH_TYPE(&authType)",
         "auto &saeAssociationOwner =",
-        "const int saeScanResume = ieee80211_sae_wcl_request_resume_scan(")
+        "saeScanResume = ieee80211_sae_wcl_request_resume_scan(")
 ordered(pure, "coalesced direct scan returns retry rather than false success",
-        "const int saeScanResume = ieee80211_sae_wcl_request_resume_scan(",
+        "int saeScanResume = IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED;",
+        "saeScanResume = ieee80211_sae_wcl_request_resume_scan(",
         "IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED",
         "IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY",
         "kIOReturnNotReady")

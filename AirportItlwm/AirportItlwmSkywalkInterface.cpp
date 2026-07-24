@@ -6306,6 +6306,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         const uint8_t *saePassword = nullptr;
         uint64_t saeGeneration = 0;
         IOReturn saeResult = kIOReturnBadArgumentTahoe;
+        int saeScanResume = IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED;
 
         explicit_bzero(&saeCredential, sizeof(saeCredential));
         memset(&authType, 0, sizeof(authType));
@@ -6422,8 +6423,8 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
          * in-kext engine.  This is a lab-only proof boundary, never a PMK or
          * credential carrier. */
         AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic);
-        const int saeScanResume = ieee80211_sae_wcl_request_resume_scan(
-            ic, saeGeneration);
+        saeScanResume = ieee80211_sae_wcl_request_resume_scan(ic,
+            saeGeneration);
         if (saeScanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED) {
             /* Do not close the shared safe recorder here: a replacement
              * lifecycle edge may already own a newer episode.  The bounded
