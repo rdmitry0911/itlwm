@@ -196,13 +196,14 @@ done
 trace_client_sha256_from_provenance() {
     python3 - "$ROOT/scripts" "$CANDIDATE_PROVENANCE" <<'PY'
 import sys
+from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
 from create_tahoe_candidate_provenance import (
     trace_client_sha256_from_candidate_provenance,
 )
 
-print(trace_client_sha256_from_candidate_provenance(sys.argv[2]))
+print(trace_client_sha256_from_candidate_provenance(Path(sys.argv[2])))
 PY
 }
 

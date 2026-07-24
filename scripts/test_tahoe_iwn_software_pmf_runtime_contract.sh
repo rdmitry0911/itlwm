@@ -102,6 +102,17 @@ from pathlib import Path
 import sys
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
+receipt_start = text.find('trace_client_sha256_from_provenance() {')
+receipt_end = text.find('\n}\n\nTRACE_CLIENT_SHA256=', receipt_start)
+if receipt_start < 0 or receipt_end < 0:
+    raise SystemExit('FAIL: IWN runtime lacks provenance receipt helper')
+receipt_helper = text[receipt_start:receipt_end]
+if 'from pathlib import Path' not in receipt_helper:
+    raise SystemExit('FAIL: IWN runtime provenance receipt helper lacks Path import')
+if receipt_helper.count('trace_client_sha256_from_candidate_provenance(') != 1:
+    raise SystemExit('FAIL: IWN runtime must make one typed provenance receipt lookup')
+if 'trace_client_sha256_from_candidate_provenance(Path(sys.argv[2]))' not in receipt_helper:
+    raise SystemExit('FAIL: IWN runtime provenance receipt lookup must pass Path')
 
 ordered = (
     'remote_trace_client_exists || fail_phase trace-client-preflight',
