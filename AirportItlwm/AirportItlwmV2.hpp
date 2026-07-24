@@ -18,6 +18,7 @@
 #include "TahoeHiddenInterfaceContracts.hpp"
 #include "TahoeStateMachineClosure.hpp"
 #include "TahoeCommanderV2.hpp"
+#include "TahoeWclPhysicalScanContracts.hpp"
 #include <ClientKit/AirportItlwmSaeRelayV1.h>
 #include <ClientKit/AirportItlwmSaeRelayFsmV1.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
@@ -270,6 +271,17 @@ struct AirportItlwmScanSourceLifecycle {
     uint32_t users;
 };
 
+/*
+ * The legacy scan timer is deliberately not the WCL physical-scan owner.
+ * WCL starts a real radio background scan, then consumes exactly its
+ * ieee80211_end_scan() edge.  The short lock protects only the ticket reducer;
+ * it is never held while entering HAL, the command gate, or PostOffice.
+ */
+struct AirportItlwmWclPhysicalScanLifecycle {
+    IOSimpleLock *admissionLock;
+    TahoeWclPhysicalScanContracts::State state;
+};
+
 #if __IO80211_TARGET >= __MAC_26_0
 /*
  * IWX completion must never make its nswq worker wait for AirportItlwm's
@@ -494,6 +506,8 @@ public:
     static IOReturn postRsnHandshakeDoneGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn postWclPhysicalScanCompletionGated(
+        OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
 #if __IO80211_TARGET >= __MAC_26_0
     bool publishTahoeAcceptedJoinIdentityEvents(const char *source);
 #endif
@@ -676,6 +690,19 @@ public:
     bool scheduleScanSource(uint32_t timeoutMs);
     bool cancelScanSource();
     bool scanSourceCallbackLive(IOTimerEventSource *sender);
+    bool reserveWclPhysicalScan(uint64_t *generation);
+    TahoeWclPhysicalScanContracts::StartDisposition
+        activateWclPhysicalScan(uint64_t generation);
+    TahoeWclPhysicalScanContracts::StartDisposition
+        failWclPhysicalScanStart(uint64_t generation);
+    bool markWclPhysicalScanAborting(uint64_t *generation);
+    void resumeWclPhysicalScanAfterAbortFailure(uint64_t generation);
+    TahoeWclPhysicalScanContracts::CompletionDisposition
+        claimWclPhysicalScanCompletion(uint64_t *generation, bool *aborted);
+    bool ownsWclPhysicalScanCompletion(uint64_t generation);
+    void finishWclPhysicalScanCompletion(uint64_t generation);
+    void invalidateWclPhysicalScan();
+    void reopenWclPhysicalScanAfterRadioReset();
     
     //-----------------------------------------------------------------------
     // Power management support.
@@ -1052,6 +1079,7 @@ public:
     bool fSkywalkInterfaceProviderAttached;
     bool fSkywalkInterfaceAttached;
     bool fSkywalkEthernetAttached;
+    AirportItlwmWclPhysicalScanLifecycle fWclPhysicalScanLifecycle;
 };
 
 // Boot nub — replicates Apple's AppleBCMWLANUserClient IOKit matching pattern.

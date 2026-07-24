@@ -3634,6 +3634,31 @@ clearScanningFlags()
 }
 
 IOReturn ItlIwn::
+abortScanForWcl()
+{
+    struct iwn_softc *sc = &com;
+    if ((sc->sc_flags & (IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN)) == 0)
+        return kIOReturnNotReady;
+
+    /*
+     * Set the marker before the firmware command: IWN_STOP_SCAN can race the
+     * asynchronous doorbell, and must not start the second band after WCL has
+     * requested cancellation.  Unlike iwn_scan_abort(), retain ordinary scan
+     * flags until that real terminal notification calls ieee80211_end_scan().
+     */
+    sc->sc_flags |= IWN_FLAG_WCL_SCAN_ABORTING;
+    const int error = iwn_cmd(sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1);
+    if (error != 0) {
+        sc->sc_flags &= ~IWN_FLAG_WCL_SCAN_ABORTING;
+        return kIOReturnError;
+    }
+
+    /* The command is asynchronous; terminal ownership stays with STOP_SCAN. */
+    DELAY(100);
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwn::
 setMulticastList(IOEthernetAddress *addr, int count)
 {
     return kIOReturnSuccess;
@@ -7077,7 +7102,8 @@ iwn_notif_intr(struct iwn_softc *sc)
             bus_dmamap_sync(sc->sc_dmat, data->map, sizeof (*desc),
                 sizeof (*scan), BUS_DMASYNC_POSTREAD);
 
-            if (scan->status == 1 && scan->chan <= 14 &&
+            if ((sc->sc_flags & IWN_FLAG_WCL_SCAN_ABORTING) == 0 &&
+                scan->status == 1 && scan->chan <= 14 &&
                 (sc->sc_flags & IWN_FLAG_HAS_5GHZ)) {
                     int error;
                 /*
@@ -7089,8 +7115,8 @@ iwn_notif_intr(struct iwn_softc *sc)
                 if (error == 0)
                     break;
             }
-            sc->sc_flags &= ~IWN_FLAG_SCANNING;
-            sc->sc_flags &= ~IWN_FLAG_BGSCAN;
+            sc->sc_flags &= ~(IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN |
+                              IWN_FLAG_WCL_SCAN_ABORTING);
             ieee80211_end_scan(ifp);
             break;
         }

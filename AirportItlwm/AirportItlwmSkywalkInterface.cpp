@@ -6176,27 +6176,50 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(2); sRT.scanReqCount++;
-    struct ieee80211com *ic = fHalService->get80211Controller();
 
     if (!req)
         return kIOReturnBadArgument;
-    if (fScanResultWrapping)
-        return 22;
-    if (ic->ic_state <= IEEE80211_S_INIT)
-        return 22;
+    if (fHalService == nullptr || instance == nullptr)
+        return kIOReturnNotReady;
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic == nullptr)
+        return kIOReturnNotReady;
 
     /*
-     * WCL scan completion is owned by the Tahoe bulletin path below: the
-     * timer publishes cached WCL_SCAN_RESULT entries followed by WCL_SCAN_DONE.
-     * Starting an independent net80211 bgscan here leaves that scan without a
-     * paired WCL completion owner and can move an associated interface out of
-     * RUN after the WCL request has already completed.
-    */
+     * First physical WCL-scan layer: an associated station may safely issue a
+     * real cache background scan.  The backend owns the radio transaction and
+     * ieee80211_end_scan() later delivers the only WCL terminal edge.  Do not
+     * borrow the asynchronous foreground SCAN state until it has a separate
+     * backend start/error bridge.
+     */
+    if (ic->ic_state != IEEE80211_S_RUN ||
+        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+        ic->ic_mgt_timer != 0 || ic->ic_bgscan_start == nullptr)
+        return kIOReturnNotReady;
+
+    uint64_t generation = 0;
+    if (!instance->reserveWclPhysicalScan(&generation))
+        return kIOReturnNotReady;
+
+    /* This is an iterator reset, not scan admission/ownership state. */
     fNextNodeToSend = NULL;
     fScanResultWrapping = false;
-    if (instance == nullptr || !instance->scheduleScanSource(100))
-        return kIOReturnAborted;
-    return kIOReturnSuccess;
+
+    ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
+    const TahoeWclPhysicalScanContracts::StartDisposition disposition =
+        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0
+            ? instance->activateWclPhysicalScan(generation)
+            : instance->failWclPhysicalScanStart(generation);
+
+    switch (disposition) {
+        case TahoeWclPhysicalScanContracts::StartDisposition::Active:
+        case TahoeWclPhysicalScanContracts::StartDisposition::TerminalPending:
+            return kIOReturnSuccess;
+        case TahoeWclPhysicalScanContracts::StartDisposition::Lost:
+            break;
+    }
+    return kIOReturnNotReady;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -6645,35 +6668,28 @@ setWCL_SCAN_ABORT(void *data)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     (void)data;
-    if (instance == nullptr || !instance->cancelScanSource())
-        return kIOReturnAborted;
-    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (instance == nullptr || fHalService == nullptr)
+        return kIOReturnNotReady;
 
-    // AppleBCMWLANCore::setWCL_SCAN_ABORT is not a no-op: it dispatches into
-    // scan-adapter-owned abort work.  The recovered WCLScanManager FSM shows
-    // why that matters: SCAN_ABORT_REQ moves IN_PROGRESS -> ABORTED, and the
-    // owner only returns ABORTED -> IDLE when it later receives SCAN_COMPLETE.
-    //
-    // Our old Tahoe path only cleared net80211 flags and returned success, so
-    // WCL stayed stuck in SCAN_MANAGER_STATE_ABORTED / IN_PROGRESS and every
-    // later external SCAN_REQ hit the family ignore path (0xe00002bc / 16).
-    // Cancel the local fake-scan timer and synthesize the single SCAN_DONE edge
-    // that our backend otherwise never emits for abort completion.
-    if (ic->ic_flags & IEEE80211_F_BGSCAN)
-        ic->ic_flags &= ~IEEE80211_F_BGSCAN;
-    if (ic->ic_flags & IEEE80211_F_ASCAN)
-        ic->ic_flags &= ~IEEE80211_F_ASCAN;
+    uint64_t generation = 0;
+    if (!instance->markWclPhysicalScanAborting(&generation))
+        return kIOReturnSuccess;
 
-    fNextNodeToSend = NULL;
-    fScanResultWrapping = false;
-
-    if (instance && instance->fNetIf) {
-        static UInt32 abortScanStatus = 0;
-        instance->postMessage(instance->fNetIf, APPLE80211_M_SCAN_DONE,
-                              &abortScanStatus, sizeof(abortScanStatus), true);
+    /*
+     * Keep the ticket reserved until the firmware's actual terminal scan
+     * notification reaches ieee80211_end_scan().  In particular, do not clear
+     * net80211 flags or fabricate a generic/WCL completion here.
+     */
+    ItlDriverController *controller = fHalService->getDriverController();
+    if (controller == nullptr) {
+        instance->resumeWclPhysicalScanAfterAbortFailure(generation);
+        return kIOReturnNotReady;
     }
 
-    return kIOReturnSuccess;
+    const IOReturn result = controller->abortScanForWcl();
+    if (result != kIOReturnSuccess)
+        instance->resumeWclPhysicalScanAfterAbortFailure(generation);
+    return result;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

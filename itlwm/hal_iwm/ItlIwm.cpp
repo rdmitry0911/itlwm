@@ -141,6 +141,24 @@ clearScanningFlags()
 }
 
 IOReturn ItlIwm::
+abortScanForWcl()
+{
+    struct iwm_softc *sc = &com;
+    if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
+        return kIOReturnNotReady;
+
+    /* Keep SCANNING/BGSCAN live until iwm_endscan() reports the real edge. */
+    sc->sc_flags |= IWM_FLAG_WCL_SCAN_ABORTING;
+    const int error = isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN)
+        ? iwm_umac_scan_abort(sc) : iwm_lmac_scan_abort(sc);
+    if (error != 0) {
+        sc->sc_flags &= ~IWM_FLAG_WCL_SCAN_ABORTING;
+        return kIOReturnError;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwm::
 setMulticastList(IOEthernetAddress *addr, int count)
 {
     struct ieee80211com *ic = &com.sc_ic;

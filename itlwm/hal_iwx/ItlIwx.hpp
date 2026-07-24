@@ -219,6 +219,7 @@ public:
     
     //driver controller
     virtual void clearScanningFlags() override;
+    virtual IOReturn abortScanForWcl() override;
     
     virtual IOReturn setMulticastList(IOEthernetAddress *addr, int count) override;
     

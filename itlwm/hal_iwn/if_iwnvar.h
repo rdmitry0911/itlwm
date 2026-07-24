@@ -371,6 +371,7 @@ struct iwn_softc {
 #define IWN_FLAG_ADV_BT_COEX    (1 << 8)
 #define IWN_FLAG_BGSCAN        (1 << 9)
 #define IWN_FLAG_SCANNING    (1 << 10)
+#define IWN_FLAG_WCL_SCAN_ABORTING (1 << 11)
 
     uint8_t         hw_type;
 

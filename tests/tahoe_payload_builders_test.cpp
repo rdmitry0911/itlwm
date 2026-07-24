@@ -18,6 +18,7 @@
 #include "AirportItlwm/TahoeCapabilityContracts.hpp"
 #include "AirportItlwm/TahoeDriverAvailabilityContracts.hpp"
 #include "AirportItlwm/TahoeExternalPmkScanResumeContracts.hpp"
+#include "AirportItlwm/TahoeWclPhysicalScanContracts.hpp"
 #include "AirportItlwm/TahoeIwxPmfBipTraceContracts.hpp"
 #include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeNrateContracts.hpp"
@@ -1720,6 +1721,96 @@ void testTahoeExternalPmkScanResumeContracts()
             "external-PMK scan resume preserves only audited PSK transition policy");
 }
 
+void testTahoeWclPhysicalScanContracts()
+{
+    using namespace TahoeWclPhysicalScanContracts;
+
+    State state{};
+    uint64_t first = 0;
+    require(reserve(&state, &first) && first != 0,
+            "physical WCL scan reserves one nonzero ticket");
+    require(!reserve(&state, &first),
+            "physical WCL scan rejects a coalesced second request");
+    require(activate(&state, first) == StartDisposition::Active,
+            "physical WCL scan activates after radio admission");
+
+    uint64_t completion = 0;
+    bool aborted = true;
+    require(claimCompletion(&state, &completion, &aborted) ==
+                CompletionDisposition::Publish &&
+                completion == first && !aborted,
+            "one normal radio terminal claims the active WCL ticket");
+    require(claimCompletion(&state, &completion, &aborted) ==
+                CompletionDisposition::None,
+            "duplicate terminal cannot claim a completing ticket");
+    finishCompletion(&state, first + 1);
+    require(ownsCompletion(&state, first),
+            "foreign generation cannot finish the claimed ticket");
+    finishCompletion(&state, first);
+    require(state.phase == Phase::Idle,
+            "only the matching terminal publisher returns WCL to idle");
+
+    uint64_t failed = 0;
+    require(reserve(&state, &failed),
+            "WCL accepts a later ticket after normal completion");
+    require(failStart(&state, failed) == StartDisposition::Lost &&
+                state.phase == Phase::Idle,
+            "failed radio admission releases a still-starting ticket");
+
+    uint64_t raced = 0;
+    require(reserve(&state, &raced),
+            "WCL reserves the asynchronous-start race ticket");
+    completion = 0;
+    aborted = true;
+    require(claimCompletion(&state, &completion, &aborted) ==
+                CompletionDisposition::Publish && completion == raced && !aborted,
+            "terminal during Starting is retained for the same ticket");
+    require(activate(&state, raced) == StartDisposition::TerminalPending &&
+                failStart(&state, raced) == StartDisposition::TerminalPending,
+            "start reconciliation cannot erase an already claimed terminal");
+    finishCompletion(&state, raced);
+
+    uint64_t cancelled = 0;
+    require(reserve(&state, &cancelled) &&
+                activate(&state, cancelled) == StartDisposition::Active,
+            "abort test obtains an active physical ticket");
+    uint64_t abortGeneration = 0;
+    require(markAborting(&state, &abortGeneration) && abortGeneration == cancelled,
+            "WCL abort retains ownership until a real terminal edge");
+    require(!reserve(&state, &first),
+            "WCL abort rejects a replacement before terminal drain");
+    require(resumeAfterAbortFailure(&state, cancelled) &&
+                state.phase == Phase::Active,
+            "a rejected backend abort restores the live scan terminal");
+    require(markAborting(&state, &abortGeneration),
+            "a retry may re-enter abort after the rejected backend command");
+    completion = 0;
+    aborted = false;
+    require(claimCompletion(&state, &completion, &aborted) ==
+                CompletionDisposition::Publish && completion == cancelled && aborted,
+            "abort terminal is published once with abort semantics");
+    finishCompletion(&state, cancelled);
+
+    uint64_t draining = 0;
+    require(reserve(&state, &draining) &&
+                activate(&state, draining) == StartDisposition::Active,
+            "drain test obtains an active physical ticket");
+    beginDraining(&state);
+    require(!reserve(&state, &first),
+            "teardown keeps a physical ticket closed until its old terminal drains");
+    require(claimCompletion(&state, &completion, &aborted) ==
+                CompletionDisposition::Suppress && state.phase == Phase::Idle,
+            "late teardown terminal is consumed without a future WCL publication");
+
+    uint64_t next = 0;
+    require(reserve(&state, &next) && next > draining,
+            "generations remain monotonic across completed physical scans");
+    beginDraining(&state);
+    reopenAfterRadioReset(&state);
+    require(state.phase == Phase::Idle,
+            "only a confirmed radio reset reopens a terminal-less drain");
+}
+
 void testTahoePostPltiTraceContracts()
 {
     using namespace TahoePostPltiTraceContracts;
@@ -2648,12 +2739,13 @@ int main()
     testTahoeBssManagerContracts();
     testTahoeAssociationAuthContracts();
     testTahoeExternalPmkScanResumeContracts();
+    testTahoeWclPhysicalScanContracts();
     testTahoePostPltiTraceContracts();
     testTahoePostPltiTraceMatrixSealedPrefixes();
     testTahoeIwxPmfBipTraceContracts();
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 34 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK scan resume, safe post-PLTI and IWX PMF/BIP trace matrices, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 35 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK and physical-WCL scan lifecycles, safe post-PLTI and IWX PMF/BIP trace matrices, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
     return 0;
 }

@@ -727,7 +727,10 @@ order(v2_scan_drain, "state.stopping = true;", "state.tearingDown = true;",
       "workloop->removeEventSource(source);", "state.source = NULL;",
       "scanSource = NULL;", "source->release();", "state.tearingDown = false;")
 order(scan_done, "!that->scanSourceCallbackLive(sender)",
-      "that->getCommandGate()->runAction(postWclScanResultsGated")
+      "that->getCommandGate()->runAction(postMessageGated",
+      "APPLE80211_M_SCAN_DONE")
+if "postWclScanResultsGated" in scan_done:
+    fail("legacy fake scan timer still publishes WCL results")
 if re.search(r"\\bscanSource\\s*->", skywalk_cpp):
     fail("Skywalk still invokes a raw cached scanSource")
 if re.search(r"\\binstance->scanSource\\b", skywalk_cpp):

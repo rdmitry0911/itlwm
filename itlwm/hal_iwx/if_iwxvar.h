@@ -495,6 +495,7 @@ struct iwx_rx_ring {
 #define IWX_FLAG_SHUTDOWN	0x100	/* shutting down; new tasks forbidden */
 #define IWX_FLAG_BGSCAN		0x200	/* background scan in progress */
 #define IWX_FLAG_TXFLUSH    0x400   /* Tx queue flushing in progress */
+#define IWX_FLAG_WCL_SCAN_ABORTING 0x800 /* WCL abort awaits terminal scan edge */
 
 struct iwx_ucode_status {
 	uint32_t uc_lmac_error_event_table[2];
