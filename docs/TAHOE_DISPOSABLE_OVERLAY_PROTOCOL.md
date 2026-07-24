@@ -74,6 +74,22 @@ first boot. This helper neither exports that variable nor starts QEMU; it only
 prepares and attests the local storage boundary. A later launcher integration
 must verify the recorded digest before it consumes the selector.
 
+`tahoe_launch_disposable_pair.sh` is that v2-only later launcher. It accepts
+the prepared pair, its pinned VM root, an explicit QEMU binary and OVMF code
+file, and exactly one bounded VFIO device address. `--check-only` validates the
+v2 receipt, the pair-local variables file mode and digest, the fresh direct
+qcow2 relation, and the absence of a prior consumption marker. It does not
+start QEMU or a user service. A successful `--launch` repeats those checks,
+refuses an existing QEMU or fixed local management-port conflict, atomically
+marks the pair consumed, and submits one deterministic pair-derived transient
+systemd user unit with pair-local monitor, serial, disk, and private variables
+paths.
+It is not a recovery envelope: it does not use the old shared-variables
+launcher, does not stop an existing guest, does not construct a second VM, and
+does not provide a recovery boot path. A failed, exited, or
+panicking attempt remains a consumed pair: discard it and prepare one new pair
+from the last known working base.
+
 Before a guest boot, retain the fresh attestation and ensure the directory has
 not been reused. After a guest uses the overlay, its top-level data allocation
 is expected to change; the preparation receipt still records the pre-boot

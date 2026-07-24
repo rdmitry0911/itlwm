@@ -33,6 +33,7 @@ bash "$root/scripts/test_tahoe_iwn_software_pmf_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_software_pmf_reconnect_contract.sh"
 bash "$root/scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh"
 bash "$root/scripts/test_tahoe_prepare_disposable_overlay_contract.sh"
+bash "$root/scripts/test_tahoe_launch_disposable_pair_contract.sh"
 
 python3 - "$root" <<'PY'
 import json
