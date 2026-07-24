@@ -688,7 +688,8 @@ for needle in (
 ordered(set_properties, "trace control is held through bind and acknowledgement",
         "AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false)",
         "setProperty(AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY",
-        "airportItlwmPostPltiTraceApplyControl", "return kIOReturnSuccess;")
+        "airportItlwmPostPltiTraceApplyControl",
+        "airportItlwmPostPltiTracePublish(this);", "return kIOReturnSuccess;")
 
 hidden_assoc = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
                     "WCL association ingress")

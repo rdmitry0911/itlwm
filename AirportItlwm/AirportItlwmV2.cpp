@@ -3713,6 +3713,11 @@ AirportItlwm::setProperties(OSObject *properties)
                         command);
             airportItlwmPostPltiTraceApplyControl(this,
                                                    command->getCStringNoCopy());
+            // A trace reset can be issued while the radio is off, when the
+            // watchdog is not scheduled to publish the fresh snapshot.  Make
+            // the acknowledged control generation immediately observable so
+            // control, snapshot, and buffer cannot describe different epochs.
+            airportItlwmPostPltiTracePublish(this);
             return kIOReturnSuccess;
         }
 #endif
