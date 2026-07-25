@@ -11336,7 +11336,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     int buflen, error, is_active;
     bool wcl_foreground_5ghz_extended_dwell = false;
     bool wcl_background_5ghz_unassociated_dwell = false;
-    bool wcl_background_5ghz_directed_active_dwell = false;
+    bool wcl_background_5ghz_directed_dwell = false;
 
     if (out_command_attempted != NULL)
         *out_command_attempted = false;
@@ -11457,10 +11457,15 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     /* An associated WCL scan for a selected SSID is an actual directed
      * active scan.  Its 24 ms 5 GHz dwell is too short to reliably collect
      * a weak probe response, while the existing passive dwell has already
-     * been limited to the serving BSS beacon budget.  Raise only the active
-     * part to a bounded value below that existing budget; never affect
-     * undirected, foreground, passive, DFS, or non-WCL scans. */
-    wcl_background_5ghz_directed_active_dwell = wcl_scan && bgscan != 0 &&
+     * been limited to the serving BSS beacon budget.  Some NVM-allowed,
+     * non-DFS 5 GHz channels remain regulatory-passive: firmware must not
+     * probe there until it hears traffic, so a sub-beacon 85 ms listen can
+     * miss the only beacon that would unlock directed discovery.  Give only
+     * that passive directed-WCL case a bounded full-beacon listen; retain the
+     * passive flag and leave DFS channels untouched.  For non-passive
+     * channels, raise only the active portion below the existing budget.
+     * Undirected, foreground, and non-WCL scans keep their prior behavior. */
+    wcl_background_5ghz_directed_dwell = wcl_scan && bgscan != 0 &&
         is_active != 0 && (flags & IEEE80211_CHAN_5GHZ) != 0;
     /*
      * Build a probe request frame.  Most of the following code is a
@@ -11545,10 +11550,12 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
         dwell_active = iwn_get_active_dwell_time(sc, flags, is_active);
         dwell_passive = iwn_get_passive_dwell_time(sc, flags);
         if ((wcl_foreground_5ghz_extended_dwell ||
-             wcl_background_5ghz_unassociated_dwell) &&
+             wcl_background_5ghz_unassociated_dwell ||
+             (wcl_background_5ghz_directed_dwell &&
+              (c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0)) &&
             (c->ic_flags & IEEE80211_CHAN_DFS) == 0)
             dwell_passive = MAX(dwell_passive, 130);
-        if (wcl_background_5ghz_directed_active_dwell &&
+        if (wcl_background_5ghz_directed_dwell &&
             (c->ic_flags & (IEEE80211_CHAN_PASSIVE |
                             IEEE80211_CHAN_DFS)) == 0 &&
             dwell_passive > dwell_active)

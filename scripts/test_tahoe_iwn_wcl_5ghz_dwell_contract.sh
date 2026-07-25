@@ -53,7 +53,7 @@ require(iwn, "bool wcl_scan,", "explicit WCL submit ownership")
 for needle, label in (
     ("bool wcl_foreground_5ghz_extended_dwell = false;", "bounded dwell state"),
     ("bool wcl_background_5ghz_unassociated_dwell = false;", "unassociated recovery dwell state"),
-    ("bool wcl_background_5ghz_directed_active_dwell = false;", "background dwell state"),
+    ("bool wcl_background_5ghz_directed_dwell = false;", "background directed dwell state"),
     ("wcl_scan && bgscan == 0 &&", "foreground WCL guard"),
     ("ic->ic_des_esslen == 0", "undirected WCL guard"),
     ("(flags & IEEE80211_CHAN_5GHZ) != 0", "5 GHz-only guard"),
@@ -64,6 +64,7 @@ for needle, label in (
     ("le16toh(sc->rxon.associd) == 0", "RXON unassociated AID marker"),
     ("(le32toh(sc->rxon.filter) & IWN_FILTER_BSS) == 0", "RXON BSS-filter absence marker"),
     ("wcl_scan && bgscan != 0 &&\n        is_active != 0 &&", "background directed WCL guard"),
+    ("wcl_background_5ghz_directed_dwell &&\n              (c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0", "directed passive-channel guard"),
     ("dwell_passive > dwell_active", "serving-BSS dwell cap guard"),
     ("dwell_active = MAX(dwell_active,\n                MIN((uint16_t)40, (uint16_t)(dwell_passive - 1)));", "40 ms active dwell cap"),
     ("if (ic->ic_des_esslen != 0)\n            chan->flags |= htole32(IWN_CHAN_NPBREQS(1));", "directed-SSID-only probe template selection"),
@@ -72,15 +73,15 @@ for needle, label in (
 forbid(submit, "ni_port_valid", "port-valid recovery discriminator")
 forbid(submit, "else if (wcl_foreground_5ghz_extended_dwell)",
        "wildcard active probing")
-foreground_dwell_begin = submit.find("if ((wcl_foreground_5ghz_extended_dwell ||\n             wcl_background_5ghz_unassociated_dwell) &&")
+foreground_dwell_begin = submit.find("if ((wcl_foreground_5ghz_extended_dwell ||\n             wcl_background_5ghz_unassociated_dwell ||\n             (wcl_background_5ghz_directed_dwell &&")
 background_dwell_begin = submit.find(
-    "if (wcl_background_5ghz_directed_active_dwell &&",
+    "if (wcl_background_5ghz_directed_dwell &&",
     foreground_dwell_begin)
 if foreground_dwell_begin < 0 or background_dwell_begin < 0:
     fail("missing separated foreground/background dwell guards")
 foreground_dwell = submit[foreground_dwell_begin:background_dwell_begin]
-forbid(foreground_dwell, "(c->ic_flags & (IEEE80211_CHAN_PASSIVE |\n                            IEEE80211_CHAN_DFS)) == 0",
-       "regulatory-passive WCL listening exclusion")
+require(foreground_dwell, "(c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0",
+        "directed WCL passive listening guard")
 require(submit[background_dwell_begin:],
         "(c->ic_flags & (IEEE80211_CHAN_PASSIVE |\n                            IEEE80211_CHAN_DFS)) == 0",
         "background active dwell passive/DFS exclusion")
