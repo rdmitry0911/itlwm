@@ -1,12 +1,12 @@
 /*
- * Fixed-byte selected-BSS identity for a future asynchronous PAE/SAE owner.
+ * Fixed-byte selected-BSS identity for asynchronous PAE/SAE and WCL owners.
  *
  * This record is deliberately not a node pointer and does not retain raw IEs,
  * keys, or credential material.  Its epoch is published by net80211 only
  * after the fixed fields are populated; zero means invalid.  This header
- * supplies byte-level helpers only.  A future cross-context consumer must
- * hold an explicit HAL/lifecycle lifetime claim and use the serialized
- * copy-out contract rather than read the live ieee80211com field directly.
+ * supplies byte-level helpers only.  A cross-context consumer must hold an
+ * explicit HAL/lifecycle lifetime claim and use the serialized copy-out
+ * contract rather than read the live ieee80211com field directly.
  */
 #ifndef _NET80211_IEEE80211_PAE_SELECTED_BSS_H_
 #define _NET80211_IEEE80211_PAE_SELECTED_BSS_H_
@@ -96,7 +96,7 @@ ieee80211_pae_selected_bss_populate(struct ieee80211_pae_selected_bss *snapshot,
 	return 1;
 }
 
-/* Pure identity predicate used by tests and a future serialized consumer. */
+/* Pure identity predicate used by tests and serialized consumers. */
 static inline int
 ieee80211_pae_selected_bss_identity_matches(
     const struct ieee80211_pae_selected_bss *snapshot,

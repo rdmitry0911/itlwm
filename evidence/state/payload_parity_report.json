@@ -262,10 +262,10 @@
       "invalid_semantics": "null controller/node/channel and zero BSSID reject before WCL_SCAN_RESULT publication"
     },
     {
-      "name": "wcl-auth-assoc-complete",
-      "shape": "0x08 WCL auth/assoc status and reason carrier",
-      "producer": "buildTahoeWclAuthAssocCompletePayload",
-      "consumer": "WCLJoinManager association/auth-complete path",
+      "name": "wcl-assoc-status",
+      "shape": "0x08 generic WCL association status carrier",
+      "producer": "buildTahoeWclAssocStatusPayload",
+      "consumer": "WCLJoinManager::associationStatusHandler",
       "implementation_paths": [
         "AirportItlwm/AirportItlwmV2.cpp",
         "include/Airport/apple80211_var.h"
@@ -273,7 +273,22 @@
       "apple_reference_case_ids": [
         "apple-wcl-auth-assoc-complete"
       ],
-      "invalid_semantics": "zero status/reason maps to zero dwords; out-of-range status/reason maps to 0xe3ff8100"
+      "invalid_semantics": "status and reason remain the generic 0x4e mapping; this carrier never substitutes for JoinAdapter completion"
+    },
+    {
+      "name": "wcl-auth-assoc-complete",
+      "shape": "0x1c WCL JoinAdapter auth/assoc completion carrier",
+      "producer": "postTahoeWclAuthAssocCompleteGated",
+      "consumer": "WCLJoinManager::authAssocCompleteEventHandler",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "include/Airport/apple80211_var.h"
+      ],
+      "apple_reference_case_ids": [
+        "apple-wcl-auth-assoc-complete"
+      ],
+      "invalid_semantics": "only the active, epoch-matched selected WCL candidate can publish 0xd3 once; public, stale, retry, reassociation, and failure edges are rejected"
     },
     {
       "name": "wcl-connect-complete",
@@ -349,7 +364,7 @@
     {
       "id": "apple-wcl-auth-assoc-complete",
       "path": "docs/reference/CR-479-wcl-auth-assoc-complete-publication-20260710.md",
-      "assertions_checked": 4
+      "assertions_checked": 5
     },
     {
       "id": "apple-bss-blacklist-async-owner",
@@ -450,7 +465,7 @@
   "mismatch_count": 0,
   "mismatches": [],
   "metrics": {
-    "covered_payload_type_count": 20,
+    "covered_payload_type_count": 21,
     "apple_reference_case_count": 16,
     "error_semantics_case_count": 6,
     "deterministic_test_count": 1

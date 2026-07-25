@@ -4587,6 +4587,14 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
     // ownership does not survive these edges; carrying a stale PMK into
     // a new association attempt would risk a host-supplicant MIC built
     // from a wrong PMK on a fresh edge.
+    /* The WCL candidate ledger and the PMK owner describe the same
+     * in-flight association.  Reset both on every cancellation edge so a
+     * later public/replacement association cannot inherit a completion
+     * candidate from an abandoned WCL request. */
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().association =
+            TahoeOwnerRegistry::AssociationOwner{};
+
     struct ieee80211com *ic = fHalService
         ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr) {
@@ -5726,6 +5734,12 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         return kIOReturnError;
     }
 
+    /* A public association is not a WCL JoinAdapter request.  Evict any
+     * preceding WCL candidate ledger before it can reach AUTH/ASSOC. */
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().association =
+            TahoeOwnerRegistry::AssociationOwner{};
+
     /* Public IOC_ASSOCIATE carries no audited PMF request field. Never let a
      * prior hidden WCL carrier auto-enable protected management here. */
     ic->ic_pae_mfp_requested = 0;
@@ -6396,6 +6410,13 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         return kIOReturnBadArgument;
     }
 
+    /* A replacement WCL carrier starts a new candidate ledger even if it is
+     * later rejected.  This mirrors JoinAdapter's per-request ownership and
+     * prevents an old selected BSSID from completing the replacement. */
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().association =
+            TahoeOwnerRegistry::AssociationOwner{};
+
     struct ieee80211com *ic = fHalService->get80211Controller();
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
 
@@ -6578,6 +6599,8 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
                 instance->getTahoeOwnerRegistry().association;
             saeAssociationOwner.hasCarrier = true;
             saeAssociationOwner.selectedFromCandidate = true;
+            saeAssociationOwner.authAssocCompletionArmed = true;
+            saeAssociationOwner.authAssocCompletionPublished = false;
             saeAssociationOwner.apMode = ap_mode;
             saeAssociationOwner.authLower = auth_lower;
             saeAssociationOwner.authUpper = auth_upper;
@@ -6675,9 +6698,15 @@ sae_out:
         TahoeAssociationContracts::pmfCapable(pmf_capability) &&
         TahoeAssociationAuthContracts::isAuditedPskPmkAuth(auth_upper);
 
-    auto &associationOwner = instance->getTahoeOwnerRegistry().association;
+    /* Build a request-local candidate ledger first.  associateSSID() may
+     * legitimately clear stale PMK/WCL state while rebuilding RSN policy, so
+     * the completion lease is published only immediately before the real
+     * SCAN resume below. */
+    TahoeOwnerRegistry::AssociationOwner associationOwner{};
     associationOwner.hasCarrier = true;
     associationOwner.selectedFromCandidate = candidate_count > 0;
+    associationOwner.authAssocCompletionArmed = false;
+    associationOwner.authAssocCompletionPublished = false;
     associationOwner.apMode = ap_mode;
     associationOwner.authLower = auth_lower;
     associationOwner.authUpper = auth_upper;
@@ -6787,6 +6816,15 @@ sae_out:
             // completion path, where net80211 performs ordinary
             // selection.
             XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
+            /* ieee80211_new_state(SCAN) can synchronously select this BSS,
+             * so commit the exact WCL lease before invoking it.  Every
+             * completion consumer additionally verifies the selected-BSS
+             * epoch, SSID, and BSSID before it may claim this one-shot. */
+            associationOwner.authAssocCompletionArmed = true;
+            associationOwner.authAssocCompletionPublished = false;
+            if (instance != nullptr)
+                instance->getTahoeOwnerRegistry().association =
+                    associationOwner;
             AirportItlwmPostPltiTraceBeginEpisode(ic);
             /* Safe-only PMF ingress boundary: the event means that WCL's
              * explicit per-association PMF request still reaches the normal
@@ -7511,6 +7549,13 @@ setWCL_REASSOC(apple80211_reassoc *data)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
+
+    /* A steady-state reassociation has its own WCL terminal owner.  Retire
+     * any join-completion lease unconditionally, including the PSK-present
+     * path that intentionally retains the current PMK. */
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().association =
+            TahoeOwnerRegistry::AssociationOwner{};
 
     // A reassociation start invalidates an externally delivered PMK:
     // the host supplicant must re-install a fresh PMK through

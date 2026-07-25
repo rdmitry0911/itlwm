@@ -30,12 +30,25 @@ struct apple80211_country_code_data {
     uint8_t cc[APPLE80211_MAX_CC_LEN];
 };
 
-#define APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN 8
+#define APPLE80211_WCL_ASSOC_STATUS_LEN 8
+#define APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN 0x1c
 #define APPLE80211_M_WCL_AUTH_ASSOC_EVENT 78
-struct apple80211_wcl_auth_assoc_complete_event {
+#define APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE 211
+struct apple80211_wcl_assoc_status_event {
     uint32_t status;
     uint32_t reason;
-};
+} __attribute__((packed));
+struct apple80211_wcl_auth_assoc_complete_event {
+    uint16_t status;
+    uint16_t secondary_state;
+    uint8_t auth_seen;
+    uint8_t bssid[6];
+    uint8_t reserved;
+    uint32_t auth_status;
+    uint32_t auth_reason;
+    uint32_t assoc_status;
+    uint32_t assoc_reason;
+} __attribute__((packed));
 #endif /* ITLWM_STANDALONE_REAL_APPLE80211_IOCTL */
 
 struct alignas(4) apple80211_offload_ndp_data {

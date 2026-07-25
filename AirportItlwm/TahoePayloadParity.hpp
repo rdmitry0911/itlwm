@@ -154,12 +154,20 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
             "invalid link reason maps to 0xff while preserving BSSID/link-state fields"
         },
         {
-            "wcl-auth-assoc-complete",
-            "buildTahoeWclAuthAssocCompletePayload",
-            "WCLJoinManager association/auth-complete path",
+            "wcl-assoc-status",
+            "buildTahoeWclAssocStatusPayload",
+            "WCLJoinManager::associationStatusHandler",
             "apple-wcl-auth-assoc-complete",
             0x08,
-            "successful local STA_ASSOC_DONE maps firmware status/reason to two zero dwords before 0x4e publication"
+            "generic successful STA association publishes the two zero status/reason dwords through 0x4e before any JoinAdapter completion"
+        },
+        {
+            "wcl-auth-assoc-complete",
+            "postTahoeWclAuthAssocCompleteGated",
+            "WCLJoinManager::authAssocCompleteEventHandler",
+            "apple-wcl-auth-assoc-complete",
+            0x1c,
+            "0xd3 completion is one-shot and only follows 0x4e for the active WCL candidate whose epoch, SSID, and selected BSSID still match"
         },
         {
             "wcl-scan-result",

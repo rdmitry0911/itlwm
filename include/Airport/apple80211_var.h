@@ -623,22 +623,63 @@ struct apple80211_wcl_connect_complete_event {
         records[APPLE80211_WCL_CONNECT_COMPLETE_MAX_RECORDS]; // 0x04
 } __attribute__((packed));    // 0xA4 total
 
-// WCL auth/assoc complete event — producer ABI recovered from
-// AppleBCMWLANCore::handleAssocEvent on Tahoe.
+// WCL association-status event — producer ABI recovered from
+// AppleBCMWLANCore::handleAssocEvent on Tahoe.  This is the historical
+// 0x4e bulletin; it is not the WCLJoinManager completion transition.
 // Payload layout is two mapped firmware dwords: association status and reason.
-#define APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN 8
-struct apple80211_wcl_auth_assoc_complete_event {
+#define APPLE80211_WCL_ASSOC_STATUS_LEN 8
+struct apple80211_wcl_assoc_status_event {
     uint32_t status;          // 0x00
     uint32_t reason;          // 0x04
 } __attribute__((packed));    // 0x08 total
 
+static_assert(sizeof(struct apple80211_wcl_assoc_status_event) ==
+                  APPLE80211_WCL_ASSOC_STATUS_LEN,
+              "apple80211_wcl_assoc_status_event must be 8 bytes");
+static_assert(__offsetof(struct apple80211_wcl_assoc_status_event, status) == 0x00,
+              "WCL auth/assoc status must live at +0x00 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_assoc_status_event, reason) == 0x04,
+              "WCL auth/assoc reason must live at +0x04 per Tahoe ABI");
+
+// WCL join auth/assoc completion — producer ABI recovered from
+// AppleBCMWLANJoinAdapter::handleAssoc.  IO80211Family's
+// WCLJoinManager::authAssocCompleteEventHandler accepts this exact 0x1c
+// carrier on selector 0xd3 and turns it into JOIN_ASSOC_COMPLETE.  The
+// independent 0x4e association-status carrier above must be sent first.
+#define APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN 0x1c
+struct apple80211_wcl_auth_assoc_complete_event {
+    uint16_t status;          // 0x00 overall association status
+    uint16_t secondary_state; // 0x02 WCL secondary state; success is 0xffff
+    uint8_t  auth_seen;       // 0x04 matching auth completion was observed
+    uint8_t  bssid[6];        // 0x05 selected candidate BSSID
+    uint8_t  reserved;        // 0x0b zero
+    uint32_t auth_status;     // 0x0c mapped authentication status
+    uint32_t auth_reason;     // 0x10 mapped authentication reason
+    uint32_t assoc_status;    // 0x14 mapped association status
+    uint32_t assoc_reason;    // 0x18 mapped association reason
+} __attribute__((packed));    // 0x1c total
+
 static_assert(sizeof(struct apple80211_wcl_auth_assoc_complete_event) ==
                   APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN,
-              "apple80211_wcl_auth_assoc_complete_event must be 8 bytes");
+              "apple80211_wcl_auth_assoc_complete_event must be 0x1c bytes");
 static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, status) == 0x00,
-              "WCL auth/assoc status must live at +0x00 per Tahoe ABI");
-static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, reason) == 0x04,
-              "WCL auth/assoc reason must live at +0x04 per Tahoe ABI");
+              "WCL join status must live at +0x00 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, secondary_state) == 0x02,
+              "WCL join secondary state must live at +0x02 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, auth_seen) == 0x04,
+              "WCL auth-seen flag must live at +0x04 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, bssid) == 0x05,
+              "WCL join BSSID must live at +0x05 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, reserved) == 0x0b,
+              "WCL join reserved byte must live at +0x0b per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, auth_status) == 0x0c,
+              "WCL auth status must live at +0x0c per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, auth_reason) == 0x10,
+              "WCL auth reason must live at +0x10 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, assoc_status) == 0x14,
+              "WCL assoc status must live at +0x14 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, assoc_reason) == 0x18,
+              "WCL assoc reason must live at +0x18 per Tahoe ABI");
 
 // BGScan cached network entry — 0x14 (20) bytes each
 // Reverse-engineered from IO80211Family/WCLBGScanManager (macOS 26.x)
@@ -868,6 +909,7 @@ struct apple80211_status_msg_hdr
 // then posts 0xED with a 4-byte status payload.
 #define APPLE80211_M_WCL_AUTH_ASSOC_EVENT    78
 #define APPLE80211_M_WCL_SCAN_RESULT         201
+#define APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE 211
 #define APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT 213
 #define APPLE80211_M_WCL_JOIN_ABORT_COMPLETE 214
 #define APPLE80211_M_WCL_SCAN_DONE           237

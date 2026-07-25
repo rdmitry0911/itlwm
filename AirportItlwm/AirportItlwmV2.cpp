@@ -23,6 +23,7 @@
 #include "TahoeSkywalkIoctlRoutes.hpp"
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_pae_selected_bss.h>
 #include <net80211/ieee80211_var.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSString.h>
@@ -4952,9 +4953,13 @@ static_assert(sizeof(apple80211_wcl_connect_complete_event) ==
               APPLE80211_WCL_CONNECT_COMPLETE_LEN,
               "Tahoe WCL connect-complete payload must match Apple 0xA4 layout");
 
+static_assert(sizeof(apple80211_wcl_assoc_status_event) ==
+              APPLE80211_WCL_ASSOC_STATUS_LEN,
+              "Tahoe WCL association-status payload must match Apple 0x08 layout");
+
 static_assert(sizeof(apple80211_wcl_auth_assoc_complete_event) ==
               APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN,
-              "Tahoe WCL auth/assoc payload must match Apple 0x08 layout");
+              "Tahoe WCL join auth/assoc payload must match Apple 0x1c layout");
 
 struct TahoeWclLinkChangedPayload {
     uint8_t bssid[IEEE80211_ADDR_LEN]; // 0x00
@@ -5153,10 +5158,10 @@ static uint32_t mapTahoeWclAssocReason(uint32_t rawReason)
     return kTahoeAssocGenericError;
 }
 
-static void buildTahoeWclAuthAssocCompletePayload(
+static void buildTahoeWclAssocStatusPayload(
     uint32_t rawStatus,
     uint32_t rawReason,
-    apple80211_wcl_auth_assoc_complete_event *payload)
+    apple80211_wcl_assoc_status_event *payload)
 {
     if (payload == nullptr)
         return;
@@ -5164,6 +5169,162 @@ static void buildTahoeWclAuthAssocCompletePayload(
     payload->status = mapTahoeWclAssocStatus(rawStatus);
     payload->reason = mapTahoeWclAssocReason(rawReason);
 }
+
+/*
+ * AppleBCMWLANJoinAdapter::handleAssoc emits a separate 0xd3 / 0x1c carrier
+ * after the generic 0x4e / 8-byte association-status bulletin.  The producer
+ * records both successful Open-System authentication and association for the
+ * selected candidate; its success payload is therefore status=0,
+ * secondary_state=0xffff, auth_seen=1, the selected BSSID, and zero mapped auth/assoc
+ * result pairs.  Our net80211 event is emitted only from a successful
+ * association response, after the matching AUTH state has already accepted
+ * that BSS.  It is the narrow equivalent evidence available at this layer.
+ *
+ * Do not use this for failure, retry, or cancellation signalling: those paths
+ * require the reference JoinAdapter's per-candidate ledger and remain owned
+ * by their respective state machines.
+ */
+static bool buildTahoeWclAuthAssocCompletePayload(
+    const uint8_t *selectedBssid,
+    apple80211_wcl_auth_assoc_complete_event *payload)
+{
+    if (selectedBssid == nullptr || payload == nullptr)
+        return false;
+    if (!TahoeScanContracts::hasRenderableBssid(selectedBssid))
+        return false;
+
+    bzero(payload, sizeof(*payload));
+    payload->secondary_state = 0xffff;
+    payload->auth_seen = 1;
+    IEEE80211_ADDR_COPY(payload->bssid, selectedBssid);
+    return true;
+}
+
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * STA_ASSOC_DONE is delivered from net80211 before it leaves S_ASSOC.  Carry
+ * the exact selected-BSS snapshot observed at that edge into the controller
+ * gate, then revalidate it there before publishing the WCL-only 0xd3.  The
+ * request owns no node or IE pointer, so it cannot extend a stale association
+ * lifetime across the lower callback / command-gate boundary.
+ */
+struct TahoeWclAuthAssocCompletionRequest {
+    uint64_t associationEpoch;
+    struct ieee80211_pae_selected_bss selected;
+};
+
+static bool captureTahoeWclAuthAssocCompletionRequest(
+    struct ieee80211com *ic,
+    TahoeWclAuthAssocCompletionRequest *request)
+{
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_ASSOC ||
+        ic->ic_bss == nullptr || request == nullptr)
+        return false;
+
+    bzero(request, sizeof(*request));
+    request->associationEpoch = ieee80211_pae_assoc_epoch_current(ic);
+    if (request->associationEpoch == 0 ||
+        !ieee80211_pae_selected_bss_copyout_current(
+            ic, request->associationEpoch, &request->selected) ||
+        !IEEE80211_ADDR_EQ(request->selected.bssid, ic->ic_bss->ni_bssid)) {
+        bzero(request, sizeof(*request));
+        return false;
+    }
+    return true;
+}
+
+static bool tahoeWclAuthAssocCompletionMatchesOwner(
+    const TahoeOwnerRegistry::AssociationOwner &owner,
+    const struct ieee80211_pae_selected_bss &selected,
+    const struct ieee80211_node *bss)
+{
+    if (!owner.hasCarrier || !owner.selectedFromCandidate ||
+        !owner.authAssocCompletionArmed ||
+        owner.authAssocCompletionPublished ||
+        owner.apMode != APPLE80211_AP_MODE_INFRA ||
+        owner.candidateCount == 0 ||
+        owner.candidateCount > TahoeAssociationContracts::kMaximumCandidateCount ||
+        bss == nullptr ||
+        selected.ssid_len != owner.ssidLength ||
+        !TahoeScanContracts::hasRenderableBssid(selected.bssid) ||
+        !IEEE80211_ADDR_EQ(selected.bssid, bss->ni_bssid) ||
+        !IEEE80211_ADDR_EQ(selected.bssid, owner.selectedBssid) ||
+        !IEEE80211_ADDR_EQ(selected.bssid, owner.candidateBssid))
+        return false;
+
+    return memcmp(selected.ssid, owner.ssid, selected.ssid_len) == 0;
+}
+
+/*
+ * WCLJoinManager accepts 0xd3 only for the candidate that its JoinAdapter
+ * owns.  This action is deliberately narrower than the generic 0x4e status
+ * bulletin: it rejects public associations, WCL reassociation, stale scan
+ * epochs, alternate candidates, and every retry/failure edge for which we do
+ * not have Apple's complete candidate ledger.
+ */
+static IOReturn postTahoeWclAuthAssocCompleteGated(
+    OSObject *target, void *arg0, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    const TahoeWclAuthAssocCompletionRequest *request =
+        static_cast<const TahoeWclAuthAssocCompletionRequest *>(arg0);
+    if (that == nullptr || request == nullptr ||
+        request->associationEpoch == 0)
+        return kIOReturnBadArgument;
+    if (that->fHalService == nullptr || that->fNetIf == nullptr)
+        return kIOReturnNotReady;
+
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_ASSOC ||
+        ic->ic_bss == nullptr ||
+        ieee80211_pae_assoc_epoch_current(ic) != request->associationEpoch)
+        return kIOReturnNotReady;
+
+    struct ieee80211_pae_selected_bss current;
+    bzero(&current, sizeof(current));
+    if (!ieee80211_pae_selected_bss_copyout_current(
+            ic, request->associationEpoch, &current) ||
+        !ieee80211_pae_selected_bss_identity_matches(
+            &request->selected, request->associationEpoch,
+            current.bssid, current.ssid, current.ssid_len) ||
+        !IEEE80211_ADDR_EQ(current.bssid, ic->ic_bss->ni_bssid))
+        return kIOReturnNotReady;
+
+    TahoeOwnerRegistry::AssociationOwner &owner =
+        that->getTahoeOwnerRegistry().association;
+    if (!tahoeWclAuthAssocCompletionMatchesOwner(owner, current, ic->ic_bss))
+        return kIOReturnNotReady;
+
+    apple80211_wcl_auth_assoc_complete_event payload;
+    if (!buildTahoeWclAuthAssocCompletePayload(current.bssid, &payload))
+        return kIOReturnNotReady;
+
+    /* Claim before dispatch so a synchronous nested callback cannot publish
+     * the same candidate twice.  A local dispatch failure releases only this
+     * unconsumed lease; it never manufactures a retry completion. */
+    owner.authAssocCompletionPublished = true;
+    const IOReturn result = AirportItlwm::postMessageGated(
+        target,
+        (void *)(uintptr_t)APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE,
+        &payload,
+        (void *)(uintptr_t)sizeof(payload),
+        nullptr);
+    if (result != kIOReturnSuccess)
+        owner.authAssocCompletionPublished = false;
+    return result;
+}
+
+static IOReturn clearTahoeWclAuthAssocCompletionLeaseGated(
+    OSObject *target, void *, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    if (that == nullptr)
+        return kIOReturnBadArgument;
+    that->getTahoeOwnerRegistry().association =
+        TahoeOwnerRegistry::AssociationOwner{};
+    return kIOReturnSuccess;
+}
+#endif
 
 static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
                                   unsigned int rawReason)
@@ -7764,7 +7925,6 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     static UInt32 scanStatus;  // static — must survive until postMessageGated runs
     static UInt32 reassocEventStatus[2];
     static UInt32 reassocFailureStatus;
-    static apple80211_wcl_auth_assoc_complete_event authAssocStatus;
     switch (msgCode) {
         case IEEE80211_EVT_COUNTRY_CODE_UPDATE:
             RT_SET(1);
@@ -7774,11 +7934,31 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         case IEEE80211_EVT_STA_ASSOC_DONE:
             RT_SET(2);
 #if __IO80211_TARGET >= __MAC_26_0
-            buildTahoeWclAuthAssocCompletePayload(0, 0, &authAssocStatus);
-            apple80211Msg = APPLE80211_M_WCL_AUTH_ASSOC_EVENT;
-            msgData = &authAssocStatus;
-            msgDataLen = sizeof(authAssocStatus);
-            break;
+        {
+            /*
+             * Preserve the reference order.  The 0x4e status bulletin is
+             * consumed by the generic association plane; WCLJoinManager only
+             * advances JOIN_ASSOC_COMPLETE when the following 0xd3 / 0x1c
+             * carrier names the selected candidate.  0x4e remains visible
+             * for every successful net80211 association; the stricter 0xd3
+             * path below is separately fenced to an active WCL candidate.
+             */
+            apple80211_wcl_assoc_status_event assocStatus;
+            buildTahoeWclAssocStatusPayload(0, 0, &assocStatus);
+            if (gate->runAction(postMessageGated,
+                                (void *)(uintptr_t)APPLE80211_M_WCL_AUTH_ASSOC_EVENT,
+                                &assocStatus,
+                                (void *)(uintptr_t)sizeof(assocStatus)) !=
+                kIOReturnSuccess)
+                return;
+
+            TahoeWclAuthAssocCompletionRequest request;
+            if (captureTahoeWclAuthAssocCompletionRequest(ic, &request)) {
+                (void)gate->runAction(postTahoeWclAuthAssocCompleteGated,
+                                      &request);
+            }
+            return;
+        }
 #else
             apple80211Msg = APPLE80211_M_ASSOC_DONE;
             break;
@@ -7810,6 +7990,12 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             return;
         case IEEE80211_EVT_STA_DEAUTH:
             RT_SET(3);
+#if __IO80211_TARGET >= __MAC_26_0
+            /* A lower deauthentication terminates every in-flight join. Do
+             * this inside the same gate used by the 0xd3 one-shot so a late
+             * association callback cannot consume a stale WCL candidate. */
+            (void)gate->runAction(clearTahoeWclAuthAssocCompletionLeaseGated);
+#endif
             apple80211Msg = APPLE80211_M_DEAUTH_RECEIVED;
             break;
         case IEEE80211_EVT_SCAN_DONE:

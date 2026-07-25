@@ -602,6 +602,7 @@ void testPayloadContractInventory()
         "link-changed-32",
         "bssid-changed-24",
         "wcl-link-state-16",
+        "wcl-assoc-status",
         "wcl-auth-assoc-complete",
         "wcl-scan-result",
         "wcl-connect-complete",
@@ -2759,15 +2760,40 @@ void testTahoeCountryCodeCarrierContracts()
 void testTahoeWclAuthAssocCarrierContracts()
 {
     require(APPLE80211_M_WCL_AUTH_ASSOC_EVENT == 0x4e,
-            "WCL auth/assoc complete uses AppleBCMWLAN handleAssocEvent selector 0x4e");
-    require(APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN == 0x08,
-            "WCL auth/assoc complete carrier length is 8 bytes");
-    require(sizeof(apple80211_wcl_auth_assoc_complete_event) == 0x08,
-            "WCL auth/assoc complete carrier is two dwords");
-    require(offsetof(apple80211_wcl_auth_assoc_complete_event, status) == 0x00,
-            "WCL auth/assoc status lives at +0x00");
-    require(offsetof(apple80211_wcl_auth_assoc_complete_event, reason) == 0x04,
-            "WCL auth/assoc reason lives at +0x04");
+            "WCL association-status uses AppleBCMWLAN handleAssocEvent selector 0x4e");
+    require(APPLE80211_WCL_ASSOC_STATUS_LEN == 0x08 &&
+            sizeof(apple80211_wcl_assoc_status_event) == 0x08,
+            "WCL association-status carrier is two dwords");
+    require(offsetof(apple80211_wcl_assoc_status_event, status) == 0x00 &&
+            offsetof(apple80211_wcl_assoc_status_event, reason) == 0x04,
+            "WCL association-status dwords retain their Tahoe offsets");
+
+    require(APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE == 0xd3,
+            "WCLJoinManager completion uses its distinct selector 0xd3");
+    require(APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN == 0x1c &&
+            sizeof(apple80211_wcl_auth_assoc_complete_event) == 0x1c,
+            "WCL join auth/assoc completion is exactly 0x1c bytes");
+    require(offsetof(apple80211_wcl_auth_assoc_complete_event, status) == 0x00 &&
+            offsetof(apple80211_wcl_auth_assoc_complete_event, secondary_state) == 0x02 &&
+            offsetof(apple80211_wcl_auth_assoc_complete_event, auth_seen) == 0x04 &&
+            offsetof(apple80211_wcl_auth_assoc_complete_event, bssid) == 0x05 &&
+            offsetof(apple80211_wcl_auth_assoc_complete_event, reserved) == 0x0b &&
+            offsetof(apple80211_wcl_auth_assoc_complete_event, auth_status) == 0x0c &&
+            offsetof(apple80211_wcl_auth_assoc_complete_event, auth_reason) == 0x10 &&
+            offsetof(apple80211_wcl_auth_assoc_complete_event, assoc_status) == 0x14 &&
+            offsetof(apple80211_wcl_auth_assoc_complete_event, assoc_reason) == 0x18,
+            "WCL join completion preserves the reference packed offsets");
+
+    apple80211_wcl_auth_assoc_complete_event success = {};
+    success.secondary_state = 0xffff;
+    success.auth_seen = 1;
+    success.bssid[0] = 1;
+    require(success.status == 0 && success.secondary_state == 0xffff &&
+            success.auth_seen == 1 && success.bssid[0] == 1 &&
+            success.reserved == 0 &&
+            success.auth_status == 0 && success.auth_reason == 0 &&
+            success.assoc_status == 0 && success.assoc_reason == 0,
+            "successful join completion has the reference auth and assoc result tuple");
 }
 
 void testTahoeDriverAvailabilityContracts()

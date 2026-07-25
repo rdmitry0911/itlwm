@@ -1222,9 +1222,10 @@ out:
  * lock alive through the call and supplies a kernel-resident, caller-owned,
  * non-aliasing output value.  The leaf lock serializes fields but does not
  * create that object-lifetime claim, and this API may not race final lock
- * destruction.  There are deliberately no production consumers until a
- * future owner can satisfy that precondition.  This is not association
- * admission, credential delivery, or authentication permission.
+ * destruction.  The Tahoe WCL join-completion bridge is one such serialized
+ * consumer: it holds the controller lifecycle claim and revalidates this
+ * exact epoch before publication.  This is not association admission,
+ * credential delivery, or authentication permission.
  */
 int
 ieee80211_pae_selected_bss_copyout_current(struct ieee80211com *ic,

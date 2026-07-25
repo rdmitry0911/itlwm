@@ -1,89 +1,76 @@
-# CR-479 WCL auth/assoc-complete publication
+# CR-479 WCL association status and JoinAdapter completion contract
 
-Date: 2026-07-10
+Date: 2026-07-25
 
-## Scope
+## Corrected scope
 
-This batch restores the Tahoe WCL auth/assoc-complete bulletin that follows a
-successful STA association edge.
+The earlier version of this note conflated two separate Tahoe WCL messages.
+That conclusion is withdrawn.  A successful association has an ordered
+two-carrier boundary:
 
-It does not reintroduce legacy public `APPLE80211_M_ASSOC_DONE`, does not add a
-CoreWLAN fallback gate, and does not synthesize Dynamic Store or
-`networksetup` answers.
+1. `AppleBCMWLANCore::handleAssocEvent(...)` publishes generic association
+   status on selector `0x4e`, with an eight-byte `{ status, reason }` payload.
+2. `AppleBCMWLANJoinAdapter::handleAssoc(...)` subsequently publishes the
+   JoinManager completion on selector `0xd3`, with a `0x1c`-byte,
+   candidate-specific auth/association result payload.
 
-## Reference Evidence
+`0x4e` is not the `WCLJoinManager` auth/association completion.  It remains a
+generic status bulletin and must precede, rather than substitute for, `0xd3`.
 
-Tahoe 25C56 `AppleBCMWLANCore::handleAssocEvent(wl_event_msg_t *)`:
+## Reference contract
 
-- reads firmware status from `wl_event_msg_t +0x08`;
-- maps nonzero status values below `0x100` to `status | 0xe0820400`;
-- maps status values at or above `0x100` to `0xe3ff8100`;
-- reads firmware reason from `wl_event_msg_t +0x0c`;
-- maps nonzero reason values below `0x45` to `reason | 0xe0821000`;
-- maps reason values at or above `0x45` to `0xe3ff8100`;
-- posts message `0x4e` with length `0x08`, async flag `1`, and the two mapped
-  dwords through `IO80211Controller::postMessage(...)`;
-- then calls extended-event handling and `AppleBCMWLANJoinAdapter::handleAssoc`.
+In the Tahoe 25C56 reference, `handleAssocEvent` maps the firmware status and
+reason values, then posts `0x4e` with length `0x08`.  It next continues through
+the extended-event path and `AppleBCMWLANJoinAdapter::handleAssoc`.  The
+JoinAdapter keeps a ledger for the selected candidate and posts `0xd3` only
+after its authentication and association records are coherent.
 
-The recovered instruction window shows `MOV EDX,0x4e`, `MOV R8D,0x8`, and
-`MOV R9D,0x1` at both infra-interface publication call sites.
+`WCLJoinManager::authAssocCompleteEventHandler` accepts the `0xd3` body only
+when it is present and exactly `0x1c` bytes.  Its packed layout is:
 
-On the consumer side, `WCLJoinManager::associationStatusHandler` accepts only a
-present payload of length `0x08`. `WCLJoinManager::handleJoinAssocComplete`
-then consumes the auth/assoc status through
-`WCLJoinRequest::updateAuthAssocStatus(...)` and advances the join FSM through
-the `AUTH_ASSOC_COMPLETE` layer.
+| Offset | Field | Success value |
+| --- | --- | --- |
+| `0x00` | `uint16_t status` | `0` |
+| `0x02` | `uint16_t secondary_state` | `0xffff` |
+| `0x04` | `uint8_t auth_seen` | `1` |
+| `0x05` | selected-candidate BSSID | selected BSSID |
+| `0x0b` | reserved byte | `0` |
+| `0x0c` | `uint32_t auth_status` | `0` |
+| `0x10` | `uint32_t auth_reason` | `0` |
+| `0x14` | `uint32_t assoc_status` | `0` |
+| `0x18` | `uint32_t assoc_reason` | `0` |
 
-The separate high-value enum string `M_WCL_AUTH_ASSOC_COMPLETE` in the corpus is
-not the producer used by `handleAssocEvent`; the driver-facing producer evidence
-for this edge is the `0x4e` postMessage selector above.
+The separate generic `0x4e` body is still exactly two 32-bit values:
+`status` at `+0x00` and `reason` at `+0x04`.
 
-## Local Closure
+## Local implementation boundary
 
-The local Tahoe `IEEE80211_EVT_STA_ASSOC_DONE` path previously returned without
-publishing any message. It now builds the Apple-shaped 8-byte WCL auth/assoc
-carrier and publishes message `0x4e` with `{status = 0, reason = 0}` for the
-accepted local association edge.
+`IEEE80211_EVT_STA_ASSOC_DONE` first sends the zero-success `0x4e` status
+bulletin for every ordinary successful local association.  It then attempts
+the stricter `0xd3` path.  The latter is deliberately unavailable unless all
+of these gates hold under the controller command gate:
 
-The legacy non-Tahoe path remains unchanged and still publishes
-`APPLE80211_M_ASSOC_DONE`.
+- net80211 is still in `S_ASSOC` and has a current BSS;
+- the association epoch and copied selected-BSS snapshot still match;
+- the request belongs to an active, armed WCL association owner;
+- the owner has not already published a completion;
+- the selected SSID and BSSID match both the owner and its selected WCL
+  candidate.
 
-## Runtime Validation
+The gate claims the completion before posting `0xd3`, making the path
+one-shot.  Deauthentication and WCL lifecycle replacement/abort/reassociate
+edges clear the lease.  Therefore a public association, stale scan epoch,
+same-BSS reassociation, alternate candidate, failure, retry, or cancellation
+cannot manufacture a JoinManager completion.
 
-Validated on Tahoe 25C56 after AuxKC install and reboot:
+## Validation and non-claims
 
-- loaded kext UUID `AE04EF54-A240-3B1F-A22A-75A6F73D92C2`;
-- installed/staged binary SHA-256
-  `a5d7b05639ed31c0848f6c0cfd04443f2f10d10da67fa68d05ca3306a0ec346a`;
-- `scripts/test_payload_builders.sh` passed on host and guest;
-- `scripts/payload_parity_report.py --write/--check` passed with zero
-  mismatches;
-- `scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
-  passed on the Tahoe guest and reported all 949 undefined symbols resolved
-  against BootKC.
+The layout is covered by the standalone payload-builder test, and the source
+order/gating contract is covered by the WCL auth/association completion static
+test.  Runtime validation must independently show the ordered `0x4e` then
+`0xd3` sequence on an active WCL candidate before claiming a completed user
+visible join path.
 
-The controlled join to `ITLWM-Lab-3c95c7` reached DHCP `10.77.0.157`.
-Raw Tahoe and legacy Apple80211 probes returned SSID `ITLWM-Lab-3c95c7`,
-BSSID `80:e4:ba:20:ef:f9`, state `4`, channel `6`, flags `0x8a`, and a
-populated `CURRENT_NETWORK` record.
-
-The required paced 240-second stress pass completed with `PING_RC=0` and
-`IPERF_RC=0`:
-
-- ping to `10.77.0.1` reported `240 packets transmitted, 240 packets received,
-  0.0% packet loss`, RTT `0.601/16.968/146.453/18.794 ms`;
-- `/usr/local/bin/iperf3 -c 10.77.0.1 -t 240 -b 20M` transferred `572 MBytes`
-  at `20.0 Mbits/sec` sender and receiver;
-- post-stress `en1` remained active at DHCP `10.77.0.157`;
-- the stress-window fault filter found no panic, CoreCapture, missed beacon,
-  deauth, disassoc, `driver not available`, `0xe0822403`, or
-  `IO80211QueueCall` signatures.
-
-## Non-Claims
-
-This closes only the missing WCL auth/assoc-complete publication layer. It does
-not claim that public `CWInterface.ssid`, `CWInterface.bssid`, or
-`networksetup -getairportnetwork` are fixed. On this validated build,
-`CWInterface.ssid` and `CWInterface.bssid` remain `nil`, and
-`networksetup -getairportnetwork en1` still prints
-`You are not associated with an AirPort network.`
+This record makes no claim about WPA3/SAE, roaming, public CoreWLAN identity
+surfaces, or an external network identity.  Those remain separate functional
+and runtime questions.

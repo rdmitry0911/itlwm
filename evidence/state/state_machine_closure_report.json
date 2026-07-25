@@ -35,12 +35,15 @@
         "scan result selection",
         "APPLE80211_IOC_ASSOCIATE",
         "WCL_ASSOCIATE",
+        "WCL_ASSOC_STATUS_EVENT_0x4e",
+        "WCL_AUTH_ASSOC_COMPLETE_EVENT_0xd3",
         "WCL_LINK_UP_DONE",
         "WCL_CONNECT_COMPLETE_EVENT"
       ],
       "apple_reference_case_ids": [
         "apple-wcl-join-manager",
-        "apple-wcl-net-manager"
+        "apple-wcl-net-manager",
+        "apple-wcl-auth-assoc-completion"
       ],
       "implementation_paths": [
         "AirportItlwm/AirportItlwmV2.cpp",
@@ -272,7 +275,7 @@
     },
     {
       "id": "driver-reset-power-wake",
-      "description": "Recovered Apple NET_MANAGER and local newstate paths make radio power, atomic system PM, sleep, wake, and driver-reset behavior explicit.",
+      "description": "Recovered Apple NET_MANAGER and local newstate paths make radio power, atomic system PM, sleep, wake, and driver-reset behavior explicit; PowerOn availability is emitted only after the lower post-reset scan-ready fence.",
       "paths": [
         "AirportItlwm/AirportItlwmV2.cpp",
         "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
@@ -294,6 +297,11 @@
     {
       "id": "apple-wcl-net-manager",
       "path": "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
+      "assertions_checked": 5
+    },
+    {
+      "id": "apple-wcl-auth-assoc-completion",
+      "path": "docs/reference/CR-479-wcl-auth-assoc-complete-publication-20260710.md",
       "assertions_checked": 5
     },
     {
@@ -321,7 +329,7 @@
     "state_machine_count": 4,
     "producer_consumer_chain_count": 5,
     "recovery_case_count": 6,
-    "apple_reference_case_count": 6
+    "apple_reference_case_count": 7
   },
   "verification": {
     "write_command": "python3 scripts/state_machine_closure_report.py --write evidence/state/state_machine_closure_report.json",

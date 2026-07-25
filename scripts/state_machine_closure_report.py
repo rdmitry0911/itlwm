@@ -51,6 +51,17 @@ REFERENCE_CASES = [
         ],
     },
     {
+        "id": "apple-wcl-auth-assoc-completion",
+        "path": "docs/reference/CR-479-wcl-auth-assoc-complete-publication-20260710.md",
+        "tokens": [
+            "0x4e",
+            "0xd3",
+            "authAssocCompleteEventHandler",
+            "active, armed WCL association owner",
+            "one-shot",
+        ],
+    },
+    {
         "id": "apple-tx-queue-space-pending",
         "path": "docs/reference/AppleBCMWLAN_tx_queue_space_pending_2026_04_27.md",
         "tokens": [
@@ -101,10 +112,16 @@ STATE_MACHINES = [
             "scan result selection",
             "APPLE80211_IOC_ASSOCIATE",
             "WCL_ASSOCIATE",
+            "WCL_ASSOC_STATUS_EVENT_0x4e",
+            "WCL_AUTH_ASSOC_COMPLETE_EVENT_0xd3",
             "WCL_LINK_UP_DONE",
             "WCL_CONNECT_COMPLETE_EVENT",
         ],
-        "reference_ids": ["apple-wcl-join-manager", "apple-wcl-net-manager"],
+        "reference_ids": [
+            "apple-wcl-join-manager",
+            "apple-wcl-net-manager",
+            "apple-wcl-auth-assoc-completion",
+        ],
         "implementation_checks": [
             {
                 "path": "AirportItlwm/TahoeStateMachineClosure.hpp",
@@ -129,7 +146,10 @@ STATE_MACHINES = [
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
                 "tokens": [
-                    "buildTahoeWclAuthAssocCompletePayload(0, 0, &authAssocStatus)",
+                    "buildTahoeWclAssocStatusPayload(0, 0, &assocStatus)",
+                    "captureTahoeWclAuthAssocCompletionRequest",
+                    "postTahoeWclAuthAssocCompleteGated",
+                    "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE",
                     "postTahoeWclConnectCompleteEvent",
                     "APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT",
                 ],
@@ -222,18 +242,20 @@ STATE_MACHINES = [
                 "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
                 "tokens": [
                     "setWCL_SCAN_REQ(apple80211ScanRequest *req)",
-                    "ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if)",
-                    "scanSource->setTimeoutMS(100)",
+                    "instance->reserveWclPhysicalScan(",
+                    "fHalService->beginWclInitialScan",
+                    "fHalService->beginWclBackgroundScan",
+                    "instance->activateWclPhysicalScan(generation, backendGeneration)",
                 ],
             },
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
                 "tokens": [
-                    "postWclScanResultsGated",
+                    "postWclPhysicalScanCompletionGated",
                     "APPLE80211_M_WCL_SCAN_RESULT",
                     "APPLE80211_M_WCL_SCAN_DONE",
-                    "scanSource->cancelTimeout()",
-                    "scanSource->disable()",
+                    "invalidateWclPhysicalScan();",
+                    "teardownWclPhysicalScanTerminalSource",
                 ],
             },
         ],
@@ -477,7 +499,10 @@ RECOVERY_CASES = [
             },
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
-                "tokens": ["scanSource->cancelTimeout()", "scanSource->disable()"],
+                "tokens": [
+                    "invalidateWclPhysicalScan();",
+                    "teardownWclPhysicalScanTerminalSource",
+                ],
             },
         ],
     },
@@ -623,7 +648,7 @@ RECOVERY_CASES = [
                 "scope_start": "IOReturn AirportItlwm::setPowerState(",
                 "scope_end": "IOReturn AirportItlwm::setPowerStateGated",
                 "tokens": [
-                    "getCommandGate()->runAction(",
+                    "gate->runAction(",
                     "setPowerStateGated",
                     "AppleBCMWLANIOReportingCore owner",
                     "explicit owner-null path",

@@ -126,6 +126,15 @@ struct TahoeOwnerRegistry {
     struct AssociationOwner {
         bool hasCarrier = false;
         bool selectedFromCandidate = false;
+        // Set immediately before the accepted WCL request resumes normal
+        // scan/selection.  Parsed carriers that are blocked, stale, or never
+        // reach a real association edge must not publish completion.
+        bool authAssocCompletionArmed = false;
+        // The reference JoinAdapter publishes its candidate-matched 0xd3
+        // completion once.  Keep the equivalent one-shot state alongside the
+        // WCL carrier so an old candidate cannot complete a later public or
+        // replacement association.
+        bool authAssocCompletionPublished = false;
         uint16_t apMode = 0;
         uint32_t authLower = 0;
         uint32_t authUpper = 0;

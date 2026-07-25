@@ -87,3 +87,5 @@ esac
   -o "$tmpdir/wcl_physical_scan_trace_contract_test"
 
 "$tmpdir/wcl_physical_scan_trace_contract_test"
+
+"$(dirname "$0")/test_tahoe_wcl_auth_assoc_completion_contract.sh"

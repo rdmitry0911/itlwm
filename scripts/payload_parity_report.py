@@ -30,7 +30,7 @@ DETERMINISTIC_TESTS = [
             "testTahoeDriverAvailabilityContracts",
             "frameLen > 0x707",
             "rejects zero PMK length",
-            "34 contracts",
+            "WCLJoinManager completion uses its distinct selector 0xd3",
         ],
         "runner_tokens": [
             "TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST",
@@ -83,7 +83,13 @@ REFERENCE_CASES = [
     {
         "id": "apple-wcl-auth-assoc-complete",
         "path": "docs/reference/CR-479-wcl-auth-assoc-complete-publication-20260710.md",
-        "tokens": ["handleAssocEvent", "0x4e", "length `0x08`", "associationStatusHandler"],
+        "tokens": [
+            "handleAssocEvent",
+            "0x4e",
+            "0xd3",
+            "0x1c",
+            "authAssocCompleteEventHandler",
+        ],
     },
     {
         "id": "apple-bss-blacklist-async-owner",
@@ -484,22 +490,70 @@ PAYLOAD_TYPES = [
         "invalid_semantics": "null controller/node/channel and zero BSSID reject before WCL_SCAN_RESULT publication",
     },
     {
-        "name": "wcl-auth-assoc-complete",
-        "shape": "0x08 WCL auth/assoc status and reason carrier",
-        "producer": "buildTahoeWclAuthAssocCompletePayload",
-        "consumer": "WCLJoinManager association/auth-complete path",
+        "name": "wcl-assoc-status",
+        "shape": "0x08 generic WCL association status carrier",
+        "producer": "buildTahoeWclAssocStatusPayload",
+        "consumer": "WCLJoinManager::associationStatusHandler",
         "reference_ids": ["apple-wcl-auth-assoc-complete"],
         "implementation_checks": [
             {
                 "path": "include/Airport/apple80211_var.h",
-                "tokens": ["APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN", "struct apple80211_wcl_auth_assoc_complete_event", "APPLE80211_M_WCL_AUTH_ASSOC_EVENT"],
+                "tokens": [
+                    "APPLE80211_WCL_ASSOC_STATUS_LEN",
+                    "struct apple80211_wcl_assoc_status_event",
+                    "APPLE80211_M_WCL_AUTH_ASSOC_EVENT",
+                ],
             },
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
-                "tokens": ["buildTahoeWclAuthAssocCompletePayload", "mapTahoeWclAssocStatus", "APPLE80211_M_WCL_AUTH_ASSOC_EVENT", "IEEE80211_EVT_STA_ASSOC_DONE"],
+                "tokens": [
+                    "buildTahoeWclAssocStatusPayload",
+                    "mapTahoeWclAssocStatus",
+                    "mapTahoeWclAssocReason",
+                    "APPLE80211_M_WCL_AUTH_ASSOC_EVENT",
+                    "IEEE80211_EVT_STA_ASSOC_DONE",
+                ],
             },
         ],
-        "invalid_semantics": "zero status/reason maps to zero dwords; out-of-range status/reason maps to 0xe3ff8100",
+        "invalid_semantics": "status and reason remain the generic 0x4e mapping; this carrier never substitutes for JoinAdapter completion",
+    },
+    {
+        "name": "wcl-auth-assoc-complete",
+        "shape": "0x1c WCL JoinAdapter auth/assoc completion carrier",
+        "producer": "postTahoeWclAuthAssocCompleteGated",
+        "consumer": "WCLJoinManager::authAssocCompleteEventHandler",
+        "reference_ids": ["apple-wcl-auth-assoc-complete"],
+        "implementation_checks": [
+            {
+                "path": "include/Airport/apple80211_var.h",
+                "tokens": [
+                    "APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN",
+                    "struct apple80211_wcl_auth_assoc_complete_event",
+                    "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "tokens": [
+                    "buildTahoeWclAuthAssocCompletePayload",
+                    "captureTahoeWclAuthAssocCompletionRequest",
+                    "postTahoeWclAuthAssocCompleteGated",
+                    "tahoeWclAuthAssocCompletionMatchesOwner",
+                    "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE",
+                    "IEEE80211_EVT_STA_ASSOC_DONE",
+                ],
+            },
+            {
+                "path": "AirportItlwm/TahoeOwnerRegistry.hpp",
+                "tokens": [
+                    "authAssocCompletionArmed",
+                    "authAssocCompletionPublished",
+                    "candidateBssid",
+                    "selectedBssid",
+                ],
+            },
+        ],
+        "invalid_semantics": "only the active, epoch-matched selected WCL candidate can publish 0xd3 once; public, stale, retry, reassociation, and failure edges are rejected",
     },
     {
         "name": "wcl-connect-complete",
