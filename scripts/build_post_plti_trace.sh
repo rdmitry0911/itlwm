@@ -42,9 +42,11 @@ case "$DERIVED_DATA" in
 esac
 
 mkdir -p "$OUTPUT_DIR"
-clang -std=c11 -Wall -Wextra -Werror \
+clang -x objective-c -std=c11 -Wall -Wextra -Werror \
     -I"$PROJECT_DIR/include" \
     "$PROJECT_DIR/AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c" \
+    -framework CoreWLAN \
+    -framework Foundation \
     -framework IOKit \
     -framework CoreFoundation \
     -o "$OUTPUT"

@@ -1,5 +1,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
+#import <CoreWLAN/CoreWLAN.h>
+#import <Foundation/Foundation.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,6 +83,70 @@ set_control(io_service_t service, int enable, int reset, int seal)
     }
     printf("%s\n", control);
     return 0;
+}
+
+/* One fixed, undirected CoreWLAN scan for the receipt-bound WCL experiment.
+ * This path accepts no caller data and never reads a network name, hardware
+ * address, signal, security, IE, or error description.  CoreWLAN exposes no
+ * completion acknowledgement for the driver's WCL result/DONE publication;
+ * the paired categorical trace is the ownership proof. */
+static int
+scan_wcl_physical(void)
+{
+    uint32_t total = 0;
+    uint32_t band_2ghz = 0;
+    uint32_t band_5ghz = 0;
+    uint32_t band_6ghz = 0;
+    uint32_t band_other = 0;
+    const char *outcome = "scan-failed";
+
+    @autoreleasepool {
+        CWWiFiClient *client = [CWWiFiClient sharedWiFiClient];
+        if (client == nil) {
+            outcome = "client-unavailable";
+        } else {
+            /* The laboratory client is fixed to AirportItlwm's pinned
+             * interface.  The value is never emitted or caller-controlled. */
+            CWInterface *interface = [client interfaceWithName:@"en1"];
+            if (interface == nil) {
+                outcome = "interface-unavailable";
+            } else {
+                NSSet<CWNetwork *> *networks =
+                    [interface scanForNetworksWithName:nil error:NULL];
+                if (networks != nil) {
+                    outcome = "ok";
+                    for (CWNetwork *network in networks) {
+                        if (total == UINT32_MAX) {
+                            outcome = "count-overflow";
+                            break;
+                        }
+                        total++;
+                        CWChannel *channel = [network wlanChannel];
+                        switch (channel != nil ? [channel channelBand] :
+                                kCWChannelBandUnknown) {
+                        case kCWChannelBand2GHz:
+                            band_2ghz++;
+                            break;
+                        case kCWChannelBand5GHz:
+                            band_5ghz++;
+                            break;
+                        case kCWChannelBand6GHz:
+                            band_6ghz++;
+                            break;
+                        default:
+                            band_other++;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    printf("wcl_physical_scan_stimulus=%s total=%u band_2ghz=%u "
+           "band_5ghz=%u band_6ghz=%u band_other=%u\n",
+           outcome, total, band_2ghz, band_5ghz, band_6ghz, band_other);
+    return strcmp(outcome, "ok") == 0 ? 0 : 1;
 }
 
 static CFTypeRef
@@ -1066,7 +1132,7 @@ usage(const char *program)
 {
     fprintf(stderr,
             "usage:\n"
-            "  %s reset|on|off|seal\n"
+            "  %s reset|on|off|seal|scan-wcl-physical\n"
             "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress|iwn-software-pmf-report|iwn-pmf-ingress-report|iwn-direct-sae-report|iwn-wcl-physical-scan-report\n",
             program, program);
 }
@@ -1093,6 +1159,8 @@ main(int argc, char **argv)
         rc = set_control(service, 0, 0, 0);
     else if (strcmp(argv[1], "seal") == 0)
         rc = set_control(service, 0, 0, 1);
+    else if (strcmp(argv[1], "scan-wcl-physical") == 0 && argc == 2)
+        rc = scan_wcl_physical();
     else if (strcmp(argv[1], "get") == 0 && argc == 3) {
         if (strcmp(argv[2], "control") == 0)
             rc = get_control(service);

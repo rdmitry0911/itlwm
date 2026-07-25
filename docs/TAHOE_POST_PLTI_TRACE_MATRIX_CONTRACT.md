@@ -73,6 +73,15 @@ post-terminal fact is negative or fail-closed as appropriate.  It does not
 prove scan-result consumption, association, roaming, reconnect, multi-AP
 selection, traffic, SAE, or physical-host behavior.
 
+The receipt-bound trace client supplies one fixed undirected CoreWLAN scan
+stimulus for this evaluator.  It accepts no network argument, reads no name,
+address, signal, security, information element, or error text, and prints
+only a success/failure token plus total and per-band aggregate counts.  It
+does not toggle radio state, join or leave a network, alter a profile, route,
+address, kext, host, AP, or reboot state.  If CoreWLAN selects a generic scan
+path, `BRANCH_NOT_OBSERVED` remains an inconclusive result rather than a
+claim that the physical-WCL path ran.
+
 The companion active-prefix classifier is narrower still: it accepts only the
 one live initial PMF/BIP chain through port-valid while the same episode remains
 open.  It is a rekey authorization predicate for the bounded runner, never a sealed verdict or final success.

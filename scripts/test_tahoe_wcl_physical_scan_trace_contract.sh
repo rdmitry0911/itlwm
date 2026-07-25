@@ -232,6 +232,33 @@ for token in ("ssid", "bssid", "rssi", "channel", "payload", "credential",
               "IORegistryEntrySetCFProperty"):
     forbid(report.lower(), token, "identity-bearing WCL runtime report")
 
+# The only stimulus is fixed, undirected CoreWLAN scan enumeration.  It
+# accepts no network input and reports no per-network field or NSError text.
+stimulus = body(client, "scan_wcl_physical(void)",
+                "fixed WCL physical scan stimulus")
+for token in (
+        "@autoreleasepool",
+        "[client interfaceWithName:@\"en1\"]",
+        "[interface scanForNetworksWithName:nil error:NULL]",
+        "[network wlanChannel]",
+        "[channel channelBand]",
+        "wcl_physical_scan_stimulus=%s total=%u band_2ghz=%u",
+        "band_5ghz=%u band_6ghz=%u band_other=%u",
+        "return strcmp(outcome, \"ok\") == 0 ? 0 : 1;",
+):
+    require(stimulus, token, "fixed aggregate-only WCL scan stimulus")
+for token in (
+        "[network ssid]", "[network bssid]", "[network rssiValue]",
+        "[network security]", "[network informationElement]",
+        "localizedDescription", "error.code", "setPower", "associate",
+        "disassociate", "setConfiguration", "networkName",
+):
+    forbid(stimulus, token, "identity or mutation in WCL scan stimulus")
+for token in (
+        "-x objective-c", "-framework CoreWLAN", "-framework Foundation",
+):
+    require(build, token, "receipt-bound CoreWLAN trace-client build")
+
 for token in (
         "require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecordWclPhysicalScan",
         "require_external_bridge ItlIwn AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode",

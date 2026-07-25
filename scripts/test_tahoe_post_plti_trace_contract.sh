@@ -1184,11 +1184,16 @@ for needle in (
         "result_publication_issued=%u",
         "IWN_WCL_PHYSICAL_SCAN_OBSERVED",
         "DONE_PUBLICATION_NOT_OBSERVED",
+        "scan-wcl-physical",
+        "scan_wcl_physical",
+        "wcl_physical_scan_stimulus=%s total=%u",
 ):
     require(client, needle, "IWN WCL physical-scan categorical client mapping")
 for needle in (
-        "-std=c11 -Wall -Wextra -Werror",
+        "-x objective-c -std=c11 -Wall -Wextra -Werror",
         "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c",
+        "-framework CoreWLAN",
+        "-framework Foundation",
         "-framework IOKit",
 ):
     require(build, needle, "safe trace client build")
