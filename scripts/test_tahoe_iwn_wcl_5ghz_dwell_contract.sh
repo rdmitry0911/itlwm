@@ -52,21 +52,27 @@ require(iwn_hpp, "bool, bool, bool, u_int64_t, u_int32_t,",
 require(iwn, "bool wcl_scan,", "explicit WCL submit ownership")
 for needle, label in (
     ("bool wcl_foreground_5ghz_extended_dwell = false;", "bounded dwell state"),
+    ("bool wcl_background_5ghz_unassociated_dwell = false;", "unassociated recovery dwell state"),
     ("bool wcl_background_5ghz_directed_active_dwell = false;", "background dwell state"),
     ("wcl_scan && bgscan == 0 &&", "foreground WCL guard"),
     ("ic->ic_des_esslen == 0", "undirected WCL guard"),
     ("(flags & IEEE80211_CHAN_5GHZ) != 0", "5 GHz-only guard"),
     ("(c->ic_flags & IEEE80211_CHAN_DFS) == 0", "DFS exclusion"),
     ("dwell_passive = MAX(dwell_passive, 130);", "130 ms dwell floor"),
+    ("wcl_scan && bgscan != 0 &&\n        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&", "background unassociated WCL guard"),
+    ("ic->ic_bss->ni_associd == 0", "net80211 unassociated marker"),
+    ("le16toh(sc->rxon.associd) == 0", "RXON unassociated AID marker"),
+    ("(le32toh(sc->rxon.filter) & IWN_FILTER_BSS) == 0", "RXON BSS-filter absence marker"),
     ("wcl_scan && bgscan != 0 &&\n        is_active != 0 &&", "background directed WCL guard"),
     ("dwell_passive > dwell_active", "serving-BSS dwell cap guard"),
     ("dwell_active = MAX(dwell_active,\n                MIN((uint16_t)40, (uint16_t)(dwell_passive - 1)));", "40 ms active dwell cap"),
     ("if (ic->ic_des_esslen != 0)\n            chan->flags |= htole32(IWN_CHAN_NPBREQS(1));", "directed-SSID-only probe template selection"),
 ):
     require(submit, needle, label)
+forbid(submit, "ni_port_valid", "port-valid recovery discriminator")
 forbid(submit, "else if (wcl_foreground_5ghz_extended_dwell)",
        "wildcard active probing")
-foreground_dwell_begin = submit.find("if (wcl_foreground_5ghz_extended_dwell &&")
+foreground_dwell_begin = submit.find("if ((wcl_foreground_5ghz_extended_dwell ||\n             wcl_background_5ghz_unassociated_dwell) &&")
 background_dwell_begin = submit.find(
     "if (wcl_background_5ghz_directed_active_dwell &&",
     foreground_dwell_begin)

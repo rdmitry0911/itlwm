@@ -11335,6 +11335,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     struct iwn_scan_doorbell_context doorbell;
     int buflen, error, is_active;
     bool wcl_foreground_5ghz_extended_dwell = false;
+    bool wcl_background_5ghz_unassociated_dwell = false;
     bool wcl_background_5ghz_directed_active_dwell = false;
 
     if (out_command_attempted != NULL)
@@ -11420,10 +11421,23 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     /* WCL's initial public scan is deliberately undirected.  Give every
      * non-DFS 5 GHz channel a bounded passive listening dwell above one
      * default beacon interval, including regulatory-passive channels.  This
-     * neither enables a probe template nor changes their passive flag; keep
-     * DFS and every background scan on their existing firmware semantics. */
+     * neither enables a probe template nor changes their passive flag.
+     *
+     * The platform can also label a physical discovery request as a
+     * background scan while its public interface remains in RUN after reset.
+     * Do not use an empty selector or port_valid to recognize that case:
+     * both are valid during ordinary live connections.  Instead require all
+     * three independent association markers to be absent: net80211's AID,
+     * the RXON AID, and RXON's BSS filter.  A normal or malformed live
+     * association retains at least the firmware BSS context, so it keeps the
+     * existing serving-BSS dwell budget. */
     wcl_foreground_5ghz_extended_dwell = wcl_scan && bgscan == 0 &&
         ic->ic_des_esslen == 0 && (flags & IEEE80211_CHAN_5GHZ) != 0;
+    wcl_background_5ghz_unassociated_dwell = wcl_scan && bgscan != 0 &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+        ic->ic_bss->ni_associd == 0 && le16toh(sc->rxon.associd) == 0 &&
+        (le32toh(sc->rxon.filter) & IWN_FILTER_BSS) == 0 &&
+        (flags & IEEE80211_CHAN_5GHZ) != 0;
 
     /* Only do active scanning if we're announcing a probe request for a
      * given SSID (or more, if we ever add it to the driver.) */
@@ -11530,7 +11544,8 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
 
         dwell_active = iwn_get_active_dwell_time(sc, flags, is_active);
         dwell_passive = iwn_get_passive_dwell_time(sc, flags);
-        if (wcl_foreground_5ghz_extended_dwell &&
+        if ((wcl_foreground_5ghz_extended_dwell ||
+             wcl_background_5ghz_unassociated_dwell) &&
             (c->ic_flags & IEEE80211_CHAN_DFS) == 0)
             dwell_passive = MAX(dwell_passive, 130);
         if (wcl_background_5ghz_directed_active_dwell &&
