@@ -53,14 +53,15 @@ import sys
 from pathlib import Path
 
 
-SCHEMA = "itlwm-tahoe-iwn-wcl-physical-scan-runtime/v1"
+SCHEMA = "itlwm-tahoe-iwn-wcl-physical-scan-runtime/v2"
 HASH64 = re.compile(r"[0-9a-f]{64}")
 COMMIT40 = re.compile(r"[0-9a-f]{40}")
 UUID = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}")
 OUTCOMES = {
     "not-run", "ok", "client-unavailable", "interface-unavailable",
-    "scan-failed", "count-overflow",
+    "scan-failed", "count-overflow", "airport-itlwm-bsd-unresolved",
 }
+ENDPOINT_BINDINGS = {"unresolved", "airport-itlwm-bsd"}
 VERDICTS = {
     "INTEGRITY_INCONCLUSIVE", "BACKEND_UNSUPPORTED", "BRANCH_NOT_OBSERVED",
     "LOWER_LEASE_NOT_OBSERVED", "TERMINAL_NOT_OBSERVED", "TERMINAL_ABORTED",
@@ -197,12 +198,21 @@ def validate(document):
     stimulus = document["physical_scan_stimulus"]
     exact_mapping(stimulus, {
         "command", "invocation_count", "client_exit_zero", "outcome", "total",
-        "band_2ghz", "band_5ghz", "band_6ghz", "band_other", "aggregate_sum_valid",
+        "endpoint_binding", "band_2ghz", "band_5ghz", "band_6ghz", "band_other",
+        "aggregate_sum_valid",
     }, "physical_scan_stimulus")
     string(stimulus["command"], "scan-wcl-physical", "physical_scan_stimulus.command")
     u32(stimulus["invocation_count"], "physical_scan_stimulus.invocation_count")
     boolean(stimulus["client_exit_zero"], "physical_scan_stimulus.client_exit_zero")
     require(stimulus["outcome"] in OUTCOMES, "physical_scan_stimulus.outcome malformed")
+    require(stimulus["endpoint_binding"] in ENDPOINT_BINDINGS,
+            "physical_scan_stimulus.endpoint_binding malformed")
+    if stimulus["outcome"] in {"not-run", "airport-itlwm-bsd-unresolved"}:
+        require(stimulus["endpoint_binding"] == "unresolved",
+                "physical_scan_stimulus unresolved endpoint malformed")
+    else:
+        require(stimulus["endpoint_binding"] == "airport-itlwm-bsd",
+                "physical_scan_stimulus controller endpoint binding malformed")
     for key in ("total", "band_2ghz", "band_5ghz", "band_6ghz", "band_other"):
         u32(stimulus[key], f"physical_scan_stimulus.{key}")
     boolean(stimulus["aggregate_sum_valid"], "physical_scan_stimulus.aggregate_sum_valid")
@@ -268,7 +278,9 @@ def validate(document):
         document["candidate"]["identity_binding_precondition"] == "PASS" and
         document["candidate"]["trace_client_receipt_binding_precondition"] == "PASS" and
         stimulus["invocation_count"] == 1 and stimulus["client_exit_zero"] and
-        stimulus["outcome"] == "ok" and stimulus["aggregate_sum_valid"] and
+        stimulus["outcome"] == "ok" and
+        stimulus["endpoint_binding"] == "airport-itlwm-bsd" and
+        stimulus["aggregate_sum_valid"] and
         lifecycle["capture_generation"] > 0 and lifecycle["backend"] == "IWN" and
         all(lifecycle[key] for key in (
             "reset_control_acknowledged", "initial_snapshot_synchronized",
@@ -321,7 +333,8 @@ def fixture():
         "physical_scan_stimulus": {
             "command": "scan-wcl-physical", "invocation_count": 1,
             "client_exit_zero": True, "outcome": "ok", "total": 0,
-            "band_2ghz": 0, "band_5ghz": 0, "band_6ghz": 0,
+            "endpoint_binding": "airport-itlwm-bsd", "band_2ghz": 0,
+            "band_5ghz": 0, "band_6ghz": 0,
             "band_other": 0, "aggregate_sum_valid": True,
         },
         "trace_lifecycle": {
@@ -360,6 +373,16 @@ try:
             pass
         else:
             fail("self-test did not reject an unexpected identity-shaped field")
+        sample = fixture()
+        sample["physical_scan_stimulus"]["endpoint_binding"] = "en1"
+        sample["result"] = "INCONCLUSIVE"
+        sample["failure_phase"] = "trace-verdict-diagnostic"
+        try:
+            validate(sample)
+        except SystemExit:
+            pass
+        else:
+            fail("self-test did not reject a raw endpoint value")
 except (OSError, ValueError, json.JSONDecodeError) as error:
     fail(str(error))
 

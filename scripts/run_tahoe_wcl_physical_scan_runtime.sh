@@ -55,6 +55,7 @@ DOUBLE_READ_STABLE=0
 SCAN_INVOCATION_COUNT=0
 SCAN_EXIT=255
 SCAN_OUTCOME="not-run"
+SCAN_ENDPOINT_BINDING="unresolved"
 SCAN_TOTAL=0
 SCAN_BAND_2GHZ=0
 SCAN_BAND_5GHZ=0
@@ -558,8 +559,9 @@ import sys
 from pathlib import Path
 
 pattern = re.compile(
-    r"wcl_physical_scan_stimulus=(ok|client-unavailable|interface-unavailable|scan-failed|count-overflow) "
-    r"total=([0-9]+) band_2ghz=([0-9]+) band_5ghz=([0-9]+) "
+    r"wcl_physical_scan_stimulus=(ok|client-unavailable|interface-unavailable|scan-failed|count-overflow|airport-itlwm-bsd-unresolved) "
+    r"endpoint_binding=(airport-itlwm-bsd|unresolved) total=([0-9]+) "
+    r"band_2ghz=([0-9]+) band_5ghz=([0-9]+) "
     r"band_6ghz=([0-9]+) band_other=([0-9]+)"
 )
 try:
@@ -570,20 +572,24 @@ try:
     if match is None:
         raise ValueError("shape")
     values = match.groups()
-    if any(int(value) > 0xFFFFFFFF for value in values[1:]):
+    if any(int(value) > 0xFFFFFFFF for value in values[2:]):
         raise ValueError("u32")
+    if ((values[0] == "airport-itlwm-bsd-unresolved") !=
+            (values[1] == "unresolved")):
+        raise ValueError("endpoint binding")
 except Exception:
     raise SystemExit(1)
 print("\n".join(values))
 PY
 )
-    [ "${#values[@]}" -eq 6 ] || return 1
+    [ "${#values[@]}" -eq 7 ] || return 1
     SCAN_OUTCOME="${values[0]}"
-    SCAN_TOTAL="${values[1]}"
-    SCAN_BAND_2GHZ="${values[2]}"
-    SCAN_BAND_5GHZ="${values[3]}"
-    SCAN_BAND_6GHZ="${values[4]}"
-    SCAN_BAND_OTHER="${values[5]}"
+    SCAN_ENDPOINT_BINDING="${values[1]}"
+    SCAN_TOTAL="${values[2]}"
+    SCAN_BAND_2GHZ="${values[3]}"
+    SCAN_BAND_5GHZ="${values[4]}"
+    SCAN_BAND_6GHZ="${values[5]}"
+    SCAN_BAND_OTHER="${values[6]}"
     local sum=$((SCAN_BAND_2GHZ + SCAN_BAND_5GHZ + SCAN_BAND_6GHZ + SCAN_BAND_OTHER))
     [ "$sum" = "$SCAN_TOTAL" ] || return 1
     SCAN_AGGREGATE_VALID=1
@@ -716,6 +722,7 @@ write_safe_attestation() {
     AIAM_WCL_SCAN_COUNT="$SCAN_INVOCATION_COUNT" \
     AIAM_WCL_SCAN_EXIT="$SCAN_EXIT" \
     AIAM_WCL_SCAN_OUTCOME="$SCAN_OUTCOME" \
+    AIAM_WCL_SCAN_ENDPOINT_BINDING="$SCAN_ENDPOINT_BINDING" \
     AIAM_WCL_SCAN_TOTAL="$SCAN_TOTAL" \
     AIAM_WCL_SCAN_2G="$SCAN_BAND_2GHZ" \
     AIAM_WCL_SCAN_5G="$SCAN_BAND_5GHZ" \
@@ -773,7 +780,7 @@ candidate = {
     "trace_client_receipt_binding_precondition": "PASS" if b("TRACE_PRE") and b("TRACE_POST") else "INCONCLUSIVE",
 }
 document = {
-    "schema": "itlwm-tahoe-iwn-wcl-physical-scan-runtime/v1",
+    "schema": "itlwm-tahoe-iwn-wcl-physical-scan-runtime/v2",
     "candidate": candidate,
     "scope": {
         "environment": "pinned_disposable_qemu_guest",
@@ -789,6 +796,7 @@ document = {
         "invocation_count": u32("SCAN_COUNT"),
         "client_exit_zero": value("SCAN_EXIT") == "0",
         "outcome": value("SCAN_OUTCOME"),
+        "endpoint_binding": value("SCAN_ENDPOINT_BINDING"),
         "total": u32("SCAN_TOTAL"),
         "band_2ghz": u32("SCAN_2G"),
         "band_5ghz": u32("SCAN_5G"),
@@ -933,7 +941,8 @@ capture_identity after || fail_phase candidate-identity-after
 remote_trace_client_exists || fail_phase trace-client-postflight
 TRACE_CLIENT_POST_BOUND=1
 
-if [ "$SCAN_OUTCOME" = ok ] && [ "$SCAN_EXIT" = 0 ] &&
+if [ "$SCAN_OUTCOME" = ok ] && [ "$SCAN_ENDPOINT_BINDING" = airport-itlwm-bsd ] &&
+    [ "$SCAN_EXIT" = 0 ] &&
     [ "$SCAN_AGGREGATE_VALID" = 1 ] && [ "$RESET_ACKNOWLEDGED" = 1 ] &&
     [ "$INITIAL_SNAPSHOT_SYNCHRONIZED" = 1 ] && [ "$SEAL_ACKNOWLEDGED" = 1 ] &&
     [ "$FINAL_CONTROL_DISABLED" = 1 ] && [ "$DOUBLE_READ_STABLE" = 1 ] &&

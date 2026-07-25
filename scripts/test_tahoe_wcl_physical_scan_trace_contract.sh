@@ -232,21 +232,53 @@ for token in ("ssid", "bssid", "rssi", "channel", "payload", "credential",
               "IORegistryEntrySetCFProperty"):
     forbid(report.lower(), token, "identity-bearing WCL runtime report")
 
+# Skywalk publishes its actual BSD endpoint on the AirportItlwm controller.
+# The client must consume that exact controller property, never guess a global
+# CoreWLAN interface name.
+require(sky, 'instance->setProperty("BSD Name", value)',
+        "AirportItlwm controller BSD endpoint publication")
+endpoint_resolver = body(client, "copy_airport_itlwm_bsd_name",
+                         "AirportItlwm controller BSD endpoint resolver")
+for token in (
+        'copy_property(service, "BSD Name")',
+        "CFStringGetCString",
+        "kCFStringEncodingUTF8",
+        "name[0] != 'e'",
+        "name[1] != 'n'",
+        "name[index] < '0' || name[index] > '9'",
+        "memset(name, 0, capacity)",
+):
+    require(endpoint_resolver, token, "bounded controller BSD endpoint resolver")
+forbid(client, '@"en1"', "hard-coded CoreWLAN endpoint")
+forbid(client, "interfaceWithName:@", "literal CoreWLAN endpoint")
+
 # The only stimulus is fixed, undirected CoreWLAN scan enumeration.  It
 # accepts no network input and reports no per-network field or NSError text.
-stimulus = body(client, "scan_wcl_physical(void)",
+stimulus = body(client, "scan_wcl_physical(io_service_t service)",
                 "fixed WCL physical scan stimulus")
 for token in (
         "@autoreleasepool",
-        "[client interfaceWithName:@\"en1\"]",
+        "copy_airport_itlwm_bsd_name(service, endpoint_name,",
+        "endpoint_binding = \"airport-itlwm-bsd\";",
+        "[client interfaceWithName:endpoint]",
         "[interface scanForNetworksWithName:nil error:NULL]",
         "[network wlanChannel]",
         "[channel channelBand]",
-        "wcl_physical_scan_stimulus=%s total=%u band_2ghz=%u",
+        "wcl_physical_scan_stimulus=%s endpoint_binding=%s total=%u",
         "band_5ghz=%u band_6ghz=%u band_other=%u",
         "return strcmp(outcome, \"ok\") == 0 ? 0 : 1;",
 ):
     require(stimulus, token, "fixed aggregate-only WCL scan stimulus")
+ordered(stimulus, "controller endpoint resolution precedes CoreWLAN lookup",
+        "copy_airport_itlwm_bsd_name(service, endpoint_name,",
+        "endpoint_binding = \"airport-itlwm-bsd\";",
+        "[client interfaceWithName:endpoint]")
+require(stimulus, "outcome, endpoint_binding, total",
+        "categorical endpoint binding output")
+forbid(stimulus, "outcome, endpoint_name, total",
+       "raw endpoint output")
+require(client, "scan_wcl_physical(service)",
+        "same AirportItlwm controller passed to physical scan stimulus")
 for token in (
         "[network ssid]", "[network bssid]", "[network rssiValue]",
         "[network security]", "[network informationElement]",

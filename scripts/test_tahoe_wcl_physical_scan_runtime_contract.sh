@@ -43,6 +43,9 @@ for needle in \
     'valid_trace_client_sha256' \
     'remote_trace_client_exists' \
     'scan-wcl-physical' \
+    'SCAN_ENDPOINT_BINDING="unresolved"' \
+    'endpoint_binding' \
+    'airport-itlwm-bsd' \
     'iwn-wcl-physical-scan-report' \
     'IWN_WCL_PHYSICAL_SCAN_OBSERVED' \
     'BRANCH_NOT_OBSERVED' \
@@ -51,7 +54,7 @@ for needle in \
     'result_publication_issued' \
     'first_missing_stage' \
     'WCL physical-scan lifecycle observed' \
-    'itlwm-tahoe-iwn-wcl-physical-scan-runtime/v1' \
+    'itlwm-tahoe-iwn-wcl-physical-scan-runtime/v2' \
     'aggregate_sum_valid' \
     'local_only_raw_artifacts' \
     'association, authentication, or SAE functionality' \
@@ -157,9 +160,14 @@ for token in ('test -f "$tool" && test ! -L "$tool" && test -x "$tool"',
         fail(f'trace-client preflight lacks receipt binding: {token}')
 
 for token in (
-        'wcl_physical_scan_stimulus=(ok|client-unavailable|interface-unavailable|scan-failed|count-overflow)',
-        'total=([0-9]+) band_2ghz=([0-9]+) band_5ghz=([0-9]+)',
+        'wcl_physical_scan_stimulus=(ok|client-unavailable|interface-unavailable|scan-failed|count-overflow|airport-itlwm-bsd-unresolved)',
+        'endpoint_binding=(airport-itlwm-bsd|unresolved) total=([0-9]+)',
+        'band_2ghz=([0-9]+) band_5ghz=([0-9]+)',
         'band_6ghz=([0-9]+) band_other=([0-9]+)',
+        'SCAN_ENDPOINT_BINDING="${values[1]}"',
+        'AIAM_WCL_SCAN_ENDPOINT_BINDING="$SCAN_ENDPOINT_BINDING"',
+        '"endpoint_binding": value("SCAN_ENDPOINT_BINDING")',
+        '[ "$SCAN_ENDPOINT_BINDING" = airport-itlwm-bsd ]',
         'SCAN_BAND_2GHZ + SCAN_BAND_5GHZ + SCAN_BAND_6GHZ + SCAN_BAND_OTHER',
         'IWN_WCL_PHYSICAL_SCAN_OBSERVED',
         'TRACE_BACKEND="IWN"',

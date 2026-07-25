@@ -1186,7 +1186,7 @@ for needle in (
         "DONE_PUBLICATION_NOT_OBSERVED",
         "scan-wcl-physical",
         "scan_wcl_physical",
-        "wcl_physical_scan_stimulus=%s total=%u",
+        "wcl_physical_scan_stimulus=%s endpoint_binding=%s total=%u",
 ):
     require(client, needle, "IWN WCL physical-scan categorical client mapping")
 for needle in (

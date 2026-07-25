@@ -18,9 +18,11 @@
 
 /*
  * This client intentionally reads only the separate safe-only trace
- * properties.  It never requests the unrelated diagnostic surface,
- * IORegistry-wide output, network
- * identity, packet bytes, credentials, firmware status, or pointer values.
+ * properties and a bounded BSD endpoint label from the same controller.  It
+ * never requests the unrelated diagnostic surface, IORegistry-wide output,
+ * wireless network identity, packet bytes, credentials, firmware status, or
+ * pointer values.  The endpoint label is used only to bind CoreWLAN to this
+ * controller; it is never emitted or retained in the safe trace surface.
  */
 
 static CFStringRef
@@ -85,70 +87,6 @@ set_control(io_service_t service, int enable, int reset, int seal)
     return 0;
 }
 
-/* One fixed, undirected CoreWLAN scan for the receipt-bound WCL experiment.
- * This path accepts no caller data and never reads a network name, hardware
- * address, signal, security, IE, or error description.  CoreWLAN exposes no
- * completion acknowledgement for the driver's WCL result/DONE publication;
- * the paired categorical trace is the ownership proof. */
-static int
-scan_wcl_physical(void)
-{
-    uint32_t total = 0;
-    uint32_t band_2ghz = 0;
-    uint32_t band_5ghz = 0;
-    uint32_t band_6ghz = 0;
-    uint32_t band_other = 0;
-    const char *outcome = "scan-failed";
-
-    @autoreleasepool {
-        CWWiFiClient *client = [CWWiFiClient sharedWiFiClient];
-        if (client == nil) {
-            outcome = "client-unavailable";
-        } else {
-            /* The laboratory client is fixed to AirportItlwm's pinned
-             * interface.  The value is never emitted or caller-controlled. */
-            CWInterface *interface = [client interfaceWithName:@"en1"];
-            if (interface == nil) {
-                outcome = "interface-unavailable";
-            } else {
-                NSSet<CWNetwork *> *networks =
-                    [interface scanForNetworksWithName:nil error:NULL];
-                if (networks != nil) {
-                    outcome = "ok";
-                    for (CWNetwork *network in networks) {
-                        if (total == UINT32_MAX) {
-                            outcome = "count-overflow";
-                            break;
-                        }
-                        total++;
-                        CWChannel *channel = [network wlanChannel];
-                        switch (channel != nil ? [channel channelBand] :
-                                kCWChannelBandUnknown) {
-                        case kCWChannelBand2GHz:
-                            band_2ghz++;
-                            break;
-                        case kCWChannelBand5GHz:
-                            band_5ghz++;
-                            break;
-                        case kCWChannelBand6GHz:
-                            band_6ghz++;
-                            break;
-                        default:
-                            band_other++;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    printf("wcl_physical_scan_stimulus=%s total=%u band_2ghz=%u "
-           "band_5ghz=%u band_6ghz=%u band_other=%u\n",
-           outcome, total, band_2ghz, band_5ghz, band_6ghz, band_other);
-    return strcmp(outcome, "ok") == 0 ? 0 : 1;
-}
-
 static CFTypeRef
 copy_property(io_service_t service, const char *name)
 {
@@ -159,6 +97,117 @@ copy_property(io_service_t service, const char *name)
                                                        kCFAllocatorDefault, 0);
     CFRelease(key);
     return value;
+}
+
+/* The BSD endpoint is published by AirportItlwm only after the Skywalk BSD
+ * client has attached.  Resolve it from the same controller service that owns
+ * the trace control rather than guessing a global CoreWLAN interface.  The
+ * endpoint never leaves this process: a categorical binding result is the
+ * only observable fact. */
+static int
+copy_airport_itlwm_bsd_name(io_service_t service, char *name, size_t capacity)
+{
+    CFTypeRef value;
+
+    if (service == IO_OBJECT_NULL || name == NULL || capacity < 4)
+        return 0;
+    memset(name, 0, capacity);
+    value = copy_property(service, "BSD Name");
+    if (value == NULL)
+        return 0;
+    if (CFGetTypeID(value) != CFStringGetTypeID() ||
+        !CFStringGetCString((CFStringRef)value, name, capacity,
+                            kCFStringEncodingUTF8)) {
+        CFRelease(value);
+        memset(name, 0, capacity);
+        return 0;
+    }
+    CFRelease(value);
+    if (name[0] != 'e' || name[1] != 'n' || name[2] == '\0') {
+        memset(name, 0, capacity);
+        return 0;
+    }
+    for (size_t index = 2; name[index] != '\0'; index++) {
+        if (name[index] < '0' || name[index] > '9') {
+            memset(name, 0, capacity);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* One fixed, undirected CoreWLAN scan for the receipt-bound WCL experiment.
+ * This path accepts no caller data and never reads a network name, hardware
+ * address, signal, security, IE, or error description.  CoreWLAN exposes no
+ * completion acknowledgement for the driver's WCL result/DONE publication;
+ * the paired categorical trace is the ownership proof. */
+static int
+scan_wcl_physical(io_service_t service)
+{
+    uint32_t total = 0;
+    uint32_t band_2ghz = 0;
+    uint32_t band_5ghz = 0;
+    uint32_t band_6ghz = 0;
+    uint32_t band_other = 0;
+    char endpoint_name[16];
+    const char *outcome = "scan-failed";
+    const char *endpoint_binding = "unresolved";
+
+    if (!copy_airport_itlwm_bsd_name(service, endpoint_name,
+                                     sizeof(endpoint_name))) {
+        outcome = "airport-itlwm-bsd-unresolved";
+    } else {
+        endpoint_binding = "airport-itlwm-bsd";
+        @autoreleasepool {
+            NSString *endpoint = [NSString stringWithUTF8String:endpoint_name];
+            memset(endpoint_name, 0, sizeof(endpoint_name));
+            CWWiFiClient *client = [CWWiFiClient sharedWiFiClient];
+            if (endpoint == nil || client == nil) {
+                outcome = "client-unavailable";
+            } else {
+                CWInterface *interface = [client interfaceWithName:endpoint];
+                if (interface == nil) {
+                    outcome = "interface-unavailable";
+                } else {
+                    NSSet<CWNetwork *> *networks =
+                        [interface scanForNetworksWithName:nil error:NULL];
+                    if (networks != nil) {
+                        outcome = "ok";
+                        for (CWNetwork *network in networks) {
+                            if (total == UINT32_MAX) {
+                                outcome = "count-overflow";
+                                break;
+                            }
+                            total++;
+                            CWChannel *channel = [network wlanChannel];
+                            switch (channel != nil ? [channel channelBand] :
+                                    kCWChannelBandUnknown) {
+                            case kCWChannelBand2GHz:
+                                band_2ghz++;
+                                break;
+                            case kCWChannelBand5GHz:
+                                band_5ghz++;
+                                break;
+                            case kCWChannelBand6GHz:
+                                band_6ghz++;
+                                break;
+                            default:
+                                band_other++;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    memset(endpoint_name, 0, sizeof(endpoint_name));
+
+    printf("wcl_physical_scan_stimulus=%s endpoint_binding=%s total=%u "
+           "band_2ghz=%u band_5ghz=%u band_6ghz=%u band_other=%u\n",
+           outcome, endpoint_binding, total, band_2ghz, band_5ghz,
+           band_6ghz, band_other);
+    return strcmp(outcome, "ok") == 0 ? 0 : 1;
 }
 
 static const char *
@@ -1160,7 +1209,7 @@ main(int argc, char **argv)
     else if (strcmp(argv[1], "seal") == 0)
         rc = set_control(service, 0, 0, 1);
     else if (strcmp(argv[1], "scan-wcl-physical") == 0 && argc == 2)
-        rc = scan_wcl_physical();
+        rc = scan_wcl_physical(service);
     else if (strcmp(argv[1], "get") == 0 && argc == 3) {
         if (strcmp(argv[2], "control") == 0)
             rc = get_control(service);
