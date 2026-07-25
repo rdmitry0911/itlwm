@@ -6020,11 +6020,13 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(2); sRT.scanReqCount++;
+    if (sd == nullptr)
+        return kIOReturnBadArgument;
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (fScanResultWrapping)
         return 22;
-    if (ic->ic_state <= IEEE80211_S_INIT)
-        return 22;
+    if (ic == nullptr)
+        return kIOReturnNotReady;
 
     /*
      * Reset SCAN_RESULT iterator — airportd/IO80211 framework reads
@@ -6037,15 +6039,40 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
     fNextNodeToSend = NULL;
     fScanResultWrapping = false;
 
-    if (sd->scan_type == APPLE80211_SCAN_TYPE_FAST || sd->scan_type == APPLE80211_SCAN_TYPE_PASSIVE) {
+    /* FAST is an explicit cache-only request.  It has no lower physical
+     * owner, so preserve the short synthetic terminal for that one form. */
+    if (sd->scan_type == APPLE80211_SCAN_TYPE_FAST) {
         if (instance == nullptr || !instance->scheduleScanSource(100))
             return kIOReturnAborted;
         return kIOReturnSuccess;
     }
-    if (instance == nullptr || !instance->scheduleScanSource(100))
+
+    /* PASSIVE and ordinary requests must wait for the real lower scan
+     * terminal.  In particular, do not leave a cache-only timer armed to
+     * publish APPLE80211_M_SCAN_DONE ahead of the IWN 2.4/5-GHz terminal. */
+    if (instance == nullptr || !instance->cancelScanSource())
         return kIOReturnAborted;
-    ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
-    return kIOReturnSuccess;
+    if ((ic->ic_ac.ac_if.if_flags & IFF_RUNNING) == 0)
+        return kIOReturnNotReady;
+
+    if (ic->ic_state == IEEE80211_S_RUN) {
+        if (ic->ic_bss == nullptr)
+            return kIOReturnNotReady;
+        if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+            ic->ic_mgt_timer != 0 ||
+            ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+             !ic->ic_bss->ni_port_valid))
+            return kIOReturnBusy;
+        ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
+        return kIOReturnSuccess;
+    }
+
+    if (ic->ic_state == IEEE80211_S_SCAN) {
+        ieee80211_begin_scan(&ic->ic_ac.ac_if);
+        return kIOReturnSuccess;
+    }
+
+    return kIOReturnBusy;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
