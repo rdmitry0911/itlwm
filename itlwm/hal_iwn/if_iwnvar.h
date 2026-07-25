@@ -370,7 +370,11 @@ struct iwn_scan_lease {
     u_int8_t        phase;
     bool            command_submitted;
     bool            abort_requested;
+    /* An upper lifecycle may withdraw its completion ticket while the radio
+     * still needs to drain the command.  That only suppresses publication;
+     * a reset is the distinct condition which fences all radio work/replay. */
     bool            publication_invalidated;
+    bool            hardware_invalidated;
     bool            terminal_claimed;
 };
 

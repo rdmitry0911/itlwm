@@ -919,8 +919,14 @@ for needle in (
 iwn_scan_submit = body(iwn, "int ItlIwn::\niwn_scan_submit(",
                        "IWN scan command submission")
 ordered(iwn_scan_submit, "IWN trace records only successful scan submission",
-        "error = iwn_cmd(sc, IWN_CMD_SCAN", "if (error == 0)",
-        "IWN_FLAG_SCANNING", "kAirportItlwmPostPltiTraceEventIwnScanStarted")
+        "iwn_cmd_with_doorbell_hook(sc, IWN_CMD_SCAN", "if (error == 0)",
+        "kAirportItlwmPostPltiTraceEventIwnScanStarted")
+doorbell_prepare = body(iwn, "static bool\niwn_scan_lease_prepare_doorbell",
+                       "IWN scan doorbell ownership")
+ordered(doorbell_prepare, "IWN scan flags publish before firmware doorbell",
+        "sc->sc_scan_lease.command_submitted = true;",
+        "sc->sc_flags |= IWN_FLAG_SCANNING;",
+        "context->committed = true;")
 require(iwn_scan_submit, "kAirportItlwmPostPltiTraceEventIwnScanCommandRejected",
         "categorical IWN scan failure marker")
 iwn_tx = body(iwn, "int ItlIwn::\niwn_tx", "IWN transmit")

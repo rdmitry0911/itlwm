@@ -183,6 +183,11 @@ for token in (
 ):
     require(iwnh, token, "IWN normal-scan override")
 require(iwnvar, "IWN_SCAN_LEASE_STANDARD_CONTROLLER", "IWN lease owner")
+for token in (
+        "bool            publication_invalidated;",
+        "bool            hardware_invalidated;",
+):
+    require(iwnvar, token, "separate lower invalidation domains")
 begin = body(iwn, "IOReturn ItlIwn::\nbeginStandardScan", "IWN normal begin")
 ordered(begin, "IWN lower scan submission",
         "iwn_scan_start(&com", "IWN_SCAN_LEASE_STANDARD_CONTROLLER",
@@ -191,16 +196,119 @@ scan_start = body(iwn, "int ItlIwn::\niwn_scan_start", "IWN scan start")
 for token in (
         "bool standard = owner == IWN_SCAN_LEASE_STANDARD_CONTROLLER;",
         "bool prearm_background = wcl || (standard && bgscan != 0);",
-        "if (standard && bgscan == 0)",
-        "iwn_prepare_standard_foreground_scan(ic);",
         "iwn_scan_lease_reserve(sc, owner, upper_generation",
+        "standard && bgscan == 0, &command_attempted,",
+        "&foreground_prepared);",
+        "foreground_prepared || bgscan == 0",
+        "iwn_scan_schedule_fatal_recovery(sc);",
 ):
     require(scan_start, token, "IWN standard owner")
-ordered(scan_start, "foreground preparation follows durable lower arm",
+ordered(scan_start, "normal scan builds after durable lower arm",
         "iwn_scan_lease_arm_submission(sc, serial, &abort_requested)",
         "if (abort_requested)",
+        "error = iwn_scan_submit(sc, flags, bgscan, serial,")
+arm = body(iwn, "static bool\niwn_scan_lease_arm_submission",
+           "lower submission arm")
+require(arm, "const bool abort_requested = sc->sc_scan_lease.abort_requested;",
+        "pre-submit abort observation")
+forbid(arm, "command_submitted = true;",
+       "pre-doorbell terminal admission")
+doorbell_prepare = body(iwn, "static bool\niwn_scan_lease_prepare_doorbell",
+                       "lower doorbell ownership")
+for token in (
+        "sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ARMING",
+        "!sc->sc_scan_lease.abort_requested",
+        "!sc->sc_scan_lease.publication_invalidated",
+        "sc->sc_scan_lease.command_submitted = true;",
+        "sc->sc_flags |= IWN_FLAG_SCANNING;",
+        "if (context->background)",
+        "sc->sc_flags |= IWN_FLAG_BGSCAN;",
+        "context->lock_held = true;",
+):
+    require(doorbell_prepare, token, "atomic lower doorbell ownership")
+doorbell_finish = body(iwn, "static void\niwn_scan_lease_finish_doorbell",
+                      "lower doorbell release")
+require(doorbell_finish, "IOSimpleLockUnlock(context->lock);",
+        "doorbell fence release")
+submit = body(iwn, "int ItlIwn::\niwn_scan_submit", "IWN command submission")
+ordered(submit, "build precedes foreground preparation",
+        "buf = (uint8_t *)malloc(IWN_SCAN_MAXSZ",
+        "hdr->len = htole16(buflen);",
+        "if (prepare_standard_foreground)",
+        "iwn_prepare_standard_foreground_scan(ic);")
+ordered(submit, "prepared scan reaches exact doorbell hook",
         "iwn_prepare_standard_foreground_scan(ic);",
-        "iwn_scan_submit(sc, flags, bgscan, prearm_background)")
+        "iwn_cmd_with_doorbell_hook(sc, IWN_CMD_SCAN, buf, buflen, 1,",
+        "iwn_scan_lease_prepare_doorbell",
+        "iwn_scan_lease_finish_doorbell")
+require(submit, "*out_command_attempted = doorbell.committed;",
+        "doorbell commit result")
+forbid(submit, "sc->sc_flags |= IWN_FLAG_SCANNING;",
+       "late scan-flag publication after doorbell")
+cmd = body(iwn, "int ItlIwn::\niwn_cmd_with_doorbell_hook",
+           "IWN hooked command submission")
+ordered(cmd, "doorbell ownership covers firmware visibility",
+        "(*pre_doorbell)(sc, doorbell_context)",
+        "ops->update_sched(sc, ring->qid, ring->cur, 0, 0);",
+        "IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR",
+        "(*post_doorbell)(sc, doorbell_context)")
+for token in (
+        "mbuf_freem(m);",
+        "data->m = NULL;",
+        "data->map->dm_nsegs = 0;",
+        "explicit_bzero(desc, sizeof(*desc));",
+):
+    require(cmd, token, "rejected doorbell cleanup")
+terminal_claim = body(iwn, "static bool\niwn_scan_lease_claim_terminal",
+                      "lower terminal claim")
+terminal_admission = terminal_claim[:terminal_claim.find("terminal->valid = true;")]
+for token in (
+        "!sc->sc_scan_lease.hardware_invalidated",
+        "IWN_SCAN_LEASE_ACTIVE",
+        "IWN_SCAN_LEASE_ABORTING",
+):
+    require(terminal_claim, token, "reset-safe terminal claim")
+forbid(terminal_admission, "publication_invalidated",
+       "upper-ticket cancellation blocking lower terminal cleanup")
+continuation = body(iwn, "static bool\niwn_scan_lease_begin_continuation",
+                    "multi-band continuation arm")
+for token in (
+        "sc->sc_scan_lease.command_submitted = false;",
+        "sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ARMING;",
+):
+    require(continuation, token, "continuation terminal fence")
+continue_submit = body(iwn, "int ItlIwn::\niwn_scan_continue",
+                       "multi-band continuation submit")
+ordered(continue_submit, "failed continuation restores current terminal",
+        "iwn_scan_lease_begin_continuation(sc, &serial)",
+        "iwn_scan_submit(sc, flags, bgscan, serial, false,",
+        "iwn_scan_lease_restore_continuation(sc, serial, true)")
+continuation_restore = body(iwn,
+                            "static bool\niwn_scan_lease_restore_continuation",
+                            "failed continuation terminal status")
+ordered(continuation_restore, "failed continuation is aborted",
+        "if (abort_terminal)",
+        "sc->sc_scan_lease.abort_requested = true;",
+        "IWN_SCAN_LEASE_ABORTING")
+require(continuation_restore, "!sc->sc_scan_lease.hardware_invalidated",
+        "upper-ticket cancellation restores native terminal")
+for marker, label in (
+        ("static bool\niwn_scan_lease_defer_scan", "deferred scan"),
+        ("static bool\niwn_scan_lease_defer_terminal_replay", "terminal replay"),
+        ("static bool\niwn_scan_lease_finish_terminal", "terminal finish"),
+):
+    require(body(iwn, marker, label), "!sc->sc_scan_lease.hardware_invalidated",
+            f"{label} reset fence")
+hardware_invalidation = body(iwn,
+    "static enum iwn_scan_lease_owner\niwn_scan_lease_begin_hardware_invalidation",
+    "hardware invalidation")
+require(hardware_invalidation, "sc->sc_scan_lease.hardware_invalidated = true;",
+        "hardware reset invalidation")
+abort_start = scan_start[scan_start.find("if (abort_requested)"):]
+ordered(abort_start, "pre-submit abort rolls back before replay",
+        "iwn_scan_lease_rollback(sc, serial)",
+        "*out_backend_generation = 0;",
+        "iwn_scan_lease_schedule_replay_task(sc);")
 for token in (
         "iwn_scan_lease_defer_terminal_replay",
         "sc->sc_scan_lease.terminal_claimed",

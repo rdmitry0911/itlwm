@@ -292,7 +292,12 @@ public:
     int        iwn_scan_start(struct iwn_softc *, uint16_t, int,
                 enum iwn_scan_lease_owner, u_int64_t, u_int32_t *);
     int        iwn_scan_continue(struct iwn_softc *, uint16_t, int);
-    int        iwn_scan_submit(struct iwn_softc *, uint16_t, int, bool);
+    int        iwn_scan_submit(struct iwn_softc *, uint16_t, int, u_int64_t,
+                               bool, bool *, bool *);
+    int        iwn_cmd_with_doorbell_hook(
+                struct iwn_softc *, int, const void *, int, int,
+                bool (*)(struct iwn_softc *, void *),
+                void (*)(struct iwn_softc *, void *), void *);
     void        iwn_scan_abort(struct iwn_softc *);
     static int        iwn_bgscan(struct ieee80211com *);
     void       iwn_rxon_configure_ht40(struct ieee80211com *,
