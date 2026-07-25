@@ -296,7 +296,7 @@ public:
                 u_int32_t *);
     int        iwn_scan_continue(struct iwn_softc *, uint16_t, int);
     int        iwn_scan_submit(struct iwn_softc *, uint16_t, int, u_int64_t,
-                               bool, bool, u_int64_t, u_int32_t,
+                               bool, bool, bool, u_int64_t, u_int32_t,
                                bool *, bool *);
     int        iwn_cmd_with_doorbell_hook(
                 struct iwn_softc *, int, const void *, int, int,

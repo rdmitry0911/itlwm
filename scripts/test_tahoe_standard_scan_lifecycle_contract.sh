@@ -249,6 +249,8 @@ ordered(submit, "prepared scan reaches exact doorbell hook",
         "iwn_scan_lease_finish_doorbell")
 require(iwn, "bool publish_wcl_initial_started,",
         "expanded WCL foreground submit argument")
+require(iwn, "bool wcl_scan,",
+        "WCL-owned foreground dwell submit argument")
 for token in (
         "if (publish_wcl_initial_started)",
         "ieee80211_free_allnodes(ic, 1 /* fresh initial census */);",
@@ -293,8 +295,9 @@ for token in (
 continue_submit = body(iwn, "int ItlIwn::\niwn_scan_continue",
                        "multi-band continuation submit")
 ordered(continue_submit, "failed continuation restores current terminal",
-        "iwn_scan_lease_begin_continuation(sc, &serial)",
-        "iwn_scan_submit(sc, flags, bgscan, serial, false, false, 0, 0,",
+        "iwn_scan_lease_begin_continuation(sc, &serial, &wcl_scan)",
+        "iwn_scan_submit(sc, flags, bgscan, serial, false, false,",
+        "wcl_scan, 0, 0,",
         "iwn_scan_lease_restore_continuation(sc, serial, true)")
 continuation_restore = body(iwn,
                             "static bool\niwn_scan_lease_restore_continuation",

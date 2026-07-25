@@ -6208,13 +6208,17 @@ iwn_scan_lease_claim_terminal(struct iwn_softc *sc,
 
 static bool
 iwn_scan_lease_begin_continuation(struct iwn_softc *sc,
-                                  u_int64_t *out_serial)
+                                  u_int64_t *out_serial,
+                                  bool *out_wcl_scan)
 {
     bool continuing = false;
 
     if (out_serial != NULL)
         *out_serial = 0;
-    if (sc == NULL || sc->sc_scan_lease_lock == NULL || out_serial == NULL)
+    if (out_wcl_scan != NULL)
+        *out_wcl_scan = false;
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || out_serial == NULL ||
+        out_wcl_scan == NULL)
         return false;
     IOSimpleLockLock(sc->sc_scan_lease_lock);
     if (iwn_scan_lease_live_locked(sc) &&
@@ -6228,6 +6232,8 @@ iwn_scan_lease_begin_continuation(struct iwn_softc *sc,
         sc->sc_scan_lease.command_submitted = false;
         sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ARMING;
         *out_serial = sc->sc_scan_lease.serial;
+        *out_wcl_scan = iwn_scan_lease_owner_is_wcl(
+            sc->sc_scan_lease.owner);
         continuing = true;
     }
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
@@ -11236,7 +11242,7 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
      * It reports whether recovery rather than a clean lease rollback owns a
      * later no-doorbell failure. */
     error = iwn_scan_submit(sc, flags, bgscan, serial,
-                            controller_foreground, wcl_foreground,
+                            controller_foreground, wcl_foreground, wcl,
                             upper_generation, backend_generation,
                             &command_attempted,
                             &foreground_prepared);
@@ -11286,12 +11292,13 @@ iwn_scan_continue(struct iwn_softc *sc, uint16_t flags, int bgscan)
 {
     u_int64_t serial = 0;
     bool command_attempted = false;
+    bool wcl_scan = false;
     int error;
 
-    if (!iwn_scan_lease_begin_continuation(sc, &serial))
+    if (!iwn_scan_lease_begin_continuation(sc, &serial, &wcl_scan))
         return EBUSY;
-    error = iwn_scan_submit(sc, flags, bgscan, serial, false, false, 0, 0,
-                            &command_attempted, NULL);
+    error = iwn_scan_submit(sc, flags, bgscan, serial, false, false,
+                            wcl_scan, 0, 0, &command_attempted, NULL);
     if (error != 0 && !command_attempted)
         (void)iwn_scan_lease_restore_continuation(sc, serial, true);
     else if (error != 0)
@@ -11303,6 +11310,7 @@ int ItlIwn::
 iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
                 u_int64_t lease_serial, bool prepare_controller_foreground,
                 bool publish_wcl_initial_started,
+                bool wcl_scan,
                 u_int64_t upper_generation, u_int32_t backend_generation,
                 bool *out_command_attempted, bool *out_foreground_prepared)
 {
@@ -11319,6 +11327,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     uint8_t txant;
     struct iwn_scan_doorbell_context doorbell;
     int buflen, error, is_active;
+    bool wcl_foreground_5ghz_extended_dwell = false;
 
     if (out_command_attempted != NULL)
         *out_command_attempted = false;
@@ -11400,10 +11409,15 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     txant = IWN_LSB(sc->txchainmask);
     tx->rflags |= IWN_RFLAG_ANT(txant);
 
-    /*
-     * Only do active scanning if we're announcing a probe request
-     * for a given SSID (or more, if we ever add it to the driver.)
-     */
+    /* WCL's initial public scan is deliberately undirected.  Give ordinary
+     * active 5 GHz channels a bounded passive dwell above one default beacon
+     * interval; keep channels marked passive or DFS, and every background
+     * scan, on their existing firmware scan semantics. */
+    wcl_foreground_5ghz_extended_dwell = wcl_scan && bgscan == 0 &&
+        ic->ic_des_esslen == 0 && (flags & IEEE80211_CHAN_5GHZ) != 0;
+
+    /* Only do active scanning if we're announcing a probe request for a
+     * given SSID (or more, if we ever add it to the driver.) */
     is_active = 0;
 
     /*
@@ -11499,6 +11513,10 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
 
         dwell_active = iwn_get_active_dwell_time(sc, flags, is_active);
         dwell_passive = iwn_get_passive_dwell_time(sc, flags);
+        if (wcl_foreground_5ghz_extended_dwell &&
+            (c->ic_flags & (IEEE80211_CHAN_PASSIVE |
+                            IEEE80211_CHAN_DFS)) == 0)
+            dwell_passive = MAX(dwell_passive, 130);
 
         /* Make sure they're valid */
         if (dwell_passive <= dwell_active)
