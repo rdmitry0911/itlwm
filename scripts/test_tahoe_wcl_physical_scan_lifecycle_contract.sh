@@ -376,7 +376,6 @@ iwn_init = body(iwn, "int ItlIwn::\niwn_init(struct _ifnet *ifp)",
 ordered(iwn_init, "IWN lower-ready fence after first scan state",
         "ifp->if_flags |= IFF_RUNNING",
         "ieee80211_begin_scan(ifp)",
-        "IWN_FLAG_SCANNING",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
 
 for token in ("availabilityEpoch", "pendingPowerOnEpoch",
@@ -385,31 +384,59 @@ for token in ("availabilityEpoch", "pendingPowerOnEpoch",
 require(v2_hpp, "kAirportItlwmPmDriverAvailabilityPendingBit",
         "deferred PowerOn lifecycle bit")
 availability_publish = body(v2,
-    "publishDeferredPowerOnAvailabilityGated(OSObject *target, void *arg0,",
-    "deferred PowerOn publisher")
+    "publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,",
+    "serialized deferred availability publisher")
 ordered(availability_publish, "deferred PowerOn epoch claim",
+        "kAirportItlwmDeferredPowerAvailabilityPublishOn",
         "lifecycle.availabilityEpoch == expectedEpoch",
         "lifecycle.pendingPowerOnEpoch == expectedEpoch",
         "lifecycle.readyPowerOnEpoch == expectedEpoch",
         "lifecycle.powerOnPublishQueued",
         "postTahoeDriverAvailabilityTransition(")
+ordered(availability_publish, "serialized PowerOff invalidates then publishes",
+        "kAirportItlwmDeferredPowerAvailabilityPublishOff",
+        "cancelDeferredPowerOnAvailabilityRaw()",
+        "Transition::PowerOff")
+require(availability_publish,
+        "kAirportItlwmDeferredPowerAvailabilityCancel",
+        "serialized cancellation action")
+availability_arm = body(v2,
+                       "uint64_t AirportItlwm::armDeferredPowerOnAvailability()",
+                       "deferred PowerOn arm")
+ordered(availability_arm, "pending availability bit armed under lock",
+        "lifecycle.powerOnPublishQueued = false",
+        "OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit",
+        "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
+availability_cancel = body(v2,
+    "void AirportItlwm::cancelDeferredPowerOnAvailabilityRaw()",
+    "deferred PowerOn invalidation")
+ordered(availability_cancel, "pending availability bit cleared under lock",
+        "lifecycle.powerOnPublishQueued = false",
+        "kAirportItlwmPmDriverAvailabilityPendingBit",
+        "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
 availability_note = body(v2,
     "void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()",
     "radio-ready PowerOn note")
 ordered(availability_note, "radio-ready notification is gated",
         "lifecycle.readyPowerOnEpoch = lifecycle.pendingPowerOnEpoch",
         "lifecycle.powerOnPublishQueued = true",
-        "gate->runAction(publishDeferredPowerOnAvailabilityGated")
+        "gate->runAction(publishDeferredPowerAvailabilityGated",
+        "kAirportItlwmDeferredPowerAvailabilityPublishOn")
 forbid(availability_note, "postTahoeDriverAvailabilityTransition",
        "off-gate PowerOn publication")
 
+radio_power_entry = body(v2,
+                         "int AirportItlwm::handlePowerStateChange(uint32_t newState,",
+                         "radio power transition entry")
+require(radio_power_entry, "gate->runAction(handlePowerStateChangeGated, &args)",
+        "radio power state serialized by command gate")
 radio_power = body(v2,
-                   "int AirportItlwm::handlePowerStateChange",
-                   "radio power transition")
+                   "int AirportItlwm::handlePowerStateChangeCore",
+                   "radio power transition core")
 require(radio_power, "armDeferredPowerOnAvailability();",
         "PowerOn arm before lower enable")
-require(radio_power, "cancelDeferredPowerOnAvailability();",
-        "PowerOff cancellation")
+require(radio_power, "publishDeferredPowerOffAvailability();",
+        "serialized PowerOff cancellation")
 forbid(radio_power, "Transition::PowerOn",
        "optimistic radio PowerOn carrier")
 system_power = body(v2,
@@ -417,15 +444,19 @@ system_power = body(v2,
                     "system power transition")
 require(system_power, "armDeferredPowerOnAvailability();",
         "system PowerOn arm")
-require(system_power, "cancelDeferredPowerOnAvailability();",
-        "system PowerOff cancellation")
+require(system_power, "publishDeferredPowerOffAvailability();",
+        "serialized system PowerOff cancellation")
 forbid(system_power, "Transition::PowerOn",
        "optimistic system PowerOn carrier")
 disable_adapter = body(v2, "void AirportItlwm::disableAdapter(IONetworkInterface *netif)",
                        "controller disableAdapter")
 ordered(disable_adapter, "disable cancellation precedes PowerOff carrier",
-        "cancelDeferredPowerOnAvailability();",
-        "Transition::PowerOff")
+        "publishDeferredPowerOffAvailability();",
+        "disableAdapterCore(netif)")
+disable_core = body(v2, "void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)",
+                    "controller disableAdapter core")
+forbid(disable_core, "cancelDeferredPowerOnAvailability();",
+       "untagged post-PowerOff cancellation")
 
 for token in ("IEEE80211_EVT_WCL_SCAN_TERMINAL",
               "IEEE80211_EVT_WCL_SCAN_INVALIDATED",

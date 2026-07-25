@@ -7230,13 +7230,19 @@ uint64_t AirportItlwm::armDeferredPowerOnAvailability()
     lifecycle.readyPowerOnEpoch = 0;
     lifecycle.powerOnPublishQueued = false;
     const uint64_t epoch = lifecycle.pendingPowerOnEpoch;
-    IOSimpleLockUnlockEnableInterrupt(lock, irq);
     OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit,
                   &pmPowerStateFlags);
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
     return epoch;
 }
 
-void AirportItlwm::cancelDeferredPowerOnAvailability()
+enum AirportItlwmDeferredPowerAvailabilityAction {
+    kAirportItlwmDeferredPowerAvailabilityPublishOn = 1,
+    kAirportItlwmDeferredPowerAvailabilityCancel,
+    kAirportItlwmDeferredPowerAvailabilityPublishOff,
+};
+
+void AirportItlwm::cancelDeferredPowerOnAvailabilityRaw()
 {
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
         fWclPhysicalScanLifecycle;
@@ -7249,7 +7255,11 @@ void AirportItlwm::cancelDeferredPowerOnAvailability()
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
         lifecycle.powerOnPublishQueued = false;
+        OSBitAndAtomic(~static_cast<UInt32>(
+                           kAirportItlwmPmDriverAvailabilityPendingBit),
+                       &pmPowerStateFlags);
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
+        return;
     }
     OSBitAndAtomic(~static_cast<UInt32>(
                        kAirportItlwmPmDriverAvailabilityPendingBit),
@@ -7257,12 +7267,33 @@ void AirportItlwm::cancelDeferredPowerOnAvailability()
 }
 
 IOReturn AirportItlwm::
-publishDeferredPowerOnAvailabilityGated(OSObject *target, void *arg0,
-                                        void *, void *, void *)
+publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
+                                      void *arg1, void *, void *)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
-    const uint64_t expectedEpoch = (uint64_t)(uintptr_t)arg0;
-    if (that == NULL || expectedEpoch == 0 || that->fNetIf == NULL)
+    const uintptr_t action = (uintptr_t)arg0;
+    if (that == NULL)
+        return kIOReturnNotReady;
+
+    /* The final public carrier and every cancellation run through this one
+     * command-gate action.  The gate therefore orders a concurrent radio-off
+     * after a ready edge (On then Off), or invalidates the epoch before a
+     * later ready edge can publish a stale On carrier. */
+    if (action == kAirportItlwmDeferredPowerAvailabilityCancel) {
+        that->cancelDeferredPowerOnAvailabilityRaw();
+        return kIOReturnSuccess;
+    }
+    if (action == kAirportItlwmDeferredPowerAvailabilityPublishOff) {
+        that->cancelDeferredPowerOnAvailabilityRaw();
+        postTahoeDriverAvailabilityTransition(
+            that, TahoeDriverAvailabilityContracts::Transition::PowerOff);
+        return kIOReturnSuccess;
+    }
+    if (action != kAirportItlwmDeferredPowerAvailabilityPublishOn)
+        return kIOReturnBadArgument;
+
+    const uint64_t expectedEpoch = (uint64_t)(uintptr_t)arg1;
+    if (expectedEpoch == 0 || that->fNetIf == NULL)
         return kIOReturnNotReady;
 
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
@@ -7281,17 +7312,66 @@ publishDeferredPowerOnAvailabilityGated(OSObject *target, void *arg0,
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
         lifecycle.powerOnPublishQueued = false;
+        OSBitAndAtomic(~static_cast<UInt32>(
+                           kAirportItlwmPmDriverAvailabilityPendingBit),
+                       &that->pmPowerStateFlags);
     }
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
     if (!publish)
         return kIOReturnAborted;
 
-    OSBitAndAtomic(~static_cast<UInt32>(
-                       kAirportItlwmPmDriverAvailabilityPendingBit),
-                   &that->pmPowerStateFlags);
     postTahoeDriverAvailabilityTransition(
         that, TahoeDriverAvailabilityContracts::Transition::PowerOn);
     return kIOReturnSuccess;
+}
+
+void AirportItlwm::cancelDeferredPowerOnAvailability()
+{
+    IOCommandGate *gate = getCommandGate();
+    IOWorkLoop *workLoop = getWorkLoop();
+    if (gate != NULL) {
+        const IOReturn result = workLoop != NULL && workLoop->inGate()
+            ? publishDeferredPowerAvailabilityGated(
+                  this,
+                  (void *)(uintptr_t)
+                      kAirportItlwmDeferredPowerAvailabilityCancel,
+                  NULL, NULL, NULL)
+            : gate->runAction(publishDeferredPowerAvailabilityGated,
+                              (void *)(uintptr_t)
+                                  kAirportItlwmDeferredPowerAvailabilityCancel,
+                              NULL, NULL, NULL);
+        if (result == kIOReturnSuccess)
+            return;
+    }
+
+    /* A detached gate cannot execute a queued ready edge.  Keep teardown
+     * fail-closed rather than publishing an off-gate availability carrier. */
+    cancelDeferredPowerOnAvailabilityRaw();
+}
+
+void AirportItlwm::publishDeferredPowerOffAvailability()
+{
+    IOCommandGate *gate = getCommandGate();
+    IOWorkLoop *workLoop = getWorkLoop();
+    if (gate != NULL) {
+        const IOReturn result = workLoop != NULL && workLoop->inGate()
+            ? publishDeferredPowerAvailabilityGated(
+                  this,
+                  (void *)(uintptr_t)
+                      kAirportItlwmDeferredPowerAvailabilityPublishOff,
+                  NULL, NULL, NULL)
+            : gate->runAction(publishDeferredPowerAvailabilityGated,
+                              (void *)(uintptr_t)
+                                  kAirportItlwmDeferredPowerAvailabilityPublishOff,
+                              NULL, NULL, NULL);
+        if (result == kIOReturnSuccess)
+            return;
+    }
+
+    /* See cancelDeferredPowerOnAvailability(): once the gate is detached,
+     * suppress a carrier that could no longer be ordered against a ready
+     * action, but still invalidate its epoch. */
+    cancelDeferredPowerOnAvailabilityRaw();
 }
 
 void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
@@ -7319,8 +7399,10 @@ void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
      * never hold the scan admission lock while doing so. */
     IOCommandGate *gate = getCommandGate();
     if (gate == NULL ||
-        gate->runAction(publishDeferredPowerOnAvailabilityGated,
-                        (void *)(uintptr_t)epoch, NULL, NULL, NULL) !=
+        gate->runAction(publishDeferredPowerAvailabilityGated,
+                        (void *)(uintptr_t)
+                            kAirportItlwmDeferredPowerAvailabilityPublishOn,
+                        (void *)(uintptr_t)epoch, NULL, NULL) !=
             kIOReturnSuccess) {
         irq = IOSimpleLockLockDisableInterrupt(lock);
         if (lifecycle.availabilityEpoch == epoch &&
@@ -10584,9 +10666,9 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 
 void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 {
-    /* A lower stop is a terminal radio boundary even when reached from a
-     * teardown path that did not first send a public PowerOff carrier. */
-    cancelDeferredPowerOnAvailability();
+    /* Callers establish the availability cancellation/PowerOff boundary
+     * before entering here.  Do not perform a second untagged cancellation:
+     * a newer serialized PowerOn may have armed a fresh epoch by then. */
     RT_SET(10);
     sRT.disableCnt++;
     // A disabled radio is a terminal ownership boundary. Do this before the
@@ -10623,10 +10705,51 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 
 void AirportItlwm::disableAdapter(IONetworkInterface *netif)
 {
-    cancelDeferredPowerOnAvailability();
-    postTahoeDriverAvailabilityTransition(
-        this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
+    publishDeferredPowerOffAvailability();
     disableAdapterCore(netif);
+}
+
+struct AirportItlwmRadioPowerStateChangeArgs {
+    uint32_t newState;
+    IONetworkInterface *netif;
+    int result;
+};
+
+IOReturn AirportItlwm::
+handlePowerStateChangeGated(OSObject *target, void *arg0, void *, void *,
+                            void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    AirportItlwmRadioPowerStateChangeArgs *args =
+        static_cast<AirportItlwmRadioPowerStateChangeArgs *>(arg0);
+    if (that == NULL || args == NULL)
+        return kIOReturnBadArgument;
+
+    args->result = that->handlePowerStateChangeCore(args->newState,
+                                                     args->netif);
+    return kIOReturnSuccess;
+}
+
+int AirportItlwm::handlePowerStateChange(uint32_t newState,
+                                          IONetworkInterface *netif)
+{
+    IOCommandGate *gate = getCommandGate();
+    IOWorkLoop *workLoop = getWorkLoop();
+    if (gate == NULL)
+        return -1;
+
+    if (workLoop != NULL && workLoop->inGate())
+        return handlePowerStateChangeCore(newState, netif);
+
+    AirportItlwmRadioPowerStateChangeArgs args = {
+        newState,
+        netif,
+        -1,
+    };
+    if (gate->runAction(handlePowerStateChangeGated, &args) !=
+        kIOReturnSuccess)
+        return -1;
+    return args.result;
 }
 
 //
@@ -10639,7 +10762,8 @@ void AirportItlwm::disableAdapter(IONetworkInterface *netif)
 //   other: error (-1)
 // On powerOn/powerOff failure, state is rolled back.
 //
-int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *netif)
+int AirportItlwm::handlePowerStateChangeCore(uint32_t newState,
+                                              IONetworkInterface *netif)
 {
     uint8_t prevState = power_state;
     int err = 0;
@@ -10648,9 +10772,7 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
         (newState == kWiFiPowerOff && prevState == kWiFiPowerStandby)) {
         // ON→OFF or STANDBY→OFF: power off
         power_state = kWiFiPowerOff;
-        cancelDeferredPowerOnAvailability();
-        postTahoeDriverAvailabilityTransition(
-            this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
+        publishDeferredPowerOffAvailability();
         disableAdapterCore(netif);
     }
     else if (newState == kWiFiPowerOn && (prevState == kWiFiPowerOff || prevState == kWiFiPowerStandby)) {
@@ -10675,9 +10797,7 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOn) {
         // ON→STANDBY: power off (into standby)
         power_state = kWiFiPowerStandby;
-        cancelDeferredPowerOnAvailability();
-        postTahoeDriverAvailabilityTransition(
-            this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
+        publishDeferredPowerOffAvailability();
         disableAdapterCore(netif);
     }
     else if (newState == prevState) {
@@ -10721,9 +10841,7 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
             postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
     } else {
         if (power_state) {
-            cancelDeferredPowerOnAvailability();
-            postTahoeDriverAvailabilityTransition(
-                this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
+            publishDeferredPowerOffAvailability();
             disableAdapterCore(netif);
         }
     }

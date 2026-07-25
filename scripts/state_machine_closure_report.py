@@ -583,10 +583,10 @@ RECOVERY_CASES = [
         "checks": [
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
-                "scope_start": "int AirportItlwm::handlePowerStateChange",
+                "scope_start": "int AirportItlwm::handlePowerStateChangeCore",
                 "scope_end": "void AirportItlwm::handleSystemPowerStateChange",
                 "tokens": [
-                    "postTahoeDriverAvailabilityTransition(",
+                    "publishDeferredPowerOffAvailability()",
                     "disableAdapterCore(netif)",
                 ],
                 "forbidden_tokens": [
@@ -601,7 +601,7 @@ RECOVERY_CASES = [
                     "handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif)",
                     "disableAdapterCore(netif)",
                     "enableAdapter(netif)",
-                    "TahoeDriverAvailabilityContracts::Transition::PowerOff",
+                    "publishDeferredPowerOffAvailability()",
                     "armDeferredPowerOnAvailability()",
                     "postMessage(fNetIf, APPLE80211_M_POWER_CHANGED",
                 ],
@@ -611,7 +611,7 @@ RECOVERY_CASES = [
                 "scope_start": "} else {\n        if (power_state) {",
                 "scope_end": "}\n}\n\nIOReturn AirportItlwm::\ntsleepHandler",
                 "tokens": [
-                    "TahoeDriverAvailabilityContracts::Transition::PowerOff",
+                    "publishDeferredPowerOffAvailability()",
                     "disableAdapterCore(netif)",
                 ],
                 "forbidden_tokens": [

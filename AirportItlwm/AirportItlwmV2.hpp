@@ -557,7 +557,9 @@ public:
 #endif
     static IOReturn postRsnHandshakeDoneGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
-    static IOReturn publishDeferredPowerOnAvailabilityGated(
+    static IOReturn handlePowerStateChangeGated(
+        OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn publishDeferredPowerAvailabilityGated(
         OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postWclPhysicalScanCompletionGated(
@@ -569,7 +571,9 @@ public:
     static IOReturn tsleepHandler(OSObject* owner, void* arg0 = 0, void* arg1 = 0, void* arg2 = 0, void* arg3 = 0);
     static void eventHandler(struct ieee80211com *, int, void *);
     uint64_t armDeferredPowerOnAvailability();
+    void cancelDeferredPowerOnAvailabilityRaw();
     void cancelDeferredPowerOnAvailability();
+    void publishDeferredPowerOffAvailability();
     void noteRadioScanReadyAndQueuePowerOnAvailability();
 #if __IO80211_TARGET >= __MAC_26_0
     // Called for either a deferred IWX TX terminal worker record or the
@@ -587,6 +591,8 @@ public:
     void disableAdapterCore(IONetworkInterface *netif);
     void disableAdapter(IONetworkInterface *netif);
     int handlePowerStateChange(uint32_t newState, IONetworkInterface *netif);
+    int handlePowerStateChangeCore(uint32_t newState,
+                                   IONetworkInterface *netif);
     void handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif);
     bool initCCLogs();
     bool initTahoeBssManager();
