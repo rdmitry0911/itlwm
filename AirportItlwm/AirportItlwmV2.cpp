@@ -4932,8 +4932,8 @@ struct TahoeWclBeaconMetaData {
     uint8_t bssid[6];             // 0x29
     uint8_t reserved2f;           // 0x2f
     int32_t rssi;                 // 0x30
-    uint16_t reserved34;          // 0x34
-    uint16_t reserved36;          // 0x36
+    int16_t noise;                // 0x34
+    int16_t snr;                  // 0x36
     uint16_t beaconInterval;      // 0x38
     uint16_t capability;          // 0x3a
     uint32_t reserved3c;          // 0x3c
@@ -4994,8 +4994,31 @@ static uint16_t buildTahoePrimaryChanSpec(struct ieee80211com *ic,
     return primary;
 }
 
+struct TahoeWclSignalSnapshot {
+    int16_t noiseDbm;
+    bool hasNoise;
+};
+
+static TahoeWclSignalSnapshot snapshotTahoeWclSignal(ItlHalService *hal)
+{
+    TahoeWclSignalSnapshot snapshot = {};
+    ItlDriverInfo *driverInfo = hal != nullptr ? hal->getDriverInfo() : nullptr;
+    if (driverInfo == nullptr)
+        return snapshot;
+
+    const int16_t noise = driverInfo->getBSSNoise();
+    if (noise == TahoeLqmContracts::kInvalidNoiseZero ||
+        noise == TahoeLqmContracts::kInvalidNoiseSentinel)
+        return snapshot;
+
+    snapshot.noiseDbm = noise;
+    snapshot.hasNoise = true;
+    return snapshot;
+}
+
 static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
                                            struct ieee80211_node *ni,
+                                           const TahoeWclSignalSnapshot &signal,
                                            TahoeWclScanResultPayload *payload,
                                            uint32_t *payloadLen)
 {
@@ -5041,6 +5064,20 @@ static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
     payload->meta.primaryChannel = static_cast<uint8_t>(MIN(primaryChannel, 0xff));
     memcpy(payload->meta.bssid, ni->ni_bssid, sizeof(payload->meta.bssid));
     payload->meta.rssi = -(0 - IWM_MIN_DBM - ni->ni_rssi);
+    if (signal.hasNoise) {
+        int16_t noise = 0;
+        /* Intel's scan node exposes measured RSSI and the HAL noise floor,
+         * but no independent firmware per-BSS SNR.  Publish only the real
+         * noise measurement; leave the separate SNR field absent. */
+        if (TahoeScanContracts::buildWclScanResultNoiseMetric(
+                signal.noiseDbm, &noise)) {
+            payload->meta.noise = noise;
+            /* IO80211BSSBeacon consumes +0x34 only when this per-field
+             * presence bit accompanies the 0xc9 metadata. */
+            payload->meta.flags |=
+                TahoeScanContracts::kWclScanResultNoisePresentFlag;
+        }
+    }
     payload->meta.beaconInterval = ni->ni_intval;
     payload->meta.capability = ni->ni_capinfo;
 
@@ -5054,6 +5091,7 @@ struct TahoeWclScanResultSnapshot {
 };
 
 struct TahoeWclScanSnapshotCollector {
+    TahoeWclSignalSnapshot signal;
     struct ieee80211com *ic;
     TahoeWclScanResultSnapshot *entries;
     uint32_t capacity;
@@ -5080,7 +5118,8 @@ static void collectTahoeWclScanResultSnapshot(void *arg,
     TahoeWclScanResultSnapshot *entry =
         &collector->entries[collector->count];
     uint32_t payloadLen = 0;
-    if (!buildTahoeWclScanResultPayload(collector->ic, ni, &entry->payload,
+    if (!buildTahoeWclScanResultPayload(collector->ic, ni, collector->signal,
+                                        &entry->payload,
                                         &payloadLen))
         return;
     entry->payloadLen = payloadLen;
@@ -5318,6 +5357,11 @@ static bool snapshotWclPhysicalScanTerminal(AirportItlwm *that,
     if (that == nullptr || generation == 0 || backendGeneration == 0)
         return false;
 
+    /* Capture the HAL-owned noise scalar before the net80211 callback.  The
+     * callback runs under splnet and must only consume this copied value. */
+    const TahoeWclSignalSnapshot signal =
+        snapshotTahoeWclSignal(that->fHalService);
+
     AirportItlwmWclPhysicalScanLifecycle &state =
         that->fWclPhysicalScanLifecycle;
     IOSimpleLock *lock = state.admissionLock;
@@ -5335,6 +5379,7 @@ static bool snapshotWclPhysicalScanTerminal(AirportItlwm *that,
         /* claimWclPhysicalScanCompletion() already took one lifecycle user
          * while it held this same lock.  That pins the preallocated values
          * across the off-lock net80211 traversal. */
+        collector.signal = signal;
         collector.ic = that->fHalService != nullptr
             ? that->fHalService->get80211Controller() : nullptr;
         collector.entries = static_cast<TahoeWclScanResultSnapshot *>(
@@ -7201,6 +7246,8 @@ postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, vo
     struct ieee80211com *ic = that->fHalService->get80211Controller();
     if (ic == nullptr)
         return kIOReturnNotReady;
+    const TahoeWclSignalSnapshot signal =
+        snapshotTahoeWclSignal(that->fHalService);
 
     const uint32_t capacity = static_cast<uint32_t>(ic->ic_max_nnodes);
     IOReturn snapshotResult = kIOReturnSuccess;
@@ -7217,7 +7264,7 @@ postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, vo
         } else {
             bzero(snapshots, snapshotBytes);
             TahoeWclScanSnapshotCollector collector = {
-                ic, snapshots, capacity, 0, false
+                signal, ic, snapshots, capacity, 0, false
             };
             ieee80211_iterate_nodes(ic, collectTahoeWclScanResultSnapshot,
                                     &collector);

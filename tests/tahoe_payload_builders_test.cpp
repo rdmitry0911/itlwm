@@ -1451,12 +1451,28 @@ void testTahoeScanResultLayout()
     require((TahoeScanContracts::kWclScanResultMetaFlags &
              TahoeScanContracts::kWclScanResultSsidPresentLegacyMask) == 0,
             "WCL scan-result BeaconMetaData clears the legacy bit-2 SSID hint");
+    require(TahoeScanContracts::kWclScanResultNoisePresentFlag == 0x1000 &&
+                TahoeScanContracts::kWclScanResultSnrPresentFlag == 0x2000,
+            "WCL scan-result keeps recovered noise and SNR presence bits separate");
+    require((TahoeScanContracts::kWclScanResultMetaFlags &
+             TahoeScanContracts::kWclScanResultSignalPresentFlags) == 0,
+            "WCL scan-result leaves signal fields absent until measured");
     require(!TahoeScanContracts::hasRenderableBssid(nullptr),
             "scan renderability rejects null BSSID");
     require(!TahoeScanContracts::hasRenderableBssid(zeroBssid),
             "scan renderability rejects zero BSSID");
     require(TahoeScanContracts::hasRenderableBssid(validBssid),
             "scan renderability accepts nonzero BSSID");
+
+    int16_t noise = 0;
+    require(TahoeScanContracts::buildWclScanResultNoiseMetric(-95, &noise),
+            "WCL scan metadata accepts a measured noise sample");
+    require(noise == -95,
+            "WCL scan metadata preserves measured noise in dBm");
+    require(!TahoeScanContracts::buildWclScanResultNoiseMetric(0, &noise),
+            "WCL scan metadata rejects an unavailable zero noise sample");
+    require(!TahoeScanContracts::buildWclScanResultNoiseMetric(-127, &noise),
+            "WCL scan metadata rejects the firmware invalid-noise sentinel");
 }
 
 void testTahoeCurrentNetworkCarrierContract()
