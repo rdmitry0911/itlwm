@@ -1513,6 +1513,20 @@ void testTahoeBeaconIeBuilder()
     require(std::memcmp(out, completeTail, sizeof(completeTail)) == 0,
             "beacon IE builder preserves full raw tagged tail bytes");
 
+    const uint8_t probeResponseTail[] = {
+        0x00, 0x03, 'f', 'o', 'o',
+        0x01, 0x01, 0x82,
+        0x30, 0x02, 0xaa, 0xbb,
+    };
+    std::memset(out, 0, sizeof(out));
+    len = TahoeBeaconIeBuilder::buildCurrentBssIeStream(
+        reinterpret_cast<const uint8_t *>("bar"), 3, 7, 1,
+        probeResponseTail, sizeof(probeResponseTail), out, sizeof(out));
+    require(len == sizeof(probeResponseTail),
+            "beacon IE builder preserves an SSID-bearing probe-response length");
+    require(std::memcmp(out, probeResponseTail, sizeof(probeResponseTail)) == 0,
+            "beacon IE builder never prepends TIM before a raw probe-response SSID");
+
     const uint8_t rsnOnlyTail[] = { 0x30, 0x02, 0xaa, 0xbb };
     std::memset(out, 0, sizeof(out));
     len = TahoeBeaconIeBuilder::buildCurrentBssIeStream(

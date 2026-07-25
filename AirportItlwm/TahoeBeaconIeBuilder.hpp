@@ -95,13 +95,18 @@ inline uint32_t buildCurrentBssIeStream(const uint8_t *ssid,
     const bool rawHasTim =
         containsElement(rawTail, rawTailLen, kElementIdTim);
 
-    if (rawHasSsid && rawHasTim)
+    if (rawHasSsid) {
+        /* A probe response normally carries SSID but no TIM.  It is already
+         * a valid ordered tagged-IE stream; prepending a synthetic TIM would
+         * change it into TIM→SSID and make the Tahoe 0xc9 consumer observe a
+         * different beacon shape.  Preserve every validated raw element in
+         * its received order whenever it already identifies the BSS. */
         return appendTaggedIeTail(dst, capacity, 0, rawTail, rawTailLen);
+    }
 
     uint32_t offset = 0;
-    if (!rawHasSsid)
-        offset = appendElement(dst, capacity, offset, kElementIdSsid,
-                               ssid, ssidLen);
+    offset = appendElement(dst, capacity, offset, kElementIdSsid,
+                           ssid, ssidLen);
 
     if (!rawHasTim) {
         const uint8_t tim[] = {
