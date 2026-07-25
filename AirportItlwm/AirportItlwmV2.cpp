@@ -8256,16 +8256,6 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 
-    if (!setupWclPhysicalScanTerminalSource(this, _fWorkloop)) {
-        XYLog("DEBUG %s [STEP 6] FAIL: WCL physical-scan source\n",
-              __FUNCTION__);
-        stopHalAndDrain();
-        super::stop(pciNub);
-        releaseAll();
-        DISARM_PANIC_TIMER();
-        return false;
-    }
-
     if (!setupLinkStatePublishSource(this, _fWorkloop)) {
         XYLog("DEBUG %s [STEP 7] FAIL: link-state publish source alloc\n", __FUNCTION__);
         stopHalAndDrain();
@@ -8648,6 +8638,24 @@ bool AirportItlwm::start(IOService *provider)
     // registerService() on fNetIf, causing IOKit to match BSDClient.
     // BSDClient::start creates the nexus channel and BSD ifnet.
     fNetIf->deferBSDAttach(false);
+
+    /*
+     * The physical-WCL terminal source is required before a WCL request can
+     * be admitted, but it is not part of Skywalk's interface construction.
+     * Keep its independent workloop registration out of the interval in which
+     * deferBSDAttach() starts the asynchronous nexus/BSD-client chain.  No
+     * external WCL selector is live until markLifecycleLive() below, so this
+     * still establishes the source before the first physical WCL scan can run.
+     */
+    if (!setupWclPhysicalScanTerminalSource(this, _fWorkloop)) {
+        XYLog("DEBUG %s [STEP 8f] FAIL: WCL physical-scan source\n",
+              __FUNCTION__);
+        stopHalAndDrain();
+        super::stop(provider);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
     {
         const char *bsdName = fNetIf->getBSDName();
         ifnet_t bsdIf = fNetIf->getBSDInterface();

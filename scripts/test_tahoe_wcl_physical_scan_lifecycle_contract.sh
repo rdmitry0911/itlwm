@@ -147,6 +147,15 @@ require(v2, "setupWclPhysicalScanTerminalSource",
         "off-gate physical terminal source setup")
 require(v2, "teardownWclPhysicalScanTerminalSource",
         "physical terminal source teardown")
+start_begin = v2.find("bool AirportItlwm::start(IOService *provider)")
+start_end = v2.find("void AirportItlwm::stop(IOService *provider)", start_begin)
+if start_begin < 0 or start_end < 0:
+    fail("missing controller start region")
+start_region = v2[start_begin:start_end]
+ordered(start_region, "Skywalk-first WCL terminal-source setup",
+        "fNetIf->deferBSDAttach(false);",
+        "setupWclPhysicalScanTerminalSource(this, _fWorkloop)",
+        "markLifecycleLive()")
 
 pending_terminal = body(sky, "completePendingWclPhysicalScanTerminal(",
                         "pending physical WCL terminal reconciler")
