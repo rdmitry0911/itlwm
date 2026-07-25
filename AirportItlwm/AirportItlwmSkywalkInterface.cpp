@@ -6300,8 +6300,11 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
     } else if (ic->ic_state == IEEE80211_S_SCAN) {
         if (ic->ic_opmode != IEEE80211_M_STA ||
             (ic->ic_ac.ac_if.if_flags & IFF_RUNNING) == 0 ||
-            (ic->ic_flags & (IEEE80211_F_BGSCAN |
-                             IEEE80211_F_DESBSSID)) != 0 ||
+            /* After radio teardown a deselected ESS can retain only a
+             * BSSID pin.  Allow a fresh WCL initial census in that exact
+             * state, but retain the pin; a directed request still has an
+             * ESS or SAE selection ownership and is rejected below. */
+            (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
             (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
             ic->ic_mgt_timer != 0 || ic->ic_des_esslen != 0 ||
             ieee80211_sae_wcl_request_scan_selection_held(ic) ||

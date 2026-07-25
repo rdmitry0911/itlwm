@@ -6617,8 +6617,12 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
         ic->ic_opmode != IEEE80211_M_STA ||
         (ic->ic_if.if_flags & IFF_RUNNING) == 0 ||
         ic->ic_mgt_timer != 0 ||
-        (ic->ic_flags & (IEEE80211_F_BGSCAN |
-                         IEEE80211_F_DESBSSID)) != 0 ||
+        /* A radio-reset teardown can leave a BSSID pin after its ESS and
+         * security selection were deselected.  It must not prevent this
+         * WCL-only, empty-ESS discovery census: the SAE selection fences
+         * and non-empty-ESS check below keep directed association out of
+         * this path, and the pin itself is deliberately preserved. */
+        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
         (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
         ic->ic_des_esslen != 0 ||
         ieee80211_sae_wcl_request_scan_selection_held(ic) ||
@@ -11163,8 +11167,11 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
         (ic->ic_state != IEEE80211_S_SCAN ||
          ic->ic_opmode != IEEE80211_M_STA ||
          ic->ic_mgt_timer != 0 ||
-         (ic->ic_flags & (IEEE80211_F_BGSCAN |
-                          IEEE80211_F_DESBSSID)) != 0 ||
+         /* As in beginWclInitialScan(), a BSSID pin without an ESS is
+          * permitted only for this WCL initial discovery scan.  Do not
+          * clear it here: later association policy remains pinned while
+          * the empty-ESS/SAE fences keep direct selection fail-closed. */
+         (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
          (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
          ic->ic_des_esslen != 0 ||
          ieee80211_sae_wcl_request_scan_selection_held(ic) ||
