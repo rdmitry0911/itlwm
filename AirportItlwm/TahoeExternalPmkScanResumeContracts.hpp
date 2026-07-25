@@ -23,10 +23,12 @@ struct Facts {
 
 /*
  * A WCL association may arrive after the scan that populated the BSS tree has
- * already completed.  Resume only that normal SCAN state machine edge after
- * the paired PLTI wait observes PMK readiness.  This deliberately does not
- * select a BSS, enter AUTH, enqueue a management frame, or broaden the PSK
- * policy (and therefore cannot enable pure SAE).
+ * already completed.  Resume only that normal SCAN state-machine edge after
+ * a valid WCL PMK handoff is ready: either the paired PLTI delivery has
+ * completed, or the exact CIPHER_PMK value in the final WCL carrier was
+ * synchronously installed.  This deliberately does not select a BSS, enter
+ * AUTH, enqueue a management frame, or broaden the PSK policy (and therefore
+ * cannot enable pure SAE).
  */
 constexpr bool shouldResumeScanAfterExternalPmk(const Facts &facts)
 {

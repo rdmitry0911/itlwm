@@ -6649,6 +6649,25 @@ sae_out:
         return kIOReturnUnsupported;
     }
 
+    /*
+     * A normal CoreWLAN WCL candidate can carry the already-derived WPA2
+     * PMK in its native apple80211_key window.  It is not followed by a
+     * separate public CIPHER_KEY IOC on this path.  Consume that value only
+     * for the exact PMK cipher and length, and only under the existing
+     * audited PSK policy; CIPHER_PWD, PMKSA, MSK, malformed lengths, and all
+     * non-PSK/WPA3 vectors retain their established paths.  The pointer is
+     * used synchronously by associateSSID() to copy into ic_psk and is never
+     * retained beyond this WCL carrier invocation.
+     */
+    const bool directWclPmk =
+        wcl_key_cipher == APPLE80211_CIPHER_PMK &&
+        wcl_key_len == IEEE80211_PMK_LEN &&
+        TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper);
+    uint8_t *directWclPmkBytes = directWclPmk
+        ? const_cast<uint8_t *>(
+            raw + TahoeAssociationContracts::kWclKeyPasswordOffset)
+        : nullptr;
+
     /* PMF is an explicit WCL association property, not a device-wide mode.
      * Transition/SAE carriers remain out of scope even if their opaque field
      * happens to carry the PMF-capable bit. */
@@ -6739,9 +6758,19 @@ sae_out:
         }
 
         assocResult = associateSSID(const_cast<uint8_t *>(ssid), ssid_len,
-                                    *bssid, auth_lower, auth_upper, NULL, 0,
-                                    0, false, true,
+                                    *bssid, auth_lower, auth_upper,
+                                    directWclPmkBytes,
+                                    directWclPmk ? IEEE80211_PMK_LEN : 0,
+                                    0, directWclPmk, !directWclPmk,
                                     &externalPmkReadyObserved);
+
+        /* The direct WCL PMK has already passed the same bounded cipher,
+         * length, and PSK-policy admission above and was synchronously
+         * installed by associateSSID().  Treat that established fact as the
+         * PMK-ready handoff for the existing SCAN->SCAN resume predicate;
+         * it does not select a BSS or synthesize AUTH. */
+        if (directWclPmk && assocResult == kIOReturnSuccess)
+            externalPmkReadyObserved = true;
 
         const TahoeExternalPmkScanResumeContracts::Facts scanResumeFacts = {
             TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper),

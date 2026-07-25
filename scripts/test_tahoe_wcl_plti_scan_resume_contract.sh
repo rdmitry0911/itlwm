@@ -2,10 +2,11 @@
 # Admission contract for the Tahoe WCL external-PMK -> SCAN resume edge.
 #
 # This is intentionally a source and pure-unit test only.  It proves that the
-# repair resumes the ordinary net80211 scan pipeline after its paired PLTI
-# wait observes PMK readiness.  It covers only the audited PSK/PLTI carrier:
-# the separately compiled IWN pure-SAE ingress is prohibited from borrowing
-# this PMK route and is not a completed WPA3 association claim.
+# repair resumes the ordinary net80211 scan pipeline after a validated WCL
+# PMK handoff is ready.  That handoff is either the paired PLTI delivery or
+# the exact CIPHER_PMK value already embedded in the final WCL carrier.  The
+# separately compiled IWN pure-SAE ingress is prohibited from borrowing this
+# PMK route and is not a completed WPA3 association claim.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -157,11 +158,24 @@ if legacy_start < 0:
 legacy_hidden_assoc = hidden_assoc[legacy_start:]
 ordered(legacy_hidden_assoc, "WCL PMK scan-resume ordering",
         "requiresUnsupportedWpa3Auth", "return kIOReturnUnsupported;",
+        "const bool directWclPmk =",
+        "wcl_key_cipher == APPLE80211_CIPHER_PMK",
+        "wcl_key_len == IEEE80211_PMK_LEN",
+        "TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper)",
+        "raw + TahoeAssociationContracts::kWclKeyPasswordOffset",
         "bool externalPmkReadyObserved = false;",
         "&externalPmkReadyObserved);",
+        "if (directWclPmk && assocResult == kIOReturnSuccess)",
+        "externalPmkReadyObserved = true;",
         "TahoeExternalPmkScanResumeContracts::Facts scanResumeFacts",
         "shouldResumeScanAfterExternalPmk(scanResumeFacts)",
         "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);")
+for token in (
+        "directWclPmk ? IEEE80211_PMK_LEN : 0",
+        "0, directWclPmk, !directWclPmk,",
+):
+    require(legacy_hidden_assoc, token,
+            "exact direct-WCL PMK ownership handoff")
 require(hidden_assoc, "TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper)",
         "exact existing PLTI PSK policy at scan-resume edge")
 resume_start = legacy_hidden_assoc.find(
