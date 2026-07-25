@@ -242,7 +242,6 @@ ordered(legacy_hidden_assoc, "ordinary hidden association ingress",
         "requiresUnsupportedWpa3Auth", "kIOReturnUnsupported",
         "const bool directWclPmk =",
         "const bool directWclPmkSha256PskCompatibility =",
-        "associationOwner.directWclSha256SelectionCompatibility =",
         "setAUTH_TYPE",
         "assocResult = associateSSID")
 require(legacy_hidden_assoc, "return assocResult;",
@@ -299,16 +298,17 @@ pmk_ingress = body(sky, "IOReturn AirportItlwmSkywalkInterface::\ninstallExterna
                    "CIPHER_KEY/CUR_PMK ingress")
 ordered(pmk_ingress, "direct PMK exact PSK AKM mapping",
         "requiresUnsupportedWpa3Auth", "memcpy(ic->ic_psk",
-        "associationOwner->directWclSha256SelectionCompatibility",
-        "localPskAkmSelectionMaskForDirectWclPmk", "usesLocalLegacyPskAkm",
+        "localAuthMaskWithoutFallbackRewrite", "usesLocalLegacyPskAkm",
         "IEEE80211_WPA_AKM_PSK", "usesLocalSha256PskAkm",
         "IEEE80211_WPA_AKM_SHA256_PSK", "ieee80211_ioctl_setwpaparms")
 forbid(pmk_ingress, "IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK",
        "implicit SHA256-PSK in direct PMK ingress")
+forbid(pmk_ingress, "localPskAkmSelectionMaskForDirectWclPmk",
+       "shared PMK ingress must remain independent of the direct-WCL selector")
+forbid(pmk_ingress, "directWclPmkSha256PskCompatibility",
+       "shared PMK ingress must not inherit a WCL-only compatibility bit")
 require(pmk_ingress, "CIPHER_KEY/CUR_PMK may arrive before WCL_ASSOCIATE",
         "PMK-before-WCL ordering boundary")
-require(pmk_ingress, "associationOwner->authAssocCompletionArmed",
-        "late PMK compatibility requires the armed direct-WCL owner")
 cipher_key = body(sky, "setCIPHER_KEY(struct apple80211_key *key)",
                   "CIPHER_KEY PMK caller")
 require(cipher_key, "current_authtype_upper,\n                                            \"CIPHER_KEY\"",

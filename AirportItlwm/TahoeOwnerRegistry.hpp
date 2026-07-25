@@ -126,10 +126,6 @@ struct TahoeOwnerRegistry {
     struct AssociationOwner {
         bool hasCarrier = false;
         bool selectedFromCandidate = false;
-        // Exact direct-WCL carrier whose SHA256 selector needs the
-        // bounded local legacy|SHA256 selection set.  It is not an auth-type
-        // rewrite and is cleared with every association owner reset.
-        bool directWclSha256SelectionCompatibility = false;
         // Set immediately before the accepted WCL request resumes normal
         // scan/selection.  Parsed carriers that are blocked, stale, or never
         // reach a real association edge must not publish completion.

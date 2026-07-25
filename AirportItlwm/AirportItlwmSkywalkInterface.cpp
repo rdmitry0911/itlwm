@@ -4547,22 +4547,9 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
     memset(&wpa, 0, sizeof(wpa));
     wpa.i_enabled = 1;
     wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
-    const TahoeOwnerRegistry::AssociationOwner *associationOwner = nullptr;
-    if (instance != nullptr)
-        associationOwner = &instance->getTahoeOwnerRegistry().association;
-    const bool directWclPmkSha256PskCompatibility =
-        associationOwner != nullptr && associationOwner->hasCarrier &&
-        associationOwner->selectedFromCandidate &&
-        associationOwner->authAssocCompletionArmed &&
-        associationOwner->directWclSha256SelectionCompatibility &&
-        associationOwner->authUpper == TahoeAssociationAuthContracts::kAuthSha256Psk &&
-        authtype_upper == associationOwner->authUpper;
     const uint32_t localPskAkmSelectionMask =
-        TahoeAssociationAuthContracts::
-            localPskAkmSelectionMaskForDirectWclPmk(
-                authtype_upper, directWclPmkSha256PskCompatibility);
-    /* A late PMK carrier for the armed exact WCL request must retain the
-     * same local selection set rather than re-narrowing it after resume. */
+        TahoeAssociationAuthContracts::localAuthMaskWithoutFallbackRewrite(
+            authtype_upper);
     if (TahoeAssociationAuthContracts::usesLocalLegacyPskAkm(
             localPskAkmSelectionMask))
         wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
@@ -6726,8 +6713,6 @@ sae_out:
     TahoeOwnerRegistry::AssociationOwner associationOwner{};
     associationOwner.hasCarrier = true;
     associationOwner.selectedFromCandidate = candidate_count > 0;
-    associationOwner.directWclSha256SelectionCompatibility =
-        directWclPmkSha256PskCompatibility;
     associationOwner.authAssocCompletionArmed = false;
     associationOwner.authAssocCompletionPublished = false;
     associationOwner.apMode = ap_mode;
