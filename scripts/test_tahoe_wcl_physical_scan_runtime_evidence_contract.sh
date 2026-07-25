@@ -53,7 +53,7 @@ import sys
 from pathlib import Path
 
 
-SCHEMA = "itlwm-tahoe-iwn-wcl-physical-scan-runtime/v2"
+SCHEMA = "itlwm-tahoe-iwn-wcl-physical-scan-runtime/v3"
 HASH64 = re.compile(r"[0-9a-f]{64}")
 COMMIT40 = re.compile(r"[0-9a-f]{40}")
 UUID = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}")
@@ -83,7 +83,7 @@ NON_CLAIMS = [
     "roaming, reconnect, or multi-AP behavior",
     "data-plane or Internet reachability",
     "physical-host validation",
-    "proof beyond one sealed IWN WCL physical-scan lifecycle",
+    "proof beyond one public scan invocation and its bounded IWN WCL physical-scan lifecycles",
 ]
 
 
@@ -286,8 +286,9 @@ def validate(document):
             "reset_control_acknowledged", "initial_snapshot_synchronized",
             "seal_control_acknowledged", "final_control_disabled", "double_read_stable",
         )) and
-        trace["entry_count"] >= 4 and trace["entry_count"] <= 128 and
-        trace["integrity"] == "ok" and trace["episode_count"] == 1 and
+        1 <= trace["episode_count"] <= 2 and
+        trace["entry_count"] >= 4 * trace["episode_count"] and
+        trace["entry_count"] <= 128 and trace["integrity"] == "ok" and
         trace["active_episode"] == 0 and
         trace["verdict"] == "IWN_WCL_PHYSICAL_SCAN_OBSERVED" and
         trace["first_missing_stage"] == "none"
@@ -344,7 +345,7 @@ def fixture():
             "double_read_stable": True,
         },
         "iwn_wcl_physical_scan_trace": {
-            "entry_count": 4, "integrity": "ok", "episode_count": 1,
+            "entry_count": 8, "integrity": "ok", "episode_count": 2,
             "active_episode": 0, "verdict": "IWN_WCL_PHYSICAL_SCAN_OBSERVED",
             "first_missing_stage": "none", "result_publication_issued": False,
         },
@@ -383,6 +384,16 @@ try:
             pass
         else:
             fail("self-test did not reject a raw endpoint value")
+        sample = fixture()
+        sample["iwn_wcl_physical_scan_trace"]["episode_count"] = 3
+        sample["iwn_wcl_physical_scan_trace"]["entry_count"] = 12
+        sample["result"] = "PASS"
+        try:
+            validate(sample)
+        except SystemExit:
+            pass
+        else:
+            fail("self-test did not reject an unbounded PASS episode count")
 except (OSError, ValueError, json.JSONDecodeError) as error:
     fail(str(error))
 

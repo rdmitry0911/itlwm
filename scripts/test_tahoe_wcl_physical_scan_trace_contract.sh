@@ -112,16 +112,21 @@ for token in (
     require(bridge, token, "WCL trace bridge")
 
 # The safe evaluator permits an empty successful scan and treats the result
-# publication call as optional.  It must fail closed on a second episode,
-# altered record, or post-terminal append.
+# publication call as optional.  One public scan may produce one or two
+# complete sequential WCL episodes; it must fail closed on a third, altered,
+# incomplete, mixed, or post-terminal record.
 for token in (
-        "Safe categorical evaluator for one IWN-owned physical WCL scan",
+        "bounded one-or-two IWN-owned physical",
+        "AIRPORT_ITLWM_WCL_PHYSICAL_SCAN_TRACE_MAX_EPISODES 2U",
         "AirportItlwmWclPhysicalScanTraceVerdictPhysicalScanObserved",
         "AirportItlwmWclPhysicalScanTraceVerdictTerminalAborted",
         "AirportItlwmWclPhysicalScanTraceVerdictDoneNotPublished",
         "airport_itlwm_wcl_physical_scan_trace_classify_entries_with_stage",
         "airport_itlwm_wcl_physical_scan_trace_result_publication_issued",
-        "episode_count != 1 || active_episode != 0",
+        "episode_count > AIRPORT_ITLWM_WCL_PHYSICAL_SCAN_TRACE_MAX_EPISODES",
+        "entries[index].episode != episode + 1",
+        "episode >= episode_count",
+        "episode != episode_count",
         "WclPhysicalScanRequestAccepted",
         "WclPhysicalScanLowerLeaseReserved",
         "WclPhysicalScanTerminalComplete",

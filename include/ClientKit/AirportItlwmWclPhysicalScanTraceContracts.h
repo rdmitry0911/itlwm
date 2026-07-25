@@ -2,7 +2,8 @@
 #define AirportItlwmWclPhysicalScanTraceContracts_h
 
 /*
- * Safe categorical evaluator for one IWN-owned physical WCL scan.
+ * Safe categorical evaluator for the bounded one-or-two IWN-owned physical
+ * WCL scans emitted by one public scan stimulus.
  *
  * It consumes the existing fixed post-PLTI trace ring rather than a second
  * driver ledger.  A positive result proves only that the request was
@@ -15,6 +16,8 @@
 #include <stdint.h>
 
 #include <ClientKit/AirportItlwmPostPltiTrace.h>
+
+#define AIRPORT_ITLWM_WCL_PHYSICAL_SCAN_TRACE_MAX_EPISODES 2U
 
 enum AirportItlwmWclPhysicalScanTraceVerdict {
     kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive = 0,
@@ -82,17 +85,21 @@ airport_itlwm_wcl_physical_scan_trace_classify_entries_with_stage(
         return kAirportItlwmWclPhysicalScanTraceVerdictBackendUnsupported;
     }
     if (episode_count == 0 || count == 0) {
-        airport_itlwm_wcl_physical_scan_trace_set_stage(
-            out_stage, kAirportItlwmWclPhysicalScanTraceMissingStageRequest);
-        return kAirportItlwmWclPhysicalScanTraceVerdictBranchNotObserved;
+        if (episode_count == 0 && count == 0 && active_episode == 0) {
+            airport_itlwm_wcl_physical_scan_trace_set_stage(
+                out_stage, kAirportItlwmWclPhysicalScanTraceMissingStageRequest);
+            return kAirportItlwmWclPhysicalScanTraceVerdictBranchNotObserved;
+        }
+        return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
     }
-    if (episode_count != 1 || active_episode != 0) {
+    if (episode_count > AIRPORT_ITLWM_WCL_PHYSICAL_SCAN_TRACE_MAX_EPISODES ||
+        active_episode != 0) {
         return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
     }
 
     generation = entries[0].captureGeneration;
     episode = entries[0].episode;
-    if (generation == 0 || episode == 0) {
+    if (generation == 0 || episode != 1) {
         return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
     }
 
@@ -100,10 +107,20 @@ airport_itlwm_wcl_physical_scan_trace_classify_entries_with_stage(
         const uint32_t event = entries[index].event;
         if (entries[index].sequence != entries[0].sequence + index ||
             entries[index].captureGeneration != generation ||
-            entries[index].episode != episode ||
             event == kAirportItlwmPostPltiTraceEventUnknown ||
             event >= kAirportItlwmPostPltiTraceEventMax) {
             return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
+        }
+        if (entries[index].episode != episode) {
+            /* One fixed CoreWLAN scan may ask WCL to cover two adjacent
+             * physical passes.  The next pass is admissible only after the
+             * prior pass reached DONE, with no skipped/reused episode id. */
+            if (sealed || phase != 5 || entries[index].episode != episode + 1 ||
+                episode >= episode_count) {
+                return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
+            }
+            episode++;
+            phase = 0;
         }
         if (event == kAirportItlwmPostPltiTraceEventEpisodeAborted) {
             return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
@@ -119,7 +136,7 @@ airport_itlwm_wcl_physical_scan_trace_classify_entries_with_stage(
         }
         if (event ==
             kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted) {
-            if (index != 0 || phase != 0)
+            if (phase != 0)
                 return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
             phase = 1;
             continue;
@@ -166,6 +183,10 @@ airport_itlwm_wcl_physical_scan_trace_classify_entries_with_stage(
             return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
         }
     }
+
+    /* A complete first pass cannot stand in for an advertised second pass. */
+    if (episode != episode_count)
+        return kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive;
 
     switch (phase) {
     case 0:

@@ -1281,6 +1281,10 @@ for needle in (
 for needle in (
         "an empty physical scan reaches the exact DONE publication boundary",
         "one issued result publication remains optional positive evidence",
+        "two sequential complete WCL passes from one public scan are observed",
+        "a complete first pass cannot hide an incomplete second pass",
+        "a skipped second episode identifier is fail-closed",
+        "more than two WCL passes are outside the bounded public-scan proof",
         "an upper admission cannot infer a lower lease",
         "a lower lease cannot infer a terminal",
         "a lower terminal cannot infer a DONE publication call",

@@ -4,9 +4,10 @@
 # The sole stimulus is the trace client's fixed `scan-wcl-physical` command.
 # It accepts no wireless identifier or credential, does not join/disassociate,
 # does not change radio power/profile/routes/addresses, and does not install,
-# load, unload, or reboot anything.  A PASS proves only one sealed IWN WCL
-# physical-scan lifecycle; it is explicitly not an association, SAE, roaming,
-# reconnect, multi-AP, or data-plane result.
+# load, unload, or reboot anything.  A PASS proves only the bounded one-or-two
+# sealed IWN WCL physical-scan lifecycles caused by one public scan stimulus;
+# it is explicitly not an association, SAE, roaming, reconnect, multi-AP, or
+# data-plane result.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -82,13 +83,16 @@ usage: run_tahoe_wcl_physical_scan_runtime.sh \
   --trace-tool /private/tmp/aiam-post-plti-trace-CANDIDATE/airport_itlwm_post_plti_trace \
   --candidate-receipt /local/safe/iwn-lab-candidate-receipt-v2.json \
   --out /fresh/local/evidence/dir \
-  [--settle-seconds 1..30] [--ack-attempts 1..60] \
+  [--settle-seconds 2..30] [--ack-attempts 1..60] \
   [--stable-read-delay-seconds 1..10]
 
-The runner requests exactly one fixed, undirected WCL physical scan.  It does
-not accept or emit a network name, hardware address, signal, security value,
-information element, address, route, profile, credential, or frame.  It only
-records safe aggregate band counts and the sealed categorical WCL trace.
+The runner requests exactly one fixed, undirected WCL physical scan.  That
+single public stimulus may produce one or two sequential driver-owned WCL
+physical-scan episodes; every observed episode must independently reach its
+sealed categorical terminal.  The runner does not accept or emit a network
+name, hardware address, signal, security value, information element, address,
+route, profile, credential, or frame.  It only records safe aggregate band
+counts and the sealed categorical WCL trace.
 EOF
 }
 
@@ -164,7 +168,7 @@ esac
     exit 2
 }
 for value_range in \
-    "$SETTLE_SECONDS:1:30" "$ACK_ATTEMPTS:1:60" \
+    "$SETTLE_SECONDS:2:30" "$ACK_ATTEMPTS:1:60" \
     "$STABLE_READ_DELAY_SECONDS:1:10"; do
     IFS=: read -r value min max <<<"$value_range"
     is_decimal_in_range "$value" "$min" "$max" || { usage; exit 2; }
@@ -523,8 +527,10 @@ try:
             u32(report["capture_generation"]) != generation or snapshot["backend"] != "IWN" or
             report["backend"] != "IWN" or u32(snapshot["enabled"]) != 1 or
             u32(snapshot["target_bound"]) != 1 or u32(snapshot["active_episode"]) != 0 or
-            u32(report["active_episode"]) != 0 or u32(snapshot["episode_count"]) != 1 or
-            u32(report["episode_count"]) != 1 or u32(snapshot["entry_count"]) < 3 or
+            u32(report["active_episode"]) != 0 or
+            u32(snapshot["episode_count"]) not in {1, 2} or
+            u32(report["episode_count"]) not in {1, 2} or
+            u32(snapshot["entry_count"]) < 3 * u32(snapshot["episode_count"]) or
             u32(snapshot["entry_count"]) != u32(report["entries"]) or
             u32(snapshot["dropped"]) != 0 or report["integrity"] not in {"ok", "inconclusive"} or
             report["iwn_wcl_physical_scan_verdict"] not in VERDICTS or
@@ -537,18 +543,22 @@ PY
 }
 
 wait_for_preseal_episode_close() {
-    local attempt snapshot report
+    local attempt snapshot report closed=0
     for attempt in $(seq 1 "$SETTLE_SECONDS"); do
         snapshot="preseal-close-$attempt-snapshot"
         report="preseal-close-$attempt-report"
         if capture_trace_client "$snapshot" get snapshot &&
             capture_trace_client "$report" get iwn-wcl-physical-scan-report &&
             preseal_episode_is_closed "$OUT_DIR/$snapshot.stdout" "$OUT_DIR/$report.stdout"; then
-            return 0
+            # Do not seal immediately after a first closed pass: one public
+            # CoreWLAN scan may enqueue its bounded second physical pass just
+            # behind it.  Retain the full settle window without a second
+            # stimulus, then seal the final aggregate.
+            closed=1
         fi
         [ "$attempt" -lt "$SETTLE_SECONDS" ] && sleep 1
     done
-    return 1
+    [ "$closed" = 1 ]
 }
 
 parse_scan_stimulus() {
@@ -780,7 +790,7 @@ candidate = {
     "trace_client_receipt_binding_precondition": "PASS" if b("TRACE_PRE") and b("TRACE_POST") else "INCONCLUSIVE",
 }
 document = {
-    "schema": "itlwm-tahoe-iwn-wcl-physical-scan-runtime/v2",
+    "schema": "itlwm-tahoe-iwn-wcl-physical-scan-runtime/v3",
     "candidate": candidate,
     "scope": {
         "environment": "pinned_disposable_qemu_guest",
@@ -839,7 +849,7 @@ document = {
         "roaming, reconnect, or multi-AP behavior",
         "data-plane or Internet reachability",
         "physical-host validation",
-        "proof beyond one sealed IWN WCL physical-scan lifecycle",
+        "proof beyond one public scan invocation and its bounded IWN WCL physical-scan lifecycles",
     ],
 }
 Path(sys.argv[1]).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n",
@@ -917,8 +927,8 @@ else
 fi
 
 # CoreWLAN returns after the request but the driver terminal callback can be
-# queued behind it.  Observe a closed aggregate episode for a bounded time;
-# on timeout seal anyway and retain an honest categorical diagnostic.
+# queued behind it.  Observe a closed bounded aggregate for the full settle
+# window; on timeout seal anyway and retain an honest categorical diagnostic.
 wait_for_preseal_episode_close || true
 capture_trace_client seal seal || fail_phase trace-seal
 seal_sequence="$(extract_u32 "$OUT_DIR/seal.stdout" seq || true)"
@@ -948,16 +958,18 @@ if [ "$SCAN_OUTCOME" = ok ] && [ "$SCAN_ENDPOINT_BINDING" = airport-itlwm-bsd ] 
     [ "$FINAL_CONTROL_DISABLED" = 1 ] && [ "$DOUBLE_READ_STABLE" = 1 ] &&
     [ "$IDENTITY_BEFORE_BOUND" = 1 ] && [ "$IDENTITY_AFTER_BOUND" = 1 ] &&
     [ "$TRACE_CLIENT_PRE_BOUND" = 1 ] && [ "$TRACE_CLIENT_POST_BOUND" = 1 ] &&
-    [ "$CAPTURE_GENERATION" -gt 0 ] && [ "$WCL_ENTRIES" -ge 4 ] &&
+    [ "$CAPTURE_GENERATION" -gt 0 ] && [ "$WCL_EPISODE_COUNT" -ge 1 ] &&
+    [ "$WCL_EPISODE_COUNT" -le 2 ] &&
+    [ "$WCL_ENTRIES" -ge $((WCL_EPISODE_COUNT * 4)) ] &&
     [ "$WCL_ENTRIES" -le 128 ] && [ "$WCL_INTEGRITY" = ok ] &&
-    [ "$WCL_EPISODE_COUNT" = 1 ] && [ "$WCL_ACTIVE_EPISODE" = 0 ] &&
+    [ "$WCL_ACTIVE_EPISODE" = 0 ] &&
     [ "$WCL_VERDICT" = IWN_WCL_PHYSICAL_SCAN_OBSERVED ] &&
     [ "$WCL_FIRST_MISSING_STAGE" = none ] &&
     { [ "$WCL_RESULT_PUBLICATION" = 0 ] || [ "$WCL_RESULT_PUBLICATION" = 1 ]; }; then
     RESULT="PASS"
     FAILURE_PHASE="none"
     FINAL_EXIT=0
-    printf 'PASS: one sealed IWN WCL physical-scan lifecycle observed\n'
+    printf 'PASS: one public WCL scan stimulus observed with bounded sealed IWN physical-scan lifecycles\n'
 else
     RESULT="INCONCLUSIVE"
     FAILURE_PHASE="trace-verdict-diagnostic"

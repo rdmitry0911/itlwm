@@ -53,8 +53,8 @@ for needle in \
     'DONE_PUBLICATION_NOT_OBSERVED' \
     'result_publication_issued' \
     'first_missing_stage' \
-    'WCL physical-scan lifecycle observed' \
-    'itlwm-tahoe-iwn-wcl-physical-scan-runtime/v2' \
+    'bounded sealed IWN physical-scan lifecycles' \
+    'itlwm-tahoe-iwn-wcl-physical-scan-runtime/v3' \
     'aggregate_sum_valid' \
     'local_only_raw_artifacts' \
     'association, authentication, or SAE functionality' \
@@ -178,9 +178,10 @@ for token in (
         'preseal_episode_is_closed()',
         'wait_for_preseal_episode_close()',
         'u32(snapshot["entry_count"]) < 3',
-        'WCL_ENTRIES" -ge 4',
+        'WCL_ENTRIES" -ge $((WCL_EPISODE_COUNT * 4))',
         'WCL_ENTRIES" -le 128',
-        'WCL_EPISODE_COUNT" = 1',
+        'WCL_EPISODE_COUNT" -ge 1',
+        'WCL_EPISODE_COUNT" -le 2',
         'WCL_ACTIVE_EPISODE" = 0',
         'WCL_FIRST_MISSING_STAGE" = none',
         'AIAM_WCL_TRACE_BACKEND',
