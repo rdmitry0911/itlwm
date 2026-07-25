@@ -173,6 +173,7 @@ ordered(legacy_hidden_assoc, "WCL PMK scan-resume ordering",
 for token in (
         "directWclPmk ? IEEE80211_PMK_LEN : 0",
         "0, directWclPmk, !directWclPmk,",
+        "directWclPmkSha256PskCompatibility,",
 ):
     require(legacy_hidden_assoc, token,
             "exact direct-WCL PMK ownership handoff")
@@ -192,7 +193,7 @@ for token in (
         "iwx_auth(",
 ):
     forbid(resume, token, "unsafe shortcut in WCL scan-resume block")
-if resume.count("ieee80211_new_state(") != 1:
+if resume.count("ieee80211_new_state(ic,") != 1:
     fail("WCL scan-resume block must contain exactly one normal state request")
 require(resume, "PMK_READY_SCAN_RESUME", "credential-safe local progress marker")
 

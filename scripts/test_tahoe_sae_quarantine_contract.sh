@@ -140,6 +140,7 @@ for needle in (
     "inline bool requiresUnsupportedWpa3Auth",
     "inline bool isAuditedPskPmkAuth",
     "inline bool mayUseLocalPskPmk",
+    "inline uint32_t localPskAkmSelectionMaskForDirectWclPmk",
     "return authtypeUpper == kAuditedWpa3PskTransitionAuth;",
 ):
     require(auth, needle, "strict WPA3 mask model")
@@ -159,6 +160,13 @@ ordered(audited_psk, "exact PLTI PSK allow-list",
         "authtypeUpper != 0", "~kPskAuthMask")
 forbid(audited_psk, "usesLocalPskAkm(",
        "broad PSK authorization in exact PLTI allow-list")
+direct_wcl_selection = body(
+    auth, "inline uint32_t localPskAkmSelectionMaskForDirectWclPmk",
+    "exact direct-WCL SHA256 PSK selection compatibility")
+ordered(direct_wcl_selection, "bounded direct-WCL selector compatibility",
+        "directWclPmkCarrier", "authtypeUpper == kAuthSha256Psk",
+        "return kAuthWpa2Psk | kAuthSha256Psk;",
+        "return authtypeUpper & kPskAuthMask;")
 
 # The generic Skywalk/public and legacy Tahoe routes must reject before any
 # association state or RSN mutation.  The WCL handler contains one separately
@@ -171,7 +179,7 @@ ordered(sky_assoc, "Skywalk associate ingress",
         "fHalService->get80211Controller()", "ieee80211_disable_rsn",
         "publishPendingAssocTarget")
 ordered(sky_assoc, "Skywalk exact PSK AKM mapping",
-        "usesLocalPskAkm", "usesLocalLegacyPskAkm",
+        "localPskAkmSelectionMaskForDirectWclPmk", "usesLocalLegacyPskAkm",
         "IEEE80211_WPA_AKM_PSK", "usesLocalSha256PskAkm",
         "IEEE80211_WPA_AKM_SHA256_PSK")
 forbid(sky_assoc, "IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK",
@@ -187,6 +195,8 @@ ordered(public_assoc, "public association ingress",
         "if (ic->ic_state < IEEE80211_S_SCAN)", "setAUTH_TYPE",
         "assocResult = associateSSID")
 require(public_assoc, "return assocResult;", "public association error propagation")
+require(public_assoc, "true, false, false, nullptr",
+        "public association cannot enable direct-WCL compatibility")
 
 hidden_assoc = body(sky,
                     "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
@@ -230,10 +240,16 @@ if legacy_start < 0:
 legacy_hidden_assoc = hidden_assoc[legacy_start:]
 ordered(legacy_hidden_assoc, "ordinary hidden association ingress",
         "requiresUnsupportedWpa3Auth", "kIOReturnUnsupported",
-        "auto &associationOwner", "setAUTH_TYPE",
+        "const bool directWclPmk =",
+        "const bool directWclPmkSha256PskCompatibility =",
+        "associationOwner.directWclSha256SelectionCompatibility =",
+        "setAUTH_TYPE",
         "assocResult = associateSSID")
 require(legacy_hidden_assoc, "return assocResult;",
         "ordinary hidden association error propagation")
+require(legacy_hidden_assoc,
+        "directWclPmkSha256PskCompatibility,\n                                    &externalPmkReadyObserved",
+        "hidden association passes only its exact direct-PMK compatibility bit")
 
 legacy_assoc = body(legacy, "IOReturn AirportItlwm::associateSSID",
                     "legacy associateSSID")
@@ -283,13 +299,16 @@ pmk_ingress = body(sky, "IOReturn AirportItlwmSkywalkInterface::\ninstallExterna
                    "CIPHER_KEY/CUR_PMK ingress")
 ordered(pmk_ingress, "direct PMK exact PSK AKM mapping",
         "requiresUnsupportedWpa3Auth", "memcpy(ic->ic_psk",
-        "localAuthMaskWithoutFallbackRewrite", "usesLocalLegacyPskAkm",
+        "associationOwner->directWclSha256SelectionCompatibility",
+        "localPskAkmSelectionMaskForDirectWclPmk", "usesLocalLegacyPskAkm",
         "IEEE80211_WPA_AKM_PSK", "usesLocalSha256PskAkm",
         "IEEE80211_WPA_AKM_SHA256_PSK", "ieee80211_ioctl_setwpaparms")
 forbid(pmk_ingress, "IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK",
        "implicit SHA256-PSK in direct PMK ingress")
 require(pmk_ingress, "CIPHER_KEY/CUR_PMK may arrive before WCL_ASSOCIATE",
         "PMK-before-WCL ordering boundary")
+require(pmk_ingress, "associationOwner->authAssocCompletionArmed",
+        "late PMK compatibility requires the armed direct-WCL owner")
 cipher_key = body(sky, "setCIPHER_KEY(struct apple80211_key *key)",
                   "CIPHER_KEY PMK caller")
 require(cipher_key, "current_authtype_upper,\n                                            \"CIPHER_KEY\"",

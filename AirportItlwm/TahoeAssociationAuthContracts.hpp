@@ -73,6 +73,23 @@ inline bool usesLocalSha256PskAkm(uint32_t authtypeUpper)
     return (authtypeUpper & kAuthSha256Psk) != 0;
 }
 
+/*
+ * The opaque direct-WCL PMK carrier occasionally reports the exact
+ * SHA256-PSK bit for a BSS whose selected scan RSN still offers ordinary
+ * WPA2-PSK.  This helper returns a *local selector set* only for that exact
+ * carrier; it never rewrites the public auth type or authorizes a different
+ * credential protocol.  In particular, public IOC association, PLTI PMK
+ * delivery, transition, SAE, FT, enterprise, and unknown vectors retain
+ * their strict masks.
+ */
+inline uint32_t localPskAkmSelectionMaskForDirectWclPmk(
+    uint32_t authtypeUpper, bool directWclPmkCarrier)
+{
+    if (directWclPmkCarrier && authtypeUpper == kAuthSha256Psk)
+        return kAuthWpa2Psk | kAuthSha256Psk;
+    return authtypeUpper & kPskAuthMask;
+}
+
 inline bool usesLocalEnterpriseAkm(uint32_t authtypeUpper)
 {
     return (authtypeUpper & kEnterpriseAuthMask) != 0;

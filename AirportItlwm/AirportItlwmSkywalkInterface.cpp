@@ -970,7 +970,7 @@ static_assert(sizeof(apple80211_wcl_wnm_offload_t) == 0x30,
 
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
-IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner, bool *externalPmkReadyObserved)
+IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner, bool directWclPmkSha256PskCompatibility, bool *externalPmkReadyObserved)
 {
     // Control-flow result only: never expose PMK material through this
     // optional caller-local output.
@@ -1056,13 +1056,18 @@ IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssi
         wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
     }
     
-    if (TahoeAssociationAuthContracts::usesLocalPskAkm(localAuthUpper)) {
-        /* Do not advertise SHA256-PSK unless Apple selected that AKM. */
+    const uint32_t localPskAkmSelectionMask =
+        TahoeAssociationAuthContracts::
+            localPskAkmSelectionMaskForDirectWclPmk(
+                authtype_upper, directWclPmkSha256PskCompatibility);
+    /* Keep the opaque carrier auth type unchanged.  Only the exact direct
+     * WCL/PMK SHA256 case gets a local BSS-selection compatibility set. */
+    if (localPskAkmSelectionMask != 0) {
         if (TahoeAssociationAuthContracts::usesLocalLegacyPskAkm(
-                localAuthUpper))
+                localPskAkmSelectionMask))
             wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
         if (TahoeAssociationAuthContracts::usesLocalSha256PskAkm(
-                localAuthUpper))
+                localPskAkmSelectionMask))
             wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK;
         wpa.i_enabled = 1;
         // The Tahoe Skywalk WCL_ASSOCIATE / IOC_ASSOCIATE carrier
@@ -4542,14 +4547,27 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
     memset(&wpa, 0, sizeof(wpa));
     wpa.i_enabled = 1;
     wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
-    const uint32_t localAuthUpper =
-        TahoeAssociationAuthContracts::localAuthMaskWithoutFallbackRewrite(
-            authtype_upper);
+    const TahoeOwnerRegistry::AssociationOwner *associationOwner = nullptr;
+    if (instance != nullptr)
+        associationOwner = &instance->getTahoeOwnerRegistry().association;
+    const bool directWclPmkSha256PskCompatibility =
+        associationOwner != nullptr && associationOwner->hasCarrier &&
+        associationOwner->selectedFromCandidate &&
+        associationOwner->authAssocCompletionArmed &&
+        associationOwner->directWclSha256SelectionCompatibility &&
+        associationOwner->authUpper == TahoeAssociationAuthContracts::kAuthSha256Psk &&
+        authtype_upper == associationOwner->authUpper;
+    const uint32_t localPskAkmSelectionMask =
+        TahoeAssociationAuthContracts::
+            localPskAkmSelectionMaskForDirectWclPmk(
+                authtype_upper, directWclPmkSha256PskCompatibility);
+    /* A late PMK carrier for the armed exact WCL request must retain the
+     * same local selection set rather than re-narrowing it after resume. */
     if (TahoeAssociationAuthContracts::usesLocalLegacyPskAkm(
-            localAuthUpper))
+            localPskAkmSelectionMask))
         wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
     if (TahoeAssociationAuthContracts::usesLocalSha256PskAkm(
-            localAuthUpper))
+            localPskAkmSelectionMask))
         wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK;
     if (wpa.i_akms == 0) {
         // No selector was available on this direct PMK carrier. Preserve the
@@ -5794,7 +5812,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
                                     ad->ad_bssid, ad->ad_auth_lower,
                                     ad->ad_auth_upper, ad->ad_key.key,
                                     ad->ad_key.key_len, ad->ad_key.key_index,
-                                    true, false, nullptr);
+                                    true, false, false, nullptr);
     }
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
                                    ad->ad_ssid, ad->ad_ssid_len,
@@ -6686,6 +6704,9 @@ sae_out:
         wcl_key_cipher == APPLE80211_CIPHER_PMK &&
         wcl_key_len == IEEE80211_PMK_LEN &&
         TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper);
+    const bool directWclPmkSha256PskCompatibility =
+        directWclPmk &&
+        auth_upper == TahoeAssociationAuthContracts::kAuthSha256Psk;
     uint8_t *directWclPmkBytes = directWclPmk
         ? const_cast<uint8_t *>(
             raw + TahoeAssociationContracts::kWclKeyPasswordOffset)
@@ -6705,6 +6726,8 @@ sae_out:
     TahoeOwnerRegistry::AssociationOwner associationOwner{};
     associationOwner.hasCarrier = true;
     associationOwner.selectedFromCandidate = candidate_count > 0;
+    associationOwner.directWclSha256SelectionCompatibility =
+        directWclPmkSha256PskCompatibility;
     associationOwner.authAssocCompletionArmed = false;
     associationOwner.authAssocCompletionPublished = false;
     associationOwner.apMode = ap_mode;
@@ -6791,6 +6814,7 @@ sae_out:
                                     directWclPmkBytes,
                                     directWclPmk ? IEEE80211_PMK_LEN : 0,
                                     0, directWclPmk, !directWclPmk,
+                                    directWclPmkSha256PskCompatibility,
                                     &externalPmkReadyObserved);
 
         /* The direct WCL PMK has already passed the same bounded cipher,

@@ -1630,6 +1630,23 @@ void testTahoeAssociationAuthContracts()
     require(mayUseLocalPskPmk(kAuthSha256Psk),
             "PLTI accepts an explicit SHA256 PSK selector");
 
+    uint32_t selection = localPskAkmSelectionMaskForDirectWclPmk(
+        kAuthSha256Psk, false);
+    require(selection == kAuthSha256Psk,
+            "public and non-WCL SHA256 PSK selection remains strict");
+    selection = localPskAkmSelectionMaskForDirectWclPmk(
+        kAuthSha256Psk, true);
+    require(selection == (kAuthWpa2Psk | kAuthSha256Psk),
+            "exact direct WCL PMK SHA256 selector keeps the bounded PSK compatibility set");
+    selection = localPskAkmSelectionMaskForDirectWclPmk(
+        mixedTransition, true);
+    require(selection == kAuthWpa2Psk,
+            "direct WCL compatibility does not broaden transition or SAE selection");
+    selection = localPskAkmSelectionMaskForDirectWclPmk(
+        kAuthWpa3Sae, true);
+    require(selection == 0,
+            "direct WCL compatibility never maps pure SAE into a local PSK selector");
+
     local = localAuthMaskWithoutFallbackRewrite(kAuthWpa2Psk | kAuthSha256Psk);
     require(usesLocalLegacyPskAkm(local) && usesLocalSha256PskAkm(local),
             "an explicit dual-PSK selector preserves both advertised AKMs");
