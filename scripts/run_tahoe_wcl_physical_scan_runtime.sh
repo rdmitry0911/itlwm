@@ -334,7 +334,35 @@ REMOTE
 }
 
 remote_trace_client_exists() {
-    remote_trace get control >/dev/null 2>/dev/null
+    # The control acknowledgement is intentionally not a precondition here:
+    # it is first published by the reset below.  This only binds the local
+    # interpreter bytes before the trace-control state machine is touched.
+    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" "$TRACE_CLIENT_SHA256" <<'REMOTE'
+set -euo pipefail
+tool="$1"
+expected_sha256="$2"
+case "$tool" in
+    /private/tmp/aiam-post-plti-trace/airport_itlwm_post_plti_trace|/private/tmp/aiam-post-plti-trace-*/airport_itlwm_post_plti_trace) ;;
+    *) exit 64 ;;
+esac
+parent="${tool%/airport_itlwm_post_plti_trace}"
+test -d "$parent" && test ! -L "$parent"
+physical_parent="$(CDPATH= cd -P -- "$parent" && pwd -P)"
+case "$physical_parent" in
+    /private/tmp/aiam-post-plti-trace|/private/tmp/aiam-post-plti-trace-*) ;;
+    *) exit 65 ;;
+esac
+[ "$physical_parent" = "$parent" ]
+test -f "$tool" && test ! -L "$tool" && test -x "$tool"
+observed="$(LC_ALL=C PATH=/usr/bin:/bin /usr/bin/shasum -a 256 "$tool" |
+    /usr/bin/awk -v path="$tool" '
+        function is_lower_hex64(value) { return length(value) == 64 && value !~ /[^0-9a-f]/ }
+        NR == 1 && NF == 2 && is_lower_hex64($1) && $2 == path { value = $1; next }
+        { invalid = 1 }
+        END { if (NR != 1 || invalid || value == "") exit 1; print value }
+    ')"
+[ "$observed" = "$expected_sha256" ]
+REMOTE
 }
 
 capture_trace_client() {

@@ -143,6 +143,19 @@ if text.count('cmp -s "$OUT_DIR/state-read-1-snapshot.stdout"') != 1:
 if text.count('cmp -s "$OUT_DIR/state-read-1-report.stdout"') != 1:
     fail('runner lacks exact double-read report comparison')
 
+binding_start = text.find('remote_trace_client_exists() {')
+binding_end = text.find('\n}\n\ncapture_trace_client()', binding_start)
+if binding_start < 0 or binding_end < 0:
+    fail('receipt-bound trace-client preflight is missing or unterminated')
+binding = text[binding_start:binding_end]
+if 'get control' in binding:
+    fail('trace-client preflight incorrectly requires an ACK before reset')
+for token in ('test -f "$tool" && test ! -L "$tool" && test -x "$tool"',
+              'shasum -a 256 "$tool"',
+              '[ "$observed" = "$expected_sha256" ]'):
+    if token not in binding:
+        fail(f'trace-client preflight lacks receipt binding: {token}')
+
 for token in (
         'wcl_physical_scan_stimulus=(ok|client-unavailable|interface-unavailable|scan-failed|count-overflow)',
         'total=([0-9]+) band_2ghz=([0-9]+) band_5ghz=([0-9]+)',
