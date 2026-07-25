@@ -131,6 +131,11 @@ require(event, "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
         "hardware-reset invalidation fence")
 require(event, "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "confirmed radio-reset reopening fence")
+ordered(event, "radio-ready availability order",
+        "IEEE80211_EVT_WCL_SCAN_REOPENED",
+        "reopenWclPhysicalScanAfterRadioReset()",
+        "reopenStandardPhysicalScanAfterRadioReset()",
+        "noteRadioScanReadyAndQueuePowerOnAvailability()")
 scan_done = event[event.find("case IEEE80211_EVT_SCAN_DONE:"):]
 forbid(scan_done[:scan_done.find("case IEEE80211_EVT_WCL_REASSOC_DONE:")],
        "claimWclPhysicalScanCompletion", "generic SCAN_DONE WCL claim")
@@ -366,6 +371,61 @@ require(iwn, "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
         "IWN reset invalidation event")
 require(iwn, "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "IWN confirmed radio reset event")
+iwn_init = body(iwn, "int ItlIwn::\niwn_init(struct _ifnet *ifp)",
+                "IWN init")
+ordered(iwn_init, "IWN lower-ready fence after first scan state",
+        "ifp->if_flags |= IFF_RUNNING",
+        "ieee80211_begin_scan(ifp)",
+        "IWN_FLAG_SCANNING",
+        "IEEE80211_EVT_WCL_SCAN_REOPENED")
+
+for token in ("availabilityEpoch", "pendingPowerOnEpoch",
+              "readyPowerOnEpoch", "powerOnPublishQueued"):
+    require(v2_hpp, token, "post-radio-ready availability epoch state")
+require(v2_hpp, "kAirportItlwmPmDriverAvailabilityPendingBit",
+        "deferred PowerOn lifecycle bit")
+availability_publish = body(v2,
+    "publishDeferredPowerOnAvailabilityGated(OSObject *target, void *arg0,",
+    "deferred PowerOn publisher")
+ordered(availability_publish, "deferred PowerOn epoch claim",
+        "lifecycle.availabilityEpoch == expectedEpoch",
+        "lifecycle.pendingPowerOnEpoch == expectedEpoch",
+        "lifecycle.readyPowerOnEpoch == expectedEpoch",
+        "lifecycle.powerOnPublishQueued",
+        "postTahoeDriverAvailabilityTransition(")
+availability_note = body(v2,
+    "void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()",
+    "radio-ready PowerOn note")
+ordered(availability_note, "radio-ready notification is gated",
+        "lifecycle.readyPowerOnEpoch = lifecycle.pendingPowerOnEpoch",
+        "lifecycle.powerOnPublishQueued = true",
+        "gate->runAction(publishDeferredPowerOnAvailabilityGated")
+forbid(availability_note, "postTahoeDriverAvailabilityTransition",
+       "off-gate PowerOn publication")
+
+radio_power = body(v2,
+                   "int AirportItlwm::handlePowerStateChange",
+                   "radio power transition")
+require(radio_power, "armDeferredPowerOnAvailability();",
+        "PowerOn arm before lower enable")
+require(radio_power, "cancelDeferredPowerOnAvailability();",
+        "PowerOff cancellation")
+forbid(radio_power, "Transition::PowerOn",
+       "optimistic radio PowerOn carrier")
+system_power = body(v2,
+                    "void AirportItlwm::handleSystemPowerStateChange",
+                    "system power transition")
+require(system_power, "armDeferredPowerOnAvailability();",
+        "system PowerOn arm")
+require(system_power, "cancelDeferredPowerOnAvailability();",
+        "system PowerOff cancellation")
+forbid(system_power, "Transition::PowerOn",
+       "optimistic system PowerOn carrier")
+disable_adapter = body(v2, "void AirportItlwm::disableAdapter(IONetworkInterface *netif)",
+                       "controller disableAdapter")
+ordered(disable_adapter, "disable cancellation precedes PowerOff carrier",
+        "cancelDeferredPowerOnAvailability();",
+        "Transition::PowerOff")
 
 for token in ("IEEE80211_EVT_WCL_SCAN_TERMINAL",
               "IEEE80211_EVT_WCL_SCAN_INVALIDATED",

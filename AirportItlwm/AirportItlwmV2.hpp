@@ -66,6 +66,9 @@ enum
     kAirportItlwmPmBootInProgressBit = 0x10,
     kAirportItlwmPmPermanentFailureBit = 0x20,
     kAirportItlwmPmWatchdogFailureBit = 0x40,
+    /* A radio/system PowerOn is not externally available until IWN has
+     * entered its first post-reset scan state. */
+    kAirportItlwmPmDriverAvailabilityPendingBit = 0x80,
     kAirportItlwmPmTransitionGateMask = 0x30,
     kAirportItlwmPmTransitionBlockedValue = 0x20
 };
@@ -321,6 +324,14 @@ struct AirportItlwmWclPhysicalScanLifecycle {
     uint32_t resultCount;
     bool resultOverflow;
     bool resultScrubPending;
+    /* Driver-availability PowerOn is a separate post-radio-ready edge.  It
+     * shares this short admission lock with scan ownership only to make a
+     * reset/off cancellation and a lower-ready notification unambiguous;
+     * neither path holds the lock across the command gate or PostOffice. */
+    uint64_t availabilityEpoch;
+    uint64_t pendingPowerOnEpoch;
+    uint64_t readyPowerOnEpoch;
+    bool powerOnPublishQueued;
 };
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -546,6 +557,8 @@ public:
 #endif
     static IOReturn postRsnHandshakeDoneGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn publishDeferredPowerOnAvailabilityGated(
+        OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postWclPhysicalScanCompletionGated(
         OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -555,6 +568,9 @@ public:
 
     static IOReturn tsleepHandler(OSObject* owner, void* arg0 = 0, void* arg1 = 0, void* arg2 = 0, void* arg3 = 0);
     static void eventHandler(struct ieee80211com *, int, void *);
+    uint64_t armDeferredPowerOnAvailability();
+    void cancelDeferredPowerOnAvailability();
+    void noteRadioScanReadyAndQueuePowerOnAvailability();
 #if __IO80211_TARGET >= __MAC_26_0
     // Called for either a deferred IWX TX terminal worker record or the
     // post-reset invalidation carrier. The borrowed event is copied into a

@@ -14078,13 +14078,21 @@ iwn_init(struct _ifnet *ifp)
     iwn_mfp_pae_reopen(sc);
     iwn_sae_tx_reopen(sc);
     iwn_sae_engine_reopen(sc);
-    if (ic->ic_event_handler != NULL)
-        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_REOPENED, NULL);
 
     if (ic->ic_opmode != IEEE80211_M_MONITOR)
         ieee80211_begin_scan(ifp);
     else
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
+
+    /* WCL's reopen fence is also the controller's lower-ready edge.  It must
+     * follow the synchronous first state transition above and a successful
+     * lower scan submission: publishing it earlier lets an availability
+     * consumer submit into S_INIT. */
+    if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) ==
+            (IFF_UP | IFF_RUNNING) &&
+        (sc->sc_flags & IWN_FLAG_SCANNING) != 0 &&
+        ic->ic_event_handler != NULL)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_REOPENED, NULL);
 
     return 0;
 

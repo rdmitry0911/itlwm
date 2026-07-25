@@ -7214,6 +7214,123 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     return kIOReturnSuccess;
 }
 
+uint64_t AirportItlwm::armDeferredPowerOnAvailability()
+{
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (lock == NULL)
+        return 0;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    ++lifecycle.availabilityEpoch;
+    if (lifecycle.availabilityEpoch == 0)
+        ++lifecycle.availabilityEpoch;
+    lifecycle.pendingPowerOnEpoch = lifecycle.availabilityEpoch;
+    lifecycle.readyPowerOnEpoch = 0;
+    lifecycle.powerOnPublishQueued = false;
+    const uint64_t epoch = lifecycle.pendingPowerOnEpoch;
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit,
+                  &pmPowerStateFlags);
+    return epoch;
+}
+
+void AirportItlwm::cancelDeferredPowerOnAvailability()
+{
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (lock != NULL) {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+        ++lifecycle.availabilityEpoch;
+        if (lifecycle.availabilityEpoch == 0)
+            ++lifecycle.availabilityEpoch;
+        lifecycle.pendingPowerOnEpoch = 0;
+        lifecycle.readyPowerOnEpoch = 0;
+        lifecycle.powerOnPublishQueued = false;
+        IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    }
+    OSBitAndAtomic(~static_cast<UInt32>(
+                       kAirportItlwmPmDriverAvailabilityPendingBit),
+                   &pmPowerStateFlags);
+}
+
+IOReturn AirportItlwm::
+publishDeferredPowerOnAvailabilityGated(OSObject *target, void *arg0,
+                                        void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    const uint64_t expectedEpoch = (uint64_t)(uintptr_t)arg0;
+    if (that == NULL || expectedEpoch == 0 || that->fNetIf == NULL)
+        return kIOReturnNotReady;
+
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        that->fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (lock == NULL)
+        return kIOReturnNotReady;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    const bool publish = that->power_state != kWiFiPowerOff &&
+        lifecycle.availabilityEpoch == expectedEpoch &&
+        lifecycle.pendingPowerOnEpoch == expectedEpoch &&
+        lifecycle.readyPowerOnEpoch == expectedEpoch &&
+        lifecycle.powerOnPublishQueued;
+    if (publish) {
+        lifecycle.pendingPowerOnEpoch = 0;
+        lifecycle.readyPowerOnEpoch = 0;
+        lifecycle.powerOnPublishQueued = false;
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    if (!publish)
+        return kIOReturnAborted;
+
+    OSBitAndAtomic(~static_cast<UInt32>(
+                       kAirportItlwmPmDriverAvailabilityPendingBit),
+                   &that->pmPowerStateFlags);
+    postTahoeDriverAvailabilityTransition(
+        that, TahoeDriverAvailabilityContracts::Transition::PowerOn);
+    return kIOReturnSuccess;
+}
+
+void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
+{
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (lock == NULL)
+        return;
+
+    uint64_t epoch = 0;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    if (lifecycle.pendingPowerOnEpoch != 0 &&
+        !lifecycle.powerOnPublishQueued) {
+        lifecycle.readyPowerOnEpoch = lifecycle.pendingPowerOnEpoch;
+        lifecycle.powerOnPublishQueued = true;
+        epoch = lifecycle.pendingPowerOnEpoch;
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    if (epoch == 0)
+        return;
+
+    /* eventHandler() runs on the lower task context.  The existing generic
+     * event path enters this same gate before using controller postMessage;
+     * never hold the scan admission lock while doing so. */
+    IOCommandGate *gate = getCommandGate();
+    if (gate == NULL ||
+        gate->runAction(publishDeferredPowerOnAvailabilityGated,
+                        (void *)(uintptr_t)epoch, NULL, NULL, NULL) !=
+            kIOReturnSuccess) {
+        irq = IOSimpleLockLockDisableInterrupt(lock);
+        if (lifecycle.availabilityEpoch == epoch &&
+            lifecycle.pendingPowerOnEpoch == epoch &&
+            lifecycle.readyPowerOnEpoch == epoch)
+            lifecycle.powerOnPublishQueued = false;
+        IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    }
+}
+
 IOReturn AirportItlwm::
 postRsnHandshakeDoneGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
 {
@@ -7465,6 +7582,11 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED) {
         that->reopenWclPhysicalScanAfterRadioReset();
         that->reopenStandardPhysicalScanAfterRadioReset();
+        /* The lower IWN producer emits REOPENED only after its synchronous
+         * first S_SCAN transition. Reopen tickets before publishing PowerOn,
+         * so a synchronous WCL consumer cannot observe a ready carrier while
+         * its own physical-scan admission remains draining. */
+        that->noteRadioScanReadyAndQueuePowerOnAvailability();
         return;
     }
 
@@ -10462,6 +10584,9 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 
 void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 {
+    /* A lower stop is a terminal radio boundary even when reached from a
+     * teardown path that did not first send a public PowerOff carrier. */
+    cancelDeferredPowerOnAvailability();
     RT_SET(10);
     sRT.disableCnt++;
     // A disabled radio is a terminal ownership boundary. Do this before the
@@ -10498,6 +10623,7 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 
 void AirportItlwm::disableAdapter(IONetworkInterface *netif)
 {
+    cancelDeferredPowerOnAvailability();
     postTahoeDriverAvailabilityTransition(
         this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
     disableAdapterCore(netif);
@@ -10522,6 +10648,7 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
         (newState == kWiFiPowerOff && prevState == kWiFiPowerStandby)) {
         // ON→OFF or STANDBY→OFF: power off
         power_state = kWiFiPowerOff;
+        cancelDeferredPowerOnAvailability();
         postTahoeDriverAvailabilityTransition(
             this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
         disableAdapterCore(netif);
@@ -10529,24 +10656,26 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
     else if (newState == kWiFiPowerOn && (prevState == kWiFiPowerOff || prevState == kWiFiPowerStandby)) {
         // OFF→ON or STANDBY→ON: power on
         power_state = kWiFiPowerOn;
+        /* enableAdapter() only queues IWN activation.  Arm before it so a
+         * fast init task cannot beat this record, then publish PowerOn from
+         * the tagged post-S_SCAN lower-ready edge. */
+        armDeferredPowerOnAvailability();
         err = enableAdapter(netif);
-        if (err == kIOReturnSuccess) {
-            postTahoeDriverAvailabilityTransition(
-                this, TahoeDriverAvailabilityContracts::Transition::PowerOn);
-        }
+        if (err != kIOReturnSuccess)
+            cancelDeferredPowerOnAvailability();
     }
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOff) {
         // OFF→STANDBY: power on (into standby mode)
         power_state = kWiFiPowerStandby;
+        armDeferredPowerOnAvailability();
         err = enableAdapter(netif);
-        if (err == kIOReturnSuccess) {
-            postTahoeDriverAvailabilityTransition(
-                this, TahoeDriverAvailabilityContracts::Transition::PowerOn);
-        }
+        if (err != kIOReturnSuccess)
+            cancelDeferredPowerOnAvailability();
     }
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOn) {
         // ON→STANDBY: power off (into standby)
         power_state = kWiFiPowerStandby;
+        cancelDeferredPowerOnAvailability();
         postTahoeDriverAvailabilityTransition(
             this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
         disableAdapterCore(netif);
@@ -10581,16 +10710,18 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
     // logical radio state, but powerOffSystem() enters powerOff(true) and
     // powerOnSystem() enters powerOn(): the normal unavailable/available 0x37
     // carriers therefore still bracket the physical sleep/wake transition.
-    // powerOnSystem() publishes selector 1 only after powerOn() has completed.
+    // PowerOn is deferred until IWN reaches its first post-reset scan state.
     if (powerOn) {
-        if (power_state && enableAdapter(netif) == kIOReturnSuccess) {
-            postTahoeDriverAvailabilityTransition(
-                this, TahoeDriverAvailabilityContracts::Transition::PowerOn);
+        if (power_state) {
+            armDeferredPowerOnAvailability();
+            if (enableAdapter(netif) != kIOReturnSuccess)
+                cancelDeferredPowerOnAvailability();
         }
         if (fNetIf)
             postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
     } else {
         if (power_state) {
+            cancelDeferredPowerOnAvailability();
             postTahoeDriverAvailabilityTransition(
                 this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
             disableAdapterCore(netif);

@@ -574,7 +574,7 @@ RECOVERY_CASES = [
     },
     {
         "id": "driver-reset-power-wake",
-        "description": "Recovered Apple NET_MANAGER and local newstate paths make radio power, atomic system PM, sleep, wake, and driver-reset behavior explicit.",
+        "description": "Recovered Apple NET_MANAGER and local newstate paths make radio power, atomic system PM, sleep, wake, and driver-reset behavior explicit; PowerOn availability is emitted only after the lower post-reset scan-ready fence.",
         "paths": [
             "AirportItlwm/AirportItlwmV2.cpp",
             "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
@@ -602,7 +602,7 @@ RECOVERY_CASES = [
                     "disableAdapterCore(netif)",
                     "enableAdapter(netif)",
                     "TahoeDriverAvailabilityContracts::Transition::PowerOff",
-                    "TahoeDriverAvailabilityContracts::Transition::PowerOn",
+                    "armDeferredPowerOnAvailability()",
                     "postMessage(fNetIf, APPLE80211_M_POWER_CHANGED",
                 ],
             },
