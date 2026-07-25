@@ -677,7 +677,6 @@ scan_setup = body_from_marker(v2_cpp, "static bool setupScanSource", "scan sourc
 scan_acquire = body_from_marker(v2_cpp, "static bool acquireScanSource", "scan source admission")
 scan_release = body_from_marker(v2_cpp, "static void releaseScanSource", "scan source release")
 scan_schedule = airport_method("scheduleScanSource")
-scan_cancel = airport_method("cancelScanSource")
 scan_live = airport_method("scanSourceCallbackLive")
 scan_done = airport_method("fakeScanDone")
 
@@ -715,10 +714,9 @@ order(scan_acquire, "++state.users;", "*out = state.source;",
       "(*out)->retain();")
 order(scan_release, "source->release();", "--state.users;")
 order(scan_schedule, "acquireScanSource(this, &source)",
+      "TahoeStandardScanContracts::idle(&standard.physicalState)",
+      "wcl.state.phase == TahoeWclPhysicalScanContracts::Phase::Idle",
       "source->setTimeoutMS(timeoutMs);", "releaseScanSource(this, source);")
-order(scan_cancel, "acquireScanSource(this, &source)",
-      "source->cancelTimeout();", "source->disable();",
-      "releaseScanSource(this, source);")
 order(scan_live, "!state.settingUp", "!state.stopping", "!state.tearingDown",
       "state.source == sender", "scanSource == sender")
 order(v2_scan_drain, "state.stopping = true;", "state.tearingDown = true;",
@@ -726,11 +724,13 @@ order(v2_scan_drain, "state.stopping = true;", "state.tearingDown = true;",
       "source->cancelTimeout();", "source->disable();",
       "workloop->removeEventSource(source);", "state.source = NULL;",
       "scanSource = NULL;", "source->release();", "state.tearingDown = false;")
-order(scan_done, "!that->scanSourceCallbackLive(sender)",
+order(scan_done, "!that->beginCachedScanTerminal(sender)",
       "that->getCommandGate()->runAction(postMessageGated",
-      "APPLE80211_M_SCAN_DONE")
+      "APPLE80211_M_SCAN_DONE", "that->finishCachedScanTerminal();")
 if "postWclScanResultsGated" in scan_done:
     fail("legacy fake scan timer still publishes WCL results")
+if "cancelScanSource" in v2_cpp:
+    fail("scan timer still has an unsafe cancellation path")
 if re.search(r"\\bscanSource\\s*->", skywalk_cpp):
     fail("Skywalk still invokes a raw cached scanSource")
 if re.search(r"\\binstance->scanSource\\b", skywalk_cpp):

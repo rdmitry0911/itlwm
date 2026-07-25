@@ -830,10 +830,12 @@ ieee80211_node_raise_inact(void *arg, struct ieee80211_node *ni)
 }
 
 /*
- * Begin an active scan.
+ * Prepare an active scan.  Kept separate from ieee80211_begin_scan() for a
+ * backend that has already acquired an exact physical scan lease and must
+ * not invoke the generic state callback a second time.
  */
 void
-ieee80211_begin_scan(struct _ifnet *ifp)
+ieee80211_prepare_scan(struct _ifnet *ifp)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
@@ -867,6 +869,16 @@ ieee80211_begin_scan(struct _ifnet *ifp)
     
     ic->ic_scan_count = 0;
     
+}
+
+/*
+ * Begin an active scan.
+ */
+void
+ieee80211_begin_scan(struct _ifnet *ifp)
+{
+    ieee80211_prepare_scan(ifp);
+
     /* Scan the next channel. */
     ieee80211_next_scan(ifp);
 }
@@ -1483,6 +1495,9 @@ ieee80211_end_scan(struct _ifnet *ifp)
             
             ieee80211_next_scan(ifp);
         }
+        if (bgscan)
+            ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                              IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
         return;
     }
     
@@ -1514,6 +1529,9 @@ ieee80211_end_scan(struct _ifnet *ifp)
      */
     if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
         ic->ic_des_esslen == 0) {
+        if (bgscan)
+            ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                              IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
         AirportItlwmPostPltiTraceRecord(
             ic, kAirportItlwmPostPltiTraceEventSelectionHeld);
         return;

@@ -1121,6 +1121,30 @@ struct ieee80211_wcl_scan_invalidation {
 #define IEEE80211_EVT_WCL_SCAN_REOPENED          13
 
 /*
+ * Exact IWN terminal for one controller-owned normal CoreWLAN scan.  The
+ * backend emits this only after ieee80211_end_scan() has consumed and
+ * published the matching generic IEEE80211_EVT_SCAN_DONE.  It is not a WCL
+ * event and never changes the normal APPLE80211_M_SCAN_DONE payload.
+ */
+#define IEEE80211_EVT_STANDARD_SCAN_TERMINAL      14
+#define IEEE80211_STANDARD_SCAN_TERMINAL_STATUS_COMPLETE 0U
+#define IEEE80211_STANDARD_SCAN_TERMINAL_STATUS_ABORTED  1U
+struct ieee80211_standard_scan_terminal {
+    u_int64_t generation;
+    u_int32_t backend_generation;
+    u_int32_t status;
+};
+
+/* A hardware reset invalidated a tagged standard scan before its terminal.
+ * It closes only the matching controller ticket; REOPENED reopens admission
+ * after the radio has been initialized again. */
+#define IEEE80211_EVT_STANDARD_SCAN_INVALIDATED   15
+struct ieee80211_standard_scan_invalidation {
+    u_int64_t generation;
+    u_int32_t backend_generation;
+};
+
+/*
  * Host-owned WCL reassociation owner contract recovered from the public
  * AppleBCMWLAN binary (AppleBCMWLANCore::setWCL_REASSOC and the
  * NetAdapter::sendReassocCommand callback/event family). The local Intel

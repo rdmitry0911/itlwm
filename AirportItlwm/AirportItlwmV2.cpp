@@ -1897,21 +1897,185 @@ bool AirportItlwm::scheduleScanSource(uint32_t timeoutMs)
     IOTimerEventSource *source = NULL;
     if (!acquireScanSource(this, &source))
         return false;
+
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    AirportItlwmWclPhysicalScanLifecycle &wcl = fWclPhysicalScanLifecycle;
+    IOSimpleLock *admissionLock = wcl.admissionLock;
+    if (admissionLock == NULL) {
+        releaseScanSource(this, source);
+        return false;
+    }
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    const bool admitted = !standard.cachedTerminalPending &&
+        !standard.cachedTerminalPublishing &&
+        TahoeStandardScanContracts::idle(&standard.physicalState) &&
+        wcl.state.phase == TahoeWclPhysicalScanContracts::Phase::Idle;
+    if (admitted)
+        standard.cachedTerminalPending = true;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    if (!admitted) {
+        releaseScanSource(this, source);
+        return false;
+    }
+
     source->setTimeoutMS(timeoutMs);
     source->enable();
     releaseScanSource(this, source);
     return true;
 }
 
-bool AirportItlwm::cancelScanSource()
+bool AirportItlwm::beginCachedScanTerminal(IOTimerEventSource *sender)
 {
-    IOTimerEventSource *source = NULL;
-    if (!acquireScanSource(this, &source))
+    if (!scanSourceCallbackLive(sender))
         return false;
-    source->cancelTimeout();
-    source->disable();
-    releaseScanSource(this, source);
-    return true;
+
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    AirportItlwmWclPhysicalScanLifecycle &wcl = fWclPhysicalScanLifecycle;
+    IOSimpleLock *admissionLock = wcl.admissionLock;
+    if (admissionLock == NULL)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    const bool admitted = standard.cachedTerminalPending &&
+        !standard.cachedTerminalPublishing &&
+        TahoeStandardScanContracts::idle(&standard.physicalState) &&
+        wcl.state.phase == TahoeWclPhysicalScanContracts::Phase::Idle;
+    if (admitted) {
+        standard.cachedTerminalPending = false;
+        standard.cachedTerminalPublishing = true;
+    }
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    return admitted;
+}
+
+void AirportItlwm::finishCachedScanTerminal()
+{
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    IOSimpleLock *admissionLock = fWclPhysicalScanLifecycle.admissionLock;
+    if (admissionLock == NULL)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    standard.cachedTerminalPublishing = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+}
+
+IOReturn AirportItlwm::reserveStandardPhysicalScan(uint64_t *generation)
+{
+    if (generation == nullptr)
+        return kIOReturnBadArgument;
+    *generation = 0;
+
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    AirportItlwmWclPhysicalScanLifecycle &wcl = fWclPhysicalScanLifecycle;
+    IOSimpleLock *admissionLock = wcl.admissionLock;
+    if (admissionLock == NULL)
+        return kIOReturnNotReady;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    const bool admitted = !standard.cachedTerminalPending &&
+        !standard.cachedTerminalPublishing &&
+        TahoeStandardScanContracts::idle(&standard.physicalState) &&
+        !wcl.settingUp && !wcl.stopping && !wcl.tearingDown &&
+        wcl.state.phase == TahoeWclPhysicalScanContracts::Phase::Idle &&
+        TahoeStandardScanContracts::reserve(&standard.physicalState,
+                                            generation);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    return admitted ? kIOReturnSuccess : kIOReturnBusy;
+}
+
+TahoeStandardScanContracts::StartDisposition
+AirportItlwm::activateStandardPhysicalScan(uint64_t generation,
+                                           uint32_t backendGeneration)
+{
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    IOSimpleLock *admissionLock = fWclPhysicalScanLifecycle.admissionLock;
+    if (admissionLock == NULL)
+        return TahoeStandardScanContracts::StartDisposition::Lost;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    const TahoeStandardScanContracts::StartDisposition disposition =
+        TahoeStandardScanContracts::activate(&standard.physicalState,
+                                             generation, backendGeneration);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    return disposition;
+}
+
+TahoeStandardScanContracts::StartDisposition
+AirportItlwm::failStandardPhysicalScanStart(uint64_t generation)
+{
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    IOSimpleLock *admissionLock = fWclPhysicalScanLifecycle.admissionLock;
+    if (admissionLock == NULL)
+        return TahoeStandardScanContracts::StartDisposition::Lost;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    const TahoeStandardScanContracts::StartDisposition disposition =
+        TahoeStandardScanContracts::failStart(&standard.physicalState,
+                                              generation);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    return disposition;
+}
+
+TahoeStandardScanContracts::TerminalDisposition
+AirportItlwm::claimStandardPhysicalScanTerminal(uint64_t generation,
+                                                uint32_t backendGeneration,
+                                                uint32_t terminalStatus)
+{
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    IOSimpleLock *admissionLock = fWclPhysicalScanLifecycle.admissionLock;
+    if (admissionLock == NULL)
+        return TahoeStandardScanContracts::TerminalDisposition::None;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    const TahoeStandardScanContracts::TerminalDisposition disposition =
+        TahoeStandardScanContracts::claimTerminal(&standard.physicalState,
+                                                  generation,
+                                                  backendGeneration,
+                                                  terminalStatus);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    return disposition;
+}
+
+void AirportItlwm::finishPendingStandardPhysicalScanTerminal(
+    uint64_t generation, uint32_t backendGeneration)
+{
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    IOSimpleLock *admissionLock = fWclPhysicalScanLifecycle.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    TahoeStandardScanContracts::finishPendingTerminal(&standard.physicalState,
+                                                       generation,
+                                                       backendGeneration);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+}
+
+void AirportItlwm::invalidateStandardPhysicalScan(uint64_t generation,
+                                                  uint32_t backendGeneration)
+{
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    IOSimpleLock *admissionLock = fWclPhysicalScanLifecycle.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    (void)TahoeStandardScanContracts::invalidate(&standard.physicalState,
+                                                  generation,
+                                                  backendGeneration);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+}
+
+void AirportItlwm::reopenStandardPhysicalScanAfterRadioReset()
+{
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
+    IOSimpleLock *admissionLock = fWclPhysicalScanLifecycle.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    TahoeStandardScanContracts::reopenAfterRadioReset(&standard.physicalState);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
 }
 
 bool AirportItlwm::scanSourceCallbackLive(IOTimerEventSource *sender)
@@ -2261,6 +2425,7 @@ IOReturn AirportItlwm::reserveWclPhysicalScan(uint64_t *generation)
 
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
         fWclPhysicalScanLifecycle;
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
     IOSimpleLock *lock = lifecycle.admissionLock;
     if (lock == nullptr) {
         releaseWclPhysicalScanSnapshot({ entries, entryBytes });
@@ -2272,7 +2437,9 @@ IOReturn AirportItlwm::reserveWclPhysicalScan(uint64_t *generation)
         lifecycle.tearingDown || lifecycle.source == nullptr ||
         lifecycle.state.phase == TahoeWclPhysicalScanContracts::Phase::Draining;
     const bool busy = lifecycle.users != 0 || lifecycle.resultEntries != nullptr ||
-        lifecycle.state.phase != TahoeWclPhysicalScanContracts::Phase::Idle;
+        lifecycle.state.phase != TahoeWclPhysicalScanContracts::Phase::Idle ||
+        standard.cachedTerminalPending || standard.cachedTerminalPublishing ||
+        !TahoeStandardScanContracts::idle(&standard.physicalState);
     bool reserved = false;
     if (!unavailable && !busy) {
         reserved = TahoeWclPhysicalScanContracts::reserve(
@@ -2534,13 +2701,23 @@ void AirportItlwm::invalidateWclPhysicalScan()
 {
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
         fWclPhysicalScanLifecycle;
+    AirportItlwmStandardScanLifecycle &standard = fStandardScanLifecycle;
     IOSimpleLock *lock = lifecycle.admissionLock;
     if (lock == nullptr)
         return;
 
     TahoeWclPhysicalScanSnapshotRelease release = { nullptr, 0 };
+    bool cancelCachedTerminal = false;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    /* A pending FAST timer is not a radio transaction. Revoke it before the
+     * reset boundary so a callback admitted later cannot inherit a future
+     * normal/WCL request's slot. A callback already publishing keeps its
+     * publishing fence until fakeScanDone() releases it, so reopen cannot
+     * overlap its one permitted cache-only terminal. */
+    cancelCachedTerminal = standard.cachedTerminalPending;
+    standard.cachedTerminalPending = false;
     TahoeWclPhysicalScanContracts::beginDraining(&lifecycle.state);
+    TahoeStandardScanContracts::beginDraining(&standard.physicalState);
     lifecycle.snapshotInProgress = false;
     lifecycle.snapshotReady = false;
     lifecycle.terminalPublicationRequested = false;
@@ -2550,6 +2727,13 @@ void AirportItlwm::invalidateWclPhysicalScan()
     release = takeWclPhysicalScanSnapshotScrubIfIdleLocked(lifecycle);
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
     releaseWclPhysicalScanSnapshot(release);
+    if (cancelCachedTerminal) {
+        IOTimerEventSource *source = NULL;
+        if (acquireScanSource(this, &source)) {
+            source->cancelTimeout();
+            releaseScanSource(this, source);
+        }
+    }
     if (fHalService != nullptr)
         fHalService->invalidateWclBackgroundScan();
 }
@@ -7190,6 +7374,28 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 
     if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED) {
         that->reopenWclPhysicalScanAfterRadioReset();
+        that->reopenStandardPhysicalScanAfterRadioReset();
+        return;
+    }
+
+    if (msgCode == IEEE80211_EVT_STANDARD_SCAN_INVALIDATED) {
+        if (data != nullptr) {
+            const struct ieee80211_standard_scan_invalidation *invalidation =
+                (const struct ieee80211_standard_scan_invalidation *)data;
+            that->invalidateStandardPhysicalScan(invalidation->generation,
+                                                 invalidation->backend_generation);
+        }
+        return;
+    }
+
+    if (msgCode == IEEE80211_EVT_STANDARD_SCAN_TERMINAL) {
+        if (data != nullptr) {
+            const struct ieee80211_standard_scan_terminal terminal =
+                *(const struct ieee80211_standard_scan_terminal *)data;
+            (void)that->claimStandardPhysicalScanTerminal(
+                terminal.generation, terminal.backend_generation,
+                terminal.status);
+        }
         return;
     }
 
@@ -7480,7 +7686,7 @@ void AirportItlwm::setTahoeLqmStatsInterval(uint32_t intervalMs)
 void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
 {
     AirportItlwm *that = (AirportItlwm *)owner;
-    if (that == NULL || !that->scanSourceCallbackLive(sender))
+    if (that == NULL || !that->beginCachedScanTerminal(sender))
         return;
     RT_SET(13);
     sRT.scanCount++;
@@ -7489,22 +7695,22 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
     that->fScanResultWrapping = false;
 
     /*
-     * The timer remains only for legacy/generic SCAN_REQ compatibility.  A
-     * physical WCL ticket is completed exclusively from its tagged
-     * IEEE80211_EVT_WCL_SCAN_TERMINAL and must never manufacture BSS results
-     * from this cached timer edge.
+     * The timer remains only for explicit FAST cache requests.  Physical WCL
+     * and normal CoreWLAN scans complete exclusively from their tagged lower
+     * terminal paths and must never manufacture BSS results from this cached
+     * timer edge.
      */
     static UInt32 genericScanStatus = 0;
     if (that->getCommandGate() != nullptr) {
         that->getCommandGate()->runAction(postMessageGated,
             (void *)(uintptr_t)APPLE80211_M_SCAN_DONE, &genericScanStatus,
             (void *)(uintptr_t)sizeof(genericScanStatus), nullptr);
-        return;
+    } else {
+        postMessageGated(that, (void *)(uintptr_t)APPLE80211_M_SCAN_DONE,
+                          &genericScanStatus,
+                          (void *)(uintptr_t)sizeof(genericScanStatus), nullptr);
     }
-
-    postMessageGated(that, (void *)(uintptr_t)APPLE80211_M_SCAN_DONE,
-                      &genericScanStatus,
-                      (void *)(uintptr_t)sizeof(genericScanStatus), nullptr);
+    that->finishCachedScanTerminal();
 }
 
 bool AirportItlwm::isCommandProhibited(int command)
@@ -7529,6 +7735,8 @@ bool AirportItlwm::init(OSDictionary *properties)
     memset(&fLinkStatePublishLifecycle, 0,
            sizeof(fLinkStatePublishLifecycle));
     memset(&fScanSourceLifecycle, 0, sizeof(fScanSourceLifecycle));
+    memset(&fStandardScanLifecycle, 0,
+           sizeof(fStandardScanLifecycle));
     memset(&fWclPhysicalScanLifecycle, 0,
            sizeof(fWclPhysicalScanLifecycle));
 #if __IO80211_TARGET >= __MAC_26_0

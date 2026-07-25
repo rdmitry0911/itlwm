@@ -650,6 +650,10 @@ void ieee80211_node_attach(struct _ifnet *);
 void ieee80211_node_lateattach(struct _ifnet *);
 void ieee80211_node_detach(struct _ifnet *);
 
+/* Prepare node/cache/mode state for a foreground scan without entering the
+ * backend state callback.  A backend with its own exact scan lease uses this
+ * after it has admitted the radio transaction. */
+void ieee80211_prepare_scan(struct _ifnet *);
 void ieee80211_begin_scan(struct _ifnet *);
 void ieee80211_next_scan(struct _ifnet *);
 void ieee80211_end_scan(struct _ifnet *);

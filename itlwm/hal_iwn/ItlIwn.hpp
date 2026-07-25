@@ -103,6 +103,8 @@ public:
                                     uint32_t *outBackendGeneration) override;
     IOReturn abortWclBackgroundScan(uint64_t generation) override;
     void invalidateWclBackgroundScan() override;
+    IOReturn beginStandardScan(uint64_t generation, bool background,
+                               uint32_t *outBackendGeneration) override;
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);

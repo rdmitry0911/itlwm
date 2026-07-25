@@ -6043,18 +6043,19 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
      * owner, so preserve the short synthetic terminal for that one form. */
     if (sd->scan_type == APPLE80211_SCAN_TYPE_FAST) {
         if (instance == nullptr || !instance->scheduleScanSource(100))
-            return kIOReturnAborted;
+            return kIOReturnBusy;
         return kIOReturnSuccess;
     }
 
-    /* PASSIVE and ordinary requests must wait for the real lower scan
-     * terminal.  In particular, do not leave a cache-only timer armed to
-     * publish APPLE80211_M_SCAN_DONE ahead of the IWN 2.4/5-GHz terminal. */
-    if (instance == nullptr || !instance->cancelScanSource())
-        return kIOReturnAborted;
+    /* PASSIVE and ordinary requests use a real lower scan.  They must not
+     * cancel/rearm a FAST timer: an action already admitted by the workloop
+     * could otherwise publish a synthetic SCAN_DONE ahead of this terminal. */
+    if (instance == nullptr || fHalService == nullptr)
+        return kIOReturnNotReady;
     if ((ic->ic_ac.ac_if.if_flags & IFF_RUNNING) == 0)
         return kIOReturnNotReady;
 
+    bool background = false;
     if (ic->ic_state == IEEE80211_S_RUN) {
         if (ic->ic_bss == nullptr)
             return kIOReturnNotReady;
@@ -6063,16 +6064,56 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
             ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
              !ic->ic_bss->ni_port_valid))
             return kIOReturnBusy;
-        ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
-        return kIOReturnSuccess;
+        background = true;
+    } else if (ic->ic_state != IEEE80211_S_SCAN) {
+        return kIOReturnBusy;
     }
 
-    if (ic->ic_state == IEEE80211_S_SCAN) {
-        ieee80211_begin_scan(&ic->ic_ac.ac_if);
+    uint64_t generation = 0;
+    const IOReturn reserveResult = instance->reserveStandardPhysicalScan(
+        &generation);
+    if (reserveResult != kIOReturnSuccess)
+        return reserveResult;
+
+    uint32_t backendGeneration = 0;
+    const IOReturn beginResult = fHalService->beginStandardScan(
+        generation, background, &backendGeneration);
+    if (beginResult == kIOReturnUnsupported) {
+        /* Keep non-IWN backends on their historical generic path. The IWN
+         * implementation above is deliberately stricter because it owns an
+         * exact physical lease and tagged terminal for this controller. */
+        (void)instance->failStandardPhysicalScanStart(generation);
+        if (background)
+            ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
+        else
+            ieee80211_begin_scan(&ic->ic_ac.ac_if);
         return kIOReturnSuccess;
     }
+    /* A nonzero backend generation means IWN accepted a lower lease before
+     * reporting this result.  Do not reset the controller reservation on an
+     * error in that case: a submitted command may still terminate, or the
+     * reset path will emit the matching INVALIDATED event. */
+    if (backendGeneration != 0) {
+        const TahoeStandardScanContracts::StartDisposition disposition =
+            instance->activateStandardPhysicalScan(generation,
+                                                   backendGeneration);
+        if (disposition ==
+            TahoeStandardScanContracts::StartDisposition::TerminalPending)
+            instance->finishPendingStandardPhysicalScanTerminal(
+                generation, backendGeneration);
+        if (disposition == TahoeStandardScanContracts::StartDisposition::Lost)
+            return kIOReturnAborted;
+        return beginResult;
+    }
 
-    return kIOReturnBusy;
+    if (beginResult != kIOReturnSuccess) {
+        const TahoeStandardScanContracts::StartDisposition failed =
+            instance->failStandardPhysicalScanStart(generation);
+        return failed == TahoeStandardScanContracts::StartDisposition::Lost ?
+            beginResult : kIOReturnAborted;
+    }
+
+    return kIOReturnAborted;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

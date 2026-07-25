@@ -18,6 +18,7 @@
 #include "TahoeHiddenInterfaceContracts.hpp"
 #include "TahoeStateMachineClosure.hpp"
 #include "TahoeCommanderV2.hpp"
+#include "TahoeStandardScanContracts.hpp"
 #include "TahoeWclPhysicalScanContracts.hpp"
 #include <ClientKit/AirportItlwmSaeRelayV1.h>
 #include <ClientKit/AirportItlwmSaeRelayFsmV1.h>
@@ -269,6 +270,21 @@ struct AirportItlwmScanSourceLifecycle {
     bool stopping;
     bool tearingDown;
     uint32_t users;
+};
+
+/*
+ * Standard CoreWLAN scan ownership is intentionally distinct from the WCL
+ * physical-scan ticket.  The cache-only FAST timer and a lower-owned normal
+ * scan must never overlap: otherwise a timer callback already accepted by the
+ * workloop can publish a synthetic SCAN_DONE ahead of the real IWN terminal.
+ * It shares the WCL physical-scan admission lock: WCL and normal CoreWLAN
+ * scans are competing owners of the same radio until their tagged lower
+ * terminal has retired.
+ */
+struct AirportItlwmStandardScanLifecycle {
+    bool cachedTerminalPending;
+    bool cachedTerminalPublishing;
+    TahoeStandardScanContracts::State physicalState;
 };
 
 /*
@@ -710,11 +726,27 @@ public:
     //scan
     static void fakeScanDone(OSObject *owner, IOTimerEventSource *sender);
     // The controller is the sole owner of the fake-scan timer.  Skywalk
-    // request/abort paths must use these admission-gated operations instead
-    // of retaining a raw timer pointer across controller teardown.
+    // paths must use these admission-gated operations instead of retaining a
+    // raw timer pointer across controller teardown.
     bool scheduleScanSource(uint32_t timeoutMs);
-    bool cancelScanSource();
     bool scanSourceCallbackLive(IOTimerEventSource *sender);
+    bool beginCachedScanTerminal(IOTimerEventSource *sender);
+    void finishCachedScanTerminal();
+    IOReturn reserveStandardPhysicalScan(uint64_t *generation);
+    TahoeStandardScanContracts::StartDisposition
+        activateStandardPhysicalScan(uint64_t generation,
+                                    uint32_t backendGeneration);
+    TahoeStandardScanContracts::StartDisposition
+        failStandardPhysicalScanStart(uint64_t generation);
+    TahoeStandardScanContracts::TerminalDisposition
+        claimStandardPhysicalScanTerminal(uint64_t generation,
+                                         uint32_t backendGeneration,
+                                         uint32_t terminalStatus);
+    void finishPendingStandardPhysicalScanTerminal(uint64_t generation,
+                                                   uint32_t backendGeneration);
+    void invalidateStandardPhysicalScan(uint64_t generation,
+                                        uint32_t backendGeneration);
+    void reopenStandardPhysicalScanAfterRadioReset();
     IOReturn reserveWclPhysicalScan(uint64_t *generation);
     TahoeWclPhysicalScanContracts::StartDisposition
         activateWclPhysicalScan(uint64_t generation,
@@ -1118,6 +1150,7 @@ public:
     bool fSkywalkInterfaceAttached;
     bool fSkywalkEthernetAttached;
     AirportItlwmWclPhysicalScanLifecycle fWclPhysicalScanLifecycle;
+    AirportItlwmStandardScanLifecycle fStandardScanLifecycle;
 };
 
 // Boot nub — replicates Apple's AppleBCMWLANUserClient IOKit matching pattern.

@@ -306,6 +306,23 @@ public:
 
 public:
     virtual bool initWithController(IOEthernetController *controller, IOWorkLoop *workloop, IOCommandGate *commandGate);
+
+    /*
+     * One CoreWLAN normal SCAN_REQ may use a backend-owned physical lease
+     * when that backend can return an exact generation-tagged terminal.  This
+     * is deliberately separate from the WCL API: the caller still publishes
+     * the normal APPLE80211_M_SCAN_DONE contract.  HALs without that exact
+     * ownership report Unsupported and keep their historical generic path.
+     * Keep this append-only virtual at the tail of the existing public ABI.
+     */
+    virtual IOReturn beginStandardScan(uint64_t generation, bool background,
+                                      uint32_t *outBackendGeneration) {
+        (void)generation;
+        (void)background;
+        if (outBackendGeneration != NULL)
+            *outBackendGeneration = 0;
+        return kIOReturnUnsupported;
+    }
     
 protected:
     
