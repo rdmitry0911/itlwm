@@ -27,6 +27,7 @@ iwx_pmf_bip_facade = (root / "AirportItlwm/TahoeIwxPmfBipTraceContracts.hpp").re
 iwn_software_pmf = (root / "include/ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h").read_text()
 iwn_pmf_ingress = (root / "include/ClientKit/AirportItlwmIwnPmfIngressTraceContracts.h").read_text()
 iwn_direct_sae = (root / "include/ClientKit/AirportItlwmIwnDirectSaeTraceContracts.h").read_text()
+wcl_physical_scan = (root / "include/ClientKit/AirportItlwmWclPhysicalScanTraceContracts.h").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
@@ -54,6 +55,7 @@ iwx_c_fixture = (root / "tests/iwx_pmf_bip_trace_contract_test.c").read_text()
 iwn_c_fixture = (root / "tests/iwn_software_pmf_trace_contract_test.c").read_text()
 iwn_ingress_c_fixture = (root / "tests/iwn_pmf_ingress_trace_contract_test.c").read_text()
 iwn_direct_sae_c_fixture = (root / "tests/iwn_direct_sae_trace_contract_test.c").read_text()
+wcl_physical_scan_c_fixture = (root / "tests/wcl_physical_scan_trace_contract_test.c").read_text()
 
 
 def fail(message):
@@ -121,7 +123,7 @@ def struct_block(name):
 
 
 for needle in (
-        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 6U",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 7U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_ACK_PROPERTY",
@@ -161,6 +163,8 @@ for needle in (
         "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_FIRST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_LAST",
         "kAirportItlwmPostPltiTraceEventMax",
 ):
     require(abi, needle, "safe-only public ABI")
@@ -192,7 +196,13 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated = 56",
         "kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed = 57",
         "kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted = 58",
-        "kAirportItlwmPostPltiTraceEventMax = 59",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted = 59",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved = 60",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalComplete = 61",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanResultPublicationIssued = 62",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalAborted = 63",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanDonePublicationIssued = 64",
+        "kAirportItlwmPostPltiTraceEventMax = 65",
 ):
     require(abi, needle, "append-only IWX PMF observer ABI")
 
@@ -227,11 +237,15 @@ ordered(buffer_fields, "buffer ABI ordering", "version;", "captureGeneration;",
 
 for needle in (
         "AirportItlwmPostPltiTraceBeginEpisode",
+        "AirportItlwmPostPltiTraceBeginWclPhysicalScanEpisode",
         "AirportItlwmPostPltiTraceBeginDirectSaeEpisode",
         "AirportItlwmPostPltiTraceRecord",
+        "AirportItlwmPostPltiTraceRecordWclPhysicalScan",
         "AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
         "AirportItlwmPostPltiTraceCompleteEpisode",
+        "AirportItlwmPostPltiTraceCompleteWclPhysicalScanEpisode",
         "AirportItlwmPostPltiTraceAbortEpisode",
+        "AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode",
         "AirportItlwmPostPltiTraceNoteStateRequest",
         "neither allocate, log, publish",
         "static inline void",
@@ -257,7 +271,10 @@ for needle in (
         "require_external_bridge ieee80211_proto AirportItlwmPostPltiTraceNoteStateRequest",
         "require_external_bridge ieee80211_crypto_bip AirportItlwmPostPltiTraceRecordIgtkPublicationSelection",
         "require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecordWclPhysicalScan",
+        "require_external_bridge ItlIwn AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode",
         "require_external_bridge ItlIwx AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge AirportItlwmSkywalkInterface AirportItlwmPostPltiTraceBeginWclPhysicalScanEpisode",
         "require_external_bridge AirportItlwmSkywalkInterface",
         "AirportItlwmPostPltiTraceBeginDirectSaeEpisode",
         "__ZL.*AirportItlwmPostPltiTrace",
@@ -783,6 +800,8 @@ for needle in (
         "AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_FIRST",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_FIRST",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_LAST",
 ):
     require(iwn_event_filter, needle, "explicit IWN PMF vocabulary boundary")
 record_token = body(v2, "airportItlwmPostPltiTraceRecordToken",
@@ -1146,6 +1165,28 @@ for needle in (
 ):
     require(client, needle, "IWN direct-SAE categorical client mapping")
 for needle in (
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted",
+        "wcl-physical-scan-request-accepted",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved",
+        "wcl-physical-scan-lower-lease-reserved",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalComplete",
+        "wcl-physical-scan-terminal-complete",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanResultPublicationIssued",
+        "wcl-physical-scan-result-publication-issued",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalAborted",
+        "wcl-physical-scan-terminal-aborted",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanDonePublicationIssued",
+        "wcl-physical-scan-done-publication-issued",
+        "#include <ClientKit/AirportItlwmWclPhysicalScanTraceContracts.h>",
+        "get_iwn_wcl_physical_scan_report",
+        "iwn-wcl-physical-scan-report",
+        "iwn_wcl_physical_scan_verdict=%s first_missing_stage=%s",
+        "result_publication_issued=%u",
+        "IWN_WCL_PHYSICAL_SCAN_OBSERVED",
+        "DONE_PUBLICATION_NOT_OBSERVED",
+):
+    require(client, needle, "IWN WCL physical-scan categorical client mapping")
+for needle in (
         "-std=c11 -Wall -Wextra -Werror",
         "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c",
         "-framework IOKit",
@@ -1166,6 +1207,8 @@ for needle in (
         "iwn_pmf_ingress_trace_contract_test",
         "tests/iwn_direct_sae_trace_contract_test.c",
         "iwn_direct_sae_trace_contract_test",
+        "tests/wcl_physical_scan_trace_contract_test.c",
+        "wcl_physical_scan_trace_contract_test",
 ):
     require(payload_script, needle, "unit build for PMF trace C contracts")
 for needle in (
@@ -1224,6 +1267,21 @@ for needle in (
 ):
     require(iwn_direct_sae_c_fixture, needle,
             "deterministic IWN direct-SAE C fixture")
+for needle in (
+        "an empty physical scan reaches the exact DONE publication boundary",
+        "one issued result publication remains optional positive evidence",
+        "an upper admission cannot infer a lower lease",
+        "a lower lease cannot infer a terminal",
+        "a lower terminal cannot infer a DONE publication call",
+        "a claimed aborted lower terminal is a negative outcome",
+        "a result publication cannot precede a lower terminal",
+        "a categorical result marker is single-shot",
+        "no event may append after the closed DONE boundary",
+        "mixed capture generations are fail-closed",
+        "IWX cannot borrow IWN physical-scan evidence",
+):
+    require(wcl_physical_scan_c_fixture, needle,
+            "deterministic IWN WCL physical-scan C fixture")
 ordered(runner, "isolated Tahoe producer build precedes trace audit",
         "ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'",
         "cd '$REMOTE_DIR' && ./scripts/build_post_plti_trace.sh")
@@ -1259,8 +1317,9 @@ for needle in (
 for needle in (
         "## Sealed capture rule",
         "## Versioned synthetic scenarios",
-        "trace v6 layer",
+        "trace v7 layer",
         "v6 adds a separate IWN direct-SAE evaluator",
+        "v7 adds a separate IWN physical-WCL scan evaluator",
         "IWN software-PMF evaluator",
         "IWN-gated PMF-ingress evaluator",
         "fixed PTK-to-GTK-to-IGTK",

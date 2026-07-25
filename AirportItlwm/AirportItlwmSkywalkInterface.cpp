@@ -6231,6 +6231,12 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
     if (reserveResult != kIOReturnSuccess)
         return reserveResult;
 
+    /* The upper WCL owner has admitted one physical-scan request.  Lower
+     * lease/final publication facts are recorded by their respective exact
+     * owners; a start failure without a claimed terminal remains an honest
+     * incomplete trace until the caller seals its diagnostic window. */
+    AirportItlwmPostPltiTraceBeginWclPhysicalScanEpisode(ic);
+
     /* This is an iterator reset, not scan admission/ownership state. */
     fNextNodeToSend = NULL;
     fScanResultWrapping = false;

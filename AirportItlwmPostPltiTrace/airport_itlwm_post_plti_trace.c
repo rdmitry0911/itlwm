@@ -12,6 +12,7 @@
 #include <ClientKit/AirportItlwmIwxPmfBipTraceContracts.h>
 #include <ClientKit/AirportItlwmIwnSoftwarePmfTraceContracts.h>
 #include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>
+#include <ClientKit/AirportItlwmWclPhysicalScanTraceContracts.h>
 
 /*
  * This client intentionally reads only the separate safe-only trace
@@ -214,6 +215,18 @@ event_name(uint32_t event)
         return "iwn-direct-sae-pmk-claimed";
     case kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted:
         return "iwn-direct-sae-assoc-descriptor-accepted";
+    case kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted:
+        return "wcl-physical-scan-request-accepted";
+    case kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved:
+        return "wcl-physical-scan-lower-lease-reserved";
+    case kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalComplete:
+        return "wcl-physical-scan-terminal-complete";
+    case kAirportItlwmPostPltiTraceEventWclPhysicalScanResultPublicationIssued:
+        return "wcl-physical-scan-result-publication-issued";
+    case kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalAborted:
+        return "wcl-physical-scan-terminal-aborted";
+    case kAirportItlwmPostPltiTraceEventWclPhysicalScanDonePublicationIssued:
+        return "wcl-physical-scan-done-publication-issued";
     default:
         return "unknown";
     }
@@ -966,13 +979,95 @@ get_iwn_direct_sae_report(io_service_t service)
     return 0;
 }
 
+static const char *
+wcl_physical_scan_verdict_name(
+    enum AirportItlwmWclPhysicalScanTraceVerdict verdict)
+{
+    switch (verdict) {
+    case kAirportItlwmWclPhysicalScanTraceVerdictIntegrityInconclusive:
+        return "INTEGRITY_INCONCLUSIVE";
+    case kAirportItlwmWclPhysicalScanTraceVerdictBackendUnsupported:
+        return "BACKEND_UNSUPPORTED";
+    case kAirportItlwmWclPhysicalScanTraceVerdictBranchNotObserved:
+        return "BRANCH_NOT_OBSERVED";
+    case kAirportItlwmWclPhysicalScanTraceVerdictLowerLeaseNotObserved:
+        return "LOWER_LEASE_NOT_OBSERVED";
+    case kAirportItlwmWclPhysicalScanTraceVerdictTerminalNotObserved:
+        return "TERMINAL_NOT_OBSERVED";
+    case kAirportItlwmWclPhysicalScanTraceVerdictTerminalAborted:
+        return "TERMINAL_ABORTED";
+    case kAirportItlwmWclPhysicalScanTraceVerdictDoneNotPublished:
+        return "DONE_PUBLICATION_NOT_OBSERVED";
+    case kAirportItlwmWclPhysicalScanTraceVerdictPhysicalScanObserved:
+        return "IWN_WCL_PHYSICAL_SCAN_OBSERVED";
+    default:
+        return "INTEGRITY_INCONCLUSIVE";
+    }
+}
+
+static const char *
+wcl_physical_scan_missing_stage_name(
+    enum AirportItlwmWclPhysicalScanTraceMissingStage stage)
+{
+    switch (stage) {
+    case kAirportItlwmWclPhysicalScanTraceMissingStageNone:
+        return "none";
+    case kAirportItlwmWclPhysicalScanTraceMissingStageRequest:
+        return "request";
+    case kAirportItlwmWclPhysicalScanTraceMissingStageLowerLease:
+        return "lower-lease";
+    case kAirportItlwmWclPhysicalScanTraceMissingStageTerminal:
+        return "terminal";
+    case kAirportItlwmWclPhysicalScanTraceMissingStageDone:
+        return "done-publication";
+    case kAirportItlwmWclPhysicalScanTraceMissingStageUnknown:
+    default:
+        return "unknown";
+    }
+}
+
+static int
+get_iwn_wcl_physical_scan_report(io_service_t service)
+{
+    AirportItlwmPostPltiTraceSnapshot snapshot;
+    AirportItlwmPostPltiTraceBuffer buffer;
+    AirportItlwmPostPltiTraceEntry entries[
+        AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES];
+    uint32_t count = 0;
+    enum AirportItlwmWclPhysicalScanTraceMissingStage missing_stage =
+        kAirportItlwmWclPhysicalScanTraceMissingStageUnknown;
+
+    if (copy_snapshot(service, &snapshot) != 0 ||
+        copy_buffer(service, &buffer) != 0)
+        return 1;
+    const int integrity = collect_entries(&snapshot, &buffer, entries, &count);
+    const enum AirportItlwmWclPhysicalScanTraceVerdict verdict =
+        airport_itlwm_wcl_physical_scan_trace_classify_entries_with_stage(
+            entries, count, integrity, snapshot.backend,
+            snapshot.episodeCount, snapshot.activeEpisode, &missing_stage);
+    const int result_publication_issued =
+        airport_itlwm_wcl_physical_scan_trace_result_publication_issued(
+            entries, count);
+    printf("capture_generation=%u backend=%s entries=%u integrity=%s "
+           "episode_count=%u active_episode=%u\n",
+           snapshot.captureGeneration, backend_name(snapshot.backend), count,
+           integrity ? "ok" : "inconclusive", snapshot.episodeCount,
+           snapshot.activeEpisode);
+    printf("iwn_wcl_physical_scan_verdict=%s first_missing_stage=%s "
+           "result_publication_issued=%u\n",
+           wcl_physical_scan_verdict_name(verdict),
+           wcl_physical_scan_missing_stage_name(missing_stage),
+           result_publication_issued != 0 ? 1U : 0U);
+    return 0;
+}
+
 static void
 usage(const char *program)
 {
     fprintf(stderr,
             "usage:\n"
             "  %s reset|on|off|seal\n"
-            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress|iwn-software-pmf-report|iwn-pmf-ingress-report|iwn-direct-sae-report\n",
+            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress|iwn-software-pmf-report|iwn-pmf-ingress-report|iwn-direct-sae-report|iwn-wcl-physical-scan-report\n",
             program, program);
 }
 
@@ -1017,6 +1112,8 @@ main(int argc, char **argv)
             rc = get_iwn_pmf_ingress_report(service);
         else if (strcmp(argv[2], "iwn-direct-sae-report") == 0)
             rc = get_iwn_direct_sae_report(service);
+        else if (strcmp(argv[2], "iwn-wcl-physical-scan-report") == 0)
+            rc = get_iwn_wcl_physical_scan_report(service);
         else
             usage(argv[0]);
     } else

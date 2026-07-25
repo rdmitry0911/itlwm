@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 6U
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 7U
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY \
@@ -115,7 +115,26 @@ enum AirportItlwmPostPltiTraceEvent {
     kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated = 56,
     kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed = 57,
     kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted = 58,
-    kAirportItlwmPostPltiTraceEventMax = 59
+    /*
+     * IWN physical-WCL scan evidence v7.  These facts establish only the
+     * lower-owner hand-off and the bounded result/DONE publication path.
+     * They carry no request contents, BSS identity, result payload,
+     * channel, signal, pointer, or firmware data.  Keep this vocabulary
+     * append-only.
+    */
+    kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted = 59,
+    kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved = 60,
+    kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalComplete = 61,
+    /* Optional: one or more nonempty result publication calls were issued
+     * while the exact ticket was still owned.  postMessage() is void, so
+     * this never claims later consumer delivery.  It is not required for a
+     * valid empty scan, and contains no count or result content. */
+    kAirportItlwmPostPltiTraceEventWclPhysicalScanResultPublicationIssued = 62,
+    kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalAborted = 63,
+    /* Same boundary for the final DONE publication call, not a delivery
+     * acknowledgement. */
+    kAirportItlwmPostPltiTraceEventWclPhysicalScanDonePublicationIssued = 64,
+    kAirportItlwmPostPltiTraceEventMax = 65
 };
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_SOFTWARE_PMF_EVENT_FIRST \
@@ -132,6 +151,11 @@ enum AirportItlwmPostPltiTraceEvent {
     kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST \
     kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted
+
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_FIRST \
+    kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_LAST \
+    kAirportItlwmPostPltiTraceEventWclPhysicalScanDonePublicationIssued
 
 /*
  * Categorical backend coverage, never a hardware identifier.  IWX exposes

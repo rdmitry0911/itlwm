@@ -3,7 +3,7 @@
 ## Scope
 
 This document records the verified, non-functional diagnostic scenarios that
-ship with the Tahoe post-PLTI trace v6 layer.  The generic ordered association evaluator is IWN-only.
+ship with the Tahoe post-PLTI trace v7 layer.  The generic ordered association evaluator is IWN-only.
 IWX, including AX211, remains backend-unsupported for that evaluator and
 cannot inherit an IWN verdict.
 
@@ -59,6 +59,19 @@ IWN reports that a scan is already active, the exact request and staged
 credential are revoked and WCL receives a bounded not-ready retry. Thus the
 completion of that older scan cannot select a BSS, enter SAE authentication,
 or be counted by the direct evaluator as its fresh scan.
+
+v7 adds a separate IWN physical-WCL scan evaluator for the high-frequency
+scan and roaming substrate.  Its facts are limited to upper request
+admission, the exact IWN lower lease reservation, a claimed lower terminal,
+an optional result-publication call, and the final DONE-publication call.  A
+positive result permits an empty result set, so the optional result fact is
+not required.  It establishes only that the driver crossed those local
+ownership boundaries in one closed IWN episode; `postMessage()` is void, so
+the publication facts never claim consumer delivery.  An aborted terminal,
+missing boundary, mixed episode or generation, drop, sequence gap, or
+post-terminal fact is negative or fail-closed as appropriate.  It does not
+prove scan-result consumption, association, roaming, reconnect, multi-AP
+selection, traffic, SAE, or physical-host behavior.
 
 The companion active-prefix classifier is narrower still: it accepts only the
 one live initial PMF/BIP chain through port-valid while the same episode remains

@@ -422,7 +422,13 @@ for token in (
     "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated = 56",
     "kAirportItlwmPostPltiTraceEventIwnDirectSaePmkClaimed = 57",
     "kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted = 58",
-    "kAirportItlwmPostPltiTraceEventMax = 59",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted = 59",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved = 60",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalComplete = 61",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanResultPublicationIssued = 62",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalAborted = 63",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanDonePublicationIssued = 64",
+    "kAirportItlwmPostPltiTraceEventMax = 65",
 ):
     require(trace_abi, token, "append-only PMF observer ABI")
 for token in (

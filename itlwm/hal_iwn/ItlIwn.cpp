@@ -7748,6 +7748,19 @@ iwn_notif_intr(struct iwn_softc *sc)
              * generic/WCL terminal by clearing flags underneath a successor. */
             if (!iwn_scan_lease_claim_terminal(sc, &terminal))
                 break;
+            /* This is the lower owner's exact terminal claim, before
+             * net80211 cleanup can create an unrelated generic scan fact.
+             * A WCL terminal that cannot be published upward remains an
+             * honest missing-DONE diagnostic, rather than a false success. */
+            if (terminal.wcl) {
+                if (terminal.aborted) {
+                    AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode(ic);
+                } else {
+                    AirportItlwmPostPltiTraceRecordWclPhysicalScan(
+                        ic,
+                        kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalComplete);
+                }
+            }
             if (terminal.wcl)
                 __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once,
                                  1, __ATOMIC_RELEASE);
@@ -10510,6 +10523,15 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
     if (!iwn_scan_lease_reserve(sc, owner, upper_generation,
                                 &backend_generation, &serial))
         return EBUSY;
+
+    /* The lease is the lower physical owner's first durable boundary.  Do
+     * not call it a firmware submission: STOP_SCAN may race before the
+     * command doorbell, and the trace must preserve that distinction. */
+    if (wcl) {
+        AirportItlwmPostPltiTraceRecordWclPhysicalScan(
+            ic,
+            kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved);
+    }
 
     if (wcl) {
         struct timeval tv;

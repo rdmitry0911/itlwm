@@ -2633,6 +2633,9 @@ struct AirportItlwmPostPltiTraceState {
     volatile uint32_t backend;
     volatile uintptr_t targetController;
     volatile uint64_t activeToken;
+    /* Initial categorical fact for the active episode; this is private
+     * recorder state, never exported through the safe trace ABI. */
+    volatile uint32_t activeInitialEvent;
     volatile uint32_t admitEpisodes;
     volatile uint8_t recorderLock;
     /* Even is open; odd fences a reset/seal/invalidation transition. */
@@ -3545,7 +3548,9 @@ airportItlwmPostPltiTraceEventRequiresIwn(uint32_t event)
         (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_FIRST &&
          event <= AIRPORT_ITLWM_POST_PLTI_TRACE_PMF_INGRESS_EVENT_LAST) ||
         (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_FIRST &&
-         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST);
+         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_IWN_DIRECT_SAE_EVENT_LAST) ||
+        (event >= AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_FIRST &&
+         event <= AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_LAST);
 }
 
 /*
@@ -3692,6 +3697,19 @@ airportItlwmPostPltiTraceTokenIsCurrent(struct ieee80211com *ic,
         __atomic_load_n(&sPostPltiTrace.activeToken, __ATOMIC_ACQUIRE) == token;
 }
 
+/* Every caller already holds recorderLock.  Keep a physical WCL scan's
+ * terminal publication separate from older association episodes: a generic
+ * port-valid/abort producer must not accidentally close the exact scan
+ * proof. */
+static bool
+airportItlwmPostPltiTraceActiveInitialEventIs(uint32_t initial_event)
+{
+    return initial_event != kAirportItlwmPostPltiTraceEventUnknown &&
+        __atomic_load_n(&sPostPltiTrace.activeToken, __ATOMIC_ACQUIRE) != 0 &&
+        __atomic_load_n(&sPostPltiTrace.activeInitialEvent,
+                        __ATOMIC_ACQUIRE) == initial_event;
+}
+
 static void
 airportItlwmPostPltiTraceMarkDropped()
 {
@@ -3755,21 +3773,37 @@ airportItlwmPostPltiTraceRecordToken(struct ieee80211com *ic, uint32_t event,
     __atomic_store_n(&entry->sequence, sequence, __ATOMIC_RELEASE);
 }
 
-static void
-airportItlwmPostPltiTraceCloseActive(struct ieee80211com *ic, uint32_t event)
+static bool
+airportItlwmPostPltiTraceCloseActiveMatching(
+    struct ieee80211com *ic, uint32_t event, uint32_t expected_initial_event)
 {
     uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
                                      __ATOMIC_ACQUIRE);
     /* Every caller holds recorderLock before detaching this token. */
     if (token == 0)
-        return;
+        return false;
+    if (expected_initial_event != kAirportItlwmPostPltiTraceEventUnknown &&
+        !airportItlwmPostPltiTraceActiveInitialEventIs(
+            expected_initial_event))
+        return false;
     uint64_t expected = token;
     if (!__atomic_compare_exchange_n(&sPostPltiTrace.activeToken, &expected,
                                      0, false, __ATOMIC_ACQ_REL,
                                      __ATOMIC_ACQUIRE))
-        return;
+        return false;
     /* The token was detached first, so later traffic cannot append to it. */
+    __atomic_store_n(&sPostPltiTrace.activeInitialEvent,
+                     kAirportItlwmPostPltiTraceEventUnknown,
+                     __ATOMIC_RELEASE);
     airportItlwmPostPltiTraceRecordToken(ic, event, token, false);
+    return true;
+}
+
+static void
+airportItlwmPostPltiTraceCloseActive(struct ieee80211com *ic, uint32_t event)
+{
+    (void)airportItlwmPostPltiTraceCloseActiveMatching(
+        ic, event, kAirportItlwmPostPltiTraceEventUnknown);
 }
 
 extern "C" void
@@ -3934,11 +3968,16 @@ airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent(
         airportItlwmPostPltiTraceProducerLeave();
         return;
     }
+    __atomic_store_n(&sPostPltiTrace.activeInitialEvent, initial_event,
+                     __ATOMIC_RELEASE);
     if (!airportItlwmPostPltiTraceTokenIsCurrent(ic, token, true)) {
         expected = token;
         (void)__atomic_compare_exchange_n(&sPostPltiTrace.activeToken,
                                           &expected, 0, false,
                                           __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&sPostPltiTrace.activeInitialEvent,
+                         kAirportItlwmPostPltiTraceEventUnknown,
+                         __ATOMIC_RELEASE);
         airportItlwmPostPltiTraceUnlock();
         airportItlwmPostPltiTraceProducerLeave();
         return;
@@ -3957,10 +3996,87 @@ AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
 }
 
 extern "C" void
+AirportItlwmPostPltiTraceBeginWclPhysicalScanEpisode(
+    struct ieee80211com *ic)
+{
+    airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent(
+        ic, kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted);
+}
+
+extern "C" void
 AirportItlwmPostPltiTraceBeginDirectSaeEpisode(struct ieee80211com *ic)
 {
     airportItlwmPostPltiTraceBeginEpisodeWithInitialEvent(
         ic, kAirportItlwmPostPltiTraceEventIwnDirectSaeRequestAccepted);
+}
+
+static bool
+airportItlwmPostPltiTraceWclPhysicalScanInteriorEvent(uint32_t event)
+{
+    return event ==
+            kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved ||
+        event ==
+            kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalComplete ||
+        event ==
+            kAirportItlwmPostPltiTraceEventWclPhysicalScanResultPublicationIssued;
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceRecordWclPhysicalScan(
+    struct ieee80211com *ic, uint32_t event)
+{
+    if (!airportItlwmPostPltiTraceWclPhysicalScanInteriorEvent(event) ||
+        !airportItlwmPostPltiTraceProducerEnter())
+        return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, false);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
+    if (airportItlwmPostPltiTraceActiveInitialEventIs(
+            kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted)) {
+        const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
+                                               __ATOMIC_ACQUIRE);
+        airportItlwmPostPltiTraceRecordToken(ic, event, token, true);
+    }
+    airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceCompleteWclPhysicalScanEpisode(
+    struct ieee80211com *ic)
+{
+    if (!airportItlwmPostPltiTraceProducerEnter())
+        return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, false);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
+    (void)airportItlwmPostPltiTraceCloseActiveMatching(
+        ic, kAirportItlwmPostPltiTraceEventWclPhysicalScanDonePublicationIssued,
+        kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted);
+    airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode(
+    struct ieee80211com *ic)
+{
+    if (!airportItlwmPostPltiTraceProducerEnter())
+        return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, false);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
+    (void)airportItlwmPostPltiTraceCloseActiveMatching(
+        ic, kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalAborted,
+        kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted);
+    airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
 }
 
 extern "C" void
@@ -3980,6 +4096,12 @@ AirportItlwmPostPltiTraceCompleteEpisode(struct ieee80211com *ic)
      * IWN's established ordered evaluator keeps its historical close-on-port
      * behavior unchanged.
      */
+    if (airportItlwmPostPltiTraceActiveInitialEventIs(
+            kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted)) {
+        airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
     if (__atomic_load_n(&sPostPltiTrace.backend, __ATOMIC_ACQUIRE) ==
         kAirportItlwmPostPltiTraceBackendIwx) {
         const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
@@ -4005,8 +4127,11 @@ AirportItlwmPostPltiTraceAbortEpisode(struct ieee80211com *ic)
         airportItlwmPostPltiTraceProducerLeave();
         return;
     }
-    airportItlwmPostPltiTraceCloseActive(
-        ic, kAirportItlwmPostPltiTraceEventEpisodeAborted);
+    if (!airportItlwmPostPltiTraceActiveInitialEventIs(
+            kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted)) {
+        airportItlwmPostPltiTraceCloseActive(
+            ic, kAirportItlwmPostPltiTraceEventEpisodeAborted);
+    }
     airportItlwmPostPltiTraceUnlock();
     airportItlwmPostPltiTraceProducerLeave();
 }
@@ -4203,6 +4328,9 @@ airportItlwmPostPltiTraceApplyControl(AirportItlwm *driver,
                              __ATOMIC_RELEASE);
         }
         __atomic_store_n(&sPostPltiTrace.activeToken, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&sPostPltiTrace.activeInitialEvent,
+                         kAirportItlwmPostPltiTraceEventUnknown,
+                         __ATOMIC_RELEASE);
         __atomic_store_n(&sPostPltiTrace.nextEpisode, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&sPostPltiTrace.episodeCount, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&sPostPltiTrace.droppedEntries, 0, __ATOMIC_RELEASE);
@@ -4384,6 +4512,9 @@ airportItlwmPostPltiTracePoll(AirportItlwm *driver)
                                  __ATOMIC_RELEASE);
                 __atomic_store_n(&sPostPltiTrace.activeToken, 0,
                                  __ATOMIC_RELEASE);
+                __atomic_store_n(&sPostPltiTrace.activeInitialEvent,
+                                 kAirportItlwmPostPltiTraceEventUnknown,
+                                 __ATOMIC_RELEASE);
                 __atomic_store_n(&sPostPltiTrace.targetController, 0,
                                  __ATOMIC_RELEASE);
                 __atomic_store_n(&sPostPltiTrace.backend,
@@ -4408,6 +4539,9 @@ airportItlwmPostPltiTraceInvalidate()
                          __ATOMIC_RELEASE);
     __atomic_store_n(&sPostPltiTrace.admitEpisodes, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&sPostPltiTrace.activeToken, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.activeInitialEvent,
+                     kAirportItlwmPostPltiTraceEventUnknown,
+                     __ATOMIC_RELEASE);
     __atomic_store_n(&sPostPltiTrace.targetController, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&sPostPltiTrace.backend,
                      kAirportItlwmPostPltiTraceBackendUnknown,
@@ -6906,6 +7040,7 @@ postWclPhysicalScanCompletionGated(OSObject *target, void *arg0, void *arg1,
     uint32_t resultCapacity = 0;
     uint32_t resultCount = 0;
     bool suppressResults = false;
+    bool resultPublicationIssued = false;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     const bool accepted = !lifecycle.settingUp && !lifecycle.stopping &&
         !lifecycle.tearingDown && lifecycle.snapshotReady &&
@@ -6956,6 +7091,8 @@ postWclPhysicalScanCompletionGated(OSObject *target, void *arg0, void *arg1,
     if (that->fNetIf == nullptr) {
         result = kIOReturnNotReady;
     } else {
+        struct ieee80211com *traceIc = that->fHalService != nullptr ?
+            that->fHalService->get80211Controller() : nullptr;
         if (!suppressResults) {
             for (uint32_t index = 0; index < resultCount; ++index) {
                 if (!that->ownsWclPhysicalScanCompletion(
@@ -6967,6 +7104,15 @@ postWclPhysicalScanCompletionGated(OSObject *target, void *arg0, void *arg1,
                 that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_RESULT,
                                   &entries[index].payload,
                                   entries[index].payloadLen, true);
+                /* postMessage() is void: this only establishes that one
+                 * publication call was issued after the exact ownership
+                 * check, never that a later consumer received it. */
+                if (!resultPublicationIssued) {
+                    resultPublicationIssued = true;
+                    AirportItlwmPostPltiTraceRecordWclPhysicalScan(
+                        traceIc,
+                        kAirportItlwmPostPltiTraceEventWclPhysicalScanResultPublicationIssued);
+                }
             }
         }
         if (that->ownsWclPhysicalScanCompletion(generation,
@@ -6974,6 +7120,13 @@ postWclPhysicalScanCompletionGated(OSObject *target, void *arg0, void *arg1,
             UInt32 status = 0;
             that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_DONE,
                               &status, sizeof(status), true);
+            /* The normal terminal's positive trace closes only after the
+             * final DONE publication call.  Aborted terminals are closed by
+             * their exact lower STOP_SCAN owner and never receive a positive
+             * DONE trace fact. */
+            if (terminalStatus == IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE)
+                AirportItlwmPostPltiTraceCompleteWclPhysicalScanEpisode(
+                    traceIc);
         } else if (result == kIOReturnSuccess) {
             result = kIOReturnAborted;
         }
