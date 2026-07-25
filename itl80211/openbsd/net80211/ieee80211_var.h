@@ -1090,11 +1090,11 @@ struct ieee80211_ess {
 #define IEEE80211_EVT_SAE_AUTH_PEER             10
 
 /*
- * One exact controller-owned WCL background scan reached a physical lower
- * terminal.  `data` is borrowed only for the synchronous event callback and
- * must be value-copied by a deferred consumer.  The backend emits it only
- * after ieee80211_end_scan() returns, and only after consuming the generic
- * SCAN_DONE callback for this physical lease.
+ * One exact controller-owned WCL scan reached a physical lower terminal.
+ * `data` is borrowed only for the synchronous event callback and must be
+ * value-copied by a deferred consumer.  Associated background WCL scans
+ * consume their generic SCAN_DONE before this event; WCL initial foreground
+ * scans instead use controlled cleanup and never publish generic SCAN_DONE.
  */
 #define IEEE80211_EVT_WCL_SCAN_TERMINAL          11
 #define IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE 0U
@@ -1140,6 +1140,23 @@ struct ieee80211_standard_scan_terminal {
  * after the radio has been initialized again. */
 #define IEEE80211_EVT_STANDARD_SCAN_INVALIDATED   15
 struct ieee80211_standard_scan_invalidation {
+    u_int64_t generation;
+    u_int32_t backend_generation;
+};
+
+/* A queued WCL initial-discovery handoff acquired its own fresh lower scan
+ * lease.  It is distinct from a terminal: a terminal may race this event and
+ * is reconciled through the same generation/backend fence. */
+#define IEEE80211_EVT_WCL_SCAN_STARTED           16
+struct ieee80211_wcl_scan_started {
+    u_int64_t generation;
+    u_int32_t backend_generation;
+};
+
+/* A queued initial handoff never reached a WCL command doorbell.  It carries
+ * no result and must not be converted into a WCL terminal/C9/ED publication. */
+#define IEEE80211_EVT_WCL_SCAN_START_REJECTED    17
+struct ieee80211_wcl_scan_start_rejected {
     u_int64_t generation;
     u_int32_t backend_generation;
 };

@@ -656,6 +656,19 @@ void ieee80211_node_detach(struct _ifnet *);
 void ieee80211_prepare_scan(struct _ifnet *);
 void ieee80211_begin_scan(struct _ifnet *);
 void ieee80211_next_scan(struct _ifnet *);
+
+/* A lower owner that is handing a generic foreground lease to WCL, or
+ * retiring its own foreground WCL lease, must preserve the common cache
+ * cleanup without leaking a generic SCAN_DONE, retry loop, or BSS selection.
+ * The disposition is passed directly by the exact terminal owner; it is not
+ * mutable controller state that a later terminal could accidentally consume. */
+enum ieee80211_scan_completion_mode {
+    IEEE80211_SCAN_COMPLETION_GENERIC = 0,
+    IEEE80211_SCAN_COMPLETION_WCL_HANDOFF,
+    IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND,
+};
+void ieee80211_end_scan_controlled(struct _ifnet *,
+                                   enum ieee80211_scan_completion_mode);
 void ieee80211_end_scan(struct _ifnet *);
 void ieee80211_reset_scan(struct _ifnet *);
 struct ieee80211_node *ieee80211_alloc_node(struct ieee80211com *,

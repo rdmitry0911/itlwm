@@ -35,6 +35,7 @@
 #include <net80211/ieee80211_node.h>
 #include <net80211/ieee80211_ioctl.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_proto.h>
 
 #define super IO80211InfraProtocol
 OSDefineMetaClassAndStructors(AirportItlwmSkywalkInterface, IO80211InfraProtocol);
@@ -6287,11 +6288,29 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
 
     /* WCL uses a dedicated lower physical owner.  Do not call net80211's
      * generic cache helper here: its coalescing return cannot prove that this
-     * request obtained a new firmware scan. */
-    if (ic->ic_state != IEEE80211_S_RUN ||
-        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
-        ic->ic_mgt_timer != 0)
+     * request obtained a new firmware scan.  Associated WCL remains a
+     * background lease; initial discovery may instead queue behind exactly
+     * the boot-time generic foreground lease and then submit its own fresh
+     * foreground command. */
+    bool initialForeground = false;
+    if (ic->ic_state == IEEE80211_S_RUN) {
+        if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+            ic->ic_mgt_timer != 0)
+            return kIOReturnNotReady;
+    } else if (ic->ic_state == IEEE80211_S_SCAN) {
+        if (ic->ic_opmode != IEEE80211_M_STA ||
+            (ic->ic_ac.ac_if.if_flags & IFF_RUNNING) == 0 ||
+            (ic->ic_flags & (IEEE80211_F_BGSCAN |
+                             IEEE80211_F_DESBSSID)) != 0 ||
+            (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+            ic->ic_mgt_timer != 0 || ic->ic_des_esslen != 0 ||
+            ieee80211_sae_wcl_request_scan_selection_held(ic) ||
+            ieee80211_sae_wcl_request_scan_selection_owned(ic))
+            return kIOReturnNotReady;
+        initialForeground = true;
+    } else {
         return kIOReturnNotReady;
+    }
 
     uint64_t generation = 0;
     const IOReturn reserveResult = instance->reserveWclPhysicalScan(
@@ -6310,8 +6329,26 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
     fScanResultWrapping = false;
 
     uint32_t backendGeneration = 0;
-    const IOReturn beginResult = fHalService->beginWclBackgroundScan(
-        generation, &backendGeneration);
+    const IOReturn beginResult = initialForeground ?
+        fHalService->beginWclInitialScan(generation, &backendGeneration) :
+        fHalService->beginWclBackgroundScan(generation, &backendGeneration);
+    if (initialForeground && beginResult == kIOReturnSuccess &&
+        backendGeneration == 0) {
+        const TahoeWclPhysicalScanContracts::StartDisposition queued =
+            instance->queueWclInitialPhysicalScan(generation);
+        if (queued == TahoeWclPhysicalScanContracts::StartDisposition::Active)
+            return kIOReturnSuccess;
+        if (queued ==
+            TahoeWclPhysicalScanContracts::StartDisposition::TerminalPending)
+            return completePendingWclPhysicalScanTerminal(generation,
+                                                          &backendGeneration);
+        /* The lower worker accepted a queued handoff only while this upper
+         * ticket was alive.  A lifecycle close that wins this tiny window
+         * must suppress the pending lower publication, not borrow its
+         * generic terminal as success. */
+        fHalService->invalidateWclBackgroundScan();
+        return kIOReturnNotReady;
+    }
     if (beginResult != kIOReturnSuccess || backendGeneration == 0) {
         const TahoeWclPhysicalScanContracts::StartDisposition failed =
             instance->failWclPhysicalScanStart(generation);

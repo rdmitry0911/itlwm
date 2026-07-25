@@ -2486,6 +2486,23 @@ AirportItlwm::activateWclPhysicalScan(uint64_t generation,
 }
 
 TahoeWclPhysicalScanContracts::StartDisposition
+AirportItlwm::queueWclInitialPhysicalScan(uint64_t generation)
+{
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (lock == nullptr)
+        return TahoeWclPhysicalScanContracts::StartDisposition::Lost;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    const TahoeWclPhysicalScanContracts::StartDisposition disposition =
+        TahoeWclPhysicalScanContracts::queueInitialStart(&lifecycle.state,
+                                                          generation);
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    return disposition;
+}
+
+TahoeWclPhysicalScanContracts::StartDisposition
 AirportItlwm::failWclPhysicalScanStart(uint64_t generation)
 {
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
@@ -2511,6 +2528,32 @@ AirportItlwm::failWclPhysicalScanStart(uint64_t generation)
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
     releaseWclPhysicalScanSnapshot(release);
     return disposition;
+}
+
+void AirportItlwm::rejectWclInitialPhysicalScanStart(
+    uint64_t generation, uint32_t backendGeneration)
+{
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (lock == nullptr)
+        return;
+
+    TahoeWclPhysicalScanSnapshotRelease release = { nullptr, 0 };
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    if (TahoeWclPhysicalScanContracts::rejectInitialStart(&lifecycle.state,
+                                                          generation,
+                                                          backendGeneration)) {
+        lifecycle.snapshotInProgress = false;
+        lifecycle.snapshotReady = false;
+        lifecycle.terminalPublicationRequested = false;
+        lifecycle.terminalQueued = false;
+        lifecycle.publishing = false;
+        markWclPhysicalScanSnapshotScrubPendingLocked(lifecycle);
+        release = takeWclPhysicalScanSnapshotScrubIfIdleLocked(lifecycle);
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    releaseWclPhysicalScanSnapshot(release);
 }
 
 bool AirportItlwm::markWclPhysicalScanAborting(uint64_t *generation)
@@ -7395,6 +7438,34 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             (void)that->claimStandardPhysicalScanTerminal(
                 terminal.generation, terminal.backend_generation,
                 terminal.status);
+        }
+        return;
+    }
+
+    if (msgCode == IEEE80211_EVT_WCL_SCAN_STARTED) {
+        if (data == nullptr)
+            return;
+        const struct ieee80211_wcl_scan_started started =
+            *(const struct ieee80211_wcl_scan_started *)data;
+        const TahoeWclPhysicalScanContracts::StartDisposition disposition =
+            that->activateWclPhysicalScan(started.generation,
+                                          started.backend_generation);
+        if (disposition ==
+            TahoeWclPhysicalScanContracts::StartDisposition::TerminalPending) {
+            if (!that->queueWclPhysicalScanTerminalPublication(
+                    started.generation, started.backend_generation))
+                that->finishWclPhysicalScanCompletion(
+                    started.generation, started.backend_generation);
+        }
+        return;
+    }
+
+    if (msgCode == IEEE80211_EVT_WCL_SCAN_START_REJECTED) {
+        if (data != nullptr) {
+            const struct ieee80211_wcl_scan_start_rejected rejected =
+                *(const struct ieee80211_wcl_scan_start_rejected *)data;
+            that->rejectWclInitialPhysicalScanStart(rejected.generation,
+                                                    rejected.backend_generation);
         }
         return;
     }

@@ -752,7 +752,11 @@ public:
         activateWclPhysicalScan(uint64_t generation,
                                 uint32_t backendGeneration);
     TahoeWclPhysicalScanContracts::StartDisposition
+        queueWclInitialPhysicalScan(uint64_t generation);
+    TahoeWclPhysicalScanContracts::StartDisposition
         failWclPhysicalScanStart(uint64_t generation);
+    void rejectWclInitialPhysicalScanStart(uint64_t generation,
+                                           uint32_t backendGeneration);
     bool markWclPhysicalScanAborting(uint64_t *generation);
     bool wclPhysicalScanStarting() const;
     void resumeWclPhysicalScanAfterAbortFailure(uint64_t generation);

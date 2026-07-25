@@ -101,6 +101,8 @@ public:
 
     IOReturn beginWclBackgroundScan(uint64_t generation,
                                     uint32_t *outBackendGeneration) override;
+    IOReturn beginWclInitialScan(uint64_t generation,
+                                 uint32_t *outBackendGeneration) override;
     IOReturn abortWclBackgroundScan(uint64_t generation) override;
     void invalidateWclBackgroundScan() override;
     IOReturn beginStandardScan(uint64_t generation, bool background,
@@ -290,10 +292,12 @@ public:
     uint16_t    iwn_get_passive_dwell_time(struct iwn_softc *, uint16_t);
     int        iwn_scan(struct iwn_softc *, uint16_t, int);
     int        iwn_scan_start(struct iwn_softc *, uint16_t, int,
-                enum iwn_scan_lease_owner, u_int64_t, u_int32_t *);
+                enum iwn_scan_lease_owner, u_int64_t, u_int64_t,
+                u_int32_t *);
     int        iwn_scan_continue(struct iwn_softc *, uint16_t, int);
     int        iwn_scan_submit(struct iwn_softc *, uint16_t, int, u_int64_t,
-                               bool, bool *, bool *);
+                               bool, bool, u_int64_t, u_int32_t,
+                               bool *, bool *);
     int        iwn_cmd_with_doorbell_hook(
                 struct iwn_softc *, int, const void *, int, int,
                 bool (*)(struct iwn_softc *, void *),

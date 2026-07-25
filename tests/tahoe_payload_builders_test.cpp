@@ -1757,6 +1757,61 @@ void testTahoeWclPhysicalScanContracts()
                 state.phase == Phase::Idle,
             "failed radio admission releases a still-starting ticket");
 
+    uint64_t queuedRejected = 0;
+    require(reserve(&state, &queuedRejected) &&
+                queueInitialStart(&state, queuedRejected) ==
+                    StartDisposition::Active &&
+                state.phase == Phase::Queued &&
+                state.activeBackendGeneration == 0,
+            "initial WCL handoff remains queued until a physical lease starts");
+    require(!reserve(&state, &first),
+            "queued initial WCL handoff rejects a coalesced second request");
+    require(claimCompletion(&state, queuedRejected, 107, 0) ==
+                CompletionDisposition::None &&
+                state.phase == Phase::Queued &&
+                state.activeBackendGeneration == 0,
+            "generic terminal cannot claim a queued WCL handoff");
+    uint64_t queuedAbortGeneration = 0xfeedfaceULL;
+    require(!markAborting(&state, &queuedAbortGeneration) &&
+                queuedAbortGeneration == 0xfeedfaceULL &&
+                state.phase == Phase::Queued,
+            "queued initial WCL handoff is Busy until it owns a physical lease");
+    require(!rejectInitialStart(&state, queuedRejected + 1, 0) &&
+                state.phase == Phase::Queued,
+            "stale queued-start rejection cannot clear the current ticket");
+    require(!rejectInitialStart(&state, queuedRejected, 107) &&
+                state.phase == Phase::Queued,
+            "nonzero rejection cannot reinterpret a queued handoff as a lease");
+    require(rejectInitialStart(&state, queuedRejected, 0) &&
+                state.phase == Phase::Idle &&
+                state.activeGeneration == 0 &&
+                state.activeBackendGeneration == 0,
+            "matching queued-start rejection releases no-terminal WCL state");
+
+    uint64_t queuedStarted = 0;
+    require(reserve(&state, &queuedStarted) &&
+                queueInitialStart(&state, queuedStarted) ==
+                    StartDisposition::Active &&
+                state.phase == Phase::Queued,
+            "another initial WCL request may queue after a rejected handoff");
+    require(!rejectInitialStart(&state, queuedRejected, 0) &&
+                state.phase == Phase::Queued &&
+                state.activeGeneration == queuedStarted,
+            "delayed rejection from an older handoff cannot clear a newer queue");
+    require(activate(&state, queuedStarted, 108) == StartDisposition::Active &&
+                state.phase == Phase::Active &&
+                state.activeBackendGeneration == 108,
+            "WCL STARTED promotes the queued ticket only with its exact lease");
+    require(!rejectInitialStart(&state, queuedStarted, 0) &&
+                !rejectInitialStart(&state, queuedStarted, 109) &&
+                state.phase == Phase::Active &&
+                state.activeBackendGeneration == 108,
+            "stale queued-start rejection cannot clear an active WCL lease");
+    require(claimCompletion(&state, queuedStarted, 108, 0) ==
+                CompletionDisposition::Publish,
+            "STARTED WCL lease keeps ordinary matching terminal ownership");
+    finishCompletion(&state, queuedStarted, 108);
+
     uint64_t raced = 0;
     require(reserve(&state, &raced),
             "WCL reserves the asynchronous-start race ticket");

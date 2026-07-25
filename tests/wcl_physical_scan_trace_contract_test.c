@@ -119,6 +119,21 @@ main(void)
         kAirportItlwmWclPhysicalScanTraceMissingStageLowerLease,
         "an upper admission cannot infer a lower lease");
 
+    /* START_REJECTED is deliberately not a new trace event: a queued
+     * no-doorbell handoff seals as request-only evidence, with no lower
+     * lease, terminal, result, or DONE fact to infer. */
+    begin(&fixture);
+    append(&fixture, kAirportItlwmPostPltiTraceEventCaptureWindowSealed);
+    require(fixture.count == 2,
+        "queued start rejection adds no WCL trace vocabulary");
+    expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwn, 1, 0,
+        kAirportItlwmWclPhysicalScanTraceVerdictLowerLeaseNotObserved,
+        kAirportItlwmWclPhysicalScanTraceMissingStageLowerLease,
+        "a sealed queued rejection remains lower-lease-not-observed");
+    require(!airport_itlwm_wcl_physical_scan_trace_result_publication_issued(
+                fixture.entries, fixture.count),
+            "a queued rejection cannot infer a result publication");
+
     begin(&fixture);
     append_lower_lease(&fixture);
     expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwn, 1, 0,

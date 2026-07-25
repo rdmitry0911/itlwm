@@ -1402,7 +1402,8 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
  * Complete a scan of potential channels.
  */
 void
-ieee80211_end_scan(struct _ifnet *ifp)
+ieee80211_end_scan_controlled(struct _ifnet *ifp,
+                              enum ieee80211_scan_completion_mode mode)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     struct ieee80211_node *ni, *selbs = NULL, *curbs = NULL;
@@ -1415,9 +1416,11 @@ ieee80211_end_scan(struct _ifnet *ifp)
     AirportItlwmPostPltiTraceRecord(
         ic, kAirportItlwmPostPltiTraceEventScanCompleted);
     
-    const int suppress_generic_scan_done = __atomic_exchange_n(
-        &ic->ic_wcl_scan_suppress_scan_done_once, 0, __ATOMIC_ACQ_REL) != 0;
-    if (ic->ic_event_handler && !suppress_generic_scan_done)
+    const int generic_terminal = mode == IEEE80211_SCAN_COMPLETION_GENERIC;
+    const int suppress_generic_scan_done = generic_terminal &&
+        __atomic_exchange_n(&ic->ic_wcl_scan_suppress_scan_done_once, 0,
+                            __ATOMIC_ACQ_REL) != 0;
+    if (generic_terminal && ic->ic_event_handler && !suppress_generic_scan_done)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_SCAN_DONE, NULL);
     
     if (ic->ic_scan_count)
@@ -1425,6 +1428,15 @@ ieee80211_end_scan(struct _ifnet *ifp)
     
     if (ic->ic_opmode == IEEE80211_M_STA)
         ieee80211_clean_inactive_nodes(ic, IEEE80211_INACT_SCAN);
+
+    /* A queued WCL initial request has drained a prior generic foreground
+     * lease, or an exact WCL foreground lease has just completed.  Both need
+     * ordinary scan cleanup, but neither may publish generic SCAN_DONE, loop
+     * back into ieee80211_next_scan(), select a BSS, or join it. */
+    if (!generic_terminal) {
+        ieee80211_reset_scan(ifp);
+        return;
+    }
 
     /* begin() may be between its short policy reservation and the explicit
      * replacement scan, or the request may be PENDING while its private
@@ -1624,6 +1636,13 @@ ieee80211_end_scan(struct _ifnet *ifp)
         goto notfound;
     
     ieee80211_node_join_bss(ic, selbs);
+}
+
+void
+ieee80211_end_scan(struct _ifnet *ifp)
+{
+    ieee80211_end_scan_controlled(ifp,
+        IEEE80211_SCAN_COMPLETION_GENERIC);
 }
 
 /*

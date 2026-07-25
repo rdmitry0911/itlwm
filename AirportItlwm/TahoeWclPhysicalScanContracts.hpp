@@ -17,6 +17,9 @@ namespace TahoeWclPhysicalScanContracts {
 enum class Phase : uint8_t {
     Idle,
     Starting,
+    /* The lower backend accepted an initial-discovery handoff, but its
+     * replacement physical lease must wait for the retiring generic scan. */
+    Queued,
     Active,
     Aborting,
     Completing,
@@ -80,7 +83,7 @@ inline StartDisposition activate(State *state, uint64_t generation,
         state->activeGeneration != generation)
         return StartDisposition::Lost;
 
-    if (state->phase == Phase::Starting) {
+    if (state->phase == Phase::Starting || state->phase == Phase::Queued) {
         state->activeBackendGeneration = backendGeneration;
         state->phase = Phase::Active;
         return StartDisposition::Active;
@@ -95,13 +98,56 @@ inline StartDisposition activate(State *state, uint64_t generation,
     return StartDisposition::Lost;
 }
 
+/* A foreground initial-discovery request may have to drain the boot-time
+ * generic foreground lease before it can reserve its own radio transaction.
+ * The ticket remains owned by WCL, but has no backend generation yet. */
+inline StartDisposition queueInitialStart(State *state, uint64_t generation)
+{
+    if (state == nullptr || generation == 0 ||
+        state->activeGeneration != generation)
+        return StartDisposition::Lost;
+    if (state->phase == Phase::Starting) {
+        state->phase = Phase::Queued;
+        return StartDisposition::Active;
+    }
+    if (state->phase == Phase::Queued)
+        return StartDisposition::Active;
+    if (state->phase == Phase::Active)
+        return StartDisposition::Active;
+    if (state->phase == Phase::Completing)
+        return StartDisposition::TerminalPending;
+    return StartDisposition::Lost;
+}
+
+/* A queued handoff that never crossed a WCL command doorbell is not a scan
+ * terminal.  Discard it and its upper snapshot rather than manufacturing a
+ * WCL completion from the generic lease it was waiting behind. */
+inline bool rejectInitialStart(State *state, uint64_t generation,
+                               uint32_t backendGeneration)
+{
+    if (state == nullptr || generation == 0 ||
+        state->activeGeneration != generation)
+        return false;
+    if (backendGeneration == 0) {
+        if (state->activeBackendGeneration != 0 ||
+            (state->phase != Phase::Queued && state->phase != Phase::Starting))
+            return false;
+    } else if (state->activeBackendGeneration != backendGeneration ||
+               (state->phase != Phase::Active &&
+                state->phase != Phase::Aborting)) {
+        return false;
+    }
+    reset(state);
+    return true;
+}
+
 inline StartDisposition failStart(State *state, uint64_t generation)
 {
     if (state == nullptr || generation == 0 ||
         state->activeGeneration != generation)
         return StartDisposition::Lost;
 
-    if (state->phase == Phase::Starting) {
+    if (state->phase == Phase::Starting || state->phase == Phase::Queued) {
         reset(state);
         return StartDisposition::Lost;
     }
@@ -117,9 +163,10 @@ inline bool markAborting(State *state, uint64_t *generation)
     if (state == nullptr || generation == nullptr)
         return false;
 
-    /* The first shipping backend does not submit an abort while its lower
-     * command is still arming.  The caller gets Busy and retries after the
-     * exact backend generation has become active. */
+    /* A queued initial request has no physical lease yet.  Its cancellation
+     * is intentionally fail-closed/Busy until the lower worker either emits
+     * STARTED or START_REJECTED; no caller may reinterpret it as a physical
+     * scan terminal. */
     if (state->phase != Phase::Active)
         return false;
 
@@ -271,7 +318,8 @@ inline bool invalidate(State *state, uint64_t generation,
 
 inline bool starting(const State *state)
 {
-    return state != nullptr && state->phase == Phase::Starting;
+    return state != nullptr && (state->phase == Phase::Starting ||
+        state->phase == Phase::Queued);
 }
 
 } // namespace TahoeWclPhysicalScanContracts

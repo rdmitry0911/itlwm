@@ -351,6 +351,7 @@ enum iwn_scan_lease_owner {
     IWN_SCAN_LEASE_GENERIC_FOREGROUND,
     IWN_SCAN_LEASE_GENERIC_BACKGROUND,
     IWN_SCAN_LEASE_WCL_BACKGROUND,
+    IWN_SCAN_LEASE_WCL_INITIAL,
     IWN_SCAN_LEASE_STANDARD_CONTROLLER,
 };
 
@@ -365,6 +366,11 @@ enum iwn_scan_lease_phase {
 struct iwn_scan_lease {
     u_int64_t       serial;
     u_int64_t       upper_generation;
+    /* A queued WCL initial handoff carries the retiring generic lease serial
+     * only until its own first command crosses WRPTR.  The token lets the
+     * replay worker prove that cancellation/reset/detach has not withdrawn
+     * its handoff in the reserve-to-doorbell interval. */
+    u_int64_t       wcl_initial_handoff_serial;
     u_int32_t       backend_generation;
     u_int8_t        owner;
     u_int8_t        phase;
@@ -376,6 +382,27 @@ struct iwn_scan_lease {
     bool            publication_invalidated;
     bool            hardware_invalidated;
     bool            terminal_claimed;
+    /* Sticky after the first WCL-initial WRPTR.  A 2.4->5 GHz continuation
+     * temporarily clears command_submitted, but must still invalidate the
+     * already announced WCL ticket on a later reset. */
+    bool            wcl_initial_started;
+};
+
+/* A WCL initial-discovery request is allowed to wait only behind the exact
+ * generic foreground lease that was already scanning at boot.  The record is
+ * protected by sc_scan_lease_lock and carries no request payload, identity,
+ * or result data.  The replay worker consumes it only after that lease's
+ * controlled terminal has retired. */
+struct iwn_wcl_initial_scan_pending {
+    u_int64_t       upper_generation;
+    u_int64_t       generic_serial;
+    bool            queued;
+    bool            terminal_handoff_ready;
+    bool            launching;
+    /* The replay record remains until its caller returns.  This separates a
+     * first-doorbell start from a generic terminal that merely made the
+     * handoff runnable, including an immediately completing WCL scan. */
+    bool            command_started;
 };
 
 struct iwn_tx_ba {
@@ -419,6 +446,7 @@ struct iwn_softc {
     bool                sc_scan_lease_replay_pending;
     enum ieee80211_state sc_scan_lease_replay_nstate;
     int                 sc_scan_lease_replay_arg;
+    struct iwn_wcl_initial_scan_pending sc_wcl_initial_scan_pending;
 
     uint8_t         hw_type;
 

@@ -194,19 +194,25 @@ ordered(begin, "IWN lower scan submission",
         "&backend_generation")
 scan_start = body(iwn, "int ItlIwn::\niwn_scan_start", "IWN scan start")
 for token in (
+        "bool wcl_background = owner == IWN_SCAN_LEASE_WCL_BACKGROUND;",
+        "bool wcl_foreground = owner == IWN_SCAN_LEASE_WCL_INITIAL;",
+        "bool wcl = iwn_scan_lease_owner_is_wcl(owner);",
         "bool standard = owner == IWN_SCAN_LEASE_STANDARD_CONTROLLER;",
-        "bool prearm_background = wcl || (standard && bgscan != 0);",
-        "iwn_scan_lease_reserve(sc, owner, upper_generation",
-        "standard && bgscan == 0, &command_attempted,",
+        "bool prearm_background = wcl_background || (standard && bgscan != 0);",
+        "bool controller_foreground = wcl_foreground ||\n        (standard && bgscan == 0);",
+        "iwn_scan_lease_reserve(sc, owner, upper_generation,",
+        "required_initial_handoff_serial,",
+        "controller_foreground, wcl_foreground,",
         "&foreground_prepared);",
-        "foreground_prepared || bgscan == 0",
+        "foreground_prepared || (bgscan == 0 && !wcl_foreground)",
         "iwn_scan_schedule_fatal_recovery(sc);",
 ):
     require(scan_start, token, "IWN standard owner")
 ordered(scan_start, "normal scan builds after durable lower arm",
         "iwn_scan_lease_arm_submission(sc, serial, &abort_requested)",
         "if (abort_requested)",
-        "error = iwn_scan_submit(sc, flags, bgscan, serial,")
+        "error = iwn_scan_submit(sc, flags, bgscan, serial,",
+        "controller_foreground, wcl_foreground,")
 arm = body(iwn, "static bool\niwn_scan_lease_arm_submission",
            "lower submission arm")
 require(arm, "const bool abort_requested = sc->sc_scan_lease.abort_requested;",
@@ -234,13 +240,20 @@ submit = body(iwn, "int ItlIwn::\niwn_scan_submit", "IWN command submission")
 ordered(submit, "build precedes foreground preparation",
         "buf = (uint8_t *)malloc(IWN_SCAN_MAXSZ",
         "hdr->len = htole16(buflen);",
-        "if (prepare_standard_foreground)",
-        "iwn_prepare_standard_foreground_scan(ic);")
+        "if (prepare_controller_foreground)",
+        "iwn_prepare_controller_foreground_scan(ic);")
 ordered(submit, "prepared scan reaches exact doorbell hook",
-        "iwn_prepare_standard_foreground_scan(ic);",
+        "iwn_prepare_controller_foreground_scan(ic);",
         "iwn_cmd_with_doorbell_hook(sc, IWN_CMD_SCAN, buf, buflen, 1,",
         "iwn_scan_lease_prepare_doorbell",
         "iwn_scan_lease_finish_doorbell")
+require(iwn, "bool publish_wcl_initial_started,",
+        "expanded WCL foreground submit argument")
+for token in (
+        "if (publish_wcl_initial_started)",
+        "ieee80211_free_allnodes(ic, 1 /* fresh initial census */);",
+):
+    require(submit, token, "WCL foreground census remains explicit")
 require(submit, "*out_command_attempted = doorbell.committed;",
         "doorbell commit result")
 forbid(submit, "sc->sc_flags |= IWN_FLAG_SCANNING;",
@@ -281,7 +294,7 @@ continue_submit = body(iwn, "int ItlIwn::\niwn_scan_continue",
                        "multi-band continuation submit")
 ordered(continue_submit, "failed continuation restores current terminal",
         "iwn_scan_lease_begin_continuation(sc, &serial)",
-        "iwn_scan_submit(sc, flags, bgscan, serial, false,",
+        "iwn_scan_submit(sc, flags, bgscan, serial, false, false, 0, 0,",
         "iwn_scan_lease_restore_continuation(sc, serial, true)")
 continuation_restore = body(iwn,
                             "static bool\niwn_scan_lease_restore_continuation",
@@ -316,10 +329,18 @@ for token in (
 ):
     require(iwn, token, "post-terminal foreground scan replay")
 stop = body(iwn, "case IWN_STOP_SCAN", "IWN scan terminal")
-ordered(stop, "tagged normal terminal after generic completion",
-        "iwn_scan_lease_claim_terminal", "ieee80211_end_scan(ifp)",
+ordered(stop, "normal terminal remains on the generic completion route",
+        "iwn_scan_lease_claim_terminal",
+        "initial_handoff =",
+        "IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
+        "IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND",
+        "ieee80211_end_scan(ifp)",
         "IEEE80211_EVT_STANDARD_SCAN_TERMINAL")
 for token in (
+        "ieee80211_end_scan_controlled(ifp,",
+        "if (initial_handoff)",
+        "else if (terminal.wcl_foreground)",
+        "else\n                ieee80211_end_scan(ifp);",
         "terminal.standard",
         "terminal.publish_standard_terminal",
         "standard_terminal.generation = terminal.upper_generation",
@@ -331,6 +352,11 @@ for token in (
 for token in (
         "void ieee80211_prepare_scan(struct _ifnet *);",
         "void ieee80211_begin_scan(struct _ifnet *);",
+        "enum ieee80211_scan_completion_mode",
+        "IEEE80211_SCAN_COMPLETION_GENERIC",
+        "IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
+        "IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND",
+        "void ieee80211_end_scan_controlled(struct _ifnet *,",
 ):
     require(nodeh, token, "foreground preparation split")
 prepare = body(node, "void\nieee80211_prepare_scan", "scan preparation")
@@ -344,8 +370,21 @@ for token in (
         "struct ieee80211_standard_scan_terminal",
 ):
     require(var, token, "normal terminal ABI")
-end_scan = body(node, "void\nieee80211_end_scan", "scan completion")
-if end_scan.count("IEEE80211_F_BGSCAN |\n                              IEEE80211_F_DISABLE_BG_AUTO_CONNECT") < 2:
+controlled_end_scan = body(node, "void\nieee80211_end_scan_controlled",
+                          "controlled scan completion")
+for token in (
+        "const int generic_terminal = mode == IEEE80211_SCAN_COMPLETION_GENERIC;",
+        "if (!generic_terminal)",
+        "ieee80211_reset_scan(ifp);",
+        "IEEE80211_EVT_SCAN_DONE",
+):
+    require(controlled_end_scan, token, "controlled generic/WCL completion split")
+end_scan = body(node, "void\nieee80211_end_scan(struct _ifnet *ifp)",
+                "generic scan completion wrapper")
+ordered(end_scan, "generic completion wrapper",
+        "ieee80211_end_scan_controlled(ifp,",
+        "IEEE80211_SCAN_COMPLETION_GENERIC")
+if controlled_end_scan.count("IEEE80211_F_BGSCAN |\n                              IEEE80211_F_DISABLE_BG_AUTO_CONNECT") < 2:
     fail("early background-scan exits do not restore scan flags")
 
 done_start = v2.find("case IEEE80211_EVT_SCAN_DONE:")

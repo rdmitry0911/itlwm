@@ -21,6 +21,7 @@ driver_controller = (root / "include/HAL/ItlDriverController.hpp").read_text()
 hal_service = (root / "include/HAL/ItlHalService.hpp").read_text()
 i80211_var = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 i80211_node = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
+i80211_node_h = (root / "itl80211/openbsd/net80211/ieee80211_node.h").read_text()
 i80211_proto = (root / "itl80211/openbsd/net80211/ieee80211_proto.h").read_text()
 i80211 = (root / "itl80211/openbsd/net80211/ieee80211.c").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
@@ -75,11 +76,25 @@ def ordered(text, label, *needles):
 
 request = body(sky, "setWCL_SCAN_REQ(apple80211ScanRequest *req)",
                "setWCL_SCAN_REQ")
-ordered(request, "physical WCL request",
-        "ic->ic_state != IEEE80211_S_RUN",
+ordered(request, "WCL associated/initial admission",
+        "if (ic->ic_state == IEEE80211_S_RUN)",
+        "else if (ic->ic_state == IEEE80211_S_SCAN)",
+        "initialForeground = true",
         "instance->reserveWclPhysicalScan(",
+        "fHalService->beginWclInitialScan",
         "fHalService->beginWclBackgroundScan",
         "instance->activateWclPhysicalScan(generation, backendGeneration)")
+for token in ("ic->ic_opmode != IEEE80211_M_STA",
+              "IEEE80211_F_AUTO_JOIN", "ic->ic_des_esslen != 0",
+              "ieee80211_sae_wcl_request_scan_selection_held(ic)",
+              "ieee80211_sae_wcl_request_scan_selection_owned(ic)"):
+    require(request, token, "trusted S_SCAN initial admission")
+ordered(request, "queued initial handoff",
+        "if (initialForeground && beginResult == kIOReturnSuccess",
+        "backendGeneration == 0",
+        "instance->queueWclInitialPhysicalScan(generation)",
+        "StartDisposition::TerminalPending",
+        "completePendingWclPhysicalScanTerminal")
 require(request, "instance->failWclPhysicalScanStart(generation)",
         "failed physical-start reconciliation")
 require(request, "completePendingWclPhysicalScanTerminal",
@@ -100,6 +115,14 @@ forbid(abort, "ItlDriverController", "generic controller WCL abort bridge")
 
 event = body(v2, "eventHandler(struct ieee80211com *ic, int msgCode, void *data)",
              "eventHandler")
+ordered(event, "post-doorbell WCL initial start",
+        "IEEE80211_EVT_WCL_SCAN_STARTED",
+        "activateWclPhysicalScan(started.generation",
+        "StartDisposition::TerminalPending",
+        "queueWclPhysicalScanTerminalPublication")
+ordered(event, "no-doorbell WCL initial rejection",
+        "IEEE80211_EVT_WCL_SCAN_START_REJECTED",
+        "rejectWclInitialPhysicalScanStart(rejected.generation")
 ordered(event, "tagged physical terminal claim",
         "IEEE80211_EVT_WCL_SCAN_TERMINAL",
         "claimWclPhysicalScanCompletion(terminal.generation",
@@ -172,11 +195,12 @@ require(fake, "APPLE80211_M_SCAN_DONE", "legacy generic scan bulletin")
 forbid(fake, "postWclScanResultsGated", "fake WCL result publication")
 
 for token in (
-        "enum class Phase", "Draining", "CompletionDisposition",
+        "enum class Phase", "Queued", "Draining", "CompletionDisposition",
         "beginDraining", "reopenAfterRadioReset", "resumeAfterAbortFailure",
         "claimCompletion", "activeBackendGeneration",
         "terminalBackendGeneration", "pendingCompletion", "invalidate",
-        "pendingCompletionForGeneration", "Pending"):
+        "pendingCompletionForGeneration", "queueInitialStart",
+        "rejectInitialStart", "Pending"):
     require(contracts, token, "ticket reducer")
 require(v2_hpp, "AirportItlwmWclPhysicalScanLifecycle",
         "per-controller WCL ticket lifecycle")
@@ -212,8 +236,9 @@ forbid(enable_adapter, "reopenWclPhysicalScanAfterRadioReset",
        "optimistic WCL reopen before lower radio-ready event")
 
 forbid(driver_controller, "Wcl", "WCL ownership on generic driver controller")
-for token in ("beginWclBackgroundScan", "abortWclBackgroundScan",
-              "invalidateWclBackgroundScan", "kIOReturnUnsupported"):
+for token in ("beginWclBackgroundScan", "beginWclInitialScan",
+              "abortWclBackgroundScan", "invalidateWclBackgroundScan",
+              "kIOReturnUnsupported"):
     require(hal_service, token, "fail-closed HAL WCL boundary")
 
 for source, label in ((iwm, "IWM"), (iwx, "IWX"),
@@ -222,25 +247,119 @@ for source, label in ((iwm, "IWM"), (iwx, "IWX"),
 for source, label in ((iwm_var, "IWM var"), (iwx_var, "IWX var")):
     forbid(source, "WCL_SCAN", f"{label} premature WCL marker")
 
-for token in ("IWN_SCAN_LEASE_WCL_BACKGROUND", "IWN_SCAN_LEASE_GENERIC_FOREGROUND",
+for token in ("IWN_SCAN_LEASE_WCL_BACKGROUND", "IWN_SCAN_LEASE_WCL_INITIAL",
+              "IWN_SCAN_LEASE_GENERIC_FOREGROUND",
               "IWN_SCAN_LEASE_GENERIC_BACKGROUND", "sc_scan_lease_lock",
               "terminal_claimed", "publication_invalidated",
-              "sc_scan_lease_replay_task_admission_state"):
+              "wcl_initial_handoff_serial", "wcl_initial_started",
+              "iwn_wcl_initial_scan_pending", "terminal_handoff_ready",
+              "command_started", "sc_scan_lease_replay_task_admission_state"):
     require(iwn_var, token, "strict IWN physical scan lease")
 for token in ("iwn_scan_lease_replay_task_admission_close",
               "iwn_scan_lease_replay_task_admission_drain",
               "iwn_scan_lease_schedule_replay_task"):
     require(iwn, token, "IWN replay task detach admission")
-for token in ("beginWclBackgroundScan", "abortWclBackgroundScan",
+for token in ("beginWclBackgroundScan", "beginWclInitialScan",
+              "abortWclBackgroundScan", "iwn_wcl_initial_scan_queue",
+              "iwn_scan_lease_initial_handoff_valid_locked",
               "iwn_scan_lease_reserve", "iwn_scan_lease_claim_terminal",
               "iwn_scan_lease_finish_terminal", "iwn_scan_lease_replay_task",
-              "iwn_scan_lease_begin_hardware_invalidation"):
+              "iwn_scan_lease_finish_doorbell",
+              "iwn_scan_lease_begin_hardware_invalidation",
+              "IEEE80211_EVT_WCL_SCAN_STARTED",
+              "IEEE80211_EVT_WCL_SCAN_START_REJECTED"):
     require(iwn, token, "IWN exact WCL owner")
+
+initial_begin = body(iwn, "beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)",
+                     "IWN beginWclInitialScan")
+ordered(initial_begin, "IWN initial WCL admission",
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "iwn_wcl_initial_scan_queue(&com, generation, &queued)",
+        "if (queued)",
+        "IWN_SCAN_LEASE_WCL_INITIAL")
+require(initial_begin, "*outBackendGeneration = 0;",
+        "initial STARTED-only backend publication")
+
+initial_queue = body(iwn, "iwn_wcl_initial_scan_queue(",
+                     "IWN initial handoff queue")
+ordered(initial_queue, "initial handoff attaches only to boot scan",
+        "IWN_SCAN_LEASE_GENERIC_FOREGROUND",
+        "sc->sc_scan_lease.command_submitted",
+        "sc->sc_wcl_initial_scan_pending.queued = true")
+
+handoff_valid = body(iwn, "iwn_scan_lease_initial_handoff_valid_locked(",
+                     "IWN initial handoff token validator")
+for token in ("wcl_initial_handoff_serial", "pending->queued",
+              "pending->launching", "pending->terminal_handoff_ready",
+              "pending->upper_generation", "pending->generic_serial"):
+    require(handoff_valid, token, "initial handoff cancellation token")
+
+reserve = body(iwn, "iwn_scan_lease_reserve(", "IWN scan lease reserve")
+for token in ("required_initial_handoff_serial", "exact_initial_pending",
+              "initial_pending && !exact_initial_pending",
+              "sc->sc_scan_lease.wcl_initial_handoff_serial"):
+    require(reserve, token, "IWN exact initial handoff reserve fence")
+
+doorbell = body(iwn, "iwn_scan_lease_finish_doorbell(",
+                "IWN scan post-WRPTR hook")
+ordered(doorbell, "initial start is published only after WRPTR",
+        "sc->sc_scan_lease.wcl_initial_handoff_serial = 0",
+        "sc->sc_scan_lease.wcl_initial_started = true",
+        "sc->sc_wcl_initial_scan_pending.command_started = true",
+        "IEEE80211_EVT_WCL_SCAN_STARTED")
+
+replay_task = body(iwn, "iwn_scan_lease_replay_task(void *arg)",
+                   "IWN scan replay task")
+ordered(replay_task, "initial replay consumes exact handoff",
+        "initial_handoff_serial =",
+        "sc->sc_wcl_initial_scan_pending.launching = true",
+        "IWN_SCAN_LEASE_WCL_INITIAL",
+        "initial_handoff_serial",
+        "reject_initial = error != 0 && !command_started",
+        "IEEE80211_EVT_WCL_SCAN_START_REJECTED")
+
+invalidation = body(iwn, "static enum iwn_scan_lease_owner\niwn_scan_lease_begin_hardware_invalidation(",
+                    "IWN scan hardware invalidation")
+ordered(invalidation, "started initial reset fence",
+        "const bool started_initial",
+        "sc->sc_scan_lease.wcl_initial_started",
+        "const bool pending_started",
+        "sc->sc_wcl_initial_scan_pending.command_started",
+        "*queued_initial_rejected_generation")
+require(invalidation, "if (!pending_started)",
+        "no-doorbell initial rejection on reset")
+
+hw_stop = body(iwn, "iwn_hw_stop(struct iwn_softc *sc)", "IWN hardware stop")
+ordered(hw_stop, "hardware reset publishes exactly fenced initial outcome",
+        "iwn_scan_lease_begin_hardware_invalidation",
+        "iwn_scan_lease_retire_after_hardware_stop",
+        "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
+        "IEEE80211_EVT_WCL_SCAN_START_REJECTED")
+
+iwn_start = body(iwn, "iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,",
+                 "IWN controller scan start")
+ordered(iwn_start, "WCL foreground scan is an S_SCAN operation",
+        "bool wcl_foreground = owner == IWN_SCAN_LEASE_WCL_INITIAL",
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "iwn_scan_submit(sc, flags, bgscan, serial",
+        "controller_foreground, wcl_foreground")
+iwn_submit = body(iwn, "iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,",
+                  "IWN controller scan submit")
+ordered(iwn_submit, "foreground initial scan starts from a fresh census",
+        "if (publish_wcl_initial_started)",
+        "ieee80211_free_allnodes(ic, 1 /* fresh initial census */)",
+        "iwn_prepare_controller_foreground_scan(ic)",
+        "iwn_cmd_with_doorbell_hook")
 stop_scan = body(iwn, "case IWN_STOP_SCAN:", "IWN STOP_SCAN")
-ordered(stop_scan, "IWN terminal ownership",
+ordered(stop_scan, "IWN initial handoff and terminal ownership",
         "iwn_scan_continue", "iwn_scan_lease_claim_terminal",
-        "ieee80211_end_scan(ifp)", "IEEE80211_EVT_WCL_SCAN_TERMINAL",
+        "iwn_wcl_initial_scan_claim_generic_terminal",
+        "IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
+        "IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND",
+        "IEEE80211_EVT_WCL_SCAN_TERMINAL",
         "iwn_scan_lease_finish_terminal")
+require(stop_scan, "ieee80211_end_scan_controlled(ifp,",
+        "controlled non-generic scan terminal")
 require(iwn, "ic_wcl_scan_suppress_scan_done_once",
         "IWN one-shot generic completion suppression")
 require(iwn, "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
@@ -251,12 +370,29 @@ require(iwn, "IEEE80211_EVT_WCL_SCAN_REOPENED",
 for token in ("IEEE80211_EVT_WCL_SCAN_TERMINAL",
               "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
               "IEEE80211_EVT_WCL_SCAN_REOPENED",
+              "IEEE80211_EVT_WCL_SCAN_STARTED",
+              "IEEE80211_EVT_WCL_SCAN_START_REJECTED",
               "ieee80211_wcl_scan_terminal",
+              "ieee80211_wcl_scan_started",
+              "ieee80211_wcl_scan_start_rejected",
               "ic_wcl_scan_suppress_scan_done_once",
               "ic_newstate_preflight"):
     require(i80211_var, token, "net80211 exact WCL contract")
 require(i80211_node, "__atomic_exchange_n",
         "one-shot generic SCAN_DONE consume")
+for token in ("IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
+              "IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND",
+              "ieee80211_end_scan_controlled"):
+    require(i80211_node_h, token, "controlled foreground terminal ABI")
+controlled_end = body(i80211_node, "ieee80211_end_scan_controlled(struct _ifnet *ifp,",
+                      "controlled net80211 scan terminal")
+ordered(controlled_end, "controlled terminal suppresses generic completion and selection",
+        "const int generic_terminal",
+        "if (generic_terminal && ic->ic_event_handler",
+        "IEEE80211_EVT_SCAN_DONE",
+        "if (!generic_terminal)",
+        "ieee80211_reset_scan(ifp)",
+        "return;")
 ordered(i80211_proto, "preflight before epoch",
         "ic_newstate_preflight", "ieee80211_pae_assoc_epoch_note_newstate")
 require(i80211, "ic_wcl_scan_active",

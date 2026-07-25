@@ -10,6 +10,7 @@ bash "$root/scripts/test_payload_builders.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 
@@ -79,6 +80,29 @@ for token in (
         "AIRPORT_ITLWM_POST_PLTI_TRACE_WCL_PHYSICAL_SCAN_EVENT_LAST",
 ):
     require(abi, token, "append-only WCL trace ABI")
+
+# Queued/STARTED/REJECTED are lower lifecycle edges, not new post-PLTI trace
+# facts.  Keep v7's WCL vocabulary closed: a queued handoff that never owns a
+# command must remain a request-only, diagnostic trajectory.
+fixed_wcl_trace_events = {
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanRequestAccepted",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalComplete",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanResultPublicationIssued",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanTerminalAborted",
+    "kAirportItlwmPostPltiTraceEventWclPhysicalScanDonePublicationIssued",
+}
+defined_wcl_trace_events = set(re.findall(
+    r"^\s*(kAirportItlwmPostPltiTraceEventWclPhysicalScan[A-Za-z0-9_]*)\s*=",
+    abi, re.MULTILINE))
+if defined_wcl_trace_events != fixed_wcl_trace_events:
+    fail("Queued/STARTED/REJECTED expanded the fixed WCL trace vocabulary")
+for token in (
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanQueued",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanStarted",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanStartRejected",
+):
+    forbid(abi, token, "unapproved WCL lifecycle trace event")
 for token in (
         "AirportItlwmPostPltiTraceBeginWclPhysicalScanEpisode",
         "AirportItlwmPostPltiTraceRecordWclPhysicalScan",
@@ -164,16 +188,87 @@ for marker, terminal in (
     ):
         require(producer, token, f"fenced WCL terminal producer {marker}")
 
-# The upper request begins only after its own reservation.  A pre-terminal
-# lower-start failure must not manufacture a false TerminalAborted fact.
+# The upper request begins only after its own reservation.  Initial discovery
+# may queue behind the boot generic foreground lease, but queue admission is
+# not a WCL lower lease and must not manufacture a false terminal fact.
 scan_request = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_SCAN_REQ",
                     "WCL physical scan request")
-ordered(scan_request, "upper request then lower ownership",
-        "reserveWclPhysicalScan", "reserveResult != kIOReturnSuccess",
+for token in (
+        "bool initialForeground = false;",
+        "ic->ic_state == IEEE80211_S_SCAN",
+        "initialForeground = true;",
+        "fHalService->beginWclInitialScan",
+        "fHalService->beginWclBackgroundScan",
+):
+    require(scan_request, token, "initial/background WCL request split")
+ordered(scan_request, "upper request then initial lower admission",
+        "initialForeground = true;", "reserveWclPhysicalScan",
+        "reserveResult != kIOReturnSuccess",
         "AirportItlwmPostPltiTraceBeginWclPhysicalScanEpisode(ic);",
-        "beginWclBackgroundScan")
+        "const IOReturn beginResult = initialForeground ?",
+        "fHalService->beginWclInitialScan")
+queued_initial_request = body(
+    scan_request,
+    "if (initialForeground && beginResult == kIOReturnSuccess",
+    "queued initial WCL request")
+require(scan_request,
+        "if (initialForeground && beginResult == kIOReturnSuccess &&\n"
+        "        backendGeneration == 0)",
+        "zero-backend queued initial condition")
+for token in (
+        "instance->queueWclInitialPhysicalScan(generation)",
+        "StartDisposition::Active",
+        "return kIOReturnSuccess",
+):
+    require(queued_initial_request, token, "queued initial WCL handoff")
+for token in (
+        "AirportItlwmPostPltiTraceRecordWclPhysicalScan",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved",
+        "AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode",
+):
+    forbid(queued_initial_request, token,
+           "queue admission claiming a physical WCL boundary")
 forbid(scan_request, "AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode",
        "false pre-terminal abort producer")
+
+# Queueing is permitted only behind an exact live generic foreground lease.
+# It leaves the post-PLTI episode request-only until replay reserves a fresh
+# WCL_INITIAL lease.
+initial_queue = body(iwn,
+    "iwn_wcl_initial_scan_queue(struct iwn_softc *sc, u_int64_t generation,",
+    "IWN initial WCL queue admission")
+for token in (
+        "IWN_SCAN_LEASE_GENERIC_FOREGROUND",
+        "sc->sc_scan_lease.command_submitted",
+        "sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ACTIVE",
+        "sc->sc_wcl_initial_scan_pending.queued = true",
+):
+    require(initial_queue, token, "exact generic-to-WCL queue fence")
+for token in (
+        "AirportItlwmPostPltiTraceRecordWclPhysicalScan",
+        "kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved",
+        "IEEE80211_EVT_WCL_SCAN_STARTED",
+        "IEEE80211_EVT_WCL_SCAN_START_REJECTED",
+):
+    forbid(initial_queue, token, "queue admission lifecycle publication")
+
+initial_replay = body(iwn, "void ItlIwn::\niwn_scan_lease_replay_task",
+                      "IWN initial WCL replay")
+ordered(initial_replay, "retired generic lease precedes fresh WCL lease",
+        "!iwn_scan_lease_live_locked(sc)", "terminal_handoff_ready",
+        "iwn_scan_start", "IWN_SCAN_LEASE_WCL_INITIAL")
+for token in (
+        "reject_initial = error != 0 && !command_started",
+        "IEEE80211_EVT_WCL_SCAN_START_REJECTED",
+):
+    require(initial_replay, token, "no-doorbell initial rejection")
+for token in (
+        "AirportItlwmPostPltiTraceRecordWclPhysicalScan",
+        "AirportItlwmPostPltiTraceCompleteWclPhysicalScanEpisode",
+        "AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode",
+        "IEEE80211_EVT_WCL_SCAN_TERMINAL",
+):
+    forbid(initial_replay, token, "rejected queued handoff terminal producer")
 
 scan_start = body(iwn, "int ItlIwn::\niwn_scan_start",
                   "IWN physical scan lease start")
@@ -181,6 +276,80 @@ ordered(scan_start, "lower lease precedes any submit boundary",
         "iwn_scan_lease_reserve", "AirportItlwmPostPltiTraceRecordWclPhysicalScan",
         "kAirportItlwmPostPltiTraceEventWclPhysicalScanLowerLeaseReserved",
         "iwn_scan_lease_arm_submission", "iwn_scan_submit")
+
+# STARTED is deliberately a net80211 lifecycle edge, emitted after WRPTR
+# while the exact WCL_INITIAL lease lock still excludes a raced STOP_SCAN.
+scan_submit = body(iwn, "int ItlIwn::\niwn_scan_submit",
+                   "IWN scan command submit")
+ordered(scan_submit, "WCL initial post-doorbell hook",
+        "iwn_cmd_with_doorbell_hook", "iwn_scan_lease_prepare_doorbell",
+        "iwn_scan_lease_finish_doorbell")
+finish_doorbell = body(iwn,
+    "iwn_scan_lease_finish_doorbell(struct iwn_softc *sc, void *opaque)",
+    "IWN initial WCL post-doorbell start")
+for token in (
+        "The WRPTR write is now complete",
+        "sc->sc_scan_lease.owner == IWN_SCAN_LEASE_WCL_INITIAL",
+        "sc->sc_scan_lease.command_submitted",
+        "sc->sc_scan_lease.wcl_initial_started = true",
+        "IEEE80211_EVT_WCL_SCAN_STARTED",
+):
+    require(finish_doorbell, token, "post-WRPTR WCL STARTED boundary")
+ordered(finish_doorbell, "STARTED precedes release of exact lease fence",
+        "sc->sc_scan_lease.wcl_initial_started = true",
+        "publish_wcl_initial_started = true",
+        "IEEE80211_EVT_WCL_SCAN_STARTED",
+        "IOSimpleLockUnlock(context->lock)")
+
+started_event = body(v2, "if (msgCode == IEEE80211_EVT_WCL_SCAN_STARTED)",
+                     "upper WCL STARTED event")
+ordered(started_event, "STARTED activates before a raced terminal publish",
+        "activateWclPhysicalScan", "StartDisposition::TerminalPending",
+        "queueWclPhysicalScanTerminalPublication")
+
+# START_REJECTED is a no-doorbell cleanup edge.  It may clear a queued upper
+# ticket, but it cannot synthesize any lower terminal/result/DONE trace fact.
+rejected_event = body(v2,
+    "if (msgCode == IEEE80211_EVT_WCL_SCAN_START_REJECTED)",
+    "upper WCL START_REJECTED event")
+require(rejected_event, "rejectWclInitialPhysicalScanStart",
+        "START_REJECTED reducer cleanup")
+for token in (
+        "queueWclPhysicalScanTerminalPublication",
+        "finishWclPhysicalScanCompletion",
+        "postMessage",
+        "APPLE80211_M_WCL_SCAN_RESULT",
+        "APPLE80211_M_WCL_SCAN_DONE",
+        "AirportItlwmPostPltiTraceRecordWclPhysicalScan",
+        "AirportItlwmPostPltiTraceCompleteWclPhysicalScanEpisode",
+        "AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode",
+        "IEEE80211_EVT_WCL_SCAN_TERMINAL",
+):
+    forbid(rejected_event, token, "START_REJECTED synthetic terminal path")
+
+initial_reset = body(iwn,
+    "static enum iwn_scan_lease_owner\niwn_scan_lease_begin_hardware_invalidation(",
+    "queued initial WCL reset")
+for token in (
+        "queued handoff has not doorbelled a WCL command",
+        "zero-backend INVALIDATED event",
+        "*queued_initial_rejected_generation =",
+        "iwn_wcl_initial_scan_pending_clear_locked(sc)",
+):
+    require(initial_reset, token, "queued reset rejection fence")
+for token in (
+        "AirportItlwmPostPltiTraceRecordWclPhysicalScan",
+        "AirportItlwmPostPltiTraceCompleteWclPhysicalScanEpisode",
+        "AirportItlwmPostPltiTraceAbortWclPhysicalScanEpisode",
+        "IEEE80211_EVT_WCL_SCAN_TERMINAL",
+):
+    forbid(initial_reset, token, "queued reset terminal producer")
+hardware_stop = body(iwn, "void ItlIwn::\niwn_hw_stop",
+                     "IWN hardware stop")
+ordered(hardware_stop, "queued reset emits rejection rather than terminal",
+        "queued_initial_rejected_generation != 0",
+        "IEEE80211_EVT_WCL_SCAN_START_REJECTED")
+
 stop_scan = body(iwn, "case IWN_STOP_SCAN", "IWN STOP_SCAN terminal")
 ordered(stop_scan, "exact lower terminal precedes generic cleanup",
         "iwn_scan_lease_claim_terminal", "if (terminal.wcl)",

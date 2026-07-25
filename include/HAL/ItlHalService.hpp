@@ -323,6 +323,23 @@ public:
             *outBackendGeneration = 0;
         return kIOReturnUnsupported;
     }
+    /*
+     * Initial discovery is foreground and may have to drain the boot-time
+     * generic scan before it can submit a fresh WCL-owned radio command.
+     * Success with zero means the backend accepted either a queued handoff
+     * or a direct launch.  The exact backend generation is published only
+     * by the post-doorbell WCL STARTED edge; a no-doorbell path instead emits
+     * START_REJECTED or returns an error.  It is never permission to reuse
+     * the generic scan's terminal or result cache.
+     * Keep this append-only virtual at the public ABI tail.
+     */
+    virtual IOReturn beginWclInitialScan(uint64_t generation,
+                                         uint32_t *outBackendGeneration) {
+        (void)generation;
+        if (outBackendGeneration != NULL)
+            *outBackendGeneration = 0;
+        return kIOReturnUnsupported;
+    }
     
 protected:
     
