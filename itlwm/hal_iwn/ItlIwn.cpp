@@ -88,7 +88,7 @@ static enum iwn_scan_lease_owner iwn_scan_lease_begin_hardware_invalidation(
     struct ieee80211_standard_scan_invalidation *, u_int64_t *);
 static void iwn_scan_lease_retire_after_hardware_stop(struct iwn_softc *);
 static bool iwn_scan_lease_live_locked(const struct iwn_softc *);
-static bool iwn_scan_lease_owner_is_wcl(enum iwn_scan_lease_owner);
+static bool iwn_scan_lease_owner_is_wcl(u_int8_t);
 static void iwn_wcl_initial_scan_pending_clear_locked(struct iwn_softc *);
 
 /* Software PMF is an on-air experiment until protected MPDU transport has
@@ -5775,14 +5775,14 @@ iwn_scan_lease_live_locked(const struct iwn_softc *sc)
 }
 
 static bool
-iwn_scan_lease_owner_is_wcl(enum iwn_scan_lease_owner owner)
+iwn_scan_lease_owner_is_wcl(u_int8_t owner)
 {
     return owner == IWN_SCAN_LEASE_WCL_BACKGROUND ||
         owner == IWN_SCAN_LEASE_WCL_INITIAL;
 }
 
 static bool
-iwn_scan_lease_owner_is_wcl_initial(enum iwn_scan_lease_owner owner)
+iwn_scan_lease_owner_is_wcl_initial(u_int8_t owner)
 {
     return owner == IWN_SCAN_LEASE_WCL_INITIAL;
 }
@@ -6182,7 +6182,8 @@ iwn_scan_lease_claim_terminal(struct iwn_softc *sc,
          sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ABORTING) &&
         !sc->sc_scan_lease.terminal_claimed) {
         terminal->valid = true;
-        terminal->owner = sc->sc_scan_lease.owner;
+        terminal->owner = (enum iwn_scan_lease_owner)
+            sc->sc_scan_lease.owner;
         terminal->serial = sc->sc_scan_lease.serial;
         terminal->wcl = iwn_scan_lease_owner_is_wcl(
             sc->sc_scan_lease.owner);
@@ -6397,7 +6398,8 @@ iwn_scan_lease_begin_hardware_invalidation(
                 sc->sc_scan_lease.backend_generation;
             if (wcl_event->generation != 0 &&
                 wcl_event->backend_generation != 0)
-                publish_owner = sc->sc_scan_lease.owner;
+                publish_owner = (enum iwn_scan_lease_owner)
+                    sc->sc_scan_lease.owner;
         } else if (sc->sc_scan_lease.owner ==
                        IWN_SCAN_LEASE_STANDARD_CONTROLLER &&
                    !sc->sc_scan_lease.terminal_claimed &&
