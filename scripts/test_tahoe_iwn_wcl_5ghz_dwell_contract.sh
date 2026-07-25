@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Static guard for the bounded WCL-initial 5 GHz passive dwell.  It must not
-# introduce a wildcard active scan or change passive/DFS/background behavior.
+# Static guard for the bounded WCL 5 GHz dwell adjustments.  They must not
+# introduce a wildcard active scan or relax passive/DFS/serving-BSS limits.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -52,20 +52,29 @@ require(iwn_hpp, "bool, bool, bool, u_int64_t, u_int32_t,",
 require(iwn, "bool wcl_scan,", "explicit WCL submit ownership")
 for needle, label in (
     ("bool wcl_foreground_5ghz_extended_dwell = false;", "bounded dwell state"),
+    ("bool wcl_background_5ghz_directed_active_dwell = false;", "background dwell state"),
     ("wcl_scan && bgscan == 0 &&", "foreground WCL guard"),
     ("ic->ic_des_esslen == 0", "undirected WCL guard"),
     ("(flags & IEEE80211_CHAN_5GHZ) != 0", "5 GHz-only guard"),
     ("IEEE80211_CHAN_PASSIVE |\n                            IEEE80211_CHAN_DFS", "passive/DFS exclusion"),
     ("dwell_passive = MAX(dwell_passive, 130);", "130 ms dwell floor"),
+    ("wcl_scan && bgscan != 0 &&\n        is_active != 0 &&", "background directed WCL guard"),
+    ("dwell_passive > dwell_active", "serving-BSS dwell cap guard"),
+    ("dwell_active = MAX(dwell_active,\n                MIN((uint16_t)40, (uint16_t)(dwell_passive - 1)));", "40 ms active dwell cap"),
     ("if (ic->ic_des_esslen != 0)\n            chan->flags |= htole32(IWN_CHAN_NPBREQS(1));", "directed-SSID-only probe template selection"),
 ):
     require(submit, needle, label)
 forbid(submit, "else if (wcl_foreground_5ghz_extended_dwell)",
        "wildcard active probing")
+forbid(submit, "dwell_active = MAX(dwell_active, 40);",
+       "uncapped background active dwell")
 require(submit, "hdr->crc_threshold = is_active ?\n            IWN_GOOD_CRC_TH_DEFAULT : IWN_GOOD_CRC_TH_DISABLED;",
         "unchanged new-scan passive CRC semantics")
 require(submit, "hdr->crc_threshold = is_active ?\n            IWN_GOOD_CRC_TH_DEFAULT : IWN_GOOD_CRC_TH_NEVER;",
         "unchanged legacy passive CRC semantics")
+passive_dwell = body(iwn, "uint16_t ItlIwn::\niwn_get_passive_dwell_time")
+require(passive_dwell, "return (iwn_limit_dwell(sc, passive));",
+        "unchanged serving-BSS passive dwell limiter")
 
 continuation = body(iwn, "static bool\niwn_scan_lease_begin_continuation")
 require(iwn, "bool *out_wcl_scan", "continuation ownership output")

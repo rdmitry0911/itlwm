@@ -11328,6 +11328,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     struct iwn_scan_doorbell_context doorbell;
     int buflen, error, is_active;
     bool wcl_foreground_5ghz_extended_dwell = false;
+    bool wcl_background_5ghz_directed_active_dwell = false;
 
     if (out_command_attempted != NULL)
         *out_command_attempted = false;
@@ -11431,6 +11432,14 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
 
         is_active = 1;
     }
+    /* An associated WCL scan for a selected SSID is an actual directed
+     * active scan.  Its 24 ms 5 GHz dwell is too short to reliably collect
+     * a weak probe response, while the existing passive dwell has already
+     * been limited to the serving BSS beacon budget.  Raise only the active
+     * part to a bounded value below that existing budget; never affect
+     * undirected, foreground, passive, DFS, or non-WCL scans. */
+    wcl_background_5ghz_directed_active_dwell = wcl_scan && bgscan != 0 &&
+        is_active != 0 && (flags & IEEE80211_CHAN_5GHZ) != 0;
     /*
      * Build a probe request frame.  Most of the following code is a
      * copy & paste of what is done in net80211.
@@ -11517,6 +11526,12 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
             (c->ic_flags & (IEEE80211_CHAN_PASSIVE |
                             IEEE80211_CHAN_DFS)) == 0)
             dwell_passive = MAX(dwell_passive, 130);
+        if (wcl_background_5ghz_directed_active_dwell &&
+            (c->ic_flags & (IEEE80211_CHAN_PASSIVE |
+                            IEEE80211_CHAN_DFS)) == 0 &&
+            dwell_passive > dwell_active)
+            dwell_active = MAX(dwell_active,
+                MIN((uint16_t)40, (uint16_t)(dwell_passive - 1)));
 
         /* Make sure they're valid */
         if (dwell_passive <= dwell_active)
