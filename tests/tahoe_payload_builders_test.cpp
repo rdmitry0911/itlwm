@@ -1727,26 +1727,26 @@ void testTahoeWclPhysicalScanContracts()
 
     State state{};
     uint64_t first = 0;
+    uint32_t terminalStatus = 0;
     require(reserve(&state, &first) && first != 0,
             "physical WCL scan reserves one nonzero ticket");
     require(!reserve(&state, &first),
             "physical WCL scan rejects a coalesced second request");
-    require(activate(&state, first) == StartDisposition::Active,
-            "physical WCL scan activates after radio admission");
-
-    uint64_t completion = 0;
-    bool aborted = true;
-    require(claimCompletion(&state, &completion, &aborted) ==
-                CompletionDisposition::Publish &&
-                completion == first && !aborted,
-            "one normal radio terminal claims the active WCL ticket");
-    require(claimCompletion(&state, &completion, &aborted) ==
+    require(activate(&state, first, 101) == StartDisposition::Active,
+            "physical WCL scan activates after exact backend admission");
+    require(claimCompletion(&state, first, 102, 0) ==
+                CompletionDisposition::None,
+            "foreign backend terminal cannot claim the WCL ticket");
+    require(claimCompletion(&state, first, 101, 0) ==
+                CompletionDisposition::Publish,
+            "one matching radio terminal claims the active WCL ticket");
+    require(claimCompletion(&state, first, 101, 0) ==
                 CompletionDisposition::None,
             "duplicate terminal cannot claim a completing ticket");
-    finishCompletion(&state, first + 1);
-    require(ownsCompletion(&state, first),
-            "foreign generation cannot finish the claimed ticket");
-    finishCompletion(&state, first);
+    finishCompletion(&state, first, 102);
+    require(ownsCompletion(&state, first, 101),
+            "foreign backend cannot finish the claimed ticket");
+    finishCompletion(&state, first, 101);
     require(state.phase == Phase::Idle,
             "only the matching terminal publisher returns WCL to idle");
 
@@ -1760,19 +1760,30 @@ void testTahoeWclPhysicalScanContracts()
     uint64_t raced = 0;
     require(reserve(&state, &raced),
             "WCL reserves the asynchronous-start race ticket");
-    completion = 0;
-    aborted = true;
-    require(claimCompletion(&state, &completion, &aborted) ==
-                CompletionDisposition::Publish && completion == raced && !aborted,
-            "terminal during Starting is retained for the same ticket");
-    require(activate(&state, raced) == StartDisposition::TerminalPending &&
+    require(claimCompletion(&state, raced, 103, 0) ==
+                CompletionDisposition::Pending,
+            "terminal during Starting is retained but not published early");
+    require(pendingCompletion(&state, raced, 103, &terminalStatus) &&
+                terminalStatus == 0,
+            "starting race retains its exact terminal status");
+    uint32_t recoveredBackendGeneration = 0;
+    require(pendingCompletionForGeneration(
+                &state, raced, &recoveredBackendGeneration, &terminalStatus) &&
+                recoveredBackendGeneration == 103 && terminalStatus == 0,
+            "post-submit failure can recover only the pending terminal identity");
+    uint32_t foreignRecoveredBackendGeneration = 104;
+    require(!pendingCompletionForGeneration(
+                &state, raced, &foreignRecoveredBackendGeneration,
+                &terminalStatus),
+            "known foreign backend cannot recover a pending terminal");
+    require(activate(&state, raced, 103) == StartDisposition::TerminalPending &&
                 failStart(&state, raced) == StartDisposition::TerminalPending,
             "start reconciliation cannot erase an already claimed terminal");
-    finishCompletion(&state, raced);
+    finishCompletion(&state, raced, 103);
 
     uint64_t cancelled = 0;
     require(reserve(&state, &cancelled) &&
-                activate(&state, cancelled) == StartDisposition::Active,
+                activate(&state, cancelled, 104) == StartDisposition::Active,
             "abort test obtains an active physical ticket");
     uint64_t abortGeneration = 0;
     require(markAborting(&state, &abortGeneration) && abortGeneration == cancelled,
@@ -1784,28 +1795,32 @@ void testTahoeWclPhysicalScanContracts()
             "a rejected backend abort restores the live scan terminal");
     require(markAborting(&state, &abortGeneration),
             "a retry may re-enter abort after the rejected backend command");
-    completion = 0;
-    aborted = false;
-    require(claimCompletion(&state, &completion, &aborted) ==
-                CompletionDisposition::Publish && completion == cancelled && aborted,
+    require(claimCompletion(&state, cancelled, 104, 1) ==
+                CompletionDisposition::Publish,
             "abort terminal is published once with abort semantics");
-    finishCompletion(&state, cancelled);
+    finishCompletion(&state, cancelled, 104);
 
     uint64_t draining = 0;
     require(reserve(&state, &draining) &&
-                activate(&state, draining) == StartDisposition::Active,
+                activate(&state, draining, 105) == StartDisposition::Active,
             "drain test obtains an active physical ticket");
     beginDraining(&state);
     require(!reserve(&state, &first),
             "teardown keeps a physical ticket closed until its old terminal drains");
-    require(claimCompletion(&state, &completion, &aborted) ==
-                CompletionDisposition::Suppress && state.phase == Phase::Idle,
-            "late teardown terminal is consumed without a future WCL publication");
+    require(claimCompletion(&state, draining, 105, 1) ==
+                CompletionDisposition::Suppress && state.phase == Phase::Draining,
+            "late teardown terminal remains closed until confirmed radio reopen");
+    reopenAfterRadioReset(&state);
+    require(state.phase == Phase::Idle,
+            "only a confirmed radio reset reopens a drained terminal");
 
     uint64_t next = 0;
     require(reserve(&state, &next) && next > draining,
             "generations remain monotonic across completed physical scans");
-    beginDraining(&state);
+    require(activate(&state, next, 106) == StartDisposition::Active,
+            "post-drain request receives a distinct backend generation");
+    require(invalidate(&state, next, 106) && state.phase == Phase::Draining,
+            "reset invalidation drains only the matching lower lease");
     reopenAfterRadioReset(&state);
     require(state.phase == Phase::Idle,
             "only a confirmed radio reset reopens a terminal-less drain");

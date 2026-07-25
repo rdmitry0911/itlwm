@@ -340,6 +340,39 @@ struct iwn_mfp_pae_txn {
     struct ieee80211_key    pending_key;
 };
 
+/*
+ * IWN firmware does not attach a scan UID to STOP_SCAN.  Keep one host-side
+ * physical-scan lease from command admission through the terminal end_scan
+ * cleanup so a delayed terminal can never be attributed to a later WCL
+ * request.  The leaf lock is interrupt-safe and protects only this POD.
+ */
+enum iwn_scan_lease_owner {
+    IWN_SCAN_LEASE_NONE = 0,
+    IWN_SCAN_LEASE_GENERIC_FOREGROUND,
+    IWN_SCAN_LEASE_GENERIC_BACKGROUND,
+    IWN_SCAN_LEASE_WCL_BACKGROUND,
+};
+
+enum iwn_scan_lease_phase {
+    IWN_SCAN_LEASE_IDLE = 0,
+    IWN_SCAN_LEASE_ARMING,
+    IWN_SCAN_LEASE_ACTIVE,
+    IWN_SCAN_LEASE_ABORTING,
+    IWN_SCAN_LEASE_DRAINING,
+};
+
+struct iwn_scan_lease {
+    u_int64_t       serial;
+    u_int64_t       upper_generation;
+    u_int32_t       backend_generation;
+    u_int8_t        owner;
+    u_int8_t        phase;
+    bool            command_submitted;
+    bool            abort_requested;
+    bool            publication_invalidated;
+    bool            terminal_claimed;
+};
+
 struct iwn_tx_ba {
     struct iwn_node *    wn;
 };
@@ -371,7 +404,16 @@ struct iwn_softc {
 #define IWN_FLAG_ADV_BT_COEX    (1 << 8)
 #define IWN_FLAG_BGSCAN        (1 << 9)
 #define IWN_FLAG_SCANNING    (1 << 10)
-#define IWN_FLAG_WCL_SCAN_ABORTING (1 << 11)
+
+    IOSimpleLock       *sc_scan_lease_lock;
+    struct iwn_scan_lease sc_scan_lease;
+    u_int64_t           sc_scan_lease_next_serial;
+    struct task         scan_lease_replay_task;
+    volatile u_int32_t  sc_scan_lease_replay_task_admission_state;
+    bool                sc_scan_lease_replay_task_ready;
+    bool                sc_scan_lease_replay_pending;
+    enum ieee80211_state sc_scan_lease_replay_nstate;
+    int                 sc_scan_lease_replay_arg;
 
     uint8_t         hw_type;
 

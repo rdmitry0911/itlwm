@@ -101,8 +101,10 @@ ieee80211_begin_bgscan(struct _ifnet *ifp)
         return;
     
     if ((ic->ic_flags & IEEE80211_F_BGSCAN)) {
-        //clear disable flag, because we need to switch a better wifi now.
-        ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+        /* A controller-owned cache scan collects candidates for WCL; do not
+         * let the periodic timer turn it into an autonomous roam. */
+        if (__atomic_load_n(&ic->ic_wcl_scan_active, __ATOMIC_ACQUIRE) == 0)
+            ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
         return;
     }
     
@@ -213,6 +215,9 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     ifp->controller = controller;
+    ic->ic_newstate_preflight = NULL;
+    ic->ic_wcl_scan_suppress_scan_done_once = 0;
+    ic->ic_wcl_scan_active = 0;
     /* A missing leaf lock leaves the dormant snapshot unpublishable. */
 	if (ic->ic_pae_selected_bss_lock == NULL)
 		ic->ic_pae_selected_bss_lock = IOSimpleLockAlloc();

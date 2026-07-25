@@ -191,7 +191,7 @@ ordered(iwx_newstate, "IWX SCAN->SCAN preservation",
         "if (ostate == IEEE80211_S_SCAN)",
         "if (nstate == ostate)",
         "IWX_FLAG_SCANNING", "goto next_scan", "iwx_scan(sc)")
-iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate", "IWN newstate")
+iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate(", "IWN newstate")
 ordered(iwn_newstate, "IWN SCAN->SCAN preservation",
         "if (ic->ic_state == IEEE80211_S_SCAN)",
         "if (nstate == IEEE80211_S_SCAN)",

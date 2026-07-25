@@ -871,7 +871,7 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventEapolTxDone",
 ):
     require(completion, needle, "IWN categorical completion event")
-iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate", "IWN newstate")
+iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate(", "IWN newstate")
 ordered(iwn_newstate, "direct SAE reads its STARTING generation before coalesce",
         "ieee80211_sae_wcl_request_scan_starting(ic,",
         "if (ic->ic_state == IEEE80211_S_SCAN)", "IWN_FLAG_SCANNING",
@@ -897,11 +897,12 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventRunEntered",
 ):
     require(iwn_newstate, needle, "IWN state boundary")
-iwn_scan = body(iwn, "int ItlIwn::\niwn_scan", "IWN scan")
-ordered(iwn_scan, "IWN trace records only successful scan submission",
+iwn_scan_submit = body(iwn, "int ItlIwn::\niwn_scan_submit(",
+                       "IWN scan command submission")
+ordered(iwn_scan_submit, "IWN trace records only successful scan submission",
         "error = iwn_cmd(sc, IWN_CMD_SCAN", "if (error == 0)",
         "IWN_FLAG_SCANNING", "kAirportItlwmPostPltiTraceEventIwnScanStarted")
-require(iwn_scan, "kAirportItlwmPostPltiTraceEventIwnScanCommandRejected",
+require(iwn_scan_submit, "kAirportItlwmPostPltiTraceEventIwnScanCommandRejected",
         "categorical IWN scan failure marker")
 iwn_tx = body(iwn, "int ItlIwn::\niwn_tx", "IWN transmit")
 ordered(iwn_tx, "IWN per-slot class reaches canonical ring kick",

@@ -774,6 +774,9 @@ public:
     IOReturn setVIRTUAL_IF_DELETE(apple80211_virt_if_delete_data *);
 
 private:
+    IOReturn completePendingWclPhysicalScanTerminal(
+        uint64_t generation, uint32_t *backendGeneration);
+
     AirportItlwm *instance;
     ItlHalService *fHalService;
 

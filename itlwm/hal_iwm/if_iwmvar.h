@@ -335,7 +335,6 @@ struct iwm_rx_ring {
 #define IWM_FLAG_HW_ERR        0x80    /* hardware error occurred */
 #define IWM_FLAG_SHUTDOWN    0x100    /* shutting down; new tasks forbidden */
 #define IWM_FLAG_BGSCAN        0x200    /* background scan in progress */
-#define IWM_FLAG_WCL_SCAN_ABORTING 0x400 /* WCL abort awaits terminal scan edge */
 
 struct iwm_ucode_status {
     uint32_t uc_error_event_table;

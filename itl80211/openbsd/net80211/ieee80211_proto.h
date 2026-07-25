@@ -302,8 +302,11 @@ extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 		enum ieee80211_state);
 #define    ieee80211_new_state(_ic, _nstate, _arg) \
 do {    \
+if ((_ic)->ic_newstate_preflight == NULL || \
+    ((_ic)->ic_newstate_preflight((_ic), (_nstate), (_arg)) == 0)) { \
 ieee80211_pae_assoc_epoch_note_newstate((_ic), (_nstate)); \
 (((_ic)->ic_newstate)((_ic), (_nstate), (_arg)));   \
+} \
 } while (0)
 extern	enum ieee80211_edca_ac ieee80211_up_to_ac(struct ieee80211com *, int);
 extern	u_int8_t *ieee80211_add_capinfo(u_int8_t *, struct ieee80211com *,

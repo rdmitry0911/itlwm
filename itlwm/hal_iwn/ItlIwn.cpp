@@ -83,6 +83,9 @@ static bool iwn_build_ht_apple_nrate(uint8_t rate, uint8_t rflags,
                                      uint32_t *nrate);
 static void iwn_post_plti_trace_record_completion(struct ieee80211com *ic,
                                                    uint8_t txClass);
+static bool iwn_scan_lease_begin_hardware_invalidation(
+    struct iwn_softc *, struct ieee80211_wcl_scan_invalidation *);
+static void iwn_scan_lease_retire_after_hardware_stop(struct iwn_softc *);
 
 /* Software PMF is an on-air experiment until protected MPDU transport has
  * passed on the physical IWN device.  A normal binary must remain incapable
@@ -499,6 +502,8 @@ iwn_sae_tx_schedule_task(struct iwn_softc *sc, bool allow_closed)
 #define IWN_SAE_ENGINE_CALLBACK_COUNT_MASK  0x7fffffffU
 #define IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED      0x80000000U
 #define IWN_SAE_ENGINE_TASK_ADMISSION_COUNT_MASK  0x7fffffffU
+#define IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED      0x80000000U
+#define IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_COUNT_MASK  0x7fffffffU
 
 /* Generic net80211 can retain a hook pointer briefly after it has dropped
  * its selected-BSS lock.  RX may invoke that copied pointer adjacent to an
@@ -659,6 +664,99 @@ iwn_sae_engine_task_admission_drain(struct iwn_softc *sc)
     while ((__atomic_load_n(&sc->sc_sae_engine_task_admission_state,
         __ATOMIC_ACQUIRE) & IWN_SAE_ENGINE_TASK_ADMISSION_COUNT_MASK) != 0)
         IOSleep(1);
+}
+
+/* The scan-lease replay task is submitted from RX terminal handling after
+ * its simple lock has been dropped.  This independently closes that enqueue
+ * window before detach snapshots task_del()+barrier. */
+static bool
+iwn_scan_lease_replay_task_admission_enter(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return false;
+    state = __atomic_load_n(&sc->sc_scan_lease_replay_task_admission_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED) != 0 ||
+            (state & IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_COUNT_MASK) ==
+            IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_COUNT_MASK)
+            return false;
+        next = state + 1;
+        if (__atomic_compare_exchange_n(
+            &sc->sc_scan_lease_replay_task_admission_state, &state, next,
+            false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return true;
+    }
+}
+
+static void
+iwn_scan_lease_replay_task_admission_leave(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return;
+    state = __atomic_load_n(&sc->sc_scan_lease_replay_task_admission_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_COUNT_MASK) == 0)
+            return;
+        next = state - 1;
+        if (__atomic_compare_exchange_n(
+            &sc->sc_scan_lease_replay_task_admission_state, &state, next,
+            false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+    }
+}
+
+static void
+iwn_scan_lease_replay_task_admission_close(struct iwn_softc *sc)
+{
+    u_int32_t state, next;
+
+    if (sc == NULL)
+        return;
+    state = __atomic_load_n(&sc->sc_scan_lease_replay_task_admission_state,
+        __ATOMIC_ACQUIRE);
+    for (;;) {
+        if ((state & IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED) != 0)
+            return;
+        next = state | IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED;
+        if (__atomic_compare_exchange_n(
+            &sc->sc_scan_lease_replay_task_admission_state, &state, next,
+            false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+    }
+}
+
+static void
+iwn_scan_lease_replay_task_admission_drain(struct iwn_softc *sc)
+{
+    if (sc == NULL)
+        return;
+    while ((__atomic_load_n(&sc->sc_scan_lease_replay_task_admission_state,
+        __ATOMIC_ACQUIRE) &
+        IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_COUNT_MASK) != 0)
+        IOSleep(1);
+}
+
+static void
+iwn_scan_lease_schedule_replay_task(struct iwn_softc *sc)
+{
+    bool ready = false;
+
+    if (sc == NULL || !iwn_scan_lease_replay_task_admission_enter(sc))
+        return;
+    if (sc->sc_scan_lease_lock != NULL) {
+        IOSimpleLockLock(sc->sc_scan_lease_lock);
+        ready = sc->sc_scan_lease_replay_task_ready;
+        IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    }
+    if (ready && systq != NULL)
+        (void)task_add(systq, &sc->scan_lease_replay_task);
+    iwn_scan_lease_replay_task_admission_leave(sc);
 }
 
 static bool
@@ -3483,6 +3581,25 @@ detach(IOPCIDevice *device)
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     struct iwn_softc *sc = &com;
 
+    if (com.sc_ic.ic_newstate_preflight == iwn_newstate_preflight)
+        com.sc_ic.ic_newstate_preflight = NULL;
+    /* Close and drain every producer which could otherwise enqueue replay
+     * after the task_del()+barrier snapshot below. */
+    iwn_scan_lease_replay_task_admission_close(sc);
+    iwn_scan_lease_replay_task_admission_drain(sc);
+    bool drain_scan_replay = false;
+    if (sc->sc_scan_lease_lock != NULL) {
+        IOSimpleLockLock(sc->sc_scan_lease_lock);
+        drain_scan_replay = sc->sc_scan_lease_replay_task_ready;
+        sc->sc_scan_lease_replay_task_ready = false;
+        sc->sc_scan_lease_replay_pending = false;
+        IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    }
+    if (drain_scan_replay && systq != NULL) {
+        (void)task_del(systq, &sc->scan_lease_replay_task);
+        taskq_barrier(systq);
+    }
+
     /* Retire the direct crypto owner while its native TX cancellation gate
      * still exists; it keeps only an auth-owned tombstone until IRQ teardown
      * makes a fresh RX fallback impossible. */
@@ -3523,6 +3640,10 @@ detach(IOPCIDevice *device)
     if (sc->sc_mfp_pae_lock != NULL) {
         IOSimpleLockFree(sc->sc_mfp_pae_lock);
         sc->sc_mfp_pae_lock = NULL;
+    }
+    if (sc->sc_scan_lease_lock != NULL) {
+        IOSimpleLockFree(sc->sc_scan_lease_lock);
+        sc->sc_scan_lease_lock = NULL;
     }
     if (sc->sc_sae_tx_lock != NULL) {
         IOSimpleLockFree(sc->sc_sae_tx_lock);
@@ -3630,32 +3751,19 @@ IOReturn ItlIwn::disable(IONetworkInterface *netif)
 void ItlIwn::
 clearScanningFlags()
 {
-    com.sc_flags &= ~(IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN);
-}
+    bool lease_live = false;
 
-IOReturn ItlIwn::
-abortScanForWcl()
-{
-    struct iwn_softc *sc = &com;
-    if ((sc->sc_flags & (IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN)) == 0)
-        return kIOReturnNotReady;
-
-    /*
-     * Set the marker before the firmware command: IWN_STOP_SCAN can race the
-     * asynchronous doorbell, and must not start the second band after WCL has
-     * requested cancellation.  Unlike iwn_scan_abort(), retain ordinary scan
-     * flags until that real terminal notification calls ieee80211_end_scan().
-     */
-    sc->sc_flags |= IWN_FLAG_WCL_SCAN_ABORTING;
-    const int error = iwn_cmd(sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1);
-    if (error != 0) {
-        sc->sc_flags &= ~IWN_FLAG_WCL_SCAN_ABORTING;
-        return kIOReturnError;
+    if (com.sc_scan_lease_lock != NULL) {
+        IOSimpleLockLock(com.sc_scan_lease_lock);
+        lease_live = com.sc_scan_lease.owner != IWN_SCAN_LEASE_NONE &&
+            com.sc_scan_lease.phase != IWN_SCAN_LEASE_IDLE;
+        IOSimpleLockUnlock(com.sc_scan_lease_lock);
     }
-
-    /* The command is asynchronous; terminal ownership stays with STOP_SCAN. */
-    DELAY(100);
-    return kIOReturnSuccess;
+    /* A late STOP_SCAN has no firmware UID.  Do not erase the only lower
+     * owner marker while its exact physical lease is still live. */
+    if (lease_live)
+        return;
+    com.sc_flags &= ~(IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN);
 }
 
 IOReturn ItlIwn::
@@ -3960,6 +4068,8 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
         IWN_SAE_ENGINE_CALLBACK_CLOSED, __ATOMIC_RELEASE);
     __atomic_store_n(&sc->sc_sae_engine_task_admission_state,
         IWN_SAE_ENGINE_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
+    __atomic_store_n(&sc->sc_scan_lease_replay_task_admission_state,
+        IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
     sc->sc_sae_engine_lock = NULL;
     explicit_bzero(&sc->sc_sae_engine_owner,
         sizeof(sc->sc_sae_engine_owner));
@@ -3973,6 +4083,13 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_engine_stopping = true;
     sc->sc_sae_engine_detaching = false;
     sc->sc_sae_engine_lab_enabled = false;
+    sc->sc_scan_lease_lock = NULL;
+    explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
+    sc->sc_scan_lease_next_serial = 0;
+    sc->sc_scan_lease_replay_task_ready = false;
+    sc->sc_scan_lease_replay_pending = false;
+    sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
+    sc->sc_scan_lease_replay_arg = -1;
 
     /*
      * Get the offset of the PCI Express Capability Structure in PCI
@@ -4115,6 +4232,20 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
         ((sc->rxchainmask >> 0) & 1);
 
     taskq_init();
+    sc->sc_scan_lease_lock = IOSimpleLockAlloc();
+    if (sc->sc_scan_lease_lock == NULL) {
+        XYLog("%s: scan lease owner unavailable\n", DEVNAME(sc));
+        goto fail4;
+    }
+    explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
+    sc->sc_scan_lease.phase = IWN_SCAN_LEASE_IDLE;
+    sc->sc_scan_lease_next_serial = 0;
+    __atomic_store_n(&sc->sc_scan_lease_replay_task_admission_state,
+        IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
+    sc->sc_scan_lease_replay_task_ready = false;
+    sc->sc_scan_lease_replay_pending = false;
+    sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
+    sc->sc_scan_lease_replay_arg = -1;
     sc->sc_sae_tx_lifecycle_lock = IOLockAlloc();
     if (sc->sc_sae_tx_lifecycle_lock == NULL) {
         XYLog("%s: SAE TX lifecycle unavailable\n", DEVNAME(sc));
@@ -4329,11 +4460,17 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     timeout_set(&sc->calib_to, iwn_calib_timeout, sc);
 //    rw_init(&sc->sc_rwlock, "iwnlock");
     task_set(&sc->init_task, iwn_init_task, sc, "iwn_init_task");
+    task_set(&sc->scan_lease_replay_task, iwn_scan_lease_replay_task, sc,
+        "iwn_scan_lease_replay_task");
     task_set(&sc->sae_tx_task, iwn_sae_tx_task, sc, "iwn_sae_tx_task");
     task_set(&sc->sae_engine_task, iwn_sae_engine_task, sc,
         "iwn_sae_engine_task");
     task_set(&sc->mfp_pae_task, iwn_mfp_pae_task, sc, "iwn_mfp_pae_task");
     sc->sc_sae_tx_task_ready = true;
+    sc->sc_scan_lease_replay_task_ready = true;
+    __atomic_store_n(&sc->sc_scan_lease_replay_task_admission_state, 0,
+        __ATOMIC_RELEASE);
+    ic->ic_newstate_preflight = iwn_newstate_preflight;
     sc->sc_sae_engine_task_ready = sc->sc_sae_engine_lock != NULL;
     if (sc->sc_sae_engine_task_ready)
         __atomic_store_n(&sc->sc_sae_engine_task_admission_state, 0,
@@ -5571,6 +5708,479 @@ iwn_media_change(struct _ifnet *ifp)
     return error;
 }
 
+/* IWN STOP_SCAN carries no firmware scan identifier.  Every physical scan
+ * therefore takes this one host-side lease before its command doorbell and
+ * keeps it until terminal net80211 cleanup is complete. */
+struct iwn_scan_lease_terminal {
+    bool valid;
+    bool wcl;
+    bool publish_wcl_terminal;
+    bool aborted;
+    u_int64_t serial;
+    u_int64_t upper_generation;
+    u_int32_t backend_generation;
+};
+
+static void
+iwn_scan_lease_clear_locked(struct iwn_softc *sc)
+{
+    explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
+    sc->sc_scan_lease.phase = IWN_SCAN_LEASE_IDLE;
+}
+
+static bool
+iwn_scan_lease_live_locked(const struct iwn_softc *sc)
+{
+    return sc->sc_scan_lease.owner != IWN_SCAN_LEASE_NONE &&
+        sc->sc_scan_lease.phase != IWN_SCAN_LEASE_IDLE;
+}
+
+static bool
+iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
+                       u_int64_t upper_generation,
+                       u_int32_t *out_backend_generation,
+                       u_int64_t *out_serial)
+{
+    u_int64_t serial;
+
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL ||
+        owner == IWN_SCAN_LEASE_NONE || out_serial == NULL ||
+        (owner == IWN_SCAN_LEASE_WCL_BACKGROUND &&
+         (upper_generation == 0 || out_backend_generation == NULL)))
+        return false;
+    if (out_backend_generation != NULL)
+        *out_backend_generation = 0;
+
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc) ||
+        (sc->sc_flags & IWN_FLAG_SCANNING) != 0) {
+        IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+        return false;
+    }
+    serial = ++sc->sc_scan_lease_next_serial;
+    if (serial == 0)
+        serial = ++sc->sc_scan_lease_next_serial;
+    iwn_scan_lease_clear_locked(sc);
+    sc->sc_scan_lease.serial = serial;
+    sc->sc_scan_lease.owner = owner;
+    sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ARMING;
+    sc->sc_scan_lease.upper_generation = upper_generation;
+    if (owner == IWN_SCAN_LEASE_WCL_BACKGROUND) {
+        u_int32_t generation = (u_int32_t)serial;
+        if (generation == 0)
+            generation = 1;
+        sc->sc_scan_lease.backend_generation = generation;
+        *out_backend_generation = generation;
+    }
+    *out_serial = serial;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return true;
+}
+
+static bool
+iwn_scan_lease_rollback(struct iwn_softc *sc, u_int64_t serial)
+{
+    bool rolled_back = false;
+
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || serial == 0)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.serial == serial &&
+        !sc->sc_scan_lease.command_submitted &&
+        !sc->sc_scan_lease.terminal_claimed) {
+        iwn_scan_lease_clear_locked(sc);
+        rolled_back = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return rolled_back;
+}
+
+static bool
+iwn_scan_lease_arm_submission(struct iwn_softc *sc, u_int64_t serial,
+                               bool *out_abort_requested)
+{
+    bool marked = false;
+
+    if (out_abort_requested != NULL)
+        *out_abort_requested = false;
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || serial == 0)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.serial == serial &&
+        !sc->sc_scan_lease.terminal_claimed) {
+        sc->sc_scan_lease.command_submitted = true;
+        if (out_abort_requested != NULL)
+            *out_abort_requested = sc->sc_scan_lease.abort_requested;
+        marked = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return marked;
+}
+
+static bool
+iwn_scan_lease_activate_submission(struct iwn_softc *sc, u_int64_t serial,
+                                   bool *out_abort_requested)
+{
+    bool activated = false;
+
+    if (out_abort_requested != NULL)
+        *out_abort_requested = false;
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || serial == 0)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.serial == serial &&
+        sc->sc_scan_lease.command_submitted &&
+        !sc->sc_scan_lease.terminal_claimed) {
+        sc->sc_scan_lease.phase = sc->sc_scan_lease.abort_requested ?
+            IWN_SCAN_LEASE_ABORTING : IWN_SCAN_LEASE_ACTIVE;
+        if (out_abort_requested != NULL)
+            *out_abort_requested = sc->sc_scan_lease.abort_requested;
+        activated = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return activated;
+}
+
+static bool
+iwn_scan_lease_terminal_claimed(struct iwn_softc *sc, u_int64_t serial)
+{
+    bool claimed = false;
+
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || serial == 0)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    claimed = iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.serial == serial &&
+        sc->sc_scan_lease.terminal_claimed;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return claimed;
+}
+
+static bool
+iwn_scan_lease_mark_abort(struct iwn_softc *sc,
+                          enum iwn_scan_lease_owner required_owner,
+                          u_int64_t required_upper_generation,
+                          u_int64_t *out_serial, bool *out_submit_abort)
+{
+    bool matched = false;
+
+    if (out_serial != NULL)
+        *out_serial = 0;
+    if (out_submit_abort != NULL)
+        *out_submit_abort = false;
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc) &&
+        (required_owner == IWN_SCAN_LEASE_NONE ||
+         sc->sc_scan_lease.owner == required_owner) &&
+        (required_upper_generation == 0 ||
+         sc->sc_scan_lease.upper_generation == required_upper_generation)) {
+        const bool was_requested = sc->sc_scan_lease.abort_requested;
+        const bool was_arming =
+            sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ARMING;
+        sc->sc_scan_lease.abort_requested = true;
+        if (!sc->sc_scan_lease.terminal_claimed && !was_arming)
+            sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ABORTING;
+        if (out_serial != NULL)
+            *out_serial = sc->sc_scan_lease.serial;
+        if (out_submit_abort != NULL)
+            *out_submit_abort = sc->sc_scan_lease.command_submitted &&
+                !was_arming &&
+                !was_requested && !sc->sc_scan_lease.terminal_claimed;
+        matched = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return matched;
+}
+
+static void
+iwn_scan_lease_abort_submission_failed(struct iwn_softc *sc, u_int64_t serial)
+{
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || serial == 0)
+        return;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.serial == serial &&
+        !sc->sc_scan_lease.terminal_claimed) {
+        sc->sc_scan_lease.abort_requested = false;
+        if (sc->sc_scan_lease.command_submitted)
+            sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ACTIVE;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+}
+
+static bool
+iwn_scan_lease_claim_terminal(struct iwn_softc *sc,
+                              struct iwn_scan_lease_terminal *terminal)
+{
+    bool claimed = false;
+
+    if (terminal != NULL)
+        explicit_bzero(terminal, sizeof(*terminal));
+    if (sc == NULL || terminal == NULL || sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.command_submitted &&
+        !sc->sc_scan_lease.terminal_claimed) {
+        terminal->valid = true;
+        terminal->serial = sc->sc_scan_lease.serial;
+        terminal->wcl = sc->sc_scan_lease.owner ==
+            IWN_SCAN_LEASE_WCL_BACKGROUND;
+        terminal->publish_wcl_terminal = terminal->wcl &&
+            !sc->sc_scan_lease.publication_invalidated;
+        terminal->aborted = sc->sc_scan_lease.abort_requested;
+        terminal->upper_generation = sc->sc_scan_lease.upper_generation;
+        terminal->backend_generation = sc->sc_scan_lease.backend_generation;
+        sc->sc_scan_lease.terminal_claimed = true;
+        sc->sc_scan_lease.phase = IWN_SCAN_LEASE_DRAINING;
+        claimed = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return claimed;
+}
+
+static bool
+iwn_scan_lease_should_continue(struct iwn_softc *sc)
+{
+    bool continue_scan = false;
+
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    continue_scan = iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.command_submitted &&
+        !sc->sc_scan_lease.terminal_claimed &&
+        !sc->sc_scan_lease.abort_requested;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return continue_scan;
+}
+
+static bool
+iwn_scan_lease_finish_terminal(struct iwn_softc *sc, u_int64_t serial)
+{
+    bool schedule_replay = false;
+
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || serial == 0)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.serial == serial &&
+        sc->sc_scan_lease.terminal_claimed) {
+        iwn_scan_lease_clear_locked(sc);
+        schedule_replay = sc->sc_scan_lease_replay_pending;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return schedule_replay;
+}
+
+static bool
+iwn_scan_lease_defer_scan(struct iwn_softc *sc,
+                          enum ieee80211_state nstate, int arg,
+                          u_int64_t *out_serial, bool *out_submit_abort)
+{
+    bool deferred = false;
+
+    if (out_serial != NULL)
+        *out_serial = 0;
+    if (out_submit_abort != NULL)
+        *out_submit_abort = false;
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL ||
+        nstate != IEEE80211_S_SCAN)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc)) {
+        const bool was_requested = sc->sc_scan_lease.abort_requested;
+        const bool was_arming =
+            sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ARMING;
+        sc->sc_scan_lease_replay_pending = true;
+        sc->sc_scan_lease_replay_nstate = nstate;
+        sc->sc_scan_lease_replay_arg = arg;
+        sc->sc_scan_lease.abort_requested = true;
+        if (!sc->sc_scan_lease.terminal_claimed && !was_arming)
+            sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ABORTING;
+        if (out_serial != NULL)
+            *out_serial = sc->sc_scan_lease.serial;
+        if (out_submit_abort != NULL)
+            *out_submit_abort = sc->sc_scan_lease.command_submitted &&
+                !was_arming &&
+                !was_requested && !sc->sc_scan_lease.terminal_claimed;
+        deferred = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return deferred;
+}
+
+static void
+iwn_scan_lease_drop_replay(struct iwn_softc *sc)
+{
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    sc->sc_scan_lease_replay_pending = false;
+    sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
+    sc->sc_scan_lease_replay_arg = -1;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+}
+
+static bool
+iwn_scan_lease_begin_hardware_invalidation(
+    struct iwn_softc *sc, struct ieee80211_wcl_scan_invalidation *event)
+{
+    bool publish = false;
+
+    if (event != NULL)
+        explicit_bzero(event, sizeof(*event));
+    if (sc == NULL || event == NULL || sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc)) {
+        if (sc->sc_scan_lease.owner == IWN_SCAN_LEASE_WCL_BACKGROUND &&
+            !sc->sc_scan_lease.terminal_claimed &&
+            !sc->sc_scan_lease.publication_invalidated) {
+            event->generation = sc->sc_scan_lease.upper_generation;
+            event->backend_generation =
+                sc->sc_scan_lease.backend_generation;
+            publish = event->generation != 0 &&
+                event->backend_generation != 0;
+        }
+        sc->sc_scan_lease.publication_invalidated = true;
+        sc->sc_scan_lease.phase = IWN_SCAN_LEASE_DRAINING;
+    }
+    /* A hardware reset discards a queued generic retry.  It must never replay
+     * against a different post-reset association epoch. */
+    sc->sc_scan_lease_replay_pending = false;
+    sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
+    sc->sc_scan_lease_replay_arg = -1;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return publish;
+}
+
+static void
+iwn_scan_lease_retire_after_hardware_stop(struct iwn_softc *sc)
+{
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(sc))
+        iwn_scan_lease_clear_locked(sc);
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+}
+
+int ItlIwn::
+iwn_newstate_preflight(struct ieee80211com *ic,
+                       enum ieee80211_state nstate, int arg)
+{
+    struct iwn_softc *sc;
+    ItlIwn *that;
+    u_int64_t serial = 0;
+    bool submit_abort = false;
+
+    if (ic == NULL || nstate != IEEE80211_S_SCAN ||
+        ic->ic_state != IEEE80211_S_RUN)
+        return 0;
+    sc = (struct iwn_softc *)ic->ic_if.if_softc;
+    if (sc == NULL)
+        return 0;
+    that = container_of(sc, ItlIwn, com);
+    if (!iwn_scan_lease_defer_scan(sc, nstate, arg, &serial, &submit_abort))
+        return 0;
+
+    /* Consume before generic epoch advancement.  A command failure cannot
+     * safely replay over a still-live radio transaction, so reset/reinit is
+     * the fail-closed recovery owner. */
+    if (submit_abort && that->iwn_cmd(sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1) != 0) {
+        iwn_scan_lease_abort_submission_failed(sc, serial);
+        iwn_scan_lease_drop_replay(sc);
+        sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
+        (void)task_add(systq, &sc->init_task);
+    }
+    return 1;
+}
+
+void ItlIwn::
+iwn_scan_lease_replay_task(void *arg)
+{
+    struct iwn_softc *sc = (struct iwn_softc *)arg;
+    struct ieee80211com *ic;
+    enum ieee80211_state nstate;
+    int nstate_arg;
+    bool replay = false;
+
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL)
+        return;
+    ic = &sc->sc_ic;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (sc->sc_scan_lease_replay_task_ready &&
+        sc->sc_scan_lease_replay_pending &&
+        !iwn_scan_lease_live_locked(sc) &&
+        (ic->ic_if.if_flags & (IFF_UP | IFF_RUNNING)) ==
+            (IFF_UP | IFF_RUNNING)) {
+        nstate = sc->sc_scan_lease_replay_nstate;
+        nstate_arg = sc->sc_scan_lease_replay_arg;
+        sc->sc_scan_lease_replay_pending = false;
+        sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
+        sc->sc_scan_lease_replay_arg = -1;
+        replay = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    if (replay)
+        ieee80211_new_state(ic, nstate, nstate_arg);
+}
+
+IOReturn ItlIwn::
+beginWclBackgroundScan(uint64_t generation, uint32_t *outBackendGeneration)
+{
+    u_int32_t backend_generation = 0;
+
+    if (outBackendGeneration == NULL || generation == 0)
+        return kIOReturnBadArgument;
+    *outBackendGeneration = 0;
+    if (iwn_scan_start(&com, IEEE80211_CHAN_2GHZ, 1,
+                       IWN_SCAN_LEASE_WCL_BACKGROUND, generation,
+                       &backend_generation) != 0)
+        return kIOReturnBusy;
+    if (backend_generation == 0)
+        return kIOReturnAborted;
+    *outBackendGeneration = backend_generation;
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwn::
+abortWclBackgroundScan(uint64_t generation)
+{
+    u_int64_t serial = 0;
+    bool submit_abort = false;
+
+    if (generation == 0)
+        return kIOReturnBadArgument;
+    if (!iwn_scan_lease_mark_abort(&com, IWN_SCAN_LEASE_WCL_BACKGROUND,
+                                   generation, &serial, &submit_abort))
+        return kIOReturnNotReady;
+    if (!submit_abort)
+        return kIOReturnSuccess;
+    if (iwn_cmd(&com, IWN_CMD_SCAN_ABORT, NULL, 0, 1) == 0)
+        return kIOReturnSuccess;
+    iwn_scan_lease_abort_submission_failed(&com, serial);
+    return kIOReturnError;
+}
+
+void ItlIwn::
+invalidateWclBackgroundScan()
+{
+    if (com.sc_scan_lease_lock == NULL)
+        return;
+    IOSimpleLockLock(com.sc_scan_lease_lock);
+    if (iwn_scan_lease_live_locked(&com) &&
+        com.sc_scan_lease.owner == IWN_SCAN_LEASE_WCL_BACKGROUND)
+        com.sc_scan_lease.publication_invalidated = true;
+    IOSimpleLockUnlock(com.sc_scan_lease_lock);
+}
+
 int ItlIwn::
 iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 {
@@ -5580,6 +6190,13 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     ItlIwn *that = container_of(sc, ItlIwn, com);
     u_int64_t direct_sae_scan_generation = 0;
     int error;
+
+    /* Most callers pass through ieee80211_new_state(), whose preflight has
+     * already consumed a conflicting RUN->SCAN request before epoch change.
+     * Keep the same fence for the few raw backend callers. */
+    if (nstate == IEEE80211_S_SCAN && ic->ic_state == IEEE80211_S_RUN &&
+        iwn_newstate_preflight(ic, nstate, arg) != 0)
+        return 0;
 
     if (nstate == IEEE80211_S_SCAN) {
         AirportItlwmPostPltiTraceRecord(
@@ -7098,26 +7715,64 @@ iwn_notif_intr(struct iwn_softc *sc)
         {
             struct iwn_stop_scan *scan =
                 (struct iwn_stop_scan *)(desc + 1);
+            struct iwn_scan_lease_terminal terminal;
+            bool replay_scan = false;
 
             bus_dmamap_sync(sc->sc_dmat, data->map, sizeof (*desc),
                 sizeof (*scan), BUS_DMASYNC_POSTREAD);
 
-            if ((sc->sc_flags & IWN_FLAG_WCL_SCAN_ABORTING) == 0 &&
+            if (iwn_scan_lease_should_continue(sc) &&
                 scan->status == 1 && scan->chan <= 14 &&
                 (sc->sc_flags & IWN_FLAG_HAS_5GHZ)) {
-                    int error;
+                int error;
                 /*
                  * We just finished scanning 2GHz channels,
-                 * start scanning 5GHz ones.
+                 * start scanning 5GHz ones under the same exact lease.
                  */
-                error = iwn_scan(sc, IEEE80211_CHAN_5GHZ,
+                error = iwn_scan_continue(sc, IEEE80211_CHAN_5GHZ,
                     (sc->sc_flags & IWN_FLAG_BGSCAN) ? 1 : 0);
                 if (error == 0)
                     break;
             }
-            sc->sc_flags &= ~(IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN |
-                              IWN_FLAG_WCL_SCAN_ABORTING);
+
+            if (scan->status != 1) {
+                u_int64_t ignored_serial = 0;
+                bool ignored_submit_abort = false;
+                (void)iwn_scan_lease_mark_abort(sc, IWN_SCAN_LEASE_NONE, 0,
+                                                 &ignored_serial,
+                                                 &ignored_submit_abort);
+            }
+
+            /* A STOP_SCAN with no exact current lease is stale or belongs to
+             * a lifecycle already closed above.  Never turn it into a fresh
+             * generic/WCL terminal by clearing flags underneath a successor. */
+            if (!iwn_scan_lease_claim_terminal(sc, &terminal))
+                break;
+            if (terminal.wcl)
+                __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once,
+                                 1, __ATOMIC_RELEASE);
+            sc->sc_flags &= ~(IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN);
             ieee80211_end_scan(ifp);
+            if (terminal.wcl && terminal.publish_wcl_terminal &&
+                ic->ic_event_handler != NULL) {
+                struct ieee80211_wcl_scan_terminal wcl_terminal;
+                explicit_bzero(&wcl_terminal, sizeof(wcl_terminal));
+                wcl_terminal.generation = terminal.upper_generation;
+                wcl_terminal.backend_generation = terminal.backend_generation;
+                wcl_terminal.status = terminal.aborted ?
+                    IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED :
+                    IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE;
+                (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_TERMINAL,
+                                        &wcl_terminal);
+                explicit_bzero(&wcl_terminal, sizeof(wcl_terminal));
+            }
+            if (terminal.wcl)
+                __atomic_store_n(&ic->ic_wcl_scan_active, 0,
+                                 __ATOMIC_RELEASE);
+            replay_scan = iwn_scan_lease_finish_terminal(sc, terminal.serial);
+            explicit_bzero(&terminal, sizeof(terminal));
+            if (replay_scan)
+                iwn_scan_lease_schedule_replay_task(sc);
             break;
         }
         case IWN5000_CALIBRATION_RESULT:
@@ -9829,7 +10484,128 @@ iwn_get_passive_dwell_time(struct iwn_softc *sc, uint16_t flags)
 }
 
 int ItlIwn::
+iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
+               enum iwn_scan_lease_owner owner, u_int64_t upper_generation,
+               u_int32_t *out_backend_generation)
+{
+    struct ieee80211com *ic;
+    u_int64_t serial = 0;
+    u_int32_t backend_generation = 0;
+    u_int32_t old_ic_flags = 0;
+    time_t old_cache_scan_ts = 0;
+    bool wcl = owner == IWN_SCAN_LEASE_WCL_BACKGROUND;
+    bool abort_requested = false;
+    int error;
+
+    if (sc == NULL || (ic = &sc->sc_ic) == NULL ||
+        (wcl && (upper_generation == 0 || out_backend_generation == NULL)))
+        return EINVAL;
+    if (out_backend_generation != NULL)
+        *out_backend_generation = 0;
+    if (wcl && (bgscan == 0 || ic->ic_state != IEEE80211_S_RUN ||
+                ic->ic_mgt_timer != 0 ||
+                ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+                 (ic->ic_bss == NULL || !ic->ic_bss->ni_port_valid))))
+        return EBUSY;
+    if (!iwn_scan_lease_reserve(sc, owner, upper_generation,
+                                &backend_generation, &serial))
+        return EBUSY;
+
+    if (wcl) {
+        struct timeval tv;
+
+        /* Arm all lower and net80211 ownership markers before the command
+         * doorbell.  A fast STOP_SCAN must already have an exact owner. */
+        old_ic_flags = ic->ic_flags;
+        old_cache_scan_ts = ic->ic_last_cache_scan_ts;
+        ic->ic_flags |= IEEE80211_F_DISABLE_BG_AUTO_CONNECT |
+            IEEE80211_F_BGSCAN;
+        __atomic_store_n(&ic->ic_wcl_scan_active, 1, __ATOMIC_RELEASE);
+        sc->sc_flags |= IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN;
+        microtime(&tv);
+        if (ic->ic_last_cache_scan_ts > 0 &&
+            tv.tv_sec - ic->ic_last_cache_scan_ts > 5 * 60)
+            ieee80211_free_allnodes(ic, 0 /* keep ic->ic_bss */);
+        ic->ic_last_cache_scan_ts = tv.tv_sec;
+    }
+
+    if (!iwn_scan_lease_arm_submission(sc, serial, &abort_requested))
+        return ECANCELED;
+    if (abort_requested) {
+        /* A generic SCAN intent won while this WCL request was only armed.
+         * No doorbell exists yet, so retire locally and replay that intent
+         * instead of racing an abort command ahead of a new scan command. */
+        if (iwn_scan_lease_rollback(sc, serial)) {
+            if (wcl) {
+                sc->sc_flags &= ~(IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN);
+                __atomic_store_n(&ic->ic_wcl_scan_active, 0,
+                                 __ATOMIC_RELEASE);
+                ic->ic_flags = old_ic_flags;
+                ic->ic_last_cache_scan_ts = old_cache_scan_ts;
+            }
+            iwn_scan_lease_schedule_replay_task(sc);
+        }
+        return ECANCELED;
+    }
+
+    error = iwn_scan_submit(sc, flags, bgscan, wcl);
+    if (error != 0) {
+        /* Submission failure after the ownership arm is not provably free of
+         * firmware visibility.  Keep the lease closed and force the existing
+         * reset owner to retire it rather than permitting a stale STOP_SCAN
+         * to fall onto a successor. */
+        sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
+        (void)task_add(systq, &sc->init_task);
+        return error;
+    }
+
+    if (!iwn_scan_lease_activate_submission(sc, serial, &abort_requested)) {
+        if (!iwn_scan_lease_terminal_claimed(sc, serial)) {
+            sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
+            (void)task_add(systq, &sc->init_task);
+            return ECANCELED;
+        }
+    } else if (abort_requested) {
+        if (iwn_cmd(sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1) != 0) {
+            iwn_scan_lease_abort_submission_failed(sc, serial);
+            sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
+            (void)task_add(systq, &sc->init_task);
+        }
+    }
+
+    if (out_backend_generation != NULL)
+        *out_backend_generation = backend_generation;
+    return 0;
+}
+
+int ItlIwn::
 iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan)
+{
+    return iwn_scan_start(sc, flags, bgscan,
+        bgscan ? IWN_SCAN_LEASE_GENERIC_BACKGROUND :
+            IWN_SCAN_LEASE_GENERIC_FOREGROUND,
+        0, NULL);
+}
+
+int ItlIwn::
+iwn_scan_continue(struct iwn_softc *sc, uint16_t flags, int bgscan)
+{
+    u_int64_t serial = 0;
+    bool ignored_submit_abort = false;
+    int error;
+
+    if (!iwn_scan_lease_should_continue(sc))
+        return EBUSY;
+    error = iwn_scan_submit(sc, flags, bgscan, true);
+    if (error != 0)
+        (void)iwn_scan_lease_mark_abort(sc, IWN_SCAN_LEASE_NONE, 0,
+                                         &serial, &ignored_submit_abort);
+    return error;
+}
+
+int ItlIwn::
+iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
+                bool scan_flags_prearmed)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwn_scan_hdr *hdr;
@@ -10048,9 +10824,11 @@ iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan)
         if (IFM_MODE(ic->ic_media.ifm_cur->ifm_media) == IFM_AUTO)
             ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
 
-        sc->sc_flags |= IWN_FLAG_SCANNING;
-        if (bgscan)
-            sc->sc_flags |= IWN_FLAG_BGSCAN;
+        if (!scan_flags_prearmed) {
+            sc->sc_flags |= IWN_FLAG_SCANNING;
+            if (bgscan)
+                sc->sc_flags |= IWN_FLAG_BGSCAN;
+        }
         AirportItlwmPostPltiTraceRecord(
             ic, kAirportItlwmPostPltiTraceEventIwnScanStarted);
     } else {
@@ -10064,13 +10842,19 @@ iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan)
 void ItlIwn::
 iwn_scan_abort(struct iwn_softc *sc)
 {
-    iwn_cmd(sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1);
+    u_int64_t serial = 0;
+    bool submit_abort = false;
 
-    /* XXX Cannot wait for status response in interrupt context. */
-    DELAY(100);
-
-    sc->sc_flags &= ~IWN_FLAG_SCANNING;
-    sc->sc_flags &= ~IWN_FLAG_BGSCAN;
+    if (!iwn_scan_lease_mark_abort(sc, IWN_SCAN_LEASE_GENERIC_BACKGROUND,
+                                   0, &serial, &submit_abort))
+        return;
+    if (!submit_abort)
+        return;
+    if (iwn_cmd(sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1) != 0) {
+        iwn_scan_lease_abort_submission_failed(sc, serial);
+        sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
+        (void)task_add(systq, &sc->init_task);
+    }
 }
 
 int ItlIwn::
@@ -10079,9 +10863,6 @@ iwn_bgscan(struct ieee80211com *ic)
     struct iwn_softc *sc = (struct iwn_softc *)ic->ic_softc;
     ItlIwn *that = container_of(sc, ItlIwn, com);
     int error;
-
-    if (sc->sc_flags & IWN_FLAG_SCANNING)
-        return 0;
 
     error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 1);
     if (error)
@@ -12357,11 +13138,17 @@ void ItlIwn::
 iwn_hw_stop(struct iwn_softc *sc)
 {
     ItlIwn *that = container_of(sc, ItlIwn, com);
+    struct ieee80211com *ic = &sc->sc_ic;
     struct ItlSaeAuthTransportEventV1 reset_event;
+    struct ieee80211_wcl_scan_invalidation wcl_invalidation;
     bool emit_reset_event = false;
+    bool emit_wcl_invalidation = false;
     int chnl, qid, ntries;
 
     explicit_bzero(&reset_event, sizeof(reset_event));
+    explicit_bzero(&wcl_invalidation, sizeof(wcl_invalidation));
+    emit_wcl_invalidation = iwn_scan_lease_begin_hardware_invalidation(sc,
+        &wcl_invalidation);
     /*
      * This helper also runs during the init-firmware calibration reboot, so
      * it uses a generation/cancel fence rather than waiting for systq here.
@@ -12420,6 +13207,17 @@ iwn_hw_stop(struct iwn_softc *sc)
 
     /* Ring reset reclaimed every descriptor; forget stale terminal state. */
     that->iwn_sae_tx_purge(sc);
+    sc->sc_flags &= ~(IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN);
+    ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                      IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+    __atomic_store_n(&ic->ic_wcl_scan_active, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once, 0,
+                     __ATOMIC_RELEASE);
+    iwn_scan_lease_retire_after_hardware_stop(sc);
+    if (emit_wcl_invalidation && ic->ic_event_handler != NULL)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_INVALIDATED,
+                                &wcl_invalidation);
+    explicit_bzero(&wcl_invalidation, sizeof(wcl_invalidation));
     if (emit_reset_event)
         that->iwn_sae_tx_emit_reset_event(sc, &reset_event);
     explicit_bzero(&reset_event, sizeof(reset_event));
@@ -12486,6 +13284,8 @@ iwn_init(struct _ifnet *ifp)
     iwn_mfp_pae_reopen(sc);
     iwn_sae_tx_reopen(sc);
     iwn_sae_engine_reopen(sc);
+    if (ic->ic_event_handler != NULL)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_REOPENED, NULL);
 
     if (ic->ic_opmode != IEEE80211_M_MONITOR)
         ieee80211_begin_scan(ifp);

@@ -646,9 +646,26 @@ struct ieee80211com {
 				    struct ieee80211_node *, u_int8_t);
 	void			(*ic_updateprot)(struct ieee80211com *);
 	int			(*ic_bgscan_start)(struct ieee80211com *);
+    /*
+     * A backend may consume a state transition before the generic macro
+     * advances association epoch.  It is used only to defer a SCAN request
+     * behind an already-owned physical scan; NULL preserves the historic
+     * unconditionally-forwarding behaviour.
+     */
+    int             (*ic_newstate_preflight)(struct ieee80211com *,
+                            enum ieee80211_state, int);
     /* The channel width has changed (20<->2040) */
     void            (*ic_update_chw)(struct ieee80211com *);
     void            (*ic_event_handler)(struct ieee80211com *, int, void *);
+    /*
+     * A lower backend sets this one-shot immediately before its exact
+     * controller-owned WCL terminal enters ieee80211_end_scan().  That
+     * terminal is delivered separately with a generation fence; the generic
+     * SCAN_DONE bulletin must not race ahead and be mistaken for it.
+     */
+    volatile u_int32_t ic_wcl_scan_suppress_scan_done_once;
+    /* True only while an exact lower WCL lease owns an associated bgscan. */
+    volatile u_int32_t ic_wcl_scan_active;
     /*
      * Optional private owner for an already-selected SAE S_AUTH attempt.
      * generic ieee80211_newstate() calls ic_sae_auth_hold only after it has
@@ -1071,6 +1088,37 @@ struct ieee80211_ess {
  * mailbox. It neither enters generic Open-System auth nor changes STA state.
  */
 #define IEEE80211_EVT_SAE_AUTH_PEER             10
+
+/*
+ * One exact controller-owned WCL background scan reached a physical lower
+ * terminal.  `data` is borrowed only for the synchronous event callback and
+ * must be value-copied by a deferred consumer.  The backend emits it only
+ * after ieee80211_end_scan() returns, and only after consuming the generic
+ * SCAN_DONE callback for this physical lease.
+ */
+#define IEEE80211_EVT_WCL_SCAN_TERMINAL          11
+#define IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE 0U
+#define IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED  1U
+struct ieee80211_wcl_scan_terminal {
+    u_int64_t generation;
+    u_int32_t backend_generation;
+    u_int32_t status;
+};
+
+/*
+ * A reset/power boundary invalidated one lower WCL lease without a physical
+ * scan terminal.  It is explicitly not a scan-complete substitute: the
+ * controller may only drain the matching ticket and reopen after radio init.
+ */
+#define IEEE80211_EVT_WCL_SCAN_INVALIDATED       12
+struct ieee80211_wcl_scan_invalidation {
+    u_int64_t generation;
+    u_int32_t backend_generation;
+};
+
+/* The lower radio completed a reset/init boundary; a drained WCL ticket may
+ * admit a later request again.  This carries no scan result or completion. */
+#define IEEE80211_EVT_WCL_SCAN_REOPENED          13
 
 /*
  * Host-owned WCL reassociation owner contract recovered from the public

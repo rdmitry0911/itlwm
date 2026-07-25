@@ -6172,6 +6172,37 @@ setINFRA_ENUMERATED(apple80211_infra_enumerated *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+completePendingWclPhysicalScanTerminal(uint64_t generation,
+                                       uint32_t *backendGeneration)
+{
+    if (instance == nullptr || backendGeneration == nullptr)
+        return kIOReturnNotReady;
+
+    uint32_t terminalStatus = 0;
+    if (!instance->pendingWclPhysicalScanCompletion(
+            generation, backendGeneration, &terminalStatus)) {
+        if (*backendGeneration != 0)
+            instance->finishWclPhysicalScanCompletion(
+                generation, *backendGeneration);
+        return kIOReturnAborted;
+    }
+
+    const uint32_t exactBackendGeneration = *backendGeneration;
+    /* The terminal may have arrived synchronously from the lower submit.
+     * Its BSS census was already copied at that edge; only queue the scalar
+     * terminal here.  Entering the controller gate from the setter would
+     * reintroduce the lower-worker wait that the mailbox removes. */
+    (void)terminalStatus;
+    if (!instance->queueWclPhysicalScanTerminalPublication(
+            generation, exactBackendGeneration)) {
+        instance->finishWclPhysicalScanCompletion(
+            generation, exactBackendGeneration);
+        return kIOReturnAborted;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_REQ(apple80211ScanRequest *req)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
@@ -6186,39 +6217,50 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
     if (ic == nullptr)
         return kIOReturnNotReady;
 
-    /*
-     * First physical WCL-scan layer: an associated station may safely issue a
-     * real cache background scan.  The backend owns the radio transaction and
-     * ieee80211_end_scan() later delivers the only WCL terminal edge.  Do not
-     * borrow the asynchronous foreground SCAN state until it has a separate
-     * backend start/error bridge.
-     */
+    /* WCL uses a dedicated lower physical owner.  Do not call net80211's
+     * generic cache helper here: its coalescing return cannot prove that this
+     * request obtained a new firmware scan. */
     if (ic->ic_state != IEEE80211_S_RUN ||
         (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
-        ic->ic_mgt_timer != 0 || ic->ic_bgscan_start == nullptr)
+        ic->ic_mgt_timer != 0)
         return kIOReturnNotReady;
 
     uint64_t generation = 0;
-    if (!instance->reserveWclPhysicalScan(&generation))
-        return kIOReturnNotReady;
+    const IOReturn reserveResult = instance->reserveWclPhysicalScan(
+        &generation);
+    if (reserveResult != kIOReturnSuccess)
+        return reserveResult;
 
     /* This is an iterator reset, not scan admission/ownership state. */
     fNextNodeToSend = NULL;
     fScanResultWrapping = false;
 
-    ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
+    uint32_t backendGeneration = 0;
+    const IOReturn beginResult = fHalService->beginWclBackgroundScan(
+        generation, &backendGeneration);
+    if (beginResult != kIOReturnSuccess || backendGeneration == 0) {
+        const TahoeWclPhysicalScanContracts::StartDisposition failed =
+            instance->failWclPhysicalScanStart(generation);
+        if (failed ==
+            TahoeWclPhysicalScanContracts::StartDisposition::TerminalPending)
+            return completePendingWclPhysicalScanTerminal(
+                generation, &backendGeneration);
+        return beginResult == kIOReturnSuccess ? kIOReturnAborted : beginResult;
+    }
     const TahoeWclPhysicalScanContracts::StartDisposition disposition =
-        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0
-            ? instance->activateWclPhysicalScan(generation)
-            : instance->failWclPhysicalScanStart(generation);
+        instance->activateWclPhysicalScan(generation, backendGeneration);
 
     switch (disposition) {
         case TahoeWclPhysicalScanContracts::StartDisposition::Active:
-        case TahoeWclPhysicalScanContracts::StartDisposition::TerminalPending:
             return kIOReturnSuccess;
+        case TahoeWclPhysicalScanContracts::StartDisposition::TerminalPending:
+            return completePendingWclPhysicalScanTerminal(
+                generation, &backendGeneration);
         case TahoeWclPhysicalScanContracts::StartDisposition::Lost:
             break;
     }
+    fHalService->invalidateWclBackgroundScan();
+    (void)instance->failWclPhysicalScanStart(generation);
     return kIOReturnNotReady;
 }
 
@@ -6673,20 +6715,10 @@ setWCL_SCAN_ABORT(void *data)
 
     uint64_t generation = 0;
     if (!instance->markWclPhysicalScanAborting(&generation))
-        return kIOReturnSuccess;
+        return instance->wclPhysicalScanStarting() ? kIOReturnBusy :
+            kIOReturnSuccess;
 
-    /*
-     * Keep the ticket reserved until the firmware's actual terminal scan
-     * notification reaches ieee80211_end_scan().  In particular, do not clear
-     * net80211 flags or fabricate a generic/WCL completion here.
-     */
-    ItlDriverController *controller = fHalService->getDriverController();
-    if (controller == nullptr) {
-        instance->resumeWclPhysicalScanAfterAbortFailure(generation);
-        return kIOReturnNotReady;
-    }
-
-    const IOReturn result = controller->abortScanForWcl();
+    const IOReturn result = fHalService->abortWclBackgroundScan(generation);
     if (result != kIOReturnSuccess)
         instance->resumeWclPhysicalScanAfterAbortFailure(generation);
     return result;

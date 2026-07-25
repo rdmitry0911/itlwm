@@ -1403,7 +1403,9 @@ ieee80211_end_scan(struct _ifnet *ifp)
     AirportItlwmPostPltiTraceRecord(
         ic, kAirportItlwmPostPltiTraceEventScanCompleted);
     
-    if (ic->ic_event_handler)
+    const int suppress_generic_scan_done = __atomic_exchange_n(
+        &ic->ic_wcl_scan_suppress_scan_done_once, 0, __ATOMIC_ACQ_REL) != 0;
+    if (ic->ic_event_handler && !suppress_generic_scan_done)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_SCAN_DONE, NULL);
     
     if (ic->ic_scan_count)

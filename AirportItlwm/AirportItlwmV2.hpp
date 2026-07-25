@@ -279,7 +279,32 @@ struct AirportItlwmScanSourceLifecycle {
  */
 struct AirportItlwmWclPhysicalScanLifecycle {
     IOSimpleLock *admissionLock;
+    /* The lower terminal can run on an RX/firmware worker.  It copies the
+     * immutable result census there, then this source moves only the tagged
+     * scalar completion to the controller workloop. */
+    IOInterruptEventSource *source;
+    bool settingUp;
+    bool stopping;
+    bool tearingDown;
+    uint32_t users;
+    /* A terminal can arrive before beginWclBackgroundScan() returns.  The
+     * setter may acknowledge that terminal, but it must not doorbell the
+     * publisher until the terminal-side immutable census is complete. */
+    bool snapshotInProgress;
+    bool snapshotReady;
+    bool terminalPublicationRequested;
+    bool terminalQueued;
+    bool publishing;
     TahoeWclPhysicalScanContracts::State state;
+    /* Allocated before lower submission and filled at the exact tagged
+     * terminal under net80211's node-tree fence.  These are copied values,
+     * never ieee80211_node pointers. */
+    void *resultEntries;
+    size_t resultEntryBytes;
+    uint32_t resultCapacity;
+    uint32_t resultCount;
+    bool resultOverflow;
+    bool resultScrubPending;
 };
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -690,18 +715,31 @@ public:
     bool scheduleScanSource(uint32_t timeoutMs);
     bool cancelScanSource();
     bool scanSourceCallbackLive(IOTimerEventSource *sender);
-    bool reserveWclPhysicalScan(uint64_t *generation);
+    IOReturn reserveWclPhysicalScan(uint64_t *generation);
     TahoeWclPhysicalScanContracts::StartDisposition
-        activateWclPhysicalScan(uint64_t generation);
+        activateWclPhysicalScan(uint64_t generation,
+                                uint32_t backendGeneration);
     TahoeWclPhysicalScanContracts::StartDisposition
         failWclPhysicalScanStart(uint64_t generation);
     bool markWclPhysicalScanAborting(uint64_t *generation);
+    bool wclPhysicalScanStarting() const;
     void resumeWclPhysicalScanAfterAbortFailure(uint64_t generation);
     TahoeWclPhysicalScanContracts::CompletionDisposition
-        claimWclPhysicalScanCompletion(uint64_t *generation, bool *aborted);
-    bool ownsWclPhysicalScanCompletion(uint64_t generation);
-    void finishWclPhysicalScanCompletion(uint64_t generation);
+        claimWclPhysicalScanCompletion(uint64_t generation,
+                                       uint32_t backendGeneration,
+                                       uint32_t terminalStatus);
+    bool queueWclPhysicalScanTerminalPublication(uint64_t generation,
+                                                 uint32_t backendGeneration);
+    bool pendingWclPhysicalScanCompletion(uint64_t generation,
+                                          uint32_t *backendGeneration,
+                                          uint32_t *terminalStatus);
+    bool ownsWclPhysicalScanCompletion(uint64_t generation,
+                                       uint32_t backendGeneration);
+    void finishWclPhysicalScanCompletion(uint64_t generation,
+                                         uint32_t backendGeneration);
     void invalidateWclPhysicalScan();
+    void invalidateWclPhysicalScan(uint64_t generation,
+                                   uint32_t backendGeneration);
     void reopenWclPhysicalScanAfterRadioReset();
     
     //-----------------------------------------------------------------------

@@ -98,6 +98,11 @@ public:
         const struct ItlSaeWclCredentialV1 *credential) override;
     void cancelSaeWclCredential(uint64_t request_generation) override;
     void purgeSaeWclCredentialStage() override;
+
+    IOReturn beginWclBackgroundScan(uint64_t generation,
+                                    uint32_t *outBackendGeneration) override;
+    IOReturn abortWclBackgroundScan(uint64_t generation) override;
+    void invalidateWclBackgroundScan() override;
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -131,7 +136,6 @@ public:
     
     //driver controller
     virtual void clearScanningFlags() override;
-    virtual IOReturn abortScanForWcl() override;
     
     virtual IOReturn setMulticastList(IOEthernetAddress *addr, int count) override;
     
@@ -183,6 +187,9 @@ public:
                 int);
     int        iwn_media_change(struct _ifnet *);
     static int        iwn_newstate(struct ieee80211com *, enum ieee80211_state, int);
+    static int        iwn_newstate_preflight(struct ieee80211com *,
+                    enum ieee80211_state, int);
+    static void       iwn_scan_lease_replay_task(void *);
     static void        iwn_iter_func(void *, struct ieee80211_node *);
     static void        iwn_calib_timeout(void *);
     int        iwn_ccmp_decap(struct iwn_softc *, mbuf_t,
@@ -280,6 +287,10 @@ public:
     uint16_t    iwn_limit_dwell(struct iwn_softc *, uint16_t);
     uint16_t    iwn_get_passive_dwell_time(struct iwn_softc *, uint16_t);
     int        iwn_scan(struct iwn_softc *, uint16_t, int);
+    int        iwn_scan_start(struct iwn_softc *, uint16_t, int,
+                enum iwn_scan_lease_owner, u_int64_t, u_int32_t *);
+    int        iwn_scan_continue(struct iwn_softc *, uint16_t, int);
+    int        iwn_scan_submit(struct iwn_softc *, uint16_t, int, bool);
     void        iwn_scan_abort(struct iwn_softc *);
     static int        iwn_bgscan(struct ieee80211com *);
     void       iwn_rxon_configure_ht40(struct ieee80211com *,

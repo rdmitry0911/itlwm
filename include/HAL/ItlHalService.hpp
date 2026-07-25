@@ -276,6 +276,32 @@ public:
     /* Overflow carries no trustworthy generation: erase only the slot. */
     virtual void purgeSaeWclCredentialStage() {}
 
+    /*
+     * Controller-owned WCL physical-scan handoff.
+     *
+     * This is a narrow associated-background scan API, not a generic scan
+     * trigger or a candidate-selection interface.  A successful backend call
+     * means it has reserved one fresh physical radio transaction and will
+     * retain the supplied upper generation until it either publishes its
+     * tagged terminal event or crosses a hardware lifecycle boundary.  The
+     * returned backend generation fences that terminal against a later WCL
+     * request.  HALs without an exact lower owner must stay fail-closed.
+     */
+    virtual IOReturn beginWclBackgroundScan(uint64_t generation,
+                                            uint32_t *outBackendGeneration) {
+        (void)generation;
+        if (outBackendGeneration != NULL)
+            *outBackendGeneration = 0;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn abortWclBackgroundScan(uint64_t generation) {
+        (void)generation;
+        return kIOReturnUnsupported;
+    }
+    /* Lifecycle invalidation is deliberately silent: it is not a fake scan
+     * completion.  A backend may later report its own tagged invalidation. */
+    virtual void invalidateWclBackgroundScan() {}
+
     virtual void free() override;
 
 public:

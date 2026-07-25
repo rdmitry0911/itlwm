@@ -3130,12 +3130,10 @@ iwm_endscan(struct iwm_softc *sc)
 //        XYLog("%s scan_result ssid=%s, bssid=%s, ni_rsnciphers=%d, ni_rsncipher=%d, ni_rsngroupmgmtcipher=%d, ni_rsngroupcipher=%d, ni_rssi=%d,  ni_capinfo=%d, ni_intval=%d, ni_rsnakms=%d, ni_supported_rsnakms=%d, ni_rsnprotos=%d, ni_supported_rsnprotos=%d, ni_rstamp=%d\n", __FUNCTION__, ni->ni_essid, ether_sprintf(ni->ni_bssid), ni->ni_rsnciphers, ni->ni_rsncipher, ni->ni_rsngroupmgmtcipher, ni->ni_rsngroupcipher, ni->ni_rssi, ni->ni_capinfo, ni->ni_intval, ni->ni_rsnakms, ni->ni_supported_rsnakms, ni->ni_rsnprotos, ni->ni_supported_rsnprotos, ni->ni_rstamp);
 //    }
     
-    if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN |
-                         IWM_FLAG_WCL_SCAN_ABORTING)) == 0)
+    if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
         return;
     
-    sc->sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN |
-                      IWM_FLAG_WCL_SCAN_ABORTING);
+    sc->sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN);
     ieee80211_end_scan(&ic->ic_if);
 }
 

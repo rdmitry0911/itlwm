@@ -20,14 +20,6 @@ class ItlDriverController {
 public:
     
     virtual void clearScanningFlags() = 0;
-
-    /*
-     * Abort a WCL-owned physical scan without clearing the backend scan flags
-     * that gate its later ieee80211_end_scan() terminal notification.  The
-     * WCL ticket consumes that real edge; generic scan abort keeps its legacy
-     * flag-clearing semantics.
-     */
-    virtual IOReturn abortScanForWcl() = 0;
     
     virtual IOReturn setMulticastList(IOEthernetAddress *addr, int count) = 0;
 };
