@@ -11417,10 +11417,11 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     txant = IWN_LSB(sc->txchainmask);
     tx->rflags |= IWN_RFLAG_ANT(txant);
 
-    /* WCL's initial public scan is deliberately undirected.  Give ordinary
-     * active 5 GHz channels a bounded passive dwell above one default beacon
-     * interval; keep channels marked passive or DFS, and every background
-     * scan, on their existing firmware scan semantics. */
+    /* WCL's initial public scan is deliberately undirected.  Give every
+     * non-DFS 5 GHz channel a bounded passive listening dwell above one
+     * default beacon interval, including regulatory-passive channels.  This
+     * neither enables a probe template nor changes their passive flag; keep
+     * DFS and every background scan on their existing firmware semantics. */
     wcl_foreground_5ghz_extended_dwell = wcl_scan && bgscan == 0 &&
         ic->ic_des_esslen == 0 && (flags & IEEE80211_CHAN_5GHZ) != 0;
 
@@ -11530,8 +11531,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
         dwell_active = iwn_get_active_dwell_time(sc, flags, is_active);
         dwell_passive = iwn_get_passive_dwell_time(sc, flags);
         if (wcl_foreground_5ghz_extended_dwell &&
-            (c->ic_flags & (IEEE80211_CHAN_PASSIVE |
-                            IEEE80211_CHAN_DFS)) == 0)
+            (c->ic_flags & IEEE80211_CHAN_DFS) == 0)
             dwell_passive = MAX(dwell_passive, 130);
         if (wcl_background_5ghz_directed_active_dwell &&
             (c->ic_flags & (IEEE80211_CHAN_PASSIVE |

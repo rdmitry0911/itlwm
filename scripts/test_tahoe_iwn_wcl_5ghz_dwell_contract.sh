@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Static guard for the bounded WCL 5 GHz dwell adjustments.  They must not
-# introduce a wildcard active scan or relax passive/DFS/serving-BSS limits.
+# introduce a wildcard active scan or relax DFS/serving-BSS limits.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -56,7 +56,7 @@ for needle, label in (
     ("wcl_scan && bgscan == 0 &&", "foreground WCL guard"),
     ("ic->ic_des_esslen == 0", "undirected WCL guard"),
     ("(flags & IEEE80211_CHAN_5GHZ) != 0", "5 GHz-only guard"),
-    ("IEEE80211_CHAN_PASSIVE |\n                            IEEE80211_CHAN_DFS", "passive/DFS exclusion"),
+    ("(c->ic_flags & IEEE80211_CHAN_DFS) == 0", "DFS exclusion"),
     ("dwell_passive = MAX(dwell_passive, 130);", "130 ms dwell floor"),
     ("wcl_scan && bgscan != 0 &&\n        is_active != 0 &&", "background directed WCL guard"),
     ("dwell_passive > dwell_active", "serving-BSS dwell cap guard"),
@@ -66,8 +66,22 @@ for needle, label in (
     require(submit, needle, label)
 forbid(submit, "else if (wcl_foreground_5ghz_extended_dwell)",
        "wildcard active probing")
+foreground_dwell_begin = submit.find("if (wcl_foreground_5ghz_extended_dwell &&")
+background_dwell_begin = submit.find(
+    "if (wcl_background_5ghz_directed_active_dwell &&",
+    foreground_dwell_begin)
+if foreground_dwell_begin < 0 or background_dwell_begin < 0:
+    fail("missing separated foreground/background dwell guards")
+foreground_dwell = submit[foreground_dwell_begin:background_dwell_begin]
+forbid(foreground_dwell, "(c->ic_flags & (IEEE80211_CHAN_PASSIVE |\n                            IEEE80211_CHAN_DFS)) == 0",
+       "regulatory-passive WCL listening exclusion")
+require(submit[background_dwell_begin:],
+        "(c->ic_flags & (IEEE80211_CHAN_PASSIVE |\n                            IEEE80211_CHAN_DFS)) == 0",
+        "background active dwell passive/DFS exclusion")
 forbid(submit, "dwell_active = MAX(dwell_active, 40);",
        "uncapped background active dwell")
+require(submit, "if (c->ic_flags & IEEE80211_CHAN_PASSIVE)\n            chan->flags |= htole32(IWN_CHAN_PASSIVE);",
+        "passive channel flag preserved while dwell is extended")
 require(submit, "hdr->crc_threshold = is_active ?\n            IWN_GOOD_CRC_TH_DEFAULT : IWN_GOOD_CRC_TH_DISABLED;",
         "unchanged new-scan passive CRC semantics")
 require(submit, "hdr->crc_threshold = is_active ?\n            IWN_GOOD_CRC_TH_DEFAULT : IWN_GOOD_CRC_TH_NEVER;",
