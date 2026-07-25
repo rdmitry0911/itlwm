@@ -40,7 +40,7 @@ dtrace:::BEGIN
     trace_errors = 0;
 }
 
-fbt:com.zxystd.AirportItlwm:_ZN6ItlIwn15iwn_scan_submitEP9iwn_softctiybbyjPbS2_:entry
+fbt:com.zxystd.AirportItlwm:_ZN6ItlIwn15iwn_scan_submitEP9iwn_softctiybbbyjPbS2_:entry
 {
     scan_submit_attempts++;
     if (self->iwn_scan_submit_depth == 0) {
@@ -89,7 +89,7 @@ fbt:com.zxystd.AirportItlwm:_Z19ieee80211_chan2ieeeP12ieee80211comPK17ieee80211_
         self->iwn_scan_has_177 = 1;
 }
 
-fbt:com.zxystd.AirportItlwm:_ZN6ItlIwn15iwn_scan_submitEP9iwn_softctiybbyjPbS2_:return
+fbt:com.zxystd.AirportItlwm:_ZN6ItlIwn15iwn_scan_submitEP9iwn_softctiybbbyjPbS2_:return
 /self->iwn_scan_submit_depth > 0/
 {
     self->iwn_scan_submit_depth--;

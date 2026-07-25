@@ -13,8 +13,13 @@ fail() {
 
 rg -F 'IWN_CMD_SCAN = 128' "$TRACE" >/dev/null ||
     fail "trace must bind only IWN scan commands"
-rg -F '_ZN6ItlIwn15iwn_scan_submit' "$TRACE" >/dev/null ||
-    fail "trace must bound observations to the IWN scan constructor"
+rg -F 'fbt:com.zxystd.AirportItlwm:_ZN6ItlIwn15iwn_scan_submitEP9iwn_softctiybbbyjPbS2_:entry' "$TRACE" >/dev/null ||
+    fail "trace must bind the current IWN scan-constructor entry ABI"
+rg -F 'fbt:com.zxystd.AirportItlwm:_ZN6ItlIwn15iwn_scan_submitEP9iwn_softctiybbbyjPbS2_:return' "$TRACE" >/dev/null ||
+    fail "trace must bind the current IWN scan-constructor return ABI"
+if rg -F '_ZN6ItlIwn15iwn_scan_submitEP9iwn_softctiybbyjPbS2_' "$TRACE" >/dev/null; then
+    fail "trace must not retain the pre-WCL-ownership scan-constructor ABI"
+fi
 rg -F '_Z19ieee80211_chan2ieee' "$TRACE" >/dev/null ||
     fail "trace must observe the IWN channel-vector construction call"
 rg -F 'self->iwn_scan_had_command = 1' "$TRACE" >/dev/null ||
