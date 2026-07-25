@@ -35,7 +35,7 @@ fi
 if rg -n 'associate|setPower|setInterface|IORegistryEntrySet|networksetup|system\(' "$SOURCE" >/dev/null; then
     fail "visibility probe must not alter association or interface state"
 fi
-rg -F 'outcome, endpoint_binding, target_present, target_records,' "$SOURCE" >/dev/null ||
+rg -F 'outcome, endpoint_binding, returned_records, returned_ssid_records,' "$SOURCE" >/dev/null ||
     fail "output arguments must remain categorical or aggregate only"
 
 printf 'PASS: Tahoe laboratory visibility client contract\n'

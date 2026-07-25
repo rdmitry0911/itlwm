@@ -136,6 +136,10 @@ main(void)
 {
     uint8_t target_digest[CC_SHA256_DIGEST_LENGTH];
     char endpoint_name[16];
+    uint32_t returned_records = 0;
+    uint32_t returned_ssid_records = 0;
+    uint32_t returned_bssid_records = 0;
+    uint32_t returned_channel_records = 0;
     uint32_t target_records = 0;
     uint32_t distinct_bss = 0;
     uint32_t incomplete_bss_records = 0;
@@ -183,12 +187,25 @@ main(void)
                             outcome = "ok";
                             for (CWNetwork *network in networks) {
                                 NSString *network_name = [network ssid];
+                                NSString *network_bss = [network bssid];
+                                CWChannel *channel = [network wlanChannel];
+                                increment(&returned_records, &overflow);
+                                if (network_name != nil &&
+                                    network_name.length != 0)
+                                    increment(&returned_ssid_records,
+                                              &overflow);
+                                if (network_bss != nil &&
+                                    network_bss.length != 0)
+                                    increment(&returned_bssid_records,
+                                              &overflow);
+                                if (channel != nil)
+                                    increment(&returned_channel_records,
+                                              &overflow);
                                 if (!ssid_matches_digest(network_name,
                                                          target_digest))
                                     continue;
 
                                 increment(&target_records, &overflow);
-                                NSString *network_bss = [network bssid];
                                 if (network_bss == nil || network_bss.length == 0) {
                                     increment(&incomplete_bss_records, &overflow);
                                     continue;
@@ -197,7 +214,6 @@ main(void)
                                     continue;
                                 [seen_bss addObject:network_bss];
                                 increment(&distinct_bss, &overflow);
-                                CWChannel *channel = [network wlanChannel];
                                 switch (channel != nil ? [channel channelBand] :
                                         kCWChannelBandUnknown) {
                                 case kCWChannelBand2GHz:
@@ -232,11 +248,15 @@ main(void)
         (band_5ghz != 0 ? 1U : 0U) + (band_6ghz != 0 ? 1U : 0U) +
         (band_other != 0 ? 1U : 0U);
     const unsigned multi_band_visible = represented_bands >= 2 ? 1U : 0U;
-    printf("lab_target_visibility=%s endpoint_binding=%s target_present=%u "
+    printf("lab_target_visibility=%s endpoint_binding=%s returned_records=%u "
+           "returned_ssid_records=%u returned_bssid_records=%u "
+           "returned_channel_records=%u target_present=%u "
            "target_records=%u distinct_bss=%u incomplete_bss_records=%u "
            "band_2ghz=%u band_5ghz=%u band_6ghz=%u band_other=%u "
            "multi_ap_visible=%u multi_band_visible=%u scan_error_present=%u\n",
-           outcome, endpoint_binding, target_present, target_records,
+           outcome, endpoint_binding, returned_records, returned_ssid_records,
+           returned_bssid_records, returned_channel_records, target_present,
+           target_records,
            distinct_bss, incomplete_bss_records, band_2ghz, band_5ghz,
            band_6ghz, band_other, multi_ap_visible, multi_band_visible,
            scan_error_present != 0 ? 1U : 0U);
