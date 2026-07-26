@@ -75,11 +75,16 @@ for token in (
     "write_private_bytes", "BROKER_BUILD_FLAGS",
     "BROKER_COMPILER", "BROKER_POST_START_CAP_SECONDS = 270",
     "HOST_CREDENTIAL_READY_TIMEOUT_SECONDS = 90",
-    "HOST_ACTIVATION_TIMEOUT_SECONDS = 195", "HOST_FED_TO_START_BUDGET_SECONDS = 235",
+    "HOST_SETUP_STARTED_TIMEOUT_SECONDS = 60", "HOST_SETUP_STARTED",
+    "SETUP_STARTED_TO_START_BUDGET_SECONDS = 220",
+    "HOST_ACTIVATION_TIMEOUT_SECONDS = 185", "HOST_FED_TO_START_BUDGET_SECONDS = 280",
     "HOST_FED_TIMEOUT_SECONDS = 60", "BROKER_STARTED_TO_ARM_CAP_SECONDS = 145",
-    "BROKER_ARMED_TO_RELEASE_CAP_SECONDS = 90",
+    "BROKER_ARMED_TO_RELEASE_CAP_SECONDS = 110", "ARMED_NATIVE_ACK_HANDOFF_MARGIN_SECONDS = 20",
     "HELPER_RECOVERY_TIMEOUT_SECONDS = 125", "HELPER_GRACEFUL_CLEANUP_TIMEOUT_SECONDS",
-    "HOST_CREDENTIAL_READY", "wait_host_credential_ready", "ActivationOutput",
+    "HOST_CREDENTIAL_READY", "wait_host_credential_ready", "wait_host_setup_started", "ActivationOutput",
+    "_set_timeout_until", "_receive_until",
+    "deadline = time.monotonic() + BROKER_START_CONTROL_TIMEOUT_SECONDS",
+    "deadline = time.monotonic() + BROKER_CONTROL_TIMEOUT_SECONDS",
     "--renew-for-withdraw", "LEASE_RENEWED_FOR_WITHDRAW",
     "_retire_after_watchdog_handoff", "ROLLBACK_RESTORE_TIMEOUT_SECONDS = 180",
     "WATCHDOG_RETIRE_PROOF_TIMEOUT_SECONDS", "--recovery-owner",
@@ -130,11 +135,15 @@ fifo = activation.find("credential_fd = require_fifo_stdin()")
 broker_start = activation.find("BrokerSession(self.broker_binary, credential_fd, host_write)")
 host_fed = activation.find("self.broker.wait_host_fed()")
 host_fed_deadline = activation.find("self._host_fed_deadline = time.monotonic()")
-active_wait = activation.find("active_output = wait_host_activation(")
+setup_wait = activation.find("wait_host_setup_started(", host_fed)
+setup_deadline = activation.find("self._setup_started_deadline = (", setup_wait)
+active_wait = activation.find("active_output = wait_host_activation(", setup_deadline)
 active_parse = activation.find("parse_multiband_result(active_output, ACTIVE_RE")
-if min(ready, fifo, broker_start, host_fed, host_fed_deadline, active_wait, active_parse) < 0 or \
-        not (ready < fifo < broker_start < host_fed < host_fed_deadline < active_wait < active_parse):
-    fail("READY/FIFO/broker/HOST_FED/ACTIVE order is unsafe")
+if min(ready, fifo, broker_start, host_fed, host_fed_deadline, setup_wait, setup_deadline,
+       active_wait, active_parse) < 0 or not (
+        ready < fifo < broker_start < host_fed < host_fed_deadline < setup_wait <
+        setup_deadline < active_wait < active_parse):
+    fail("READY/FIFO/broker/HOST_FED/SETUP_STARTED/ACTIVE order is unsafe")
 if "communicate(" in activation:
     fail("activation stream parser regressed to communicate")
 if activation.count("self._discard_exact_empty_state_dir(\"host-activation-cleanup\")") != 2:
@@ -236,33 +245,125 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
-# Cross-layer public timing tuple.  The ACK wait is intentionally pre-secret;
-# the later activation and native HOST_FED budgets remain separately bounded.
+# Cross-layer public timing tuple.  The post-credential SETUP_STARTED
+# acknowledgement rebases ACTIVE/status/START; the native HOST_FED retention
+# cap conservatively covers the preceding 60-second read/preparation window.
 assert module.HOST_CREDENTIAL_READY_TIMEOUT_SECONDS == 90
-assert module.HOST_ACTIVATION_TIMEOUT_SECONDS == 195
+assert module.HOST_SETUP_STARTED_TIMEOUT_SECONDS == 60
+assert module.SETUP_STARTED_TO_START_BUDGET_SECONDS == 220
+assert module.HOST_ACTIVATION_TIMEOUT_SECONDS == 185
 assert module.HOST_FED_TIMEOUT_SECONDS == 60
-assert module.HOST_FED_TO_START_BUDGET_SECONDS == 235
-assert module.BROKER_HOST_FED_CAP_SECONDS == 240
+assert module.HOST_FED_TO_START_BUDGET_SECONDS == 280
+assert module.BROKER_HOST_FED_CAP_SECONDS == 290
 assert module.MINIMUM_INITIAL_LEASE_REMAINING_SECONDS == 285
 assert module.MINIMUM_RENEWED_LEASE_REMAINING_SECONDS == 285
 assert module.WATCHDOG_RETIRE_PROOF_TIMEOUT_SECONDS == 500
 assert module.COMPLETED_WATCHDOG_RETIRE_RACE_TIMEOUT_SECONDS == 25
 assert module.ARMED_PHASE_SAFETY_SECONDS == 5
-assert 195 + module.HOST_STATUS_TIMEOUT_SECONDS + \
-    module.BROKER_START_CONTROL_TIMEOUT_SECONDS + module.BROKER_START_SAFETY_SECONDS <= 235
-assert 235 + module.BROKER_START_SAFETY_SECONDS <= 240
+assert module.HOST_SETUP_STARTED_TIMEOUT_SECONDS + \
+    module.SETUP_STARTED_TO_START_BUDGET_SECONDS == module.HOST_FED_TO_START_BUDGET_SECONDS
+assert 185 + module.HOST_STATUS_TIMEOUT_SECONDS + \
+    module.BROKER_START_CONTROL_TIMEOUT_SECONDS + module.BROKER_START_SAFETY_SECONDS <= 220
+assert 280 + module.BROKER_HOST_FED_HANDOFF_MARGIN_SECONDS <= 290
 assert 60 >= 15 + 15 + 15 + 15
 assert module.ARM_TO_WITHDRAW_TIMEOUT_SECONDS + module.POST_ARM_RELEASE_PATH_SECONDS + \
-    module.ARMED_PHASE_SAFETY_SECONDS < module.BROKER_ARMED_TO_RELEASE_CAP_SECONDS
+    module.ARMED_PHASE_SAFETY_SECONDS < module.HELPER_WITHDRAW_CONTROL_TIMEOUT_SECONDS
+assert module.HELPER_WITHDRAW_CONTROL_TIMEOUT_SECONDS + \
+    module.ARMED_NATIVE_ACK_HANDOFF_MARGIN_SECONDS <= module.BROKER_ARMED_TO_RELEASE_CAP_SECONDS
 for token in (
+    "kSwitcherCredentialReadBoundMilliseconds = 45000u",
     "kSwitcherSetupBoundMilliseconds = 180000u",
     "kPostCredentialSetupMarginMilliseconds = 15000u",
-    "kControllerStatusAndStartMarginMilliseconds = 45000u",
+    "kHostFedToSetupStartedBoundMilliseconds =",
+    "kSetupStartedToStartDeadlineMilliseconds =",
+    "kHostFedControllerHandoffMarginMilliseconds = 10000u",
     "kHostFedToStartDeadlineMilliseconds =",
 ):
     if token not in broker_source:
         fail(f"native broker timing bridge changed: {token}")
-assert 180 + 15 + 45 == 240
+assert 45 + 15 + 180 + 5 + 10 + 20 + 5 + 10 == 290
+
+
+class DeadlineClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class BrokerSocketFixture:
+    def __init__(self, clock: DeadlineClock, status: bytes, send_cost: float) -> None:
+        self.clock = clock
+        self.status = status
+        self.send_cost = send_cost
+        self.timeouts: list[float] = []
+        self.sent: list[bytes] = []
+        self.receive_calls = 0
+
+    def settimeout(self, value: float) -> None:
+        assert value > 0
+        self.timeouts.append(value)
+
+    def send(self, payload: bytes) -> int:
+        self.sent.append(payload)
+        self.clock.now += self.send_cost
+        return len(payload)
+
+    def sendmsg(self, vectors: list[bytes], _ancillary: object) -> int:
+        payload = b"".join(vectors)
+        self.sent.append(payload)
+        self.clock.now += self.send_cost
+        return len(payload)
+
+    def recvmsg(self, _capacity: int, _flags: int) -> tuple[bytes, list[object], int, object]:
+        self.receive_calls += 1
+        return self.status, [], 0, None
+
+
+def broker_session_with(socket_fixture: BrokerSocketFixture) -> module.BrokerSession:
+    session = object.__new__(module.BrokerSession)
+    session._parent = socket_fixture
+    return session
+
+
+# The send and receive halves share one deadline.  A successful five-second
+# send leaves only fifteen seconds for the ACK; a send that consumes all of
+# the phase budget cannot begin a receive wait at all.
+clock = DeadlineClock()
+fixed_socket = BrokerSocketFixture(clock, b"ARMED", 5.0)
+original_monotonic = module.time.monotonic
+module.time.monotonic = clock.monotonic
+try:
+    broker_session_with(fixed_socket)._send_fixed(b"ARM", b"ARMED")
+finally:
+    module.time.monotonic = original_monotonic
+assert fixed_socket.timeouts == [20.0, 15.0]
+
+clock = DeadlineClock()
+start_socket = BrokerSocketFixture(clock, b"STARTED", 6.0)
+module.time.monotonic = clock.monotonic
+try:
+    broker_session_with(start_socket).start(
+        module.HostTarget("a" * 64, "b" * 64, 300), 9
+    )
+finally:
+    module.time.monotonic = original_monotonic
+assert start_socket.timeouts == [20.0, 14.0]
+
+clock = DeadlineClock()
+stalled_socket = BrokerSocketFixture(clock, b"RELEASED", 20.0)
+module.time.monotonic = clock.monotonic
+try:
+    try:
+        broker_session_with(stalled_socket)._send_fixed(b"RELEASE", b"RELEASED")
+    except module.RunnerError:
+        pass
+    else:
+        raise AssertionError("control send consumed a second receive window")
+finally:
+    module.time.monotonic = original_monotonic
+assert stalled_socket.receive_calls == 0
 
 
 def activation_process(payload: bytes, exit_code: int = 0) -> subprocess.Popen[bytes]:
@@ -284,14 +385,17 @@ def close_activation(process: subprocess.Popen[bytes], output: module.Activation
         output.close()
 
 
+setup_started = module.HOST_SETUP_STARTED
 active = b"LABAP_BSS_SWITCH=ACTIVE external_bss_count=2 external_band_count=2\n"
 
 # Deterministic local pipe/Popen grammar: the only accepted transcript is the
-# nonsecret READY acknowledgement followed by one exact ACTIVE line and EOF/0.
-process = activation_process(module.HOST_CREDENTIAL_READY + active)
+# nonsecret READY acknowledgement, exact SETUP_STARTED origin, then one exact
+# ACTIVE line and EOF/0.
+process = activation_process(module.HOST_CREDENTIAL_READY + setup_started + active)
 output = module.ActivationOutput(process)
 try:
     module.wait_host_credential_ready(output)
+    module.wait_host_setup_started(output, 1)
     assert module.wait_host_activation(process, output, 1) == active
     module.parse_multiband_result(active, module.ACTIVE_RE, "activation-model")
 finally:
@@ -299,15 +403,17 @@ finally:
 
 for payload, exit_code, label in (
     (active, 0, "ACTIVE-before-READY"),
-    (module.HOST_CREDENTIAL_READY, 0, "EOF-before-ACTIVE"),
-    (module.HOST_CREDENTIAL_READY + active + b"extra\n", 0, "extra-after-ACTIVE"),
-    (module.HOST_CREDENTIAL_READY + active, 1, "nonzero-switcher"),
+    (module.HOST_CREDENTIAL_READY, 0, "EOF-before-SETUP_STARTED"),
+    (module.HOST_CREDENTIAL_READY + active, 0, "ACTIVE-before-SETUP_STARTED"),
+    (module.HOST_CREDENTIAL_READY + setup_started + active + b"extra\n", 0, "extra-after-ACTIVE"),
+    (module.HOST_CREDENTIAL_READY + setup_started + active, 1, "nonzero-switcher"),
 ):
     process = activation_process(payload, exit_code)
     output = module.ActivationOutput(process)
     try:
         try:
             module.wait_host_credential_ready(output)
+            module.wait_host_setup_started(output, 1)
             result = module.wait_host_activation(process, output, 1)
             module.parse_multiband_result(result, module.ACTIVE_RE, "activation-model")
         except module.RunnerError:
@@ -317,18 +423,18 @@ for payload, exit_code, label in (
     finally:
         close_activation(process, output)
 
-# A second READY is not an ACTIVE result, even if it is followed by clean EOF.
+# A second READY is not a SETUP_STARTED result, even if it is followed by
+# clean EOF.
 process = activation_process(module.HOST_CREDENTIAL_READY + module.HOST_CREDENTIAL_READY)
 output = module.ActivationOutput(process)
 try:
     module.wait_host_credential_ready(output)
-    duplicate = module.wait_host_activation(process, output, 1)
     try:
-        module.parse_multiband_result(duplicate, module.ACTIVE_RE, "activation-model")
+        module.wait_host_setup_started(output, 1)
     except module.RunnerError:
         pass
     else:
-        raise AssertionError("duplicate READY activation transcript was accepted")
+        raise AssertionError("duplicate READY setup transcript was accepted")
 finally:
     close_activation(process, output)
 

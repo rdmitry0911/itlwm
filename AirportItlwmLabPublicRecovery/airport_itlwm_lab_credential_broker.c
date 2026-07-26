@@ -45,19 +45,36 @@ enum {
     kCredentialMaximumLength = 63u,
     kCredentialDeadlineMilliseconds = 15000u,
     kPipeWriteDeadlineMilliseconds = 15000u,
-    /* The v4 switcher owns a complete 180-second setup deadline after the
-     * credential-ready handshake.  HOST_FED can precede that deadline by a
-     * short bounded configuration/state handoff; the controller then needs a
-     * hash-only status and exact START acknowledgement.  Keep all of that
-     * secret retention bounded, without charging a valid 171..180 second
-     * setup against an unrelated shorter controller timeout. */
-    kSwitcherSetupBoundMilliseconds = 180000u,
+    /* HOST_FED is deliberately earlier than the host's later fixed
+     * SETUP_STARTED acknowledgement.  Before that acknowledgement the v4
+     * switcher may consume the credential for 45 seconds and prepare its
+     * durable setup/watchdog receipt for another 15 seconds.  The controller
+     * rebases its ACTIVE/status/START budget only after SETUP_STARTED, while
+     * this native pre-START cap conservatively covers both portions from the
+     * earlier HOST_FED origin. */
+    kSwitcherCredentialReadBoundMilliseconds = 45000u,
     kPostCredentialSetupMarginMilliseconds = 15000u,
-    kControllerStatusAndStartMarginMilliseconds = 45000u,
-    kHostFedToStartDeadlineMilliseconds =
+    kHostFedToSetupStartedBoundMilliseconds =
+        kSwitcherCredentialReadBoundMilliseconds +
+        kPostCredentialSetupMarginMilliseconds,
+    kSwitcherSetupBoundMilliseconds = 180000u,
+    kPostSetupSchedulerMarginMilliseconds = 5000u,
+    kControllerStatusDeadlineMilliseconds = 10000u,
+    kControllerStartDeadlineMilliseconds = 20000u,
+    kControllerStartSafetyMilliseconds = 5000u,
+    kSetupStartedToStartDeadlineMilliseconds =
         kSwitcherSetupBoundMilliseconds +
-        kPostCredentialSetupMarginMilliseconds +
-        kControllerStatusAndStartMarginMilliseconds,
+        kPostSetupSchedulerMarginMilliseconds +
+        kControllerStatusDeadlineMilliseconds +
+        kControllerStartDeadlineMilliseconds +
+        kControllerStartSafetyMilliseconds,
+    /* HOST_FED is sent before the controller can observe it, so reserve a
+     * fixed native-to-controller handoff fence beyond the two runner windows. */
+    kHostFedControllerHandoffMarginMilliseconds = 10000u,
+    kHostFedToStartDeadlineMilliseconds =
+        kHostFedToSetupStartedBoundMilliseconds +
+        kSetupStartedToStartDeadlineMilliseconds +
+        kHostFedControllerHandoffMarginMilliseconds,
     /* START is issued only after the controller has freshly attested a
      * sufficiently long watchdog remainder.  From that point onward the
      * secret-delivery session has one absolute cap, leaving fifteen seconds
@@ -69,11 +86,11 @@ enum {
      * same-ESS scan.  Its runner allows 115 seconds plus a bounded 20-second
      * ARM control acknowledgement, leaving a positive ten-second fence. */
     kStartedToArmDeadlineMilliseconds = 145000u,
-    /* After ARM the public client may take fifteen seconds to publish
-     * withdraw-armed, then the runner has a bounded 65-second state-only
-     * renewal/status/withdrawal/RELEASE path.  Its matching deadline starts
-     * at this ARM acknowledgement and still leaves a five-second fence. */
-    kArmedToReleaseDeadlineMilliseconds = 90000u,
+    /* The helper/runner keep their 90-second control deadline after observing
+     * ARMED.  This native clock begins before that observation, so retain a
+     * separate 20-second C-to-controller handoff fence in addition to the
+     * helper's 15-second arm receipt and 65-second host/RELEASE path. */
+    kArmedToReleaseDeadlineMilliseconds = 110000u,
     kControlPacketCapacity = 160u,
     kDigestTextLength = 64u,
 };

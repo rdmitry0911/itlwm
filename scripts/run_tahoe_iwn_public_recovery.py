@@ -95,21 +95,34 @@ LEASE_SECONDS = 300
 # cannot cause an artificial activation failure before the broker exists.
 HOST_CREDENTIAL_READY_TIMEOUT_SECONDS = 90
 HOST_CREDENTIAL_READY = b"LABAP_BSS_CREDENTIAL_READY=1\n"
-# The switcher starts its exact 180-second v4 setup deadline only after it
-# consumes the credential.  The native broker is launched only after the
-# nonsecret ready line, so this is a separate no-secret pre-credential bound.
-HOST_ACTIVATION_TIMEOUT_SECONDS = 195
-BROKER_HOST_FED_CAP_SECONDS = 240
-HOST_FED_TO_START_BUDGET_SECONDS = 235
+# The nonsecret SETUP_STARTED acknowledgement is emitted only after the
+# switcher consumed the host pipe and armed its exact 180-second v4 setup
+# deadline with durable rollback ownership.  Rebase the active/start path
+# there; HOST_FED remains a larger native retention ceiling covering the
+# preceding 45-second read plus 15-second setup preparation.
+HOST_SETUP_STARTED_TIMEOUT_SECONDS = 60
+HOST_SETUP_STARTED = b"LABAP_BSS_SETUP_STARTED=1\n"
+HOST_ACTIVATION_TIMEOUT_SECONDS = 185
+SETUP_STARTED_TO_START_BUDGET_SECONDS = 220
+HOST_FED_TO_START_BUDGET_SECONDS = 280
+BROKER_HOST_FED_CAP_SECONDS = 290
+# The native broker starts this outer cap when it sends HOST_FED, while this
+# controller observes that packet slightly later.  Keep an explicit ten-second
+# native-to-controller handoff fence rather than treating the two origins as
+# identical.
+BROKER_HOST_FED_HANDOFF_MARGIN_SECONDS = 10
 # FIFO credential read (15), host-pipe feed (15), and HOST_FED send (15) each
 # have native bounds.  Keep another full fifteen seconds for scheduler/pipe
 # handoff variance rather than making the public timeout their exact sum.
 HOST_FED_TIMEOUT_SECONDS = 60
+# Each control timeout is one absolute end-to-end budget: local SOCK_SEQPACKET
+# send/sendmsg plus the matching native acknowledgement.  Neither half may
+# consume a second full phase window.
 BROKER_START_CONTROL_TIMEOUT_SECONDS = 20
 BROKER_CONTROL_TIMEOUT_SECONDS = 20
 BROKER_START_SAFETY_SECONDS = 5
 BROKER_STARTED_TO_ARM_CAP_SECONDS = 145
-BROKER_ARMED_TO_RELEASE_CAP_SECONDS = 90
+BROKER_ARMED_TO_RELEASE_CAP_SECONDS = 110
 # A successful START begins the native broker's independent 270-second cap.
 BROKER_POST_START_CAP_SECONDS = 270
 START_TO_ARM_TIMEOUT_SECONDS = 115
@@ -119,9 +132,10 @@ HOST_STATUS_TIMEOUT_SECONDS = 10
 HOST_WITHDRAW_TIMEOUT_SECONDS = 25
 # The public helper and broker both allow this bounded post-arm control window.
 HELPER_WITHDRAW_CONTROL_TIMEOUT_SECONDS = 90
-# The broker's ARMED cap starts as soon as it acknowledges ARM, before the
-# helper emits withdraw-armed.  Fifteen seconds for that helper receipt plus
-# the 65-second host/release path leaves a real five-second shared margin.
+# The helper/runner begin their 90-second control window after receiving the
+# ARMED acknowledgement.  The native broker began first, so reserve a
+# separate bounded acknowledgement-handoff margin in its 110-second cap.
+ARMED_NATIVE_ACK_HANDOFF_MARGIN_SECONDS = 20
 ARMED_PHASE_SAFETY_SECONDS = 5
 POST_ARM_RELEASE_PATH_SECONDS = (
     HOST_RENEW_FOR_WITHDRAW_TIMEOUT_SECONDS + HOST_STATUS_TIMEOUT_SECONDS +
@@ -376,6 +390,7 @@ class RuntimeState:
     stdin_fifo_verified: bool = False
     host_preflight_passed: bool = False
     host_credential_ready: bool = False
+    host_setup_started: bool = False
     host_activated: bool = False
     host_status_initial_verified: bool = False
     host_status_before_withdraw_verified: bool = False
@@ -941,8 +956,17 @@ class BrokerSession:
             except OSError:
                 pass
 
-    def _receive(self, expected: bytes, timeout: int) -> None:
-        self._parent.settimeout(timeout)
+    def _set_timeout_until(self, deadline: float) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RunnerError("broker-control")
+        try:
+            self._parent.settimeout(remaining)
+        except OSError as error:
+            raise RunnerError("broker-control") from error
+
+    def _receive_until(self, expected: bytes, deadline: float) -> None:
+        self._set_timeout_until(deadline)
         try:
             payload, ancillary, flags, _address = self._parent.recvmsg(64, 0)
         except (OSError, socket.timeout) as error:
@@ -951,19 +975,21 @@ class BrokerSession:
             raise RunnerError("broker-control")
 
     def wait_host_fed(self) -> None:
-        self._receive(b"HOST_FED", HOST_FED_TIMEOUT_SECONDS)
+        self._receive_until(b"HOST_FED", time.monotonic() + HOST_FED_TIMEOUT_SECONDS)
 
     def start(self, target: HostTarget, guest_write: int) -> None:
         payload = b"START " + target.ssid_sha256.encode("ascii") + b" " + target.bssid_sha256.encode("ascii")
+        deadline = time.monotonic() + BROKER_START_CONTROL_TIMEOUT_SECONDS
         try:
+            self._set_timeout_until(deadline)
             sent = self._parent.sendmsg(
                 [payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", guest_write))]
             )
-        except OSError as error:
+        except (OSError, socket.timeout) as error:
             raise RunnerError("broker-start-control") from error
         if sent != len(payload):
             raise RunnerError("broker-start-control")
-        self._receive(b"STARTED", BROKER_START_CONTROL_TIMEOUT_SECONDS)
+        self._receive_until(b"STARTED", deadline)
 
     def arm(self) -> None:
         self._send_fixed(b"ARM", b"ARMED")
@@ -979,13 +1005,15 @@ class BrokerSession:
             return False
 
     def _send_fixed(self, message: bytes, expected: bytes) -> None:
+        deadline = time.monotonic() + BROKER_CONTROL_TIMEOUT_SECONDS
         try:
+            self._set_timeout_until(deadline)
             sent = self._parent.send(message)
-        except OSError as error:
+        except (OSError, socket.timeout) as error:
             raise RunnerError("broker-control") from error
         if sent != len(message):
             raise RunnerError("broker-control")
-        self._receive(expected, BROKER_CONTROL_TIMEOUT_SECONDS)
+        self._receive_until(expected, deadline)
 
     def close(self) -> bool:
         exited_zero = False
@@ -1231,6 +1259,12 @@ def wait_host_credential_ready(output: ActivationOutput) -> None:
         raise RunnerError("host-credential-ready")
 
 
+def wait_host_setup_started(output: ActivationOutput, timeout: float) -> None:
+    """Accept the fixed post-credential setup origin before ACTIVE timing starts."""
+    if output.next_line(timeout, "host-setup-started") != HOST_SETUP_STARTED:
+        raise RunnerError("host-setup-started")
+
+
 def wait_host_activation(process: subprocess.Popen[bytes], output: ActivationOutput,
                          timeout: float) -> bytes:
     """Consume the final switcher result on the same bounded stream parser."""
@@ -1369,6 +1403,7 @@ class Supervisor:
         self.state_dir: Optional[Path] = None
         self.host_target: Optional[HostTarget] = None
         self._host_fed_deadline: Optional[float] = None
+        self._setup_started_deadline: Optional[float] = None
         self._withdraw_control_deadline: Optional[float] = None
 
     def execute(self) -> None:
@@ -1584,7 +1619,19 @@ class Supervisor:
         self._host_fed_deadline = time.monotonic() + HOST_FED_TO_START_BUDGET_SECONDS
         if self.activation is None or self.activation_output is None:
             raise RunnerError("host-activation")
-        activation_budget = self._remaining_host_fed_budget() - (
+        setup_started_budget = self._remaining_host_fed_budget() - \
+            SETUP_STARTED_TO_START_BUDGET_SECONDS
+        if setup_started_budget <= 0:
+            raise RunnerError("broker-start-window")
+        wait_host_setup_started(
+            self.activation_output,
+            min(float(HOST_SETUP_STARTED_TIMEOUT_SECONDS), setup_started_budget),
+        )
+        self.state.host_setup_started = True
+        self._setup_started_deadline = (
+            time.monotonic() + SETUP_STARTED_TO_START_BUDGET_SECONDS
+        )
+        activation_budget = self._remaining_start_budget() - (
             HOST_STATUS_TIMEOUT_SECONDS + BROKER_START_CONTROL_TIMEOUT_SECONDS +
             BROKER_START_SAFETY_SECONDS
         )
@@ -1611,8 +1658,8 @@ class Supervisor:
         if self.state_dir is None:
             raise RunnerError("host-status")
         timeout = HOST_STATUS_TIMEOUT_SECONDS
-        if self._host_fed_deadline is not None:
-            remaining = self._remaining_host_fed_budget()
+        if self._host_fed_deadline is not None or self._setup_started_deadline is not None:
+            remaining = self._remaining_start_budget()
             if remaining <= BROKER_START_CONTROL_TIMEOUT_SECONDS + BROKER_START_SAFETY_SECONDS:
                 raise RunnerError("broker-start-window")
             timeout = min(
@@ -1646,6 +1693,7 @@ class Supervisor:
                 pass
         self.state.broker_started = True
         self._host_fed_deadline = None
+        self._setup_started_deadline = None
         self.helper_output = HelperOutput(self.helper_process)
         self.helper_output.next_expected("initial-ready", START_TO_ARM_TIMEOUT_SECONDS)
         self.state.helper_initial_ready = True
@@ -1705,8 +1753,20 @@ class Supervisor:
             raise RunnerError("broker-start-window")
         return remaining
 
+    def _remaining_start_budget(self) -> float:
+        deadlines = tuple(
+            deadline for deadline in (self._host_fed_deadline, self._setup_started_deadline)
+            if deadline is not None
+        )
+        if not deadlines:
+            return float(HOST_ACTIVATION_TIMEOUT_SECONDS)
+        remaining = min(deadlines) - time.monotonic()
+        if remaining <= 1:
+            raise RunnerError("broker-start-window")
+        return remaining
+
     def _require_start_window(self) -> None:
-        if self._remaining_host_fed_budget() <= (
+        if self._remaining_start_budget() <= (
                 BROKER_START_CONTROL_TIMEOUT_SECONDS + BROKER_START_SAFETY_SECONDS):
             raise RunnerError("broker-start-window")
 
@@ -2067,6 +2127,7 @@ def report_document(state: RuntimeState) -> dict[str, object]:
         "host": {
             "multiband_preflight_passed": state.host_preflight_passed,
             "credential_ready_before_broker": state.host_credential_ready,
+            "setup_started_after_credential_consumption": state.host_setup_started,
             "temporary_bss_activated": state.host_activated,
             "hash_only_status_initial_verified": state.host_status_initial_verified,
             "initial_lease_exact_300_and_sufficient": state.initial_lease_sufficient,
@@ -2139,6 +2200,7 @@ def is_complete_pass(state: RuntimeState) -> bool:
         state.public_stage_bound, state.guest_helper_reverified,
         state.current_source_candidate_bound, state.broker_materialized_from_head,
         state.stdin_fifo_verified, state.host_preflight_passed, state.host_credential_ready,
+        state.host_setup_started,
         state.host_activated, state.host_status_initial_verified, state.initial_lease_sufficient,
         state.host_status_before_withdraw_verified, state.withdraw_lease_sufficient,
         state.host_lease_renewed_after_helper_arm, state.host_renewed_lease_fresh,
@@ -2166,20 +2228,26 @@ def make_helper_line(state: str, flags: tuple[int, int, int, int, int, int]) -> 
 def self_test() -> int:
     if HOST_FED_TIMEOUT_SECONDS < 15 + 15 + 15 + 15:
         raise SystemExit("self-test HOST_FED acknowledgement margin")
-    if HOST_FED_TO_START_BUDGET_SECONDS + BROKER_START_SAFETY_SECONDS > \
+    if HOST_SETUP_STARTED_TIMEOUT_SECONDS + SETUP_STARTED_TO_START_BUDGET_SECONDS != \
+            HOST_FED_TO_START_BUDGET_SECONDS:
+        raise SystemExit("self-test HOST_FED to SETUP_STARTED budget")
+    if HOST_FED_TO_START_BUDGET_SECONDS + BROKER_HOST_FED_HANDOFF_MARGIN_SECONDS > \
             BROKER_HOST_FED_CAP_SECONDS:
         raise SystemExit("self-test native HOST_FED margin")
     if (HOST_ACTIVATION_TIMEOUT_SECONDS + HOST_STATUS_TIMEOUT_SECONDS +
             BROKER_START_CONTROL_TIMEOUT_SECONDS + BROKER_START_SAFETY_SECONDS
-            > HOST_FED_TO_START_BUDGET_SECONDS):
-        raise SystemExit("self-test HOST_FED to START budget")
+            > SETUP_STARTED_TO_START_BUDGET_SECONDS):
+        raise SystemExit("self-test SETUP_STARTED to START budget")
     if START_TO_ARM_TIMEOUT_SECONDS + BROKER_CONTROL_TIMEOUT_SECONDS >= \
             BROKER_STARTED_TO_ARM_CAP_SECONDS:
         raise SystemExit("self-test STARTED to ARM budget")
     if (ARM_TO_WITHDRAW_TIMEOUT_SECONDS + POST_ARM_RELEASE_PATH_SECONDS +
             ARMED_PHASE_SAFETY_SECONDS >=
-            BROKER_ARMED_TO_RELEASE_CAP_SECONDS):
+            HELPER_WITHDRAW_CONTROL_TIMEOUT_SECONDS):
         raise SystemExit("self-test ARMED to RELEASE budget")
+    if HELPER_WITHDRAW_CONTROL_TIMEOUT_SECONDS + ARMED_NATIVE_ACK_HANDOFF_MARGIN_SECONDS > \
+            BROKER_ARMED_TO_RELEASE_CAP_SECONDS:
+        raise SystemExit("self-test native ARMED acknowledgement margin")
     if BROKER_STARTED_TO_ARM_CAP_SECONDS + BROKER_ARMED_TO_RELEASE_CAP_SECONDS >= \
             BROKER_POST_START_CAP_SECONDS:
         raise SystemExit("self-test post-START broker budget")

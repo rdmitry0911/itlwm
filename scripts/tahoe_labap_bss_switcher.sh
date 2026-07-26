@@ -1484,6 +1484,14 @@ do_activate() {
         recover_after_activate_failure
     fi
 
+    if [ "$CREDENTIAL_STDIN" -eq 1 ] && [ "$TEST_MODE" = labap ]; then
+        # This exact nonsecret acknowledgement is emitted only after the host
+        # has consumed the pipe credential, created its v4 setup deadline, and
+        # established durable rollback ownership.  The public supervisor uses
+        # it as the sole origin for the remaining ACTIVE/status/START budget.
+        printf 'LABAP_BSS_SETUP_STARTED=1\n' || recover_after_activate_failure
+    fi
+
     record_activation_phase pre-live-stop || true
     if ! stop_exact_hostapd "$LIVE_CONFIG" "$LIVE_PID" "$LIVE_LOG"; then
         recover_after_activate_failure

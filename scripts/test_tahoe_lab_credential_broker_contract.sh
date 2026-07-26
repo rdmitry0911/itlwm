@@ -102,14 +102,17 @@ for token in (
     "O_WRONLY", "write_guest_credential", "write_guest_arm",
     "arm-withdraw\\n", "withdraw\\n", '"HOST_FED"', '"STARTED"',
     '"ARMED"', '"RELEASED"', '"ABORTED"',
+    "kSwitcherCredentialReadBoundMilliseconds = 45000u",
     "kSwitcherSetupBoundMilliseconds = 180000u",
     "kPostCredentialSetupMarginMilliseconds = 15000u",
-    "kControllerStatusAndStartMarginMilliseconds = 45000u",
+    "kHostFedToSetupStartedBoundMilliseconds =",
+    "kSetupStartedToStartDeadlineMilliseconds =",
+    "kHostFedControllerHandoffMarginMilliseconds = 10000u",
     "kHostFedToStartDeadlineMilliseconds =",
     "kVerifiedInitialLeaseFloorMilliseconds = 285000u",
     "kPostStartSessionDeadlineMilliseconds = 270000u",
     "kStartedToArmDeadlineMilliseconds = 145000u",
-    "kArmedToReleaseDeadlineMilliseconds = 90000u",
+    "kArmedToReleaseDeadlineMilliseconds = 110000u",
     "_Static_assert(kPostStartSessionDeadlineMilliseconds <",
     "_Static_assert(kStartedToArmDeadlineMilliseconds +",
     "deadline_is_live",
@@ -185,7 +188,7 @@ for token in (
 ):
     require(capped, token, "non-extendable absolute deadline helper")
 if "kStartedToArmDeadlineMilliseconds = 145000u" not in source or \
-        "kArmedToReleaseDeadlineMilliseconds = 90000u" not in source:
+        "kArmedToReleaseDeadlineMilliseconds = 110000u" not in source:
     fail("cross-layer phase ceilings changed")
 started_phase = protocol.find("case kBrokerPhaseStarted:")
 armed_phase = protocol.find("case kBrokerPhaseArmed:")
@@ -193,7 +196,7 @@ started_cap = protocol.find("phase_deadline = kStartedToArmDeadlineMilliseconds"
 armed_cap = protocol.find("phase_deadline = kArmedToReleaseDeadlineMilliseconds", armed_phase)
 if min(started_phase, armed_phase, started_cap, armed_cap) < 0 or \
         not (started_phase < started_cap < armed_phase < armed_cap):
-    fail("145/90 phase ceilings are not used by the live broker state machine")
+    fail("145/110 phase ceilings are not used by the live broker state machine")
 
 # The secret resides in a private, locked non-dumpable mapping and every
 # terminal route scrubs and releases it.  SIGPIPE is handled as an error path,

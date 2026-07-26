@@ -42,6 +42,7 @@ for token in \
     'SETUP_DEADLINE_SECONDS=180' \
     'CREDENTIAL_READ_TIMEOUT_SECONDS=45' \
     'LABAP_BSS_CREDENTIAL_READY=1' \
+    'LABAP_BSS_SETUP_STARTED=1' \
     'IFS= read -r -s -t "$CREDENTIAL_READ_TIMEOUT_SECONDS" passphrase' \
     'armed:setup' \
     'labap-active:active|labap-withdraw-armed:active|direct-active:active|withdrawn:active' \
@@ -128,10 +129,12 @@ awk '
     in_activate && /LABAP_BSS_CREDENTIAL_READY=1/ { credential_ready_line = NR }
     in_activate && /read -r -s -t/ { credential_read_line = NR }
     in_activate && /write_test_config "\$passphrase"/ { credential_config_line = NR }
+    in_activate && /setup_deadline=\$\(\(setup_now \+ SETUP_DEADLINE_SECONDS\)\)/ { setup_deadline_line = NR }
     in_activate && /write_state armed/ { write_state_line = NR }
     in_activate && /^[[:space:]]*arm_activate_signal_recovery$/ { arm_line = NR }
     in_activate && /write_marker/ { marker_line = NR }
     in_activate && /start_watchdog/ { watchdog_line = NR }
+    in_activate && /LABAP_BSS_SETUP_STARTED=1/ { setup_started_line = NR }
     in_activate && /stop_exact_hostapd "\$LIVE_CONFIG"/ { stop_line = NR }
     in_activate && /start_exact_hostapd "\$\(test_config\)"/ { test_start_line = NR }
     in_activate && /! test_hostapd_active/ { test_active_line = NR }
@@ -140,10 +143,10 @@ awk '
     in_activate && /disarm_activate_signal_recovery/ { disarm_line = NR }
     END {
         exit !(credential_ready_line < credential_read_line &&
-            credential_read_line < credential_config_line &&
-            credential_config_line < write_state_line &&
+            credential_read_line < credential_config_line && credential_config_line < setup_deadline_line &&
+            setup_deadline_line < write_state_line &&
             write_state_line < arm_line && arm_line < marker_line &&
-            marker_line < watchdog_line && watchdog_line < stop_line &&
+            marker_line < watchdog_line && watchdog_line < setup_started_line && setup_started_line < stop_line &&
             stop_line < test_start_line && test_start_line < test_active_line &&
             setup_guard_count >= 3 && test_active_line < setup_guard_line &&
             setup_guard_line < promote_line && promote_line < disarm_line)
