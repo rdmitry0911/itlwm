@@ -28,14 +28,117 @@ usage() {
 usage: tahoe_auxkc_admission_preflight.sh --candidate /private/path/AirportItlwm.kext --out /private/evidence-dir
 
 Creates and inspects only a private temporary AuxKC. It never installs, loads,
-unloads, swaps, or reboots a kext. The candidate and output directory must not
-resolve outside /private.
+unloads, swaps, or reboots a kext. This root-only helper accepts a root-owned,
+sealed candidate and creates its output below a root-owned 0700 directory under
+/private.
 EOF
 }
 
 fail() {
     echo "FAIL: $*" >&2
     exit 1
+}
+
+clear_untrusted_metadata() {
+    local path="$1"
+
+    sudo -n /bin/chmod -RN "$path"
+    sudo -n /usr/bin/xattr -rc "$path"
+    sudo -n /usr/bin/chflags -R nouchg "$path"
+    sudo -n /usr/bin/find "$path" -exec /bin/chmod u-s,g-s,-t {} +
+}
+
+# All recursive metadata operations below are deliberately preceded by this
+# physical lstat walk.  The candidate is a root-owned snapshot under a sealed
+# ancestor, so an untrusted caller cannot replace an entry between validation
+# and the recursive chmod/xattr/chflags calls.
+validate_root_owned_tree() {
+    local path="$1"
+
+    /usr/bin/python3 -I - "$path" <<'PY'
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+
+def fail():
+    raise SystemExit(1)
+
+def check(path, want_directory):
+    try:
+        value = os.lstat(path)
+    except OSError:
+        fail()
+    if stat.S_ISLNK(value.st_mode) or value.st_uid != 0:
+        fail()
+    if stat.S_IMODE(value.st_mode) & 0o7022:
+        fail()
+    if want_directory:
+        if not stat.S_ISDIR(value.st_mode):
+            fail()
+    elif not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+        fail()
+    return value
+
+pending = [root]
+while pending:
+    current = pending.pop()
+    check(current, True)
+    try:
+        entries = list(os.scandir(current))
+    except OSError:
+        fail()
+    for entry in entries:
+        child = os.path.join(current, entry.name)
+        value = os.lstat(child)
+        if stat.S_ISDIR(value.st_mode):
+            check(child, True)
+            pending.append(child)
+        else:
+            check(child, False)
+PY
+}
+
+validate_bridge_root() {
+    local root="$1"
+
+    /usr/bin/python3 -I - "$root" <<'PY'
+import os
+import re
+import stat
+import sys
+
+root = sys.argv[1]
+if re.fullmatch(r"/private/tmp/aiam-iwn-activation-[A-Za-z0-9][A-Za-z0-9._-]{0,63}", root) is None:
+    raise SystemExit(1)
+for path, want_sticky in (("/private", False), ("/private/tmp", True), (root, False)):
+    try:
+        value = os.lstat(path)
+    except OSError:
+        raise SystemExit(1)
+    if (stat.S_ISLNK(value.st_mode) or not stat.S_ISDIR(value.st_mode) or
+            value.st_uid != 0):
+        raise SystemExit(1)
+    if want_sticky and not value.st_mode & stat.S_ISVTX:
+        raise SystemExit(1)
+    if path == root and stat.S_IMODE(value.st_mode) != 0o700:
+        raise SystemExit(1)
+PY
+    # The root is root-owned inside the sticky /private/tmp directory, so this
+    # non-recursive ACL reset cannot be raced by an unprivileged caller.
+    /bin/chmod -N "$root"
+    /bin/chmod 700 "$root"
+    /usr/bin/python3 -I - "$root" <<'PY'
+import os
+import stat
+import sys
+
+value = os.lstat(sys.argv[1])
+if (stat.S_ISLNK(value.st_mode) or not stat.S_ISDIR(value.st_mode) or
+        value.st_uid != 0 or stat.S_IMODE(value.st_mode) != 0o700):
+    raise SystemExit(1)
+PY
 }
 
 reject_canonical_path() {
@@ -83,6 +186,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$candidate" ] && [ -n "$out" ] || { usage; exit 2; }
+[ "$(/usr/bin/id -u)" -eq 0 ] || fail "must run as root"
 case "$candidate" in
     /*) ;;
     *) fail "candidate must be an absolute private path" ;;
@@ -96,8 +200,6 @@ esac
 candidate="$(cd -P -- "$candidate" && pwd)"
 reject_canonical_path "$candidate" "candidate"
 require_private_path "$candidate" "candidate"
-candidate_binary="$candidate/Contents/MacOS/AirportItlwm"
-[ -f "$candidate_binary" ] || fail "candidate Mach-O is missing"
 
 out_parent="$(dirname "$out")"
 out_leaf="$(basename "$out")"
@@ -115,6 +217,15 @@ require_private_path "$out" "output"
 [ ! -L "$out" ] || fail "output must not be a symlink"
 [ ! -e "$out" ] && [ ! -L "$out" ] ||
     fail "output must be a new private evidence directory: $out"
+validate_bridge_root "$out_parent" ||
+    fail "output parent must be the root-owned sealed bridge activation root"
+[ "$out" = "$out_parent/preflight" ] ||
+    fail "output must be the bridge preflight directory for this activation root"
+[ "$candidate" = "$out_parent/frozen/extracted/AirportItlwm.kext" ] ||
+    fail "candidate must be the frozen bridge snapshot for this output root"
+validate_root_owned_tree "$candidate" || fail "candidate tree is unsafe"
+candidate_binary="$candidate/Contents/MacOS/AirportItlwm"
+[ -f "$candidate_binary" ] || fail "candidate Mach-O is missing"
 
 for path in "$CANONICAL_AUXKC" "$BOOTKC" "$SYSTEMKC" \
             "$INSTALLED_AIRPORT" "$INSTALLED_AIRPORT_BINARY" \
@@ -128,6 +239,9 @@ mkdir "$out"
 out="$(cd -P -- "$out" && pwd)"
 reject_canonical_path "$out" "output"
 require_private_path "$out" "output"
+validate_root_owned_tree "$out" || fail "new output tree is unsafe"
+clear_untrusted_metadata "$out"
+/bin/chmod 700 "$out"
 private_candidate="$out/AirportItlwm.kext"
 temp_auxkc="$out/exact-5.kc"
 [ ! -e "$private_candidate" ] && [ ! -L "$private_candidate" ] ||
@@ -424,7 +538,9 @@ set +e
 codesign --verify --deep --strict "$candidate" > "$out/candidate-source-codesign.txt" 2>&1
 source_codesign_status=$?
 set -e
-sudo -n ditto "$candidate" "$private_candidate"
+sudo -n /usr/bin/ditto --norsrc --noacl --noextattr --noqtn "$candidate" "$private_candidate"
+validate_root_owned_tree "$private_candidate" || fail "private candidate tree is unsafe"
+clear_untrusted_metadata "$private_candidate"
 sudo -n chown -R root:wheel "$private_candidate"
 sudo -n chmod -R go-w "$private_candidate"
 private_binary="$private_candidate/Contents/MacOS/AirportItlwm"

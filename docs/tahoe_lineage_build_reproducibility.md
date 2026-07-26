@@ -131,23 +131,29 @@ artifact until the same source has passed the BootKC symbol check.
 
 ## Private AuxKC Admission Preflight
 
-Before an activation decision, test the candidate's AuxKC link/materialization
-boundary with the project-owned private-only helper:
+Before an activation decision, the activation bridge tests the candidate's
+AuxKC link/materialization boundary with the project-owned private-only helper.
+This is a bridge-private, root-only interface: it is not a generic command for
+an arbitrary `/private/tmp` candidate. The bridge supplies a root-owned sealed activation root,
+whose frozen candidate and new preflight directory have this fixed relationship:
 
 ```bash
 scripts/tahoe_auxkc_admission_preflight.sh \
-  --candidate /private/tmp/aiam-candidate/AirportItlwm.kext \
-  --out /private/tmp/aiam-auxkc-preflight-evidence
+  --candidate /private/<activation-root>/frozen/extracted/AirportItlwm.kext \
+  --out /private/<activation-root>/preflight
 ```
 
 The candidate and temporary collection must physically resolve beneath `/private`.
-The canonical AirportItlwm bundle and canonical AuxKC remain read-only throughout this check.
-`--out` must name a non-existent private directory; the helper creates it once
-and refuses a reusable directory or symlink, so stale evidence children cannot
-redirect a new run. Once it has captured the canonical before-witnesses, its
-exit path always records and verifies the canonical after-witnesses, including
-after a failed `kmutil create` or private inspection. A PASS therefore requires
-both successful private materialization and a complete unchanged canonical
+The activation root and candidate must be root-owned, with the root directory
+mode `0700`; the helper rejects links, special files, hard-linked regular files,
+and writable tree entries before it performs recursive metadata cleanup. The
+canonical AirportItlwm bundle and canonical AuxKC remain read-only throughout
+this check. `--out` must name a non-existent private directory: the `preflight` child of that root;
+the helper creates it once and refuses a reusable directory or symlink, so stale
+evidence children cannot redirect a new run. Once it has captured the canonical
+before-witnesses, its exit path always records and verifies the canonical after-witnesses,
+including after a failed `kmutil create` or private inspection.
+A PASS therefore requires both successful private materialization and a complete unchanged canonical
 postflight.
 The helper uses the successful 25C56 explicit-five-member form: the private
 candidate plus HighPointRR, HighPointIOP, RemoteVirtualInterface, and

@@ -578,7 +578,23 @@ def write_new_json(root: Path, document: dict[str, object], destination: str) ->
         raise ValueError("receipt output must be a new non-symlink path")
     if not path.parent.is_dir():
         raise ValueError("receipt output parent is missing")
-    path.write_text(rendered, encoding="utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        payload = rendered.encode("utf-8")
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("short receipt write")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    metadata = path.lstat()
+    if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or
+            metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600):
+        raise OSError("receipt output post-write verification failed")
 
 
 def fixture_macho(uuid_value: str) -> bytes:
@@ -652,6 +668,8 @@ def self_test() -> int:
             raise SystemExit("self-test: trace-client digest did not round-trip")
         receipt = temporary / "receipt.json"
         write_new_json(root, document, str(receipt))
+        if stat.S_IMODE(receipt.lstat().st_mode) != 0o600:
+            raise SystemExit("self-test: candidate receipt is not private")
         if load_candidate_receipt(receipt)["binary_sha256"] != sha256_bytes(binary):
             raise SystemExit("self-test: typed receipt loader did not round-trip")
         if (load_direct_runtime_candidate_receipt(receipt)["trace_client_sha256"]

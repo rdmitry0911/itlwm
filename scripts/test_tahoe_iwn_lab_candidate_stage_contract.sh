@@ -55,6 +55,8 @@ for token in \
     'GIT_CONFIG_KEY_0=core.excludesFile' \
     'capture_tahoe_iwn_lab_candidate_receipt.py' \
     'load_direct_runtime_candidate_receipt' \
+    'candidate-receipt-must-be-private-0600' \
+    'stat.S_IMODE(value.st_mode) != 0o600' \
     'PINNED_GUEST_HOSTKEY_LINE=' \
     'PINNED_GUEST_HOSTKEY_SHA256=' \
     'StrictHostKeyChecking=yes' \

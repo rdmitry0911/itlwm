@@ -78,11 +78,22 @@ for needle in (
     '[ ! -L "$out" ] || fail "output must not be a symlink"',
     '[ ! -e "$out" ] && [ ! -L "$out" ] ||',
     'fail "output must be a new private evidence directory: $out"',
+    '[ "$(/usr/bin/id -u)" -eq 0 ] || fail "must run as root"',
+    'validate_root_owned_tree() {',
+    'validate_bridge_root() {',
+    'validate_bridge_root "$out_parent"',
+    '[ "$out" = "$out_parent/preflight" ]',
+    '[ "$candidate" = "$out_parent/frozen/extracted/AirportItlwm.kext" ]',
+    'validate_root_owned_tree "$candidate"',
     'mkdir "$out"',
+    'validate_root_owned_tree "$out"',
+    'clear_untrusted_metadata "$out"',
     'private_candidate="$out/AirportItlwm.kext"',
     '[ ! -e "$private_candidate" ] && [ ! -L "$private_candidate" ] ||',
     '[ ! -e "$temp_auxkc" ] && [ ! -L "$temp_auxkc" ] ||',
-    'sudo -n ditto "$candidate" "$private_candidate"',
+    'sudo -n /usr/bin/ditto --norsrc --noacl --noextattr --noqtn "$candidate" "$private_candidate"',
+    'validate_root_owned_tree "$private_candidate"',
+    'clear_untrusted_metadata "$private_candidate"',
     'sudo -n chown -R root:wheel "$private_candidate"',
     'sudo -n chmod -R go-w "$private_candidate"',
     "sudo -n /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \"$private_candidate/Contents/Info.plist\"",
@@ -136,8 +147,27 @@ ordered(script, "physical private-path validation before copy",
         'require_private_path "$out" "output"',
         '[ ! -L "$out" ] || fail "output must not be a symlink"',
         '[ ! -e "$out" ] && [ ! -L "$out" ] ||',
+        'validate_bridge_root "$out_parent"',
+        '[ "$out" = "$out_parent/preflight" ]',
+        '[ "$candidate" = "$out_parent/frozen/extracted/AirportItlwm.kext" ]',
+        'validate_root_owned_tree "$candidate"',
         'mkdir "$out"',
-        'sudo -n ditto "$candidate" "$private_candidate"')
+        'validate_root_owned_tree "$out"',
+        'clear_untrusted_metadata "$out"',
+        'sudo -n /usr/bin/ditto --norsrc --noacl --noextattr --noqtn "$candidate" "$private_candidate"',
+        'validate_root_owned_tree "$private_candidate"',
+        'clear_untrusted_metadata "$private_candidate"')
+
+tree_validator = function_body(script, "validate_root_owned_tree")
+for needle in ('os.lstat', 'stat.S_ISLNK', 'stat.S_ISDIR', 'stat.S_ISREG',
+               'value.st_nlink != 1', '0o7022', 'os.scandir'):
+    require(tree_validator, needle, "physical private-tree validation")
+bridge_root = function_body(script, "validate_bridge_root")
+for needle in ('/private/tmp/aiam-iwn-activation-', 'stat.S_ISVTX',
+               'value.st_uid != 0', 'stat.S_IMODE(value.st_mode) != 0o700'):
+    require(bridge_root, needle, "bridge-root physical validation")
+ordered(bridge_root, "sealed output-root ACL cleanup",
+        '/bin/chmod -N "$root"', '/bin/chmod 700 "$root"')
 
 main_start = script.find('sudo -n true')
 if main_start < 0:
@@ -200,6 +230,7 @@ forbidden = (
     ('sudo -n cp "$private_candidate" "$INSTALLED_AIRPORT"', 'canonical bundle copy'),
     ('sudo -n mv "$temp_auxkc" "$CANONICAL_AUXKC"', 'canonical collection swap'),
     ('sudo -n ditto "$private_candidate" "$INSTALLED_AIRPORT"', 'canonical bundle replacement'),
+    ('sudo -n ditto "$candidate" "$private_candidate"', 'ACL-preserving private candidate copy'),
     ('mkdir -p "$out"', 'reusable output-directory creation'),
 )
 for needle, label in forbidden:
@@ -212,6 +243,10 @@ for needle in (
     '## Private AuxKC Admission Preflight',
     'scripts/tahoe_auxkc_admission_preflight.sh',
     'must physically resolve beneath `/private`',
+    'bridge-private, root-only interface',
+    'root-owned sealed activation root',
+    'mode `0700`',
+    'fixed relationship',
     'canonical AirportItlwm bundle and canonical AuxKC remain read-only',
     '`--out` must name a non-existent private directory',
     'exit path always records and verifies the canonical after-witnesses',

@@ -1015,6 +1015,17 @@ stage_candidate() {
     require_clean_committed_source
     CANDIDATE_RECEIPT="$(canonical_existing_regular_file "$CANDIDATE_RECEIPT")" ||
         fail "candidate-receipt-must-be-absolute-regular-non-symlink-file"
+    python3 - "$CANDIDATE_RECEIPT" <<'PY' ||
+        fail "candidate-receipt-must-be-private-0600"
+import os
+import stat
+import sys
+
+value = os.lstat(sys.argv[1])
+if (stat.S_ISLNK(value.st_mode) or not stat.S_ISREG(value.st_mode) or
+        value.st_nlink != 1 or stat.S_IMODE(value.st_mode) != 0o600):
+    raise SystemExit(1)
+PY
     ARCHIVE="$(canonical_existing_regular_file "$ARCHIVE")" ||
         fail "archive-must-be-absolute-regular-non-symlink-file"
     TRACE_CLIENT="$(canonical_existing_regular_file "$TRACE_CLIENT")" ||
