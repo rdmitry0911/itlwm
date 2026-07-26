@@ -34,6 +34,14 @@ for needle in \
     'typed IWN lab v2 receipt helper is unavailable' \
     '--candidate-receipt' \
     'require_regular_file(path, "candidate receipt")' \
+    'os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | cloexec' \
+    'loaded identity output requires no-follow descriptor support' \
+    'parent_metadata.st_uid != os.getuid()' \
+    'stat.S_IMODE(parent_metadata.st_mode) != 0o700' \
+    'descriptor_metadata = os.fstat(descriptor)' \
+    'path_metadata = path.lstat()' \
+    'stat.S_IMODE(path_metadata.st_mode) != 0o600' \
+    'loaded identity output post-write verification failed' \
     'PINNED_QEMU_GUEST = "devops@127.0.0.1"' \
     'PINNED_QEMU_PORT = 3322' \
     'PINNED_QEMU_BUILD = "25C56"' \

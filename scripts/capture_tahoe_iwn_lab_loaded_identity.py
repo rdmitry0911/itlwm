@@ -19,6 +19,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import stat
 import subprocess
@@ -548,11 +549,49 @@ def write_new_json(root: Path, document: dict[str, object], destination: str) ->
     path = Path(destination)
     if output_path_is_inside_root(root, path):
         raise ValueError("loaded identity output must be outside the source repository")
-    if path.exists() or path.is_symlink():
-        raise ValueError("loaded identity output must be a new non-symlink path")
-    if not path.parent.is_dir():
-        raise ValueError("loaded identity output parent is missing")
-    path.write_text(rendered, encoding="utf-8")
+    try:
+        parent_metadata = path.parent.lstat()
+    except OSError as error:
+        raise ValueError("loaded identity output parent is missing") from error
+    if (stat.S_ISLNK(parent_metadata.st_mode) or not stat.S_ISDIR(parent_metadata.st_mode) or
+            parent_metadata.st_uid != os.getuid() or
+            stat.S_IMODE(parent_metadata.st_mode) != 0o700):
+        raise ValueError("loaded identity output parent must be a private 0700 directory")
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    cloexec = getattr(os, "O_CLOEXEC", None)
+    if nofollow is None or cloexec is None:
+        raise ValueError("loaded identity output requires no-follow descriptor support")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | cloexec
+    payload = rendered.encode("utf-8")
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError as error:
+        raise ValueError("loaded identity output must be a new non-symlink path") from error
+    except OSError as error:
+        raise ValueError("loaded identity output could not be created safely") from error
+    try:
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("short loaded identity write")
+            offset += written
+        os.fsync(descriptor)
+        descriptor_metadata = os.fstat(descriptor)
+    except OSError as error:
+        raise ValueError("loaded identity output write failed") from error
+    finally:
+        os.close(descriptor)
+    try:
+        path_metadata = path.lstat()
+    except OSError as error:
+        raise ValueError("loaded identity output post-write verification failed") from error
+    if (stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISREG(path_metadata.st_mode) or
+            path_metadata.st_nlink != 1 or path_metadata.st_uid != os.getuid() or
+            stat.S_IMODE(path_metadata.st_mode) != 0o600 or
+            (path_metadata.st_dev, path_metadata.st_ino) !=
+            (descriptor_metadata.st_dev, descriptor_metadata.st_ino)):
+        raise ValueError("loaded identity output post-write verification failed")
 
 
 def fixture_candidate() -> dict[str, Any]:
@@ -700,6 +739,48 @@ def self_test() -> int:
             raise SystemExit("self-test: stable double-read fact was not retained")
         if document["command_result"]["raw_guest_stdout_retained"] is not False:
             raise SystemExit("self-test: guest stdout retention claim changed")
+        source_root = temporary / "source-root"
+        source_root.mkdir(mode=0o700)
+        private_output = temporary / "private-output"
+        private_output.mkdir(mode=0o700)
+        report = private_output / "loaded-identity.json"
+        write_new_json(source_root, document, str(report))
+        report_metadata = report.lstat()
+        if (not stat.S_ISREG(report_metadata.st_mode) or report_metadata.st_nlink != 1 or
+                report_metadata.st_uid != os.getuid() or
+                stat.S_IMODE(report_metadata.st_mode) != 0o600):
+            raise SystemExit("self-test: loaded identity output was not private")
+        if json.loads(report.read_text(encoding="utf-8")) != document:
+            raise SystemExit("self-test: loaded identity output changed")
+        try:
+            write_new_json(source_root, document, str(report))
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test: loaded identity output was overwritten")
+        unsafe_output = temporary / "unsafe-output"
+        unsafe_output.mkdir(mode=0o700)
+        unsafe_output.chmod(0o755)
+        try:
+            write_new_json(source_root, document, str(unsafe_output / "report.json"))
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test: non-private loaded identity parent was accepted")
+        linked_output = temporary / "linked-output"
+        linked_output.symlink_to(private_output, target_is_directory=True)
+        try:
+            write_new_json(source_root, document, str(linked_output / "report.json"))
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test: symlinked loaded identity parent was accepted")
+        try:
+            write_new_json(source_root, document, str(source_root / "report.json"))
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test: source-local loaded identity output was accepted")
     print("PASS: Tahoe IWN lab loaded identity self-test")
     return 0
 
