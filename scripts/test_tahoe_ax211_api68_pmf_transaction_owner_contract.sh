@@ -4,7 +4,7 @@
 # This is deliberately a fail-closed admission test.  A PASS proves that the
 # staged AX211/IWX PSK+PMF path retains its ownership, epoch, q0, and rollback
 # fences; it does not claim a functional WPA3 association or broaden IWX into
-# the separately lab-gated IWN pure-SAE ingress.
+# the separately lab-gated IWN exact-SAE-password ingress.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -142,7 +142,8 @@ for token in (
     require(proto_h, token, "generic PMF owner API")
 
 # The ordinary and AX211/IWX WCL carrier opts in only for the exact audited
-# PSK PMK route.  A separate IWN-only compile gate may admit pure SAE, but it
+# PSK PMK route.  A separate IWN-only compile gate may admit exact SAE
+# password carriers, but it
 # must neither reuse this PSK PMF assignment nor make IWX a SAE backend.
 # Public/leave/disassociate ingress still clear stale state.
 auth = source["auth"]
@@ -153,9 +154,9 @@ hidden = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImp
               "hidden WCL association")
 direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
                  "    /*\n"
-                 "     * The first live ingress")
+                 "     * The live ingress")
 direct_lab = preprocessor_block(hidden, direct_marker,
-                                "IWN lab pure-SAE WCL block")
+                                "IWN lab exact-SAE WCL block")
 for token in (
     "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
     "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
@@ -163,11 +164,18 @@ for token in (
 ):
     require(sky, token, "IWN-only compile fence")
 for token in (
+    "if (directSaeWclPassword)",
     "ieee80211_sae_wcl_request_begin",
     "stageSaeWclCredential",
     "ieee80211_sae_wcl_request_resume_scan",
 ):
-    require(direct_lab, token, "direct IWN pure-SAE handoff")
+    require(direct_lab, token, "direct IWN exact-SAE handoff")
+if re.search(
+        r"const bool directSaeWclPassword\s*=\s*"
+        r"wcl_key_cipher\s*==\s*APPLE80211_CIPHER_PWD\s*&&\s*"
+        r"TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential\(\s*"
+        r"auth_upper\s*\)\s*;", hidden, re.S) is None:
+    fail("missing exact CIPHER_PWD-and-auth direct-SAE selector")
 for token in (
     "TahoeAssociationAuthContracts::isAuditedPskPmkAuth",
     "TahoeAssociationContracts::pmfCapable(pmf_capability)",

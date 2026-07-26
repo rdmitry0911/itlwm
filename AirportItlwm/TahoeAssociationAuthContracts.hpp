@@ -112,6 +112,21 @@ inline bool isAuditedWpa3PskTransition(uint32_t authtypeUpper)
     return authtypeUpper == kAuditedWpa3PskTransitionAuth;
 }
 
+/*
+ * A CIPHER_PWD carrier identifies a user-supplied SAE password rather than
+ * the WPA2-derived PMK used by the legacy transition fallback.  The direct
+ * SAE WCL bridge may therefore admit exactly the pure-SAE selector and the
+ * one audited SAE|WPA2-PSK transition selector.  This predicate does not
+ * authorize a generic association or any PMK path; its only caller is the
+ * separately compiled credential bridge, which still validates CIPHER_PWD
+ * and the selected BSS profile before it starts SAE.
+ */
+inline bool mayUseDirectSaeWclCredential(uint32_t authtypeUpper)
+{
+    return authtypeUpper == kAuthWpa3Sae ||
+           isAuditedWpa3PskTransition(authtypeUpper);
+}
+
 inline bool isAuditedPskPmkAuth(uint32_t authtypeUpper)
 {
     /*

@@ -88,7 +88,7 @@ require_external_bridge ItlIwn AirportItlwmPostPltiTraceAbortWclPhysicalScanEpis
 require_external_bridge ItlIwx AirportItlwmPostPltiTraceRecord
 require_external_bridge AirportItlwmSkywalkInterface AirportItlwmPostPltiTraceBeginWclPhysicalScanEpisode
 
-# The pure-SAE WCL entry is not compiled in the ordinary product artifact, so
+# The exact-SAE-password WCL entry is not compiled in the ordinary product artifact, so
 # prove its external bridge only against the separately built lab object.
 # This makes the runtime client and its candidate kext use the same lab
 # DerivedData lineage without making a normal build depend on a lab-only call.

@@ -6483,10 +6483,19 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 
     uint32_t assocPolicyFlags = tahoeAssociationRegDiagPolicyFlags(auth_upper);
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
+    /* The transition selector retains its audited PMK route unless the WCL
+     * carrier explicitly contains a bounded SAE password.  In particular,
+     * do not turn an existing CIPHER_PMK auto-join into a bad-argument
+     * failure merely because the selected BSS also advertises SAE. */
+    const bool directSaeWclPassword =
+        wcl_key_cipher == APPLE80211_CIPHER_PWD &&
+        TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential(
+            auth_upper);
     /* The ordinary product still reports this vector as quarantined.  The
-     * separately compiled IWN lab artifact admits one exact pure-SAE carrier
-     * below, so do not label that controlled path as a diagnostic reject. */
-    if (auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae)
+     * separately compiled IWN lab artifact admits only exact SAE credential
+     * carriers below, so do not label that controlled path as a diagnostic
+     * reject. */
+    if (directSaeWclPassword)
         assocPolicyFlags &= ~kAirportItlwmRegDiagAssocPolicyRejectWpa3;
 #endif
     airportItlwmRegDiagRecordAssocPolicy(
@@ -6496,15 +6505,17 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
     /*
-     * The first live ingress is intentionally one narrow path: a pure SAE
-     * WCL candidate while the interface is already scanning.  It is not the
-     * old SAE|PSK transition/PLTI route, does not consume a raw RSN IE, and
-     * does not call associateSSID(), whose generic WPA parameters cannot
-     * express SAE without an Open/PSK fallback.  The driver copies the
-     * bounded CIPHER_PWD record synchronously and later rebinds this public
-     * SSID+BSSID identity to the selected scan BSS before it sends Commit.
+     * The live ingress is intentionally narrow: an exact pure-SAE or exact
+     * SAE|WPA2-PSK transition WCL candidate while the interface is already
+     * scanning.  The transition form is admitted only when it carries
+     * CIPHER_PWD, never the legacy PMK carrier.  This path does not consume a
+     * raw RSN IE and does not call associateSSID(), whose generic WPA
+     * parameters cannot express SAE without an Open/PSK fallback.  The
+     * driver copies the bounded CIPHER_PWD record synchronously and later
+     * rebinds this public SSID+BSSID identity to the selected scan BSS before
+     * it sends Commit.
      */
-    if (auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae) {
+    if (directSaeWclPassword) {
         struct ItlSaeWclCredentialV1 saeCredential;
         struct apple80211_authtype_data authType;
         uint8_t saeBssid[IEEE80211_ADDR_LEN];
@@ -6553,7 +6564,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         /* This is the lifecycle/PMK reset edge.  begin() itself does not
          * invoke ieee80211_disable_rsn(), because that generic epoch reset
          * would revoke the generation it is about to publish. */
-        clearExternalPmkEligibilityLocked("setWCL_ASSOCIATE_pure_SAE");
+        clearExternalPmkEligibilityLocked("setWCL_ASSOCIATE_SAE_CIPHER_PWD");
         saeGeneration = ieee80211_sae_wcl_request_begin(
             ic, saeBssid, ssid, raw_ssid_len);
         if (saeGeneration == 0) {

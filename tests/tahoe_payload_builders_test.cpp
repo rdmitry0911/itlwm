@@ -1666,6 +1666,14 @@ void testTahoeAssociationAuthContracts()
             "association auth rejects an unobserved WPA3 plus PSK carrier");
     require(!requiresUnsupportedWpa3Auth(mixedTransition),
             "association auth preserves explicit WPA2 PSK transition fallback");
+    require(mayUseDirectSaeWclCredential(kAuthWpa3Sae),
+            "direct SAE WCL bridge admits the exact pure-SAE password carrier");
+    require(mayUseDirectSaeWclCredential(mixedTransition),
+            "direct SAE WCL bridge admits the exact SAE transition password carrier");
+    require(!mayUseDirectSaeWclCredential(kAuthWpa2Psk),
+            "direct SAE WCL bridge never reinterprets WPA2 PSK as SAE");
+    require(!mayUseDirectSaeWclCredential(mixedTransition | (1U << 31)),
+            "direct SAE WCL bridge rejects transition carriers with extra bits");
     require(requiresUnsupportedWpa3Auth(kAuthWpa3Enterprise | kAuthWpa2),
             "association auth rejects unimplemented WPA3 enterprise transition");
     require(mayUseLocalPskPmk(mixedTransition),
@@ -1689,6 +1697,9 @@ void testTahoeAssociationAuthContracts()
         const bool expectedUnsupportedWpa3 =
             (selector & kWpa3OnlyAuthMask) != 0 &&
             selector != kAuditedWpa3PskTransitionAuth;
+        const bool expectedDirectSaeWclCredential =
+            selector == kAuthWpa3Sae ||
+            selector == kAuditedWpa3PskTransitionAuth;
         require(mayUseLocalPskPmk(selector) == expectedPskPmk,
                 "PLTI exact PSK matrix matches its audited allow-list");
         require(AirportItlwmAgentTargetUsesPskPmk(selector) ==
@@ -1697,6 +1708,9 @@ void testTahoeAssociationAuthContracts()
         require(requiresUnsupportedWpa3Auth(selector) ==
                     expectedUnsupportedWpa3,
                 "WPA3 ingress matrix rejects every non-audited carrier");
+        require(mayUseDirectSaeWclCredential(selector) ==
+                    expectedDirectSaeWclCredential,
+                "direct SAE WCL credential matrix admits only exact SAE carriers");
     }
 
     for (uint32_t selector : {

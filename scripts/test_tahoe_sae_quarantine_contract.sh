@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-pass contract gate for the ordinary pure-SAE quarantine, the narrow
-# IWN lab ingress exception, and the audited PMF owner.
+# exact-SAE-password IWN lab ingress exception, and the audited PMF owner.
 #
 # This intentionally combines semantic mask tests, every association ingress,
 # PLTI/Agent PMK boundaries, net80211's Open-System limitation, and the AX211
@@ -41,6 +41,7 @@ bash "$root/scripts/test_tahoe_launch_disposable_pair_contract.sh"
 
 python3 - "$root" <<'PY'
 import json
+import re
 from pathlib import Path
 import sys
 
@@ -112,6 +113,11 @@ def require(text, needle, label):
         fail(f"missing {label}: {needle}")
 
 
+def require_re(text, pattern, label):
+    if re.search(pattern, text, re.S) is None:
+        fail(f"missing {label}: /{pattern}/")
+
+
 def forbid(text, needle, label):
     if needle in text:
         fail(f"unexpected {label}: {needle}")
@@ -140,6 +146,7 @@ for needle in (
     "inline bool requiresUnsupportedWpa3Auth",
     "inline bool isAuditedPskPmkAuth",
     "inline bool mayUseLocalPskPmk",
+    "inline bool mayUseDirectSaeWclCredential",
     "inline uint32_t localPskAkmSelectionMaskForDirectWclPmk",
     "return authtypeUpper == kAuditedWpa3PskTransitionAuth;",
 ):
@@ -203,9 +210,9 @@ hidden_assoc = body(sky,
                     "hidden setWCL_ASSOCIATEImpl")
 direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
                  "    /*\n"
-                 "     * The first live ingress")
+                 "     * The live ingress")
 direct_lab = preprocessor_block(hidden_assoc, direct_marker,
-                                "IWN lab pure-SAE WCL block")
+                                "IWN lab exact-SAE WCL block")
 for token in (
     "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
     "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
@@ -213,15 +220,22 @@ for token in (
     "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 0",
 ):
     require(sky, token, "IWN lab-only compile gate")
+require_re(
+    hidden_assoc,
+    r"const bool directSaeWclPassword\s*=\s*"
+    r"wcl_key_cipher\s*==\s*APPLE80211_CIPHER_PWD\s*&&\s*"
+    r"TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential\(\s*"
+    r"auth_upper\s*\)\s*;",
+    "exact CIPHER_PWD-and-auth IWN selector")
 for token in (
-    "if (auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae)",
+    "if (directSaeWclPassword)",
     "ieee80211_sae_wcl_request_begin",
     "stageSaeWclCredential",
     "ieee80211_sae_wcl_request_resume_scan",
 ):
-    require(direct_lab, token, "pure-SAE direct IWN ingress")
-ordered(direct_lab, "IWN direct pure-SAE ordering",
-        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_pure_SAE\")",
+    require(direct_lab, token, "exact-SAE direct IWN ingress")
+ordered(direct_lab, "IWN direct exact-SAE ordering",
+        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_SAE_CIPHER_PWD\")",
         "ieee80211_sae_wcl_request_begin", "stageSaeWclCredential",
         "ieee80211_sae_wcl_request_resume_scan")
 for token in (
@@ -249,6 +263,16 @@ require(legacy_hidden_assoc, "return assocResult;",
 require(legacy_hidden_assoc,
         "directWclPmkSha256PskCompatibility,\n                                    &externalPmkReadyObserved",
         "hidden association passes only its exact direct-PMK compatibility bit")
+
+
+def direct_sae_password_route(auth, cipher):
+    return cipher == "pwd" and auth in {"pure-sae", "sae-psk-transition"}
+
+
+assert direct_sae_password_route("pure-sae", "pwd")
+assert direct_sae_password_route("sae-psk-transition", "pwd")
+assert not direct_sae_password_route("sae-psk-transition", "pmk")
+assert not direct_sae_password_route("wpa2-psk", "pwd")
 
 legacy_assoc = body(legacy, "IOReturn AirportItlwm::associateSSID",
                     "legacy associateSSID")

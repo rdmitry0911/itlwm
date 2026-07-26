@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Static contract for the lab-gated pure-SAE WCL ingress.  It proves that one
+# Static contract for the lab-gated exact-SAE WCL ingress.  It proves that one
 # bounded CIPHER_PWD carrier can reach the driver-owned Commit/Confirm path;
-# it does not prove PMK-to-4-way continuation or a completed WPA3 association.
+# an SAE|PSK transition CIPHER_PMK must retain its existing PMK route.  This
+# contract does not prove PMK-to-4-way continuation or a completed WPA3
+# association.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -20,7 +22,7 @@ build = (root / "scripts/build_tahoe.sh").read_text()
 
 
 def fail(message: str) -> None:
-    raise SystemExit(f"IWN pure-SAE WCL ingress contract: {message}")
+    raise SystemExit(f"IWN exact-SAE WCL ingress contract: {message}")
 
 
 def require(text: str, needle: str, label: str) -> None:
@@ -131,17 +133,24 @@ if credential_at < 0:
     fail("missing private WCL credential carrier")
 pure_opening = association.rfind("{", 0, credential_at)
 if pure_opening < 0:
-    fail("missing pure-SAE branch opening")
-pure = block_after(association, pure_opening, "pure-SAE WCL branch")
+    fail("missing exact-SAE branch opening")
+pure = block_after(association, pure_opening, "exact-SAE WCL branch")
 guard_at = association.rfind("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS",
                             0, pure_opening)
 guard_end = association.find("#endif", pure_opening)
 if guard_at < 0 or guard_end < credential_at:
-    fail("pure-SAE branch is not wholly lab-gated")
+    fail("exact-SAE branch is not wholly lab-gated")
 
 require(association[pure_opening - 160:pure_opening],
-        "auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae",
-        "exact pure-SAE branch selector")
+        "if (directSaeWclPassword)",
+        "exact SAE password branch selector")
+require_re(
+    association,
+    r"const bool directSaeWclPassword\s*=\s*"
+    r"wcl_key_cipher\s*==\s*APPLE80211_CIPHER_PWD\s*&&\s*"
+    r"TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential\(\s*"
+    r"auth_upper\s*\)\s*;",
+    "exact CIPHER_PWD-and-auth selector")
 for token in (
         "ap_mode != APPLE80211_AP_MODE_INFRA",
         "raw_ssid_len == 0",
@@ -157,7 +166,7 @@ for token in (
         "itl_sae_wcl_credential_bssid_is_unicast_nonzero(saeBssid)",
         "saeCredential.ssid_len = static_cast<uint8_t>(raw_ssid_len)",
 ):
-    require(pure, token, "pure-SAE ingress validation")
+    require(pure, token, "exact-SAE ingress validation")
 ordered(pure, "identity and diagnostic validation precede policy publication",
         "raw_ssid_len > kItlSaeWclCredentialV1SsidMaxLength",
         "memcpy(saeBssid,",
@@ -165,11 +174,11 @@ ordered(pure, "identity and diagnostic validation precede policy publication",
         "airportItlwmRegDiagShouldBlock(",
         "kAirportItlwmRegDiagBlockHiddenAssoc",
         "airportItlwmRegDiagRecordBlock(",
-        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_pure_SAE\")")
+        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_SAE_CIPHER_PWD\")")
 
 begin_at = pure.find("saeGeneration = ieee80211_sae_wcl_request_begin(")
 if begin_at < 0:
-    fail("missing pure-SAE policy begin")
+    fail("missing exact-SAE policy begin")
 before_begin = strip_comments(pure[:begin_at])
 for token in (
         "raw + TahoeAssociationContracts::kWclKeyPasswordOffset",
@@ -187,12 +196,12 @@ ordered(pure, "successful begin precedes private password copy",
         "saeCredential.request_generation = saeGeneration;",
         "memcpy(saeCredential.password, saePassword")
 
-# A pure request must erase stale PLTI/PMK eligibility before it publishes the
+# An exact SAE password request must erase stale PLTI/PMK eligibility before it publishes the
 # generation.  It stages the bounded private copy before mutating current auth
 # type or resuming selection; every later failure revokes and scrubs the same
 # generation without borrowing a WCL buffer.
-ordered(pure, "pure-SAE begin/stage/resume order",
-        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_pure_SAE\")",
+ordered(pure, "exact-SAE begin/stage/resume order",
+        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_SAE_CIPHER_PWD\")",
         "ieee80211_sae_wcl_request_begin(",
         "instance->getTahoeOwnerRegistry().association =",
         "saeCredential.request_generation = saeGeneration;",
@@ -230,7 +239,7 @@ for token in (
         "IEEE80211_C_MFP",
         "ic->ic_pae_mfp_requested",
 ):
-    forbid(pure_code, token, "legacy/PMF-bypass route in pure-SAE branch")
+    forbid(pure_code, token, "legacy/PMF-bypass route in exact-SAE branch")
 
 # The owner is deliberately a public carrier only.  Its stale value is reset
 # after begin, then identity/auth/meta appear only after staging and auth-type
@@ -238,7 +247,7 @@ for token in (
 registry_fields = re.findall(r"getTahoeOwnerRegistry\(\)\.([A-Za-z_]\w*)",
                              pure_code)
 if not registry_fields or set(registry_fields) != {"association"}:
-    fail("pure-SAE branch must clear/fill only TahoeOwnerRegistry::association")
+    fail("exact-SAE branch must clear/fill only TahoeOwnerRegistry::association")
 for token in ("getTahoeOwnerRegistry().reset",):
     forbid(pure_code, token, "broad Tahoe owner reset")
 owner_record = record_body(owner_registry, "struct AssociationOwner",
@@ -254,11 +263,11 @@ for token in ("password", "pmk", "psk", "kck", "pwe", "ieee80211_key"):
 
 owner_at = pure.find("auto &saeAssociationOwner =")
 if owner_at < 0:
-    fail("missing public pure-SAE association owner publication")
+    fail("missing public exact-SAE association owner publication")
 owner_opening = pure.rfind("{", 0, owner_at)
 if owner_opening < 0:
-    fail("missing public pure-SAE association owner body")
-owner_publish = block_after(pure, owner_opening, "public pure-SAE owner publication")
+    fail("missing public exact-SAE association owner body")
+owner_publish = block_after(pure, owner_opening, "public exact-SAE owner publication")
 for token in (
         "saeAssociationOwner.hasCarrier = true",
         "saeAssociationOwner.selectedFromCandidate = true",
@@ -272,7 +281,7 @@ for token in (
         "memcpy(saeAssociationOwner.selectedBssid, saeBssid",
         "memcpy(saeAssociationOwner.candidateBssid, saeBssid",
 ):
-    require(owner_publish, token, "public pure-SAE owner publication")
+    require(owner_publish, token, "public exact-SAE owner publication")
 for token in ("saeCredential", "saePassword", "password", "Pmk", "pmk",
               "rsnIe", "boundedRsn"):
     forbid(owner_publish, token, "private/raw-RSN state in pure-SAE owner")
@@ -290,7 +299,7 @@ class IngressModel:
 
     def begin(self, auth: str, state: str, password_kind: str,
               password_length: int, candidates: int, bssid_ok: bool) -> bool:
-        return (auth == "pure-sae" and state == "scan" and
+        return (auth in {"pure-sae", "sae-psk-transition"} and state == "scan" and
                 password_kind == "pwd" and 8 <= password_length <= 63 and
                 1 <= candidates <= 69 and bssid_ok)
 
@@ -298,12 +307,13 @@ class IngressModel:
 model = IngressModel()
 assert model.begin("pure-sae", "scan", "pwd", 8, 1, True)
 assert model.begin("pure-sae", "scan", "pwd", 63, 69, True)
-assert not model.begin("sae-psk-transition", "scan", "pwd", 12, 1, True)
+assert model.begin("sae-psk-transition", "scan", "pwd", 12, 1, True)
+assert not model.begin("sae-psk-transition", "scan", "pmk", 12, 1, True)
 assert not model.begin("pure-sae", "run", "pwd", 12, 1, True)
 assert not model.begin("pure-sae", "scan", "psk", 12, 1, True)
 assert not model.begin("pure-sae", "scan", "pwd", 7, 1, True)
 assert not model.begin("pure-sae", "scan", "pwd", 12, 0, True)
 assert not model.begin("pure-sae", "scan", "pwd", 12, 1, False)
 
-print("PASS: lab-gated pure-SAE WCL ingress reaches bounded staging/scan handoff; this ingress test alone does not claim on-air WPA3")
+print("PASS: lab-gated exact-SAE WCL ingress reaches bounded staging/scan handoff without intercepting transition PMK; this ingress test alone does not claim on-air WPA3")
 PY

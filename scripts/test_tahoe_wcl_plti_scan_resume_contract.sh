@@ -5,8 +5,8 @@
 # repair resumes the ordinary net80211 scan pipeline after a validated WCL
 # PMK handoff is ready.  That handoff is either the paired PLTI delivery or
 # the exact CIPHER_PMK value already embedded in the final WCL carrier.  The
-# separately compiled IWN pure-SAE ingress is prohibited from borrowing this
-# PMK route and is not a completed WPA3 association claim.
+# separately compiled IWN exact-SAE-password ingress is prohibited from
+# borrowing this PMK route and is not a completed WPA3 association claim.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -15,6 +15,7 @@ bash "$root/scripts/test_payload_builders.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 
@@ -37,6 +38,11 @@ def fail(message):
 def require(text, needle, label):
     if needle not in text:
         fail(f"missing {label}: {needle}")
+
+
+def require_re(text, pattern, label):
+    if re.search(pattern, text, re.S) is None:
+        fail(f"missing {label}: /{pattern}/")
 
 
 def forbid(text, needle, label):
@@ -121,23 +127,30 @@ hidden_assoc = body(
     "WCL association ingress")
 direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
                  "    /*\n"
-                 "     * The first live ingress")
+                 "     * The live ingress")
 direct_lab = preprocessor_block(hidden_assoc, direct_marker,
-                                "lab-gated pure-SAE WCL ingress")
+                                "lab-gated exact-SAE WCL ingress")
 require(sky, "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
         "compile-time IWN laboratory gate")
 require(sky, "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
         "driver-crypto laboratory gate")
+require_re(
+    hidden_assoc,
+    r"const bool directSaeWclPassword\s*=\s*"
+    r"wcl_key_cipher\s*==\s*APPLE80211_CIPHER_PWD\s*&&\s*"
+    r"TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential\(\s*"
+    r"auth_upper\s*\)\s*;",
+    "exact CIPHER_PWD-and-auth SAE selector")
 for token in (
-        "if (auth_upper == TahoeAssociationAuthContracts::kAuthWpa3Sae)",
-        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_pure_SAE\")",
+        "if (directSaeWclPassword)",
+        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_SAE_CIPHER_PWD\")",
         "ieee80211_sae_wcl_request_begin",
         "stageSaeWclCredential",
         "ieee80211_sae_wcl_request_resume_scan",
 ):
-    require(direct_lab, token, "narrow IWN pure-SAE ingress")
-ordered(direct_lab, "IWN pure-SAE avoids PLTI PMK handoff",
-        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_pure_SAE\")",
+    require(direct_lab, token, "narrow IWN exact-SAE ingress")
+ordered(direct_lab, "IWN exact-SAE avoids PLTI PMK handoff",
+        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_SAE_CIPHER_PWD\")",
         "ieee80211_sae_wcl_request_begin", "stageSaeWclCredential",
         "ieee80211_sae_wcl_request_resume_scan")
 for token in (
@@ -179,6 +192,16 @@ for token in (
             "exact direct-WCL PMK ownership handoff")
 require(hidden_assoc, "TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper)",
         "exact existing PLTI PSK policy at scan-resume edge")
+
+
+def direct_sae_password_route(auth, cipher):
+    return cipher == "pwd" and auth in {"pure-sae", "sae-psk-transition"}
+
+
+assert direct_sae_password_route("pure-sae", "pwd")
+assert direct_sae_password_route("sae-psk-transition", "pwd")
+assert not direct_sae_password_route("sae-psk-transition", "pmk")
+assert not direct_sae_password_route("wpa2-psk", "pwd")
 resume_start = legacy_hidden_assoc.find(
     "const TahoeExternalPmkScanResumeContracts::Facts scanResumeFacts")
 resume_end = legacy_hidden_assoc.find("airportItlwmRegDiagRecordAssoc", resume_start)
