@@ -24,6 +24,7 @@ paths = {
     "node": "itl80211/openbsd/net80211/ieee80211_node.c",
     "output": "itl80211/openbsd/net80211/ieee80211_output.c",
     "sky": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+    "iwn_gate": "AirportItlwm/IwnDirectSaeLabGate.hpp",
     "auth": "AirportItlwm/TahoeAssociationAuthContracts.hpp",
     "cpp": "itlwm/hal_iwx/ItlIwx.cpp",
     "hpp": "itlwm/hal_iwx/ItlIwx.hpp",
@@ -150,6 +151,7 @@ auth = source["auth"]
 require(auth, "inline bool requiresUnsupportedWpa3Auth", "pure-SAE gate")
 require(auth, "inline bool isAuditedPskPmkAuth", "audited PSK classifier")
 sky = source["sky"]
+iwn_gate = source["iwn_gate"]
 hidden = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
               "hidden WCL association")
 direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
@@ -157,19 +159,32 @@ direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
                  "     * The live ingress")
 direct_lab = preprocessor_block(hidden, direct_marker,
                                 "IWN lab exact-SAE WCL block")
+shared_direct = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nstartIwnDirectSaeCredential",
+                     "shared IWN direct-SAE transaction")
 for token in (
     "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
     "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
-    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 0",
 ):
-    require(sky, token, "IWN-only compile fence")
+    require(iwn_gate, token, "IWN-only compile fence")
+for token in (
+    '#include "IwnDirectSaeLabGate.hpp"',
+    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS \\",
+    "AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS",
+    "#define AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS 0",
+):
+    require(sky if token.startswith('#include') else iwn_gate, token,
+            "IWN-only compile fence")
 for token in (
     "if (directSaeWclPassword)",
+    "startIwnDirectSaeCredential",
+):
+    require(direct_lab, token, "direct IWN exact-SAE handoff")
+for token in (
     "ieee80211_sae_wcl_request_begin",
     "stageSaeWclCredential",
     "ieee80211_sae_wcl_request_resume_scan",
 ):
-    require(direct_lab, token, "direct IWN exact-SAE handoff")
+    require(shared_direct, token, "shared direct IWN SAE transaction")
 if re.search(
         r"const bool directSaeWclPassword\s*=\s*"
         r"wcl_key_cipher\s*==\s*APPLE80211_CIPHER_PWD\s*&&\s*"

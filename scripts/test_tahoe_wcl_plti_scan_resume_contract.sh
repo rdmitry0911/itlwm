@@ -24,6 +24,7 @@ contracts = (root / "AirportItlwm/TahoeExternalPmkScanResumeContracts.hpp").read
 auth = (root / "AirportItlwm/TahoeAssociationAuthContracts.hpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 sky_header = (root / "AirportItlwm/AirportItlwmSkywalkInterface.hpp").read_text()
+iwn_gate = (root / "AirportItlwm/IwnDirectSaeLabGate.hpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 node = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
@@ -130,10 +131,15 @@ direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
                  "     * The live ingress")
 direct_lab = preprocessor_block(hidden_assoc, direct_marker,
                                 "lab-gated exact-SAE WCL ingress")
-require(sky, "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
+shared_direct = body(
+    sky, "IOReturn AirportItlwmSkywalkInterface::\nstartIwnDirectSaeCredential",
+    "shared IWN direct-SAE transaction")
+require(iwn_gate, "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
         "compile-time IWN laboratory gate")
-require(sky, "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
+require(iwn_gate, "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
         "driver-crypto laboratory gate")
+require(sky, '#include "IwnDirectSaeLabGate.hpp"',
+        "IWN laboratory gate inclusion")
 require_re(
     hidden_assoc,
     r"const bool directSaeWclPassword\s*=\s*"
@@ -143,14 +149,18 @@ require_re(
     "exact CIPHER_PWD-and-auth SAE selector")
 for token in (
         "if (directSaeWclPassword)",
-        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_SAE_CIPHER_PWD\")",
+        "startIwnDirectSaeCredential",
+):
+    require(direct_lab, token, "narrow IWN exact-SAE ingress")
+for token in (
+        "clearExternalPmkEligibilityLocked(",
         "ieee80211_sae_wcl_request_begin",
         "stageSaeWclCredential",
         "ieee80211_sae_wcl_request_resume_scan",
 ):
-    require(direct_lab, token, "narrow IWN exact-SAE ingress")
-ordered(direct_lab, "IWN exact-SAE avoids PLTI PMK handoff",
-        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_SAE_CIPHER_PWD\")",
+    require(shared_direct, token, "shared direct IWN SAE transaction")
+ordered(shared_direct, "IWN exact-SAE avoids PLTI PMK handoff",
+        "clearExternalPmkEligibilityLocked(",
         "ieee80211_sae_wcl_request_begin", "stageSaeWclCredential",
         "ieee80211_sae_wcl_request_resume_scan")
 for token in (
