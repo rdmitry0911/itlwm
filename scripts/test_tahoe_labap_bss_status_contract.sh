@@ -57,7 +57,10 @@ for token in (
     "[ \"$LEASE_SECONDS_EXPLICIT\" -eq 0 ]",
     "status) with_lock do_status;;",
     "retire) with_lock do_retire;;",
+    "schema=tahoe-labap-bss-switch/v4",
     "schema=tahoe-labap-bss-switch/v3",
+    "deadline_phase=",
+    "SETUP_DEADLINE_SECONDS=180",
     "lease_not_after_monotonic_seconds=",
     "monotonic_uptime_seconds",
     "watchdog_remaining_seconds",
@@ -65,15 +68,28 @@ for token in (
 ):
     require(token, "status admission/state boundary")
 
+writer = body("write_state()", "v4 state writer")
+for token in (
+    "schema=tahoe-labap-bss-switch/v4",
+    "armed:setup",
+    "labap-active:active|direct-active:active|withdrawn:active",
+    "original-restored:setup|original-restored:active",
+    "deadline_phase=%s",
+    "lease_not_after_monotonic_seconds=%s",
+):
+    if token not in writer:
+        fail(f"v4 writer lacks a phase-bounded state field: {token}")
+
 state = body("status_state_is_current()", "status state validator")
 for token in (
-    "[ \"$schema\" = tahoe-labap-bss-switch/v3 ]",
+    "[ \"$schema\" = tahoe-labap-bss-switch/v4 ]",
     "[ \"$state\" = labap-active ]",
     "[ \"$mode\" = labap ]",
     "is_hex64 \"$network\" && is_hex64 \"$fingerprint\"",
     "canonical_bssid \"$state_bssid\" >/dev/null",
     "[ \"$external_count\" -ge 2 ]",
     "is_decimal_in_range \"$lease_seconds\" 60 300",
+    "[ \"$deadline_phase\" = active ]",
     "is_canonical_positive_decimal \"$lease_deadline\"",
     "[ \"$lease_deadline\" -gt \"$now\" ]",
     "[ \"$remaining\" -gt 0 ] && [ \"$remaining\" -le \"$lease_seconds\" ]",
@@ -85,7 +101,13 @@ for token in (
 
 watchdog = body("watchdog_remaining_seconds()", "watchdog deadline reader")
 for token in (
+    "tahoe-labap-bss-switch/v4",
     "tahoe-labap-bss-switch/v3",
+    "deadline_phase",
+    "armed:setup",
+    "labap-active:active|direct-active:active|withdrawn:active",
+    'maximum_seconds="$SETUP_DEADLINE_SECONDS"',
+    'maximum_seconds="$stored_lease"',
     "lease_not_after_monotonic_seconds",
     "[ \"$stored_lease\" != \"$LEASE_SECONDS\" ]",
     "monotonic_uptime_seconds",
@@ -98,6 +120,21 @@ for token in (
 watchdog_main = body("do_watchdog()", "watchdog loop")
 if 'remaining="$(watchdog_remaining_seconds)"' not in watchdog_main:
     fail("watchdog does not refresh the absolute deadline while waiting")
+if '[ "$current_state" != original-restored ] || return 0' not in watchdog_main:
+    fail("watchdog does not leave a verified rollback state without mutation")
+
+promotion = body("promote_active_state()", "active lease promotion")
+for token in (
+    '[ "$schema" = tahoe-labap-bss-switch/v4 ]',
+    '[ "$state" = armed ]',
+    '[ "$deadline_phase" = setup ]',
+    'remaining=$((setup_deadline - now))',
+    '[ "$remaining" -gt 0 ] && [ "$remaining" -le "$SETUP_DEADLINE_SECONDS" ]',
+    'active_deadline=$((now + lease_seconds))',
+    '"$lease_seconds" active "$active_deadline"',
+):
+    if token not in promotion:
+        fail(f"active lease promotion is not bounded/exact: {token}")
 
 watchdog_match = body("watchdog_process_matches()", "watchdog argv matcher")
 for token in (
@@ -176,6 +213,7 @@ if "LABAP_BSS_STATUS" in runtime or "LABAP_BSS_STATUS" in state:
 retire = body("do_retire()", "verified state retirement")
 for token in (
     "[ \"$(state_value state)\" = original-restored ]",
+    "retire_state_is_safe",
     "active marker blocks retirement",
     "watchdog receipt blocks retirement",
     "retire_regular_mode_600 \"$(state_file)\"",
@@ -195,6 +233,27 @@ for forbidden in ("rm -rf", "start_exact_hostapd", "stop_exact_hostapd",
                   "write_state", "scan_"):
     if forbidden in retire:
         fail(f"retirement has an unsafe mutation surface: {forbidden}")
+
+retire_state = body("retire_state_is_safe()", "retired v4 state validator")
+for token in (
+    "tahoe-labap-bss-switch/v4",
+    "deadline_phase",
+    "case \"$deadline_phase\" in setup|active)",
+    "is_decimal_in_range \"$lease_seconds\" 60 300",
+    "is_canonical_positive_decimal \"$deadline\"",
+):
+    if token not in retire_state:
+        fail(f"retirement does not validate the v4 deadline receipt: {token}")
+
+withdraw = body("do_withdraw()", "one-shot withdrawal")
+for token in (
+    "active_lease_is_current labap-active",
+    "active LabAP lease is expired or malformed",
+    "active LabAP lease changed before withdrawal",
+    "set_state withdrawn",
+):
+    if token not in withdraw:
+        fail(f"withdrawal is not fail-closed on the active lease: {token}")
 
 print("PASS: Tahoe LabAP hash-only status contract")
 PY

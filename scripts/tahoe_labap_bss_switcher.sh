@@ -64,6 +64,11 @@ LEASE_SECONDS_EXPLICIT=0
 LAR_SCAN_ATTEMPTS=30
 LAR_SCAN_INTERVAL_SECONDS=2
 LAR_STABILITY_POLLS=2
+# The independently supervised setup window is deliberately separate from
+# the on-air recovery lease.  It covers the permitted slow LAR scan path
+# (bounded at 120 seconds in this lab) plus the exact hostapd handoff and
+# state-promotion checks.  Callers cannot extend it.
+SETUP_DEADLINE_SECONDS=180
 MODE=""
 STATE_DIR=""
 CREDENTIAL_STDIN=0
@@ -172,6 +177,7 @@ done
 
 [ -n "$MODE" ] || { usage; exit 2; }
 is_decimal_in_range "$LEASE_SECONDS" 60 300 || { usage; exit 2; }
+is_decimal_in_range "$SETUP_DEADLINE_SECONDS" 120 180 || { usage; exit 2; }
 if [ "$DIRECT_JOIN" -eq 1 ]; then
     [ "$MODE" = activate ] || { usage; exit 2; }
     TEST_MODE=direct
@@ -301,7 +307,7 @@ write_state_v2() {
     mv -f -- "$tmp" "$(state_file)"
 }
 
-write_state() {
+write_state_v3() {
     local state="$1" mode="$2" network="$3" fingerprint="$4" bssid="$5" external_count="$6" lease_seconds="$7" lease_deadline="$8" tmp
     case "$mode" in labap|direct) ;; *) return 1;; esac
     is_decimal_in_range "$lease_seconds" 60 300 || return 1
@@ -323,8 +329,37 @@ write_state() {
     mv -f -- "$tmp" "$(state_file)"
 }
 
+write_state() {
+    local state="$1" mode="$2" network="$3" fingerprint="$4" bssid="$5" external_count="$6"
+    local lease_seconds="$7" deadline_phase="$8" deadline="$9" tmp
+    case "$mode" in labap|direct) ;; *) return 1;; esac
+    case "$state:$deadline_phase" in
+        armed:setup|labap-active:active|direct-active:active|withdrawn:active|\
+        original-restored:setup|original-restored:active) ;;
+        *) return 1;;
+    esac
+    is_decimal_in_range "$lease_seconds" 60 300 || return 1
+    is_canonical_positive_decimal "$deadline" || return 1
+    tmp="$STATE_DIR/.state.$$"
+    [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
+    {
+        printf 'schema=tahoe-labap-bss-switch/v4\n'
+        printf 'state=%s\n' "$state"
+        printf 'test_mode=%s\n' "$mode"
+        printf 'network_signature_before=%s\n' "$network"
+        printf 'live_config_fingerprint=%s\n' "$fingerprint"
+        printf 'live_bssid_before=%s\n' "$bssid"
+        printf 'external_labap_bss_count=%s\n' "$external_count"
+        printf 'lease_seconds=%s\n' "$lease_seconds"
+        printf 'deadline_phase=%s\n' "$deadline_phase"
+        printf 'lease_not_after_monotonic_seconds=%s\n' "$deadline"
+    } >"$tmp" || return 1
+    chmod 600 "$tmp" || return 1
+    mv -f -- "$tmp" "$(state_file)"
+}
+
 set_state() {
-    local next="$1" mode network fingerprint bssid external_count schema lease_seconds lease_deadline
+    local next="$1" mode network fingerprint bssid external_count schema lease_seconds deadline_phase lease_deadline
     load_test_mode_from_state || return 1
     mode="$TEST_MODE"
     network="$(state_value network_signature_before)" || return 1
@@ -333,10 +368,16 @@ set_state() {
     external_count="$(state_value external_labap_bss_count)" || return 1
     schema="$(state_value schema)" || return 1
     case "$schema" in
+        tahoe-labap-bss-switch/v4)
+            lease_seconds="$(state_value lease_seconds)" || return 1
+            deadline_phase="$(state_value deadline_phase)" || return 1
+            lease_deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+            write_state "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count" "$lease_seconds" "$deadline_phase" "$lease_deadline"
+            ;;
         tahoe-labap-bss-switch/v3)
             lease_seconds="$(state_value lease_seconds)" || return 1
             lease_deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
-            write_state "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count" "$lease_seconds" "$lease_deadline"
+            write_state_v3 "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count" "$lease_seconds" "$lease_deadline"
             ;;
         tahoe-labap-bss-switch/v1|tahoe-labap-bss-switch/v2)
             write_state_v2 "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count"
@@ -345,6 +386,92 @@ set_state() {
             return 1
             ;;
     esac
+}
+
+state_deadline_is_current() {
+    local expected_state="$1" expected_phase="$2" maximum_seconds="$3"
+    local schema state deadline_phase lease_seconds deadline now remaining
+
+    is_canonical_positive_decimal "$maximum_seconds" || return 1
+    schema="$(state_value schema)" || return 1
+    state="$(state_value state)" || return 1
+    deadline_phase="$(state_value deadline_phase)" || return 1
+    lease_seconds="$(state_value lease_seconds)" || return 1
+    deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+    [ "$schema" = tahoe-labap-bss-switch/v4 ] || return 1
+    [ "$state" = "$expected_state" ] || return 1
+    [ "$deadline_phase" = "$expected_phase" ] || return 1
+    is_decimal_in_range "$lease_seconds" 60 300 || return 1
+    is_canonical_positive_decimal "$deadline" || return 1
+    now="$(monotonic_uptime_seconds)" || return 1
+    is_canonical_decimal "$now" || return 1
+    [ "$deadline" -gt "$now" ] || return 1
+    remaining=$((deadline - now))
+    [ "$remaining" -gt 0 ] && [ "$remaining" -le "$maximum_seconds" ]
+}
+
+setup_deadline_is_current() {
+    state_deadline_is_current armed setup "$SETUP_DEADLINE_SECONDS"
+}
+
+active_lease_is_current() {
+    local expected_state="$1" schema lease_seconds deadline now remaining
+
+    case "$expected_state" in labap-active|direct-active|withdrawn) ;; *) return 1;; esac
+    schema="$(state_value schema)" || return 1
+    case "$schema" in
+        tahoe-labap-bss-switch/v4)
+            lease_seconds="$(state_value lease_seconds)" || return 1
+            is_decimal_in_range "$lease_seconds" 60 300 || return 1
+            state_deadline_is_current "$expected_state" active "$lease_seconds"
+            ;;
+        tahoe-labap-bss-switch/v3)
+            [ "$(state_value state)" = "$expected_state" ] || return 1
+            lease_seconds="$(state_value lease_seconds)" || return 1
+            deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+            is_decimal_in_range "$lease_seconds" 60 300 || return 1
+            is_canonical_positive_decimal "$deadline" || return 1
+            now="$(monotonic_uptime_seconds)" || return 1
+            is_canonical_decimal "$now" || return 1
+            [ "$deadline" -gt "$now" ] || return 1
+            remaining=$((deadline - now))
+            [ "$remaining" -gt 0 ] && [ "$remaining" -le "$lease_seconds" ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+promote_active_state() {
+    local next="$1" mode network fingerprint bssid external_count schema state deadline_phase
+    local lease_seconds setup_deadline now remaining active_deadline
+
+    load_test_mode_from_state || return 1
+    mode="$TEST_MODE"
+    case "$mode:$next" in labap:labap-active|direct:direct-active) ;; *) return 1;; esac
+    schema="$(state_value schema)" || return 1
+    state="$(state_value state)" || return 1
+    deadline_phase="$(state_value deadline_phase)" || return 1
+    network="$(state_value network_signature_before)" || return 1
+    fingerprint="$(state_value live_config_fingerprint)" || return 1
+    bssid="$(state_value live_bssid_before)" || return 1
+    external_count="$(state_value external_labap_bss_count)" || return 1
+    lease_seconds="$(state_value lease_seconds)" || return 1
+    setup_deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+    [ "$schema" = tahoe-labap-bss-switch/v4 ] || return 1
+    [ "$state" = armed ] || return 1
+    [ "$deadline_phase" = setup ] || return 1
+    is_decimal_in_range "$lease_seconds" 60 300 || return 1
+    is_canonical_positive_decimal "$setup_deadline" || return 1
+    now="$(monotonic_uptime_seconds)" || return 1
+    is_canonical_decimal "$now" || return 1
+    [ "$setup_deadline" -gt "$now" ] || return 1
+    remaining=$((setup_deadline - now))
+    [ "$remaining" -gt 0 ] && [ "$remaining" -le "$SETUP_DEADLINE_SECONDS" ] || return 1
+    active_deadline=$((now + lease_seconds))
+    [ "$active_deadline" -gt "$now" ] || return 1
+    write_state "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count" "$lease_seconds" active "$active_deadline"
 }
 
 # This is diagnostic-only: it deliberately stores one fixed phase token, not
@@ -1069,16 +1196,17 @@ recover_after_activate_failure() {
 }
 
 # The status path is deliberately narrower than rollback: it admits only a
-# current v3 LabAP activation and keeps every raw identifier in shell memory.
+# current v4 LabAP activation with an active (not setup) deadline and keeps
+# every raw identifier in shell memory.
 # Its sole successful output is produced by do_status below as fixed hashes.
 status_state_is_current() {
     local schema state mode network fingerprint state_bssid external_count
-    local lease_seconds lease_deadline now remaining
+    local lease_seconds deadline_phase lease_deadline now remaining
 
     schema="$(state_value schema)" || return 1
     state="$(state_value state)" || return 1
     mode="$(state_value test_mode)" || return 1
-    [ "$schema" = tahoe-labap-bss-switch/v3 ] || return 1
+    [ "$schema" = tahoe-labap-bss-switch/v4 ] || return 1
     [ "$state" = labap-active ] || return 1
     [ "$mode" = labap ] || return 1
     network="$(state_value network_signature_before)" || return 1
@@ -1086,12 +1214,14 @@ status_state_is_current() {
     state_bssid="$(state_value live_bssid_before)" || return 1
     external_count="$(state_value external_labap_bss_count)" || return 1
     lease_seconds="$(state_value lease_seconds)" || return 1
+    deadline_phase="$(state_value deadline_phase)" || return 1
     lease_deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
     is_hex64 "$network" && is_hex64 "$fingerprint" || return 1
     canonical_bssid "$state_bssid" >/dev/null || return 1
     case "$external_count" in ''|*[!0-9]*) return 1;; esac
     [ "$external_count" -ge 2 ] || return 1
     is_decimal_in_range "$lease_seconds" 60 300 || return 1
+    [ "$deadline_phase" = active ] || return 1
     is_canonical_positive_decimal "$lease_deadline" || return 1
     now="$(monotonic_uptime_seconds)" || return 1
     is_canonical_decimal "$now" || return 1
@@ -1157,7 +1287,7 @@ do_preflight() {
 }
 
 do_activate() {
-    local external_count external_band_count network fingerprint bssid passphrase="" active_state lease_now lease_deadline
+    local external_count external_band_count network fingerprint bssid passphrase="" active_state setup_now setup_deadline
     require_state_dir
     [ ! -e "$(state_file)" ] && [ ! -L "$(state_file)" ] || die "state directory is not fresh"
     [ ! -e "$MARKER" ] && [ ! -L "$MARKER" ] || die "another LabAP switch is already active"
@@ -1192,13 +1322,14 @@ do_activate() {
     passphrase=""
     validate_test_config || die "temporary hostapd configuration failed local validation"
 
-    lease_now="$(monotonic_uptime_seconds)" || die "monotonic lease clock is unavailable"
-    is_canonical_decimal "$lease_now" || die "monotonic lease clock is invalid"
-    lease_deadline=$((lease_now + LEASE_SECONDS))
-    [ "$lease_deadline" -gt "$lease_now" ] || die "monotonic lease deadline is invalid"
-    # The deadline starts before watchdog spawn, intentionally understating the
-    # remaining lease rather than allowing a status reader to overstate it.
-    write_state armed "$TEST_MODE" "$network" "$fingerprint" "$bssid" "$external_count" "$LEASE_SECONDS" "$lease_deadline" || die "could not write rollback state"
+    setup_now="$(monotonic_uptime_seconds)" || die "monotonic setup clock is unavailable"
+    is_canonical_decimal "$setup_now" || die "monotonic setup clock is invalid"
+    setup_deadline=$((setup_now + SETUP_DEADLINE_SECONDS))
+    [ "$setup_deadline" -gt "$setup_now" ] || die "monotonic setup deadline is invalid"
+    # Arm an independently bounded setup deadline before publishing the marker.
+    # This preserves rollback ownership through the LAR/hostapd handoff without
+    # consuming any of the exact on-air lease that begins only at promotion.
+    write_state armed "$TEST_MODE" "$network" "$fingerprint" "$bssid" "$external_count" "$LEASE_SECONDS" setup "$setup_deadline" || die "could not write rollback state"
     record_activation_phase state-written || true
     arm_activate_signal_recovery
     mkdir -p "$CONTROL_DIR"
@@ -1210,7 +1341,7 @@ do_activate() {
 
     if ! live_config_matches_state || ! live_hostapd_active ||
         [ "$(host_network_signature)" != "$network" ] ||
-        ! watchdog_owner_is_current; then
+        ! watchdog_owner_is_current || ! setup_deadline_is_current; then
         recover_after_activate_failure
     fi
 
@@ -1219,18 +1350,19 @@ do_activate() {
         recover_after_activate_failure
     fi
     record_activation_phase live-stopped || true
+    setup_deadline_is_current || recover_after_activate_failure
     if ! start_exact_hostapd "$(test_config)" "$(test_pid)" "$(test_log)" test; then
         recover_after_activate_failure
     fi
     record_activation_phase test-started || true
     if ! test_hostapd_active ||
         [ "$(host_network_signature)" != "$network" ] ||
-        ! watchdog_owner_is_current; then
+        ! watchdog_owner_is_current || ! setup_deadline_is_current; then
         recover_after_activate_failure
     fi
     active_state=labap-active
     [ "$TEST_MODE" = labap ] || active_state=direct-active
-    set_state "$active_state" || recover_after_activate_failure
+    promote_active_state "$active_state" || recover_after_activate_failure
     record_activation_phase promoted || true
     disarm_activate_signal_recovery
     if [ "$TEST_MODE" = direct ]; then
@@ -1247,8 +1379,10 @@ do_withdraw() {
     [ "$TEST_MODE" = labap ] || die "direct join test does not authorize withdrawal"
     marker_matches_state || die "active marker does not authorize this switch"
     [ "$(state_value state)" = labap-active ] || die "state does not authorize a one-shot withdrawal"
+    active_lease_is_current labap-active || die "active LabAP lease is expired or malformed"
     test_hostapd_active || die "temporary LabAP hostapd is not exact"
     watchdog_owner_is_current || die "rollback watchdog is not current"
+    active_lease_is_current labap-active || die "active LabAP lease changed before withdrawal"
     stop_exact_hostapd "$(test_config)" "$(test_pid)" "$(test_log)" || die "temporary LabAP hostapd did not stop"
     [ ! -e "$(test_pid)" ] && [ ! -L "$(test_pid)" ] || die "temporary LabAP pidfile remains after withdrawal"
     set_state withdrawn || die "could not record one-shot withdrawal"
@@ -1284,6 +1418,36 @@ retire_regular_mode_600() {
     [ "$(stat -c %a -- "$path")" = 600 ]
 }
 
+retire_state_is_safe() {
+    local schema state deadline_phase lease_seconds deadline
+
+    schema="$(state_value schema)" || return 1
+    state="$(state_value state)" || return 1
+    [ "$state" = original-restored ] || return 1
+    case "$schema" in
+        tahoe-labap-bss-switch/v4)
+            deadline_phase="$(state_value deadline_phase)" || return 1
+            lease_seconds="$(state_value lease_seconds)" || return 1
+            deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+            case "$deadline_phase" in setup|active) ;; *) return 1;; esac
+            is_decimal_in_range "$lease_seconds" 60 300 || return 1
+            is_canonical_positive_decimal "$deadline"
+            ;;
+        tahoe-labap-bss-switch/v3)
+            lease_seconds="$(state_value lease_seconds)" || return 1
+            deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+            is_decimal_in_range "$lease_seconds" 60 300 &&
+                is_canonical_positive_decimal "$deadline"
+            ;;
+        tahoe-labap-bss-switch/v1|tahoe-labap-bss-switch/v2)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 retire_activation_phase_is_safe() {
     local phase
     [ ! -e "$(activation_phase_file)" ] && [ ! -L "$(activation_phase_file)" ] && return 0
@@ -1303,6 +1467,7 @@ do_retire() {
     require_state_dir
     load_test_mode_from_state || die "state test mode is invalid"
     [ "$(state_value state)" = original-restored ] || die "state is not a verified rollback"
+    retire_state_is_safe || die "rollback state deadline receipt is invalid"
     [ ! -e "$MARKER" ] && [ ! -L "$MARKER" ] || die "active marker blocks retirement"
     [ ! -e "$(watchdog_pid_file)" ] && [ ! -L "$(watchdog_pid_file)" ] || die "watchdog receipt blocks retirement"
     [ ! -e "$(test_config)" ] && [ ! -L "$(test_config)" ] || die "temporary configuration blocks retirement"
@@ -1327,15 +1492,47 @@ do_retire() {
     printf 'LABAP_BSS_SWITCH=RETIRED\n'
 }
 
-# v3's conservative absolute deadline is the watchdog's actual upper bound,
-# not merely an advisory value for a status reader.  A malformed v3 receipt
-# produces an immediate rollback attempt below; legacy v1/v2 receipts retain
-# their historic relative lease behavior so they can still be recovered.
+# v4 separates a bounded setup deadline from the on-air recovery deadline.
+# The watchdog accepts only setup timing while state=armed, then reads a newly
+# written active deadline after verified promotion.  Thus a permitted slow LAR
+# handoff cannot consume the active lease, while a stalled setup still rolls
+# back.  v3 remains readable only so pre-existing receipts can be recovered.
 watchdog_remaining_seconds() {
-    local schema stored_lease deadline now remaining
+    local schema state deadline_phase stored_lease deadline now remaining maximum_seconds
 
     schema="$(state_value schema 2>/dev/null || true)"
     case "$schema" in
+        tahoe-labap-bss-switch/v4)
+            state="$(state_value state 2>/dev/null || true)"
+            deadline_phase="$(state_value deadline_phase 2>/dev/null || true)"
+            stored_lease="$(state_value lease_seconds 2>/dev/null || true)"
+            deadline="$(state_value lease_not_after_monotonic_seconds 2>/dev/null || true)"
+            if ! is_decimal_in_range "$stored_lease" 60 300 ||
+                [ "$stored_lease" != "$LEASE_SECONDS" ] ||
+                ! is_canonical_positive_decimal "$deadline"; then
+                printf '0\n'
+                return 0
+            fi
+            case "$state:$deadline_phase" in
+                armed:setup) maximum_seconds="$SETUP_DEADLINE_SECONDS";;
+                labap-active:active|direct-active:active|withdrawn:active) maximum_seconds="$stored_lease";;
+                *)
+                    printf '0\n'
+                    return 0
+                    ;;
+            esac
+            now="$(monotonic_uptime_seconds 2>/dev/null || true)"
+            if ! is_canonical_decimal "$now" || [ "$deadline" -le "$now" ]; then
+                printf '0\n'
+                return 0
+            fi
+            remaining=$((deadline - now))
+            if [ "$remaining" -le 0 ] || [ "$remaining" -gt "$maximum_seconds" ]; then
+                printf '0\n'
+                return 0
+            fi
+            printf '%s\n' "$remaining"
+            ;;
         tahoe-labap-bss-switch/v3)
             stored_lease="$(state_value lease_seconds 2>/dev/null || true)"
             deadline="$(state_value lease_not_after_monotonic_seconds 2>/dev/null || true)"
@@ -1375,6 +1572,8 @@ do_watchdog() {
         printf 'LABAP_BSS_WATCHDOG_READY:%s\n' "$$" >&8 || return 1
     fi
     while marker_matches_state; do
+        current_state="$(state_value state 2>/dev/null || true)"
+        [ "$current_state" != original-restored ] || return 0
         remaining="$(watchdog_remaining_seconds)" || return 1
         case "$remaining" in ''|*[!0-9]*) return 1;; esac
         [ "$remaining" -gt 0 ] || break

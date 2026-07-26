@@ -35,9 +35,16 @@ for token in \
     'direct join requires credential stdin' \
     'stable_direct_test_ssid_absence' \
     'direct join test does not authorize withdrawal' \
+    'schema=tahoe-labap-bss-switch/v4' \
     'schema=tahoe-labap-bss-switch/v3' \
     'schema=tahoe-labap-bss-switch/v2' \
     'tahoe-labap-bss-switch/v1' \
+    'SETUP_DEADLINE_SECONDS=180' \
+    'armed:setup' \
+    'labap-active:active|direct-active:active|withdrawn:active' \
+    'setup_deadline_is_current' \
+    'promote_active_state' \
+    'active_lease_is_current' \
     'load_test_mode_from_state' \
     '"$SELF" --rollback --state-dir "$STATE_DIR" --from-watchdog' \
     'LABAP_FREQ_24_CH9=2452' \
@@ -101,8 +108,9 @@ done
 
 # The catchable-signal handler must be armed only after the rollback state is
 # durable, but before the marker appears.  The exact owner must still be
-# ready before the first hostapd stop, and successful promotion must disarm
-# the foreground-only handler so the independent watchdog remains the owner.
+# ready before the first hostapd stop.  The setup deadline must protect the
+# slow LAR handoff, and only a verified temporary BSS may reset the exact
+# on-air lease before the foreground-only handler is disarmed.
 awk '
     /^do_activate\(\)/ { in_activate = 1 }
     in_activate && /write_state armed/ { write_state_line = NR }
@@ -110,14 +118,23 @@ awk '
     in_activate && /write_marker/ { marker_line = NR }
     in_activate && /start_watchdog/ { watchdog_line = NR }
     in_activate && /stop_exact_hostapd "\$LIVE_CONFIG"/ { stop_line = NR }
-    in_activate && /set_state "\$active_state"/ { promote_line = NR }
+    in_activate && /start_exact_hostapd "\$\(test_config\)"/ { test_start_line = NR }
+    in_activate && /! test_hostapd_active/ { test_active_line = NR }
+    in_activate && /setup_deadline_is_current/ { setup_guard_count++; setup_guard_line = NR }
+    in_activate && /promote_active_state "\$active_state"/ { promote_line = NR }
     in_activate && /disarm_activate_signal_recovery/ { disarm_line = NR }
     END {
         exit !(write_state_line < arm_line && arm_line < marker_line &&
             marker_line < watchdog_line && watchdog_line < stop_line &&
-            promote_line < disarm_line)
+            stop_line < test_start_line && test_start_line < test_active_line &&
+            setup_guard_count >= 3 && test_active_line < setup_guard_line &&
+            setup_guard_line < promote_line && promote_line < disarm_line)
     }
 ' "$SCRIPT" || fail "activation signal-recovery ordering is unsafe"
+
+if grep -Fq 'set_state "$active_state"' "$SCRIPT"; then
+    fail "active lease promotion reuses the setup deadline"
+fi
 
 # No password argv/env mechanism and no broad system-network control path.
 for token in \
