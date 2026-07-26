@@ -235,6 +235,9 @@ sNW_BSSID(OSObject* target, void* data, bool isSet)
     struct ieee80211com *ic = that->fDriver->fHalService->get80211Controller();
     
     if (isSet) {
+		/* This private user-client selector is an explicit BSSID policy, not
+		 * public IOC_ASSOCIATE's one-shot initial candidate provenance. */
+		ieee80211_public_initial_bssid_pin_disarm(ic);
         if (IEEE80211_ADDR_EQ(nwid->bssid, etheranyaddr))
             ic->ic_flags &= ~IEEE80211_F_DESBSSID;
         else {
@@ -331,6 +334,7 @@ sDISASSOCIATE(OSObject* target, void* data, bool isSet)
     ItlNetworkUserClient *that = OSDynamicCast(ItlNetworkUserClient, target);
     struct ioctl_disassociate *dis = (struct ioctl_disassociate *)data;
     struct ieee80211com *ic = that->fDriver->fHalService->get80211Controller();
+    ieee80211_public_initial_bssid_pin_disarm(ic);
     if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
         IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
     ieee80211_del_ess(ic, (char *)dis->ssid, strlen((char *)dis->ssid), 0);

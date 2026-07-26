@@ -485,6 +485,27 @@ struct ieee80211_sae_peer_rx_admission {
 };
 
 /*
+ * One public CoreWLAN association may name the BSS selected for its initial
+ * join.  That is an initial-candidate hint, not the persistent explicit
+ * BSSID policy used by raw ioctls, the legacy interface, or WCL.  Keep the
+ * distinction as a fixed controller-owned record: after the exact initial
+ * WPA2 BSS reaches RUN with its port valid, net80211 may retire only this
+ * marker's DESBSSID pin and resume normal same-ESS candidate selection.
+ *
+ * The selected-BSS leaf lock serializes every field.  configuration_epoch is
+ * the public configuration edge; binding_pending bridges the one controlled
+ * selected-BSS replacement that follows it, and association_epoch is set
+ * only after that exact BSS has been copied into ic_bss.
+ */
+struct ieee80211_public_initial_bssid_pin {
+	u_int64_t		configuration_epoch;
+	u_int64_t		association_epoch;
+	u_int8_t		bssid[IEEE80211_ADDR_LEN];
+	u_int8_t		active;
+	u_int8_t		binding_pending;
+};
+
+/*
  * One explicit direct-WCL SAE request, kept separately from both the
  * selected scan BSS and the private driver credential staging slot.  This is
  * public association identity only: it contains no passphrase, PMK, PWE,
@@ -790,6 +811,8 @@ struct ieee80211com {
 	IOSimpleLock		*ic_pae_selected_bss_lock;
 	/* Same leaf lock as the selected-BSS value above/below. */
 	struct ieee80211_sae_peer_rx_admission ic_sae_peer_rx_admission;
+	/* Public initial-BSS hint only; never represents raw/legacy/WCL pinning. */
+	struct ieee80211_public_initial_bssid_pin ic_public_initial_bssid_pin;
 	/* Direct-WCL SAE request identity and monotonic nonzero generation.  The
 	 * fixed record is public control-plane state only; credentials remain in
 	 * the driver's separately scrubbed private staging slot. */

@@ -87,6 +87,14 @@ struct ItlSaePmkContinuationIdentityV1;
  * never an on-air management subtype and may enter S_ASSOC only after the
  * exact local claim checks below succeed. */
 #define IEEE80211_SAE_WCL_MGMT_PMK_CONTINUE 0x534145u
+
+/* Private net80211 marker for the single ieee80211_next_scan() channel-hop
+ * edge.  It crosses preflight/deferred replay to IWN's exact scan callback,
+ * which selects its already-fenced cleanup before restoring the historic -1
+ * management argument for all lower callbacks.  Queued IWM/IWX frontends
+ * instead normalize it before recording task state, retaining their historic
+ * generic cleanup until they have an equivalent request-identity fence. */
+#define IEEE80211_NEWSTATE_ARG_SCAN_HOP (-2)
 /*
  * The four direct-SAE hook fields are published and withdrawn under the
  * selected-BSS leaf.  Readers must take one coherent value snapshot before
@@ -166,6 +174,19 @@ extern	u_int64_t ieee80211_pae_assoc_epoch_current(const struct ieee80211com *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_begin(struct ieee80211com *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_begin_replacement(
 	    struct ieee80211com *);
+/* Public IOC_ASSOCIATE may use an initial BSSID only through this bounded
+ * controller-owned marker.  Raw ioctl, legacy, and WCL BSSID pins never arm
+ * it and therefore retain their existing persistent semantics. */
+extern	void ieee80211_public_initial_bssid_pin_arm(struct ieee80211com *,
+	    const u_int8_t[IEEE80211_ADDR_LEN]);
+extern	void ieee80211_public_initial_bssid_pin_disarm(struct ieee80211com *);
+extern	void ieee80211_public_initial_bssid_pin_port_valid(
+	    struct ieee80211com *, struct ieee80211_node *);
+/* True only for the exact public initial-BSS owner which has reached RUN but
+ * has not yet opened its RSN port.  It lets Tahoe defer its otherwise-early
+ * USE_APPLE_SUPPLICANT LINK_UP edge without changing WCL/raw semantics. */
+extern	int ieee80211_public_initial_bssid_pin_should_defer_link_up(
+	    struct ieee80211com *, struct ieee80211_node *);
 extern	void ieee80211_pae_mfp_txn_complete(struct ieee80211com *,
 	    u_int64_t, u_int8_t, int);
 extern	void ieee80211_pae_mfp_txn_abort(struct ieee80211com *);
@@ -299,12 +320,15 @@ extern	int ieee80211_sae_peer_rx_snapshot_admission(struct ieee80211com *,
 	    const u_int8_t[IEEE80211_ADDR_LEN],
 	    const u_int8_t[IEEE80211_ADDR_LEN], u_int64_t *, u_int64_t *);
 extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
-		enum ieee80211_state);
+		enum ieee80211_state, int);
+#define IEEE80211_NEWSTATE_BACKEND_ARG(_nstate, _arg) \
+	(((_nstate) == IEEE80211_S_SCAN && \
+	  (_arg) == IEEE80211_NEWSTATE_ARG_SCAN_HOP) ? -1 : (_arg))
 #define    ieee80211_new_state(_ic, _nstate, _arg) \
 do {    \
 if ((_ic)->ic_newstate_preflight == NULL || \
     ((_ic)->ic_newstate_preflight((_ic), (_nstate), (_arg)) == 0)) { \
-ieee80211_pae_assoc_epoch_note_newstate((_ic), (_nstate)); \
+ieee80211_pae_assoc_epoch_note_newstate((_ic), (_nstate), (_arg)); \
 (((_ic)->ic_newstate)((_ic), (_nstate), (_arg)));   \
 } \
 } while (0)

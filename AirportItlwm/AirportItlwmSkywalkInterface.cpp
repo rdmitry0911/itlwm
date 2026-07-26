@@ -983,6 +983,11 @@ IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssi
 
     struct ieee80211com *ic = fHalService->get80211Controller();
 
+    /* associateSSID() is shared with WCL.  Any direct desired-BSSID rewrite
+     * first retires the public-only one-shot provenance; setASSOCIATE() may
+     * arm a fresh marker only after this full public configuration succeeds. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
+
     // ieee80211_disable_rsn() zeroes ic->ic_psk along with the
     // RSN config fields. On the WCL/Skywalk externally-owned-PSK
     // path, Apple userspace delivers the PSK-derived PMK
@@ -1292,7 +1297,10 @@ void AirportItlwmSkywalkInterface::setGTK(const u_int8_t *gtk, size_t key_len, u
             ++ni->ni_key_count == 2)
 #endif
         {
+            const bool was_port_valid = ni->ni_port_valid != 0;
             ni->ni_port_valid = 1;
+            if (!was_port_valid)
+                ieee80211_public_initial_bssid_pin_port_valid(ic, ni);
             ieee80211_set_link_state(ic, LINK_STATE_UP);
             ni->ni_assoc_fail = 0;
             if (ic->ic_opmode == IEEE80211_M_STA)
@@ -5705,6 +5713,11 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(3); sRT.assocCount++;
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    /* A new public request supersedes any earlier initial-BSS hint even if
+     * this carrier later takes an early no-op/error return. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
     if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockPublicAssoc)) {
         airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockPublicAssoc,
                                        kAirportItlwmRegDiagPathPublicAssoc,
@@ -5721,7 +5734,6 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
     }
 
     struct apple80211_authtype_data auth_type_data;
-    struct ieee80211com *ic = fHalService->get80211Controller();
 
     if (!ad) {
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
@@ -5791,6 +5803,14 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
                                     ad->ad_auth_upper, ad->ad_key.key,
                                     ad->ad_key.key_len, ad->ad_key.key_index,
                                     true, false, false, nullptr);
+        /* CoreWLAN's BSSID is an initial selected candidate on this public
+         * path. Arm only after association policy setup succeeded; WCL
+         * reaches the shared associateSSID() but never reaches this arm. */
+        if (assocResult == kIOReturnSuccess &&
+            TahoeAssociationAuthContracts::mayUseLocalPskPmk(
+                ad->ad_auth_upper))
+            ieee80211_public_initial_bssid_pin_arm(ic,
+                                                    ad->ad_bssid.octet);
     }
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
                                    ad->ad_ssid, ad->ad_ssid_len,
@@ -5806,6 +5826,10 @@ setDISASSOCIATE(void *ad)
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(7);
     struct ieee80211com *ic = fHalService->get80211Controller();
+
+    /* Disassociation cancels any initial public provenance before its
+     * early-return paths decide whether a lower deauth is needed. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
 
     // External PMK eligibility does not survive any disassociate
     // edge that this selector represents, including the early-return
@@ -6392,6 +6416,10 @@ IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    /* WCL uses an explicit BSSID owner; it must never inherit a preceding
+     * public-CoreWLAN initial-candidate marker, including malformed carriers. */
+    ieee80211_public_initial_bssid_pin_disarm(
+        fHalService->get80211Controller());
     return setWCL_ASSOCIATEImpl(candidates);
 }
 
@@ -7022,10 +7050,12 @@ IOReturn AirportItlwmSkywalkInterface::
 setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    /* Retire the public-only hint before all WCL leave early returns. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
     if (!data)
         return kIOReturnError;
-
-    struct ieee80211com *ic = fHalService->get80211Controller();
 
     // WCL leave is the canonical Apple lifecycle edge that invalidates
     // any externally delivered PMK. Clear before any early return so
@@ -7064,6 +7094,9 @@ setWCL_SCAN_ABORT(void *data)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     (void)data;
+	if (fHalService != nullptr)
+		ieee80211_public_initial_bssid_pin_disarm(
+		    fHalService->get80211Controller());
     if (instance == nullptr || fHalService == nullptr)
         return kIOReturnNotReady;
 
@@ -7723,6 +7756,9 @@ setWCL_REASSOC(apple80211_reassoc *data)
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
 
+    /* WCL reassociation owns its current-BSS policy independently. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
+
     /* A steady-state reassociation has its own WCL terminal owner.  Retire
      * any join-completion lease unconditionally, including the PSK-present
      * path that intentionally retains the current PMK. */
@@ -7920,6 +7956,10 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
+
+    /* Abort must retire a public marker even when the state branch below
+     * does not reach ieee80211_deselect_ess(). */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
     const bool requestCompletion = data != nullptr &&
                                    *reinterpret_cast<const uint32_t *>(data) != 0;
 

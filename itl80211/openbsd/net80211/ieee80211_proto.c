@@ -850,6 +850,8 @@ ieee80211_pae_mfp_txn_complete(struct ieee80211com *ic, u_int64_t id,
 		if (finish_error == 0 && published && port_became_valid &&
 		    ieee80211_pae_mfp_txn_current(ic, snapshot.ni,
 		    snapshot.assoc_epoch)) {
+			ieee80211_public_initial_bssid_pin_port_valid(ic,
+			    snapshot.ni);
 			AirportItlwmPostPltiTraceCompleteEpisode(ic);
 			ieee80211_set_link_state(ic, LINK_STATE_UP);
 			if (ic->ic_event_handler != NULL)
@@ -897,8 +899,18 @@ ieee80211_sae_peer_rx_admission_clear_locked(struct ieee80211com *ic)
 	    sizeof(ic->ic_sae_peer_rx_admission));
 }
 
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
+static void
+ieee80211_public_initial_bssid_pin_clear_locked(struct ieee80211com *ic)
+{
+	if (ic == NULL)
+		return;
+	explicit_bzero(&ic->ic_public_initial_bssid_pin,
+	    sizeof(ic->ic_public_initial_bssid_pin));
+}
+
 static int
-ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(
+ieee80211_bssid_is_unicast_nonzero(
     const u_int8_t bssid[IEEE80211_ADDR_LEN])
 {
 	size_t index;
@@ -913,6 +925,173 @@ ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(
 		}
 	}
 	return nonzero;
+}
+
+static int
+ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(
+    const u_int8_t bssid[IEEE80211_ADDR_LEN])
+{
+	return ieee80211_bssid_is_unicast_nonzero(bssid);
+}
+
+/*
+ * The public IOC_ASSOCIATE carrier can name a BSS selected by CoreWLAN, but
+ * does not express a durable user BSSID lock.  Record that provenance only
+ * after the caller has fully rebuilt its local association policy.  The
+ * marker carries no SSID, RSN IE, key, or node reference.
+ */
+void
+ieee80211_public_initial_bssid_pin_arm(struct ieee80211com *ic,
+    const u_int8_t bssid[IEEE80211_ADDR_LEN])
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	u_int64_t epoch;
+
+	if (ic == NULL || bssid == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    !ieee80211_bssid_is_unicast_nonzero(bssid) ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (ic->ic_opmode == IEEE80211_M_STA && epoch != 0 &&
+	    (ic->ic_flags & IEEE80211_F_DESBSSID) != 0 &&
+	    IEEE80211_ADDR_EQ(ic->ic_des_bssid, bssid)) {
+		ieee80211_public_initial_bssid_pin_clear_locked(ic);
+		ic->ic_public_initial_bssid_pin.configuration_epoch = epoch;
+		IEEE80211_ADDR_COPY(ic->ic_public_initial_bssid_pin.bssid, bssid);
+		ic->ic_public_initial_bssid_pin.active = 1;
+	} else {
+		ieee80211_public_initial_bssid_pin_clear_locked(ic);
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+void
+ieee80211_public_initial_bssid_pin_disarm(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_public_initial_bssid_pin_clear_locked(ic);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+/* Caller holds ic_pae_selected_bss_lock. */
+static void
+ieee80211_public_initial_bssid_pin_bind_selected_bss_locked(
+    struct ieee80211com *ic, const struct ieee80211_node *ni,
+    u_int64_t expected_epoch)
+{
+	struct ieee80211_public_initial_bssid_pin *pin;
+
+	if (ic == NULL)
+		return;
+	pin = &ic->ic_public_initial_bssid_pin;
+	if (pin->active == 0)
+		return;
+	if (ni == NULL || expected_epoch == 0 ||
+	    pin->binding_pending == 0 || pin->association_epoch != 0 ||
+	    __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) !=
+		expected_epoch ||
+	    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+		__ATOMIC_ACQUIRE) != expected_epoch ||
+	    (ic->ic_flags & IEEE80211_F_DESBSSID) == 0 ||
+	    !IEEE80211_ADDR_EQ(pin->bssid, ic->ic_des_bssid) ||
+	    !IEEE80211_ADDR_EQ(pin->bssid, ni->ni_bssid) ||
+	    !IEEE80211_ADDR_EQ(ic->ic_pae_selected_bss.bssid, ni->ni_bssid)) {
+		ieee80211_public_initial_bssid_pin_clear_locked(ic);
+		return;
+	}
+	pin->association_epoch = expected_epoch;
+	pin->binding_pending = 0;
+}
+
+/*
+ * Retire only an exact public initial-BSS pin after its first successful RSN
+ * port-valid publication.  This is deliberately later than AUTH/ASSOC and
+ * earlier than the driver event callback: a failed initial 4-way handshake
+ * keeps the historical BSSID restriction, while a live RUN association may
+ * recover to another compatible BSS of the same ESS after a later loss.
+ */
+void
+ieee80211_public_initial_bssid_pin_port_valid(struct ieee80211com *ic,
+    struct ieee80211_node *ni)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_public_initial_bssid_pin *pin;
+	u_int64_t epoch;
+
+	if (ic == NULL || ni == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	pin = &ic->ic_public_initial_bssid_pin;
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (pin->active != 0 && pin->association_epoch != 0 &&
+	    pin->association_epoch == epoch && ni == ic->ic_bss &&
+	    ni->ni_port_valid != 0) {
+		if (ic->ic_opmode == IEEE80211_M_STA &&
+		    ic->ic_state == IEEE80211_S_RUN &&
+		    __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+		    __ATOMIC_ACQUIRE) == 0 &&
+		    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+		    __ATOMIC_ACQUIRE) == epoch &&
+		    (ic->ic_flags & IEEE80211_F_DESBSSID) != 0 &&
+		    IEEE80211_ADDR_EQ(pin->bssid, ic->ic_des_bssid) &&
+		    IEEE80211_ADDR_EQ(pin->bssid, ni->ni_bssid) &&
+		    IEEE80211_ADDR_EQ(ic->ic_pae_selected_bss.bssid,
+		    ni->ni_bssid)) {
+			ic->ic_flags &= ~IEEE80211_F_DESBSSID;
+			explicit_bzero(ic->ic_des_bssid, sizeof(ic->ic_des_bssid));
+		}
+		/* A port-valid edge cannot leave a stale initial-public marker. */
+		ieee80211_public_initial_bssid_pin_clear_locked(ic);
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+/*
+ * Tahoe's generic S_RUN handler historically publishes LINK_UP under
+ * USE_APPLE_SUPPLICANT before a local RSN PAE has opened its port.  Keep that
+ * historical timing for every non-public path, but make the exact public
+ * initial-BSS owner wait for its existing port-valid release helper below.
+ * This only observes fixed identity/epoch state; it never owns a node, key,
+ * credential, or callback.
+ */
+int
+ieee80211_public_initial_bssid_pin_should_defer_link_up(
+    struct ieee80211com *ic, struct ieee80211_node *ni)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_public_initial_bssid_pin *pin;
+	u_int64_t epoch;
+	int defer = 0;
+
+	if (ic == NULL || ni == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	pin = &ic->ic_public_initial_bssid_pin;
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (pin->active != 0 && pin->association_epoch != 0 &&
+	    pin->association_epoch == epoch && ic->ic_opmode == IEEE80211_M_STA &&
+	    ic->ic_state == IEEE80211_S_RUN && ni == ic->ic_bss &&
+	    ni->ni_port_valid == 0 &&
+	    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+	    __ATOMIC_ACQUIRE) == epoch &&
+	    (ic->ic_flags & IEEE80211_F_DESBSSID) != 0 &&
+	    IEEE80211_ADDR_EQ(pin->bssid, ic->ic_des_bssid) &&
+	    IEEE80211_ADDR_EQ(pin->bssid, ni->ni_bssid) &&
+	    IEEE80211_ADDR_EQ(pin->bssid, ic->ic_pae_selected_bss.bssid))
+		defer = 1;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return defer;
 }
 
 static int
@@ -1012,6 +1191,9 @@ ieee80211_sae_wcl_request_policy_clear_locked(struct ieee80211com *ic)
 	    sizeof(ic->ic_sae_wcl_pmk_claim));
 	ic->ic_sae_wcl_policy_generation = 0;
 	ic->ic_pae_mfp_requested = 0;
+	/* This direct/WCL policy owns a different explicit BSSID lifetime.  It
+	 * must never inherit the transient public-CoreWLAN provenance marker. */
+	ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	ic->ic_flags &= ~(IEEE80211_F_PSK | IEEE80211_F_RSNON |
 	    IEEE80211_F_MFPR | IEEE80211_F_DESBSSID);
 	explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
@@ -1207,7 +1389,17 @@ ieee80211_pae_selected_bss_capture(struct ieee80211com *ic,
 		goto out;
 	__atomic_store_n(&ic->ic_pae_selected_bss.epoch, expected_epoch,
 	    __ATOMIC_RELEASE);
+	/* A public initial-BSS hint becomes eligible only after this exact
+	 * post-copy selected-BSS identity has been published for the replacement
+	 * epoch.  It never binds a scan candidate or a request-side BSSID. */
+	ieee80211_public_initial_bssid_pin_bind_selected_bss_locked(ic, ni,
+	    expected_epoch);
 out:
+	/* A failed/short selected-BSS publication cannot leave a pending public
+	 * hint for a later replacement to inherit. */
+	if (ic->ic_public_initial_bssid_pin.active != 0 &&
+	    ic->ic_public_initial_bssid_pin.binding_pending != 0)
+		ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	/* Only the replacement owner that installed this marker may clear it. */
 	if (__atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
 	    __ATOMIC_ACQUIRE) == expected_epoch)
@@ -1406,11 +1598,18 @@ ieee80211_sae_peer_rx_snapshot_admission(struct ieee80211com *ic,
  * node/RSN state.  The future SAE relay and PAE continuation queues may read
  * this from a different execution context, hence an atomic increment.  Zero
  * is reserved as the uninitialized/no-attempt value and is skipped on wrap.
+ *
+ * Only ieee80211_next_scan() may request preservation, and only while it is
+ * making an intra-scan channel hop.  It may carry one exact, unbound public
+ * initial-BSSID marker to the next epoch; every other asynchronous owner is
+ * invalidated exactly as it is for an ordinary cancellation.
  */
-u_int64_t
-ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
+static u_int64_t
+ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
+    int preserve_unbound_public_initial_bssid_pin)
 {
 	u_int64_t epoch;
+	u_int64_t prior_epoch;
 	u_int64_t txn_id = 0;
 	IOSimpleLock *lock;
 	IOInterruptState irq;
@@ -1425,11 +1624,32 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock != NULL)
 		irq = IOSimpleLockLockDisableInterrupt(lock);
+	prior_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch,
+	    __ATOMIC_ACQUIRE);
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	/* An ordinary retry/reset never transfers public initial-BSS provenance
+	 * into a later attempt.  The scanner's own channel hop is the sole narrow
+	 * exception: it retains only an exact unbound public marker and rebases
+	 * its configuration epoch.  It deliberately leaves the actual DESBSSID
+	 * configuration untouched so legacy/raw recovery semantics remain intact. */
+	if (preserve_unbound_public_initial_bssid_pin != 0 &&
+	    ic->ic_public_initial_bssid_pin.active != 0 &&
+	    ic->ic_public_initial_bssid_pin.association_epoch == 0 &&
+	    ic->ic_public_initial_bssid_pin.binding_pending == 0 &&
+	    ic->ic_public_initial_bssid_pin.configuration_epoch == prior_epoch &&
+	    (ic->ic_flags & IEEE80211_F_DESBSSID) != 0 &&
+	    ieee80211_bssid_is_unicast_nonzero(
+	    ic->ic_public_initial_bssid_pin.bssid) &&
+	    IEEE80211_ADDR_EQ(ic->ic_public_initial_bssid_pin.bssid,
+	    ic->ic_des_bssid)) {
+		ic->ic_public_initial_bssid_pin.configuration_epoch = epoch;
+	} else {
+		ieee80211_public_initial_bssid_pin_clear_locked(ic);
+	}
 	/* A real cancellation wins over the brief pre-policy reservation too.
 	 * begin() rechecks this value after its out-of-lock WEP teardown before
 	 * it can publish any new direct request. */
@@ -1451,11 +1671,18 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	return epoch;
 }
 
+u_int64_t
+ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
+{
+	return ieee80211_pae_assoc_epoch_begin_internal(ic, 0);
+}
+
 /* Begin the one controlled current-BSS replacement owner token. */
 u_int64_t
 ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 {
 	u_int64_t epoch;
+	u_int64_t prior_epoch;
 	u_int64_t txn_id;
 	IOSimpleLock *lock;
 	IOInterruptState irq;
@@ -1473,11 +1700,24 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	bzero(&prepared, sizeof(prepared));
 	bzero(&revocation, sizeof(revocation));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	prior_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch,
+	    __ATOMIC_ACQUIRE);
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, epoch,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	/* The initial public configuration is followed by exactly one selected
+	 * BSS replacement.  Carry its marker only across that one replacement;
+	 * capture() below will bind it to the post-copy BSS or erase it. */
+	if (ic->ic_public_initial_bssid_pin.active != 0 &&
+	    ic->ic_public_initial_bssid_pin.association_epoch == 0 &&
+	    ic->ic_public_initial_bssid_pin.configuration_epoch == prior_epoch)
+	{
+			ic->ic_public_initial_bssid_pin.binding_pending = 1;
+	}
+	else
+		ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	ic->ic_sae_wcl_request_policy_starting = 0;
 	/* The direct WCL resume has exactly one permitted bind handoff: its
 	 * SCAN_ISSUED request survives this post-scan replacement long enough to
@@ -1540,6 +1780,9 @@ ieee80211_sae_wcl_request_fence_run_resume(struct ieee80211com *ic,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	/* A direct WCL RUN-resume owns a new association epoch and cannot inherit
+	 * public initial-BSS provenance from the prior RUN owner. */
+	ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	/* Do not bind an old RUN epoch to the resumed request. */
 	ic->ic_sae_wcl_request.association_epoch = 0;
 	txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
@@ -1577,6 +1820,7 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 	ic->ic_sae_wcl_request_policy_starting = 0;
 	ic->ic_sae_wcl_request_join_active = 0;
@@ -1596,7 +1840,7 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
  */
 void
 ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
-    enum ieee80211_state nstate)
+    enum ieee80211_state nstate, int arg)
 {
 	if (ic == NULL)
 		return;
@@ -1612,6 +1856,14 @@ ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
 	    (ic->ic_state == IEEE80211_S_ASSOC &&
 	     nstate == IEEE80211_S_RUN))
 		return;
+	/* ieee80211_next_scan() is the only caller allowed to carry an unbound
+	 * public marker across SCAN->SCAN.  The tag remains intact through IWN's
+	 * deferred-scan replay; all untagged requests remain hard cancellations. */
+	if (ic->ic_state == IEEE80211_S_SCAN && nstate == IEEE80211_S_SCAN &&
+	    arg == IEEE80211_NEWSTATE_ARG_SCAN_HOP) {
+		(void)ieee80211_pae_assoc_epoch_begin_internal(ic, 1);
+		return;
+	}
 	(void)ieee80211_pae_assoc_epoch_begin(ic);
 }
 
@@ -1660,6 +1912,9 @@ ieee80211_sae_wcl_request_begin(struct ieee80211com *ic,
 	     ic->ic_sae_wcl_request.phase !=
 	     IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED))
 		goto out_unlock;
+	/* Pure-SAE WCL bypasses generic associateSSID(); retire any old public
+	 * initial-BSS provenance before this non-public policy writes DESBSSID. */
+	ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	/* The Skywalk ingress has already called clearExternalPmkEligibilityLocked,
 	 * including its epoch reset.  Own this narrow interval before deleting a
 	 * stale WEP key so a concurrent legacy node_join_bss() cannot begin after
@@ -2618,7 +2873,7 @@ ieee80211_sae_wcl_request_pmk_continue_assoc(struct ieee80211com *ic,
 	 * private argument makes ieee80211_newstate() repeat the exact claim check
 	 * after it has committed S_ASSOC and immediately before it queues the
 	 * ordinary Association Request. */
-	ieee80211_pae_assoc_epoch_note_newstate(ic, IEEE80211_S_ASSOC);
+	ieee80211_pae_assoc_epoch_note_newstate(ic, IEEE80211_S_ASSOC, -1);
 	error = (*ic->ic_newstate)(ic, IEEE80211_S_ASSOC,
 	    IEEE80211_SAE_WCL_MGMT_PMK_CONTINUE);
 	return error == 0;
@@ -4288,7 +4543,12 @@ justcleanup:
 				panic("%s: bogus xmit rate %u setup",
 				    __FUNCTION__, ni->ni_txrate);
 #ifdef USE_APPLE_SUPPLICANT
-            {
+            /* Tahoe's non-public paths retain their historical S_RUN link
+             * publication.  Only the exact public initial-BSS marker waits
+             * for port-valid, so it cannot expose DESBSSID before release. */
+            if ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
+                !ieee80211_public_initial_bssid_pin_should_defer_link_up(
+                ic, ni)) {
 #elif (defined IO80211FAMILY_V2)
             if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms) ||
                 !(ic->ic_flags & IEEE80211_F_RSNON)) {

@@ -227,6 +227,8 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     memset(&ic->ic_pae_selected_bss, 0, sizeof(ic->ic_pae_selected_bss));
     memset(&ic->ic_sae_peer_rx_admission, 0,
            sizeof(ic->ic_sae_peer_rx_admission));
+    memset(&ic->ic_public_initial_bssid_pin, 0,
+           sizeof(ic->ic_public_initial_bssid_pin));
     ic->ic_sae_wcl_request_next_generation = 0;
     ic->ic_sae_wcl_policy_generation = 0;
     memset(&ic->ic_sae_wcl_request, 0,
@@ -291,6 +293,7 @@ ieee80211_ifdetach(struct _ifnet *ifp)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     /* Close future async STA owners before queues, crypto, and nodes vanish. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
     (void)ieee80211_pae_assoc_epoch_begin(ic);
     timeout_del(&ic->ic_bgscan_timeout);
     timeout_free(&ic->ic_bgscan_timeout);

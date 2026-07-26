@@ -1272,6 +1272,10 @@ setASSOCIATE(OSObject *object,
     struct apple80211_authtype_data auth_type_data;
     struct ieee80211com *ic = fHalService->get80211Controller();
 
+    /* Even a rejected/no-op legacy carrier supersedes the public-only
+     * initial-BSS provenance owned by the Skywalk surface. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
+
     if (!ad)
         return kIOReturnError;
 
@@ -1318,6 +1322,8 @@ getASSOCIATE_RESULT(OSObject *object, struct apple80211_assoc_result_data *ad)
 IOReturn AirportItlwm::setDISASSOCIATE(OSObject *object)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+
+    ieee80211_public_initial_bssid_pin_disarm(ic);
 
     if (ic->ic_state < IEEE80211_S_SCAN)
         return kIOReturnSuccess;

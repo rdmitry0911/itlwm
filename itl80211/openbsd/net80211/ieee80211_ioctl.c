@@ -757,6 +757,9 @@ ieee80211_ioctl(struct _ifnet *ifp, u_long cmd, caddr_t data)
 //		if ((error = suser(curproc)) != 0)
 //			break;
 		bssid = (struct ieee80211_bssid *)data;
+		/* A raw request is an explicit BSSID policy, never the transient
+		 * public-CoreWLAN initial-BSS hint. */
+		ieee80211_public_initial_bssid_pin_disarm(ic);
 		if (IEEE80211_ADDR_EQ(bssid->i_bssid, empty_macaddr))
 			ic->ic_flags &= ~IEEE80211_F_DESBSSID;
 		else {

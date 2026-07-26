@@ -157,6 +157,11 @@ IOReturn AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const str
     }
 
     struct ieee80211com *ic = fHalService->get80211Controller();
+
+    /* The legacy surface keeps its explicit BSSID semantics. If it follows
+     * a Skywalk public request on the same controller, retire only that
+     * transient provenance before writing this legacy desired BSSID. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
     
     ieee80211_disable_rsn(ic);
     ieee80211_disable_wep(ic);
@@ -312,7 +317,10 @@ void AirportItlwm::setGTK(const u_int8_t *gtk, size_t key_len, u_int8_t kid, u_i
             ++ni->ni_key_count == 2)
 #endif
         {
+            const bool was_port_valid = ni->ni_port_valid != 0;
             ni->ni_port_valid = 1;
+            if (!was_port_valid)
+                ieee80211_public_initial_bssid_pin_port_valid(ic, ni);
             ieee80211_set_link_state(ic, LINK_STATE_UP);
             ni->ni_assoc_fail = 0;
             if (ic->ic_opmode == IEEE80211_M_STA)

@@ -688,6 +688,9 @@ ieee80211_set_ess(struct ieee80211com *ic, struct ieee80211_ess *ess,
 void
 ieee80211_deselect_ess(struct ieee80211com *ic)
 {
+	/* Every generic deselect path abandons a not-yet-successful public
+	 * initial-BSS request.  This does not mutate a raw/WCL BSSID pin. */
+	ieee80211_public_initial_bssid_pin_disarm(ic);
     memset(ic->ic_des_essid, 0, IEEE80211_NWID_LEN);
     ic->ic_des_esslen = 0;
     ieee80211_disable_wep(ic);
@@ -912,7 +915,12 @@ ieee80211_next_scan(struct _ifnet *ifp)
     }
     clrbit(ic->ic_chan_scan, ieee80211_chan2ieee(ic, chan));
     ic->ic_bss->ni_chan = chan;
-    ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+    /* This is the scanner's own intra-scan channel hop, not a fresh generic
+     * SCAN request.  The private tag survives an IWN deferred replay to its
+     * exact callback; queued IWM/IWX frontends normalize it before task
+     * capture and retain their historic generic cleanup semantics. */
+    ieee80211_new_state(ic, IEEE80211_S_SCAN,
+        IEEE80211_NEWSTATE_ARG_SCAN_HOP);
 }
 
 #ifndef IEEE80211_STA_ONLY
@@ -1798,6 +1806,26 @@ void
 ieee80211_node_cleanup(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
     ieee80211_node_cleanup_internal(ic, ni, 1);
+}
+
+/*
+ * Only a backend that has received IEEE80211_NEWSTATE_ARG_SCAN_HOP may use
+ * this.  Its state edge has already invalidated generic PAE/SAE work while
+ * retaining the exact unbound public initial-BSSID marker; do not repeat that
+ * cancellation merely because the backend now clears its transient scan BSS.
+ */
+void
+ieee80211_node_cleanup_scan_hop(struct ieee80211com *ic,
+    struct ieee80211_node *ni)
+{
+    if (ic == NULL || ni == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN || ni != ic->ic_bss) {
+        /* Future callers which do not prove this exact scanner context must
+         * retain the historic cancellation behaviour. */
+        ieee80211_node_cleanup_internal(ic, ni, 1);
+        return;
+    }
+    ieee80211_node_cleanup_internal(ic, ni, 0);
 }
 
 void

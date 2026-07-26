@@ -996,6 +996,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             if (deferlink == 0) {
                 int was_port_valid = ni->ni_port_valid;
                 ni->ni_port_valid = 1;
+				if (!was_port_valid)
+					ieee80211_public_initial_bssid_pin_port_valid(ic, ni);
                 if (!was_port_valid) {
                     AirportItlwmPostPltiTraceCompleteEpisode(ic);
                 }
@@ -1310,8 +1312,11 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
             ++ni->ni_key_count == 2)
 #endif
         {
+            int was_port_valid = ni->ni_port_valid;
             ni->ni_port_valid = 1;
-            ieee80211_set_link_state(ic, LINK_STATE_UP);
+            if (!was_port_valid)
+                ieee80211_public_initial_bssid_pin_port_valid(ic, ni);
+			ieee80211_set_link_state(ic, LINK_STATE_UP);
             ni->ni_assoc_fail = 0;
         }
     }
@@ -1412,8 +1417,11 @@ ieee80211_recv_wpa_group_msg1(struct ieee80211com *ic,
             ++ni->ni_key_count == 2)
 #endif
         {
+            int was_port_valid = ni->ni_port_valid;
             ni->ni_port_valid = 1;
-            ieee80211_set_link_state(ic, LINK_STATE_UP);
+            if (!was_port_valid)
+                ieee80211_public_initial_bssid_pin_port_valid(ic, ni);
+			ieee80211_set_link_state(ic, LINK_STATE_UP);
             ni->ni_assoc_fail = 0;
         }
     }

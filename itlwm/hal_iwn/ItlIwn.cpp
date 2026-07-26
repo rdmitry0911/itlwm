@@ -6729,7 +6729,15 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     struct ieee80211_node *ni = ic->ic_bss;
     ItlIwn *that = container_of(sc, ItlIwn, com);
     u_int64_t direct_sae_scan_generation = 0;
+    const bool scan_hop = nstate == IEEE80211_S_SCAN &&
+        ic->ic_state == IEEE80211_S_SCAN &&
+        arg == IEEE80211_NEWSTATE_ARG_SCAN_HOP;
     int error;
+
+    /* The tagged net80211 channel hop reaches this exact callback so its
+     * transient current-BSS cleanup can avoid a duplicate epoch cancellation.
+     * No lower IWN or generic net80211 callback may observe the private tag. */
+    arg = IEEE80211_NEWSTATE_BACKEND_ARG(nstate, arg);
 
     /* Most callers pass through ieee80211_new_state(), whose preflight has
      * already consumed a conflicting RUN->SCAN request before epoch change.
@@ -6812,7 +6820,10 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 
         if ((sc->sc_flags & IWN_FLAG_BGSCAN) == 0) {
             ieee80211_set_link_state(ic, LINK_STATE_DOWN);
-            ieee80211_node_cleanup(ic, ic->ic_bss);
+            if (scan_hop)
+                ieee80211_node_cleanup_scan_hop(ic, ic->ic_bss);
+            else
+                ieee80211_node_cleanup(ic, ic->ic_bss);
         }
         ic->ic_state = nstate;
         if ((error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)) != 0) {

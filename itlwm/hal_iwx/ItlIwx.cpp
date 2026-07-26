@@ -11967,6 +11967,11 @@ iwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     struct iwx_softc *sc = (struct iwx_softc *)ifp->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     struct ieee80211_node *ni = ic->ic_bss;
+
+    /* IWX queues state work without a per-request epoch.  Do not carry the
+     * private IWN scan-hop tag across that queue; it keeps its established
+     * generic cleanup semantics until that distinct race is hardened. */
+    arg = IEEE80211_NEWSTATE_BACKEND_ARG(nstate, arg);
     
     /*
      * Prevent attemps to transition towards the same state, unless

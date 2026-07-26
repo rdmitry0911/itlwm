@@ -686,6 +686,11 @@ struct ieee80211_node *ieee80211_find_txnode(struct ieee80211com *,
 void ieee80211_release_node(struct ieee80211com *,
 		struct ieee80211_node *);
 void ieee80211_node_cleanup(struct ieee80211com *, struct ieee80211_node *);
+/* A tagged backend scanner callback already advanced its association epoch
+ * through ieee80211_pae_assoc_epoch_note_newstate().  It alone may clean the
+ * transient scan BSS without a second generic cancellation fence. */
+void ieee80211_node_cleanup_scan_hop(struct ieee80211com *,
+		struct ieee80211_node *);
 void ieee80211_free_allnodes(struct ieee80211com *, int);
 void ieee80211_iterate_nodes(struct ieee80211com *,
 		ieee80211_iter_func *, void *);

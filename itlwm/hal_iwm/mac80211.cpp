@@ -3085,6 +3085,11 @@ iwm_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     struct iwm_softc *sc = (struct iwm_softc*)ifp->if_softc;
     ItlIwm *that = container_of(sc, ItlIwm, com);
     struct ieee80211_node *ni = ic->ic_bss;
+
+    /* IWM queues state work without a per-request epoch.  Do not carry the
+     * private IWN scan-hop tag across that queue; it keeps its established
+     * generic cleanup semantics until that distinct race is hardened. */
+    arg = IEEE80211_NEWSTATE_BACKEND_ARG(nstate, arg);
     
     /*
      * Prevent attemps to transition towards the same state, unless
