@@ -121,6 +121,7 @@ bash "$root/scripts/test_tahoe_iwn_sae_wcl_credential_contract.sh"
 bash "$root/scripts/test_net80211_sae_wcl_request_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_wcl_ingress_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_lab_direct_sae_userclient_contract.sh"
+bash "$root/scripts/test_tahoe_iwn_direct_sae_lab_client_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_pmk_continuation_contract.sh"
 bash "$root/scripts/test_net80211_sae_rsn_output_contract.sh"
 

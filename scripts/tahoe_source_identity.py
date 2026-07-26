@@ -45,12 +45,14 @@ SOURCE_PATHS_V1 = [
 
 SOURCE_PATHS_V2 = [
     "AirportItlwm",
+    "AirportItlwmIwnDirectSaeLabClient",
     "AirportItlwmPostPltiTrace",
     "include",
     "itl80211",
     "itlwm",
     "itlwm.xcodeproj",
     "scripts/build_post_plti_trace.sh",
+    "scripts/build_tahoe_iwn_direct_sae_lab_client.sh",
     "scripts/build_tahoe.sh",
     "scripts/tahoe_source_identity.py",
 ]
