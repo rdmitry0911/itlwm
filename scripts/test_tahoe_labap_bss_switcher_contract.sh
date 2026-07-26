@@ -75,8 +75,11 @@ for token in \
     '"$LABAP_FREQ_5_CH149"|"$LABAP_FREQ_5_CH153"|"$LABAP_FREQ_5_CH177"' \
     'EXPECTED_IW_VERSION="iw version 6.7"' \
     'LABAP_TOPOLOGY_SAMPLES=2' \
-    'LABAP_TOPOLOGY_INTERVAL_SECONDS=1' \
+    'LABAP_PASSIVE_SCAN_ATTEMPTS=4' \
+    'LABAP_PASSIVE_SCAN_RETRY_INTERVAL_SECONDS=5' \
+    'LABAP_TOPOLOGY_INTERVAL_SECONDS=15' \
     'scan flush passive' \
+    'passive_flushed_scan' \
     'TOPOLOGY_PARSER=' \
     '--credential-stdin' \
     'generated_passphrase' \
@@ -118,6 +121,33 @@ for token in \
     'LABAP_BSS_SWITCH=ORIGINAL_RESTORED'; do
     require "$token"
 done
+
+# The scan admission path may tolerate only the pinned nl80211 EBUSY status.
+# It must retry the exact passive+flush request, retain no scan output outside
+# process memory, and never make an active/cached fallback decision.
+passive_scan_body="$(sed -n '/^passive_flushed_scan()/,/^}/p' "$SCRIPT")"
+for token in \
+    'PASSIVE_SCAN_OUTPUT=""' \
+    'LABAP_PASSIVE_SCAN_ATTEMPTS' \
+    'sudo_cmd "$IW" dev "$STA_IF" scan flush passive 2>/dev/null' \
+    'scan_rc=$?' \
+    'else' \
+    '[ "$scan_rc" -eq 240 ]' \
+    'LABAP_PASSIVE_SCAN_RETRY_INTERVAL_SECONDS' \
+    'return "$scan_rc"'; do
+    printf '%s\n' "$passive_scan_body" | grep -Fq -- "$token" ||
+        fail "passive scan retry lacks: $token"
+done
+if printf '%s\n' "$passive_scan_body" | grep -Eq 'scan[[:space:]]+(dump|trigger)'; then
+    fail "passive scan retry gained a cached or active fallback"
+fi
+lar_scan_body="$(sed -n '/^scan_for_lar_country()/,/^}/p' "$SCRIPT")"
+printf '%s\n' "$lar_scan_body" | grep -Fq -- \
+    'sudo_cmd "$IW" dev "$STA_IF" scan flush passive >/dev/null 2>&1' ||
+    fail "LAR scan lost its one-at-a-time passive probe"
+if printf '%s\n' "$lar_scan_body" | grep -Fq 'passive_flushed_scan'; then
+    fail "LAR scan inherited the pre-credential retry budget"
+fi
 
 # The catchable-signal handler must be armed only after the rollback state is
 # durable, but before the marker appears.  The exact owner must still be

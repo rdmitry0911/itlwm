@@ -58,7 +58,14 @@ LABAP_FREQ_5_CH153=5765
 LABAP_FREQ_5_CH177=5885
 EXPECTED_IW_VERSION="iw version 6.7"
 LABAP_TOPOLOGY_SAMPLES=2
-LABAP_TOPOLOGY_INTERVAL_SECONDS=1
+# A completed passive scan can leave the pinned nl80211 scan owner briefly
+# busy.  Retrying only its documented EBUSY shell status keeps admission
+# read-only and fail-closed; any other iw failure remains terminal.  The
+# longer inter-sample gap ensures the two topology samples are independently
+# fresh rather than immediately colliding with the same scan owner.
+LABAP_PASSIVE_SCAN_ATTEMPTS=4
+LABAP_PASSIVE_SCAN_RETRY_INTERVAL_SECONDS=5
+LABAP_TOPOLOGY_INTERVAL_SECONDS=15
 LEASE_SECONDS=180
 LEASE_SECONDS_EXPLICIT=0
 # A real credential is handed over only after every read-only admission gate
@@ -797,6 +804,29 @@ validate_test_config() {
     ! grep -Fq 'SAE' "$config"
 }
 
+passive_flushed_scan() {
+    local attempt scan_rc
+
+    PASSIVE_SCAN_OUTPUT=""
+    for ((attempt = 1; attempt <= LABAP_PASSIVE_SCAN_ATTEMPTS; attempt++)); do
+        # Keep the scan passive and flushed on every retry.  In particular, do
+        # not fall back to a cached dump or wildcard-probe active scan merely
+        # because the previous nl80211 scan has not retired yet.
+        if PASSIVE_SCAN_OUTPUT="$(sudo_cmd "$IW" dev "$STA_IF" scan flush passive 2>/dev/null)"; then
+            return 0
+        else
+            # Capture the command-substitution status before the `if` itself
+            # can overwrite it.  Only the pinned nl80211 EBUSY status below
+            # is retryable; every other failure remains fail-closed.
+            scan_rc=$?
+        fi
+        [ "$scan_rc" -eq 240 ] || return "$scan_rc"
+        [ "$attempt" -lt "$LABAP_PASSIVE_SCAN_ATTEMPTS" ] || return "$scan_rc"
+        sleep "$LABAP_PASSIVE_SCAN_RETRY_INTERVAL_SECONDS" || return 1
+    done
+    return 1
+}
+
 scan_external_labap_topology() {
     local output records bssid frequency extra bssid24 bssid5
     local -A seen_all=()
@@ -814,7 +844,8 @@ scan_external_labap_topology() {
     # iw 6.7 documents that a scan without `passive` sends wildcard probes.
     # `flush passive` is supported on this exact host and refuses stale cache
     # data rather than quietly falling back to an active scan.
-    output="$(sudo_cmd "$IW" dev "$STA_IF" scan flush passive)" || return 1
+    passive_flushed_scan || return 1
+    output="$PASSIVE_SCAN_OUTPUT"
     records="$(printf '%s\n' "$output" | awk \
         -v target_ssid="$TEST_SSID" \
         -v freq24_ch9="$LABAP_FREQ_24_CH9" \
@@ -908,7 +939,8 @@ direct_test_ssid_absent_once() {
     local output
     sta_interface_is_up || return 1
     [ "$("$IW" --version 2>/dev/null)" = "$EXPECTED_IW_VERSION" ] || return 1
-    output="$(sudo_cmd "$IW" dev "$STA_IF" scan flush passive)" || return 1
+    passive_flushed_scan || return 1
+    output="$PASSIVE_SCAN_OUTPUT"
     if printf '%s\n' "$output" | awk -v target="$DIRECT_TEST_SSID" '
         $1 == "SSID:" {
             value = substr($0, index($0, ":") + 1)
@@ -948,6 +980,9 @@ scan_for_lar_country() {
     sta_interface_is_up || return 1
     # Do not send wildcard probe requests while acquiring the Country-IE
     # evidence used for a later local AP transmit permit.
+    # ensure_ap_channel_ir is the bounded retry owner after rollback state is
+    # durable.  Keep one LAR probe per outer attempt so pre-credential scan
+    # settling cannot inflate the v4 setup-deadline window.
     sudo_cmd "$IW" dev "$STA_IF" scan flush passive >/dev/null 2>&1
 }
 
