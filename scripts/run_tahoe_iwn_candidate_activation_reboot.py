@@ -94,7 +94,9 @@ MAX_INPUT_BYTES = 2 * 1024 * 1024
 
 CANDIDATE_PREFIX = "/private/tmp/aiam-iwn-lab-candidate-"
 TRACE_PREFIX = "/private/tmp/aiam-post-plti-trace-"
-ACTIVATION_PREFIX = "/private/tmp/aiam-iwn-activation-"
+# Tahoe clears /private/tmp during boot.  The activation root carries the
+# reboot marker and must survive long enough to bind the returned boot session.
+ACTIVATION_PREFIX = "/private/var/tmp/aiam-iwn-activation-"
 ARCHIVE_NAME = "AirportItlwm-iwn-software-pmf-lab.kext.zip"
 RECEIPT_NAME = "iwn-lab-candidate-receipt-v2.json"
 MANIFEST_NAME = "iwn-lab-bundle-manifest.json"
@@ -725,7 +727,7 @@ required_ids = {
 token_re = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 candidate_prefix = "/private/tmp/aiam-iwn-lab-candidate-"
 trace_prefix = "/private/tmp/aiam-post-plti-trace-"
-activation_prefix = "/private/tmp/aiam-iwn-activation-"
+activation_prefix = "/private/var/tmp/aiam-iwn-activation-"
 
 def fail():
     raise SystemExit(1)
@@ -1122,7 +1124,7 @@ def verify_preflight_summary():
     companion = hashlib.sha256("\n".join(sorted(line for line in rows if line != airport)).encode("utf-8")).hexdigest()
     return values["canonical_airport_sha256_before"], values["canonical_auxkc_sha256_before"], companion
 
-for parent in ("/private", "/private/tmp"):
+for parent in ("/private", "/private/tmp", "/private/var", "/private/var/tmp"):
     directory(parent)
 if not root.startswith(activation_prefix):
     fail()
@@ -1781,7 +1783,7 @@ def self_test() -> int:
     }
     candidate = canonical_direct_candidate(receipt_document)
     remote_prefix, marker, _remote_tail = REMOTE_VERIFIER.partition(
-        '\nfor parent in ("/private", "/private/tmp"):')
+        '\nfor parent in ("/private", "/private/tmp", "/private/var", "/private/var/tmp"):')
     if not marker:
         raise SystemExit("self-test: remote verifier bootstrap marker is missing")
     remote_wire = base64.urlsafe_b64encode(

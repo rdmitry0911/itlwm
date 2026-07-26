@@ -113,9 +113,10 @@ import stat
 import sys
 
 root = sys.argv[1]
-if re.fullmatch(r"/private/tmp/aiam-iwn-activation-[A-Za-z0-9][A-Za-z0-9._-]{0,63}", root) is None:
+if re.fullmatch(r"/private/var/tmp/aiam-iwn-activation-[A-Za-z0-9][A-Za-z0-9._-]{0,63}", root) is None:
     raise SystemExit(1)
-for path, want_sticky in (("/private", False), ("/private/tmp", True), (root, False)):
+for path, want_sticky in (("/private", False), ("/private/var", False),
+                          ("/private/var/tmp", True), (root, False)):
     try:
         value = os.lstat(path)
     except OSError:

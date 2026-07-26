@@ -163,7 +163,8 @@ for needle in ('os.lstat', 'stat.S_ISLNK', 'stat.S_ISDIR', 'stat.S_ISREG',
                'value.st_nlink != 1', '0o7022', 'os.scandir'):
     require(tree_validator, needle, "physical private-tree validation")
 bridge_root = function_body(script, "validate_bridge_root")
-for needle in ('/private/tmp/aiam-iwn-activation-', 'stat.S_ISVTX',
+for needle in ('/private/var/tmp/aiam-iwn-activation-', '("/private/var", False)',
+               '("/private/var/tmp", True)', 'stat.S_ISVTX',
                'value.st_uid != 0', 'stat.S_IMODE(value.st_mode) != 0o700'):
     require(bridge_root, needle, "bridge-root physical validation")
 ordered(bridge_root, "sealed output-root ACL cleanup",

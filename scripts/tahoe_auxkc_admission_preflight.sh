@@ -110,9 +110,10 @@ import stat
 import sys
 
 root = sys.argv[1]
-if re.fullmatch(r"/private/tmp/aiam-iwn-activation-[A-Za-z0-9][A-Za-z0-9._-]{0,63}", root) is None:
+if re.fullmatch(r"/private/var/tmp/aiam-iwn-activation-[A-Za-z0-9][A-Za-z0-9._-]{0,63}", root) is None:
     raise SystemExit(1)
-for path, want_sticky in (("/private", False), ("/private/tmp", True), (root, False)):
+for path, want_sticky in (("/private", False), ("/private/var", False),
+                          ("/private/var/tmp", True), (root, False)):
     try:
         value = os.lstat(path)
     except OSError:
@@ -125,8 +126,8 @@ for path, want_sticky in (("/private", False), ("/private/tmp", True), (root, Fa
     if path == root and stat.S_IMODE(value.st_mode) != 0o700:
         raise SystemExit(1)
 PY
-    # The root is root-owned inside the sticky /private/tmp directory, so this
-    # non-recursive ACL reset cannot be raced by an unprivileged caller.
+    # The root is root-owned inside the sticky /private/var/tmp directory, so
+    # this non-recursive ACL reset cannot be raced by an unprivileged caller.
     /bin/chmod -N "$root"
     /bin/chmod 700 "$root"
     /usr/bin/python3 -I - "$root" <<'PY'

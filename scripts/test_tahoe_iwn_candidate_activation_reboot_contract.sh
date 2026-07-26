@@ -84,6 +84,9 @@ for needle in (
     '"-c", "core.excludesFile=/dev/null", "-C", str(root), *arguments]',
     'PREFLIGHT_RELATIVE = "scripts/tahoe_auxkc_admission_preflight.sh"',
     'ACTIVATION_RELATIVE = "scripts/tahoe_auxkc_activate_release.sh"',
+    'ACTIVATION_PREFIX = "/private/var/tmp/aiam-iwn-activation-"',
+    'activation_prefix = "/private/var/tmp/aiam-iwn-activation-"',
+    'for parent in ("/private", "/private/tmp", "/private/var", "/private/var/tmp")',
     'TRUSTED_SOURCE_RELATIVES = (SELF_RELATIVE, PREFLIGHT_RELATIVE, ACTIVATION_RELATIVE)',
     'StrictHostKeyChecking=yes',
     'GlobalKnownHostsFile=/dev/null',
@@ -172,6 +175,7 @@ forbidden = (
     ("route delete", "route mutation"),
     ("qemu-system", "QEMU control"),
     ("qemu-img", "overlay manipulation"),
+    ("/private/tmp/aiam-iwn-activation-", "boot-volatile activation root"),
     ("return subprocess.run([*self.base, *args], **options)", "lossy SSH command flattening"),
     ("shell=True", "shell command expansion"),
 )

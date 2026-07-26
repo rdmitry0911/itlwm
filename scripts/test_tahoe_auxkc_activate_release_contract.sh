@@ -126,7 +126,8 @@ for token in ('os.lstat', 'stat.S_ISLNK', 'stat.S_ISDIR', 'stat.S_ISREG',
     if token not in tree_validator:
         fail("physical tree validator misses: " + token)
 bridge_root = body(helper, "validate_bridge_root()")
-for token in ('/private/tmp/aiam-iwn-activation-', 'stat.S_ISVTX',
+for token in ('/private/var/tmp/aiam-iwn-activation-', '("/private/var", False)',
+              '("/private/var/tmp", True)', 'stat.S_ISVTX',
               'value.st_uid != 0', 'stat.S_IMODE(value.st_mode) != 0o700'):
     if token not in bridge_root:
         fail("bridge-root validator misses: " + token)

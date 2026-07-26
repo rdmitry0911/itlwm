@@ -134,13 +134,16 @@ artifact until the same source has passed the BootKC symbol check.
 Before an activation decision, the activation bridge tests the candidate's
 AuxKC link/materialization boundary with the project-owned private-only helper.
 This is a bridge-private, root-only interface: it is not a generic command for
-an arbitrary `/private/tmp` candidate. The bridge supplies a root-owned sealed activation root,
-whose frozen candidate and new preflight directory have this fixed relationship:
+an arbitrary `/private/tmp` candidate. The bridge supplies a root-owned sealed activation root
+beneath boot-persistent `/private/var/tmp`; Tahoe clears
+`/private/tmp` during reboot, while the bridge must retain its marker to bind
+the returned boot session. The frozen candidate and new preflight directory
+have this fixed relationship:
 
 ```bash
 scripts/tahoe_auxkc_admission_preflight.sh \
-  --candidate /private/<activation-root>/frozen/extracted/AirportItlwm.kext \
-  --out /private/<activation-root>/preflight
+  --candidate /private/var/tmp/<activation-root>/frozen/extracted/AirportItlwm.kext \
+  --out /private/var/tmp/<activation-root>/preflight
 ```
 
 The candidate and temporary collection must physically resolve beneath `/private`.
