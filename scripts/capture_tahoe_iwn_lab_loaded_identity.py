@@ -52,7 +52,6 @@ RECEIPT_KIND = "local-unpublished-iwn-lab-candidate"
 PINNED_QEMU_GUEST = "devops@127.0.0.1"
 PINNED_QEMU_PORT = 3322
 PINNED_QEMU_BUILD = "25C56"
-PINNED_QEMU_INTERFACE = "en1"
 PINNED_KEXT_PATH = "/Library/Extensions/AirportItlwm.kext"
 PINNED_QEMU_HOST_KEY = (
     "[127.0.0.1]:3322 ssh-ed25519 "
@@ -97,8 +96,6 @@ _GUEST_VALUE_KEYS = {
 }
 _STABLE_SANITIZED_IDENTITY_FACT_KEYS = (
     "os_build",
-    "wifi_interface",
-    "wifi_interface_present",
     "installed_bundle_present",
     "installed_bundle_id",
     "installed_bundle_version",
@@ -197,9 +194,6 @@ p="__PINNED_KEXT_PATH__"
 info="$p/Contents/Info.plist"
 bin="$p/Contents/MacOS/AirportItlwm"
 printf 'guest_build=%s\n' "$(sw_vers -buildVersion 2>/dev/null || true)"
-printf '__NETWORKSETUP_BEGIN__\n'
-networksetup -listallhardwareports 2>/dev/null || true
-printf '__NETWORKSETUP_END__\n'
 if [ -d "$p" ] && [ -f "$info" ] && [ -f "$bin" ]; then
   printf 'installed_bundle_present=true\n'
 else
@@ -303,23 +297,10 @@ def unique_uuids(text: str) -> list[str]:
     return values
 
 
-def interface_present(networksetup_output: Optional[str]) -> bool:
-    if networksetup_output is None:
-        return False
-    return bool(
-        re.search(
-            r"(?im)^\s*Device:\s*" + re.escape(PINNED_QEMU_INTERFACE) + r"\s*$",
-            networksetup_output,
-        )
-    )
-
-
 def parse_guest_observation(output: str) -> dict[str, object]:
     """Reduce untrusted guest stdout to categorical, non-secret evidence."""
     default = {
         "os_build": "unknown",
-        "wifi_interface": PINNED_QEMU_INTERFACE,
-        "wifi_interface_present": False,
         "installed_bundle_present": False,
         "installed_bundle_id": "",
         "installed_bundle_version": "",
@@ -335,12 +316,11 @@ def parse_guest_observation(output: str) -> dict[str, object]:
     }
     try:
         values = guest_key_values(output)
-        network = section(output, "__NETWORKSETUP_BEGIN__", "__NETWORKSETUP_END__")
         installed_uuid_text = section(
             output, "__INSTALLED_UUID_BEGIN__", "__INSTALLED_UUID_END__"
         )
         loaded = section(output, "__LOADED_BEGIN__", "__LOADED_END__")
-        if network is None or installed_uuid_text is None or loaded is None:
+        if installed_uuid_text is None or loaded is None:
             return default
         installed_uuids = unique_uuids(installed_uuid_text)
         loaded_driver_lines = [
@@ -350,8 +330,6 @@ def parse_guest_observation(output: str) -> dict[str, object]:
         installed_uuid = installed_uuids[0] if len(installed_uuids) == 1 else ""
         return {
             "os_build": values.get("guest_build", "unknown"),
-            "wifi_interface": PINNED_QEMU_INTERFACE,
-            "wifi_interface_present": interface_present(network),
             "installed_bundle_present": values.get("installed_bundle_present") == "true",
             "installed_bundle_id": values.get("installed_bundle_id", ""),
             "installed_bundle_version": values.get("installed_bundle_version", ""),
@@ -463,7 +441,6 @@ def binding_result(
             double_read.get("both_pinned_qemu_builds_match") is True,
         "sanitized_installed_loaded_identity_stable":
             double_read.get("sanitized_installed_loaded_identity_stable") is True,
-        "wifi_interface_present": guest.get("wifi_interface_present") is True,
         "installed_bundle_present": guest.get("installed_bundle_present") is True,
         "installed_bundle_id_matches_candidate":
             guest.get("installed_bundle_id") == expected["bundle_id"],
@@ -600,8 +577,6 @@ def fixture_candidate() -> dict[str, Any]:
 def fixture_guest(candidate: dict[str, Any]) -> dict[str, object]:
     return {
         "os_build": PINNED_QEMU_BUILD,
-        "wifi_interface": PINNED_QEMU_INTERFACE,
-        "wifi_interface_present": True,
         "installed_bundle_present": True,
         "installed_bundle_id": candidate["bundle_id"],
         "installed_bundle_version": "fixture-build",
@@ -622,10 +597,6 @@ def fixture_guest_stdout(candidate: dict[str, Any], guest_build: str = PINNED_QE
     """Build a credential-free fixture response for local double-read tests."""
     uuid_value = candidate["macho_uuid"] if loaded_uuid is None else loaded_uuid
     return f"""guest_build={guest_build}
-__NETWORKSETUP_BEGIN__
-Hardware Port: Wi-Fi
-Device: {PINNED_QEMU_INTERFACE}
-__NETWORKSETUP_END__
 installed_bundle_present=true
 installed_bundle_id={candidate["bundle_id"]}
 installed_bundle_version=fixture

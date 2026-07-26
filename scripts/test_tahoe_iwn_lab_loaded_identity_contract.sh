@@ -37,7 +37,6 @@ for needle in \
     'PINNED_QEMU_GUEST = "devops@127.0.0.1"' \
     'PINNED_QEMU_PORT = 3322' \
     'PINNED_QEMU_BUILD = "25C56"' \
-    'PINNED_QEMU_INTERFACE = "en1"' \
     'PINNED_QEMU_HOST_KEY_SHA256' \
     'DOUBLE_READ_DELAY_SECONDS = 1' \
     'StrictHostKeyChecking=yes' \
@@ -87,7 +86,7 @@ for needle in \
     'sudo -n kmutil load' \
     'sudo -n kextload' \
     'sudo -n kextutil' \
-    'networksetup -set' \
+    'networksetup' \
     'route add' \
     'route delete' \
     'route change' \
@@ -139,10 +138,6 @@ if set(candidate) != expected_keys:
 
 uuid = candidate["macho_uuid"]
 valid_output = f"""guest_build={module.PINNED_QEMU_BUILD}
-__NETWORKSETUP_BEGIN__
-Hardware Port: Wi-Fi
-Device: {module.PINNED_QEMU_INTERFACE}
-__NETWORKSETUP_END__
 installed_bundle_present=true
 installed_bundle_id={candidate["bundle_id"]}
 installed_bundle_version=fixture
