@@ -506,6 +506,17 @@ enum {
         kAirportItlwmSaeRelaySelectorCount
 };
 
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+enum {
+    kAirportItlwmIwnDirectSaeLabMethod_QueryReady =
+        kAirportItlwmIwnLabDirectSaeStimulusQueryReadySelector,
+    kAirportItlwmIwnDirectSaeLabMethod_Submit =
+        kAirportItlwmIwnLabDirectSaeStimulusSubmitSelector,
+    kAirportItlwmIwnDirectSaeLabMethod_Count =
+        kAirportItlwmIwnLabDirectSaeStimulusSelectorCount,
+};
+#endif
+
 class AirportItlwmUserClient : public IOUserClient
 {
     OSDeclareDefaultStructors(AirportItlwmUserClient)
@@ -549,6 +560,14 @@ public:
     static IOReturn sExtAbortSae(AirportItlwmUserClient *target,
                                  void *reference,
                                  IOExternalMethodArguments *args);
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    static IOReturn sExtIwnDirectSaeLabQueryReady(
+        AirportItlwmUserClient *target, void *reference,
+        IOExternalMethodArguments *args);
+    static IOReturn sExtIwnDirectSaeLabSubmit(
+        AirportItlwmUserClient *target, void *reference,
+        IOExternalMethodArguments *args);
+#endif
 
     AirportItlwm *retainProvider();
 
@@ -561,6 +580,9 @@ private:
     IOLock       *fProviderLock;
     task_t       fOwningTask;
     uint8_t      fSaeClientCookie[kAirportItlwmSaeRelayV1NonceLength];
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    bool         fIwnDirectSaeLabClient;
+#endif
 };
 
 // Pin the carrier ABI for the helper-side mirror in
@@ -631,6 +653,31 @@ sAirportItlwmUserClientMethods[kAirportItlwmUserClientMethod_NumMethods] = {
         0                                         // checkStructureOutputSize
     }
 };
+
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+/* This table is reachable only from the separate lab UserClient type.  The
+ * product PLTI selectors remain 0..6 and retain their exact ABI. */
+static const IOExternalMethodDispatch
+sAirportItlwmIwnDirectSaeLabUserClientMethods[
+    kAirportItlwmIwnDirectSaeLabMethod_Count] = {
+    {
+        (IOExternalMethodAction)
+            &AirportItlwmUserClient::sExtIwnDirectSaeLabQueryReady,
+        0,
+        0,
+        0,
+        sizeof(struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1)
+    },
+    {
+        (IOExternalMethodAction)
+            &AirportItlwmUserClient::sExtIwnDirectSaeLabSubmit,
+        0,
+        sizeof(struct AirportItlwmIwnLabDirectSaeStimulusRequestV1),
+        0,
+        0
+    }
+};
+#endif
 #endif // __IO80211_TARGET >= __MAC_26_0
 
 #define super IO80211Controller
@@ -745,6 +792,17 @@ static void clearSaePeerRxMailboxAdmissionAndPurge(AirportItlwm *that);
 static void dispatchSaePeerRxMailboxEvent(
     AirportItlwm *that, const struct ItlSaeAuthPeerEventV1 *event,
     bool conflict);
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+static bool setupIwnDirectSaeLabStimulusSource(AirportItlwm *that,
+                                                IOWorkLoop *workloop);
+static void teardownIwnDirectSaeLabStimulusSource(AirportItlwm *that,
+                                                   IOWorkLoop *workloop);
+static void signalIwnDirectSaeLabStimulus(
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state,
+    IOSimpleLock *admissionLock, IOInterruptEventSource *source);
+static void cancelIwnDirectSaeLabGeneration(AirportItlwm *that,
+                                             uint64_t generation);
+#endif
 #endif
 
 static bool setupWclPhysicalScanTerminalSource(AirportItlwm *that,
@@ -1772,6 +1830,344 @@ teardownSaePeerRxMailboxSource(AirportItlwm *that, IOWorkLoop *workloop)
     state.tearingDown = false;
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
 }
+
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+static bool
+iwnDirectSaeLabCookieEqual(const uint8_t left[
+                           kAirportItlwmSaeRelayV1NonceLength],
+                         const uint8_t right[
+                           kAirportItlwmSaeRelayV1NonceLength])
+{
+    volatile uint8_t difference = 0;
+
+    if (left == nullptr || right == nullptr)
+        return false;
+    for (size_t index = 0; index < kAirportItlwmSaeRelayV1NonceLength;
+         ++index)
+        difference |= left[index] ^ right[index];
+    return difference == 0;
+}
+
+static void
+iwnDirectSaeLabClearOwnershipLocked(
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state)
+{
+    state.pending = false;
+    state.dispatching = false;
+    state.active = false;
+    state.cancelRequested = false;
+    state.requestId = 0;
+    state.activeGeneration = 0;
+    explicit_bzero(state.ownerCookie, sizeof(state.ownerCookie));
+}
+
+static void
+cancelIwnDirectSaeLabGeneration(AirportItlwm *that, uint64_t generation)
+{
+    if (that == nullptr || generation == 0)
+        return;
+    AirportItlwmSkywalkInterface *interface =
+        OSDynamicCast(AirportItlwmSkywalkInterface, that->fNetIf);
+    if (interface == nullptr)
+        return;
+    interface->retain();
+    interface->cancelIwnDirectSaeLabStimulus(generation);
+    interface->release();
+}
+
+/* The source action is the sole place that can invoke the password-bearing
+ * lower-half. It runs on the controller workloop with its command gate
+ * released, so it cannot take WCL's recursive-gate publication path. */
+static void
+iwnDirectSaeLabStimulusInterruptAction(
+    OSObject *owner, IOInterruptEventSource *sender, int /* count */)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    if (that == nullptr)
+        return;
+
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(that, false);
+    if (!lifecycle.admitted())
+        return;
+
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
+        that->fIwnDirectSaeLabStimulus;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == nullptr)
+        return;
+
+    for (;;) {
+        struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 request;
+        uint8_t ownerCookie[kAirportItlwmSaeRelayV1NonceLength];
+        uint64_t requestId = 0;
+        uint64_t cancelGeneration = 0;
+        bool start = false;
+        bool cancel = false;
+
+        explicit_bzero(&request, sizeof(request));
+        explicit_bzero(ownerCookie, sizeof(ownerCookie));
+        IOInterruptState admissionIrq =
+            IOSimpleLockLockDisableInterrupt(admissionLock);
+        if (state.settingUp || state.stopping || state.tearingDown ||
+            sender != state.source || state.payloadLock == nullptr) {
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+            explicit_bzero(&request, sizeof(request));
+            explicit_bzero(ownerCookie, sizeof(ownerCookie));
+            return;
+        }
+        IOSimpleLock *payloadLock = state.payloadLock;
+        IOInterruptState payloadIrq =
+            IOSimpleLockLockDisableInterrupt(payloadLock);
+        if (state.pending) {
+            request = state.request;
+            memcpy(ownerCookie, state.ownerCookie, sizeof(ownerCookie));
+            requestId = state.requestId;
+            explicit_bzero(&state.request, sizeof(state.request));
+            state.pending = false;
+            state.dispatching = true;
+            state.active = false;
+            state.activeGeneration = 0;
+            start = true;
+        } else if (state.active && state.cancelRequested &&
+                   state.activeGeneration != 0) {
+            cancelGeneration = state.activeGeneration;
+            iwnDirectSaeLabClearOwnershipLocked(state);
+            cancel = true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+        if (start) {
+            bool cancelledBeforeStart = false;
+            admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+            if (!state.stopping && !state.tearingDown && state.dispatching &&
+                state.requestId == requestId &&
+                iwnDirectSaeLabCookieEqual(state.ownerCookie, ownerCookie)) {
+                cancelledBeforeStart = state.cancelRequested;
+                if (cancelledBeforeStart)
+                    iwnDirectSaeLabClearOwnershipLocked(state);
+            } else {
+                cancelledBeforeStart = true;
+            }
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+            uint64_t generation = 0;
+            IOReturn result = kIOReturnAborted;
+            if (!cancelledBeforeStart) {
+                AirportItlwmSkywalkInterface *interface =
+                    OSDynamicCast(AirportItlwmSkywalkInterface, that->fNetIf);
+                if (interface != nullptr) {
+                    interface->retain();
+                    result = interface->startIwnDirectSaeLabStimulus(&request,
+                                                                       &generation);
+                    interface->release();
+                }
+            }
+
+            bool cancelAfterStart = false;
+            admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+            if (state.dispatching && state.requestId == requestId &&
+                iwnDirectSaeLabCookieEqual(state.ownerCookie, ownerCookie)) {
+                state.dispatching = false;
+                if (result == kIOReturnSuccess && generation != 0) {
+                    state.active = true;
+                    state.activeGeneration = generation;
+                    cancelAfterStart = state.cancelRequested;
+                    if (cancelAfterStart)
+                        iwnDirectSaeLabClearOwnershipLocked(state);
+                } else {
+                    iwnDirectSaeLabClearOwnershipLocked(state);
+                }
+            }
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+            if (cancelAfterStart)
+                cancelIwnDirectSaeLabGeneration(that, generation);
+            explicit_bzero(&request, sizeof(request));
+            explicit_bzero(ownerCookie, sizeof(ownerCookie));
+            continue;
+        }
+
+        if (cancel)
+            cancelIwnDirectSaeLabGeneration(that, cancelGeneration);
+        explicit_bzero(&request, sizeof(request));
+        explicit_bzero(ownerCookie, sizeof(ownerCookie));
+        return;
+    }
+}
+
+static bool
+setupIwnDirectSaeLabStimulusSource(AirportItlwm *that,
+                                   IOWorkLoop *workloop)
+{
+    if (that == nullptr || workloop == nullptr)
+        return false;
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
+        that->fIwnDirectSaeLabStimulus;
+    IOSimpleLock *lifecycleLock = that->fLifecycleAdmissionLock;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (lifecycleLock == nullptr || admissionLock == nullptr)
+        return false;
+
+    IOInterruptState lifecycleIrq =
+        IOSimpleLockLockDisableInterrupt(lifecycleLock);
+    if (that->fLifecyclePhase != kAirportItlwmLifecycleStarting &&
+        that->fLifecyclePhase != kAirportItlwmLifecycleLive) {
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source != nullptr || state.payloadLock != nullptr) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    state.settingUp = true;
+    state.stopping = false;
+    state.tearingDown = false;
+    workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+
+    IOSimpleLock *payloadLock = IOSimpleLockAlloc();
+    IOInterruptEventSource *source = IOInterruptEventSource::
+        interruptEventSource(that, (IOInterruptEventSource::Action)
+            iwnDirectSaeLabStimulusInterruptAction);
+    bool sourceAdded = false;
+    bool installed = false;
+    if (payloadLock != nullptr && source != nullptr &&
+        workloop->addEventSource(source) == kIOReturnSuccess) {
+        sourceAdded = true;
+        source->enable();
+        admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        if (!state.stopping && !state.tearingDown) {
+            state.source = source;
+            state.payloadLock = payloadLock;
+            state.users = 0;
+            state.pending = false;
+            state.dispatching = false;
+            state.active = false;
+            state.cancelRequested = false;
+            state.nextRequestId = 0;
+            state.requestId = 0;
+            state.activeGeneration = 0;
+            explicit_bzero(state.ownerCookie, sizeof(state.ownerCookie));
+            explicit_bzero(&state.request, sizeof(state.request));
+            state.settingUp = false;
+            installed = true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    }
+    if (installed) {
+        workloop->release();
+        return true;
+    }
+    if (source != nullptr) {
+        source->disable();
+        if (sourceAdded)
+            workloop->removeEventSource(source);
+        source->release();
+    }
+    if (payloadLock != nullptr)
+        IOSimpleLockFree(payloadLock);
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.settingUp = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    workloop->release();
+    return false;
+}
+
+static void
+signalIwnDirectSaeLabStimulus(
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state,
+    IOSimpleLock *admissionLock, IOInterruptEventSource *source)
+{
+    if (admissionLock == nullptr || source == nullptr)
+        return;
+    source->interruptOccurred(0, 0, 0);
+    source->release();
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.users != 0)
+        --state.users;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+}
+
+static void
+teardownIwnDirectSaeLabStimulusSource(AirportItlwm *that,
+                                      IOWorkLoop *workloop)
+{
+    if (that == nullptr)
+        return;
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
+        that->fIwnDirectSaeLabStimulus;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == nullptr)
+        return;
+
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.tearingDown) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        for (;;) {
+            admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+            const bool complete = !state.tearingDown;
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+            if (complete)
+                return;
+            IOSleep(1);
+        }
+    }
+    state.stopping = true;
+    state.tearingDown = true;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    for (;;) {
+        admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        const bool drained = !state.settingUp && state.users == 0;
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        if (drained)
+            break;
+        IOSleep(1);
+    }
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    IOInterruptEventSource *source = state.source;
+    IOSimpleLock *payloadLock = state.payloadLock;
+    if (source != nullptr)
+        source->retain();
+    if (workloop != nullptr)
+        workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (source != nullptr) {
+        source->disable();
+        if (workloop != nullptr)
+            workloop->removeEventSource(source);
+    }
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.source = nullptr;
+    state.payloadLock = nullptr;
+    iwnDirectSaeLabClearOwnershipLocked(state);
+    explicit_bzero(&state.request, sizeof(state.request));
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (payloadLock != nullptr)
+        IOSimpleLockFree(payloadLock);
+    if (source != nullptr) {
+        source->release();
+        source->release();
+    }
+    if (workloop != nullptr)
+        workloop->release();
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.tearingDown = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+}
+#endif /* AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS */
+
 #endif
 
 // The Skywalk interface historically copied AirportItlwm::scanSource into a
@@ -6818,6 +7214,9 @@ void AirportItlwm::prepareLifecycleDrain()
      */
     cancelPendingAssocTarget("prepareLifecycleDrain", true);
     cancelSaeRelay("prepareLifecycleDrain", true);
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    cancelIwnDirectSaeLabAll();
+#endif
 #endif
 
     IOSimpleLock *admissionLock = fLifecycleAdmissionLock;
@@ -6870,6 +7269,9 @@ void AirportItlwm::stopHalAndDrainClaimed()
     teardownWclPhysicalScanTerminalSource(this, _fWorkloop);
     stopTahoeBootThreadCallAndDrain();
 #if __IO80211_TARGET >= __MAC_26_0
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    teardownIwnDirectSaeLabStimulusSource(this, _fWorkloop);
+#endif
     teardownSaePeerRxMailboxSource(this, _fWorkloop);
     teardownSaeTransportMailboxSource(this, _fWorkloop);
 #endif
@@ -8250,6 +8652,9 @@ bool AirportItlwm::init(OSDictionary *properties)
 #if __IO80211_TARGET >= __MAC_26_0
     memset(&fSaeTransportMailbox, 0, sizeof(fSaeTransportMailbox));
     memset(&fSaePeerRxMailbox, 0, sizeof(fSaePeerRxMailbox));
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    memset(&fIwnDirectSaeLabStimulus, 0, sizeof(fIwnDirectSaeLabStimulus));
+#endif
 #endif
     fLinkStatePublishLifecycle.admissionLock = IOSimpleLockAlloc();
     fScanSourceLifecycle.admissionLock = IOSimpleLockAlloc();
@@ -8257,6 +8662,9 @@ bool AirportItlwm::init(OSDictionary *properties)
 #if __IO80211_TARGET >= __MAC_26_0
     fSaeTransportMailbox.admissionLock = IOSimpleLockAlloc();
     fSaePeerRxMailbox.admissionLock = IOSimpleLockAlloc();
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    fIwnDirectSaeLabStimulus.admissionLock = IOSimpleLockAlloc();
+#endif
 #endif
     fWatchdogStopping = false;
     tahoeBootThreadCall = nullptr;
@@ -8278,6 +8686,9 @@ bool AirportItlwm::init(OSDictionary *properties)
 #if __IO80211_TARGET >= __MAC_26_0
         || fSaeTransportMailbox.admissionLock == nullptr
         || fSaePeerRxMailbox.admissionLock == nullptr
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+        || fIwnDirectSaeLabStimulus.admissionLock == nullptr
+#endif
 #endif
         )
         ret = false;
@@ -9000,6 +9411,17 @@ bool AirportItlwm::start(IOService *provider)
         DISARM_PANIC_TIMER();
         return false;
     }
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    if (!setupIwnDirectSaeLabStimulusSource(this, _fWorkloop)) {
+        XYLog("DEBUG %s [STEP 7] FAIL: IWN direct SAE lab source alloc\n",
+              __FUNCTION__);
+        stopHalAndDrain();
+        super::stop(pciNub);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+#endif
 #endif
 
     SD_SET(10); // watchdog/scan timers OK
@@ -9699,6 +10121,12 @@ void AirportItlwm::free()
         IOSimpleLockFree(fSaePeerRxMailbox.admissionLock);
         fSaePeerRxMailbox.admissionLock = NULL;
     }
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    if (fIwnDirectSaeLabStimulus.admissionLock != NULL) {
+        IOSimpleLockFree(fIwnDirectSaeLabStimulus.admissionLock);
+        fIwnDirectSaeLabStimulus.admissionLock = NULL;
+    }
+#endif
 #endif
     if (fLifecycleAdmissionLock != NULL) {
         IOSimpleLockFree(fLifecycleAdmissionLock);
@@ -11248,11 +11676,18 @@ initWithTask(task_t owningTask, void *securityID, UInt32 type,
     fProvider = nullptr;
     fProviderLock = nullptr;
     memset(fSaeClientCookie, 0, sizeof(fSaeClientCookie));
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    fIwnDirectSaeLabClient = false;
+#endif
     if (!IOUserClient::initWithTask(owningTask, securityID, type,
                                     properties)) {
         return false;
     }
     fOwningTask = owningTask;
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    fIwnDirectSaeLabClient =
+        type == kAirportItlwmIwnLabDirectSaeStimulusUserClientType;
+#endif
     if (!airportItlwmSaeFillNonZero(fSaeClientCookie))
         return false;
     fProviderLock = IOLockAlloc();
@@ -11361,6 +11796,10 @@ stop(IOService *provider)
          * A normal close may cancel only the exact cookie it owns; a draining
          * controller has already cancelled/woken all relay waiters.
          */
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+        if (fIwnDirectSaeLabClient)
+            controller->cancelIwnDirectSaeLabForClient(sae_cookie);
+#endif
         controller->abortSaeRelayForClient(sae_cookie);
         controller->endLifecycleOperation();
     }
@@ -11379,6 +11818,10 @@ free(void)
     AirportItlwm *controller = takeProvider();
     if (controller != nullptr && have_sae_cookie &&
         controller->beginLifecycleOperation()) {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+        if (fIwnDirectSaeLabClient)
+            controller->cancelIwnDirectSaeLabForClient(sae_cookie);
+#endif
         controller->abortSaeRelayForClient(sae_cookie);
         controller->endLifecycleOperation();
     }
@@ -11408,6 +11851,17 @@ externalMethod(uint32_t selector,
                OSObject *target,
                void *reference)
 {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    if (fIwnDirectSaeLabClient) {
+        if (selector >= kAirportItlwmIwnDirectSaeLabMethod_Count)
+            return kIOReturnBadArgument;
+        dispatch = (IOExternalMethodDispatch *)
+            &sAirportItlwmIwnDirectSaeLabUserClientMethods[selector];
+        target = this;
+        return IOUserClient::externalMethod(selector, args, dispatch,
+                                            target, reference);
+    }
+#endif
     if (selector >= kAirportItlwmUserClientMethod_NumMethods) {
         XYLog("CR239 AirportItlwmUserClient::externalMethod selector=%u "
               "out of range (max=%u)\n",
@@ -11638,6 +12092,75 @@ sExtAbortSae(AirportItlwmUserClient *target,
     return rc;
 }
 
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+IOReturn AirportItlwmUserClient::
+sExtIwnDirectSaeLabQueryReady(AirportItlwmUserClient *target,
+                              void *reference,
+                              IOExternalMethodArguments *args)
+{
+    (void)reference;
+    if (target == nullptr || !target->fIwnDirectSaeLabClient ||
+        args == nullptr || args->structureOutput == nullptr)
+        return kIOReturnBadArgument;
+
+    AirportItlwm *provider = target->retainProvider();
+    if (provider == nullptr || !provider->beginLifecycleOperation()) {
+        if (provider != nullptr)
+            provider->release();
+        return kIOReturnNotReady;
+    }
+    struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1 reply{};
+    IOReturn rc = provider->queryIwnDirectSaeLabReady(&reply);
+    if (rc == kIOReturnSuccess)
+        memcpy(args->structureOutput, &reply, sizeof(reply));
+    explicit_bzero(&reply, sizeof(reply));
+    provider->endLifecycleOperation();
+    provider->release();
+    return rc;
+}
+
+IOReturn AirportItlwmUserClient::
+sExtIwnDirectSaeLabSubmit(AirportItlwmUserClient *target,
+                          void *reference,
+                          IOExternalMethodArguments *args)
+{
+    (void)reference;
+    struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 request{};
+    uint8_t clientCookie[kAirportItlwmSaeRelayV1NonceLength];
+    IOReturn rc = kIOReturnBadArgument;
+
+    explicit_bzero(clientCookie, sizeof(clientCookie));
+    if (target == nullptr || !target->fIwnDirectSaeLabClient ||
+        args == nullptr || args->structureInput == nullptr)
+        goto out;
+    memcpy(&request, args->structureInput, sizeof(request));
+    if (!AirportItlwmIwnLabDirectSaeStimulusRequestIsWellFormed(&request))
+        goto out;
+    if (!target->copySaeClientCookie(clientCookie)) {
+        rc = kIOReturnNotReady;
+        goto out;
+    }
+
+    {
+        AirportItlwm *provider = target->retainProvider();
+        if (provider == nullptr || !provider->beginLifecycleOperation()) {
+            if (provider != nullptr)
+                provider->release();
+            rc = kIOReturnNotReady;
+            goto out;
+        }
+        rc = provider->queueIwnDirectSaeLabStimulus(&request, clientCookie);
+        provider->endLifecycleOperation();
+        provider->release();
+    }
+
+out:
+    AirportItlwmIwnLabDirectSaeStimulusRequestScrub(&request);
+    explicit_bzero(clientCookie, sizeof(clientCookie));
+    return rc;
+}
+#endif
+
 // =====================================================================
 // AirportItlwm controller-side dispatch.
 // =====================================================================
@@ -11646,10 +12169,17 @@ IOReturn AirportItlwm::
 newUserClient(task_t owningTask, void *securityID, UInt32 type,
               OSDictionary *properties, IOUserClient **handler)
 {
-    if (type != kAirportItlwmUserClientType) {
+    const bool productPltiType = type == kAirportItlwmUserClientType;
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    const bool labDirectSaeType =
+        type == kAirportItlwmIwnLabDirectSaeStimulusUserClientType;
+#else
+    const bool labDirectSaeType = false;
+#endif
+    if (!productPltiType && !labDirectSaeType) {
         // Defer to base class so existing IO80211APIUserClient
-        // dispatch is preserved unchanged. We only intercept the
-        // unique 'PLTI' type magic for our private channel.
+        // dispatch is preserved unchanged.  The separately compiled lab
+        // artifact additionally intercepts its own diagnostic type.
         return IO80211Controller::newUserClient(owningTask, securityID,
                                                 type, properties,
                                                 handler);
@@ -11709,6 +12239,232 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
     endLifecycleOperation();
     return kIOReturnSuccess;
 }
+
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+struct AirportItlwmIwnDirectSaeLabReadyArgs {
+    AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1 *out;
+};
+
+static IOReturn
+airportItlwmIwnDirectSaeLabReadyGated(OSObject *owner, void *arg0,
+                                      void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    AirportItlwmIwnDirectSaeLabReadyArgs *args =
+        static_cast<AirportItlwmIwnDirectSaeLabReadyArgs *>(arg0);
+    if (that == nullptr || args == nullptr || args->out == nullptr)
+        return kIOReturnBadArgument;
+
+    auto &reply = *args->out;
+    explicit_bzero(&reply, sizeof(reply));
+    reply.version = kAirportItlwmIwnLabDirectSaeStimulusV1Version;
+    reply.size = sizeof(reply);
+    reply.readiness = kAirportItlwmIwnLabDirectSaeStimulusUnsupported;
+
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
+        that->fIwnDirectSaeLabStimulus;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    bool sourceReady = false;
+    if (admissionLock != nullptr) {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(admissionLock);
+        sourceReady = !state.settingUp && !state.stopping &&
+            !state.tearingDown && state.source != nullptr &&
+            state.payloadLock != nullptr;
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    }
+    if (!sourceReady) {
+        reply.readiness = kAirportItlwmIwnLabDirectSaeStimulusNotReady;
+        return kIOReturnSuccess;
+    }
+    if (that->fHalService == nullptr ||
+        OSDynamicCast(ItlIwn, that->fHalService) == nullptr)
+        return kIOReturnSuccess;
+
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    reply.readiness = ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_SCAN
+        ? kAirportItlwmIwnLabDirectSaeStimulusReady
+        : kAirportItlwmIwnLabDirectSaeStimulusNotReady;
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmClearIwnDirectSaeLabAssociationOwnerGated(
+    OSObject *owner, void *, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    if (that == nullptr)
+        return kIOReturnNotReady;
+    that->getTahoeOwnerRegistry().association =
+        TahoeOwnerRegistry::AssociationOwner{};
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+queryIwnDirectSaeLabReady(
+    struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1 *out)
+{
+    if (out == nullptr)
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    AirportItlwmIwnDirectSaeLabReadyArgs args{out};
+    return gate->runAction(airportItlwmIwnDirectSaeLabReadyGated, &args);
+}
+
+IOReturn AirportItlwm::
+clearIwnDirectSaeLabAssociationOwner()
+{
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    return gate->runAction(
+        airportItlwmClearIwnDirectSaeLabAssociationOwnerGated);
+}
+
+IOReturn AirportItlwm::
+queueIwnDirectSaeLabStimulus(
+    const struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *request,
+    const uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength])
+{
+    struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1 ready{};
+    IOReturn readinessResult;
+
+    if (!AirportItlwmIwnLabDirectSaeStimulusRequestIsWellFormed(request) ||
+        client_cookie == nullptr ||
+        AirportItlwmSaeRelayFsmV1BytesAllZero(client_cookie,
+            kAirportItlwmSaeRelayV1NonceLength)) {
+        return kIOReturnBadArgument;
+    }
+    readinessResult = queryIwnDirectSaeLabReady(&ready);
+    const bool readyForSecret = readinessResult == kIOReturnSuccess &&
+        ready.readiness == kAirportItlwmIwnLabDirectSaeStimulusReady;
+    explicit_bzero(&ready, sizeof(ready));
+    if (!readyForSecret)
+        return readinessResult == kIOReturnSuccess
+            ? kIOReturnNotReady : readinessResult;
+
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
+        fIwnDirectSaeLabStimulus;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == nullptr)
+        return kIOReturnNotReady;
+
+    IOInterruptEventSource *source = nullptr;
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source == nullptr || state.payloadLock == nullptr) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return kIOReturnNotReady;
+    }
+    IOSimpleLock *payloadLock = state.payloadLock;
+    IOInterruptState payloadIrq =
+        IOSimpleLockLockDisableInterrupt(payloadLock);
+    if (state.pending || state.dispatching || state.active) {
+        IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return kIOReturnBusy;
+    }
+    uint64_t requestId = ++state.nextRequestId;
+    if (requestId == 0)
+        requestId = ++state.nextRequestId;
+    state.request = *request;
+    state.requestId = requestId;
+    state.activeGeneration = 0;
+    state.cancelRequested = false;
+    memcpy(state.ownerCookie, client_cookie, sizeof(state.ownerCookie));
+    state.pending = true;
+    ++state.users;
+    source = state.source;
+    source->retain();
+    IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    signalIwnDirectSaeLabStimulus(state, admissionLock, source);
+    return kIOReturnSuccess;
+}
+
+void AirportItlwm::
+cancelIwnDirectSaeLabForClient(const uint8_t client_cookie[
+    kAirportItlwmSaeRelayV1NonceLength])
+{
+    if (client_cookie == nullptr || AirportItlwmSaeRelayFsmV1BytesAllZero(
+            client_cookie, kAirportItlwmSaeRelayV1NonceLength))
+        return;
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
+        fIwnDirectSaeLabStimulus;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == nullptr)
+        return;
+
+    IOInterruptEventSource *source = nullptr;
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.requestId == 0 || !iwnDirectSaeLabCookieEqual(
+            state.ownerCookie, client_cookie)) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return;
+    }
+    if (state.pending && state.payloadLock != nullptr) {
+        IOInterruptState payloadIrq =
+            IOSimpleLockLockDisableInterrupt(state.payloadLock);
+        explicit_bzero(&state.request, sizeof(state.request));
+        iwnDirectSaeLabClearOwnershipLocked(state);
+        IOSimpleLockUnlockEnableInterrupt(state.payloadLock, payloadIrq);
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return;
+    }
+    if ((state.dispatching || state.active) && state.source != nullptr) {
+        state.cancelRequested = true;
+        ++state.users;
+        source = state.source;
+        source->retain();
+    }
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    if (source != nullptr)
+        signalIwnDirectSaeLabStimulus(state, admissionLock, source);
+}
+
+void AirportItlwm::
+cancelIwnDirectSaeLabAll()
+{
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
+        fIwnDirectSaeLabStimulus;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == nullptr)
+        return;
+
+    IOInterruptEventSource *source = nullptr;
+    uint64_t activeGeneration = 0;
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.pending && state.payloadLock != nullptr) {
+        IOInterruptState payloadIrq =
+            IOSimpleLockLockDisableInterrupt(state.payloadLock);
+        explicit_bzero(&state.request, sizeof(state.request));
+        iwnDirectSaeLabClearOwnershipLocked(state);
+        IOSimpleLockUnlockEnableInterrupt(state.payloadLock, payloadIrq);
+    } else if (state.active && state.activeGeneration != 0) {
+        activeGeneration = state.activeGeneration;
+        iwnDirectSaeLabClearOwnershipLocked(state);
+    } else if (state.dispatching) {
+        state.cancelRequested = true;
+        if (state.source != nullptr) {
+            ++state.users;
+            source = state.source;
+            source->retain();
+        }
+    }
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    if (activeGeneration != 0)
+        cancelIwnDirectSaeLabGeneration(this, activeGeneration);
+    if (source != nullptr)
+        signalIwnDirectSaeLabStimulus(state, admissionLock, source);
+}
+#endif /* AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS */
 
 // =====================================================================
 // Project-owned PLTI PMK producer trigger surface.

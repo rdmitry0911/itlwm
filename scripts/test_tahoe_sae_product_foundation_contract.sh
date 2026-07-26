@@ -102,12 +102,25 @@ clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
     -o "$tmpdir/iwn-sae-wcl-credential-cpp"
 "$tmpdir/iwn-sae-wcl-credential-cpp"
 
+clang -std=c11 -Wall -Wextra -Werror \
+    -I"$root/include" \
+    "$root/tests/iwn_lab_direct_sae_stimulus_v1_test.c" \
+    -o "$tmpdir/iwn-lab-direct-sae-stimulus-c"
+"$tmpdir/iwn-lab-direct-sae-stimulus-c"
+
+clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
+    -I"$root/include" \
+    "$root/tests/iwn_lab_direct_sae_stimulus_v1_test.c" \
+    -o "$tmpdir/iwn-lab-direct-sae-stimulus-cpp"
+"$tmpdir/iwn-lab-direct-sae-stimulus-cpp"
+
 bash "$root/scripts/test_tahoe_sae_controller_relay_contract.sh"
 bash "$root/scripts/test_tahoe_iwx_sae_auth_transport_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_auth_transport_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_wcl_credential_contract.sh"
 bash "$root/scripts/test_net80211_sae_wcl_request_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_wcl_ingress_contract.sh"
+bash "$root/scripts/test_tahoe_iwn_lab_direct_sae_userclient_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_pmk_continuation_contract.sh"
 bash "$root/scripts/test_net80211_sae_rsn_output_contract.sh"
 

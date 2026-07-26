@@ -20,9 +20,13 @@
 #include "TahoeCommanderV2.hpp"
 #include "TahoeStandardScanContracts.hpp"
 #include "TahoeWclPhysicalScanContracts.hpp"
+#include "IwnDirectSaeLabGate.hpp"
 #include <ClientKit/AirportItlwmSaeRelayV1.h>
 #include <ClientKit/AirportItlwmSaeRelayFsmV1.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+#include <ClientKit/AirportItlwmIwnLabDirectSaeStimulusV1.h>
+#endif
 
 #include "IOKit/network/IOGatedOutputQueue.h"
 #include <libkern/c++/OSNumber.h>
@@ -397,6 +401,37 @@ struct AirportItlwmSaePeerRxMailboxLifecycle {
     ItlSaeAuthPeerEventV1 event;
     ItlSaeAuthPeerEventV1 conflictEvent;
 };
+
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+/*
+ * One explicit password-bearing diagnostic request may be queued only by its
+ * lab-only UserClient.  The source action runs on the controller workloop
+ * with its command gate released; it is intentionally separate from the
+ * link-state publisher and the IWN TX-terminal mailbox.
+ *
+ * `ownerCookie` and `requestId` are kernel-generated cancellation fences, not
+ * UserClient ABI inputs.  `request` is scrubbed on every dequeue, cancel, and
+ * teardown edge.
+ */
+struct AirportItlwmIwnDirectSaeLabStimulusLifecycle {
+    IOSimpleLock *admissionLock;
+    IOInterruptEventSource *source;
+    IOSimpleLock *payloadLock;
+    bool settingUp;
+    bool stopping;
+    bool tearingDown;
+    uint32_t users;
+    bool pending;
+    bool dispatching;
+    bool active;
+    bool cancelRequested;
+    uint64_t nextRequestId;
+    uint64_t requestId;
+    uint64_t activeGeneration;
+    uint8_t ownerCookie[kAirportItlwmSaeRelayV1NonceLength];
+    struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 request;
+};
+#endif
 #endif
 
 enum AirportItlwmLifecyclePhase : uint32_t {
@@ -1084,6 +1119,20 @@ public:
     void     cancelSaeRelay(const char *reason, bool terminating = false);
     void     abortSaeRelayForClient(const uint8_t client_cookie[
                                        kAirportItlwmSaeRelayV1NonceLength]);
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    /* A separate physical-IWN diagnostic path.  Its UserClient can query only
+     * readiness, submit one fixed request, and later cancel only its own
+     * kernel-generated cookie binding. */
+    IOReturn queryIwnDirectSaeLabReady(
+        struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1 *out);
+    IOReturn queueIwnDirectSaeLabStimulus(
+        const struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *request,
+        const uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength]);
+    IOReturn clearIwnDirectSaeLabAssociationOwner();
+    void cancelIwnDirectSaeLabForClient(const uint8_t client_cookie[
+        kAirportItlwmSaeRelayV1NonceLength]);
+    void cancelIwnDirectSaeLabAll();
+#endif
 #endif // __IO80211_TARGET >= __MAC_26_0
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -1166,6 +1215,9 @@ public:
 #if __IO80211_TARGET >= __MAC_26_0
     AirportItlwmSaeTransportMailboxLifecycle fSaeTransportMailbox;
     AirportItlwmSaePeerRxMailboxLifecycle fSaePeerRxMailbox;
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle fIwnDirectSaeLabStimulus;
+#endif
 #endif
 
     // Keep teardown ownership at the class tail so existing controller member

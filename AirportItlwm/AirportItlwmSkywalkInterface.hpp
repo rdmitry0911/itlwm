@@ -12,6 +12,10 @@
 #include <Airport/Apple80211.h>
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoePayloadBuilders.hpp"
+#include "IwnDirectSaeLabGate.hpp"
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+#include <ClientKit/AirportItlwmIwnLabDirectSaeStimulusV1.h>
+#endif
 
 struct if_link_status;
 
@@ -27,6 +31,9 @@ static_assert(sizeof(apple80211_colocated_network_scope_id) == 0x30,
               "apple80211_colocated_network_scope_id must match Tahoe WCL ABI");
 
 class AirportItlwm;
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+struct AirportItlwmIwnDirectSaeCredentialRequest;
+#endif
 
 class AirportItlwmSkywalkInterface : public IO80211InfraProtocol {
     OSDeclareDefaultStructors(AirportItlwmSkywalkInterface)
@@ -169,8 +176,22 @@ public:
     IOReturn getSUPPORTED_CHANNELSImpl(apple80211_sup_channel_data *);
     IOReturn setWCL_ASSOCIATEImpl(apple80211AssocCandidates *);
     IOReturn setCHANNELImpl(apple80211_channel_data *);
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    IOReturn startIwnDirectSaeCredential(
+        const struct AirportItlwmIwnDirectSaeCredentialRequest *request,
+        uint64_t *out_generation);
+#endif
 
 public:
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+    /* Called exclusively by AirportItlwm's off-gate, one-slot laboratory
+     * mailbox.  It never accepts a WCL carrier and does not publish a WCL
+     * association owner. */
+    IOReturn startIwnDirectSaeLabStimulus(
+        const struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *request,
+        uint64_t *out_generation);
+    void cancelIwnDirectSaeLabStimulus(uint64_t generation);
+#endif
     //
     // GET methods — vtable slots [470]-[544] (75 methods)
     // Order MUST match IO80211InfraProtocol.h exactly.
