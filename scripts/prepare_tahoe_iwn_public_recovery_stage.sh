@@ -25,6 +25,7 @@ SELF_TEST=0
 GATE_BUILD_DIR=""
 GATE_BUILD_TOKEN=""
 WORKTREE=""
+STAGE_VERIFY_WORKTREE=""
 ARTIFACTS_DIR=""
 CANDIDATE_RECEIPT=""
 PUBLIC_RECEIPT=""
@@ -217,10 +218,35 @@ copy_remote_gate_helper() {
     /bin/chmod 700 "$output"
 }
 
+assert_detached_worktree_script_modules_clean() {
+    local worktree="$1" status
+    status="$(/usr/bin/git -C "$worktree" status --porcelain=v1 --untracked-files=all -- scripts)" ||
+        fail "detached-worktree-script-status-unavailable"
+    [ -z "$status" ] || fail "detached-worktree-script-modules-are-not-clean"
+}
+
+materialize_detached_worktree() {
+    local worktree="$1"
+    /usr/bin/git -C "$ROOT" worktree add --detach "$worktree" "$SOURCE_HEAD" >/dev/null 2>&1 ||
+        fail "detached-worktree-create-failed"
+    [ "$(/usr/bin/git -C "$worktree" rev-parse HEAD 2>/dev/null || true)" = "$SOURCE_HEAD" ] ||
+        fail "detached-worktree-head-mismatch"
+    [ -z "$(/usr/bin/git -C "$worktree" status --porcelain=v1 --untracked-files=all)" ] ||
+        fail "detached-worktree-is-not-clean"
+    assert_detached_worktree_script_modules_clean "$worktree"
+}
+
 make_fresh_detached_worktree() {
-    /usr/bin/git -C "$ROOT" worktree add --detach "$WORKTREE" "$SOURCE_HEAD" >/dev/null 2>&1 || fail "detached-worktree-create-failed"
-    [ "$(/usr/bin/git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || true)" = "$SOURCE_HEAD" ] || fail "detached-worktree-head-mismatch"
-    [ -z "$(/usr/bin/git -C "$WORKTREE" status --porcelain=v1 --untracked-files=all)" ] || fail "detached-worktree-is-not-clean"
+    materialize_detached_worktree "$WORKTREE"
+}
+
+make_stage_verification_worktree() {
+    local stage_parent
+    stage_parent="$(dirname -- "$STAGE_REPORT")"
+    STAGE_VERIFY_WORKTREE="$(/usr/bin/mktemp -d "$stage_parent/.aiam-iwn-public-recovery-verify.XXXXXX")" ||
+        fail "stage-verification-worktree-create-failed"
+    /bin/chmod 700 "$STAGE_VERIFY_WORKTREE"
+    materialize_detached_worktree "$STAGE_VERIFY_WORKTREE"
 }
 
 copy_helper_into_worktree() {
@@ -235,20 +261,62 @@ capture_public_recovery_receipt() {
     local exclude_file="$COLLECT_STAGING/worktree-build.exclude"
     printf 'Build/\n' > "$exclude_file"
     /bin/chmod 600 "$exclude_file"
+    assert_detached_worktree_script_modules_clean "$WORKTREE"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0="$exclude_file" LC_ALL=C \
-        /usr/bin/python3 "$WORKTREE/scripts/$RECEIPT_TOOL_NAME" \
-            --candidate-receipt "$CANDIDATE_RECEIPT" \
-            --helper "$WORKTREE/$HELPER_REPO_PATH" \
-            --gate-token "$GATE_BUILD_TOKEN" \
-            --output "$COLLECT_STAGING/$PUBLIC_RECEIPT_NAME" >/dev/null || fail "public-recovery-receipt-capture-failed"
+        /usr/bin/python3 -I - "$WORKTREE/scripts" "$CANDIDATE_RECEIPT" \
+            "$WORKTREE/$HELPER_REPO_PATH" "$GATE_BUILD_TOKEN" \
+            "$COLLECT_STAGING/$PUBLIC_RECEIPT_NAME" <<'PY' >/dev/null || fail "public-recovery-receipt-capture-failed"
+import importlib.util
+import stat
+import sys
+from pathlib import Path
+
+scripts = Path(sys.argv[1])
+candidate_receipt = sys.argv[2]
+helper = sys.argv[3]
+gate_token = sys.argv[4]
+output = sys.argv[5]
+
+
+def load_committed_module(name):
+    path = scripts / f"{name}.py"
+    try:
+        metadata = path.lstat()
+    except OSError:
+        raise SystemExit(1)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(1)
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(1)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+load_committed_module("tahoe_source_identity")
+load_committed_module("capture_tahoe_iwn_lab_candidate_receipt")
+receipt_tool = load_committed_module("capture_tahoe_iwn_lab_public_recovery_receipt")
+sys.argv = [
+    str(scripts / "capture_tahoe_iwn_lab_public_recovery_receipt.py"),
+    "--candidate-receipt", candidate_receipt,
+    "--helper", helper,
+    "--gate-token", gate_token,
+    "--output", output,
+]
+raise SystemExit(receipt_tool.main())
+PY
     [ -f "$COLLECT_STAGING/$PUBLIC_RECEIPT_NAME" ] && [ ! -L "$COLLECT_STAGING/$PUBLIC_RECEIPT_NAME" ] || fail "public-recovery-receipt-output-missing"
 }
 
 write_collection_report() {
     local output="$1" helper_path="$2" receipt_path="$3"
-    /usr/bin/python3 - "$ROOT/scripts" "$CANDIDATE_RECEIPT" "$helper_path" "$receipt_path" "$output" <<'PY'
+    assert_detached_worktree_script_modules_clean "$WORKTREE"
+    /usr/bin/python3 -I - "$WORKTREE/scripts" "$CANDIDATE_RECEIPT" "$helper_path" "$receipt_path" "$output" <<'PY'
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -260,15 +328,34 @@ candidate_path = Path(sys.argv[2])
 helper_path = Path(sys.argv[3])
 receipt_path = Path(sys.argv[4])
 output = Path(sys.argv[5])
-sys.path.insert(0, str(scripts))
-from capture_tahoe_iwn_lab_public_recovery_receipt import (
-    macho_uuid,
-    parse_json_document,
-    read_typed_candidate_receipt,
-    require_regular_file,
-    require_regular_executable,
-    validate_public_recovery_receipt_document,
-)
+
+
+def load_committed_module(name):
+    path = scripts / f"{name}.py"
+    try:
+        metadata = path.lstat()
+    except OSError:
+        raise SystemExit(1)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(1)
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(1)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+load_committed_module("tahoe_source_identity")
+load_committed_module("capture_tahoe_iwn_lab_candidate_receipt")
+receipt_module = load_committed_module("capture_tahoe_iwn_lab_public_recovery_receipt")
+macho_uuid = receipt_module.macho_uuid
+parse_json_document = receipt_module.parse_json_document
+read_typed_candidate_receipt = receipt_module.read_typed_candidate_receipt
+require_regular_file = receipt_module.require_regular_file
+require_regular_executable = receipt_module.require_regular_executable
+validate_public_recovery_receipt_document = receipt_module.validate_public_recovery_receipt_document
 
 candidate, candidate_sha256 = read_typed_candidate_receipt(candidate_path)
 receipt = require_regular_file(receipt_path, "collection public recovery receipt")
@@ -368,8 +455,11 @@ collect_public_recovery() {
 }
 
 validate_stage_inputs() {
-    /usr/bin/python3 - "$ROOT/scripts" "$ROOT" "$CANDIDATE_RECEIPT" "$PUBLIC_RECEIPT" "$HELPER" "$SOURCE_HEAD" <<'PY'
+    assert_detached_worktree_script_modules_clean "$STAGE_VERIFY_WORKTREE"
+    /usr/bin/python3 -I - "$STAGE_VERIFY_WORKTREE/scripts" "$STAGE_VERIFY_WORKTREE" "$CANDIDATE_RECEIPT" "$PUBLIC_RECEIPT" "$HELPER" "$SOURCE_HEAD" <<'PY'
 import hashlib
+import importlib.util
+import stat
 import sys
 from pathlib import Path
 
@@ -379,17 +469,36 @@ candidate_path = Path(sys.argv[3])
 public_receipt_path = Path(sys.argv[4])
 helper_path = Path(sys.argv[5])
 source_head = sys.argv[6]
-sys.path.insert(0, str(scripts))
-from capture_tahoe_iwn_lab_public_recovery_receipt import (
-    current_source_identity,
-    helper_source_identity,
-    macho_uuid,
-    parse_json_document,
-    read_typed_candidate_receipt,
-    require_regular_file,
-    require_regular_executable,
-    validate_public_recovery_receipt_document,
-)
+
+
+def load_committed_module(name):
+    path = scripts / f"{name}.py"
+    try:
+        metadata = path.lstat()
+    except OSError:
+        raise SystemExit(1)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(1)
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(1)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+load_committed_module("tahoe_source_identity")
+load_committed_module("capture_tahoe_iwn_lab_candidate_receipt")
+receipt_module = load_committed_module("capture_tahoe_iwn_lab_public_recovery_receipt")
+current_source_identity = receipt_module.current_source_identity
+helper_source_identity = receipt_module.helper_source_identity
+macho_uuid = receipt_module.macho_uuid
+parse_json_document = receipt_module.parse_json_document
+read_typed_candidate_receipt = receipt_module.read_typed_candidate_receipt
+require_regular_file = receipt_module.require_regular_file
+require_regular_executable = receipt_module.require_regular_executable
+validate_public_recovery_receipt_document = receipt_module.validate_public_recovery_receipt_document
 
 import subprocess
 head = subprocess.run(
@@ -474,7 +583,7 @@ copy_stage_artifacts() {
 
 verify_remote_stage() {
     local helper_sha256="$1" helper_uuid="$2" receipt_sha256="$3" observed
-    observed="$("${SSH[@]}" /usr/bin/python3 - "$GUEST_DIR" "$helper_sha256" "$helper_uuid" "$receipt_sha256" 2>/dev/null <<'PY'
+    observed="$("${SSH[@]}" /usr/bin/python3 -I - "$GUEST_DIR" "$helper_sha256" "$helper_uuid" "$receipt_sha256" 2>/dev/null <<'PY'
 import hashlib
 import os
 import re
@@ -490,34 +599,82 @@ if not stage.startswith(prefix):
 token = stage[len(prefix):]
 if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", token) is None:
     raise SystemExit(1)
-for parent in ("/private", "/private/tmp", stage):
+for parent in ("/private", "/private/tmp"):
     metadata = os.lstat(parent)
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise SystemExit(1)
-if stat.S_IMODE(os.lstat(stage).st_mode) != 0o700:
+try:
+    stage_fd = os.open(stage, os.O_RDONLY | os.O_NOFOLLOW)
+except (AttributeError, OSError):
     raise SystemExit(1)
-helper = os.path.join(stage, "airport_itlwm_lab_public_recovery")
-receipt = os.path.join(stage, "iwn-public-recovery-receipt-v1.json")
-if set(os.listdir(stage)) != {os.path.basename(helper), os.path.basename(receipt)}:
+try:
+    stage_metadata = os.fstat(stage_fd)
+    if (not stat.S_ISDIR(stage_metadata.st_mode) or
+            stat.S_IMODE(stage_metadata.st_mode) != 0o700):
+        raise SystemExit(1)
+    stage_identity = (stage_metadata.st_dev, stage_metadata.st_ino)
+    helper_name = "airport_itlwm_lab_public_recovery"
+    receipt_name = "iwn-public-recovery-receipt-v1.json"
+    expected_names = {helper_name, receipt_name}
+    if set(os.listdir(stage_fd)) != expected_names:
+        raise SystemExit(1)
+
+    def read_stage_file_nofollow(directory_fd, name, executable, required_mode):
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        except (AttributeError, OSError, TypeError):
+            raise SystemExit(1)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise SystemExit(1)
+            if executable and before.st_mode & 0o111 == 0:
+                raise SystemExit(1)
+            os.fchmod(fd, required_mode)
+            after = os.fstat(fd)
+            if ((after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or
+                    after.st_nlink != 1 or stat.S_IMODE(after.st_mode) != required_mode):
+                raise SystemExit(1)
+            chunks = []
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            data = b"".join(chunks)
+            final = os.fstat(fd)
+            if ((final.st_dev, final.st_ino) != (after.st_dev, after.st_ino) or
+                    final.st_nlink != 1 or stat.S_IMODE(final.st_mode) != required_mode):
+                raise SystemExit(1)
+        finally:
+            os.close(fd)
+        try:
+            path_after = os.lstat(name, dir_fd=directory_fd)
+        except (OSError, TypeError):
+            raise SystemExit(1)
+        if (stat.S_ISLNK(path_after.st_mode) or not stat.S_ISREG(path_after.st_mode) or
+                (path_after.st_dev, path_after.st_ino) != (final.st_dev, final.st_ino) or
+                path_after.st_nlink != 1 or stat.S_IMODE(path_after.st_mode) != required_mode):
+            raise SystemExit(1)
+        return data
+
+
+    helper_bytes = read_stage_file_nofollow(stage_fd, helper_name, executable=True, required_mode=0o700)
+    receipt_bytes = read_stage_file_nofollow(stage_fd, receipt_name, executable=False, required_mode=0o600)
+    if (helper_bytes != read_stage_file_nofollow(stage_fd, helper_name, executable=True, required_mode=0o700) or
+            receipt_bytes != read_stage_file_nofollow(stage_fd, receipt_name, executable=False, required_mode=0o600)):
+        raise SystemExit(1)
+    if set(os.listdir(stage_fd)) != expected_names:
+        raise SystemExit(1)
+finally:
+    os.close(stage_fd)
+
+stage_after = os.lstat(stage)
+if (stat.S_ISLNK(stage_after.st_mode) or not stat.S_ISDIR(stage_after.st_mode) or
+        (stage_after.st_dev, stage_after.st_ino) != stage_identity or
+        stat.S_IMODE(stage_after.st_mode) != 0o700):
     raise SystemExit(1)
 
-def regular(path, executable=False):
-    metadata = os.lstat(path)
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(1)
-    if executable and metadata.st_mode & 0o111 == 0:
-        raise SystemExit(1)
-    with open(path, "rb") as source:
-        return source.read()
-
-helper_bytes = regular(helper, executable=True)
-receipt_bytes = regular(receipt)
-os.chmod(helper, 0o700)
-os.chmod(receipt, 0o600)
-if stat.S_IMODE(os.lstat(helper).st_mode) != 0o700 or stat.S_IMODE(os.lstat(receipt).st_mode) != 0o600:
-    raise SystemExit(1)
-if helper_bytes != regular(helper, executable=True) or receipt_bytes != regular(receipt):
-    raise SystemExit(1)
 if len(helper_bytes) < 32:
     raise SystemExit(1)
 magic, cpu_type, _subtype, file_type, count, command_bytes, _flags, _reserved = struct.unpack_from("<IiiIIIII", helper_bytes, 0)
@@ -556,7 +713,7 @@ esac
 
 validate_stage_report() {
     local report="$1"
-    /usr/bin/python3 - "$report" <<'PY'
+    /usr/bin/python3 -I - "$report" <<'PY'
 import json
 import re
 import stat
@@ -644,7 +801,7 @@ PY
 
 write_stage_report() {
     local values="$1"
-    /usr/bin/python3 - "$STAGE_REPORT" "$GUEST_TOKEN" "$values" <<'PY'
+    /usr/bin/python3 -I - "$STAGE_REPORT" "$GUEST_TOKEN" "$values" <<'PY'
 import json
 import os
 import re
@@ -729,15 +886,16 @@ stage_public_recovery() {
     HELPER="$(require_existing_outside_source "$HELPER" "helper")"
     STAGE_REPORT="$(require_new_outside_source "$STAGE_REPORT" "stage-report")"
     parse_guest_dir "$GUEST_DIR" || fail "guest-dir-is-not-a-safe-full-token-path"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '%s\n' 'STAGE_DRY_RUN_READY'
+        return 0
+    fi
+    make_stage_verification_worktree
     local values
     values="$(validate_stage_inputs 2>/dev/null || true)"
     stage_fields_shape_valid "$values" || fail "local-sidecar-input-verification-failed"
     require_clean_committed_source
     [ "$SOURCE_HEAD" = "$source_head_before" ] || fail "source-head-changed-during-local-verification"
-    if [ "$DRY_RUN" -eq 1 ]; then
-        printf '%s\n' 'STAGE_DRY_RUN_READY'
-        return 0
-    fi
     local -a fields=()
     IFS='|' read -r -a fields <<<"$values"
     prepare_guest_transport

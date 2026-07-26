@@ -112,7 +112,14 @@ for token, label in (
     ("parse_gate_build_dir", "gate-token parser"),
     ("parse_guest_dir", "guest-token parser"),
     ("git -C \"$ROOT\" worktree add --detach", "detached clean worktree"),
+    ("materialize_detached_worktree", "detached worktree materializer"),
+    ("make_stage_verification_worktree", "detached stage-verification worktree"),
+    ("assert_detached_worktree_script_modules_clean", "clean committed script-module gate"),
+    ("STAGE_VERIFY_WORKTREE/scripts", "stage validation committed module path"),
     ("GIT_CONFIG_KEY_0=core.excludesFile", "private build-artifact exclusion"),
+    ("/usr/bin/python3 -I -", "isolated Python launch"),
+    ("importlib.util.spec_from_file_location", "explicit committed Python module loader"),
+    ("load_committed_module", "committed Python module loader"),
     ("StrictHostKeyChecking=yes", "strict host-key checking"),
     ("GlobalKnownHostsFile=/dev/null", "isolated known-hosts policy"),
     ("UpdateHostKeys=no", "host-key rotation refusal"),
@@ -125,7 +132,16 @@ for token, label in (
     ("REMOTE_PUBLIC_RECOVERY_STAGE", "aggregate-only guest verification"),
     ("0xFEEDFACF", "remote thin Mach-O verification"),
     ("0x1B", "remote LC_UUID verification"),
-    ("helper_bytes != regular", "remote artifact double read"),
+    ("read_stage_file_nofollow", "fd-based remote artifact reader"),
+    ("os.open(stage, os.O_RDONLY | os.O_NOFOLLOW)", "no-follow stage-directory open"),
+    ("os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)", "dir-fd no-follow remote artifact open"),
+    ("stage_metadata = os.fstat(stage_fd)", "stage directory fd verification"),
+    ("os.fstat(fd)", "fd metadata verification"),
+    ("os.fchmod(fd, required_mode)", "fd-only remote artifact mode change"),
+    ("before.st_nlink != 1", "remote hard-link rejection"),
+    ("path_after = os.lstat(name, dir_fd=directory_fd)", "post-fd path identity check"),
+    ("stage_identity = (stage_metadata.st_dev, stage_metadata.st_ino)", "stage directory identity check"),
+    ("helper_bytes != read_stage_file_nofollow", "remote artifact fd double read"),
     ("os.O_EXCL", "new report output gate"),
     ("O_NOFOLLOW", "no-follow report output gate"),
     ("0o600", "private report mode"),
@@ -158,6 +174,10 @@ for token, label in (
     ("find -delete", "recursive cleanup"),
     ("worktree remove", "forced worktree cleanup"),
     ("/bin/cat", "raw remote binary streaming"),
+    ("sys.path.insert(", "module-path prepending"),
+    ("os.chmod(helper", "path-based guest helper chmod"),
+    ("os.chmod(receipt", "path-based guest receipt chmod"),
+    ("with open(path, \"rb\")", "path-based guest artifact read"),
 ):
     forbid(token, label)
 
@@ -168,8 +188,21 @@ for token in ("git -C \"$ROOT\" diff --quiet", "git -C \"$ROOT\" diff --cached -
     if token not in root_gate:
         raise SystemExit(f"FAIL: root identity gate lacks tracked-change protection: {token}")
 
+for line in text.splitlines():
+    if "/usr/bin/python3" in line and " -I -" not in line:
+        raise SystemExit(f"FAIL: public recovery stage has non-isolated Python launch: {line.strip()}")
+
+capture = text[text.find("capture_public_recovery_receipt() {"):text.find("write_collection_report() {")]
+collection = text[text.find("write_collection_report() {"):text.find("collect_public_recovery() {")]
+stage_validation = text[text.find("validate_stage_inputs() {"):text.find("stage_fields_shape_valid() {")]
+for section, label in ((capture, "capture"), (collection, "collection report"), (stage_validation, "stage validation")):
+    if '"$ROOT/scripts"' in section or "sys.path." in section:
+        raise SystemExit(f"FAIL: {label} imports can be shadowed by the source-root environment")
+    if "load_committed_module" not in section:
+        raise SystemExit(f"FAIL: {label} does not load committed Python modules explicitly")
+
 stage = text[text.find("stage_public_recovery() {"):text.find("self_test() {")]
-ordered = ("validate_stage_inputs", "require_clean_committed_source", "prepare_guest_transport", "create_remote_stage_directory", "copy_stage_artifacts", "verify_remote_stage", "write_stage_report")
+ordered = ("make_stage_verification_worktree", "validate_stage_inputs", "require_clean_committed_source", "prepare_guest_transport", "create_remote_stage_directory", "copy_stage_artifacts", "verify_remote_stage", "write_stage_report")
 position = -1
 for token in ordered:
     next_position = stage.find(token, position + 1)
