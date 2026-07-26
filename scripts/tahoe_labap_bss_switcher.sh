@@ -60,6 +60,7 @@ EXPECTED_IW_VERSION="iw version 6.7"
 LABAP_TOPOLOGY_SAMPLES=2
 LABAP_TOPOLOGY_INTERVAL_SECONDS=1
 LEASE_SECONDS=180
+LEASE_SECONDS_EXPLICIT=0
 LAR_SCAN_ATTEMPTS=30
 LAR_SCAN_INTERVAL_SECONDS=2
 LAR_STABILITY_POLLS=2
@@ -77,6 +78,7 @@ usage: tahoe_labap_bss_switcher.sh --preflight
          [--lease-seconds 60..300] [--credential-stdin] [--direct-join]
        tahoe_labap_bss_switcher.sh --withdraw --state-dir /tmp/aiam-labap-bss-switch.NAME
        tahoe_labap_bss_switcher.sh --rollback --state-dir /tmp/aiam-labap-bss-switch.NAME
+       tahoe_labap_bss_switcher.sh --status --state-dir /tmp/aiam-labap-bss-switch.NAME
 
 The helper replaces only the pinned local hostapd BSS.  --withdraw stops only
 the temporary LabAP BSS, leaving any independently operated OpenWrt LabAP BSS
@@ -102,13 +104,15 @@ sudo_cmd() {
 
 is_decimal_in_range() {
     local value="$1" minimum="$2" maximum="$3"
-    case "$value" in ''|*[!0-9]*) return 1;; esac
+    # Bash arithmetic treats a leading zero as octal.  Leases are later used
+    # in an arithmetic deadline, so admit only canonical base-10 spelling.
+    case "$value" in ''|0|0[0-9]*|*[!0-9]*) return 1;; esac
     [ "$value" -ge "$minimum" ] && [ "$value" -le "$maximum" ]
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --preflight|--activate|--withdraw|--rollback)
+        --preflight|--activate|--withdraw|--rollback|--status)
             [ -z "$MODE" ] || { usage; exit 2; }
             MODE="${1#--}"
             shift
@@ -126,6 +130,7 @@ while [ "$#" -gt 0 ]; do
         --lease-seconds)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             LEASE_SECONDS="$2"
+            LEASE_SECONDS_EXPLICIT=1
             shift 2
             ;;
         --credential-stdin)
@@ -168,6 +173,7 @@ case "$MODE" in
     activate) [ -n "$STATE_DIR" ] && [ "$FROM_WATCHDOG" -eq 0 ] || { usage; exit 2; };;
     withdraw) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] || { usage; exit 2; };;
     rollback) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] || { usage; exit 2; };;
+    status) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] && [ -z "$WATCHDOG_READY_FD" ] && [ "$LEASE_SECONDS_EXPLICIT" -eq 0 ] || { usage; exit 2; };;
     watchdog)
         [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] || { usage; exit 2; }
         case "$WATCHDOG_READY_FD" in ''|8) ;; *) usage; exit 2;; esac
@@ -205,6 +211,41 @@ state_value() {
     ' "$(state_file)"
 }
 
+is_hex64() {
+    [[ "$1" =~ ^[0-9a-f]{64}$ ]]
+}
+
+monotonic_uptime_seconds() {
+    awk '
+        NR == 1 && $1 ~ /^[0-9]+([.][0-9]+)?$/ {
+            split($1, part, ".")
+            if (part[1] !~ /^[0-9]+$/)
+                exit 1
+            print part[1]
+            found = 1
+            exit
+        }
+        END { if (!found) exit 1 }
+    ' /proc/uptime
+}
+
+canonical_bssid() {
+    local value="$1"
+    [[ "$value" =~ ^([0-9A-Fa-f][0-9A-Fa-f]:){5}[0-9A-Fa-f][0-9A-Fa-f]$ ]] || return 1
+    printf '%s\n' "${value,,}"
+}
+
+opaque_sha256() {
+    local value="$1" digest
+    digest="$(printf '%s' "$value" | sha256sum | awk '
+        NR == 1 && NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { print $1; next }
+        { invalid = 1 }
+        END { if (NR != 1 || invalid) exit 1 }
+    ')" || return 1
+    is_hex64 "$digest" || return 1
+    printf '%s\n' "$digest"
+}
+
 select_test_mode() {
     case "$1" in
         labap)
@@ -232,7 +273,7 @@ load_test_mode_from_state() {
     select_test_mode "$mode"
 }
 
-write_state() {
+write_state_v2() {
     local state="$1" mode="$2" network="$3" fingerprint="$4" bssid="$5" external_count="$6" tmp
     case "$mode" in labap|direct) ;; *) return 1;; esac
     tmp="$STATE_DIR/.state.$$"
@@ -250,15 +291,51 @@ write_state() {
     mv -f -- "$tmp" "$(state_file)"
 }
 
+write_state() {
+    local state="$1" mode="$2" network="$3" fingerprint="$4" bssid="$5" external_count="$6" lease_seconds="$7" lease_deadline="$8" tmp
+    case "$mode" in labap|direct) ;; *) return 1;; esac
+    is_decimal_in_range "$lease_seconds" 60 300 || return 1
+    case "$lease_deadline" in ''|*[!0-9]*) return 1;; esac
+    [ "$lease_deadline" -gt 0 ] || return 1
+    tmp="$STATE_DIR/.state.$$"
+    [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
+    {
+        printf 'schema=tahoe-labap-bss-switch/v3\n'
+        printf 'state=%s\n' "$state"
+        printf 'test_mode=%s\n' "$mode"
+        printf 'network_signature_before=%s\n' "$network"
+        printf 'live_config_fingerprint=%s\n' "$fingerprint"
+        printf 'live_bssid_before=%s\n' "$bssid"
+        printf 'external_labap_bss_count=%s\n' "$external_count"
+        printf 'lease_seconds=%s\n' "$lease_seconds"
+        printf 'lease_not_after_monotonic_seconds=%s\n' "$lease_deadline"
+    } >"$tmp" || return 1
+    chmod 600 "$tmp" || return 1
+    mv -f -- "$tmp" "$(state_file)"
+}
+
 set_state() {
-    local next="$1" mode network fingerprint bssid external_count
+    local next="$1" mode network fingerprint bssid external_count schema lease_seconds lease_deadline
     load_test_mode_from_state || return 1
     mode="$TEST_MODE"
     network="$(state_value network_signature_before)" || return 1
     fingerprint="$(state_value live_config_fingerprint)" || return 1
     bssid="$(state_value live_bssid_before)" || return 1
     external_count="$(state_value external_labap_bss_count)" || return 1
-    write_state "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count"
+    schema="$(state_value schema)" || return 1
+    case "$schema" in
+        tahoe-labap-bss-switch/v3)
+            lease_seconds="$(state_value lease_seconds)" || return 1
+            lease_deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+            write_state "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count" "$lease_seconds" "$lease_deadline"
+            ;;
+        tahoe-labap-bss-switch/v1|tahoe-labap-bss-switch/v2)
+            write_state_v2 "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # This is diagnostic-only: it deliberately stores one fixed phase token, not
@@ -360,11 +437,32 @@ hostapd_process_matches() {
     [[ " $args " == *" $config "* ]]
 }
 
-hostapd_status_is() {
-    local expected_ssid="$1" status
-    status="$(sudo_cmd "$HOSTAPD_CLI" -p /run/hostapd -i "$AP_IF" status 2>/dev/null)" || return 1
+hostapd_status_snapshot() {
+    sudo_cmd "$HOSTAPD_CLI" -p /run/hostapd -i "$AP_IF" status 2>/dev/null
+}
+
+hostapd_status_snapshot_is() {
+    local expected_ssid="$1" status="$2"
     printf '%s\n' "$status" | grep -Fxq 'state=ENABLED' || return 1
     printf '%s\n' "$status" | grep -Fxq "ssid[0]=$expected_ssid"
+}
+
+hostapd_status_snapshot_bssid() {
+    local status="$1"
+    printf '%s\n' "$status" | awk -F= '
+        $1 == "bssid[0]" {
+            if (++seen != 1 || $2 == "")
+                exit 1
+            value = $2
+        }
+        END { if (seen != 1 || value == "") exit 1; print value }
+    '
+}
+
+hostapd_status_is() {
+    local expected_ssid="$1" status
+    status="$(hostapd_status_snapshot)" || return 1
+    hostapd_status_snapshot_is "$expected_ssid" "$status"
 }
 
 runtime_ap_is_pinned() {
@@ -744,14 +842,30 @@ clear_marker() {
 }
 
 watchdog_process_matches() {
-    local pid="$1" args
+    local pid="$1" value index self_count=0 watchdog_count=0 state_count=0
+    local -a argv=()
     case "$pid" in ''|*[!0-9]*) return 1;; esac
     [ "$pid" -gt 1 ] || return 1
     kill -0 "$pid" 2>/dev/null || return 1
-    args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-    [[ " $args " == *" $SELF "* &&
-       " $args " == *" --watchdog "* &&
-       "$args" == *"--state-dir $STATE_DIR"* ]]
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    while IFS= read -r -d '' value; do
+        [ -n "$value" ] || return 1
+        argv+=("$value")
+    done <"/proc/$pid/cmdline"
+    [ "${#argv[@]}" -ne 0 ] || return 1
+    for ((index = 0; index < ${#argv[@]}; index++)); do
+        case "${argv[$index]}" in
+            "$SELF") self_count=$((self_count + 1));;
+            --watchdog) watchdog_count=$((watchdog_count + 1));;
+            --state-dir)
+                [ $((index + 1)) -lt "${#argv[@]}" ] || return 1
+                [ "${argv[$((index + 1))]}" = "$STATE_DIR" ] || return 1
+                state_count=$((state_count + 1))
+                ;;
+        esac
+    done
+    [ "$self_count" -eq 1 ] && [ "$watchdog_count" -eq 1 ] &&
+        [ "$state_count" -eq 1 ]
 }
 
 watchdog_process_is_zombie() {
@@ -763,10 +877,25 @@ watchdog_process_is_zombie() {
     [[ "$state" == Z* ]]
 }
 
+watchdog_process_can_rollback() {
+    local pid="$1" state
+    case "$pid" in ''|*[!0-9]*) return 1;; esac
+    [ "$pid" -gt 1 ] || return 1
+    state="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]')"
+    case "$state" in ''|Z*|T*|t*) return 1;; esac
+    return 0
+}
+
 watchdog_owner_is_current() {
     local pid
     pid="$(pid_from_file "$(watchdog_pid_file)")" || return 1
     watchdog_process_matches "$pid"
+}
+
+watchdog_owner_is_live() {
+    local pid
+    pid="$(pid_from_file "$(watchdog_pid_file)")" || return 1
+    watchdog_process_matches "$pid" && watchdog_process_can_rollback "$pid"
 }
 
 write_watchdog_pid() {
@@ -930,6 +1059,80 @@ recover_after_activate_failure() {
     die "temporary test BSS activation failed; watchdog/marker retained for recovery"
 }
 
+# The status path is deliberately narrower than rollback: it admits only a
+# current v3 LabAP activation and keeps every raw identifier in shell memory.
+# Its sole successful output is produced by do_status below as fixed hashes.
+status_state_is_current() {
+    local schema state mode network fingerprint state_bssid external_count
+    local lease_seconds lease_deadline now remaining
+
+    schema="$(state_value schema)" || return 1
+    state="$(state_value state)" || return 1
+    mode="$(state_value test_mode)" || return 1
+    [ "$schema" = tahoe-labap-bss-switch/v3 ] || return 1
+    [ "$state" = labap-active ] || return 1
+    [ "$mode" = labap ] || return 1
+    network="$(state_value network_signature_before)" || return 1
+    fingerprint="$(state_value live_config_fingerprint)" || return 1
+    state_bssid="$(state_value live_bssid_before)" || return 1
+    external_count="$(state_value external_labap_bss_count)" || return 1
+    lease_seconds="$(state_value lease_seconds)" || return 1
+    lease_deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+    is_hex64 "$network" && is_hex64 "$fingerprint" || return 1
+    canonical_bssid "$state_bssid" >/dev/null || return 1
+    case "$external_count" in ''|*[!0-9]*) return 1;; esac
+    [ "$external_count" -ge 2 ] || return 1
+    is_decimal_in_range "$lease_seconds" 60 300 || return 1
+    case "$lease_deadline" in ''|*[!0-9]*) return 1;; esac
+    now="$(monotonic_uptime_seconds)" || return 1
+    case "$now" in ''|*[!0-9]*) return 1;; esac
+    [ "$lease_deadline" -gt "$now" ] || return 1
+    remaining=$((lease_deadline - now))
+    [ "$remaining" -gt 0 ] && [ "$remaining" -le "$lease_seconds" ] || return 1
+    marker_matches_state || return 1
+    watchdog_owner_is_live || return 1
+    STATUS_LEASE_SECONDS="$lease_seconds"
+    STATUS_LEASE_REMAINING_SECONDS="$remaining"
+}
+
+status_runtime_is_exact() {
+    local status runtime_bssid status_bssid state_bssid
+
+    validate_test_config || return 1
+    test_hostapd_process_active || return 1
+    runtime_ap_is_pinned || return 1
+    status="$(hostapd_status_snapshot)" || return 1
+    hostapd_status_snapshot_is "$TEST_SSID" "$status" || return 1
+    runtime_bssid="$(canonical_bssid "$(runtime_bssid)")" || return 1
+    status_bssid="$(canonical_bssid "$(hostapd_status_snapshot_bssid "$status")")" || return 1
+    state_bssid="$(canonical_bssid "$(state_value live_bssid_before)")" || return 1
+    [ "$runtime_bssid" = "$status_bssid" ] || return 1
+    [ "$runtime_bssid" = "$state_bssid" ] || return 1
+    STATUS_RUNTIME_BSSID="$runtime_bssid"
+}
+
+do_status() {
+    local ssid_sha256 bssid_sha256
+
+    require_state_dir
+    status_state_is_current || die "active LabAP status is not exact"
+    status_runtime_is_exact || die "active LabAP runtime identity is not exact"
+    # Re-attest after gathering the runtime snapshot.  The switch lock blocks
+    # normal withdrawal/rollback and this second check fails closed if an
+    # independently supervised owner changed before the only output site.
+    status_state_is_current || die "active LabAP status changed during attestation"
+    status_runtime_is_exact || die "active LabAP runtime changed during attestation"
+    ssid_sha256="$(opaque_sha256 "$TEST_SSID")" || die "active LabAP SSID digest is invalid"
+    bssid_sha256="$(opaque_sha256 "$STATUS_RUNTIME_BSSID")" || die "active LabAP BSSID digest is invalid"
+    is_hex64 "$ssid_sha256" && is_hex64 "$bssid_sha256" || die "active LabAP digest shape is invalid"
+    # This last check is intentionally after every slow external query and
+    # hash calculation, so the advertised remaining lease was current at the
+    # only output site rather than at an earlier attestation stage.
+    status_state_is_current || die "active LabAP lease changed before status output"
+    printf 'LABAP_BSS_STATUS schema=tahoe-labap-bss-status/v1 active=1 target_ssid_sha256=%s target_bssid_sha256=%s lease_seconds=%s lease_remaining_seconds=%s\n' \
+        "$ssid_sha256" "$bssid_sha256" "$STATUS_LEASE_SECONDS" "$STATUS_LEASE_REMAINING_SECONDS"
+}
+
 do_preflight() {
     local external_count external_band_count
     sudo_cmd true || die "noninteractive sudo is unavailable"
@@ -945,7 +1148,7 @@ do_preflight() {
 }
 
 do_activate() {
-    local external_count external_band_count network fingerprint bssid passphrase="" active_state
+    local external_count external_band_count network fingerprint bssid passphrase="" active_state lease_now lease_deadline
     require_state_dir
     [ ! -e "$(state_file)" ] && [ ! -L "$(state_file)" ] || die "state directory is not fresh"
     [ ! -e "$MARKER" ] && [ ! -L "$MARKER" ] || die "another LabAP switch is already active"
@@ -980,7 +1183,13 @@ do_activate() {
     passphrase=""
     validate_test_config || die "temporary hostapd configuration failed local validation"
 
-    write_state armed "$TEST_MODE" "$network" "$fingerprint" "$bssid" "$external_count" || die "could not write rollback state"
+    lease_now="$(monotonic_uptime_seconds)" || die "monotonic lease clock is unavailable"
+    case "$lease_now" in ''|*[!0-9]*) die "monotonic lease clock is invalid";; esac
+    lease_deadline=$((lease_now + LEASE_SECONDS))
+    [ "$lease_deadline" -gt "$lease_now" ] || die "monotonic lease deadline is invalid"
+    # The deadline starts before watchdog spawn, intentionally understating the
+    # remaining lease rather than allowing a status reader to overstate it.
+    write_state armed "$TEST_MODE" "$network" "$fingerprint" "$bssid" "$external_count" "$LEASE_SECONDS" "$lease_deadline" || die "could not write rollback state"
     record_activation_phase state-written || true
     arm_activate_signal_recovery
     mkdir -p "$CONTROL_DIR"
@@ -1049,18 +1258,60 @@ do_rollback() {
     die "original BSS restoration could not be verified; marker/watchdog retained"
 }
 
+# v3's conservative absolute deadline is the watchdog's actual upper bound,
+# not merely an advisory value for a status reader.  A malformed v3 receipt
+# produces an immediate rollback attempt below; legacy v1/v2 receipts retain
+# their historic relative lease behavior so they can still be recovered.
+watchdog_remaining_seconds() {
+    local schema stored_lease deadline now remaining
+
+    schema="$(state_value schema 2>/dev/null || true)"
+    case "$schema" in
+        tahoe-labap-bss-switch/v3)
+            stored_lease="$(state_value lease_seconds 2>/dev/null || true)"
+            deadline="$(state_value lease_not_after_monotonic_seconds 2>/dev/null || true)"
+            if ! is_decimal_in_range "$stored_lease" 60 300 ||
+                [ "$stored_lease" != "$LEASE_SECONDS" ] ||
+                ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+                printf '0\n'
+                return 0
+            fi
+            now="$(monotonic_uptime_seconds 2>/dev/null || true)"
+            if ! [[ "$now" =~ ^[0-9]+$ ]] || [ "$deadline" -le "$now" ]; then
+                printf '0\n'
+                return 0
+            fi
+            remaining=$((deadline - now))
+            if [ "$remaining" -le 0 ] || [ "$remaining" -gt "$stored_lease" ]; then
+                printf '0\n'
+                return 0
+            fi
+            printf '%s\n' "$remaining"
+            ;;
+        tahoe-labap-bss-switch/v1|tahoe-labap-bss-switch/v2)
+            is_decimal_in_range "$LEASE_SECONDS" 60 300 || return 1
+            printf '%s\n' "$LEASE_SECONDS"
+            ;;
+        *)
+            printf '0\n'
+            ;;
+    esac
+}
+
 do_watchdog() {
-    local remaining="$LEASE_SECONDS" chunk current_state
+    local remaining chunk current_state
     require_state_dir
     marker_matches_state || return 1
     if [ -n "$WATCHDOG_READY_FD" ]; then
         printf 'LABAP_BSS_WATCHDOG_READY:%s\n' "$$" >&8 || return 1
     fi
-    while [ "$remaining" -gt 0 ]; do
+    while marker_matches_state; do
+        remaining="$(watchdog_remaining_seconds)" || return 1
+        case "$remaining" in ''|*[!0-9]*) return 1;; esac
+        [ "$remaining" -gt 0 ] || break
         chunk=30
         [ "$remaining" -lt "$chunk" ] && chunk="$remaining"
         sleep "$chunk"
-        remaining=$((remaining - chunk))
         marker_matches_state || return 0
         current_state="$(state_value state 2>/dev/null || true)"
         case "$current_state" in
@@ -1096,5 +1347,6 @@ case "$MODE" in
     activate) with_lock do_activate;;
     withdraw) with_lock do_withdraw;;
     rollback) with_lock do_rollback;;
+    status) with_lock do_status;;
     watchdog) do_watchdog;;
 esac

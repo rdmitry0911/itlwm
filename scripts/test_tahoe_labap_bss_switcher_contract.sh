@@ -35,6 +35,7 @@ for token in \
     'direct join requires credential stdin' \
     'stable_direct_test_ssid_absence' \
     'direct join test does not authorize withdrawal' \
+    'schema=tahoe-labap-bss-switch/v3' \
     'schema=tahoe-labap-bss-switch/v2' \
     'tahoe-labap-bss-switch/v1' \
     'load_test_mode_from_state' \
@@ -139,6 +140,8 @@ done
 
 bash "$ROOT/scripts/test_tahoe_labap_topology_parser.sh" ||
     fail "topology parser fixtures failed"
+bash "$ROOT/scripts/test_tahoe_labap_bss_status_contract.sh" ||
+    fail "hash-only status contract failed"
 
 # The watchdog must be able to invoke its child rollback without being rejected
 # by argument validation.  An empty, private state directory makes the child
