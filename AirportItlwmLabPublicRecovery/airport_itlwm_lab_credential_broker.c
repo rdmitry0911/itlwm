@@ -45,16 +45,38 @@ enum {
     kCredentialMaximumLength = 63u,
     kCredentialDeadlineMilliseconds = 15000u,
     kPipeWriteDeadlineMilliseconds = 15000u,
+    /* The permitted host activation path may require all thirty LAR attempts
+     * with two two-second stability polls (120 s), then up to twenty seconds
+     * each to stop the old hostapd and observe the replacement.  Reserve a
+     * further minute for watchdog arming, hash-only status, remote helper
+     * launch, and scheduler variance.  This is a bounded secret-retention
+     * window; no guest pipe has been received or written yet. */
+    kSwitcherLarActivationBoundMilliseconds = 120000u,
+    kSwitcherHostapdTransitionBoundMilliseconds = 40000u,
+    kControllerStatusAndStartMarginMilliseconds = 60000u,
+    kHostFedToStartDeadlineMilliseconds =
+        kSwitcherLarActivationBoundMilliseconds +
+        kSwitcherHostapdTransitionBoundMilliseconds +
+        kControllerStatusAndStartMarginMilliseconds,
+    /* START is issued only after the controller has freshly attested a
+     * sufficiently long watchdog remainder.  From that point onward the
+     * secret-delivery session has one absolute cap, leaving fifteen seconds
+     * before the verified 285-second remainder for watchdog recovery. */
+    kVerifiedInitialLeaseFloorMilliseconds = 285000u,
+    kPostStartSessionDeadlineMilliseconds = 270000u,
     /* The public recovery client can spend about one hundred seconds proving
      * initial readiness: discovery, exact association, and a post-association
      * same-ESS scan.  Keep the controller's START-to-ARM phase above that
      * bounded work while still expiring well before a laboratory lease. */
     kStartedToArmDeadlineMilliseconds = 120000u,
     kArmedToReleaseDeadlineMilliseconds = 90000u,
-    kHostFedToStartDeadlineMilliseconds = 60000u,
     kControlPacketCapacity = 160u,
     kDigestTextLength = 64u,
 };
+
+_Static_assert(kPostStartSessionDeadlineMilliseconds <
+               kVerifiedInitialLeaseFloorMilliseconds,
+               "post-START session must leave watchdog recovery margin");
 
 enum broker_phase {
     kBrokerPhaseHostFed = 0,
@@ -209,6 +231,32 @@ deadline_after(uint32_t milliseconds, int64_t *deadline)
         return 0;
     *deadline = started + (int64_t)milliseconds;
     return 1;
+}
+
+static int
+deadline_is_live(int64_t deadline)
+{
+    int64_t now;
+
+    return monotonic_milliseconds(&now) && deadline > now;
+}
+
+/* Derive a short operation deadline without allowing a phase to extend its
+ * caller-provided absolute ceiling. */
+static int
+deadline_after_capped(uint32_t milliseconds, int64_t cap_deadline,
+                      int64_t *deadline)
+{
+    int64_t started;
+    int64_t requested;
+
+    if (deadline == NULL || !monotonic_milliseconds(&started) ||
+        cap_deadline <= started ||
+        started > INT64_MAX - (int64_t)milliseconds)
+        return 0;
+    requested = started + (int64_t)milliseconds;
+    *deadline = requested < cap_deadline ? requested : cap_deadline;
+    return *deadline > started;
 }
 
 static int
@@ -519,50 +567,42 @@ is_guest_write_pipe(int fd)
 }
 
 static int
-write_guest_credential(int guest_fd, const struct protected_secret *secret)
+write_guest_credential(int guest_fd, const struct protected_secret *secret,
+                       int64_t deadline)
 {
     static const uint8_t newline[] = "\n";
-    int64_t deadline;
 
-    if (secret == NULL || secret->bytes == NULL || secret->length == 0 ||
-        !deadline_after(kPipeWriteDeadlineMilliseconds, &deadline))
+    if (secret == NULL || secret->bytes == NULL || secret->length == 0)
         return 0;
     return write_all_until(guest_fd, secret->bytes, secret->length, deadline) &&
         write_all_until(guest_fd, newline, sizeof(newline) - 1u, deadline);
 }
 
 static int
-write_guest_arm(int guest_fd)
+write_guest_arm(int guest_fd, int64_t deadline)
 {
     static const uint8_t arm_token[] = "arm-withdraw\n";
-    int64_t deadline;
 
-    if (!deadline_after(kPipeWriteDeadlineMilliseconds, &deadline))
-        return 0;
     return write_all_until(guest_fd, arm_token, sizeof(arm_token) - 1u,
                            deadline);
 }
 
 static int
-write_guest_release(int guest_fd)
+write_guest_release(int guest_fd, int64_t deadline)
 {
     static const uint8_t withdraw_token[] = "withdraw\n";
-    int64_t deadline;
 
-    if (!deadline_after(kPipeWriteDeadlineMilliseconds, &deadline))
-        return 0;
     return write_all_until(guest_fd, withdraw_token,
                            sizeof(withdraw_token) - 1u, deadline);
 }
 
 static int
-send_status(int control_fd, const uint8_t *status, size_t status_length)
+send_status(int control_fd, const uint8_t *status, size_t status_length,
+            int64_t deadline)
 {
-    int64_t deadline;
     ssize_t count;
 
     if (status == NULL || status_length == 0 ||
-        !deadline_after(kPipeWriteDeadlineMilliseconds, &deadline) ||
         !wait_for_fd_until(control_fd, POLLOUT, deadline))
         return 0;
     do {
@@ -610,6 +650,8 @@ airport_itlwm_lab_credential_broker_main(int argc, char *argv[])
     int host_fd = -1;
     int control_fd = -1;
     int guest_fd = -1;
+    int64_t host_fed_deadline = -1;
+    int64_t post_start_session_deadline = -1;
     int exit_code = 1;
 
     secure_zero(&secret, sizeof(secret));
@@ -626,69 +668,109 @@ airport_itlwm_lab_credential_broker_main(int argc, char *argv[])
         !read_exactly_one_credential(credential_fd, &secret) ||
         !close_once(&credential_fd) || !feed_host_pipe_once(&host_fd, &secret))
         goto out;
-    if (!send_status(control_fd, host_fed_status,
-                     sizeof(host_fed_status) - 1u))
+    /* HOST_FED begins the independently bounded period in which the broker
+     * may retain the credential while the controller finishes host activation.
+     * A valid START, rather than elapsed activation time, begins the later
+     * guest-delivery session. */
+    if (!deadline_after(kHostFedToStartDeadlineMilliseconds,
+                        &host_fed_deadline))
         goto out;
+    {
+        int64_t operation_deadline;
+
+        if (!deadline_after_capped(kPipeWriteDeadlineMilliseconds,
+                                   host_fed_deadline, &operation_deadline) ||
+            !send_status(control_fd, host_fed_status,
+                         sizeof(host_fed_status) - 1u, operation_deadline))
+            goto out;
+    }
     for (;;) {
         int64_t deadline;
+        int64_t operation_deadline;
         uint32_t phase_deadline;
 
         switch (phase) {
         case kBrokerPhaseHostFed:
-            phase_deadline = kHostFedToStartDeadlineMilliseconds;
+            if (!deadline_is_live(host_fed_deadline))
+                goto out;
+            deadline = host_fed_deadline;
             break;
         case kBrokerPhaseStarted:
             phase_deadline = kStartedToArmDeadlineMilliseconds;
+            if (!deadline_after_capped(phase_deadline,
+                                       post_start_session_deadline, &deadline))
+                goto out;
             break;
         case kBrokerPhaseArmed:
             phase_deadline = kArmedToReleaseDeadlineMilliseconds;
+            if (!deadline_after_capped(phase_deadline,
+                                       post_start_session_deadline, &deadline))
+                goto out;
             break;
         default:
             goto out;
         }
         control_packet_destroy(&packet);
-        if (!deadline_after(phase_deadline, &deadline) ||
-            !receive_control_packet(control_fd, deadline, &packet))
+        if (!receive_control_packet(control_fd, deadline, &packet))
             goto out;
         if (is_fixed_packet(&packet, "ABORT", sizeof("ABORT") - 1u) &&
             packet.received_fd < 0) {
             close_discard(&guest_fd);
-            if (!send_status(control_fd, aborted_status,
-                             sizeof(aborted_status) - 1u))
+            if (!deadline_after_capped(kPipeWriteDeadlineMilliseconds,
+                                       deadline, &operation_deadline) ||
+                !send_status(control_fd, aborted_status,
+                             sizeof(aborted_status) - 1u,
+                             operation_deadline))
                 goto out;
             exit_code = 0;
             goto out;
         }
         if (phase == kBrokerPhaseHostFed) {
             if (!is_start_packet(&packet) || packet.received_fd < 0 ||
-                !is_guest_write_pipe(packet.received_fd))
+                !is_guest_write_pipe(packet.received_fd) ||
+                !deadline_is_live(host_fed_deadline) ||
+                !deadline_after(kPostStartSessionDeadlineMilliseconds,
+                                &post_start_session_deadline) ||
+                !deadline_after_capped(kPipeWriteDeadlineMilliseconds,
+                                       post_start_session_deadline,
+                                       &operation_deadline))
                 goto out;
             guest_fd = packet.received_fd;
             packet.received_fd = -1;
-            if (!write_guest_credential(guest_fd, &secret))
+            if (!write_guest_credential(guest_fd, &secret,
+                                        operation_deadline))
                 goto out;
             secret_buffer_destroy(&secret);
             if (!send_status(control_fd, started_status,
-                             sizeof(started_status) - 1u))
+                             sizeof(started_status) - 1u,
+                             operation_deadline))
                 goto out;
             phase = kBrokerPhaseStarted;
             continue;
         }
         if (phase == kBrokerPhaseStarted) {
             if (!is_fixed_packet(&packet, "ARM", sizeof("ARM") - 1u) ||
-                packet.received_fd >= 0 || !write_guest_arm(guest_fd) ||
+                packet.received_fd >= 0 ||
+                !deadline_after_capped(kPipeWriteDeadlineMilliseconds,
+                                       deadline, &operation_deadline) ||
+                !write_guest_arm(guest_fd, operation_deadline) ||
                 !send_status(control_fd, armed_status,
-                             sizeof(armed_status) - 1u))
+                             sizeof(armed_status) - 1u,
+                             operation_deadline))
                 goto out;
             phase = kBrokerPhaseArmed;
             continue;
         }
         if (phase == kBrokerPhaseArmed) {
             if (!is_fixed_packet(&packet, "RELEASE", sizeof("RELEASE") - 1u) ||
-                packet.received_fd >= 0 || !write_guest_release(guest_fd) ||
+                packet.received_fd >= 0 ||
+                !deadline_after_capped(kPipeWriteDeadlineMilliseconds,
+                                       deadline, &operation_deadline) ||
+                !write_guest_release(guest_fd, operation_deadline) ||
                 !close_once(&guest_fd) ||
                 !send_status(control_fd, released_status,
-                             sizeof(released_status) - 1u))
+                             sizeof(released_status) - 1u,
+                             operation_deadline))
                 goto out;
             exit_code = 0;
             goto out;

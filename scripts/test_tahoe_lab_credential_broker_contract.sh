@@ -102,9 +102,17 @@ for token in (
     "O_WRONLY", "write_guest_credential", "write_guest_arm",
     "arm-withdraw\\n", "withdraw\\n", '"HOST_FED"', '"STARTED"',
     '"ARMED"', '"RELEASED"', '"ABORTED"',
-    "kHostFedToStartDeadlineMilliseconds = 60000u",
+    "kSwitcherLarActivationBoundMilliseconds = 120000u",
+    "kSwitcherHostapdTransitionBoundMilliseconds = 40000u",
+    "kControllerStatusAndStartMarginMilliseconds = 60000u",
+    "kHostFedToStartDeadlineMilliseconds =",
+    "kVerifiedInitialLeaseFloorMilliseconds = 285000u",
+    "kPostStartSessionDeadlineMilliseconds = 270000u",
     "kStartedToArmDeadlineMilliseconds = 120000u",
     "kArmedToReleaseDeadlineMilliseconds = 90000u",
+    "_Static_assert(kPostStartSessionDeadlineMilliseconds <",
+    "deadline_is_live",
+    "deadline_after_capped",
 ):
     require(source, token, "private opaque control protocol")
 for token in ("localizedDescription", "ssid", "bssid", "SSID=", "BSSID="):
@@ -113,10 +121,11 @@ protocol = body(source, "airport_itlwm_lab_credential_broker_main", "broker main
 for token in (
     "kBrokerPhaseHostFed", "kBrokerPhaseStarted", "kBrokerPhaseArmed",
     "send_status(control_fd, host_fed_status", "is_fixed_packet(&packet, \"ABORT\"",
-    "is_start_packet(&packet)", "write_guest_credential(guest_fd, &secret)",
+    "is_start_packet(&packet)", "write_guest_credential(guest_fd, &secret,",
     "secret_buffer_destroy(&secret)", "is_fixed_packet(&packet, \"ARM\"",
-    "write_guest_arm(guest_fd)", "is_fixed_packet(&packet, \"RELEASE\"",
-    "write_guest_release(guest_fd)",
+    "write_guest_arm(guest_fd, operation_deadline)",
+    "is_fixed_packet(&packet, \"RELEASE\"",
+    "write_guest_release(guest_fd, operation_deadline)",
     "close_once(&guest_fd)",
 ):
     require(protocol, token, "HOST_FED/STARTED/ARMED state transition")
@@ -124,6 +133,46 @@ abort_gate = protocol.find('is_fixed_packet(&packet, "ABORT"')
 phase_gate = protocol.find("if (phase == kBrokerPhaseHostFed)")
 if abort_gate < 0 or phase_gate < 0 or abort_gate > phase_gate:
     fail("ABORT is not accepted before every control-phase gate")
+
+# HOST_FED retains the secret for the full permitted host-activation path.
+# A *valid* START begins a separate, shorter session after the controller has
+# attested enough watchdog remainder.  This avoids charging a legitimate LAR
+# wait against initial readiness, while every later phase still shares one
+# non-extendable absolute ceiling.
+for token in (
+    "deadline_after(kHostFedToStartDeadlineMilliseconds,",
+    "host_fed_deadline",
+    "deadline_after(kPostStartSessionDeadlineMilliseconds,",
+    "post_start_session_deadline",
+    "deadline_after_capped(phase_deadline,",
+    "deadline_after_capped(kPipeWriteDeadlineMilliseconds,",
+):
+    require(protocol, token, "bounded HOST_FED and post-START windows")
+forbid(source, "kBrokerSessionLeaseDeadlineMilliseconds",
+       "obsolete post-HOST_FED global lease cap")
+if "deadline_after(phase_deadline, &deadline)" in protocol:
+    fail("phase-local deadline can extend the post-START session")
+if protocol.count("deadline_after_capped(phase_deadline,") != 2:
+    fail("STARTED and ARMED must each be capped by one post-START ceiling")
+if protocol.count("deadline_after_capped(kPipeWriteDeadlineMilliseconds,") < 5:
+    fail("post-packet writes/statuses are not all capped by their live window")
+host_fed_phase = protocol.find("case kBrokerPhaseHostFed:")
+start_gate = protocol.find("if (phase == kBrokerPhaseHostFed)")
+post_start = protocol.find("deadline_after(kPostStartSessionDeadlineMilliseconds,")
+host_fed_live = protocol.find("deadline_is_live(host_fed_deadline)")
+if min(host_fed_phase, start_gate, post_start, host_fed_live) < 0:
+    fail("missing HOST_FED-to-START timing boundary")
+if not (host_fed_phase < start_gate < post_start):
+    fail("post-START session does not begin only after the valid START gate")
+start_live = protocol.find("deadline_is_live(host_fed_deadline)", start_gate)
+if start_live < 0 or start_live > post_start:
+    fail("valid START is not rejected after the HOST_FED retention deadline")
+capped = body(source, "deadline_after_capped(uint32_t milliseconds", "deadline cap helper")
+for token in (
+    "cap_deadline <= started",
+    "requested < cap_deadline ? requested : cap_deadline",
+):
+    require(capped, token, "non-extendable absolute deadline helper")
 
 # The secret resides in a private, locked non-dumpable mapping and every
 # terminal route scrubs and releases it.  SIGPIPE is handled as an error path,
