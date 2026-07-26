@@ -15,6 +15,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import pwd
 import re
 import stat
 import subprocess
@@ -34,13 +35,17 @@ from capture_tahoe_iwn_lab_loaded_identity import (
 )
 
 
-SCHEMA_VERSION = "itlwm-tahoe-iwn-direct-sae-lab-artifacts/v1"
+SCHEMA_VERSION = "itlwm-tahoe-iwn-direct-sae-lab-artifacts/v3"
 RECEIPT_KIND = "guest-local-direct-sae-lab-artifact-binding"
-ARTIFACT_PATH_POLICY = "pinned-guest-private-isae-runtime-dir/v1"
+ARTIFACT_PATH_POLICY = "pinned-guest-root-ancestry-isae-runtime-dir/v3"
+PINNED_HOST_KEY_FINGERPRINT = "SHA256:4Q/9OkSwSE09YhXRdAbdbPl7WTqRNJHyn+vAM6p8QiY"
 DIRECT_CLIENT_NAME = "airport_itlwm_iwn_direct_sae_lab_client"
 TRACE_CLIENT_NAME = "airport_itlwm_post_plti_trace"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
-ARTIFACT_DIR_RE = re.compile(
+ROOT_ARTIFACT_PARENT = "/private/var/db/aiam-isae-runtime"
+ROOT_ARTIFACT_DIR = f"{ROOT_ARTIFACT_PARENT}/direct-sae"
+ARTIFACT_DIR_RE = re.compile(re.escape(ROOT_ARTIFACT_DIR))
+STAGING_ARTIFACT_DIR_RE = re.compile(
     r"/Users/devops/\.aiam-isae-runtime-[A-Za-z0-9][A-Za-z0-9._-]*"
 )
 
@@ -49,6 +54,9 @@ VALIDATION_KEYS = {
     "artifact_parent_not_symlink",
     "direct_client_regular_executable",
     "trace_client_regular_executable",
+    "artifact_parent_root_owned_nonwritable",
+    "direct_client_root_owned_nonwritable",
+    "trace_client_root_owned_nonwritable",
     "direct_client_stable_during_capture",
     "trace_client_stable_during_capture",
 }
@@ -63,6 +71,16 @@ NON_CLAIM_KEYS = {
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def trusted_host_environment() -> dict[str, str]:
+    """Use only fixed host lookup paths while an opaque future stdin exists."""
+    return {
+        "PATH": "/usr/bin:/bin",
+        "LC_ALL": "C",
+        "LANG": "C",
+        "HOME": pwd.getpwuid(os.getuid()).pw_dir,
+    }
 
 
 def require_regular_file(path: Path, label: str) -> Path:
@@ -93,7 +111,15 @@ def require_artifact_dir(value: str) -> str:
     if not isinstance(value, str) or "\x00" in value:
         raise ValueError("guest artifact directory is malformed")
     if ARTIFACT_DIR_RE.fullmatch(value) is None:
-        raise ValueError("guest artifact directory does not match the restricted policy")
+        raise ValueError("guest artifact directory does not match the root-only policy")
+    return value
+
+
+def require_staging_artifact_dir(value: str) -> str:
+    if not isinstance(value, str) or "\x00" in value:
+        raise ValueError("guest staging artifact directory is malformed")
+    if STAGING_ARTIFACT_DIR_RE.fullmatch(value) is None:
+        raise ValueError("guest staging artifact directory does not match the restricted policy")
     return value
 
 
@@ -129,15 +155,27 @@ def artifact_probe_script() -> str:
     return r'''
 set -euo pipefail
 artifact_dir="$1"
-printf '%s\n' "$artifact_dir" |
-  /usr/bin/grep -Eq '^/Users/devops/\.aiam-isae-runtime-[A-Za-z0-9][A-Za-z0-9._-]*$' || exit 64
-test -d "$artifact_dir" && test ! -L "$artifact_dir"
+test "$artifact_dir" = "__ROOT_ARTIFACT_DIR__"
+
+root_owned_nonwritable() {
+  path="$1"
+  owner="$(/usr/bin/stat -f '%u' "$path")"
+  mode="$(/usr/bin/stat -f '%Lp' "$path")"
+  test "$owner" = 0
+  printf '%s\n' "$mode" | /usr/bin/grep -Eq '^[0-7][0145][0145]$'
+}
+
+for root_path in /private /private/var /private/var/db __ROOT_ARTIFACT_PARENT__ "$artifact_dir"; do
+  test -d "$root_path" && test ! -L "$root_path"
+  root_owned_nonwritable "$root_path"
+done
 physical_dir="$(CDPATH= cd -P -- "$artifact_dir" && pwd -P)"
 test "$physical_dir" = "$artifact_dir"
 
 digest() {
   file="$1"
   test -f "$file" && test ! -L "$file" && test -x "$file"
+  root_owned_nonwritable "$file"
   LC_ALL=C PATH=/usr/bin:/bin /usr/bin/shasum -a 256 "$file" |
     /usr/bin/awk -v expected="$file" '
       function hex64(value) { return length(value) == 64 && value !~ /[^0-9a-f]/ }
@@ -158,12 +196,16 @@ printf 'pair-two-direct=%s\n' "$two_direct"
 printf 'pair-two-trace=%s\n' "$two_trace"
 '''.replace("__PINNED_BUILD__", PINNED_QEMU_BUILD).replace(
         "__DIRECT_CLIENT__", DIRECT_CLIENT_NAME
-    ).replace("__TRACE_CLIENT__", TRACE_CLIENT_NAME)
+    ).replace("__TRACE_CLIENT__", TRACE_CLIENT_NAME).replace(
+        "__ROOT_ARTIFACT_PARENT__", ROOT_ARTIFACT_PARENT
+    ).replace(
+        "__ROOT_ARTIFACT_DIR__", ROOT_ARTIFACT_DIR
+    )
 
 
 def pinned_ssh(known_hosts: Path) -> list[str]:
     return [
-        "ssh",
+        "/usr/bin/ssh",
         "-F", "/dev/null",
         "-T",
         "-o", "BatchMode=yes",
@@ -188,11 +230,13 @@ def verified_known_hosts() -> Path:
         handle.close()
         os.chmod(handle.name, 0o600)
         result = subprocess.run(
-            ["ssh-keygen", "-lf", handle.name, "-E", "sha256"],
+            ["/usr/bin/ssh-keygen", "-lf", handle.name, "-E", "sha256"],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=trusted_host_environment(),
         )
-        if not result.stdout.split():
-            raise ValueError("pinned guest host key cannot be read")
+        fields = result.stdout.split()
+        if len(fields) < 2 or fields[1] != PINNED_HOST_KEY_FINGERPRINT:
+            raise ValueError("pinned guest host key fingerprint mismatch")
         return Path(handle.name)
     except Exception:
         Path(handle.name).unlink(missing_ok=True)
@@ -220,9 +264,10 @@ def capture_guest_artifacts(artifact_dir: str, timeout_seconds: int = 20) -> tup
     known_hosts = verified_known_hosts()
     try:
         result = subprocess.run(
-            [*pinned_ssh(known_hosts), "/bin/bash", "-s", "--", artifact_dir],
+            [*pinned_ssh(known_hosts), "/usr/bin/sudo", "-n", "/bin/bash", "-s", "--", artifact_dir],
             input=artifact_probe_script(), text=True, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, timeout=timeout_seconds,
+            env=trusted_host_environment(),
         )
     except subprocess.TimeoutExpired as error:
         raise ValueError("guest artifact probe timed out") from error
@@ -231,6 +276,96 @@ def capture_guest_artifacts(artifact_dir: str, timeout_seconds: int = 20) -> tup
     if result.returncode != 0:
         raise ValueError("guest artifact probe failed")
     return parse_probe_output(result.stdout)
+
+
+def harden_guest_artifact_script() -> str:
+    """Copy staged tools into a root-only, non-replaceable execution path."""
+    return r'''
+set -euo pipefail
+staging_dir="$1"
+root_artifact_dir="__ROOT_ARTIFACT_DIR__"
+root_artifact_parent="__ROOT_ARTIFACT_PARENT__"
+printf '%s\n' "$staging_dir" |
+  /usr/bin/grep -Eq '^/Users/devops/\.aiam-isae-runtime-[A-Za-z0-9][A-Za-z0-9._-]*$' || exit 64
+test -d "$staging_dir" && test ! -L "$staging_dir"
+staging_physical_dir="$(CDPATH= cd -P -- "$staging_dir" && pwd -P)"
+test "$staging_physical_dir" = "$staging_dir"
+
+root_owned_nonwritable() {
+  path="$1"
+  owner="$(/usr/bin/stat -f '%u' "$path")"
+  mode="$(/usr/bin/stat -f '%Lp' "$path")"
+  test "$owner" = 0
+  printf '%s\n' "$mode" | /usr/bin/grep -Eq '^[0-7][0145][0145]$'
+}
+
+for root_path in /private /private/var /private/var/db; do
+  test -d "$root_path" && test ! -L "$root_path"
+  root_owned_nonwritable "$root_path"
+done
+/usr/bin/install -d -o root -g wheel -m 700 "$root_artifact_parent"
+test -d "$root_artifact_parent" && test ! -L "$root_artifact_parent"
+root_owned_nonwritable "$root_artifact_parent"
+test ! -e "$root_artifact_dir" && test ! -L "$root_artifact_dir"
+umask 077
+/bin/mkdir "$root_artifact_dir"
+/usr/sbin/chown root:wheel "$root_artifact_dir"
+/bin/chmod 700 "$root_artifact_dir"
+
+digest() {
+  file="$1"
+  test -f "$file" && test ! -L "$file"
+  LC_ALL=C PATH=/usr/bin:/bin /usr/bin/shasum -a 256 "$file" |
+    /usr/bin/awk -v expected="$file" '
+      function hex64(value) { return length(value) == 64 && value !~ /[^0-9a-f]/ }
+      NR == 1 && NF == 2 && $2 == expected && hex64($1) { print $1; next }
+      { invalid = 1 }
+      END { if (NR != 1 || invalid) exit 1 }
+    '
+}
+
+for name in __DIRECT_CLIENT__ __TRACE_CLIENT__; do
+  source_tool="$staging_dir/$name"
+  destination_tool="$root_artifact_dir/$name"
+  test -f "$source_tool" && test ! -L "$source_tool" && test -x "$source_tool"
+  before="$(digest "$source_tool")"
+  /bin/cp -pP "$source_tool" "$destination_tool"
+  test -f "$destination_tool" && test ! -L "$destination_tool" && test -x "$destination_tool"
+  /usr/sbin/chown root:wheel "$destination_tool"
+  /bin/chmod 500 "$destination_tool"
+  after="$(digest "$source_tool")"
+  copied="$(digest "$destination_tool")"
+  test "$before" = "$after" && test "$before" = "$copied"
+done
+root_owned_nonwritable "$root_artifact_dir"
+for name in __DIRECT_CLIENT__ __TRACE_CLIENT__; do
+  root_owned_nonwritable "$root_artifact_dir/$name"
+done
+'''.replace("__DIRECT_CLIENT__", DIRECT_CLIENT_NAME).replace(
+        "__TRACE_CLIENT__", TRACE_CLIENT_NAME
+    ).replace(
+        "__ROOT_ARTIFACT_PARENT__", ROOT_ARTIFACT_PARENT
+    ).replace(
+        "__ROOT_ARTIFACT_DIR__", ROOT_ARTIFACT_DIR
+    )
+
+
+def harden_guest_artifacts(staging_dir: str, timeout_seconds: int = 20) -> None:
+    staging_dir = require_staging_artifact_dir(staging_dir)
+    known_hosts = verified_known_hosts()
+    try:
+        result = subprocess.run(
+            [*pinned_ssh(known_hosts), "/usr/bin/sudo", "-n", "/bin/bash", "-s", "--", staging_dir],
+            input=harden_guest_artifact_script(), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=timeout_seconds,
+            env=trusted_host_environment(),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("guest artifact hardening timed out") from error
+    finally:
+        known_hosts.unlink(missing_ok=True)
+    if result.returncode != 0 or result.stdout != "":
+        raise ValueError("guest artifact hardening failed")
 
 
 def make_receipt(direct_sha256: str, trace_sha256: str) -> dict[str, object]:
@@ -357,13 +492,25 @@ def self_test() -> int:
             pass
         else:
             raise SystemExit("self-test: malformed receipt accepted")
-    for value in ("relative", "/private/tmp/other", "/Users/devops/.aiam-isae-runtime-"):
+    if require_artifact_dir(ROOT_ARTIFACT_DIR) != ROOT_ARTIFACT_DIR:
+        raise SystemExit("self-test: root artifact path rejected")
+    if require_staging_artifact_dir("/Users/devops/.aiam-isae-runtime-safe") != \
+            "/Users/devops/.aiam-isae-runtime-safe":
+        raise SystemExit("self-test: staging artifact path rejected")
+    for value in ("relative", "/private/tmp/other", "/Users/devops/.aiam-isae-runtime-safe"):
         try:
             require_artifact_dir(value)
         except ValueError:
             pass
         else:
             raise SystemExit("self-test: unsafe artifact path accepted")
+    for value in ("relative", "/private/tmp/other", ROOT_ARTIFACT_DIR):
+        try:
+            require_staging_artifact_dir(value)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test: unsafe staging artifact path accepted")
     with tempfile.TemporaryDirectory(prefix="aiam-isae-artifact-receipt-") as directory:
         output = Path(directory) / "receipt.json"
         write_new_json(document, output)
@@ -414,10 +561,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--guest-artifact-dir")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--harden-guest-artifacts", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
+    if args.harden_guest_artifacts:
+        if args.guest_artifact_dir is None or args.output is not None:
+            parser.error("--harden-guest-artifacts requires --guest-artifact-dir and forbids --output")
+        try:
+            harden_guest_artifacts(args.guest_artifact_dir)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            print("FAIL: direct-SAE guest artifact hardening", file=sys.stderr)
+            return 2
+        print("artifact-directory=hardened")
+        return 0
     if args.guest_artifact_dir is None or args.output is None:
         parser.error("--guest-artifact-dir and --output are required unless --self-test is used")
     try:

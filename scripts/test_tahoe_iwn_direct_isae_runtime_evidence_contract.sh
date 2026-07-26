@@ -125,6 +125,7 @@ def passing_document():
         artifacts_post_bound=True,
         readiness_observed=True,
         submission_category="queued",
+        trace_reset_may_be_active=True,
         trace_reset_ack=True,
         initial_snapshot_synchronized=True,
         trace_seal_ack=True,
@@ -161,8 +162,12 @@ for malformed in (
     {**document, "extra": True},
     {**document, "retention": {**document["retention"], "opaque_request_retained": True}},
     {**document, "input_handling": {**document["input_handling"], "submit_category": "untrusted"}},
+    {**document, "input_handling": {**document["input_handling"], "readiness_observed": False}},
     {**document, "trace": {**document["trace"], "entry_count": 0}},
+    {**document, "trace": {**document["trace"], "cleanup_fallback_attempted": True}},
+    {**document, "trace": {**document["trace"], "cleanup_seal_confirmed": True}},
     {**document, "environment": {**document["environment"], "profile_or_route_changed": True}},
+    {**document, "created_at_utc": "2026-02-30T00:00:00+00:00"},
 ):
     try:
         validate(malformed)

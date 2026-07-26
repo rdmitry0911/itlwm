@@ -43,7 +43,7 @@ required = (
     'REMOTE_SUBMIT',
     '--submit-stdin',
     '--hold-milliseconds',
-    'guest.run_command(command, stream',
+    'guest.run_root_command(',
     'shlex.quote(REMOTE_SUBMIT)',
     'remote_query(',
     'parse_lab_status',
@@ -58,6 +58,14 @@ required = (
     'artifact_path_retained',
     'host_dtrace_zero',
     'guest_dtrace_zero',
+    'trusted_host_environment',
+    'PINNED_HOST_KEY_FINGERPRINT',
+    'ROOT_ARTIFACT_PARENT',
+    'ROOT_ARTIFACT_DIR',
+    'run_root_script',
+    'trace_reset_may_be_active',
+    'trace_cleanup_fallback_attempted',
+    'sealed-snapshot-report',
     'StrictHostKeyChecking=yes',
     'GlobalKnownHostsFile=/dev/null',
 )
@@ -101,7 +109,7 @@ submit_end = text.find('\ndef parse_lab_status(', submit_start)
 if submit_start < 0 or submit_end < 0:
     raise SystemExit('FAIL: direct-ISAE submit helper missing')
 submit = text[submit_start:submit_end]
-for token in ('guest.run_command(command, stream', 'shlex.quote(REMOTE_SUBMIT)', 'timeout=hold_milliseconds // 1000 + 20'):
+for token in ('guest.run_root_command(', 'exec /usr/bin/sudo -n /bin/bash -c', 'shlex.quote(REMOTE_SUBMIT)', 'timeout=hold_milliseconds // 1000 + 20'):
     if token not in submit:
         raise SystemExit(f'FAIL: direct-ISAE submit transport lacks {token}')
 for token in ('run_script(', 'read_text(', 'write_text(', 'stdin.read', 'tee', 'heredoc'):
@@ -116,6 +124,7 @@ ordered = (
     'request_stream = require_fifo_stdin()',
     'receipt = load_artifact_receipt',
     'remote_artifacts_bound(',
+    'state.trace_reset_may_be_active = True',
     'remote_trace(guest, artifact_dir, state.trace_sha256, ("reset",))',
     'remote_query(',
     'remote_submit(',
@@ -135,10 +144,64 @@ if run.count('remote_submit(') != 1:
     raise SystemExit('FAIL: direct-ISAE runner may submit more than once')
 if run.count('("get", "iwn-direct-sae-report")') != 2:
     raise SystemExit('FAIL: direct-ISAE runner must read two frozen reports')
-if 'trace_reset_requested and not state.trace_sealed' not in run:
+if 'trace_reset_may_be_active and not state.trace_final_disabled' not in run:
     raise SystemExit('FAIL: direct-ISAE runner has no failed-cycle trace cleanup')
 if 'remote_trace(guest, artifact_dir, state.trace_sha256, ("off",))' not in run:
     raise SystemExit('FAIL: direct-ISAE runner has no trace-off fallback')
+if run.find('state.trace_reset_may_be_active = True') > run.find('remote_trace(guest, artifact_dir, state.trace_sha256, ("reset",))'):
+    raise SystemExit('FAIL: direct-ISAE runner arms cleanup after reset')
+for token in (
+    'state.trace_cleanup_fallback_attempted = True',
+    'state.trace_cleanup_seal_confirmed = True',
+    'state.trace_cleanup_off_attempted = True',
+    'state.trace_cleanup_disabled_confirmed = True',
+):
+    if token not in run:
+        raise SystemExit(f'FAIL: direct-ISAE runner lacks cleanup evidence state {token}')
+for token in (
+    'final["entry_count"] == first["entry_count"]',
+    'final["episode_count"] == first["episode_count"]',
+    'final["active_episode"] == first["active_episode"]',
+):
+    if token not in run:
+        raise SystemExit(f'FAIL: direct-ISAE runner does not bind sealed snapshot to report: {token}')
+
+transport_start = text.find('class PinnedGuest:')
+transport_end = text.find('\ndef decoded_stdout(', transport_start)
+if transport_start < 0 or transport_end < 0:
+    raise SystemExit('FAIL: direct-ISAE pinned transport missing')
+transport = text[transport_start:transport_end]
+for token in (
+    '"/usr/bin/ssh-keygen"',
+    'fields[1] != PINNED_HOST_KEY_FINGERPRINT',
+    '"/usr/bin/ssh"',
+    'env=trusted_host_environment()',
+    'def run_root_script(',
+    '"/usr/bin/sudo", "-n", "/bin/bash", "-s", "--"',
+    'def run_root_command(',
+):
+    if token not in transport:
+        raise SystemExit(f'FAIL: direct-ISAE transport lacks pinned root execution {token}')
+for token in ('["ssh"', '["ssh-keygen"', '["pgrep"'):
+    if token in text:
+        raise SystemExit('FAIL: direct-ISAE runner retains a PATH-resolved host tool')
+
+verify_start = text.find('REMOTE_VERIFY_LIBRARY =')
+verify_end = text.find('\n\nREMOTE_ARTIFACTS_BOUND', verify_start)
+if verify_start < 0 or verify_end < 0:
+    raise SystemExit('FAIL: direct-ISAE root artifact verifier missing')
+verify = text[verify_start:verify_end]
+for token in (
+    'test "$artifact_dir" = "__ROOT_ARTIFACT_DIR__"',
+    'for root_path in /private /private/var /private/var/db __ROOT_ARTIFACT_PARENT__',
+    'root_owned_nonwritable "$root_path"',
+    'root_owned_exact_mode "$artifact_dir" 700',
+    'root_owned_exact_mode "$tool" 500',
+):
+    if token not in verify:
+        raise SystemExit(f'FAIL: direct-ISAE root verifier lacks ancestry control {token}')
+if 'exec /usr/bin/sudo -n -- "$tool"' in text:
+    raise SystemExit('FAIL: direct-ISAE runner verifies under one identity and executes under another')
 
 evidence_start = text.find('def evidence_document(')
 evidence_end = text.find('\ndef require_exact_keys(', evidence_start)
@@ -154,6 +217,8 @@ for required_token in (
     '"opaque_request_retained": False',
     '"unparsed_transport_output_retained": False',
     '"artifact_path_retained": False',
+    '"readiness_observed": state.readiness_observed',
+    '"cleanup_fallback_attempted": state.trace_cleanup_fallback_attempted',
 ):
     if required_token not in evidence:
         raise SystemExit(f'FAIL: direct-ISAE aggregate lacks privacy invariant {required_token}')

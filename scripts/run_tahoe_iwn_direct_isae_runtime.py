@@ -27,8 +27,12 @@ from typing import BinaryIO, Optional
 
 from capture_tahoe_iwn_direct_sae_runtime_artifact_receipt import (
     ARTIFACT_DIR_RE,
+    PINNED_HOST_KEY_FINGERPRINT,
+    ROOT_ARTIFACT_DIR,
+    ROOT_ARTIFACT_PARENT,
     SCHEMA_VERSION as ARTIFACT_RECEIPT_SCHEMA,
     load_artifact_receipt,
+    trusted_host_environment,
 )
 from capture_tahoe_iwn_lab_loaded_identity import (
     PINNED_QEMU_BUILD,
@@ -42,6 +46,9 @@ RUNTIME_SCHEMA = "itlwm-tahoe-iwn-direct-isae-runtime/v1"
 DIRECT_CLIENT_NAME = "airport_itlwm_iwn_direct_sae_lab_client"
 TRACE_CLIENT_NAME = "airport_itlwm_post_plti_trace"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+UTC_SECONDS_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00"
+)
 LAB_STATUS_RE = re.compile(
     r"lab-client=(ready|not-ready|unsupported|query-failed|open-unavailable|queued|rejected)\n"
 )
@@ -105,8 +112,11 @@ class State:
     trace_active_episode: int = 0
     trace_verdict: str = "INTEGRITY_INCONCLUSIVE"
     trace_first_missing_stage: str = "unknown"
-    trace_reset_requested: bool = False
-    trace_sealed: bool = False
+    trace_reset_may_be_active: bool = False
+    trace_cleanup_fallback_attempted: bool = False
+    trace_cleanup_seal_confirmed: bool = False
+    trace_cleanup_off_attempted: bool = False
+    trace_cleanup_disabled_confirmed: bool = False
     result: str = "INCONCLUSIVE"
     failure_phase: str = "preflight"
     operational_failure: bool = False
@@ -158,28 +168,56 @@ def require_fresh_output(path: Path) -> None:
 
 def host_dtrace_zero() -> bool:
     result = subprocess.run(
-        ["pgrep", "-x", "dtrace"],
+        ["/usr/bin/pgrep", "-x", "dtrace"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
         text=True,
+        env=trusted_host_environment(),
     )
     return result.returncode == 1 and result.stdout == ""
 
 
 REMOTE_VERIFY_LIBRARY = r'''
 set -euo pipefail
+root_owned_nonwritable() {
+  path="$1"
+  owner="$(/usr/bin/stat -f '%u' "$path")"
+  mode="$(/usr/bin/stat -f '%Lp' "$path")"
+  test "$owner" = 0
+  printf '%s\n' "$mode" | /usr/bin/grep -Eq '^[0-7][0145][0145]$'
+}
+root_owned_exact_mode() {
+  path="$1"
+  expected_mode="$2"
+  test "$(/usr/bin/stat -f '%u' "$path")" = 0
+  test "$(/usr/bin/stat -f '%Lp' "$path")" = "$expected_mode"
+}
+verify_root_ancestry() {
+  artifact_dir="$1"
+  test "$artifact_dir" = "__ROOT_ARTIFACT_DIR__"
+  for root_path in /private /private/var /private/var/db __ROOT_ARTIFACT_PARENT__; do
+    test -d "$root_path" && test ! -L "$root_path"
+    root_owned_nonwritable "$root_path"
+  done
+  test -d "$artifact_dir" && test ! -L "$artifact_dir"
+  physical_dir="$(CDPATH= cd -P -- "$artifact_dir" && pwd -P)"
+  test "$physical_dir" = "$artifact_dir"
+  root_owned_exact_mode "$artifact_dir" 700
+}
 verify_tool() {
   artifact_dir="$1"
   tool_name="$2"
   expected_sha256="$3"
-  printf '%s\n' "$artifact_dir" |
-    /usr/bin/grep -Eq '^/Users/devops/\.aiam-isae-runtime-[A-Za-z0-9][A-Za-z0-9._-]*$' || exit 64
-  test -d "$artifact_dir" && test ! -L "$artifact_dir"
-  physical_dir="$(CDPATH= cd -P -- "$artifact_dir" && pwd -P)"
-  test "$physical_dir" = "$artifact_dir"
+  case "$tool_name" in
+    airport_itlwm_iwn_direct_sae_lab_client|airport_itlwm_post_plti_trace) ;;
+    *) exit 64 ;;
+  esac
+  printf '%s\n' "$expected_sha256" | /usr/bin/grep -Eq '^[0-9a-f]{64}$' || exit 64
+  verify_root_ancestry "$artifact_dir"
   tool="$artifact_dir/$tool_name"
   test -f "$tool" && test ! -L "$tool" && test -x "$tool"
+  root_owned_exact_mode "$tool" 500
   observed="$(LC_ALL=C PATH=/usr/bin:/bin /usr/bin/shasum -a 256 "$tool" |
     /usr/bin/awk -v path="$tool" '
       function hex64(value) { return length(value) == 64 && value !~ /[^0-9a-f]/ }
@@ -189,7 +227,9 @@ verify_tool() {
     ')"
   test "$observed" = "$expected_sha256"
 }
-'''
+'''.replace("__ROOT_ARTIFACT_PARENT__", ROOT_ARTIFACT_PARENT).replace(
+    "__ROOT_ARTIFACT_DIR__", ROOT_ARTIFACT_DIR
+)
 
 REMOTE_ARTIFACTS_BOUND = REMOTE_VERIFY_LIBRARY + r'''
 verify_tool "$1" airport_itlwm_iwn_direct_sae_lab_client "$2"
@@ -214,12 +254,12 @@ case "$#:$first:$second" in
   *) exit 64 ;;
 esac
 verify_tool "$artifact_dir" airport_itlwm_post_plti_trace "$expected_sha256"
-exec /usr/bin/sudo -n -- "$tool" "$@"
+exec "$tool" "$@"
 '''
 
 REMOTE_QUERY = REMOTE_VERIFY_LIBRARY + r'''
 verify_tool "$1" airport_itlwm_iwn_direct_sae_lab_client "$2"
-exec /usr/bin/sudo -n -- "$tool" --query-ready
+exec "$tool" --query-ready
 '''
 
 REMOTE_SUBMIT = REMOTE_VERIFY_LIBRARY + r'''
@@ -229,13 +269,13 @@ hold_milliseconds="$3"
 case "$hold_milliseconds" in ""|*[!0-9]*) exit 64 ;; esac
 test "$hold_milliseconds" -ge 1000 && test "$hold_milliseconds" -le 60000
 verify_tool "$artifact_dir" airport_itlwm_iwn_direct_sae_lab_client "$expected_sha256"
-exec /usr/bin/sudo -n -- "$tool" --submit-stdin --hold-milliseconds "$hold_milliseconds"
+exec "$tool" --submit-stdin --hold-milliseconds "$hold_milliseconds"
 '''
 
 REMOTE_DTRACE_ZERO = r'''
 set -u
 set +e
-matches="$(/usr/bin/sudo -n /usr/bin/pgrep -x dtrace 2>/dev/null)"
+matches="$(LC_ALL=C PATH=/usr/bin:/bin /usr/bin/pgrep -x dtrace 2>/dev/null)"
 status="$?"
 set -e
 test "$status" = 1
@@ -267,17 +307,22 @@ class PinnedGuest:
             handle.close()
             os.chmod(handle.name, 0o600)
             verified = subprocess.run(
-                ["ssh-keygen", "-lf", handle.name, "-E", "sha256"],
+                ["/usr/bin/ssh-keygen", "-lf", handle.name, "-E", "sha256"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
                 text=True,
+                env=trusted_host_environment(),
             )
-            if verified.returncode != 0 or not verified.stdout.split():
+            fields = verified.stdout.split()
+            if (
+                verified.returncode != 0 or len(fields) < 2 or
+                fields[1] != PINNED_HOST_KEY_FINGERPRINT
+            ):
                 raise RunnerError("hostkey-pin")
             self.known_hosts = Path(handle.name)
             self.base = [
-                "ssh", "-F", "/dev/null", "-T", "-p", str(PINNED_QEMU_PORT),
+                "/usr/bin/ssh", "-F", "/dev/null", "-T", "-p", str(PINNED_QEMU_PORT),
                 "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
                 "-o", "StrictHostKeyChecking=yes",
                 "-o", f"UserKnownHostsFile={self.known_hosts}",
@@ -285,9 +330,12 @@ class PinnedGuest:
                 "-o", "UpdateHostKeys=no", "-o", "LogLevel=ERROR",
                 PINNED_QEMU_GUEST,
             ]
-        except Exception:
+        except RunnerError:
             Path(handle.name).unlink(missing_ok=True)
             raise
+        except (OSError, subprocess.SubprocessError) as error:
+            Path(handle.name).unlink(missing_ok=True)
+            raise RunnerError("hostkey-pin") from error
 
     def close(self) -> None:
         if self.known_hosts is not None:
@@ -295,29 +343,41 @@ class PinnedGuest:
         self.known_hosts = None
         self.base = []
 
-    def run_script(
+    def run_root_script(
         self, script: str, arguments: list[str], timeout: int = 20
     ) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(
-            [*self.base, "/bin/bash", "-s", "--", *arguments],
-            input=script.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout,
-        )
+        try:
+            return subprocess.run(
+                [*self.base, "/usr/bin/sudo", "-n", "/bin/bash", "-s", "--", *arguments],
+                input=script.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout,
+                env=trusted_host_environment(),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RunnerError("guest-root-script-timeout") from error
+        except OSError as error:
+            raise RunnerError("guest-root-script") from error
 
-    def run_command(
+    def run_root_command(
         self, command: str, stdin: BinaryIO, timeout: int
     ) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(
-            [*self.base, command],
-            stdin=stdin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout,
-        )
+        try:
+            return subprocess.run(
+                [*self.base, command],
+                stdin=stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout,
+                env=trusted_host_environment(),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RunnerError("submit-timeout") from error
+        except OSError as error:
+            raise RunnerError("guest-root-submit") from error
 
 
 def decoded_stdout(result: subprocess.CompletedProcess[bytes], phase: str) -> str:
@@ -330,7 +390,7 @@ def decoded_stdout(result: subprocess.CompletedProcess[bytes], phase: str) -> st
 def remote_artifacts_bound(
     guest: PinnedGuest, artifact_dir: str, direct_digest: str, trace_digest: str
 ) -> bool:
-    result = guest.run_script(
+    result = guest.run_root_script(
         REMOTE_ARTIFACTS_BOUND, [artifact_dir, direct_digest, trace_digest]
     )
     return result.returncode == 0 and result.stdout == b""
@@ -339,7 +399,7 @@ def remote_artifacts_bound(
 def remote_trace(
     guest: PinnedGuest, artifact_dir: str, trace_digest: str, arguments: tuple[str, ...]
 ) -> str:
-    result = guest.run_script(REMOTE_TRACE, [artifact_dir, trace_digest, *arguments])
+    result = guest.run_root_script(REMOTE_TRACE, [artifact_dir, trace_digest, *arguments])
     if result.returncode != 0:
         raise RunnerError("trace-command")
     return decoded_stdout(result, "trace-output")
@@ -348,7 +408,7 @@ def remote_trace(
 def remote_query(
     guest: PinnedGuest, artifact_dir: str, direct_digest: str
 ) -> tuple[int, str]:
-    result = guest.run_script(REMOTE_QUERY, [artifact_dir, direct_digest])
+    result = guest.run_root_script(REMOTE_QUERY, [artifact_dir, direct_digest])
     return result.returncode, decoded_stdout(result, "readiness-output")
 
 
@@ -356,15 +416,14 @@ def remote_submit(
     guest: PinnedGuest, artifact_dir: str, direct_digest: str,
     hold_milliseconds: int, stream: BinaryIO
 ) -> tuple[int, str]:
-    command = "exec /bin/bash -c " + shlex.quote(REMOTE_SUBMIT)
+    command = "exec /usr/bin/sudo -n /bin/bash -c " + shlex.quote(REMOTE_SUBMIT)
     command += " -- " + " ".join(
         shlex.quote(value)
         for value in (artifact_dir, direct_digest, str(hold_milliseconds))
     )
-    try:
-        result = guest.run_command(command, stream, timeout=hold_milliseconds // 1000 + 20)
-    except subprocess.TimeoutExpired as error:
-        raise RunnerError("submit-timeout") from error
+    result = guest.run_root_command(
+        command, stream, timeout=hold_milliseconds // 1000 + 20
+    )
     return result.returncode, decoded_stdout(result, "submit-output")
 
 
@@ -510,12 +569,12 @@ def wait_snapshot(
 
 
 def guest_dtrace_zero(guest: PinnedGuest) -> bool:
-    result = guest.run_script(REMOTE_DTRACE_ZERO, [])
+    result = guest.run_root_script(REMOTE_DTRACE_ZERO, [])
     return result.returncode == 0 and result.stdout == b""
 
 
 def guest_build_is_pinned(guest: PinnedGuest) -> bool:
-    result = guest.run_script(REMOTE_GUEST_BUILD, [PINNED_QEMU_BUILD])
+    result = guest.run_root_script(REMOTE_GUEST_BUILD, [PINNED_QEMU_BUILD])
     return result.returncode == 0 and result.stdout == b""
 
 
@@ -527,6 +586,7 @@ def positive_trace(state: State) -> bool:
         state.readiness_observed and state.submission_category == "queued" and
         state.trace_reset_ack and state.initial_snapshot_synchronized and
         state.trace_seal_ack and state.trace_final_disabled and
+        not state.trace_cleanup_fallback_attempted and
         state.report_one_read and state.report_two_read and
         state.report_double_read_stable and state.capture_generation > 0 and
         state.trace_backend == "IWN" and state.trace_integrity == "ok" and
@@ -553,13 +613,19 @@ def evidence_document(state: State) -> dict[str, object]:
             "runner_read_or_persisted_request": False,
             "tty_rejected": True,
             "helper_query_before_read": True,
+            "readiness_observed": state.readiness_observed,
             "submit_category": state.submission_category,
         },
         "trace": {
+            "reset_may_be_active": state.trace_reset_may_be_active,
             "reset_acknowledged": state.trace_reset_ack,
             "initial_snapshot_synchronized": state.initial_snapshot_synchronized,
             "seal_acknowledged": state.trace_seal_ack,
             "final_control_disabled": state.trace_final_disabled,
+            "cleanup_fallback_attempted": state.trace_cleanup_fallback_attempted,
+            "cleanup_seal_confirmed": state.trace_cleanup_seal_confirmed,
+            "cleanup_off_attempted": state.trace_cleanup_off_attempted,
+            "cleanup_disabled_confirmed": state.trace_cleanup_disabled_confirmed,
             "report_one_read": state.report_one_read,
             "report_two_read": state.report_two_read,
             "double_read_stable": state.report_double_read_stable,
@@ -634,6 +700,15 @@ def validate_evidence_document(document: object) -> dict[str, object]:
     )
     if root["schema"] != RUNTIME_SCHEMA or not isinstance(root["created_at_utc"], str):
         raise ValueError("document schema")
+    timestamp = str(root["created_at_utc"])
+    if UTC_SECONDS_RE.fullmatch(timestamp) is None:
+        raise ValueError("document timestamp")
+    try:
+        parsed_timestamp = dt.datetime.fromisoformat(timestamp)
+    except ValueError as error:
+        raise ValueError("document timestamp") from error
+    if parsed_timestamp.tzinfo != dt.timezone.utc or parsed_timestamp.microsecond != 0:
+        raise ValueError("document timestamp")
     artifacts = require_exact_keys(
         root["artifact_binding"],
         {
@@ -653,7 +728,7 @@ def validate_evidence_document(document: object) -> dict[str, object]:
         root["input_handling"],
         {
             "stdin_only", "runner_read_or_persisted_request", "tty_rejected",
-            "helper_query_before_read", "submit_category",
+            "helper_query_before_read", "readiness_observed", "submit_category",
         },
         "input_handling",
     )
@@ -662,6 +737,7 @@ def validate_evidence_document(document: object) -> dict[str, object]:
         input_handling["runner_read_or_persisted_request"] is not False or
         input_handling["tty_rejected"] is not True or
         input_handling["helper_query_before_read"] is not True or
+        type(input_handling["readiness_observed"]) is not bool or
         input_handling["submit_category"] not in {
             "queued", "rejected", "not-ready", "unsupported", "query-failed",
             "open-unavailable", "not-invoked",
@@ -671,18 +747,22 @@ def validate_evidence_document(document: object) -> dict[str, object]:
     trace = require_exact_keys(
         root["trace"],
         {
-            "reset_acknowledged", "initial_snapshot_synchronized",
+            "reset_may_be_active", "reset_acknowledged", "initial_snapshot_synchronized",
             "seal_acknowledged", "final_control_disabled", "report_one_read",
-            "report_two_read", "double_read_stable", "capture_generation",
+            "cleanup_fallback_attempted", "cleanup_seal_confirmed",
+            "cleanup_off_attempted", "cleanup_disabled_confirmed", "report_two_read",
+            "double_read_stable", "capture_generation",
             "backend", "entry_count", "dropped_entries", "integrity",
             "episode_count", "active_episode", "verdict", "first_missing_stage",
         },
         "trace",
     )
     for key in (
-        "reset_acknowledged", "initial_snapshot_synchronized", "seal_acknowledged",
-        "final_control_disabled", "report_one_read", "report_two_read",
-        "double_read_stable",
+        "reset_may_be_active", "reset_acknowledged",
+        "initial_snapshot_synchronized", "seal_acknowledged", "final_control_disabled",
+        "cleanup_fallback_attempted", "cleanup_seal_confirmed",
+        "cleanup_off_attempted", "cleanup_disabled_confirmed", "report_one_read",
+        "report_two_read", "double_read_stable",
     ):
         require_bool(trace, key, "trace")
     for key in (
@@ -697,6 +777,16 @@ def validate_evidence_document(document: object) -> dict[str, object]:
         trace["first_missing_stage"] not in DIRECT_STAGES
     ):
         raise ValueError("trace classification")
+    if (
+        (trace["reset_acknowledged"] and not trace["reset_may_be_active"]) or
+        (trace["cleanup_fallback_attempted"] and not trace["reset_may_be_active"]) or
+        (trace["cleanup_seal_confirmed"] and not trace["cleanup_fallback_attempted"]) or
+        (trace["cleanup_off_attempted"] and not trace["cleanup_fallback_attempted"]) or
+        (trace["cleanup_disabled_confirmed"] and not (
+            trace["cleanup_seal_confirmed"] or trace["cleanup_off_attempted"]
+        ))
+    ):
+        raise ValueError("trace cleanup invariants")
     environment = require_exact_keys(
         root["environment"],
         {
@@ -761,7 +851,9 @@ def validate_evidence_document(document: object) -> dict[str, object]:
             trace["double_read_stable"],
         )
         if (
-            not all(required_true) or input_handling["submit_category"] != "queued" or
+            not all(required_true) or input_handling["readiness_observed"] is not True or
+            trace["cleanup_fallback_attempted"] is not False or
+            input_handling["submit_category"] != "queued" or
             trace["capture_generation"] == 0 or trace["backend"] != "IWN" or
             trace["entry_count"] == 0 or trace["dropped_entries"] != 0 or
             trace["integrity"] != "ok" or trace["episode_count"] != 1 or
@@ -846,8 +938,8 @@ def run(args: argparse.Namespace) -> int:
         )
         state.artifacts_pre_bound = True
 
+        state.trace_reset_may_be_active = True
         remote_trace(guest, artifact_dir, state.trace_sha256, ("reset",))
-        state.trace_reset_requested = True
         state.capture_generation = wait_control(
             guest, artifact_dir, state.trace_sha256, 1, 1, 0, 0,
             args.ack_attempts,
@@ -899,7 +991,6 @@ def run(args: argparse.Namespace) -> int:
             state.capture_generation, args.ack_attempts,
         )
         state.trace_seal_ack = True
-        state.trace_sealed = True
         final = wait_snapshot(
             guest, artifact_dir, state.trace_sha256, state.capture_generation, 0,
             args.ack_attempts,
@@ -915,6 +1006,12 @@ def run(args: argparse.Namespace) -> int:
         )
         first = parse_direct_report(report_one, state.capture_generation)
         state.report_one_read = True
+        require(
+            final["entry_count"] == first["entry_count"] and
+            final["episode_count"] == first["episode_count"] and
+            final["active_episode"] == first["active_episode"],
+            "sealed-snapshot-report",
+        )
         time.sleep(args.stable_read_delay_seconds)
         report_two = remote_trace(
             guest, artifact_dir, state.trace_sha256, ("get", "iwn-direct-sae-report")
@@ -959,14 +1056,27 @@ def run(args: argparse.Namespace) -> int:
         return 1
     finally:
         if guest is not None:
-            if state.trace_reset_requested and not state.trace_sealed:
+            if state.trace_reset_may_be_active and not state.trace_final_disabled:
+                state.trace_cleanup_fallback_attempted = True
+                cleanup_attempts = min(args.ack_attempts, 5)
                 try:
                     remote_trace(guest, artifact_dir, state.trace_sha256, ("seal",))
-                    state.trace_sealed = True
-                except RunnerError:
+                    wait_control(
+                        guest, artifact_dir, state.trace_sha256, 0, 0, 1,
+                        state.capture_generation, cleanup_attempts,
+                    )
+                    state.trace_cleanup_seal_confirmed = True
+                    state.trace_cleanup_disabled_confirmed = True
+                except Exception:
+                    state.trace_cleanup_off_attempted = True
                     try:
                         remote_trace(guest, artifact_dir, state.trace_sha256, ("off",))
-                    except RunnerError:
+                        wait_control(
+                            guest, artifact_dir, state.trace_sha256, 0, 0, 0,
+                            0, cleanup_attempts,
+                        )
+                        state.trace_cleanup_disabled_confirmed = True
+                    except Exception:
                         pass
             try:
                 state.guest_dtrace_after = guest_dtrace_zero(guest)
