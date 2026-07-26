@@ -36,7 +36,12 @@
 enum {
     kCredentialMinimumLength = 8u,
     kCredentialMaximumLength = 64u,
-    kInputDeadlineMilliseconds = 15000u,
+    kCredentialInputDeadlineMilliseconds = 15000u,
+    /* The host's verified one-shot withdrawal can itself take up to twenty
+     * seconds to stop hostapd.  Keep the post-association control window
+     * comfortably above that bounded operation without leaving a client
+     * indefinitely associated if the controller disappears. */
+    kControlInputDeadlineMilliseconds = 60000u,
     kDiscoveryAttempts = 80u,
     kInitialIdentityAttempts = 40u,
     kRecoveryAttempts = 240u,
@@ -158,6 +163,48 @@ string_matches_digest(NSString *value,
     return matched;
 }
 
+/* `iw` reports its BSSID in a lower-case textual form while CoreWLAN does not
+ * promise a particular case.  The controller and this public client therefore
+ * bind a MAC address through a fixed lower-case ASCII representation, not
+ * through a framework-specific rendering. */
+static int
+bssid_matches_digest(NSString *value,
+                     const uint8_t expected[CC_SHA256_DIGEST_LENGTH])
+{
+    NSData *data;
+    const uint8_t *input;
+    uint8_t canonical[17];
+    uint8_t digest[CC_SHA256_DIGEST_LENGTH];
+    int matched = 0;
+
+    if (value == nil || expected == NULL)
+        return 0;
+    data = [value dataUsingEncoding:NSUTF8StringEncoding];
+    if (data == nil || data.length != sizeof(canonical) || data.bytes == NULL)
+        return 0;
+    input = data.bytes;
+    for (size_t index = 0; index < sizeof(canonical); index++) {
+        uint8_t byte = input[index];
+
+        if (index % 3u == 2u) {
+            if (byte != ':')
+                goto out;
+        } else if (hex_value((char)byte) < 0) {
+            goto out;
+        } else if (byte >= 'A' && byte <= 'F') {
+            byte = (uint8_t)(byte - 'A' + 'a');
+        }
+        canonical[index] = byte;
+    }
+    CC_SHA256(canonical, (CC_LONG)sizeof(canonical), digest);
+    matched = memcmp(digest, expected, sizeof(digest)) == 0;
+
+out:
+    secure_bzero(canonical, sizeof(canonical));
+    secure_bzero(digest, sizeof(digest));
+    return matched;
+}
+
 static int64_t
 monotonic_milliseconds(void)
 {
@@ -263,9 +310,10 @@ read_credential(uint8_t credential[kCredentialMaximumLength],
         !S_ISFIFO(input_status.st_mode))
         return 0;
     started = monotonic_milliseconds();
-    if (started < 0 || started > INT64_MAX - kInputDeadlineMilliseconds)
+    if (started < 0 ||
+        started > INT64_MAX - kCredentialInputDeadlineMilliseconds)
         return 0;
-    deadline = started + kInputDeadlineMilliseconds;
+    deadline = started + kCredentialInputDeadlineMilliseconds;
     if (!read_bounded_line(credential, kCredentialMaximumLength,
                            credential_length, deadline) ||
         !credential_is_valid(credential, *credential_length)) {
@@ -293,9 +341,10 @@ read_control_token(const char *expected, int require_eof)
         expected_length >= sizeof(control))
         goto out;
     started = monotonic_milliseconds();
-    if (started < 0 || started > INT64_MAX - kInputDeadlineMilliseconds)
+    if (started < 0 ||
+        started > INT64_MAX - kControlInputDeadlineMilliseconds)
         goto out;
-    deadline = started + kInputDeadlineMilliseconds;
+    deadline = started + kControlInputDeadlineMilliseconds;
     if (!read_bounded_line(control, sizeof(control), &control_length,
                            deadline) ||
         control_length != expected_length ||
@@ -346,7 +395,9 @@ static CWNetwork *
 scan_for_exact_target(CWInterface *interface,
                       const uint8_t ssid_digest[CC_SHA256_DIGEST_LENGTH],
                       const uint8_t bssid_digest[CC_SHA256_DIGEST_LENGTH],
-                      uint32_t *matching_records, int *scan_error_present)
+                      uint32_t *matching_records,
+                      int *alternate_bss_visible,
+                      int *scan_error_present)
 {
     NSError *scan_error = nil;
     NSSet<CWNetwork *> *networks;
@@ -355,15 +406,25 @@ scan_for_exact_target(CWInterface *interface,
 
     if (matching_records != NULL)
         *matching_records = 0;
+    if (alternate_bss_visible != NULL)
+        *alternate_bss_visible = 0;
     if (interface == nil || ssid_digest == NULL || bssid_digest == NULL)
         return nil;
     networks = [interface scanForNetworksWithName:nil error:&scan_error];
     if (scan_error != nil && scan_error_present != NULL)
         *scan_error_present = 1;
     for (CWNetwork *network in networks) {
-        if (!string_matches_digest([network ssid], ssid_digest) ||
-            !string_matches_digest([network bssid], bssid_digest))
+        NSString *network_bssid;
+
+        if (!string_matches_digest([network ssid], ssid_digest))
             continue;
+        network_bssid = [network bssid];
+        if (!bssid_matches_digest(network_bssid, bssid_digest)) {
+            if (network_bssid != nil && network_bssid.length != 0 &&
+                alternate_bss_visible != NULL)
+                *alternate_bss_visible = 1;
+            continue;
+        }
         if (matches == UINT32_MAX) {
             matches = 0;
             target = nil;
@@ -382,6 +443,7 @@ wait_for_exact_target(CWInterface *interface,
                       const uint8_t ssid_digest[CC_SHA256_DIGEST_LENGTH],
                       const uint8_t bssid_digest[CC_SHA256_DIGEST_LENGTH],
                       uint32_t *attempts, uint32_t *matching_records,
+                      int *alternate_bss_visible,
                       int *scan_error_present)
 {
     CWNetwork *target = nil;
@@ -390,16 +452,22 @@ wait_for_exact_target(CWInterface *interface,
         *attempts = 0;
     if (matching_records != NULL)
         *matching_records = 0;
+    if (alternate_bss_visible != NULL)
+        *alternate_bss_visible = 0;
     for (uint32_t attempt = 1; attempt <= kDiscoveryAttempts; attempt++) {
         uint32_t matches = 0;
+        int alternate = 0;
 
         target = scan_for_exact_target(interface, ssid_digest, bssid_digest,
-                                       &matches, scan_error_present);
+                                       &matches, &alternate,
+                                       scan_error_present);
         if (attempts != NULL)
             *attempts = attempt;
         if (matching_records != NULL)
             *matching_records = matches;
-        if (target != nil)
+        if (alternate_bss_visible != NULL)
+            *alternate_bss_visible = alternate;
+        if (target != nil && alternate)
             return target;
         if (attempt != kDiscoveryAttempts)
             delay_milliseconds(kPollDelayMilliseconds);
@@ -415,7 +483,7 @@ interface_has_exact_initial_identity(
 {
     return interface != nil &&
         string_matches_digest([interface ssid], ssid_digest) &&
-        string_matches_digest([interface bssid], bssid_digest);
+        bssid_matches_digest([interface bssid], bssid_digest);
 }
 
 static int
@@ -446,7 +514,7 @@ wait_for_same_ssid_different_bss(
         if (interface != nil &&
             string_matches_digest([interface ssid], ssid_digest) &&
             current_bssid != nil &&
-            !string_matches_digest(current_bssid, initial_bssid_digest))
+            !bssid_matches_digest(current_bssid, initial_bssid_digest))
             return 1;
         if (attempt != kRecoveryAttempts)
             delay_milliseconds(kPollDelayMilliseconds);
@@ -457,7 +525,8 @@ wait_for_same_ssid_different_bss(
 static void
 emit_result(const char *result, const char *endpoint_binding,
             uint32_t discovery_attempts, uint32_t matching_records,
-            int scan_error_present, int association_error_present,
+            int alternate_bss_visible, int scan_error_present,
+            int association_error_present,
             int initial_identity_exact, int withdrawal_arm_accepted,
             int pre_withdrawal_identity_exact,
             int withdrawal_control_accepted,
@@ -466,13 +535,15 @@ emit_result(const char *result, const char *endpoint_binding,
 {
     printf("public_corewlan_recovery=%s endpoint_binding=%s "
            "discovery_attempts=%u matching_records=%u "
-           "scan_error_present=%u association_error_present=%u "
+           "alternate_bss_visible=%u scan_error_present=%u "
+           "association_error_present=%u "
            "initial_identity_exact=%u withdrawal_arm_accepted=%u "
            "pre_withdrawal_identity_exact=%u "
            "withdrawal_control_accepted=%u "
            "recovery_same_ssid=%u recovery_different_bss=%u "
            "cleanup_disassociate_attempted=%u\n",
            result, endpoint_binding, discovery_attempts, matching_records,
+           alternate_bss_visible != 0 ? 1u : 0u,
            scan_error_present != 0 ? 1u : 0u,
            association_error_present != 0 ? 1u : 0u,
            initial_identity_exact != 0 ? 1u : 0u,
@@ -504,6 +575,7 @@ main(int argc, char **argv)
     const char *result = "not-started";
     uint32_t discovery_attempts = 0;
     uint32_t matching_records = 0;
+    int alternate_bss_visible = 0;
     int scan_error_present = 0;
     int association_error_present = 0;
     int initial_identity_exact = 0;
@@ -562,9 +634,10 @@ main(int argc, char **argv)
         target = wait_for_exact_target(interface, ssid_digest, bssid_digest,
                                        &discovery_attempts,
                                        &matching_records,
+                                       &alternate_bss_visible,
                                        &scan_error_present);
         if (target == nil) {
-            result = "initial-target-unavailable";
+            result = "initial-or-alternate-target-unavailable";
             goto out;
         }
         @autoreleasepool {
@@ -595,9 +668,9 @@ main(int argc, char **argv)
             goto out;
         }
         emit_result("initial-ready", endpoint_binding, discovery_attempts,
-                    matching_records, scan_error_present,
+                    matching_records, alternate_bss_visible, scan_error_present,
                     association_error_present, initial_identity_exact, 0, 0,
-                    0, 0, 0);
+                    0, 0, 0, 0);
         withdrawal_arm_accepted = read_withdrawal_arm_control();
         if (!withdrawal_arm_accepted) {
             result = "withdrawal-arm-rejected";
@@ -610,7 +683,7 @@ main(int argc, char **argv)
             goto out;
         }
         emit_result("withdraw-armed", endpoint_binding, discovery_attempts,
-                    matching_records, scan_error_present,
+                    matching_records, alternate_bss_visible, scan_error_present,
                     association_error_present, initial_identity_exact,
                     withdrawal_arm_accepted, pre_withdrawal_identity_exact, 0,
                     0, 0, 0);
@@ -643,7 +716,8 @@ out:
     secure_bzero(bssid_digest, sizeof(bssid_digest));
     secure_bzero(endpoint_name, sizeof(endpoint_name));
     emit_result(result, endpoint_binding, discovery_attempts, matching_records,
-                scan_error_present, association_error_present,
+                alternate_bss_visible, scan_error_present,
+                association_error_present,
                 initial_identity_exact, withdrawal_arm_accepted,
                 pre_withdrawal_identity_exact, withdrawal_control_accepted,
                 recovery_same_ssid, recovery_different_bss,

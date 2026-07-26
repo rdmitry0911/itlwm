@@ -67,6 +67,7 @@ for token in (
     "CC_SHA256_DIGEST_LENGTH * 2u",
     "decode_digest_environment",
     "string_matches_digest",
+    "bssid_matches_digest",
     "read_credential",
 ):
     require(source, token, "opaque target/credential ingress")
@@ -83,7 +84,7 @@ ordered(credential, "credential reader is a bounded pipe record",
         "isatty(STDIN_FILENO) != 0",
         "fstat(STDIN_FILENO, &input_status)",
         "S_ISFIFO(input_status.st_mode)",
-        "kInputDeadlineMilliseconds",
+        "kCredentialInputDeadlineMilliseconds",
         "read_bounded_line")
 require(credential, "credential_is_valid", "credential length/ASCII gate")
 reader = body(source, "read_bounded_line(uint8_t *out", "bounded line reader")
@@ -101,7 +102,7 @@ for token in (
     "[client interfaceWithName:endpoint]",
     "[interface scanForNetworksWithName:nil error:&scan_error]",
     "string_matches_digest([network ssid], ssid_digest)",
-    "string_matches_digest([network bssid], bssid_digest)",
+    "bssid_matches_digest(network_bssid, bssid_digest)",
     "return matches == 1u ? target : nil;",
 ):
     require(source, token, "exact public target selection")
@@ -126,8 +127,9 @@ ordered(initial, "public association before recovery control",
         "withdrawal_control_accepted = read_withdrawal_control();",
         "wait_for_same_ssid_different_bss")
 control = body(source, "read_control_token(const char *expected", "control reader")
-for token in ("read_bounded_line(control", "memcmp(control, expected",
-              "if (!require_eof)", "accepted = count == 0"):
+for token in ("kControlInputDeadlineMilliseconds", "read_bounded_line(control",
+              "memcmp(control, expected", "if (!require_eof)",
+              "accepted = count == 0"):
     require(control, token, "bounded control token reader")
 for marker, token, label in (
     ("read_withdrawal_arm_control(void)", 'read_control_token("arm-withdraw", 0)',
@@ -139,13 +141,28 @@ for marker, token, label in (
 
 # Recovery is deliberately automatic: same opaque SSID plus a BSSID different
 # from the initial target.  No raw identity reaches output.
+selection = body(source, "scan_for_exact_target(CWInterface", "exact target scan")
+ordered(selection, "same-ESS alternate is observed without rendering it",
+        "string_matches_digest([network ssid], ssid_digest)",
+        "network_bssid = [network bssid]",
+        "!bssid_matches_digest(network_bssid, bssid_digest)",
+        "*alternate_bss_visible = 1")
+bssid = body(source, "bssid_matches_digest(NSString *value", "BSSID canonicalizer")
+for token in ("data.length != sizeof(canonical)", "index % 3u == 2u",
+              "byte >= 'A' && byte <= 'F'", "CC_SHA256(canonical",
+              "secure_bzero(canonical", "secure_bzero(digest"):
+    require(bssid, token, "canonical lower-case BSSID digest")
+wait_target = body(source, "wait_for_exact_target(CWInterface", "target wait")
+require(wait_target, "if (target != nil && alternate)",
+        "initial association waits for an observable same-ESS alternate")
 recovery = body(source, "wait_for_same_ssid_different_bss(", "recovery poll")
 ordered(recovery, "same-ESS alternate-BSS proof",
         "string_matches_digest([interface ssid], ssid_digest)",
         "current_bssid != nil",
-        "!string_matches_digest(current_bssid, initial_bssid_digest)")
+        "!bssid_matches_digest(current_bssid, initial_bssid_digest)")
 emit = body(source, "emit_result(const char *result", "aggregate result")
 for token in ("public_corewlan_recovery=%s", "endpoint_binding=%s",
+              "alternate_bss_visible=%u",
               "initial_identity_exact=%u", "withdrawal_control_accepted=%u",
               "withdrawal_arm_accepted=%u",
               "pre_withdrawal_identity_exact=%u",
