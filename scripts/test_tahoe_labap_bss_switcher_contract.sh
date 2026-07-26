@@ -40,11 +40,24 @@ for token in \
     'schema=tahoe-labap-bss-switch/v2' \
     'tahoe-labap-bss-switch/v1' \
     'SETUP_DEADLINE_SECONDS=180' \
+    'CREDENTIAL_READ_TIMEOUT_SECONDS=45' \
+    'LABAP_BSS_CREDENTIAL_READY=1' \
+    'IFS= read -r -s -t "$CREDENTIAL_READ_TIMEOUT_SECONDS" passphrase' \
     'armed:setup' \
-    'labap-active:active|direct-active:active|withdrawn:active' \
+    'labap-active:active|labap-withdraw-armed:active|direct-active:active|withdrawn:active' \
     'setup_deadline_is_current' \
     'promote_active_state' \
     'active_lease_is_current' \
+    'renew_active_lease_for_withdraw' \
+    'do_renew_for_withdraw' \
+    '--renew-for-withdraw' \
+    'LABAP_BSS_SWITCH=LEASE_RENEWED_FOR_WITHDRAW' \
+    '--recovery-owner' \
+    'do_recovery_owner' \
+    'watchdog_recovery_owner_is_current' \
+    'recovery_owner_is_proven_unarmed' \
+    'LABAP_BSS_RECOVERY_OWNER=WATCHDOG' \
+    'LABAP_BSS_RECOVERY_OWNER=NONE' \
     'load_test_mode_from_state' \
     '"$SELF" --rollback --state-dir "$STATE_DIR" --from-watchdog' \
     'LABAP_FREQ_24_CH9=2452' \
@@ -65,7 +78,6 @@ for token in \
     'scan flush passive' \
     'TOPOLOGY_PARSER=' \
     '--credential-stdin' \
-    'IFS= read -r -s passphrase' \
     'generated_passphrase' \
     'scan_external_labap_topology' \
     'stable_external_labap_topology' \
@@ -113,6 +125,9 @@ done
 # on-air lease before the foreground-only handler is disarmed.
 awk '
     /^do_activate\(\)/ { in_activate = 1 }
+    in_activate && /LABAP_BSS_CREDENTIAL_READY=1/ { credential_ready_line = NR }
+    in_activate && /read -r -s -t/ { credential_read_line = NR }
+    in_activate && /write_test_config "\$passphrase"/ { credential_config_line = NR }
     in_activate && /write_state armed/ { write_state_line = NR }
     in_activate && /^[[:space:]]*arm_activate_signal_recovery$/ { arm_line = NR }
     in_activate && /write_marker/ { marker_line = NR }
@@ -124,7 +139,10 @@ awk '
     in_activate && /promote_active_state "\$active_state"/ { promote_line = NR }
     in_activate && /disarm_activate_signal_recovery/ { disarm_line = NR }
     END {
-        exit !(write_state_line < arm_line && arm_line < marker_line &&
+        exit !(credential_ready_line < credential_read_line &&
+            credential_read_line < credential_config_line &&
+            credential_config_line < write_state_line &&
+            write_state_line < arm_line && arm_line < marker_line &&
             marker_line < watchdog_line && watchdog_line < stop_line &&
             stop_line < test_start_line && test_start_line < test_active_line &&
             setup_guard_count >= 3 && test_active_line < setup_guard_line &&
@@ -135,6 +153,53 @@ awk '
 if grep -Fq 'set_state "$active_state"' "$SCRIPT"; then
     fail "active lease promotion reuses the setup deadline"
 fi
+
+# Renewal is a one-shot state transition only: it must leave hostapd/LAR and
+# other network machinery untouched, and the renewed state must make a second
+# request fail before any state write.  A watchdog rollback rechecks the
+# current deadline while it holds the switch lock, so an old expiry cannot win
+# after the atomic state replacement.
+renew_body="$(sed -n '/^renew_active_lease_for_withdraw()/,/^}/p' "$SCRIPT")"
+for token in \
+    '[ "$state" = labap-active ]' \
+    'active_lease_is_current labap-active' \
+    'write_state labap-withdraw-armed' \
+    'test_hostapd_active' \
+    'watchdog_owner_is_current'; do
+    printf '%s\n' "$renew_body" | grep -Fq -- "$token" ||
+        fail "renewal lacks one-shot state fence: $token"
+done
+for token in 'start_exact_hostapd' 'stop_exact_hostapd' 'scan_' 'ensure_ap_channel_ir' 'sudo_cmd kill'; do
+    if printf '%s\n' "$renew_body" | grep -Fq -- "$token"; then
+        fail "renewal gained host/network mutation: $token"
+    fi
+done
+rollback_body="$(sed -n '/^do_rollback()/,/^}/p' "$SCRIPT")"
+for token in '[ "$FROM_WATCHDOG" -eq 1 ]' 'watchdog_remaining_seconds' \
+             '[ "$watchdog_remaining" -eq 0 ] || return 1'; do
+    printf '%s\n' "$rollback_body" | grep -Fq -- "$token" ||
+        fail "watchdog rollback does not revalidate renewed deadline: $token"
+done
+
+# The recovery-owner query is deliberately lock-free: it is used precisely
+# when the watchdog may own flock.  It must stay read-only, return WATCHDOG
+# only for a live exact receipt, and reserve NONE for an entirely empty state.
+owner_body="$(sed -n '/^do_recovery_owner()/,/^}/p' "$SCRIPT")"
+for token in 'watchdog_recovery_owner_is_current' 'recovery_owner_is_proven_unarmed' \
+             'LABAP_BSS_RECOVERY_OWNER=WATCHDOG' 'LABAP_BSS_RECOVERY_OWNER=NONE'; do
+    printf '%s\n' "$owner_body" | grep -Fq -- "$token" ||
+        fail "recovery-owner lacks fixed read-only output: $token"
+done
+for token in 'with_lock' 'start_exact_hostapd' 'stop_exact_hostapd' 'write_state' 'scan_' 'sudo_cmd'; do
+    if printf '%s\n' "$owner_body" | grep -Fq -- "$token"; then
+        fail "recovery-owner gained side effect: $token"
+    fi
+done
+owner_none_body="$(sed -n '/^recovery_owner_is_proven_unarmed()/,/^}/p' "$SCRIPT")"
+for token in '"$MARKER"' '"$(state_file)"' '"$(test_config)"' '"$(watchdog_pid_file)"' '"$STATE_DIR"/*'; do
+    printf '%s\n' "$owner_none_body" | grep -Fq -- "$token" ||
+        fail "recovery-owner NONE is not exact/empty: $token"
+done
 
 # No password argv/env mechanism and no broad system-network control path.
 for token in \

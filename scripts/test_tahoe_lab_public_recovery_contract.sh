@@ -70,6 +70,7 @@ for token in (
     "copy_canonical_bssid",
     "bssid_matches_digest",
     "read_credential",
+    "kControlInputDeadlineMilliseconds = 90000u",
 ):
     require(source, token, "opaque target/credential ingress")
 for forbidden in (

@@ -49,13 +49,16 @@ def body(marker: str, label: str) -> str:
 # A status request has no caller-chosen lease and is locked like every state
 # operation.  It is deliberately rejected for every non-LabAP activation.
 for token in (
-    "--preflight|--activate|--withdraw|--rollback|--status|--retire",
+    "--preflight|--activate|--renew-for-withdraw|--withdraw|--rollback|--recovery-owner|--status|--retire",
     "LEASE_SECONDS_EXPLICIT=0",
     "LEASE_SECONDS_EXPLICIT=1",
     "status) [ -n \"$STATE_DIR\" ]",
+    "recovery-owner) [ -n \"$STATE_DIR\" ]",
     "retire) [ -n \"$STATE_DIR\" ]",
     "[ \"$LEASE_SECONDS_EXPLICIT\" -eq 0 ]",
     "status) with_lock do_status;;",
+    "recovery-owner) do_recovery_owner;;",
+    "renew-for-withdraw) with_lock do_renew_for_withdraw;;",
     "retire) with_lock do_retire;;",
     "schema=tahoe-labap-bss-switch/v4",
     "schema=tahoe-labap-bss-switch/v3",
@@ -72,7 +75,7 @@ writer = body("write_state()", "v4 state writer")
 for token in (
     "schema=tahoe-labap-bss-switch/v4",
     "armed:setup",
-    "labap-active:active|direct-active:active|withdrawn:active",
+    "labap-active:active|labap-withdraw-armed:active|direct-active:active|withdrawn:active",
     "original-restored:setup|original-restored:active",
     "deadline_phase=%s",
     "lease_not_after_monotonic_seconds=%s",
@@ -83,7 +86,7 @@ for token in (
 state = body("status_state_is_current()", "status state validator")
 for token in (
     "[ \"$schema\" = tahoe-labap-bss-switch/v4 ]",
-    "[ \"$state\" = labap-active ]",
+    "case \"$state\" in labap-active|labap-withdraw-armed)",
     "[ \"$mode\" = labap ]",
     "is_hex64 \"$network\" && is_hex64 \"$fingerprint\"",
     "canonical_bssid \"$state_bssid\" >/dev/null",
@@ -105,7 +108,7 @@ for token in (
     "tahoe-labap-bss-switch/v3",
     "deadline_phase",
     "armed:setup",
-    "labap-active:active|direct-active:active|withdrawn:active",
+    "labap-active:active|labap-withdraw-armed:active|direct-active:active|withdrawn:active",
     'maximum_seconds="$SETUP_DEADLINE_SECONDS"',
     'maximum_seconds="$stored_lease"',
     "lease_not_after_monotonic_seconds",
@@ -247,13 +250,133 @@ for token in (
 
 withdraw = body("do_withdraw()", "one-shot withdrawal")
 for token in (
-    "active_lease_is_current labap-active",
-    "active LabAP lease is expired or malformed",
-    "active LabAP lease changed before withdrawal",
+    "active_lease_is_current labap-withdraw-armed",
+    "renewed LabAP lease is expired or malformed",
+    "renewed LabAP lease changed before withdrawal",
     "set_state withdrawn",
 ):
     if token not in withdraw:
         fail(f"withdrawal is not fail-closed on the active lease: {token}")
+
+renew = body("renew_active_lease_for_withdraw()", "one-shot renewed lease")
+for token in (
+    '[ "$schema" = tahoe-labap-bss-switch/v4 ]',
+    '[ "$state" = labap-active ]',
+    'active_lease_is_current labap-active',
+    'write_state labap-withdraw-armed',
+):
+    if token not in renew:
+        fail(f"renewal lacks exact one-shot transition: {token}")
+for forbidden in ("start_exact_hostapd", "stop_exact_hostapd", "scan_", "ensure_ap_channel_ir"):
+    if forbidden in renew:
+        fail(f"renewal has a host/network mutation surface: {forbidden}")
+rollback = body("do_rollback()", "watchdog rollback gate")
+for token in (
+    '[ "$FROM_WATCHDOG" -eq 1 ]',
+    'watchdog_remaining_seconds',
+    '[ "$watchdog_remaining" -eq 0 ] || return 1',
+):
+    if token not in rollback:
+        fail(f"watchdog rollback does not recheck the live v4 deadline: {token}")
+
+owner = body("do_recovery_owner()", "read-only recovery owner")
+for token in (
+    "require_state_dir",
+    "watchdog_recovery_owner_is_current",
+    "recovery_owner_is_proven_unarmed",
+    "LABAP_BSS_RECOVERY_OWNER=WATCHDOG",
+    "LABAP_BSS_RECOVERY_OWNER=NONE",
+    "recovery ownership is ambiguous; state retained",
+):
+    if token not in owner:
+        fail(f"recovery-owner lacks fixed fail-closed result: {token}")
+for forbidden in ("with_lock", "start_exact_hostapd", "stop_exact_hostapd", "write_state",
+                  "set_state", "scan_", "sudo_cmd", "unlink", "rmdir"):
+    if forbidden in owner:
+        fail(f"recovery-owner is not strictly read-only: {forbidden}")
+owner_live = body("watchdog_recovery_owner_is_current()", "live recovery owner validator")
+for token in (
+    "[ \"$schema\" = tahoe-labap-bss-switch/v4 ]",
+    "marker_matches_state",
+    "watchdog_owner_is_live",
+    "labap:labap-withdraw-armed:active",
+):
+    if token not in owner_live:
+        fail(f"recovery-owner lacks exact v4 watchdog scope: {token}")
+for forbidden in ("start_exact_hostapd", "stop_exact_hostapd", "scan_", "sudo_cmd",
+                  "write_state", "set_state"):
+    if forbidden in owner_live:
+        fail(f"recovery-owner liveness check mutates host/network: {forbidden}")
+owner_none = body("recovery_owner_is_proven_unarmed()", "proven unarmed owner result")
+for token in (
+    "[ ! -e \"$MARKER\" ] && [ ! -L \"$MARKER\" ]",
+    '"$(state_file)"', '"$(test_config)"', '"$(watchdog_pid_file)"',
+    '"$STATE_DIR"/*', 'return 1',
+):
+    if token not in owner_none:
+        fail(f"NONE is not restricted to an exact empty unarmed state: {token}")
+
+
+class RenewalModel:
+    def __init__(self):
+        self.state = "labap-active"
+        self.deadline = 300
+
+    def renew_for_withdraw(self, now: int) -> None:
+        if self.state != "labap-active" or not now < self.deadline:
+            raise ValueError("renew rejected")
+        self.state = "labap-withdraw-armed"
+        self.deadline = now + 300
+
+    def statusable(self, now: int) -> bool:
+        return self.state in {"labap-active", "labap-withdraw-armed"} and now < self.deadline
+
+    def watchdog_may_rollback_under_lock(self, now: int) -> bool:
+        return now >= self.deadline
+
+
+model = RenewalModel()
+# A stale watchdog expiry at 300 must re-read the atomically renewed deadline
+# under lock: after renewal at 299 the intermediate state is statusable and
+# rollback is not yet authorized.
+model.renew_for_withdraw(299)
+assert model.statusable(300)
+assert not model.watchdog_may_rollback_under_lock(300)
+try:
+    model.renew_for_withdraw(300)
+except ValueError:
+    pass
+else:
+    raise AssertionError("second renewal was accepted")
+
+
+class RecoveryOwnerModel:
+    def __init__(self, *, exact_v4: bool, marker: bool, live_watchdog: bool, empty: bool):
+        self.exact_v4 = exact_v4
+        self.marker = marker
+        self.live_watchdog = live_watchdog
+        self.empty = empty
+
+    def owner(self) -> str:
+        if self.exact_v4 and self.marker and self.live_watchdog:
+            return "WATCHDOG"
+        if self.empty and not self.marker:
+            return "NONE"
+        raise ValueError("ambiguous")
+
+
+assert RecoveryOwnerModel(exact_v4=False, marker=False, live_watchdog=False, empty=True).owner() == "NONE"
+assert RecoveryOwnerModel(exact_v4=True, marker=True, live_watchdog=True, empty=False).owner() == "WATCHDOG"
+for fixture in (
+    RecoveryOwnerModel(exact_v4=True, marker=False, live_watchdog=False, empty=False),
+    RecoveryOwnerModel(exact_v4=False, marker=True, live_watchdog=False, empty=False),
+):
+    try:
+        fixture.owner()
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("ambiguous recovery state was downgraded to NONE")
 
 print("PASS: Tahoe LabAP hash-only status contract")
 PY
@@ -264,6 +387,15 @@ PY
 state_dir="$(mktemp -d /tmp/aiam-labap-bss-switch.status-contract.XXXXXX)"
 chmod 700 "$state_dir"
 trap 'rmdir "$state_dir" 2>/dev/null || true' EXIT
+if output="$("$switcher" --recovery-owner --state-dir "$state_dir" 2>&1)"; then
+    [ "$output" = 'LABAP_BSS_RECOVERY_OWNER=NONE' ] || {
+        printf '%s\n' 'FAIL: empty recovery-owner fixture emitted a nonfixed result' >&2
+        exit 1
+    }
+else
+    printf '%s\n' 'FAIL: empty recovery-owner fixture was not recognized as unarmed' >&2
+    exit 1
+fi
 if output="$("$switcher" --status --state-dir "$state_dir" 2>&1)"; then
     printf '%s\n' 'FAIL: empty status fixture unexpectedly succeeded' >&2
     exit 1

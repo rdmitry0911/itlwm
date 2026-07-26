@@ -45,18 +45,18 @@ enum {
     kCredentialMaximumLength = 63u,
     kCredentialDeadlineMilliseconds = 15000u,
     kPipeWriteDeadlineMilliseconds = 15000u,
-    /* The permitted host activation path may require all thirty LAR attempts
-     * with two two-second stability polls (120 s), then up to twenty seconds
-     * each to stop the old hostapd and observe the replacement.  Reserve a
-     * further minute for watchdog arming, hash-only status, remote helper
-     * launch, and scheduler variance.  This is a bounded secret-retention
-     * window; no guest pipe has been received or written yet. */
-    kSwitcherLarActivationBoundMilliseconds = 120000u,
-    kSwitcherHostapdTransitionBoundMilliseconds = 40000u,
-    kControllerStatusAndStartMarginMilliseconds = 60000u,
+    /* The v4 switcher owns a complete 180-second setup deadline after the
+     * credential-ready handshake.  HOST_FED can precede that deadline by a
+     * short bounded configuration/state handoff; the controller then needs a
+     * hash-only status and exact START acknowledgement.  Keep all of that
+     * secret retention bounded, without charging a valid 171..180 second
+     * setup against an unrelated shorter controller timeout. */
+    kSwitcherSetupBoundMilliseconds = 180000u,
+    kPostCredentialSetupMarginMilliseconds = 15000u,
+    kControllerStatusAndStartMarginMilliseconds = 45000u,
     kHostFedToStartDeadlineMilliseconds =
-        kSwitcherLarActivationBoundMilliseconds +
-        kSwitcherHostapdTransitionBoundMilliseconds +
+        kSwitcherSetupBoundMilliseconds +
+        kPostCredentialSetupMarginMilliseconds +
         kControllerStatusAndStartMarginMilliseconds,
     /* START is issued only after the controller has freshly attested a
      * sufficiently long watchdog remainder.  From that point onward the
@@ -66,9 +66,13 @@ enum {
     kPostStartSessionDeadlineMilliseconds = 270000u,
     /* The public recovery client can spend about one hundred seconds proving
      * initial readiness: discovery, exact association, and a post-association
-     * same-ESS scan.  Keep the controller's START-to-ARM phase above that
-     * bounded work while still expiring well before a laboratory lease. */
-    kStartedToArmDeadlineMilliseconds = 120000u,
+     * same-ESS scan.  Its runner allows 115 seconds plus a bounded 20-second
+     * ARM control acknowledgement, leaving a positive ten-second fence. */
+    kStartedToArmDeadlineMilliseconds = 145000u,
+    /* After ARM the public client may take fifteen seconds to publish
+     * withdraw-armed, then the runner has a bounded 65-second state-only
+     * renewal/status/withdrawal/RELEASE path.  Its matching deadline starts
+     * at this ARM acknowledgement and still leaves a five-second fence. */
     kArmedToReleaseDeadlineMilliseconds = 90000u,
     kControlPacketCapacity = 160u,
     kDigestTextLength = 64u,
@@ -77,6 +81,10 @@ enum {
 _Static_assert(kPostStartSessionDeadlineMilliseconds <
                kVerifiedInitialLeaseFloorMilliseconds,
                "post-START session must leave watchdog recovery margin");
+_Static_assert(kStartedToArmDeadlineMilliseconds +
+               kArmedToReleaseDeadlineMilliseconds <
+               kPostStartSessionDeadlineMilliseconds,
+               "phase ceilings must fit inside the post-START session");
 
 enum broker_phase {
     kBrokerPhaseHostFed = 0,
@@ -668,6 +676,19 @@ airport_itlwm_lab_credential_broker_main(int argc, char *argv[])
         !read_exactly_one_credential(credential_fd, &secret) ||
         !close_once(&credential_fd) || !feed_host_pipe_once(&host_fd, &secret))
         goto out;
+    /* Send the acknowledgement before starting the HOST_FED retention clock.
+     * The runner begins its deliberately shorter corresponding budget only
+     * after consuming this exact packet, so a delayed local socket send never
+     * silently consumes that margin. */
+    {
+        int64_t operation_deadline;
+
+        if (!deadline_after(kPipeWriteDeadlineMilliseconds,
+                            &operation_deadline) ||
+            !send_status(control_fd, host_fed_status,
+                         sizeof(host_fed_status) - 1u, operation_deadline))
+            goto out;
+    }
     /* HOST_FED begins the independently bounded period in which the broker
      * may retain the credential while the controller finishes host activation.
      * A valid START, rather than elapsed activation time, begins the later
@@ -675,15 +696,6 @@ airport_itlwm_lab_credential_broker_main(int argc, char *argv[])
     if (!deadline_after(kHostFedToStartDeadlineMilliseconds,
                         &host_fed_deadline))
         goto out;
-    {
-        int64_t operation_deadline;
-
-        if (!deadline_after_capped(kPipeWriteDeadlineMilliseconds,
-                                   host_fed_deadline, &operation_deadline) ||
-            !send_status(control_fd, host_fed_status,
-                         sizeof(host_fed_status) - 1u, operation_deadline))
-            goto out;
-    }
     for (;;) {
         int64_t deadline;
         int64_t operation_deadline;

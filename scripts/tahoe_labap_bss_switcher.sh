@@ -61,6 +61,15 @@ LABAP_TOPOLOGY_SAMPLES=2
 LABAP_TOPOLOGY_INTERVAL_SECONDS=1
 LEASE_SECONDS=180
 LEASE_SECONDS_EXPLICIT=0
+# A real credential is handed over only after every read-only admission gate
+# (including the two-scan topology check) has passed.  The foreground runner
+# consumes the fixed ready acknowledgement before it starts its native relay.
+# If that relay never arrives, this bounded read exits before a state receipt,
+# rollback marker, watchdog, hostapd configuration, or host mutation exists.
+# The broker may legally spend 15 seconds reading its FIFO and a further 15
+# seconds feeding the host pipe.  Keep a full additional margin before the
+# pre-marker host read fails closed.
+CREDENTIAL_READ_TIMEOUT_SECONDS=45
 LAR_SCAN_ATTEMPTS=30
 LAR_SCAN_INTERVAL_SECONDS=2
 LAR_STABILITY_POLLS=2
@@ -81,14 +90,22 @@ usage() {
 usage: tahoe_labap_bss_switcher.sh --preflight
        tahoe_labap_bss_switcher.sh --activate --state-dir /tmp/aiam-labap-bss-switch.NAME \
          [--lease-seconds 60..300] [--credential-stdin] [--direct-join]
+       tahoe_labap_bss_switcher.sh --renew-for-withdraw --state-dir /tmp/aiam-labap-bss-switch.NAME
        tahoe_labap_bss_switcher.sh --withdraw --state-dir /tmp/aiam-labap-bss-switch.NAME
        tahoe_labap_bss_switcher.sh --rollback --state-dir /tmp/aiam-labap-bss-switch.NAME
+       tahoe_labap_bss_switcher.sh --recovery-owner --state-dir /tmp/aiam-labap-bss-switch.NAME
        tahoe_labap_bss_switcher.sh --status --state-dir /tmp/aiam-labap-bss-switch.NAME
        tahoe_labap_bss_switcher.sh --retire --state-dir /tmp/aiam-labap-bss-switch.NAME
 
 The helper replaces only the pinned local hostapd BSS.  --withdraw stops only
 the temporary LabAP BSS, leaving any independently operated OpenWrt LabAP BSS
 available as the controlled-failure candidates.  Rollback restores AIAMlab6235.
+`--renew-for-withdraw` is a one-shot, state-only transition from the active
+LabAP BSS after the guest has armed withdrawal.  It resets the fixed watchdog
+lease once; it neither scans nor starts/stops a host service.
+`--recovery-owner` is a fixed-output, read-only query.  It reports a live
+authorized watchdog only for the exact current v4 receipt; it never retries
+rollback or changes host/network state.
 The pre-existing sta0 LAR scan interface must already be administratively UP.
 For a controlled withdrawal, two fresh passive scans must find at least two
 external LabAP BSSes across both the 2.4 and 5 GHz bands before this helper
@@ -126,7 +143,7 @@ is_decimal_in_range() {
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --preflight|--activate|--withdraw|--rollback|--status|--retire)
+        --preflight|--activate|--renew-for-withdraw|--withdraw|--rollback|--recovery-owner|--status|--retire)
             [ -z "$MODE" ] || { usage; exit 2; }
             MODE="${1#--}"
             shift
@@ -186,8 +203,10 @@ fi
 case "$MODE" in
     preflight) [ -z "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] || { usage; exit 2; };;
     activate) [ -n "$STATE_DIR" ] && [ "$FROM_WATCHDOG" -eq 0 ] || { usage; exit 2; };;
+    renew-for-withdraw) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] && [ -z "$WATCHDOG_READY_FD" ] && [ "$LEASE_SECONDS_EXPLICIT" -eq 0 ] || { usage; exit 2; };;
     withdraw) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] || { usage; exit 2; };;
     rollback) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] || { usage; exit 2; };;
+    recovery-owner) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] && [ -z "$WATCHDOG_READY_FD" ] && [ "$LEASE_SECONDS_EXPLICIT" -eq 0 ] || { usage; exit 2; };;
     status) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] && [ -z "$WATCHDOG_READY_FD" ] && [ "$LEASE_SECONDS_EXPLICIT" -eq 0 ] || { usage; exit 2; };;
     retire) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] && [ -z "$WATCHDOG_READY_FD" ] && [ "$LEASE_SECONDS_EXPLICIT" -eq 0 ] || { usage; exit 2; };;
     watchdog)
@@ -334,7 +353,7 @@ write_state() {
     local lease_seconds="$7" deadline_phase="$8" deadline="$9" tmp
     case "$mode" in labap|direct) ;; *) return 1;; esac
     case "$state:$deadline_phase" in
-        armed:setup|labap-active:active|direct-active:active|withdrawn:active|\
+        armed:setup|labap-active:active|labap-withdraw-armed:active|direct-active:active|withdrawn:active|\
         original-restored:setup|original-restored:active) ;;
         *) return 1;;
     esac
@@ -417,7 +436,7 @@ setup_deadline_is_current() {
 active_lease_is_current() {
     local expected_state="$1" schema lease_seconds deadline now remaining
 
-    case "$expected_state" in labap-active|direct-active|withdrawn) ;; *) return 1;; esac
+    case "$expected_state" in labap-active|labap-withdraw-armed|direct-active|withdrawn) ;; *) return 1;; esac
     schema="$(state_value schema)" || return 1
     case "$schema" in
         tahoe-labap-bss-switch/v4)
@@ -474,6 +493,47 @@ promote_active_state() {
     write_state "$next" "$mode" "$network" "$fingerprint" "$bssid" "$external_count" "$lease_seconds" active "$active_deadline"
 }
 
+renew_active_lease_for_withdraw() {
+    local mode network fingerprint bssid external_count schema state deadline_phase
+    local lease_seconds old_deadline now remaining renewed_deadline
+
+    # This is intentionally a pure state transition.  The lock held by the
+    # command serializes it with foreground status/withdraw/rollback, while a
+    # watchdog-triggered rollback re-reads this deadline under that same lock.
+    # Therefore a stale expiry observation cannot restore a newly renewed BSS.
+    load_test_mode_from_state || return 1
+    mode="$TEST_MODE"
+    [ "$mode" = labap ] || return 1
+    schema="$(state_value schema)" || return 1
+    state="$(state_value state)" || return 1
+    deadline_phase="$(state_value deadline_phase)" || return 1
+    network="$(state_value network_signature_before)" || return 1
+    fingerprint="$(state_value live_config_fingerprint)" || return 1
+    bssid="$(state_value live_bssid_before)" || return 1
+    external_count="$(state_value external_labap_bss_count)" || return 1
+    lease_seconds="$(state_value lease_seconds)" || return 1
+    old_deadline="$(state_value lease_not_after_monotonic_seconds)" || return 1
+    [ "$schema" = tahoe-labap-bss-switch/v4 ] || return 1
+    [ "$state" = labap-active ] || return 1
+    [ "$deadline_phase" = active ] || return 1
+    is_decimal_in_range "$lease_seconds" 60 300 || return 1
+    is_canonical_positive_decimal "$old_deadline" || return 1
+    active_lease_is_current labap-active || return 1
+    test_hostapd_active || return 1
+    watchdog_owner_is_current || return 1
+    # Re-check immediately before the atomic replacement.  A second renewal
+    # cannot pass because the first changes state away from labap-active.
+    active_lease_is_current labap-active || return 1
+    now="$(monotonic_uptime_seconds)" || return 1
+    is_canonical_decimal "$now" || return 1
+    remaining=$((old_deadline - now))
+    [ "$remaining" -gt 0 ] && [ "$remaining" -le "$lease_seconds" ] || return 1
+    renewed_deadline=$((now + lease_seconds))
+    [ "$renewed_deadline" -gt "$now" ] || return 1
+    write_state labap-withdraw-armed "$mode" "$network" "$fingerprint" "$bssid" \
+        "$external_count" "$lease_seconds" active "$renewed_deadline"
+}
+
 # This is diagnostic-only: it deliberately stores one fixed phase token, not
 # the BSS identity, credential, or any host/network value.  Unlike state.txt,
 # it remains after a verified rollback so an interrupted foreground activation
@@ -481,7 +541,7 @@ promote_active_state() {
 record_activation_phase() {
     local phase="$1" path tmp
     case "$phase" in
-        state-written|marker-published|watchdog-ready|pre-live-stop|live-stopped|test-started|promoted|\
+        state-written|marker-published|watchdog-ready|pre-live-stop|live-stopped|test-started|promoted|renewed-for-withdraw|\
         interrupted-HUP|interrupted-INT|interrupted-TERM) ;;
         *) return 1;;
     esac
@@ -1034,6 +1094,66 @@ watchdog_owner_is_live() {
     watchdog_process_matches "$pid" && watchdog_process_can_rollback "$pid"
 }
 
+# This is deliberately narrower than status and intentionally makes no
+# network/runtime probes: it is used only to decide whether a caller may wait
+# for an already-authorized watchdog recovery.  The state file is atomically
+# replaced by writers, and every accepted tuple is the v4 state that the
+# watchdog itself can legally recover.  An expired deadline is still accepted
+# here because the watchdog may be actively performing the resulting restore.
+watchdog_recovery_owner_is_current() {
+    local schema state mode network fingerprint state_bssid external_count
+    local lease_seconds deadline_phase deadline
+
+    schema="$(state_value schema 2>/dev/null || true)"
+    state="$(state_value state 2>/dev/null || true)"
+    mode="$(state_value test_mode 2>/dev/null || true)"
+    network="$(state_value network_signature_before 2>/dev/null || true)"
+    fingerprint="$(state_value live_config_fingerprint 2>/dev/null || true)"
+    state_bssid="$(state_value live_bssid_before 2>/dev/null || true)"
+    external_count="$(state_value external_labap_bss_count 2>/dev/null || true)"
+    lease_seconds="$(state_value lease_seconds 2>/dev/null || true)"
+    deadline_phase="$(state_value deadline_phase 2>/dev/null || true)"
+    deadline="$(state_value lease_not_after_monotonic_seconds 2>/dev/null || true)"
+    [ "$schema" = tahoe-labap-bss-switch/v4 ] || return 1
+    is_hex64 "$network" && is_hex64 "$fingerprint" || return 1
+    canonical_bssid "$state_bssid" >/dev/null || return 1
+    is_decimal_in_range "$lease_seconds" 60 300 || return 1
+    is_canonical_positive_decimal "$deadline" || return 1
+    case "$mode:$state:$deadline_phase" in
+        labap:armed:setup|labap:labap-active:active|labap:labap-withdraw-armed:active|\
+        labap:withdrawn:active)
+            is_canonical_decimal "$external_count" && [ "$external_count" -ge 2 ]
+            ;;
+        direct:armed:setup|direct:direct-active:active)
+            [ "$external_count" = 0 ]
+            ;;
+        *) return 1;;
+    esac || return 1
+    marker_matches_state || return 1
+    watchdog_owner_is_live
+}
+
+# `NONE` is deliberately stronger than "no live watchdog": it is the only
+# non-error answer that proves activation did not get as far as publishing any
+# rollback ownership.  This lets the runner remove only its exact empty
+# private directory after a pre-READY/pre-marker failure.  Any partial,
+# malformed, stale, or unrecognized artifact remains an error for manual or
+# watchdog recovery rather than being mistaken for an unarmed attempt.
+recovery_owner_is_proven_unarmed() {
+    local entry
+
+    [ ! -e "$MARKER" ] && [ ! -L "$MARKER" ] || return 1
+    for entry in "$(state_file)" "$(test_config)" "$(test_pid)" "$(test_log)" \
+        "$(watchdog_pid_file)" "$(activation_phase_file)" "$STATE_DIR/rollback.status"; do
+        [ ! -e "$entry" ] && [ ! -L "$entry" ] || return 1
+    done
+    for entry in "$STATE_DIR"/* "$STATE_DIR"/.[!.]* "$STATE_DIR"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        return 1
+    done
+    return 0
+}
+
 write_watchdog_pid() {
     local pid="$1" path
     path="$(watchdog_pid_file)"
@@ -1207,7 +1327,7 @@ status_state_is_current() {
     state="$(state_value state)" || return 1
     mode="$(state_value test_mode)" || return 1
     [ "$schema" = tahoe-labap-bss-switch/v4 ] || return 1
-    [ "$state" = labap-active ] || return 1
+    case "$state" in labap-active|labap-withdraw-armed) ;; *) return 1;; esac
     [ "$mode" = labap ] || return 1
     network="$(state_value network_signature_before)" || return 1
     fingerprint="$(state_value live_config_fingerprint)" || return 1
@@ -1248,6 +1368,19 @@ status_runtime_is_exact() {
     [ "$runtime_bssid" = "$status_bssid" ] || return 1
     [ "$runtime_bssid" = "$state_bssid" ] || return 1
     STATUS_RUNTIME_BSSID="$runtime_bssid"
+}
+
+do_recovery_owner() {
+    require_state_dir
+    # Fixed output and no lock acquisition: this query is specifically usable
+    # when the watchdog holds flock.  It performs no host/network operation.
+    if watchdog_recovery_owner_is_current; then
+        printf 'LABAP_BSS_RECOVERY_OWNER=WATCHDOG\n'
+    elif recovery_owner_is_proven_unarmed; then
+        printf 'LABAP_BSS_RECOVERY_OWNER=NONE\n'
+    else
+        die "recovery ownership is ambiguous; state retained"
+    fi
 }
 
 do_status() {
@@ -1313,7 +1446,13 @@ do_activate() {
     fi
 
     if [ "$CREDENTIAL_STDIN" -eq 1 ]; then
-        IFS= read -r -s passphrase || die "credential stdin ended before one passphrase"
+        # This is the only pre-credential output.  Every admission check above
+        # is complete, but neither a state receipt nor a host/network mutation
+        # exists yet.  A missing broker/credential therefore times out cleanly
+        # before rollback ownership needs to be created.
+        printf 'LABAP_BSS_CREDENTIAL_READY=1\n' || die "could not acknowledge credential readiness"
+        IFS= read -r -s -t "$CREDENTIAL_READ_TIMEOUT_SECONDS" passphrase || \
+            die "credential stdin was not supplied before the bounded deadline"
     else
         passphrase="$(generated_passphrase)" || die "could not generate temporary passphrase"
     fi
@@ -1378,22 +1517,40 @@ do_withdraw() {
     load_test_mode_from_state || die "state test mode is invalid"
     [ "$TEST_MODE" = labap ] || die "direct join test does not authorize withdrawal"
     marker_matches_state || die "active marker does not authorize this switch"
-    [ "$(state_value state)" = labap-active ] || die "state does not authorize a one-shot withdrawal"
-    active_lease_is_current labap-active || die "active LabAP lease is expired or malformed"
+    [ "$(state_value state)" = labap-withdraw-armed ] || die "state does not authorize a renewed one-shot withdrawal"
+    active_lease_is_current labap-withdraw-armed || die "renewed LabAP lease is expired or malformed"
     test_hostapd_active || die "temporary LabAP hostapd is not exact"
     watchdog_owner_is_current || die "rollback watchdog is not current"
-    active_lease_is_current labap-active || die "active LabAP lease changed before withdrawal"
+    active_lease_is_current labap-withdraw-armed || die "renewed LabAP lease changed before withdrawal"
     stop_exact_hostapd "$(test_config)" "$(test_pid)" "$(test_log)" || die "temporary LabAP hostapd did not stop"
     [ ! -e "$(test_pid)" ] && [ ! -L "$(test_pid)" ] || die "temporary LabAP pidfile remains after withdrawal"
     set_state withdrawn || die "could not record one-shot withdrawal"
     printf 'LABAP_BSS_SWITCH=WITHDRAWN\n'
 }
 
+do_renew_for_withdraw() {
+    require_state_dir
+    marker_matches_state || die "active marker does not authorize lease renewal"
+    renew_active_lease_for_withdraw || die "active LabAP state does not authorize one-shot lease renewal"
+    record_activation_phase renewed-for-withdraw || die "could not record one-shot lease renewal"
+    printf 'LABAP_BSS_SWITCH=LEASE_RENEWED_FOR_WITHDRAW\n'
+}
+
 do_rollback() {
     require_state_dir
     load_test_mode_from_state || die "state test mode is invalid"
     marker_matches_state || die "active marker does not authorize rollback"
-    case "$(state_value state)" in armed|labap-active|direct-active|withdrawn) ;; *) die "state does not authorize rollback";; esac
+    case "$(state_value state)" in armed|labap-active|labap-withdraw-armed|direct-active|withdrawn) ;; *) die "state does not authorize rollback";; esac
+    if [ "$FROM_WATCHDOG" -eq 1 ]; then
+        # The watchdog can wake on the pre-renewal deadline.  It must check
+        # the atomically replaced v4 state while it owns the switch lock; a
+        # positive remainder means the one-shot renewal won the race and no
+        # rollback is authorized yet.
+        local watchdog_remaining
+        watchdog_remaining="$(watchdog_remaining_seconds)" || die "watchdog deadline is unreadable"
+        case "$watchdog_remaining" in ''|*[!0-9]*) die "watchdog deadline is malformed";; esac
+        [ "$watchdog_remaining" -eq 0 ] || return 1
+    fi
     if finish_rollback; then
         printf 'LABAP_BSS_SWITCH=ORIGINAL_RESTORED\n'
         return 0
@@ -1455,7 +1612,7 @@ retire_activation_phase_is_safe() {
     phase="$(cat "$(activation_phase_file)" 2>/dev/null)" || return 1
     case "$phase" in
         phase=state-written|phase=marker-published|phase=watchdog-ready|phase=pre-live-stop|\
-        phase=live-stopped|phase=test-started|phase=promoted|phase=interrupted-HUP|\
+        phase=live-stopped|phase=test-started|phase=promoted|phase=renewed-for-withdraw|phase=interrupted-HUP|\
         phase=interrupted-INT|phase=interrupted-TERM) return 0;;
         *) return 1;;
     esac
@@ -1515,7 +1672,7 @@ watchdog_remaining_seconds() {
             fi
             case "$state:$deadline_phase" in
                 armed:setup) maximum_seconds="$SETUP_DEADLINE_SECONDS";;
-                labap-active:active|direct-active:active|withdrawn:active) maximum_seconds="$stored_lease";;
+                labap-active:active|labap-withdraw-armed:active|direct-active:active|withdrawn:active) maximum_seconds="$stored_lease";;
                 *)
                     printf '0\n'
                     return 0
@@ -1576,23 +1733,22 @@ do_watchdog() {
         [ "$current_state" != original-restored ] || return 0
         remaining="$(watchdog_remaining_seconds)" || return 1
         case "$remaining" in ''|*[!0-9]*) return 1;; esac
-        [ "$remaining" -gt 0 ] || break
-        chunk=30
-        [ "$remaining" -lt "$chunk" ] && chunk="$remaining"
-        sleep "$chunk"
-        marker_matches_state || return 0
-        current_state="$(state_value state 2>/dev/null || true)"
-        case "$current_state" in
-            armed|labap-active|direct-active|withdrawn) ;;
-            *) return 0;;
-        esac
-    done
-    # The foreground activation/rollback takes a non-blocking switch lock.
-    # If the lease fires while it is reacquiring LAR, a single rollback try
-    # would otherwise exit and silently lose the only recovery owner.  Keep
-    # retrying while the marker remains authorized; a successful foreground
-    # rollback removes it and makes this loop terminate without mutation.
-    while marker_matches_state; do
+        if [ "$remaining" -gt 0 ]; then
+            chunk=30
+            [ "$remaining" -lt "$chunk" ] && chunk="$remaining"
+            sleep "$chunk"
+            marker_matches_state || return 0
+            current_state="$(state_value state 2>/dev/null || true)"
+            case "$current_state" in
+                armed|labap-active|labap-withdraw-armed|direct-active|withdrawn) ;;
+                *) return 0;;
+            esac
+            continue
+        fi
+        # The foreground activation/rollback takes a non-blocking switch
+        # lock.  `--rollback --from-watchdog` independently re-reads the
+        # deadline under that lock, so an atomic renew that raced this expired
+        # observation simply returns here and this loop resumes the new lease.
         if "$SELF" --rollback --state-dir "$STATE_DIR" --from-watchdog; then
             clear_own_watchdog_receipt || return 1
             return 0
@@ -1613,8 +1769,10 @@ with_lock() {
 case "$MODE" in
     preflight) with_lock do_preflight;;
     activate) with_lock do_activate;;
+    renew-for-withdraw) with_lock do_renew_for_withdraw;;
     withdraw) with_lock do_withdraw;;
     rollback) with_lock do_rollback;;
+    recovery-owner) do_recovery_owner;;
     status) with_lock do_status;;
     retire) with_lock do_retire;;
     watchdog) do_watchdog;;

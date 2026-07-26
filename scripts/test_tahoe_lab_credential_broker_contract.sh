@@ -102,15 +102,16 @@ for token in (
     "O_WRONLY", "write_guest_credential", "write_guest_arm",
     "arm-withdraw\\n", "withdraw\\n", '"HOST_FED"', '"STARTED"',
     '"ARMED"', '"RELEASED"', '"ABORTED"',
-    "kSwitcherLarActivationBoundMilliseconds = 120000u",
-    "kSwitcherHostapdTransitionBoundMilliseconds = 40000u",
-    "kControllerStatusAndStartMarginMilliseconds = 60000u",
+    "kSwitcherSetupBoundMilliseconds = 180000u",
+    "kPostCredentialSetupMarginMilliseconds = 15000u",
+    "kControllerStatusAndStartMarginMilliseconds = 45000u",
     "kHostFedToStartDeadlineMilliseconds =",
     "kVerifiedInitialLeaseFloorMilliseconds = 285000u",
     "kPostStartSessionDeadlineMilliseconds = 270000u",
-    "kStartedToArmDeadlineMilliseconds = 120000u",
+    "kStartedToArmDeadlineMilliseconds = 145000u",
     "kArmedToReleaseDeadlineMilliseconds = 90000u",
     "_Static_assert(kPostStartSessionDeadlineMilliseconds <",
+    "_Static_assert(kStartedToArmDeadlineMilliseconds +",
     "deadline_is_live",
     "deadline_after_capped",
 ):
@@ -154,8 +155,14 @@ if "deadline_after(phase_deadline, &deadline)" in protocol:
     fail("phase-local deadline can extend the post-START session")
 if protocol.count("deadline_after_capped(phase_deadline,") != 2:
     fail("STARTED and ARMED must each be capped by one post-START ceiling")
-if protocol.count("deadline_after_capped(kPipeWriteDeadlineMilliseconds,") < 5:
-    fail("post-packet writes/statuses are not all capped by their live window")
+# HOST_FED is the one pre-retention acknowledgement: it receives its own
+# standalone 15-second send bound before the HOST_FED deadline starts.  Every
+# later packet write/status must instead be capped by a live phase/session
+# deadline, so keep these two classes distinct.
+if protocol.count("deadline_after(kPipeWriteDeadlineMilliseconds,") != 1:
+    fail("HOST_FED acknowledgement is not independently bounded exactly once")
+if protocol.count("deadline_after_capped(kPipeWriteDeadlineMilliseconds,") < 4:
+    fail("post-HOST_FED writes/statuses are not all capped by their live window")
 host_fed_phase = protocol.find("case kBrokerPhaseHostFed:")
 start_gate = protocol.find("if (phase == kBrokerPhaseHostFed)")
 post_start = protocol.find("deadline_after(kPostStartSessionDeadlineMilliseconds,")
@@ -164,6 +171,10 @@ if min(host_fed_phase, start_gate, post_start, host_fed_live) < 0:
     fail("missing HOST_FED-to-START timing boundary")
 if not (host_fed_phase < start_gate < post_start):
     fail("post-START session does not begin only after the valid START gate")
+host_fed_status = protocol.find("send_status(control_fd, host_fed_status")
+host_fed_deadline = protocol.find("deadline_after(kHostFedToStartDeadlineMilliseconds,")
+if host_fed_status < 0 or host_fed_deadline < 0 or host_fed_status > host_fed_deadline:
+    fail("HOST_FED deadline begins before its acknowledgement is sent")
 start_live = protocol.find("deadline_is_live(host_fed_deadline)", start_gate)
 if start_live < 0 or start_live > post_start:
     fail("valid START is not rejected after the HOST_FED retention deadline")
@@ -173,6 +184,16 @@ for token in (
     "requested < cap_deadline ? requested : cap_deadline",
 ):
     require(capped, token, "non-extendable absolute deadline helper")
+if "kStartedToArmDeadlineMilliseconds = 145000u" not in source or \
+        "kArmedToReleaseDeadlineMilliseconds = 90000u" not in source:
+    fail("cross-layer phase ceilings changed")
+started_phase = protocol.find("case kBrokerPhaseStarted:")
+armed_phase = protocol.find("case kBrokerPhaseArmed:")
+started_cap = protocol.find("phase_deadline = kStartedToArmDeadlineMilliseconds", started_phase)
+armed_cap = protocol.find("phase_deadline = kArmedToReleaseDeadlineMilliseconds", armed_phase)
+if min(started_phase, armed_phase, started_cap, armed_cap) < 0 or \
+        not (started_phase < started_cap < armed_phase < armed_cap):
+    fail("145/90 phase ceilings are not used by the live broker state machine")
 
 # The secret resides in a private, locked non-dumpable mapping and every
 # terminal route scrubs and releases it.  SIGPIPE is handled as an error path,

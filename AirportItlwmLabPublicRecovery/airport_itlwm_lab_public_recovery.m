@@ -41,11 +41,13 @@ enum {
     kCredentialMinimumLength = 8u,
     kCredentialMaximumLength = 64u,
     kCredentialInputDeadlineMilliseconds = 15000u,
-    /* The host's verified one-shot withdrawal can itself take up to twenty
-     * seconds to stop hostapd.  Keep the post-association control window
-     * comfortably above that bounded operation without leaving a client
-     * indefinitely associated if the controller disappears. */
-    kControlInputDeadlineMilliseconds = 60000u,
+    /* After the client publishes withdraw-armed, the controller performs one
+     * state-only lease renewal, one hash-only status, one bounded hostapd
+     * withdrawal and RELEASE within sixty-five seconds.  Reserve a positive
+     * scheduling margin while still leaving a failed controller unable to
+     * keep a client associated indefinitely.  The native broker enforces its
+     * related ARM-to-RELEASE cap from the earlier ARM acknowledgement. */
+    kControlInputDeadlineMilliseconds = 90000u,
     kDiscoveryAttempts = 80u,
     kRequiredAlternateBssCount = 2u,
     kRequiredAlternateBandCount = 2u,
