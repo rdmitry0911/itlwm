@@ -72,6 +72,7 @@ for token in (
     "canonical_bssid \"$state_bssid\" >/dev/null",
     "[ \"$external_count\" -ge 2 ]",
     "is_decimal_in_range \"$lease_seconds\" 60 300",
+    "is_canonical_positive_decimal \"$lease_deadline\"",
     "[ \"$lease_deadline\" -gt \"$now\" ]",
     "[ \"$remaining\" -gt 0 ] && [ \"$remaining\" -le \"$lease_seconds\" ]",
     "marker_matches_state",
@@ -87,6 +88,7 @@ for token in (
     "[ \"$stored_lease\" != \"$LEASE_SECONDS\" ]",
     "monotonic_uptime_seconds",
     "[ \"$deadline\" -le \"$now\" ]",
+    "is_canonical_positive_decimal \"$deadline\"",
     "printf '0\\n'",
 ):
     if token not in watchdog:
@@ -111,7 +113,7 @@ watchdog_live = body("watchdog_process_can_rollback()", "watchdog liveness gate"
 if "''|Z*|T*|t*" not in watchdog_live:
     fail("status can attest a stopped, traced, or zombie watchdog")
 
-range_gate = body("is_decimal_in_range()", "canonical decimal lease gate")
+range_gate = body("is_canonical_decimal()", "canonical decimal lease gate")
 if "0[0-9]*" not in range_gate:
     fail("lease gate accepts an octal-looking decimal spelling")
 

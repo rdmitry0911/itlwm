@@ -102,11 +102,19 @@ sudo_cmd() {
     "$SUDO" -n "$@"
 }
 
+is_canonical_decimal() {
+    # Bash arithmetic treats a leading zero as octal.  Every state value used
+    # in arithmetic must therefore have canonical base-10 spelling.
+    case "$1" in ''|0[0-9]*|*[!0-9]*) return 1;; esac
+}
+
+is_canonical_positive_decimal() {
+    is_canonical_decimal "$1" && [ "$1" -gt 0 ]
+}
+
 is_decimal_in_range() {
     local value="$1" minimum="$2" maximum="$3"
-    # Bash arithmetic treats a leading zero as octal.  Leases are later used
-    # in an arithmetic deadline, so admit only canonical base-10 spelling.
-    case "$value" in ''|0|0[0-9]*|*[!0-9]*) return 1;; esac
+    is_canonical_decimal "$value" || return 1
     [ "$value" -ge "$minimum" ] && [ "$value" -le "$maximum" ]
 }
 
@@ -295,8 +303,7 @@ write_state() {
     local state="$1" mode="$2" network="$3" fingerprint="$4" bssid="$5" external_count="$6" lease_seconds="$7" lease_deadline="$8" tmp
     case "$mode" in labap|direct) ;; *) return 1;; esac
     is_decimal_in_range "$lease_seconds" 60 300 || return 1
-    case "$lease_deadline" in ''|*[!0-9]*) return 1;; esac
-    [ "$lease_deadline" -gt 0 ] || return 1
+    is_canonical_positive_decimal "$lease_deadline" || return 1
     tmp="$STATE_DIR/.state.$$"
     [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
     {
@@ -1083,9 +1090,9 @@ status_state_is_current() {
     case "$external_count" in ''|*[!0-9]*) return 1;; esac
     [ "$external_count" -ge 2 ] || return 1
     is_decimal_in_range "$lease_seconds" 60 300 || return 1
-    case "$lease_deadline" in ''|*[!0-9]*) return 1;; esac
+    is_canonical_positive_decimal "$lease_deadline" || return 1
     now="$(monotonic_uptime_seconds)" || return 1
-    case "$now" in ''|*[!0-9]*) return 1;; esac
+    is_canonical_decimal "$now" || return 1
     [ "$lease_deadline" -gt "$now" ] || return 1
     remaining=$((lease_deadline - now))
     [ "$remaining" -gt 0 ] && [ "$remaining" -le "$lease_seconds" ] || return 1
@@ -1184,7 +1191,7 @@ do_activate() {
     validate_test_config || die "temporary hostapd configuration failed local validation"
 
     lease_now="$(monotonic_uptime_seconds)" || die "monotonic lease clock is unavailable"
-    case "$lease_now" in ''|*[!0-9]*) die "monotonic lease clock is invalid";; esac
+    is_canonical_decimal "$lease_now" || die "monotonic lease clock is invalid"
     lease_deadline=$((lease_now + LEASE_SECONDS))
     [ "$lease_deadline" -gt "$lease_now" ] || die "monotonic lease deadline is invalid"
     # The deadline starts before watchdog spawn, intentionally understating the
@@ -1272,12 +1279,12 @@ watchdog_remaining_seconds() {
             deadline="$(state_value lease_not_after_monotonic_seconds 2>/dev/null || true)"
             if ! is_decimal_in_range "$stored_lease" 60 300 ||
                 [ "$stored_lease" != "$LEASE_SECONDS" ] ||
-                ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+                ! is_canonical_positive_decimal "$deadline"; then
                 printf '0\n'
                 return 0
             fi
             now="$(monotonic_uptime_seconds 2>/dev/null || true)"
-            if ! [[ "$now" =~ ^[0-9]+$ ]] || [ "$deadline" -le "$now" ]; then
+            if ! is_canonical_decimal "$now" || [ "$deadline" -le "$now" ]; then
                 printf '0\n'
                 return 0
             fi
