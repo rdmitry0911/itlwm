@@ -67,6 +67,7 @@ for token in (
     "CC_SHA256_DIGEST_LENGTH * 2u",
     "decode_digest_environment",
     "string_matches_digest",
+    "copy_canonical_bssid",
     "bssid_matches_digest",
     "read_credential",
 ):
@@ -120,6 +121,8 @@ ordered(initial, "public association before recovery control",
         "[interface associateToNetwork:target",
         "associated = 1;",
         "wait_for_exact_initial_identity",
+        "post-association-alternate-unavailable",
+        "post-scan-initial-identity-lost",
         "emit_result(\"initial-ready\"",
         "withdrawal_arm_accepted = read_withdrawal_arm_control();",
         "pre_withdrawal_identity_exact = interface_has_exact_initial_identity",
@@ -146,15 +149,26 @@ ordered(selection, "same-ESS alternate is observed without rendering it",
         "string_matches_digest([network ssid], ssid_digest)",
         "network_bssid = [network bssid]",
         "!bssid_matches_digest(network_bssid, bssid_digest)",
-        "*alternate_bss_visible = 1")
-bssid = body(source, "bssid_matches_digest(NSString *value", "BSSID canonicalizer")
-for token in ("data.length != sizeof(canonical)", "index % 3u == 2u",
-              "byte >= 'A' && byte <= 'F'", "CC_SHA256(canonical",
+        "copy_canonical_bssid(network_bssid, canonical_bssid)",
+        "[seen_alternate_bss containsObject:alternate_key]",
+        "kCWChannelBand2GHz",
+        "kCWChannelBand5GHz",
+        "alternates >= kRequiredAlternateBssCount",
+        "alternate_bands >= kRequiredAlternateBandCount")
+bssid = body(source, "copy_canonical_bssid(NSString *value", "BSSID canonicalizer")
+for token in ("data.length != kBssidTextLength", "index % 3u == 2u",
+              "byte >= 'A' && byte <= 'F'", "secure_bzero(canonical"):
+    require(bssid, token, "canonical lower-case BSSID parser")
+bssid_digest = body(source, "bssid_matches_digest(NSString *value",
+                    "BSSID digest matcher")
+for token in ("copy_canonical_bssid(value, canonical)", "CC_SHA256(canonical",
               "secure_bzero(canonical", "secure_bzero(digest"):
-    require(bssid, token, "canonical lower-case BSSID digest")
+    require(bssid_digest, token, "canonical lower-case BSSID digest")
 wait_target = body(source, "wait_for_exact_target(CWInterface", "target wait")
-require(wait_target, "if (target != nil && alternate)",
-        "initial association waits for an observable same-ESS alternate")
+require(wait_target, "if (target != nil && ready)",
+        "initial association waits for a multi-band same-ESS alternate set")
+for token in ("&alternate_bss_count", "&alternate_band_count", "&alternate_ready"):
+    require(initial, token, "initial-ready alternate-set output")
 recovery = body(source, "wait_for_same_ssid_different_bss(", "recovery poll")
 ordered(recovery, "same-ESS alternate-BSS proof",
         "string_matches_digest([interface ssid], ssid_digest)",
@@ -162,7 +176,8 @@ ordered(recovery, "same-ESS alternate-BSS proof",
         "!bssid_matches_digest(current_bssid, initial_bssid_digest)")
 emit = body(source, "emit_result(const char *result", "aggregate result")
 for token in ("public_corewlan_recovery=%s", "endpoint_binding=%s",
-              "alternate_bss_visible=%u",
+              "alternate_bss_count=%u", "alternate_band_count=%u",
+              "alternate_ready=%u",
               "initial_identity_exact=%u", "withdrawal_control_accepted=%u",
               "withdrawal_arm_accepted=%u",
               "pre_withdrawal_identity_exact=%u",
@@ -230,8 +245,11 @@ class RecoveryModel:
         self.state = self.INIT
         self.associate_calls = 0
 
-    def associate_exact_initial(self) -> None:
+    def associate_exact_initial(self, alternate_bss_count: int,
+                                alternate_band_count: int) -> None:
         assert self.state == self.INIT
+        assert alternate_bss_count >= 2
+        assert alternate_band_count >= 2
         self.associate_calls += 1
         self.state = self.READY
 
@@ -250,7 +268,19 @@ class RecoveryModel:
 
 
 model = RecoveryModel()
-model.associate_exact_initial()
+try:
+    model.associate_exact_initial(1, 2)
+except AssertionError:
+    pass
+else:
+    raise AssertionError("one alternate BSS was accepted")
+try:
+    model.associate_exact_initial(2, 1)
+except AssertionError:
+    pass
+else:
+    raise AssertionError("one alternate band was accepted")
+model.associate_exact_initial(2, 2)
 model.observe(True, True)
 assert model.state == RecoveryModel.READY
 model.arm_withdrawal(True)
