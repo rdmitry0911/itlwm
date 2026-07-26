@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Source-level lifecycle gate for the association-epoch fence and its one
-# bounded selected-BSS Algorithm-3 peer-RX consumer.
+# Source-level lifecycle gate for the association-epoch fence and its two
+# bounded selected-BSS consumers: Algorithm-3 peer RX and the separately
+# fenced Tahoe WCL auth/association-completion publisher.
 #
 # This is intentionally broader than a single reassociation assertion: it
 # verifies every current invalidation edge (selection, state retry, RSN
@@ -216,9 +217,11 @@ for token in (
 	if token in copyout:
 		fail(f"selected BSS copyout must remain fixed-value and inactive: {token}")
 
-# The selected-BSS copyout has exactly one production consumer: the bounded
-# Algorithm-3 RX leaf. It must remain a value-only pre-callback identity check,
-# never a node/credential/association handoff.
+# The selected-BSS copyout has exactly two production consumers: the bounded
+# Algorithm-3 RX leaf and the separately contract-tested Tahoe WCL
+# auth/association-completion publisher.  Both must remain exact value-only
+# identity checks; a new source file or a third call in the controller is a
+# lifecycle expansion and must fail this gate.
 copyout_references = []
 for directory in (root / "itl80211", root / "AirportItlwm"):
 	for suffix in ("*.c", "*.h", "*.cpp", "*.hpp"):
@@ -226,11 +229,21 @@ for directory in (root / "itl80211", root / "AirportItlwm"):
 			if "ieee80211_pae_selected_bss_copyout_current(" in source.read_text():
 				copyout_references.append(source.relative_to(root).as_posix())
 if sorted(copyout_references) != [
+	"AirportItlwm/AirportItlwmV2.cpp",
 	"itl80211/openbsd/net80211/ieee80211_input.c",
 	"itl80211/openbsd/net80211/ieee80211_proto.c",
 	"itl80211/openbsd/net80211/ieee80211_proto.h",
 ]:
-	fail("selected BSS copyout must have only the bounded peer-RX caller")
+	fail("selected BSS copyout must have only the bounded peer-RX and gated WCL completion consumers")
+if v2_cpp.count("ieee80211_pae_selected_bss_copyout_current(") != 2:
+	fail("WCL completion may use exactly its capture and gated revalidation copyouts")
+for marker in (
+	"static bool captureTahoeWclAuthAssocCompletionRequest(",
+	"static IOReturn postTahoeWclAuthAssocCompleteGated(",
+):
+	require(body(v2_cpp, marker, "gated WCL completion copyout owner"),
+		"ieee80211_pae_selected_bss_copyout_current",
+		"gated WCL completion copyout")
 
 peer_admit = body(proto_c, "int\nieee80211_sae_peer_rx_admit",
                   "peer-RX admission publish")
