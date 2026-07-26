@@ -122,6 +122,7 @@ for needle in (
     'self.private_candidate',
     'self.preflight_dir + "/AirportItlwm.kext"',
     '["/usr/bin/sudo", "-n", "/sbin/shutdown", "-r", "now"]',
+    '["/usr/bin/sudo", "-n", "/bin/test", "-f", self.work + "/reboot-requested"]',
     'if dispatched.returncode == 0:',
     'elif dispatched.returncode == 255:',
     'self.reboot_dispatch_acknowledged = True',
@@ -176,6 +177,7 @@ forbidden = (
     ("qemu-system", "QEMU control"),
     ("qemu-img", "overlay manipulation"),
     ("/private/tmp/aiam-iwn-activation-", "boot-volatile activation root"),
+    ("/usr/bin/test", "nonfunctional Tahoe marker probe"),
     ("return subprocess.run([*self.base, *args], **options)", "lossy SSH command flattening"),
     ("shell=True", "shell command expansion"),
 )

@@ -1492,7 +1492,7 @@ class PinnedRemote:
             try:
                 after = self._boot_token()
                 marker = self.transport.run(
-                    ["/usr/bin/sudo", "-n", "/usr/bin/test", "-f", self.work + "/reboot-requested"],
+                    ["/usr/bin/sudo", "-n", "/bin/test", "-f", self.work + "/reboot-requested"],
                     timeout=PRECHECK_TIMEOUT,
                 )
             except (OSError, subprocess.TimeoutExpired):
@@ -1944,7 +1944,7 @@ def self_test() -> int:
                 return subprocess.CompletedProcess(arguments, 0, PINNED_QEMU_BUILD.encode("ascii") + b"\n", b"")
             if command[:3] in (("/usr/bin/sudo", "-n", "/usr/bin/touch"),
                                ("/usr/bin/sudo", "-n", "/bin/sync"),
-                               ("/usr/bin/sudo", "-n", "/usr/bin/test")):
+                               ("/usr/bin/sudo", "-n", "/bin/test")):
                 return subprocess.CompletedProcess(arguments, 0, b"", b"")
             raise SystemExit("self-test: unexpected reboot transport command")
 
