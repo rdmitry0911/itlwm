@@ -58,6 +58,7 @@ import sys
 root = Path(sys.argv[1])
 auth = (root / "AirportItlwm/TahoeAssociationAuthContracts.hpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
+direct_sae_gate = (root / "AirportItlwm/IwnDirectSaeLabGate.hpp").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 legacy = (root / "AirportItlwm/AirportItlwm.cpp").read_text()
 legacy_ioctl = (root / "AirportItlwm/AirportSTAIOCTL.cpp").read_text()
@@ -222,13 +223,23 @@ direct_marker = ("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS\n"
                  "     * The live ingress")
 direct_lab = preprocessor_block(hidden_assoc, direct_marker,
                                 "IWN lab exact-SAE WCL block")
+direct_transaction = body(
+    sky,
+    "IOReturn AirportItlwmSkywalkInterface::\nstartIwnDirectSaeCredential",
+    "common IWN direct-SAE transaction")
 for token in (
     "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
     "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
-    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 1",
-    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 0",
+    "#define AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS 1",
+    "#define AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS 0",
+    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS",
+    "AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS",
 ):
-    require(sky, token, "IWN lab-only compile gate")
+    require(direct_sae_gate, token, "IWN lab-only compile gate")
+require(sky, '#include "IwnDirectSaeLabGate.hpp"',
+        "Skywalk direct-SAE lab gate include")
+require(sky, "#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS",
+        "Skywalk direct-SAE lab gate use")
 require_re(
     hidden_assoc,
     r"const bool directSaeWclPassword\s*=\s*"
@@ -238,15 +249,29 @@ require_re(
     "exact CIPHER_PWD-and-auth IWN selector")
 for token in (
     "if (directSaeWclPassword)",
-    "ieee80211_sae_wcl_request_begin",
-    "stageSaeWclCredential",
-    "ieee80211_sae_wcl_request_resume_scan",
+    "AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate",
+    "directRequest.wclOwner = &owner",
+    "startIwnDirectSaeCredential(&directRequest, nullptr)",
 ):
     require(direct_lab, token, "exact-SAE direct IWN ingress")
-ordered(direct_lab, "IWN direct exact-SAE ordering",
-        "clearExternalPmkEligibilityLocked(\"setWCL_ASSOCIATE_SAE_CIPHER_PWD\")",
+ordered(direct_lab, "IWN direct exact-SAE delegation",
+        "if (directSaeWclPassword)",
+        "AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate",
+        "startIwnDirectSaeCredential(&directRequest, nullptr)")
+for token in (
+    "OSDynamicCast(ItlIwn, fHalService)",
+    "request->provenance",
+    "clearExternalPmkEligibilityLocked(",
+    "ieee80211_sae_wcl_request_begin",
+    "stageSaeWclCredential",
+    "setAUTH_TYPE(&authType)",
+    "ieee80211_sae_wcl_request_resume_scan",
+):
+    require(direct_transaction, token, "common exact-SAE IWN transaction")
+ordered(direct_transaction, "IWN direct exact-SAE transaction ordering",
+        "clearExternalPmkEligibilityLocked(",
         "ieee80211_sae_wcl_request_begin", "stageSaeWclCredential",
-        "ieee80211_sae_wcl_request_resume_scan")
+        "setAUTH_TYPE(&authType)", "ieee80211_sae_wcl_request_resume_scan")
 for token in (
     "kAuditedWpa3PskTransitionAuth",
     "TahoeAssociationAuthContracts::mayUseLocalPskPmk",
@@ -256,6 +281,8 @@ for token in (
     "installExternalPmkLocked",
 ):
     forbid(direct_lab, token, "PLTI/legacy association reuse in IWN ingress")
+    forbid(direct_transaction, token,
+           "PLTI/legacy association reuse in IWN transaction")
 legacy_start = hidden_assoc.find(
     "if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(")
 if legacy_start < 0:
