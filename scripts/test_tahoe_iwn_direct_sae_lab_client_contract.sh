@@ -35,7 +35,9 @@ for token in \
     'secure_bzero(&request, sizeof(request))' \
     'IOServiceClose(connection)' \
     'lab-client=not-ready' \
-    'lab-client=accepted' \
+    'lab-client=unsupported' \
+    'lab-client=query-failed' \
+    'lab-client=queued' \
     'lab-client=rejected' \
     'lab-client=open-unavailable' \
     '--query-ready' \
@@ -83,6 +85,13 @@ if scrub_after_read > client.index('IOServiceClose(connection)'):
     fail('request is not scrubbed before client close')
 if 'while (offset < sizeof(*out))' not in client or 'if (count != 0)' not in client:
     fail('stdin framing is not exact and EOF-bound')
+for token in ('kInputDeadlineMilliseconds = 10000u',
+              'clock_gettime(CLOCK_MONOTONIC, &now)',
+              'wait_for_stdin_until(deadline)',
+              'POLLIN | POLLHUP', 'S_ISFIFO(input_status.st_mode)',
+              'fflush(stdout)'):
+    if token not in client:
+        fail(f'stdin deadline is missing {token}')
 if 'kMaximumHoldMilliseconds = 60000u' not in client:
     fail('client hold is not bounded')
 for token in ('--iwn-software-pmf-lab', '-framework IOKit',

@@ -15,6 +15,8 @@
 #include <ClientKit/AirportItlwmIwnLabDirectSaeStimulusV1.h>
 
 #include <errno.h>
+#include <limits.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -27,6 +29,7 @@
 enum {
     kDefaultHoldMilliseconds = 45000u,
     kMaximumHoldMilliseconds = 60000u,
+    kInputDeadlineMilliseconds = 10000u,
 };
 
 enum LabClientMode {
@@ -135,6 +138,38 @@ query_readiness(io_connect_t connection)
     return outcome;
 }
 
+static int64_t
+monotonic_milliseconds(void)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return -1;
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static bool
+wait_for_stdin_until(int64_t deadline)
+{
+    struct pollfd descriptor;
+    int64_t now;
+    int remaining;
+    int result;
+
+    now = monotonic_milliseconds();
+    if (now < 0 || now >= deadline)
+        return false;
+    remaining = deadline - now > INT_MAX ? INT_MAX : (int)(deadline - now);
+    descriptor.fd = STDIN_FILENO;
+    descriptor.events = POLLIN | POLLHUP;
+    descriptor.revents = 0;
+    do {
+        result = poll(&descriptor, 1, remaining);
+    } while (result < 0 && errno == EINTR);
+    secure_bzero(&descriptor, sizeof(descriptor));
+    return result > 0;
+}
+
 /* A request is accepted only if stdin contains precisely one ABI record. */
 static bool
 read_exact_request(struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *out)
@@ -142,16 +177,27 @@ read_exact_request(struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *out)
     struct stat input_status;
     uint8_t extra = 0;
     size_t offset = 0;
+    int64_t started;
+    int64_t deadline;
 
     if (out == NULL)
         return false;
     secure_bzero(out, sizeof(*out));
-    /* A secret-bearing fixture file or interactive terminal is not an
-     * admissible producer. The caller supplies a single closing pipe. */
+    /* The descriptor itself must be a closing pipe. This does not establish
+     * the provenance of its upstream writer; the runtime owner must bind one
+     * in-memory producer and must not route a fixture file through it. */
     if (isatty(STDIN_FILENO) != 0 || fstat(STDIN_FILENO, &input_status) != 0 ||
-        S_ISREG(input_status.st_mode))
+        !S_ISFIFO(input_status.st_mode))
         return false;
+    started = monotonic_milliseconds();
+    if (started < 0 || started > INT64_MAX - kInputDeadlineMilliseconds)
+        return false;
+    deadline = started + kInputDeadlineMilliseconds;
     while (offset < sizeof(*out)) {
+        if (!wait_for_stdin_until(deadline)) {
+            AirportItlwmIwnLabDirectSaeStimulusRequestScrub(out);
+            return false;
+        }
         ssize_t count = read(STDIN_FILENO,
                              ((uint8_t *)out) + offset,
                              sizeof(*out) - offset);
@@ -168,6 +214,11 @@ read_exact_request(struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *out)
         offset += (size_t)count;
     }
     for (;;) {
+        if (!wait_for_stdin_until(deadline)) {
+            AirportItlwmIwnLabDirectSaeStimulusRequestScrub(out);
+            secure_bzero(&extra, sizeof(extra));
+            return false;
+        }
         ssize_t count = read(STDIN_FILENO, &extra, sizeof(extra));
         if (count < 0 && errno == EINTR)
             continue;
@@ -240,7 +291,12 @@ main(int argc, char **argv)
         goto out;
     }
     if (strcmp(readiness, "ready") != 0) {
-        printf("lab-client=not-ready\n");
+        if (strcmp(readiness, "unsupported") == 0)
+            printf("lab-client=unsupported\n");
+        else if (strcmp(readiness, "query-failed") == 0)
+            printf("lab-client=query-failed\n");
+        else
+            printf("lab-client=not-ready\n");
         goto out;
     }
     if (!read_exact_request(&request) ||
@@ -256,8 +312,12 @@ main(int argc, char **argv)
         printf("lab-client=rejected\n");
         goto out;
     }
+    /* Queue acknowledgement is deliberately distinct from any SAE outcome.
+     * Flush it before holding the UserClient open so the trace owner can
+     * synchronize on dispatch admission without closing this connection. */
+    printf("lab-client=queued\n");
+    fflush(stdout);
     bounded_hold(hold_milliseconds);
-    printf("lab-client=accepted\n");
     exit_code = 0;
 
 out:
