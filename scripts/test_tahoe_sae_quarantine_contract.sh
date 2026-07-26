@@ -37,6 +37,7 @@ bash "$root/scripts/test_tahoe_iwn_software_pmf_lab_build_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_lab_candidate_receipt_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_lab_candidate_stage_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_lab_loaded_identity_contract.sh"
+bash "$root/scripts/test_tahoe_lab_public_recovery_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_software_pmf_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_software_pmf_reconnect_contract.sh"
 bash "$root/scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh"
@@ -494,8 +495,12 @@ for needle in (
     require(profile_runner, needle, "four-epoch SAE/PMF lab runner")
 forbid(profile_runner, "PASSWORD=", "password carrier in SAE lab runner")
 forbid(profile_runner, "--password", "password command line in SAE lab runner")
-require(layer_runner, "./scripts/build_regdiag.sh",
-        "layer gate builds the matching RegDiag client")
+for needle in (
+    "./scripts/build_tahoe_lab_public_recovery.sh",
+    "./scripts/build_regdiag.sh",
+):
+    require(layer_runner, needle,
+            "layer gate builds the matching recovery/RegDiag client")
 for needle in ("git -C \"$ROOT\" diff --cached --quiet",
                "git -C \"$ROOT\" diff --cached --binary",
                "git -C \"$ROOT\" ls-files --others --exclude-standard"):
