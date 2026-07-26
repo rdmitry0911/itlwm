@@ -79,6 +79,7 @@ usage: tahoe_labap_bss_switcher.sh --preflight
        tahoe_labap_bss_switcher.sh --withdraw --state-dir /tmp/aiam-labap-bss-switch.NAME
        tahoe_labap_bss_switcher.sh --rollback --state-dir /tmp/aiam-labap-bss-switch.NAME
        tahoe_labap_bss_switcher.sh --status --state-dir /tmp/aiam-labap-bss-switch.NAME
+       tahoe_labap_bss_switcher.sh --retire --state-dir /tmp/aiam-labap-bss-switch.NAME
 
 The helper replaces only the pinned local hostapd BSS.  --withdraw stops only
 the temporary LabAP BSS, leaving any independently operated OpenWrt LabAP BSS
@@ -120,7 +121,7 @@ is_decimal_in_range() {
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --preflight|--activate|--withdraw|--rollback|--status)
+        --preflight|--activate|--withdraw|--rollback|--status|--retire)
             [ -z "$MODE" ] || { usage; exit 2; }
             MODE="${1#--}"
             shift
@@ -182,6 +183,7 @@ case "$MODE" in
     withdraw) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] || { usage; exit 2; };;
     rollback) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] || { usage; exit 2; };;
     status) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] && [ -z "$WATCHDOG_READY_FD" ] && [ "$LEASE_SECONDS_EXPLICIT" -eq 0 ] || { usage; exit 2; };;
+    retire) [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] && [ "$FROM_WATCHDOG" -eq 0 ] && [ -z "$WATCHDOG_READY_FD" ] && [ "$LEASE_SECONDS_EXPLICIT" -eq 0 ] || { usage; exit 2; };;
     watchdog)
         [ -n "$STATE_DIR" ] && [ "$CREDENTIAL_STDIN" -eq 0 ] && [ "$DIRECT_JOIN" -eq 0 ] || { usage; exit 2; }
         case "$WATCHDOG_READY_FD" in ''|8) ;; *) usage; exit 2;; esac
@@ -1265,6 +1267,66 @@ do_rollback() {
     die "original BSS restoration could not be verified; marker/watchdog retained"
 }
 
+retire_directory_has_only_receipts() {
+    local entry
+    for entry in "$STATE_DIR"/* "$STATE_DIR"/.[!.]* "$STATE_DIR"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        case "$entry" in
+            "$(state_file)"|"$STATE_DIR/rollback.status"|"$(activation_phase_file)") ;;
+            *) return 1;;
+        esac
+    done
+}
+
+retire_regular_mode_600() {
+    local path="$1"
+    [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    [ "$(stat -c %a -- "$path")" = 600 ]
+}
+
+retire_activation_phase_is_safe() {
+    local phase
+    [ ! -e "$(activation_phase_file)" ] && [ ! -L "$(activation_phase_file)" ] && return 0
+    retire_regular_mode_600 "$(activation_phase_file)" || return 1
+    phase="$(cat "$(activation_phase_file)" 2>/dev/null)" || return 1
+    case "$phase" in
+        phase=state-written|phase=marker-published|phase=watchdog-ready|phase=pre-live-stop|\
+        phase=live-stopped|phase=test-started|phase=promoted|phase=interrupted-HUP|\
+        phase=interrupted-INT|phase=interrupted-TERM) return 0;;
+        *) return 1;;
+    esac
+}
+
+do_retire() {
+    local state_bssid
+
+    require_state_dir
+    load_test_mode_from_state || die "state test mode is invalid"
+    [ "$(state_value state)" = original-restored ] || die "state is not a verified rollback"
+    [ ! -e "$MARKER" ] && [ ! -L "$MARKER" ] || die "active marker blocks retirement"
+    [ ! -e "$(watchdog_pid_file)" ] && [ ! -L "$(watchdog_pid_file)" ] || die "watchdog receipt blocks retirement"
+    [ ! -e "$(test_config)" ] && [ ! -L "$(test_config)" ] || die "temporary configuration blocks retirement"
+    [ ! -e "$(test_pid)" ] && [ ! -L "$(test_pid)" ] || die "temporary pid receipt blocks retirement"
+    [ ! -e "$(test_log)" ] && [ ! -L "$(test_log)" ] || die "temporary log blocks retirement"
+    retire_regular_mode_600 "$(state_file)" || die "rollback state receipt is not exact"
+    retire_regular_mode_600 "$STATE_DIR/rollback.status" || die "rollback proof is not exact"
+    [ "$(cat "$STATE_DIR/rollback.status" 2>/dev/null)" = rollback_verified=true ] || die "rollback proof is invalid"
+    retire_activation_phase_is_safe || die "activation phase receipt is invalid"
+    retire_directory_has_only_receipts || die "state directory contains unrecognized entries"
+    live_config_matches_state || die "live configuration changed after rollback"
+    live_hostapd_active || die "live hostapd is not exact after rollback"
+    state_bssid="$(canonical_bssid "$(state_value live_bssid_before)")" || die "rollback BSSID receipt is invalid"
+    [ "$(canonical_bssid "$(runtime_bssid)")" = "$state_bssid" ] || die "live BSSID changed after rollback"
+    [ "$(host_network_signature)" = "$(state_value network_signature_before)" ] || die "host network changed after rollback"
+    unlink "$(state_file)" || die "could not remove rollback state"
+    unlink "$STATE_DIR/rollback.status" || die "could not remove rollback proof"
+    if [ -e "$(activation_phase_file)" ]; then
+        unlink "$(activation_phase_file)" || die "could not remove activation phase"
+    fi
+    rmdir "$STATE_DIR" || die "could not remove retired state directory"
+    printf 'LABAP_BSS_SWITCH=RETIRED\n'
+}
+
 # v3's conservative absolute deadline is the watchdog's actual upper bound,
 # not merely an advisory value for a status reader.  A malformed v3 receipt
 # produces an immediate rollback attempt below; legacy v1/v2 receipts retain
@@ -1355,5 +1417,6 @@ case "$MODE" in
     withdraw) with_lock do_withdraw;;
     rollback) with_lock do_rollback;;
     status) with_lock do_status;;
+    retire) with_lock do_retire;;
     watchdog) do_watchdog;;
 esac

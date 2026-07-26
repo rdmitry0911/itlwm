@@ -49,12 +49,14 @@ def body(marker: str, label: str) -> str:
 # A status request has no caller-chosen lease and is locked like every state
 # operation.  It is deliberately rejected for every non-LabAP activation.
 for token in (
-    "--preflight|--activate|--withdraw|--rollback|--status",
+    "--preflight|--activate|--withdraw|--rollback|--status|--retire",
     "LEASE_SECONDS_EXPLICIT=0",
     "LEASE_SECONDS_EXPLICIT=1",
     "status) [ -n \"$STATE_DIR\" ]",
+    "retire) [ -n \"$STATE_DIR\" ]",
     "[ \"$LEASE_SECONDS_EXPLICIT\" -eq 0 ]",
     "status) with_lock do_status;;",
+    "retire) with_lock do_retire;;",
     "schema=tahoe-labap-bss-switch/v3",
     "lease_not_after_monotonic_seconds=",
     "monotonic_uptime_seconds",
@@ -171,6 +173,29 @@ if source.count("LABAP_BSS_STATUS schema=") != 1:
 if "LABAP_BSS_STATUS" in runtime or "LABAP_BSS_STATUS" in state:
     fail("precondition helpers must not emit a partial schema line")
 
+retire = body("do_retire()", "verified state retirement")
+for token in (
+    "[ \"$(state_value state)\" = original-restored ]",
+    "active marker blocks retirement",
+    "watchdog receipt blocks retirement",
+    "retire_regular_mode_600 \"$(state_file)\"",
+    "rollback_verified=true",
+    "retire_activation_phase_is_safe",
+    "retire_directory_has_only_receipts",
+    "live_config_matches_state",
+    "live_hostapd_active",
+    "host_network_signature",
+    "unlink \"$(state_file)\"",
+    "rmdir \"$STATE_DIR\"",
+    "LABAP_BSS_SWITCH=RETIRED",
+):
+    if token not in retire:
+        fail(f"missing verified retirement condition: {token}")
+for forbidden in ("rm -rf", "start_exact_hostapd", "stop_exact_hostapd",
+                  "write_state", "scan_"):
+    if forbidden in retire:
+        fail(f"retirement has an unsafe mutation surface: {forbidden}")
+
 print("PASS: Tahoe LabAP hash-only status contract")
 PY
 
@@ -203,5 +228,12 @@ for invalid_lease in 060 00180; do
         printf '%s\n' 'FAIL: rejected lease emitted a status schema line' >&2
         exit 1;; esac
 done
+if output="$("$switcher" --retire --state-dir "$state_dir" 2>&1)"; then
+    printf '%s\n' 'FAIL: empty retirement fixture unexpectedly succeeded' >&2
+    exit 1
+fi
+case "$output" in *LABAP_BSS_SWITCH=RETIRED*)
+    printf '%s\n' 'FAIL: rejected retirement emitted a success line' >&2
+    exit 1;; esac
 
 printf '%s\n' 'PASS: Tahoe LabAP hash-only status parser rejection'
