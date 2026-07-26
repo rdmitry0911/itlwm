@@ -95,6 +95,10 @@ for needle in (
     'close_fds=True',
     '[SSH_KEYGEN, "-lf", str(self.known_hosts), "-E", "sha256"]',
     'SSH, "-F", "/dev/null", "-T"',
+    'import shlex',
+    'remote_command = " ".join(shlex.quote(argument) for argument in args)',
+    '"\\x00" in argument',
+    'strict transport lost an empty remote argv element',
     'tempfile.mkdtemp(',
     'dir="/tmp"',
     'stat.S_IMODE(directory.st_mode) != 0o700',
@@ -168,6 +172,7 @@ forbidden = (
     ("route delete", "route mutation"),
     ("qemu-system", "QEMU control"),
     ("qemu-img", "overlay manipulation"),
+    ("return subprocess.run([*self.base, *args], **options)", "lossy SSH command flattening"),
     ("shell=True", "shell command expansion"),
 )
 for needle, label in forbidden:

@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import stat
 import struct
 import subprocess
@@ -658,6 +659,14 @@ class StrictTransport:
     ) -> subprocess.CompletedProcess[bytes]:
         if not self.base:
             raise BridgeFailure("transport-pinning")
+        if (not args or any(not isinstance(argument, str) or "\x00" in argument
+                            for argument in args)):
+            raise BridgeFailure("transport-pinning")
+        # ssh serializes the command portion through the guest shell instead
+        # of preserving a local argv vector.  Make that one command explicitly
+        # shell-quoted so the verifier's empty work-slot reaches Python as
+        # a real empty argv element rather than disappearing before activation.
+        remote_command = " ".join(shlex.quote(argument) for argument in args)
         options: dict[str, Any] = {
             "stdout": subprocess.PIPE,
             "stderr": subprocess.DEVNULL,
@@ -670,7 +679,7 @@ class StrictTransport:
             options["stdin"] = subprocess.DEVNULL
         else:
             options["input"] = input_bytes
-        return subprocess.run([*self.base, *args], **options)
+        return subprocess.run([*self.base, remote_command], **options)
 
     def close(self) -> None:
         if self.known_hosts is not None:
@@ -2047,15 +2056,16 @@ def self_test() -> int:
         fixture_transport = StrictTransport()
         fixture_transport.run(["/usr/bin/true"])
         fixture_transport.run(["/usr/bin/python3", "-"], input_bytes=b"fixture\n")
+        fixture_transport.run(["/usr/bin/printf", "%s", ""])
         fixture_transport.close()
     finally:
         subprocess.run = original_run  # type: ignore[assignment]
-    if len(calls) != 3 or calls[0][0][0] != SSH_KEYGEN:
+    if len(calls) != 4 or calls[0][0][0] != SSH_KEYGEN:
         raise SystemExit("self-test: strict transport command shape changed")
     if (calls[0][1].get("stdin") is not subprocess.DEVNULL or
             calls[0][1].get("env") != LOCAL_ENV or not calls[0][1].get("close_fds")):
         raise SystemExit("self-test: host-key check inherited controller state")
-    no_payload, payload = calls[1], calls[2]
+    no_payload, payload, empty_argument = calls[1], calls[2], calls[3]
     if (no_payload[0][0] != SSH or no_payload[1].get("stdin") is not subprocess.DEVNULL or
             no_payload[1].get("env") != LOCAL_ENV or not no_payload[1].get("close_fds")):
         raise SystemExit("self-test: read-only SSH inherited controller stdin")
@@ -2063,6 +2073,11 @@ def self_test() -> int:
             "stdin" in payload[1] or payload[1].get("env") != LOCAL_ENV or
             not payload[1].get("close_fds")):
         raise SystemExit("self-test: explicit verifier payload transport changed")
+    if (no_payload[0][-1] != "/usr/bin/true" or
+            payload[0][-1] != "/usr/bin/python3 -" or
+            empty_argument[0][0] != SSH or
+            empty_argument[0][-1] != "/usr/bin/printf %s ''"):
+        raise SystemExit("self-test: strict transport lost an empty remote argv element")
     print("PASS: Tahoe IWN candidate activation/reboot bridge self-test")
     return 0
 
