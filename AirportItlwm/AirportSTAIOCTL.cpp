@@ -13,6 +13,7 @@
 #include "TahoeAssociationContracts.hpp"
 #include "TahoeAssociationAuthContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
+#include "IwnDirectSaeLabGate.hpp"
 #include "TahoeLqmContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeOpModeContracts.hpp"
@@ -990,6 +991,9 @@ getCARD_CAPABILITIES(OSObject *object,
     // property requests.
     TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
         cd->capabilities);
+#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
+    TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
+#endif
     //cd->capabilities[8] = 0x40;
     //cd->capabilities[8] |= 8;//dfs white list
     //cd->capabilities[9] = 0x28;

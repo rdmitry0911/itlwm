@@ -27,6 +27,13 @@ static constexpr uint8_t kCardCapabilityByte7 =
     kCardCapabilityCurrentNetworkProfileMask;
 static constexpr uint8_t kCardCapabilityByte8 = 0x01;
 static constexpr uint8_t kCardCapabilityByte9 = 0x02;
+/*
+ * AppleBCMWLANCore::getCARD_CAPABILITIES maps feature flag 0x41 (WPA3 SAE)
+ * to capability byte 9, bit 0x08.  Keep this out of the common baseline:
+ * only a build that also exposes the complete SAE/PMF WCL ingress may opt in.
+ */
+static constexpr size_t kCardCapabilitySaeByte = 9;
+static constexpr uint8_t kCardCapabilitySaeMask = 0x08;
 
 static constexpr uint8_t kAppleImpossibleCap2Mask = 0x80;
 static constexpr uint8_t kAppleImpossibleCap3Mask = 0x08;
@@ -49,6 +56,15 @@ inline void applyAppleConsistentCardCapabilityCluster(uint8_t (&capabilities)[N]
     capabilities[7] = kCardCapabilityByte7;
     capabilities[8] = kCardCapabilityByte8;
     capabilities[9] = kCardCapabilityByte9;
+}
+
+template <size_t N>
+inline void applySaeCardCapability(uint8_t (&capabilities)[N])
+{
+    static_assert(N > kCardCapabilitySaeByte,
+                  "CARD_CAPABILITIES carrier must expose the SAE byte");
+
+    capabilities[kCardCapabilitySaeByte] |= kCardCapabilitySaeMask;
 }
 
 inline bool hasAppleImpossibleAdvancedAkmBits(uint8_t cap2,

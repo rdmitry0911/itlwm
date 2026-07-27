@@ -10943,6 +10943,14 @@ getCARD_CAPABILITIES(OSObject *object,
     // Keep the advanced-byte sanitation from CR-032 in the same helper.
     TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
         cd->capabilities);
+#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
+    /*
+     * CoreWLAN checks the Apple feature-0x41 capability before it will create
+     * a CIPHER_PWD association carrier.  Publish that one capability only in
+     * the build which also owns the complete driver-resident SAE/PMF path.
+     */
+    TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
+#endif
 //
 //    cd->capabilities[2] |= 0x10;
 //    cd->capabilities[5] |= 0x1;
