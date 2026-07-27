@@ -7,6 +7,8 @@ set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
+bash "$root/scripts/test_net80211_sae_eapol_key_descriptor_contract.sh"
+
 python3 - "$root" <<'PY'
 from pathlib import Path
 import re

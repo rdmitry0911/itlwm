@@ -370,12 +370,19 @@ ieee80211_eapol_key_input(struct ieee80211com *ic, mbuf_t m,
     
     info = BE_READ_2(key->info);
     
-    /* discard EAPOL-Key frames with an unknown descriptor version */
+    /*
+     * SAE defines descriptor version zero for the 4-way handshake.  It uses
+     * AES-128-CMAC and AES Key Wrap, but must not be mistaken for the
+     * otherwise invalid pre-V1 descriptor range.
+     */
     desc = info & EAPOL_KEY_VERSION_MASK;
-    if (desc < EAPOL_KEY_DESC_V1 || desc > EAPOL_KEY_DESC_V3)
+    if (ni->ni_rsnakms == IEEE80211_AKM_SAE) {
+        if (desc != EAPOL_KEY_DESC_AKM_DEFINED)
+            goto done;
+    } else if (desc < EAPOL_KEY_DESC_V1 || desc > EAPOL_KEY_DESC_V3) {
         goto done;
-    
-    if (ieee80211_is_sha256_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
+    } else if (ieee80211_is_sha256_akm(
+        (enum ieee80211_akm)ni->ni_rsnakms)) {
         if (desc != EAPOL_KEY_DESC_V3)
             goto done;
     } else if (ni->ni_rsncipher == IEEE80211_CIPHER_CCMP ||

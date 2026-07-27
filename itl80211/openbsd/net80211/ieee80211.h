@@ -1202,6 +1202,7 @@ struct ieee80211_eapol_key {
 
 	u_int8_t	info[2];
 #define EAPOL_KEY_VERSION_MASK	0x7
+#define EAPOL_KEY_DESC_AKM_DEFINED	0	/* SAE */
 #define EAPOL_KEY_DESC_V1	1
 #define EAPOL_KEY_DESC_V2	2
 #define EAPOL_KEY_DESC_V3	3		/* 11r */
