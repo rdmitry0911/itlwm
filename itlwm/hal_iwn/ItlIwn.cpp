@@ -11356,6 +11356,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     bool wcl_foreground_5ghz_extended_dwell = false;
     bool wcl_background_5ghz_unassociated_dwell = false;
     bool wcl_background_5ghz_directed_dwell = false;
+    bool foreground_5ghz_directed_dwell = false;
 
     if (out_command_attempted != NULL)
         *out_command_attempted = false;
@@ -11486,6 +11487,15 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
      * Undirected, foreground, and non-WCL scans keep their prior behavior. */
     wcl_background_5ghz_directed_dwell = wcl_scan && bgscan != 0 &&
         is_active != 0 && (flags & IEEE80211_CHAN_5GHZ) != 0;
+    /* A public ASSOCIATE can replace an undirected discovery command with a
+     * foreground directed scan.  On an NVM-passive non-DFS channel, the
+     * legacy 110 ms budget is only 7.6 ms above a normal 100-TU beacon
+     * interval and can expire before firmware accounts the beacon and emits
+     * the permitted directed probe.  Give every foreground directed 5 GHz
+     * join one bounded full-beacon margin.  The channel remains passive and
+     * DFS remains excluded, so this does not authorize a new transmission. */
+    foreground_5ghz_directed_dwell = bgscan == 0 && is_active != 0 &&
+        (flags & IEEE80211_CHAN_5GHZ) != 0;
     /*
      * Build a probe request frame.  Most of the following code is a
      * copy & paste of what is done in net80211.
@@ -11568,6 +11578,10 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
 
         dwell_active = iwn_get_active_dwell_time(sc, flags, is_active);
         dwell_passive = iwn_get_passive_dwell_time(sc, flags);
+        if (foreground_5ghz_directed_dwell &&
+            (c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0 &&
+            (c->ic_flags & IEEE80211_CHAN_DFS) == 0)
+            dwell_passive = MAX(dwell_passive, 130);
         if ((wcl_foreground_5ghz_extended_dwell ||
              wcl_background_5ghz_unassociated_dwell ||
              (wcl_background_5ghz_directed_dwell &&
