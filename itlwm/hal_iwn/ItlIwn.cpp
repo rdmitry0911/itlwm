@@ -2848,7 +2848,6 @@ iwn_sae_engine_task(void *arg)
     struct ItlSaeAuthTransportEventV1 terminal;
     struct ItlSaeAuthPeerEventV1 peer;
     struct ItlSaePmkContinuationV1 continuation;
-    u_int8_t canonical_pmkid[IEEE80211_PMKID_LEN];
     struct ieee80211_sae_engine *engine;
     enum ieee80211_sae_engine_peer_result peer_result;
     u_int64_t wcl_cancel_generation = 0;
@@ -2867,7 +2866,6 @@ iwn_sae_engine_task(void *arg)
     explicit_bzero(&terminal, sizeof(terminal));
     explicit_bzero(&peer, sizeof(peer));
     explicit_bzero(&continuation, sizeof(continuation));
-    explicit_bzero(canonical_pmkid, sizeof(canonical_pmkid));
     if (sc->sc_sae_engine_lock == NULL)
         goto out;
 
@@ -2983,15 +2981,12 @@ iwn_sae_engine_task(void *arg)
                  * Confirm boundary; it carries no value out of the engine. */
                 IWN_DIRECT_SAE_TRACE(&sc->sc_ic,
                     kAirportItlwmPostPltiTraceEventIwnDirectSaePeerConfirmValidated);
-                /* The engine generated a PMK Name itself.  Recompute it at
-                 * the IWN/net80211 boundary before a single PMK byte can
-                 * enter the local PAE; a malformed or mismatched result is
-                 * terminal and never reaches WCL, PLTI, or an Agent route. */
-                if (ieee80211_sae_engine_derive_rsn_pmkid(
-                    continuation.pmk, continuation.identity.bssid,
-                    continuation.identity.sta, canonical_pmkid) != 0 ||
-                    timingsafe_bcmp(canonical_pmkid, continuation.pmkid,
-                    sizeof(canonical_pmkid)) != 0) {
+                /* The PMK and scalar-derived SAE PMKID came from the same
+                 * accepted in-kext exchange.  Recheck the bounded record at
+                 * the IWN/net80211 boundary before either value can enter
+                 * the local PAE. */
+                if (!itl_sae_pmk_continuation_is_well_formed(
+                    &continuation)) {
                     fail = true;
                 } else if ((bss_lock = sc->sc_ic.ic_pae_selected_bss_lock) ==
                     NULL) {
@@ -3012,7 +3007,7 @@ iwn_sae_engine_task(void *arg)
                         owner, &continuation.identity) &&
                         iwn_sae_engine_peer_owner_current_locked(sc, owner) &&
                         ieee80211_sae_wcl_request_pmk_claim_locked(
-                        &sc->sc_ic, &continuation, canonical_pmkid)) {
+                        &sc->sc_ic, &continuation)) {
                         owner->completion = continuation.identity;
                         owner->completion_claimed = true;
                         owner->assoc_tx_pending = true;
@@ -3088,7 +3083,6 @@ iwn_sae_engine_task(void *arg)
     if (more)
         iwn_sae_engine_schedule_task(sc);
 out:
-    explicit_bzero(canonical_pmkid, sizeof(canonical_pmkid));
     explicit_bzero(&continuation, sizeof(continuation));
     explicit_bzero(&peer, sizeof(peer));
     explicit_bzero(&terminal, sizeof(terminal));

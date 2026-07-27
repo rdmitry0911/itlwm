@@ -36,10 +36,11 @@ struct ItlSaePmkContinuationIdentityV1 {
 /*
  * Secret one-shot handoff.  The HAL must copy it before returning and scrub
  * every retained/local copy on claim, cancellation, failure, stop, and
- * detach.  The direct SAE engine derives PMKID; the IWN owner independently
- * canonicalizes and checks it before net80211 can copy it to a node.  An
- * all-zero PMKID is not rejected at syntax-validation time because V1 has no
- * "pmkid present" field.
+ * detach.  The direct SAE engine copies the scalar-derived SAE PMKID produced
+ * by the same accepted exchange as the PMK.  That PMKID is not the generic
+ * HMAC-SHA256 "PMK Name" construction used by PSK and other AKMs.  V1 has no
+ * separate "PMKID present" field, so the syntactically valid all-zero value
+ * is not overloaded as an absence sentinel.
  */
 struct ItlSaePmkContinuationV1 {
     struct ItlSaePmkContinuationIdentityV1 identity;

@@ -100,32 +100,47 @@ for token in (
     require(abi, token, "private continuation ABI")
 for token in ("password", "pwe", "kck", "controller_nonce", "client_cookie"):
     forbid(abi, token, "continuation ABI secret/controller surface")
-require(engine_h, "ieee80211_sae_engine_derive_rsn_pmkid",
-        "engine PMK Name export")
-derive = body(engine_c, "ieee80211_sae_engine_derive_rsn_pmkid",
-              "engine PMK Name derivation")
-ordered(derive, "PMK Name derivation", '"PMK Name"', "hmac_sha256_vector",
-        "os_memcpy(pmkid", "ieee80211_sae_secure_zero")
+well_formed = body(abi, "itl_sae_pmk_continuation_is_well_formed",
+                   "continuation syntax validation")
+require(well_formed,
+        "!itl_sae_pmk_continuation_bytes_all_zero(continuation->pmk",
+        "nonzero SAE PMK")
+forbid(well_formed,
+       "!itl_sae_pmk_continuation_bytes_all_zero(continuation->pmkid",
+       "all-zero SAE PMKID absence sentinel")
+forbid(engine_h, "ieee80211_sae_engine_derive_rsn_pmkid",
+       "generic PMK Name export")
+for token in ("ieee80211_sae_engine_derive_rsn_pmkid",
+              "hmac_sha256_vector"):
+    forbid(engine_c, token, "generic PMK Name derivation")
+confirm = body(engine_c, "ieee80211_sae_engine_handle_confirm",
+               "SAE Confirm completion")
+ordered(confirm, "accepted SAE key export",
+        "sae_check_confirm",
+        "os_memcpy(continuation->pmk, engine->sae.pmk",
+        "os_memcpy(continuation->pmkid, engine->sae.pmkid",
+        "itl_sae_pmk_continuation_is_well_formed",
+        "ieee80211_sae_engine_clear_crypto")
 
-# The local generic claim copies a verified PMK only into the pre-existing
-# PAE store, preserves SAE rather than PSK policy, and records a public
-# one-shot identity.  It is neither an external PMK installer nor a WCL/PLTI
-# association route.
+# The local generic claim copies the verified PMK and scalar-derived SAE
+# PMKID into the pre-existing PAE/node stores, preserves SAE rather than PSK
+# policy, and records a public one-shot identity.  It is neither an external
+# PMK installer nor a WCL/PLTI association route.
 claim = body(proto_c, "ieee80211_sae_wcl_request_pmk_claim_locked",
              "local SAE PMK claim")
 for token in (
         "itl_sae_pmk_continuation_is_well_formed",
-        "timingsafe_bcmp(continuation->pmkid, canonical_pmkid",
         "IEEE80211_S_AUTH",
         "ic->ic_sae_peer_rx_admission",
         "IEEE80211_F_PSK",
         "memcpy(ic->ic_psk, continuation->pmk",
         "ic->ic_external_pmk_owner = 0",
-        "memcpy(ni->ni_pmkid, canonical_pmkid",
+        "memcpy(ni->ni_pmkid, continuation->pmkid",
         "IEEE80211_NODE_PMKID",
         "claim->event_sequence",
         "claim->active = 1"):
     require(claim, token, "local PMK claim fence")
+forbid(claim, "canonical_pmkid", "non-SAE PMK Name detour")
 for token in ("installExternalPmkLocked", "DeliverPMK", "setwpaparms",
               "associateSSID", "PLTI", "Agent"):
     forbid(strip_comments(claim), token, "controller/external PMK detour")
@@ -153,7 +168,7 @@ require(output_c, "if (ni->ni_flags & IEEE80211_NODE_PMKID)",
         "RSN PMKID emission")
 
 # Claim cleanup and attach initialization ensure no later association inherits
-# local key material or a stale PMK Name.
+# local key material or a stale SAE PMKID.
 policy_clear = body(proto_c, "ieee80211_sae_wcl_request_policy_clear_locked",
                     "direct SAE policy cleanup")
 for token in ("explicit_bzero(ni->ni_pmk", "explicit_bzero(ni->ni_pmkid",
@@ -198,7 +213,7 @@ ordered(continue_assoc, "direct continuation order",
         "IEEE80211_S_AUTH", "ieee80211_pae_assoc_epoch_note_newstate",
         "IEEE80211_S_ASSOC", "IEEE80211_SAE_WCL_MGMT_PMK_CONTINUE")
 
-# Confirm completion independently derives and compares PMKID, claims the
+# Confirm completion revalidates the bounded PMK+SAE-PMKID record, claims the
 # local PAE while holding selected-BSS -> engine leaves, then retains an
 # identity-only tombstone until the real IWN descriptor is firmware-owned.
 for token in ("completion_claimed", "assoc_tx_pending", "assoc_tx_accepted",
@@ -207,8 +222,7 @@ for token in ("completion_claimed", "assoc_tx_pending", "assoc_tx_accepted",
 task = iwn_method("iwn_sae_engine_task")
 ordered(task, "Confirm to local continuation",
         "IEEE80211_SAE_ENGINE_PEER_COMPLETE",
-        "ieee80211_sae_engine_derive_rsn_pmkid",
-        "timingsafe_bcmp(canonical_pmkid, continuation.pmkid",
+        "itl_sae_pmk_continuation_is_well_formed",
         "IOSimpleLockLockDisableInterrupt(bss_lock)",
         "IOSimpleLockLock(sc->sc_sae_engine_lock)",
         "ieee80211_sae_wcl_request_pmk_claim_locked",
@@ -216,6 +230,9 @@ ordered(task, "Confirm to local continuation",
         "owner->completion_claimed = true",
         "owner->assoc_tx_pending = true",
         "ieee80211_sae_wcl_request_pmk_continue_assoc")
+for token in ("ieee80211_sae_engine_derive_rsn_pmkid", "canonical_pmkid",
+              '"PMK Name"'):
+    forbid(task, token, "non-SAE PMK Name detour")
 for token in ("installExternalPmkLocked", "DeliverPMK", "setwpaparms",
               "associateSSID", "PLTI", "Agent"):
     forbid(strip_comments(task), token, "IWN Confirm PMK detour")

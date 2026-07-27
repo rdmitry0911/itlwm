@@ -89,43 +89,6 @@ ieee80211_sae_engine_fail(struct ieee80211_sae_engine *engine)
 	engine->state = IEEE80211_SAE_ENGINE_FAILED;
 }
 
-/*
- * IEEE 802.11's SHA-256 PMK Name construction for SAE.  The legacy
- * net80211 implementation has the same HMAC-SHA256("PMK Name" || AA || SPA)
- * formula, but is compiled as C++ in the Tahoe kext and therefore exports a
- * mangled symbol.  Keep the archive's C boundary self-contained instead of
- * relying on an ABI-unsafe C-to-C++ external call.
- */
-int
-ieee80211_sae_engine_derive_rsn_pmkid(const uint8_t *pmk,
-	const uint8_t *authenticator, const uint8_t *supplicant,
-	uint8_t *pmkid)
-{
-	static const uint8_t label[] = "PMK Name";
-	const u8 *address[3];
-	size_t length[3];
-	uint8_t digest[32];
-	int result;
-
-	if (pmk == NULL || authenticator == NULL || supplicant == NULL ||
-	    pmkid == NULL)
-		return -1;
-	address[0] = label;
-	address[1] = authenticator;
-	address[2] = supplicant;
-	length[0] = sizeof(label) - 1;
-	length[1] = kItlSaeAuthTransportV1MacLength;
-	length[2] = kItlSaeAuthTransportV1MacLength;
-	result = hmac_sha256_vector(pmk,
-	    sizeof(((struct ItlSaePmkContinuationV1 *)0)->pmk),
-	    sizeof(address) / sizeof(address[0]), address, length, digest);
-	if (result == 0)
-		os_memcpy(pmkid, digest,
-		    sizeof(((struct ItlSaePmkContinuationV1 *)0)->pmkid));
-	ieee80211_sae_secure_zero(digest, sizeof(digest));
-	return result;
-}
-
 static int
 ieee80211_sae_engine_selected_matches_active(
 	const struct ItlSaeSelectedJoinEventV1 *selected,
@@ -471,17 +434,15 @@ ieee80211_sae_engine_handle_confirm(struct ieee80211_sae_engine *engine,
 	    sizeof(continuation->identity.sta));
 	os_memcpy(continuation->pmk, engine->sae.pmk, sizeof(continuation->pmk));
 	/*
-	 * hostapd's sae.pmkid is the SAE internal scalar-derived identifier.  The
-	 * PMK owner expects the RSN PMK Name HMAC instead, so derive the canonical
-	 * value here rather than smuggling hostapd-private state across the
-	 * continuation boundary.
+	 * IEEE 802.11 SAE defines its PMKID as the leftmost 128 bits of
+	 * (own-commit-scalar + peer-commit-scalar) mod r.  sae_process_commit()
+	 * derived this value together with the PMK.  It is the PMKSA identifier
+	 * the authenticator caches and must be emitted unchanged in the
+	 * Association Request; the generic HMAC "PMK Name" formula is not valid
+	 * for SAE.
 	 */
-	if (ieee80211_sae_engine_derive_rsn_pmkid(continuation->pmk,
-	    engine->bssid, engine->sta, continuation->pmkid) != 0) {
-		ieee80211_sae_secure_zero(continuation, sizeof(*continuation));
-		ieee80211_sae_engine_fail(engine);
-		return IEEE80211_SAE_ENGINE_PEER_ABORT;
-	}
+	os_memcpy(continuation->pmkid, engine->sae.pmkid,
+	    sizeof(continuation->pmkid));
 	if (!itl_sae_pmk_continuation_is_well_formed(continuation)) {
 		ieee80211_sae_secure_zero(continuation, sizeof(*continuation));
 		return IEEE80211_SAE_ENGINE_PEER_ABORT;

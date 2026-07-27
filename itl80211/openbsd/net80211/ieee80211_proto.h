@@ -294,8 +294,7 @@ extern	int ieee80211_sae_wcl_peer_rx_admit(struct ieee80211com *,
  * PAE/node stores; no callback, state transition, or controller handoff is
  * permitted under that leaf. */
 extern	int ieee80211_sae_wcl_request_pmk_claim_locked(
-	    struct ieee80211com *, const struct ItlSaePmkContinuationV1 *,
-	    const u_int8_t[IEEE80211_PMKID_LEN]);
+	    struct ieee80211com *, const struct ItlSaePmkContinuationV1 *);
 /* Check the one-shot claim for the exact current Association Request.  The
  * locked form is for IWN's final descriptor admission; the wrapper takes the
  * selected-BSS leaf itself. */

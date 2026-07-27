@@ -1175,7 +1175,7 @@ ieee80211_sae_wcl_request_policy_clear_locked(struct ieee80211com *ic)
 	 * PAE store so its first M1 path can remain untouched.  It belongs only to
 	 * this exact direct request.  Tear it down before the public request value
 	 * disappears; a later association must never inherit either a PMK or its
-	 * PMK Name. */
+	 * SAE PMKID. */
 	if (ic->ic_sae_wcl_pmk_claim.active != 0 && ni != NULL &&
 	    IEEE80211_ADDR_EQ(ni->ni_bssid,
 	    ic->ic_sae_wcl_pmk_claim.bssid) &&
@@ -2723,25 +2723,21 @@ ieee80211_sae_wcl_request_pmk_claim_matches_locked(
 }
 
 /*
- * Claim one verified direct-SAE PMK under the selected-BSS leaf.  The caller
- * has independently recomputed the canonical RSN PMK Name in the same
- * direct SAE crypto domain.  This leaf checks that value again before it
- * makes the existing local PAE the only M1 owner.  It intentionally leaves
- * IEEE80211_F_PSK clear: SAE is an AKM, not a legacy PSK selection policy.
+ * Claim one verified direct-SAE PMK and its scalar-derived SAE PMKID under
+ * the selected-BSS leaf.  Both values came from the same accepted in-kext
+ * SAE exchange.  It intentionally leaves IEEE80211_F_PSK clear: SAE is an
+ * AKM, not a legacy PSK selection policy.
  */
 int
 ieee80211_sae_wcl_request_pmk_claim_locked(struct ieee80211com *ic,
-    const struct ItlSaePmkContinuationV1 *continuation,
-    const u_int8_t canonical_pmkid[IEEE80211_PMKID_LEN])
+    const struct ItlSaePmkContinuationV1 *continuation)
 {
 	const struct ieee80211_sae_peer_rx_admission *admission;
 	struct ieee80211_sae_wcl_pmk_claim *claim;
 	struct ieee80211_node *ni;
 
-	if (ic == NULL || continuation == NULL || canonical_pmkid == NULL ||
-	    !itl_sae_pmk_continuation_is_well_formed(continuation) ||
-	    timingsafe_bcmp(continuation->pmkid, canonical_pmkid,
-	    IEEE80211_PMKID_LEN) != 0)
+	if (ic == NULL || continuation == NULL ||
+	    !itl_sae_pmk_continuation_is_well_formed(continuation))
 		return 0;
 	ni = ic->ic_bss;
 	if (!ieee80211_sae_wcl_request_pmk_base_current_locked(ic, ni,
@@ -2766,7 +2762,7 @@ ieee80211_sae_wcl_request_pmk_claim_locked(struct ieee80211com *ic,
 	explicit_bzero(ni->ni_pmk, sizeof(ni->ni_pmk));
 	explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
 	ni->ni_flags &= ~(IEEE80211_NODE_PMK | IEEE80211_NODE_PMKID);
-	memcpy(ni->ni_pmkid, canonical_pmkid, sizeof(ni->ni_pmkid));
+	memcpy(ni->ni_pmkid, continuation->pmkid, sizeof(ni->ni_pmkid));
 	ni->ni_flags |= IEEE80211_NODE_PMKID;
 	explicit_bzero(claim, sizeof(*claim));
 	claim->generation = continuation->identity.request_generation;
