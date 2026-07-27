@@ -5887,6 +5887,39 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
     return true;
 }
 
+static IOReturn postTahoeWclJoinCompletionGated(
+    OSObject *target, void *arg0, void *, void *, void *)
+{
+    AirportItlwm *controller = OSDynamicCast(AirportItlwm, target);
+    if (controller == nullptr)
+        return kIOReturnBadArgument;
+
+    /*
+     * IO80211PostOffice::sendMail admits asynchronous messages only while
+     * its controller work loop is inGate().  Keep the key-done, link-up, and
+     * connect-complete carriers in one command-gate action so 0xd8/0xd5
+     * cannot fall through sendMail with kIOReturnNotPermitted after the
+     * lower RSN callback returns to its off-gate task context.
+     *
+     * This gate is only the producer-side PostOffice contract.  WCL consumes
+     * these carriers asynchronously and owns the later parent link-state
+     * transition in its framework context; do not call setLinkState here.
+     */
+    const IOReturn keyDone = AirportItlwm::postRsnHandshakeDoneGated(
+        target, (void *)(uintptr_t)false, nullptr, nullptr, nullptr);
+    if (keyDone != kIOReturnSuccess)
+        return keyDone;
+
+    const unsigned int rawReason =
+        static_cast<unsigned int>((uintptr_t)arg0);
+    const bool linkPublished =
+        postTahoeWclLinkUpInd(controller, rawReason);
+    const bool connectPublished =
+        postTahoeWclConnectCompleteEvent(controller);
+    return linkPublished && connectPublished ? kIOReturnSuccess
+                                              : kIOReturnNotReady;
+}
+
 static bool postTahoeJoinAcceptedSsidChangedEvent(AirportItlwm *controller)
 {
     if (controller == nullptr || controller->fNetIf == nullptr ||
@@ -8447,13 +8480,12 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             // never calls setCIPHER_KEY, so publish the reference completion
             // state here or wifid's WCL join state machine times out and fires
             // setWCL_JOIN_ABORT even though the handshake succeeded on air.
-            // The RSN key-done path is command-gated, and the WCL routes below
-            // use the gate-safe controller->postMessage (PostOffice) dispatch.
-            gate->runAction(postRsnHandshakeDoneGated,
-                            (void *)(uintptr_t)false, NULL, NULL);
+            // PostOffice requires inGate()==true at producer admission. Keep
+            // RSN key-done and both WCL completion carriers in one command
+            // gate action; WCL owns the later parent link-state transition.
 #if __IO80211_TARGET >= __MAC_26_0
-            postTahoeWclLinkUpInd(that, 0);
-            postTahoeWclConnectCompleteEvent(that);
+            (void)gate->runAction(postTahoeWclJoinCompletionGated,
+                                  (void *)(uintptr_t)0, NULL, NULL);
             /*
              * Keep RSN_HANDSHAKE_DONE limited to key-completion and WCL join
              * FSM completion. The BSSID/SSID identity events that wake
@@ -8462,6 +8494,9 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
              * made the interface current-state model coherent for that
              * re-read.
              */
+#else
+            (void)gate->runAction(postRsnHandshakeDoneGated,
+                                  (void *)(uintptr_t)false, NULL, NULL);
 #endif
             return;
         case IEEE80211_EVT_STA_DEAUTH:
