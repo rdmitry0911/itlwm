@@ -430,6 +430,10 @@ struct AirportItlwmIwnDirectSaeLabStimulusLifecycle {
     uint64_t requestId;
     uint64_t activeGeneration;
     uint8_t ownerCookie[kAirportItlwmSaeRelayV1NonceLength];
+    bool outcomeValid;
+    uint32_t outcome;
+    uint64_t outcomeRequestId;
+    uint8_t outcomeCookie[kAirportItlwmSaeRelayV1NonceLength];
     struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 request;
 };
 #endif
@@ -1129,6 +1133,9 @@ public:
     IOReturn queueIwnDirectSaeLabStimulus(
         const struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *request,
         const uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength]);
+    IOReturn queryIwnDirectSaeLabOutcome(
+        const uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength],
+        struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1 *out);
     IOReturn clearIwnDirectSaeLabAssociationOwner();
     void cancelIwnDirectSaeLabForClient(const uint8_t client_cookie[
         kAirportItlwmSaeRelayV1NonceLength]);

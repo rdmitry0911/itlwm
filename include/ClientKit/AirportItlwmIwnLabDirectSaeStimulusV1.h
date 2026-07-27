@@ -29,7 +29,8 @@
 enum AirportItlwmIwnLabDirectSaeStimulusSelectorV1 {
     kAirportItlwmIwnLabDirectSaeStimulusQueryReadySelector = 0,
     kAirportItlwmIwnLabDirectSaeStimulusSubmitSelector = 1,
-    kAirportItlwmIwnLabDirectSaeStimulusSelectorCount = 2,
+    kAirportItlwmIwnLabDirectSaeStimulusQueryOutcomeSelector = 2,
+    kAirportItlwmIwnLabDirectSaeStimulusSelectorCount = 3,
 };
 
 /* The caller selects no radio parameters.  This value only selects one of
@@ -45,6 +46,23 @@ enum AirportItlwmIwnLabDirectSaeStimulusReadyV1 {
     kAirportItlwmIwnLabDirectSaeStimulusUnsupported = 0,
     kAirportItlwmIwnLabDirectSaeStimulusNotReady = 1,
     kAirportItlwmIwnLabDirectSaeStimulusReady = 2,
+};
+
+/* QueryOutcome exposes only the first bounded dispatch stage.  It contains
+ * no IOReturn value, radio identity, credential material, generation, or
+ * protocol frame.  Pending is published before the request is copied into
+ * the one-slot mailbox; every other value is terminal for that submission. */
+enum AirportItlwmIwnLabDirectSaeStimulusOutcomeV1 {
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomePending = 0,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeStarted = 1,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedPrecondition = 2,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedRequestBegin = 3,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedAssociationOwner = 4,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedCredentialStage = 5,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedAuthType = 6,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedScanResume = 7,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeCancelled = 8,
+    kAirportItlwmIwnLabDirectSaeStimulusOutcomeCount = 9,
 };
 
 /* Fixed input only.  In particular it contains no generation, PMK, PMKID,
@@ -67,6 +85,15 @@ struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1 {
     uint32_t version;
     uint32_t size;
     uint32_t readiness;
+    uint32_t reserved;
+};
+
+/* QueryOutcome is bound implicitly to the kernel-generated cookie of the
+ * calling UserClient. */
+struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1 {
+    uint32_t version;
+    uint32_t size;
+    uint32_t outcome;
     uint32_t reserved;
 };
 
@@ -96,6 +123,9 @@ AIRPORT_ITLWM_IWN_LAB_DIRECT_SAE_STATIC_ASSERT(
 AIRPORT_ITLWM_IWN_LAB_DIRECT_SAE_STATIC_ASSERT(
     sizeof(struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1) == 16,
     "direct SAE lab readiness ABI size");
+AIRPORT_ITLWM_IWN_LAB_DIRECT_SAE_STATIC_ASSERT(
+    sizeof(struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1) == 16,
+    "direct SAE lab outcome ABI size");
 
 static inline bool
 AirportItlwmIwnLabDirectSaeStimulusBytesAllZero(const uint8_t *bytes,
@@ -164,6 +194,17 @@ AirportItlwmIwnLabDirectSaeStimulusReadyReplyIsWellFormed(
         reply->version == kAirportItlwmIwnLabDirectSaeStimulusV1Version &&
         reply->size == sizeof(*reply) &&
         reply->readiness <= kAirportItlwmIwnLabDirectSaeStimulusReady &&
+        reply->reserved == 0;
+}
+
+static inline bool
+AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyIsWellFormed(
+    const struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1 *reply)
+{
+    return reply != NULL &&
+        reply->version == kAirportItlwmIwnLabDirectSaeStimulusV1Version &&
+        reply->size == sizeof(*reply) &&
+        reply->outcome < kAirportItlwmIwnLabDirectSaeStimulusOutcomeCount &&
         reply->reserved == 0;
 }
 

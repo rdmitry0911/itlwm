@@ -6477,7 +6477,8 @@ struct AirportItlwmIwnDirectSaeCredentialRequest {
 IOReturn AirportItlwmSkywalkInterface::
 startIwnDirectSaeCredential(
     const struct AirportItlwmIwnDirectSaeCredentialRequest *request,
-    uint64_t *out_generation)
+    uint64_t *out_generation,
+    uint32_t *out_lab_outcome)
 {
     struct ItlSaeWclCredentialV1 credential;
     struct apple80211_authtype_data authType;
@@ -6488,6 +6489,9 @@ startIwnDirectSaeCredential(
 
     if (out_generation != nullptr)
         *out_generation = 0;
+    if (out_lab_outcome != nullptr)
+        *out_lab_outcome =
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedPrecondition;
     explicit_bzero(&credential, sizeof(credential));
     memset(&authType, 0, sizeof(authType));
 
@@ -6542,6 +6546,9 @@ startIwnDirectSaeCredential(
                                                   request->ssid,
                                                   request->ssidLength);
     if (generation == 0) {
+        if (out_lab_outcome != nullptr)
+            *out_lab_outcome =
+                kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedRequestBegin;
         result = kIOReturnNotReady;
         goto out;
     }
@@ -6558,6 +6565,9 @@ startIwnDirectSaeCredential(
         if (instance == nullptr ||
             instance->clearIwnDirectSaeLabAssociationOwner() !=
                 kIOReturnSuccess) {
+            if (out_lab_outcome != nullptr)
+                *out_lab_outcome =
+                    kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedAssociationOwner;
             result = kIOReturnNotReady;
             goto out;
         }
@@ -6571,19 +6581,31 @@ startIwnDirectSaeCredential(
     memcpy(credential.bssid, request->bssid, sizeof(credential.bssid));
     memcpy(credential.ssid, request->ssid, credential.ssid_len);
     memcpy(credential.password, request->password, credential.password_len);
-    if (!itl_sae_wcl_credential_is_well_formed(&credential))
+    if (!itl_sae_wcl_credential_is_well_formed(&credential)) {
+        if (out_lab_outcome != nullptr)
+            *out_lab_outcome =
+                kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedCredentialStage;
         goto out;
+    }
 
     result = fHalService->stageSaeWclCredential(&credential);
-    if (result != kIOReturnSuccess)
+    if (result != kIOReturnSuccess) {
+        if (out_lab_outcome != nullptr)
+            *out_lab_outcome =
+                kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedCredentialStage;
         goto out;
+    }
 
     authType.version = APPLE80211_VERSION;
     authType.authtype_lower = request->authLower;
     authType.authtype_upper = request->authUpper;
     result = setAUTH_TYPE(&authType);
-    if (result != kIOReturnSuccess)
+    if (result != kIOReturnSuccess) {
+        if (out_lab_outcome != nullptr)
+            *out_lab_outcome =
+                kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedAuthType;
         goto out;
+    }
     disassocIsVoluntary = false;
 
     if (request->wclOwner != nullptr && instance != nullptr) {
@@ -6617,12 +6639,18 @@ startIwnDirectSaeCredential(
     AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic);
     scanResume = ieee80211_sae_wcl_request_resume_scan(ic, generation);
     if (scanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED) {
+        if (out_lab_outcome != nullptr)
+            *out_lab_outcome =
+                kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedScanResume;
         result = scanResume == IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY
             ? kIOReturnNotReady : kIOReturnAborted;
         goto out;
     }
 
     result = kIOReturnSuccess;
+    if (out_lab_outcome != nullptr)
+        *out_lab_outcome =
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeStarted;
     if (out_generation != nullptr)
         *out_generation = generation;
 
@@ -6643,13 +6671,17 @@ out:
 IOReturn AirportItlwmSkywalkInterface::
 startIwnDirectSaeLabStimulus(
     const struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *request,
-    uint64_t *out_generation)
+    uint64_t *out_generation,
+    uint32_t *outcome)
 {
     AirportItlwmIwnDirectSaeCredentialRequest directRequest{};
     IOReturn result;
 
     if (out_generation != nullptr)
         *out_generation = 0;
+    if (outcome != nullptr)
+        *outcome =
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedPrecondition;
     if (!AirportItlwmIwnLabDirectSaeStimulusRequestIsWellFormed(request))
         return kIOReturnBadArgument;
 
@@ -6666,7 +6698,8 @@ startIwnDirectSaeLabStimulus(
         ? APPLE80211_AUTHTYPE_WPA3_SAE
         : APPLE80211_AUTHTYPE_WPA3_SAE | APPLE80211_AUTHTYPE_WPA2_PSK;
     directRequest.wclOwner = nullptr;
-    result = startIwnDirectSaeCredential(&directRequest, out_generation);
+    result = startIwnDirectSaeCredential(&directRequest, out_generation,
+                                         outcome);
     explicit_bzero(&directRequest, sizeof(directRequest));
     return result;
 }
@@ -6863,7 +6896,8 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         directRequest.authLower = auth_lower;
         directRequest.authUpper = auth_upper;
         directRequest.wclOwner = &owner;
-        saeResult = startIwnDirectSaeCredential(&directRequest, nullptr);
+        saeResult = startIwnDirectSaeCredential(&directRequest, nullptr,
+                                                nullptr);
 
 sae_out:
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,

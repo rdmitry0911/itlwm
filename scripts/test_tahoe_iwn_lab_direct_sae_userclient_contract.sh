@@ -106,7 +106,8 @@ require(v2h, "AirportItlwmIwnDirectSaeLabStimulusLifecycle",
         "isolated one-slot lifecycle")
 for token in ("pending", "dispatching", "active", "cancelRequested",
               "lowerAdmissionReserved", "ownerCookie", "activeGeneration",
-              "requestId"):
+              "requestId", "outcomeValid", "outcomeRequestId",
+              "outcomeCookie"):
     require(v2h, token, "exact cancellation fence")
 require(relay, "kAirportItlwmSaeRelaySelectorCount = 7",
         "unchanged PLTI selector ABI")
@@ -123,9 +124,11 @@ for token in (
     require(v2, token, "lab UserClient open fence")
 require(v2, "if (fIwnDirectSaeLabClient)", "separate dispatch by type")
 for token in ("sExtIwnDirectSaeLabQueryReady", "sExtIwnDirectSaeLabSubmit",
+              "sExtIwnDirectSaeLabQueryOutcome",
               "sizeof(struct AirportItlwmIwnLabDirectSaeStimulusRequestV1)",
-              "sizeof(struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1)"):
-    require(v2, token, "two-method lab dispatch")
+              "sizeof(struct AirportItlwmIwnLabDirectSaeStimulusReadyReplyV1)",
+              "sizeof(struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1)"):
+    require(v2, token, "three-method lab dispatch")
 
 query = body(v2, "IOReturn AirportItlwmUserClient::\nsExtIwnDirectSaeLabQueryReady(",
              "QueryReady handler")
@@ -133,6 +136,17 @@ forbid(query, "XYLog", "QueryReady input logging")
 forbid(query, "queueIwnDirectSaeLabStimulus", "QueryReady stimulus")
 forbid(query, "startIwnDirectSaeLabStimulus", "QueryReady association")
 require(query, "queryIwnDirectSaeLabReady(&reply)", "identity-free readiness")
+outcome_query = body(
+    v2,
+    "IOReturn AirportItlwmUserClient::\nsExtIwnDirectSaeLabQueryOutcome(",
+    "QueryOutcome handler")
+for token in ("copySaeClientCookie(clientCookie)",
+              "queryIwnDirectSaeLabOutcome(clientCookie, &reply)",
+              "explicit_bzero(&reply", "explicit_bzero(clientCookie"):
+    require(outcome_query, token, "cookie-bound categorical outcome")
+for token in ("XYLog", "request", "password", "bssid", "generation",
+              "kIOReturnSuccess ?"):
+    forbid(outcome_query.lower(), token.lower(), "outcome disclosure/bypass")
 ready = body(v2, "airportItlwmIwnDirectSaeLabReadyGated(",
              "lower-backed readiness gate")
 require(ready, "fHalService->isSaeWclCredentialAdmissionReady()",
@@ -217,6 +231,7 @@ for token in ("associateSSID(", "ieee80211_new_state(", "raw +", "stageSaeWclCre
 action = body(v2, "static void\niwnDirectSaeLabStimulusInterruptAction(",
               "off-gate source action")
 for token in ("startIwnDirectSaeLabStimulus(&request",
+              "dispatchOutcome", "iwnDirectSaeLabPublishOutcomeLocked",
               "explicit_bzero(&request", "cancelIwnDirectSaeLabGeneration"):
     require(action, token, "source action work")
 ordered(action, "reservation transfer through lower start",
@@ -254,6 +269,12 @@ for token in ("RequestIsWellFormed(request)", "LabStimulus",
               "APPLE80211_AUTHTYPE_WPA3_SAE", "wclOwner = nullptr",
               "startIwnDirectSaeCredential(&directRequest", "explicit_bzero(&directRequest"):
     require(lab, token, "strict lab entry")
+for token in (
+        "OutcomeRejectedPrecondition", "OutcomeRejectedRequestBegin",
+        "OutcomeRejectedAssociationOwner", "OutcomeRejectedCredentialStage",
+        "OutcomeRejectedAuthType", "OutcomeRejectedScanResume",
+        "OutcomeStarted"):
+    require(sky, token, "bounded lower dispatch outcome")
 for token in ("associateSSID(", "setWCL_ASSOCIATE", "publishPendingAssocTarget",
               "ieee80211_new_state(", "raw +"):
     forbid(lab, token, "lab entry bypass")

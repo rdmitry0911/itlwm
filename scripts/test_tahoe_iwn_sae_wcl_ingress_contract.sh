@@ -117,7 +117,7 @@ for token in (
         "itl_sae_wcl_credential_bssid_is_unicast_nonzero(saeBssid)",
         "AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate",
         "directRequest.password =",
-        "startIwnDirectSaeCredential(&directRequest, nullptr)",
+        "startIwnDirectSaeCredential(&directRequest, nullptr,",
         "explicit_bzero(&directRequest",
         "explicit_bzero(&owner",
 ):
@@ -137,7 +137,7 @@ ordered(direct, "WCL validation before common call",
         "itl_sae_wcl_credential_bssid_is_unicast_nonzero(saeBssid)",
         "airportItlwmRegDiagShouldBlock(",
         "directRequest.password =",
-        "startIwnDirectSaeCredential(&directRequest, nullptr)")
+        "startIwnDirectSaeCredential(&directRequest, nullptr,")
 
 common = body(sky,
     "IOReturn AirportItlwmSkywalkInterface::\nstartIwnDirectSaeCredential(",

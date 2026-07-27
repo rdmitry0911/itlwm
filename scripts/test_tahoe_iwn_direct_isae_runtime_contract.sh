@@ -31,7 +31,7 @@ import sys
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 
 required = (
-    'itlwm-tahoe-iwn-direct-isae-runtime/v1',
+    'itlwm-tahoe-iwn-direct-isae-runtime/v2',
     'require_fifo_stdin',
     'stat.S_ISFIFO',
     'sys.stdin.buffer',
@@ -46,7 +46,9 @@ required = (
     'guest.run_root_command(',
     'shlex.quote(REMOTE_SUBMIT)',
     'remote_query(',
-    'parse_lab_status',
+    'parse_query_status',
+    'parse_submit_status',
+    'dispatch_outcome',
     'wait_control(',
     'wait_snapshot(',
     'get", "iwn-direct-sae-report',
@@ -105,7 +107,7 @@ for token in forbidden:
         raise SystemExit(f'FAIL: direct-ISAE runner exposes forbidden surface {token}')
 
 submit_start = text.find('def remote_submit(')
-submit_end = text.find('\ndef parse_lab_status(', submit_start)
+submit_end = text.find('\ndef parse_query_status(', submit_start)
 if submit_start < 0 or submit_end < 0:
     raise SystemExit('FAIL: direct-ISAE submit helper missing')
 submit = text[submit_start:submit_end]

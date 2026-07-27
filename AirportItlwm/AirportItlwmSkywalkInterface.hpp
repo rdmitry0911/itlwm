@@ -179,7 +179,8 @@ public:
 #if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
     IOReturn startIwnDirectSaeCredential(
         const struct AirportItlwmIwnDirectSaeCredentialRequest *request,
-        uint64_t *out_generation);
+        uint64_t *out_generation,
+        uint32_t *out_lab_outcome);
 #endif
 
 public:
@@ -189,7 +190,8 @@ public:
      * association owner. */
     IOReturn startIwnDirectSaeLabStimulus(
         const struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *request,
-        uint64_t *out_generation);
+        uint64_t *out_generation,
+        uint32_t *outcome);
     void cancelIwnDirectSaeLabStimulus(uint64_t generation);
 #endif
     //

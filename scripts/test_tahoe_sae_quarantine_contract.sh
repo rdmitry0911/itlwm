@@ -251,13 +251,13 @@ for token in (
     "if (directSaeWclPassword)",
     "AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate",
     "directRequest.wclOwner = &owner",
-    "startIwnDirectSaeCredential(&directRequest, nullptr)",
+    "startIwnDirectSaeCredential(&directRequest, nullptr,",
 ):
     require(direct_lab, token, "exact-SAE direct IWN ingress")
 ordered(direct_lab, "IWN direct exact-SAE delegation",
         "if (directSaeWclPassword)",
         "AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate",
-        "startIwnDirectSaeCredential(&directRequest, nullptr)")
+        "startIwnDirectSaeCredential(&directRequest, nullptr,")
 for token in (
     "OSDynamicCast(ItlIwn, fHalService)",
     "request->provenance",

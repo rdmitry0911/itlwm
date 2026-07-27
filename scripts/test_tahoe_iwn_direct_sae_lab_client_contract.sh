@@ -28,6 +28,7 @@ for token in \
     'kAirportItlwmIwnLabDirectSaeStimulusUserClientType' \
     'kAirportItlwmIwnLabDirectSaeStimulusQueryReadySelector' \
     'kAirportItlwmIwnLabDirectSaeStimulusSubmitSelector' \
+    'kAirportItlwmIwnLabDirectSaeStimulusQueryOutcomeSelector' \
     'IOServiceOpen(' \
     'IOConnectCallStructMethod(' \
     'read(STDIN_FILENO,' \
@@ -38,6 +39,7 @@ for token in \
     'lab-client=unsupported' \
     'lab-client=query-failed' \
     'lab-client=queued' \
+    'lab-client-outcome=%s' \
     'lab-client=rejected' \
     'lab-client=open-unavailable' \
     '--query-ready' \
@@ -70,8 +72,8 @@ def fail(message: str) -> None:
 
 if client.count('IOConnectCallStructMethod(') != 1:
     fail('client must have exactly one Submit external method')
-if client.count('IOConnectCallMethod(') != 1:
-    fail('client must have exactly one readiness external method')
+if client.count('IOConnectCallMethod(') != 2:
+    fail('client must have exactly readiness and outcome external methods')
 if 'if (strcmp(readiness, "ready") != 0) {' not in client:
     fail('Submit does not gate stdin reads on readiness')
 ready_gate = client.index('if (strcmp(readiness, "ready") != 0) {')
@@ -94,6 +96,11 @@ for token in ('kInputDeadlineMilliseconds = 10000u',
         fail(f'stdin deadline is missing {token}')
 if 'kMaximumHoldMilliseconds = 60000u' not in client:
     fail('client hold is not bounded')
+for token in ('AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyIsWellFormed',
+              'bounded_hold_with_outcome(connection, hold_milliseconds)',
+              'kOutcomePollMilliseconds = 100u'):
+    if token not in client:
+        fail(f'bounded categorical dispatch outcome is missing {token}')
 for token in ('--iwn-software-pmf-lab', '-framework IOKit',
               '-framework CoreFoundation', 'chmod 700 "$OUTPUT"'):
     if token not in build:

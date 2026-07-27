@@ -42,15 +42,22 @@ from capture_tahoe_iwn_lab_loaded_identity import (
 )
 
 
-RUNTIME_SCHEMA = "itlwm-tahoe-iwn-direct-isae-runtime/v1"
+RUNTIME_SCHEMA = "itlwm-tahoe-iwn-direct-isae-runtime/v2"
 DIRECT_CLIENT_NAME = "airport_itlwm_iwn_direct_sae_lab_client"
 TRACE_CLIENT_NAME = "airport_itlwm_post_plti_trace"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 UTC_SECONDS_RE = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00"
 )
-LAB_STATUS_RE = re.compile(
-    r"lab-client=(ready|not-ready|unsupported|query-failed|open-unavailable|queued|rejected)\n"
+LAB_QUERY_STATUS_RE = re.compile(
+    r"lab-client=(ready|not-ready|unsupported|query-failed|open-unavailable)\n"
+)
+LAB_SUBMIT_STATUS_RE = re.compile(
+    r"lab-client=(rejected|not-ready|unsupported|query-failed|open-unavailable)\n"
+    r"|lab-client=(queued)\nlab-client-outcome="
+    r"(pending|started|rejected-precondition|rejected-request-begin|"
+    r"rejected-association-owner|rejected-stage|"
+    r"rejected-auth-type|rejected-scan-resume|cancelled|query-failed)\n"
 )
 DIRECT_VERDICTS = {
     "DIRECT_SAE_4WAY_PORT_VALID", "BRANCH_NOT_OBSERVED",
@@ -96,6 +103,7 @@ class State:
     artifacts_post_bound: bool = False
     readiness_observed: bool = False
     submission_category: str = "not-invoked"
+    dispatch_outcome: str = "not-invoked"
     trace_reset_ack: bool = False
     initial_snapshot_synchronized: bool = False
     trace_seal_ack: bool = False
@@ -427,11 +435,20 @@ def remote_submit(
     return result.returncode, decoded_stdout(result, "submit-output")
 
 
-def parse_lab_status(text: str) -> str:
-    match = LAB_STATUS_RE.fullmatch(text)
+def parse_query_status(text: str) -> str:
+    match = LAB_QUERY_STATUS_RE.fullmatch(text)
     if match is None:
         raise RunnerError("lab-client-output")
     return match.group(1)
+
+
+def parse_submit_status(text: str) -> tuple[str, str]:
+    match = LAB_SUBMIT_STATUS_RE.fullmatch(text)
+    if match is None:
+        raise RunnerError("lab-client-output")
+    if match.group(1) is not None:
+        return match.group(1), "not-invoked"
+    return match.group(2), match.group(3)
 
 
 def parse_control(
@@ -584,6 +601,7 @@ def positive_trace(state: State) -> bool:
         state.host_dtrace_before and state.host_dtrace_after and
         state.guest_dtrace_before and state.guest_dtrace_after and
         state.readiness_observed and state.submission_category == "queued" and
+        state.dispatch_outcome == "started" and
         state.trace_reset_ack and state.initial_snapshot_synchronized and
         state.trace_seal_ack and state.trace_final_disabled and
         not state.trace_cleanup_fallback_attempted and
@@ -615,6 +633,7 @@ def evidence_document(state: State) -> dict[str, object]:
             "helper_query_before_read": True,
             "readiness_observed": state.readiness_observed,
             "submit_category": state.submission_category,
+            "dispatch_outcome": state.dispatch_outcome,
         },
         "trace": {
             "reset_may_be_active": state.trace_reset_may_be_active,
@@ -729,6 +748,7 @@ def validate_evidence_document(document: object) -> dict[str, object]:
         {
             "stdin_only", "runner_read_or_persisted_request", "tty_rejected",
             "helper_query_before_read", "readiness_observed", "submit_category",
+            "dispatch_outcome",
         },
         "input_handling",
     )
@@ -741,6 +761,13 @@ def validate_evidence_document(document: object) -> dict[str, object]:
         input_handling["submit_category"] not in {
             "queued", "rejected", "not-ready", "unsupported", "query-failed",
             "open-unavailable", "not-invoked",
+        } or
+        input_handling["dispatch_outcome"] not in {
+            "pending", "started", "rejected-precondition",
+            "rejected-request-begin", "rejected-association-owner",
+            "rejected-stage", "rejected-auth-type",
+            "rejected-scan-resume", "cancelled", "query-failed",
+            "not-invoked",
         }
     ):
         raise ValueError("input handling")
@@ -854,6 +881,7 @@ def validate_evidence_document(document: object) -> dict[str, object]:
             not all(required_true) or input_handling["readiness_observed"] is not True or
             trace["cleanup_fallback_attempted"] is not False or
             input_handling["submit_category"] != "queued" or
+            input_handling["dispatch_outcome"] != "started" or
             trace["capture_generation"] == 0 or trace["backend"] != "IWN" or
             trace["entry_count"] == 0 or trace["dropped_entries"] != 0 or
             trace["integrity"] != "ok" or trace["episode_count"] != 1 or
@@ -956,7 +984,7 @@ def run(args: argparse.Namespace) -> int:
         query_return, query_stdout = remote_query(
             guest, artifact_dir, state.direct_sha256
         )
-        query_category = parse_lab_status(query_stdout)
+        query_category = parse_query_status(query_stdout)
         if query_category == "ready":
             require(query_return == 0, "readiness-status")
             state.readiness_observed = True
@@ -964,9 +992,12 @@ def run(args: argparse.Namespace) -> int:
                 guest, artifact_dir, state.direct_sha256,
                 args.hold_seconds * 1000, request_stream,
             )
-            state.submission_category = parse_lab_status(submit_stdout)
+            state.submission_category, state.dispatch_outcome = \
+                parse_submit_status(submit_stdout)
             if state.submission_category == "queued":
                 require(submit_return == 0, "submit-status")
+                if state.dispatch_outcome != "started":
+                    state.failure_phase = "dispatch-" + state.dispatch_outcome
                 time.sleep(args.settle_seconds)
             else:
                 require(

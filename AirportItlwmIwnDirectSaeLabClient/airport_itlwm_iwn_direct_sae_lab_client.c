@@ -30,6 +30,7 @@ enum {
     kDefaultHoldMilliseconds = 45000u,
     kMaximumHoldMilliseconds = 60000u,
     kInputDeadlineMilliseconds = 10000u,
+    kOutcomePollMilliseconds = 100u,
 };
 
 enum LabClientMode {
@@ -138,6 +139,56 @@ query_readiness(io_connect_t connection)
     return outcome;
 }
 
+static const char *
+query_outcome(io_connect_t connection)
+{
+    struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1 reply;
+    size_t reply_size = sizeof(reply);
+    kern_return_t result;
+    const char *outcome = "query-failed";
+
+    secure_bzero(&reply, sizeof(reply));
+    result = IOConnectCallMethod(
+        connection, kAirportItlwmIwnLabDirectSaeStimulusQueryOutcomeSelector,
+        NULL, 0, NULL, 0, NULL, NULL, &reply, &reply_size);
+    if (result == kIOReturnSuccess && reply_size == sizeof(reply) &&
+        AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyIsWellFormed(&reply)) {
+        switch (reply.outcome) {
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomePending:
+            outcome = "pending";
+            break;
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomeStarted:
+            outcome = "started";
+            break;
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedPrecondition:
+            outcome = "rejected-precondition";
+            break;
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedRequestBegin:
+            outcome = "rejected-request-begin";
+            break;
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedAssociationOwner:
+            outcome = "rejected-association-owner";
+            break;
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedCredentialStage:
+            outcome = "rejected-stage";
+            break;
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedAuthType:
+            outcome = "rejected-auth-type";
+            break;
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedScanResume:
+            outcome = "rejected-scan-resume";
+            break;
+        case kAirportItlwmIwnLabDirectSaeStimulusOutcomeCancelled:
+            outcome = "cancelled";
+            break;
+        default:
+            break;
+        }
+    }
+    secure_bzero(&reply, sizeof(reply));
+    return outcome;
+}
+
 static int64_t
 monotonic_milliseconds(void)
 {
@@ -233,16 +284,25 @@ read_exact_request(struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *out)
     return true;
 }
 
-static void
-bounded_hold(uint32_t milliseconds)
+static const char *
+bounded_hold_with_outcome(io_connect_t connection, uint32_t milliseconds)
 {
     struct timespec delay;
+    const char *outcome = query_outcome(connection);
+    uint32_t remaining = milliseconds;
 
-    delay.tv_sec = milliseconds / 1000u;
-    delay.tv_nsec = (long)(milliseconds % 1000u) * 1000000L;
-    while (nanosleep(&delay, &delay) != 0 && errno == EINTR)
-        ;
+    while (remaining != 0) {
+        uint32_t slice = remaining < kOutcomePollMilliseconds
+            ? remaining : kOutcomePollMilliseconds;
+        delay.tv_sec = slice / 1000u;
+        delay.tv_nsec = (long)(slice % 1000u) * 1000000L;
+        while (nanosleep(&delay, &delay) != 0 && errno == EINTR)
+            ;
+        remaining -= slice;
+        outcome = query_outcome(connection);
+    }
     secure_bzero(&delay, sizeof(delay));
+    return outcome;
 }
 
 int
@@ -317,7 +377,8 @@ main(int argc, char **argv)
      * synchronize on dispatch admission without closing this connection. */
     printf("lab-client=queued\n");
     fflush(stdout);
-    bounded_hold(hold_milliseconds);
+    printf("lab-client-outcome=%s\n",
+           bounded_hold_with_outcome(connection, hold_milliseconds));
     exit_code = 0;
 
 out:

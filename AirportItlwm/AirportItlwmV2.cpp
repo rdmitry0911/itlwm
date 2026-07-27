@@ -512,6 +512,8 @@ enum {
         kAirportItlwmIwnLabDirectSaeStimulusQueryReadySelector,
     kAirportItlwmIwnDirectSaeLabMethod_Submit =
         kAirportItlwmIwnLabDirectSaeStimulusSubmitSelector,
+    kAirportItlwmIwnDirectSaeLabMethod_QueryOutcome =
+        kAirportItlwmIwnLabDirectSaeStimulusQueryOutcomeSelector,
     kAirportItlwmIwnDirectSaeLabMethod_Count =
         kAirportItlwmIwnLabDirectSaeStimulusSelectorCount,
 };
@@ -565,6 +567,9 @@ public:
         AirportItlwmUserClient *target, void *reference,
         IOExternalMethodArguments *args);
     static IOReturn sExtIwnDirectSaeLabSubmit(
+        AirportItlwmUserClient *target, void *reference,
+        IOExternalMethodArguments *args);
+    static IOReturn sExtIwnDirectSaeLabQueryOutcome(
         AirportItlwmUserClient *target, void *reference,
         IOExternalMethodArguments *args);
 #endif
@@ -675,6 +680,14 @@ sAirportItlwmIwnDirectSaeLabUserClientMethods[
         sizeof(struct AirportItlwmIwnLabDirectSaeStimulusRequestV1),
         0,
         0
+    },
+    {
+        (IOExternalMethodAction)
+            &AirportItlwmUserClient::sExtIwnDirectSaeLabQueryOutcome,
+        0,
+        0,
+        0,
+        sizeof(struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1)
     }
 };
 #endif
@@ -1866,6 +1879,32 @@ iwnDirectSaeLabClearOwnershipLocked(
 }
 
 static void
+iwnDirectSaeLabClearOutcomeLocked(
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state)
+{
+    state.outcomeValid = false;
+    state.outcome =
+        kAirportItlwmIwnLabDirectSaeStimulusOutcomePending;
+    state.outcomeRequestId = 0;
+    explicit_bzero(state.outcomeCookie, sizeof(state.outcomeCookie));
+}
+
+static void
+iwnDirectSaeLabPublishOutcomeLocked(
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state,
+    uint64_t requestId,
+    const uint8_t ownerCookie[kAirportItlwmSaeRelayV1NonceLength],
+    uint32_t outcome)
+{
+    if (!state.outcomeValid || requestId == 0 ||
+        state.outcomeRequestId != requestId ||
+        !iwnDirectSaeLabCookieEqual(state.outcomeCookie, ownerCookie) ||
+        outcome >= kAirportItlwmIwnLabDirectSaeStimulusOutcomeCount)
+        return;
+    state.outcome = outcome;
+}
+
+static void
 iwnDirectSaeLabReleaseLowerAdmission(AirportItlwm *that)
 {
     if (that != nullptr && that->fHalService != nullptr)
@@ -1915,6 +1954,8 @@ iwnDirectSaeLabStimulusInterruptAction(
         bool start = false;
         bool cancel = false;
         bool lowerAdmissionOwned = false;
+        uint32_t dispatchOutcome =
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeCancelled;
 
         explicit_bzero(&request, sizeof(request));
         explicit_bzero(ownerCookie, sizeof(ownerCookie));
@@ -1977,13 +2018,15 @@ iwnDirectSaeLabStimulusInterruptAction(
                 if (interface != nullptr) {
                     interface->retain();
                     result = interface->startIwnDirectSaeLabStimulus(&request,
-                                                                       &generation);
+                        &generation, &dispatchOutcome);
                     interface->release();
                 }
             }
 
             bool cancelAfterStart = false;
             admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+            iwnDirectSaeLabPublishOutcomeLocked(state, requestId, ownerCookie,
+                                                dispatchOutcome);
             if (state.dispatching && state.requestId == requestId &&
                 iwnDirectSaeLabCookieEqual(state.ownerCookie, ownerCookie)) {
                 state.dispatching = false;
@@ -2074,6 +2117,7 @@ setupIwnDirectSaeLabStimulusSource(AirportItlwm *that,
             state.requestId = 0;
             state.activeGeneration = 0;
             explicit_bzero(state.ownerCookie, sizeof(state.ownerCookie));
+            iwnDirectSaeLabClearOutcomeLocked(state);
             explicit_bzero(&state.request, sizeof(state.request));
             state.settingUp = false;
             installed = true;
@@ -2173,6 +2217,7 @@ teardownIwnDirectSaeLabStimulusSource(AirportItlwm *that,
     state.payloadLock = nullptr;
     const bool releaseLowerAdmission =
         iwnDirectSaeLabClearOwnershipLocked(state);
+    iwnDirectSaeLabClearOutcomeLocked(state);
     explicit_bzero(&state.request, sizeof(state.request));
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
     if (releaseLowerAdmission)
@@ -12187,6 +12232,46 @@ out:
     explicit_bzero(clientCookie, sizeof(clientCookie));
     return rc;
 }
+
+IOReturn AirportItlwmUserClient::
+sExtIwnDirectSaeLabQueryOutcome(AirportItlwmUserClient *target,
+                                void *reference,
+                                IOExternalMethodArguments *args)
+{
+    (void)reference;
+    uint8_t clientCookie[kAirportItlwmSaeRelayV1NonceLength];
+    struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1 reply{};
+    IOReturn rc = kIOReturnBadArgument;
+
+    explicit_bzero(clientCookie, sizeof(clientCookie));
+    if (target == nullptr || !target->fIwnDirectSaeLabClient ||
+        args == nullptr || args->structureOutput == nullptr)
+        goto out;
+    if (!target->copySaeClientCookie(clientCookie)) {
+        rc = kIOReturnNotReady;
+        goto out;
+    }
+
+    {
+        AirportItlwm *provider = target->retainProvider();
+        if (provider == nullptr || !provider->beginLifecycleOperation()) {
+            if (provider != nullptr)
+                provider->release();
+            rc = kIOReturnNotReady;
+            goto out;
+        }
+        rc = provider->queryIwnDirectSaeLabOutcome(clientCookie, &reply);
+        if (rc == kIOReturnSuccess)
+            memcpy(args->structureOutput, &reply, sizeof(reply));
+        provider->endLifecycleOperation();
+        provider->release();
+    }
+
+out:
+    explicit_bzero(&reply, sizeof(reply));
+    explicit_bzero(clientCookie, sizeof(clientCookie));
+    return rc;
+}
 #endif
 
 // =====================================================================
@@ -12354,6 +12439,37 @@ clearIwnDirectSaeLabAssociationOwner()
 }
 
 IOReturn AirportItlwm::
+queryIwnDirectSaeLabOutcome(
+    const uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength],
+    struct AirportItlwmIwnLabDirectSaeStimulusOutcomeReplyV1 *out)
+{
+    if (client_cookie == nullptr || out == nullptr ||
+        AirportItlwmSaeRelayFsmV1BytesAllZero(client_cookie,
+            kAirportItlwmSaeRelayV1NonceLength))
+        return kIOReturnBadArgument;
+
+    AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
+        fIwnDirectSaeLabStimulus;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == nullptr)
+        return kIOReturnNotReady;
+
+    IOReturn result = kIOReturnNotReady;
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (!state.stopping && !state.tearingDown && state.outcomeValid &&
+        iwnDirectSaeLabCookieEqual(state.outcomeCookie, client_cookie)) {
+        explicit_bzero(out, sizeof(*out));
+        out->version = kAirportItlwmIwnLabDirectSaeStimulusV1Version;
+        out->size = sizeof(*out);
+        out->outcome = state.outcome;
+        result = kIOReturnSuccess;
+    }
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    return result;
+}
+
+IOReturn AirportItlwm::
 queueIwnDirectSaeLabStimulus(
     const struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *request,
     const uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength])
@@ -12413,6 +12529,11 @@ queueIwnDirectSaeLabStimulus(
     state.cancelRequested = false;
     state.lowerAdmissionReserved = true;
     memcpy(state.ownerCookie, client_cookie, sizeof(state.ownerCookie));
+    state.outcomeValid = true;
+    state.outcome =
+        kAirportItlwmIwnLabDirectSaeStimulusOutcomePending;
+    state.outcomeRequestId = requestId;
+    memcpy(state.outcomeCookie, client_cookie, sizeof(state.outcomeCookie));
     state.pending = true;
     ++state.users;
     source = state.source;
@@ -12450,6 +12571,9 @@ cancelIwnDirectSaeLabForClient(const uint8_t client_cookie[
         IOInterruptState payloadIrq =
             IOSimpleLockLockDisableInterrupt(state.payloadLock);
         explicit_bzero(&state.request, sizeof(state.request));
+        iwnDirectSaeLabPublishOutcomeLocked(state, state.requestId,
+            client_cookie,
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeCancelled);
         releaseLowerAdmission =
             iwnDirectSaeLabClearOwnershipLocked(state);
         IOSimpleLockUnlockEnableInterrupt(state.payloadLock, payloadIrq);
@@ -12460,6 +12584,9 @@ cancelIwnDirectSaeLabForClient(const uint8_t client_cookie[
     }
     if ((state.dispatching || state.active) && state.source != nullptr) {
         state.cancelRequested = true;
+        iwnDirectSaeLabPublishOutcomeLocked(state, state.requestId,
+            client_cookie,
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeCancelled);
         ++state.users;
         source = state.source;
         source->retain();
@@ -12487,15 +12614,24 @@ cancelIwnDirectSaeLabAll()
         IOInterruptState payloadIrq =
             IOSimpleLockLockDisableInterrupt(state.payloadLock);
         explicit_bzero(&state.request, sizeof(state.request));
+        iwnDirectSaeLabPublishOutcomeLocked(state, state.requestId,
+            state.ownerCookie,
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeCancelled);
         releaseLowerAdmission =
             iwnDirectSaeLabClearOwnershipLocked(state);
         IOSimpleLockUnlockEnableInterrupt(state.payloadLock, payloadIrq);
     } else if (state.active && state.activeGeneration != 0) {
         activeGeneration = state.activeGeneration;
+        iwnDirectSaeLabPublishOutcomeLocked(state, state.requestId,
+            state.ownerCookie,
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeCancelled);
         releaseLowerAdmission =
             iwnDirectSaeLabClearOwnershipLocked(state);
     } else if (state.dispatching) {
         state.cancelRequested = true;
+        iwnDirectSaeLabPublishOutcomeLocked(state, state.requestId,
+            state.ownerCookie,
+            kAirportItlwmIwnLabDirectSaeStimulusOutcomeCancelled);
         if (state.source != nullptr) {
             ++state.users;
             source = state.source;
