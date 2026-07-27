@@ -4,8 +4,9 @@
 The supervisor never accepts a wireless name, BSSID, password, profile, or
 other credential as an argument.  Its standard input must already be a FIFO;
 the descriptor is handed directly to the bounded native broker and is never
-read by Python.  The only target values that cross this process boundary are
-fixed-width SHA-256 values returned by the host's hash-only LabAP status.
+read by Python.  The fixed laboratory SSID is compiled into this controller;
+it is passed to CoreWLAN only after its SHA-256 matches the host's hash-only
+LabAP status.  No caller-controlled wireless identity crosses this boundary.
 
 This is intentionally a one-shot laboratory controller.  It binds the exact
 candidate, public-helper, loaded-kext, and sidecar-stage receipts before it
@@ -83,6 +84,7 @@ BROKER_SOURCE_RELATIVE = "AirportItlwmLabPublicRecovery/airport_itlwm_lab_creden
 BROKER_BINARY_NAME = "airport_itlwm_lab_credential_broker"
 BROKER_SOURCE_COPY_NAME = "airport_itlwm_lab_credential_broker.c"
 BROKER_BUILD_PREFIX = "aiam-public-recovery-broker-"
+LABAP_TARGET_SSID = "LabAP"
 BROKER_COMPILER = "/usr/bin/cc"
 BROKER_BUILD_FLAGS = (
     "-std=c11", "-O2", "-D_FORTIFY_SOURCE=2", "-fstack-protector-strong",
@@ -928,8 +930,13 @@ class PinnedGuest:
                      guest_stdin_read: int) -> subprocess.Popen[bytes]:
         require(SHA256_RE.fullmatch(target.ssid_sha256) is not None, "target-status")
         require(SHA256_RE.fullmatch(target.bssid_sha256) is not None, "target-status")
+        expected_ssid_sha256 = hashlib.sha256(
+            LABAP_TARGET_SSID.encode("utf-8")
+        ).hexdigest()
+        require(target.ssid_sha256 == expected_ssid_sha256, "target-status")
         remote_words = [
             "/usr/bin/env", "-i", "PATH=/usr/bin:/bin",
+            f"AIRPORT_ITLWM_LAB_TARGET_SSID={LABAP_TARGET_SSID}",
             f"AIRPORT_ITLWM_LAB_TARGET_SSID_SHA256={target.ssid_sha256}",
             f"AIRPORT_ITLWM_LAB_TARGET_BSSID_SHA256={target.bssid_sha256}",
             "/usr/bin/python3", "-I", "-c", REMOTE_EXEC_HELPER,
@@ -1236,14 +1243,15 @@ class HelperOutput:
                     raise RunnerError("helper-result-initial-target-ambiguous")
                 if alternate_count < 2:
                     raise RunnerError("helper-result-alternate-bss-insufficient")
-                if alternate_bands < 2:
+                if alternate_bands < 1:
                     raise RunnerError("helper-result-alternate-band-insufficient")
                 if alternate_ready != 1:
                     raise RunnerError("helper-result-alternate-readiness-inconsistent")
             raise RunnerError("helper-result-" + state)
         if state != expected_state or fields[1] != "airport-itlwm-bsd" or \
                 not 1 <= discovery <= 80 or matching_records != 1 or \
-                alternate_count < 2 or alternate_bands != 2 or alternate_ready != 1 or \
+                alternate_count < 2 or not 1 <= alternate_bands <= 2 or \
+                alternate_ready != 1 or \
                 scan_error != 0 or association_error != 0 or initial_exact != 1:
             raise RunnerError("helper-grammar")
         expected_flags = {

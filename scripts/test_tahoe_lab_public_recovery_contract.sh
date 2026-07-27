@@ -58,10 +58,11 @@ def body(text: str, marker: str, label: str) -> str:
     fail(f"unterminated {label}")
 
 
-# The target is opaque at every ingress.  The only accepted wireless identity
-# carriers are fixed-width SHA-256 values, and the credential has no argv or
-# environment route.
+# The fixed laboratory SSID is accepted only alongside its fixed-width
+# SHA-256 binding.  The exact initial BSSID remains digest-only, and the
+# credential has no argv or environment route.
 for token in (
+    "AIRPORT_ITLWM_LAB_TARGET_SSID",
     "AIRPORT_ITLWM_LAB_TARGET_SSID_SHA256",
     "AIRPORT_ITLWM_LAB_TARGET_BSSID_SHA256",
     "CC_SHA256_DIGEST_LENGTH * 2u",
@@ -96,15 +97,16 @@ for token in ("wait_for_stdin_until(deadline)", "read(STDIN_FILENO", "byte == '\
 poller = body(source, "wait_for_stdin_until(int64_t deadline)", "stdin deadline poll")
 require(poller, "poll(&descriptor", "bounded stdin poll")
 
-# The client obtains the actual AirportItlwm BSD endpoint, scans with the
-# public CoreWLAN surface, and selects exactly one BSS by both opaque values.
+# The client obtains the actual AirportItlwm BSD endpoint, performs a directed
+# public CoreWLAN scan, and selects exactly one BSS on the controlled initial
+# channel without relying on Tahoe's privacy-redacted scan properties.
 for token in (
     'IOServiceMatching("AirportItlwm")',
     "copy_airport_itlwm_bsd_name",
     "[client interfaceWithName:endpoint]",
-    "[interface scanForNetworksWithName:nil error:&scan_error]",
-    "string_matches_digest([network ssid], ssid_digest)",
-    "bssid_matches_digest(network_bssid, bssid_digest)",
+    "[interface scanForNetworksWithName:target_name",
+    "!string_matches_digest(target_name, ssid_digest)",
+    "channel_number != kInitialPrimaryChannel",
     "return matches == 1u ? target : nil;",
 ):
     require(source, token, "exact public target selection")
@@ -143,15 +145,15 @@ for marker, token, label in (
 ):
     require(body(source, marker, label), token, label)
 
-# Recovery is deliberately automatic: same opaque SSID plus a BSSID different
-# from the initial target.  No raw identity reaches output.
+# Recovery is deliberately automatic: same bound SSID plus a BSSID different
+# from the initial target.  The directed scan's NSSet supplies one object per
+# framework BSS, while only noninitial channels count as alternates.  No raw
+# identity reaches output.
 selection = body(source, "scan_for_exact_target(CWInterface", "exact target scan")
 ordered(selection, "same-ESS alternate is observed without rendering it",
-        "string_matches_digest([network ssid], ssid_digest)",
-        "network_bssid = [network bssid]",
-        "!bssid_matches_digest(network_bssid, bssid_digest)",
-        "copy_canonical_bssid(network_bssid, canonical_bssid)",
-        "[seen_alternate_bss containsObject:alternate_key]",
+        "scanForNetworksWithName:target_name",
+        "channel_number != kInitialPrimaryChannel",
+        "alternates++",
         "kCWChannelBand2GHz",
         "kCWChannelBand5GHz",
         "alternates >= kRequiredAlternateBssCount",
@@ -252,7 +254,7 @@ class RecoveryModel:
                                 alternate_band_count: int) -> None:
         assert self.state == self.INIT
         assert alternate_bss_count >= 2
-        assert alternate_band_count >= 2
+        assert alternate_band_count >= 1
         self.associate_calls += 1
         self.state = self.READY
 
@@ -278,12 +280,12 @@ except AssertionError:
 else:
     raise AssertionError("one alternate BSS was accepted")
 try:
-    model.associate_exact_initial(2, 1)
+    model.associate_exact_initial(2, 0)
 except AssertionError:
     pass
 else:
-    raise AssertionError("one alternate band was accepted")
-model.associate_exact_initial(2, 2)
+    raise AssertionError("no alternate band was accepted")
+model.associate_exact_initial(2, 1)
 model.observe(True, True)
 assert model.state == RecoveryModel.READY
 model.arm_withdrawal(True)

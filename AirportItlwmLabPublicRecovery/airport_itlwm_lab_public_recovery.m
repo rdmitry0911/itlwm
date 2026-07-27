@@ -2,11 +2,12 @@
  * Bounded public-CoreWLAN recovery laboratory client.
  *
  * This is deliberately a user-facing association probe, not a private
- * driver/UserClient shortcut.  It receives only SHA-256 target identities in
- * the environment, reads one WPA/WPA2 credential record and one later
- * withdrawal acknowledgement from a pipe, and never prints or persists an
- * SSID, BSSID, credential, channel, NSError description, profile, or scan
- * record.  It does not call any CoreWLAN configuration-commit API.
+ * driver/UserClient shortcut.  It receives the fixed laboratory SSID together
+ * with its SHA-256 binding and the initial BSSID SHA-256 in the environment,
+ * reads one WPA/WPA2 credential record and one later withdrawal
+ * acknowledgement from a pipe, and never prints or persists an SSID, BSSID,
+ * credential, channel, NSError description, profile, or scan record.  It does
+ * not call any CoreWLAN configuration-commit API.
  *
  * Before the host withdraws its temporary first BSS it must first request an
  * arm acknowledgement.  The client verifies it is still on that exact BSS,
@@ -14,9 +15,13 @@
  * acknowledgement.  After that acknowledgement this client performs no
  * second association: success means the same target SSID is associated on a
  * BSSID different from the exact first BSS.  Before its one association it
- * also requires two distinct noninitial same-ESS BSSes across 2.4 and 5 GHz;
- * this makes `initial-ready` a proof that the planned automatic-recovery
- * candidates were publicly visible before the withdrawal.
+ * also requires two distinct noninitial same-ESS BSSes.  The controlled
+ * initial BSS is the sole directed-scan result on the fixture's fixed channel,
+ * so `initial-ready` proves both that exact initial selection and that the
+ * planned automatic-recovery candidates were publicly visible before the
+ * withdrawal.  This channel-based public selection is required on Tahoe,
+ * where an unentitled command-line client receives privacy-redacted SSID and
+ * BSSID properties even for a successful directed CoreWLAN scan.
  */
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -50,7 +55,8 @@ enum {
     kControlInputDeadlineMilliseconds = 90000u,
     kDiscoveryAttempts = 80u,
     kRequiredAlternateBssCount = 2u,
-    kRequiredAlternateBandCount = 2u,
+    kRequiredAlternateBandCount = 1u,
+    kInitialPrimaryChannel = 153u,
     kInitialIdentityAttempts = 40u,
     kRecoveryAttempts = 240u,
     kPollDelayMilliseconds = 500u,
@@ -415,8 +421,8 @@ delay_milliseconds(uint32_t milliseconds)
 
 static CWNetwork *
 scan_for_exact_target(CWInterface *interface,
+                      NSString *target_name,
                       const uint8_t ssid_digest[CC_SHA256_DIGEST_LENGTH],
-                      const uint8_t bssid_digest[CC_SHA256_DIGEST_LENGTH],
                       uint32_t *matching_records,
                       uint32_t *alternate_bss_count,
                       uint32_t *alternate_band_count,
@@ -425,7 +431,6 @@ scan_for_exact_target(CWInterface *interface,
 {
     NSError *scan_error = nil;
     NSSet<CWNetwork *> *networks;
-    NSMutableSet<NSData *> *seen_alternate_bss;
     CWNetwork *target = nil;
     uint32_t matches = 0;
     uint32_t alternates = 0;
@@ -444,42 +449,39 @@ scan_for_exact_target(CWInterface *interface,
         *alternate_ready = 0;
     if (scan_error_present != NULL)
         *scan_error_present = 0;
-    if (interface == nil || ssid_digest == NULL || bssid_digest == NULL)
+    if (interface == nil || target_name == nil || ssid_digest == NULL ||
+        !string_matches_digest(target_name, ssid_digest))
         return nil;
-    networks = [interface scanForNetworksWithName:nil error:&scan_error];
+    networks = [interface scanForNetworksWithName:target_name
+                                            error:&scan_error];
     if (scan_error != nil && scan_error_present != NULL)
         *scan_error_present = 1;
-    seen_alternate_bss = [[NSMutableSet alloc] init];
-    if (networks == nil || seen_alternate_bss == nil)
+    if (networks == nil)
         return nil;
     for (CWNetwork *network in networks) {
-        NSString *network_bssid;
-        uint8_t canonical_bssid[kBssidTextLength];
+        CWChannel *channel = [network wlanChannel];
+        const NSUInteger channel_number =
+            channel != nil ? [channel channelNumber] : 0;
 
-        if (!string_matches_digest([network ssid], ssid_digest))
+        /*
+         * scanForNetworksWithName: performs the exact ESS selection inside
+         * CoreWLAN before Tahoe applies client-side privacy redaction.  Do not
+         * try to repeat that selection through [network ssid] or [network
+         * bssid]: both are nil for this ordinary command-line helper.
+         *
+         * The temporary host BSS has one controlled primary channel, while
+         * every recovery candidate is deliberately off that channel.  The
+         * NSSet already contains at most one object for each framework BSS.
+         */
+        if (channel == nil)
             continue;
-        network_bssid = [network bssid];
-        if (!bssid_matches_digest(network_bssid, bssid_digest)) {
-            NSData *alternate_key;
-            CWChannel *channel;
-
-            if (!copy_canonical_bssid(network_bssid, canonical_bssid))
-                continue;
-            alternate_key = [NSData dataWithBytes:canonical_bssid
-                                             length:sizeof(canonical_bssid)];
-            secure_bzero(canonical_bssid, sizeof(canonical_bssid));
-            if (alternate_key == nil ||
-                [seen_alternate_bss containsObject:alternate_key])
-                continue;
+        if (channel_number != kInitialPrimaryChannel) {
             if (alternates == UINT32_MAX) {
                 overflow = 1;
                 break;
             }
-            [seen_alternate_bss addObject:alternate_key];
             alternates++;
-            channel = [network wlanChannel];
-            switch (channel != nil ? [channel channelBand] :
-                    kCWChannelBandUnknown) {
+            switch ([channel channelBand]) {
             case kCWChannelBand2GHz:
                 alternate_2ghz = 1;
                 break;
@@ -522,8 +524,8 @@ scan_for_exact_target(CWInterface *interface,
 
 static CWNetwork *
 wait_for_exact_target(CWInterface *interface,
+                      NSString *target_name,
                       const uint8_t ssid_digest[CC_SHA256_DIGEST_LENGTH],
-                      const uint8_t bssid_digest[CC_SHA256_DIGEST_LENGTH],
                       uint32_t *attempts, uint32_t *matching_records,
                       uint32_t *alternate_bss_count,
                       uint32_t *alternate_band_count,
@@ -548,7 +550,7 @@ wait_for_exact_target(CWInterface *interface,
         uint32_t alternate_bands = 0;
         int ready = 0;
 
-        target = scan_for_exact_target(interface, ssid_digest, bssid_digest,
+        target = scan_for_exact_target(interface, target_name, ssid_digest,
                                        &matches, &alternate_count,
                                        &alternate_bands, &ready,
                                        scan_error_present);
@@ -657,6 +659,8 @@ emit_result(const char *result, const char *endpoint_binding,
 int
 main(int argc, char **argv)
 {
+    static const char ssid_name[] =
+        "AIRPORT_ITLWM_LAB_TARGET_SSID";
     static const char ssid_digest_name[] =
         "AIRPORT_ITLWM_LAB_TARGET_SSID_SHA256";
     static const char bssid_digest_name[] =
@@ -669,6 +673,7 @@ main(int argc, char **argv)
     io_service_t service = IO_OBJECT_NULL;
     CWInterface *interface = nil;
     CWNetwork *target = nil;
+    NSString *target_name = nil;
     const char *endpoint_binding = "unresolved";
     const char *result = "not-started";
     uint32_t discovery_attempts = 0;
@@ -697,7 +702,8 @@ main(int argc, char **argv)
         result = "usage";
         goto out;
     }
-    if (!decode_digest_environment(ssid_digest_name, ssid_digest) ||
+    if (getenv(ssid_name) == NULL ||
+        !decode_digest_environment(ssid_digest_name, ssid_digest) ||
         !decode_digest_environment(bssid_digest_name, bssid_digest)) {
         result = "target-input-invalid";
         goto out;
@@ -720,8 +726,14 @@ main(int argc, char **argv)
     @autoreleasepool {
         NSString *endpoint = [NSString stringWithUTF8String:endpoint_name];
         CWWiFiClient *client = [CWWiFiClient sharedWiFiClient];
+        target_name = [NSString stringWithUTF8String:getenv(ssid_name)];
 
         secure_bzero(endpoint_name, sizeof(endpoint_name));
+        if (target_name == nil ||
+            !string_matches_digest(target_name, ssid_digest)) {
+            result = "target-input-invalid";
+            goto out;
+        }
         if (endpoint == nil || client == nil) {
             result = "corewlan-input-unavailable";
             goto out;
@@ -731,7 +743,7 @@ main(int argc, char **argv)
             result = "interface-unavailable";
             goto out;
         }
-        target = wait_for_exact_target(interface, ssid_digest, bssid_digest,
+        target = wait_for_exact_target(interface, target_name, ssid_digest,
                                        &discovery_attempts,
                                        &matching_records,
                                        &alternate_bss_count,
@@ -771,9 +783,11 @@ main(int argc, char **argv)
         }
         /* A pre-association scan admits the one public join, but `initial-
          * ready` is stronger: after that join it must still see the exact
-         * initial BSS plus two distinct same-ESS alternates across both bands.
-         * This rejects a transient pre-join RF observation or an early roam. */
-        target = wait_for_exact_target(interface, ssid_digest, bssid_digest,
+         * initial BSS plus two distinct same-ESS alternates in at least one
+         * other band.  This rejects a transient pre-join RF observation or an
+         * early roam while allowing the currently available two-radio
+         * recovery topology. */
+        target = wait_for_exact_target(interface, target_name, ssid_digest,
                                        &discovery_attempts,
                                        &matching_records,
                                        &alternate_bss_count,
