@@ -1828,6 +1828,33 @@ ieee80211_node_cleanup_scan_hop(struct ieee80211com *ic,
     ieee80211_node_cleanup_internal(ic, ni, 0);
 }
 
+/*
+ * A raw direct-SAE SCAN -> SCAN request has already fenced an exact
+ * generation as SCAN_STARTING.  Clearing the transient current scan node is
+ * part of submitting that replacement scan, not a new association
+ * cancellation.  Preserve the request only when net80211 still reports that
+ * exact policy generation; every malformed, stale, or non-current call keeps
+ * the historical cancel-current-BSS cleanup.
+ */
+int
+ieee80211_node_cleanup_sae_wcl_scan_starting(struct ieee80211com *ic,
+    struct ieee80211_node *ni, u_int64_t expected_generation)
+{
+    u_int64_t current_generation = 0;
+
+    if (ic == NULL || ni == NULL || expected_generation == 0 ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN || ni != ic->ic_bss ||
+        !ieee80211_sae_wcl_request_scan_starting(ic,
+        &current_generation) ||
+        current_generation != expected_generation) {
+        ieee80211_node_cleanup_internal(ic, ni, 1);
+        return 0;
+    }
+    ieee80211_node_cleanup_internal(ic, ni, 0);
+    return 1;
+}
+
 void
 ieee80211_node_free(struct ieee80211com *ic, struct ieee80211_node *ni)
 {

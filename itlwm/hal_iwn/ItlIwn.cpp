@@ -6982,6 +6982,11 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
             ieee80211_set_link_state(ic, LINK_STATE_DOWN);
             if (scan_hop)
                 ieee80211_node_cleanup_scan_hop(ic, ic->ic_bss);
+            else if (direct_sae_scan_generation != 0) {
+                if (!ieee80211_node_cleanup_sae_wcl_scan_starting(
+                    ic, ic->ic_bss, direct_sae_scan_generation))
+                    return EAGAIN;
+            }
             else
                 ieee80211_node_cleanup(ic, ic->ic_bss);
         }

@@ -17,6 +17,7 @@ root = Path(sys.argv[1])
 var_h = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 proto_h = (root / "itl80211/openbsd/net80211/ieee80211_proto.h").read_text()
 proto_c = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
+node_h = (root / "itl80211/openbsd/net80211/ieee80211_node.h").read_text()
 node_c = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 ieee_c = (root / "itl80211/openbsd/net80211/ieee80211.c").read_text()
 
@@ -127,6 +128,26 @@ for token in (
     "ieee80211_sae_wcl_peer_rx_admit",
 ):
     require(proto_h, token, "public request API declaration")
+
+require(node_h, "ieee80211_node_cleanup_sae_wcl_scan_starting",
+        "exact SCAN_STARTING node-cleanup declaration")
+scan_cleanup = body(
+    node_c, "ieee80211_node_cleanup_sae_wcl_scan_starting(",
+    "exact SCAN_STARTING node cleanup")
+for token in (
+        "expected_generation == 0",
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "ni != ic->ic_bss",
+        "ieee80211_sae_wcl_request_scan_starting(ic,",
+        "current_generation != expected_generation",
+        "ieee80211_node_cleanup_internal(ic, ni, 1)",
+        "ieee80211_node_cleanup_internal(ic, ni, 0)"):
+    require(scan_cleanup, token, "exact SCAN_STARTING cleanup fence")
+ordered(scan_cleanup, "SCAN_STARTING cleanup decision",
+        "ieee80211_sae_wcl_request_scan_starting(ic,",
+        "current_generation != expected_generation",
+        "ieee80211_node_cleanup_internal(ic, ni, 1)",
+        "ieee80211_node_cleanup_internal(ic, ni, 0)")
 
 publish = body(proto_c, "u_int64_t\nieee80211_sae_wcl_request_publish", "publish")
 for token in (

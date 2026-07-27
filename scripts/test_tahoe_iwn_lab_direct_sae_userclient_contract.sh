@@ -263,6 +263,12 @@ for token in ("(sc->sc_sae_wcl_admission_reserved && !direct_sae_scan)",
 require(iwn_cpp,
         "direct_sae_scan_generation != 0)) != 0",
         "direct-SAE scan carries reservation-consume identity")
+for token in (
+        "else if (direct_sae_scan_generation != 0)",
+        "ieee80211_node_cleanup_sae_wcl_scan_starting(",
+        "ic, ic->ic_bss, direct_sae_scan_generation",
+        "return EAGAIN;"):
+    require(iwn_cpp, token, "exact direct-SAE scan node cleanup")
 
 lab = body(sky, "startIwnDirectSaeLabStimulus(", "Skywalk lab entry")
 for token in ("RequestIsWellFormed(request)", "LabStimulus",
