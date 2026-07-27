@@ -2964,7 +2964,7 @@ iwn_sae_engine_task(void *arg)
                 /* `PEER_TX_READY` also covers an anti-clogging token retry,
                  * which prepares a second local Commit but has not accepted
                  * a peer Commit.  Record this boundary only after the engine
-                 * accepted the successful wire-sequence-2 peer Commit and
+                 * accepted the successful wire-sequence-1 peer Commit and
                  * prepared our Confirm; no peer bytes leave the recorder. */
                 if (peer.phase == kItlSaeAuthTransportPhaseCommit &&
                     peer.wire_transaction ==

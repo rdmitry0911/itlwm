@@ -209,7 +209,7 @@ test_request_well_formed_boundaries_and_fixed_fields(void)
     assert_request_rejected(&request);
 
     fill_request(&request);
-    request.wire_transaction = kItlSaeAuthTransportPeerWireTransactionCommit;
+    request.wire_transaction = kItlSaeAuthTransportStaWireTransactionConfirm;
     assert_request_rejected(&request);
 
     fill_request(&request);
@@ -296,7 +296,7 @@ test_event_well_formed_fixed_fields_and_result(void)
 
     fill_event(&request, &event);
     event.wire_transaction =
-        kItlSaeAuthTransportPeerWireTransactionCommit;
+        kItlSaeAuthTransportStaWireTransactionConfirm;
     assert_event_rejected(&event);
 
     fill_event(&request, &event);
@@ -421,7 +421,7 @@ test_peer_event_schema_and_exact_retransmission_identity(void)
 
     fill_peer_event(&peer);
     peer.wire_transaction =
-        kItlSaeAuthTransportStaWireTransactionCommit;
+        kItlSaeAuthTransportPeerWireTransactionConfirm;
     assert(!itl_sae_auth_peer_event_is_well_formed(&peer));
 
     fill_peer_event(&peer);

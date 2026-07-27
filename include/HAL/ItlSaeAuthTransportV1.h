@@ -27,17 +27,18 @@
 
 /*
  * Relay phase is deliberately distinct from the Authentication transaction
- * sequence carried on the air.  The Agent/FSM speaks semantic Commit/Confirm
- * phases (1/2); an STA emits those as SAE wire sequences 1/3 and receives the
- * peer equivalents as 2/4.  Keeping both values in this private ABI prevents
- * a semantic Confirm value from ever being serialized as wire sequence 2.
+ * sequence carried on the air.  SAE uses transaction 1 for Commit and
+ * transaction 2 for Confirm in both directions; unlike Open-System
+ * authentication, the peer does not increment a request sequence.  Keeping
+ * both semantic phase and wire value in this private ABI still rejects every
+ * malformed phase/transaction pairing at each bounded transport boundary.
  */
 #define kItlSaeAuthTransportPhaseCommit 1u
 #define kItlSaeAuthTransportPhaseConfirm 2u
 #define kItlSaeAuthTransportStaWireTransactionCommit 1u
-#define kItlSaeAuthTransportStaWireTransactionConfirm 3u
-#define kItlSaeAuthTransportPeerWireTransactionCommit 2u
-#define kItlSaeAuthTransportPeerWireTransactionConfirm 4u
+#define kItlSaeAuthTransportStaWireTransactionConfirm 2u
+#define kItlSaeAuthTransportPeerWireTransactionCommit 1u
+#define kItlSaeAuthTransportPeerWireTransactionConfirm 2u
 
 enum ItlSaeAuthTransportEventKindV1 {
     kItlSaeAuthTransportEventTxComplete = 1u,

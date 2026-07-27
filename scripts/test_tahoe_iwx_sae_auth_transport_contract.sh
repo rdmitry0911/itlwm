@@ -121,9 +121,9 @@ for secret in ("password[", "pwe[", "kck[", "pmk[", "pmkid[",
 for token in ("kItlSaeAuthTransportPhaseCommit 1u",
               "kItlSaeAuthTransportPhaseConfirm 2u",
               "kItlSaeAuthTransportStaWireTransactionCommit 1u",
-              "kItlSaeAuthTransportStaWireTransactionConfirm 3u",
-              "kItlSaeAuthTransportPeerWireTransactionCommit 2u",
-              "kItlSaeAuthTransportPeerWireTransactionConfirm 4u",
+              "kItlSaeAuthTransportStaWireTransactionConfirm 2u",
+              "kItlSaeAuthTransportPeerWireTransactionCommit 1u",
+              "kItlSaeAuthTransportPeerWireTransactionConfirm 2u",
               "itl_sae_auth_transport_sta_wire_transaction_for_phase",
               "itl_sae_auth_transport_peer_wire_transaction_for_phase"):
     require(transport, token, "semantic-phase/wire-sequence split")
