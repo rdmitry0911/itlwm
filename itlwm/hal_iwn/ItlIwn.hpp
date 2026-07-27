@@ -99,6 +99,8 @@ public:
     void cancelSaeWclCredential(uint64_t request_generation) override;
     void purgeSaeWclCredentialStage() override;
     bool isSaeWclCredentialAdmissionReady() override;
+    bool reserveSaeWclCredentialAdmission() override;
+    void releaseSaeWclCredentialAdmission() override;
 
     IOReturn beginWclBackgroundScan(uint64_t generation,
                                     uint32_t *outBackendGeneration) override;
@@ -291,10 +293,10 @@ public:
     uint16_t    iwn_get_active_dwell_time(struct iwn_softc *, uint16_t, uint8_t);
     uint16_t    iwn_limit_dwell(struct iwn_softc *, uint16_t);
     uint16_t    iwn_get_passive_dwell_time(struct iwn_softc *, uint16_t);
-    int        iwn_scan(struct iwn_softc *, uint16_t, int);
+    int        iwn_scan(struct iwn_softc *, uint16_t, int, bool);
     int        iwn_scan_start(struct iwn_softc *, uint16_t, int,
                 enum iwn_scan_lease_owner, u_int64_t, u_int64_t,
-                u_int32_t *);
+                u_int32_t *, bool);
     int        iwn_scan_continue(struct iwn_softc *, uint16_t, int);
     int        iwn_scan_submit(struct iwn_softc *, uint16_t, int, u_int64_t,
                                bool, bool, bool, u_int64_t, u_int32_t,

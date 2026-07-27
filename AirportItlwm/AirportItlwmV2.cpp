@@ -1848,17 +1848,28 @@ iwnDirectSaeLabCookieEqual(const uint8_t left[
     return difference == 0;
 }
 
-static void
+static bool
 iwnDirectSaeLabClearOwnershipLocked(
     AirportItlwmIwnDirectSaeLabStimulusLifecycle &state)
 {
+    const bool releaseLowerAdmission = state.lowerAdmissionReserved;
+
     state.pending = false;
     state.dispatching = false;
     state.active = false;
     state.cancelRequested = false;
+    state.lowerAdmissionReserved = false;
     state.requestId = 0;
     state.activeGeneration = 0;
     explicit_bzero(state.ownerCookie, sizeof(state.ownerCookie));
+    return releaseLowerAdmission;
+}
+
+static void
+iwnDirectSaeLabReleaseLowerAdmission(AirportItlwm *that)
+{
+    if (that != nullptr && that->fHalService != nullptr)
+        that->fHalService->releaseSaeWclCredentialAdmission();
 }
 
 static void
@@ -1903,6 +1914,7 @@ iwnDirectSaeLabStimulusInterruptAction(
         uint64_t cancelGeneration = 0;
         bool start = false;
         bool cancel = false;
+        bool lowerAdmissionOwned = false;
 
         explicit_bzero(&request, sizeof(request));
         explicit_bzero(ownerCookie, sizeof(ownerCookie));
@@ -1919,19 +1931,25 @@ iwnDirectSaeLabStimulusInterruptAction(
         IOInterruptState payloadIrq =
             IOSimpleLockLockDisableInterrupt(payloadLock);
         if (state.pending) {
-            request = state.request;
-            memcpy(ownerCookie, state.ownerCookie, sizeof(ownerCookie));
-            requestId = state.requestId;
+            lowerAdmissionOwned = state.lowerAdmissionReserved;
+            state.lowerAdmissionReserved = false;
+            if (lowerAdmissionOwned) {
+                request = state.request;
+                memcpy(ownerCookie, state.ownerCookie, sizeof(ownerCookie));
+                requestId = state.requestId;
+            }
             explicit_bzero(&state.request, sizeof(state.request));
             state.pending = false;
-            state.dispatching = true;
+            state.dispatching = lowerAdmissionOwned;
             state.active = false;
             state.activeGeneration = 0;
-            start = true;
+            start = lowerAdmissionOwned;
+            if (!lowerAdmissionOwned)
+                (void)iwnDirectSaeLabClearOwnershipLocked(state);
         } else if (state.active && state.cancelRequested &&
                    state.activeGeneration != 0) {
             cancelGeneration = state.activeGeneration;
-            iwnDirectSaeLabClearOwnershipLocked(state);
+            (void)iwnDirectSaeLabClearOwnershipLocked(state);
             cancel = true;
         }
         IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
@@ -1945,7 +1963,7 @@ iwnDirectSaeLabStimulusInterruptAction(
                 iwnDirectSaeLabCookieEqual(state.ownerCookie, ownerCookie)) {
                 cancelledBeforeStart = state.cancelRequested;
                 if (cancelledBeforeStart)
-                    iwnDirectSaeLabClearOwnershipLocked(state);
+                    (void)iwnDirectSaeLabClearOwnershipLocked(state);
             } else {
                 cancelledBeforeStart = true;
             }
@@ -1974,12 +1992,14 @@ iwnDirectSaeLabStimulusInterruptAction(
                     state.activeGeneration = generation;
                     cancelAfterStart = state.cancelRequested;
                     if (cancelAfterStart)
-                        iwnDirectSaeLabClearOwnershipLocked(state);
+                        (void)iwnDirectSaeLabClearOwnershipLocked(state);
                 } else {
-                    iwnDirectSaeLabClearOwnershipLocked(state);
+                    (void)iwnDirectSaeLabClearOwnershipLocked(state);
                 }
             }
             IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+            if (lowerAdmissionOwned)
+                iwnDirectSaeLabReleaseLowerAdmission(that);
             if (cancelAfterStart)
                 cancelIwnDirectSaeLabGeneration(that, generation);
             explicit_bzero(&request, sizeof(request));
@@ -2049,6 +2069,7 @@ setupIwnDirectSaeLabStimulusSource(AirportItlwm *that,
             state.dispatching = false;
             state.active = false;
             state.cancelRequested = false;
+            state.lowerAdmissionReserved = false;
             state.nextRequestId = 0;
             state.requestId = 0;
             state.activeGeneration = 0;
@@ -2150,9 +2171,12 @@ teardownIwnDirectSaeLabStimulusSource(AirportItlwm *that,
     admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
     state.source = nullptr;
     state.payloadLock = nullptr;
-    iwnDirectSaeLabClearOwnershipLocked(state);
+    const bool releaseLowerAdmission =
+        iwnDirectSaeLabClearOwnershipLocked(state);
     explicit_bzero(&state.request, sizeof(state.request));
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    if (releaseLowerAdmission)
+        iwnDirectSaeLabReleaseLowerAdmission(that);
 
     if (payloadLock != nullptr)
         IOSimpleLockFree(payloadLock);
@@ -12350,12 +12374,17 @@ queueIwnDirectSaeLabStimulus(
     if (!readyForSecret)
         return readinessResult == kIOReturnSuccess
             ? kIOReturnNotReady : readinessResult;
+    if (fHalService == nullptr ||
+        !fHalService->reserveSaeWclCredentialAdmission())
+        return kIOReturnNotReady;
 
     AirportItlwmIwnDirectSaeLabStimulusLifecycle &state =
         fIwnDirectSaeLabStimulus;
     IOSimpleLock *admissionLock = state.admissionLock;
-    if (admissionLock == nullptr)
+    if (admissionLock == nullptr) {
+        fHalService->releaseSaeWclCredentialAdmission();
         return kIOReturnNotReady;
+    }
 
     IOInterruptEventSource *source = nullptr;
     IOInterruptState admissionIrq =
@@ -12363,6 +12392,7 @@ queueIwnDirectSaeLabStimulus(
     if (state.settingUp || state.stopping || state.tearingDown ||
         state.source == nullptr || state.payloadLock == nullptr) {
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        fHalService->releaseSaeWclCredentialAdmission();
         return kIOReturnNotReady;
     }
     IOSimpleLock *payloadLock = state.payloadLock;
@@ -12371,6 +12401,7 @@ queueIwnDirectSaeLabStimulus(
     if (state.pending || state.dispatching || state.active) {
         IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        fHalService->releaseSaeWclCredentialAdmission();
         return kIOReturnBusy;
     }
     uint64_t requestId = ++state.nextRequestId;
@@ -12380,6 +12411,7 @@ queueIwnDirectSaeLabStimulus(
     state.requestId = requestId;
     state.activeGeneration = 0;
     state.cancelRequested = false;
+    state.lowerAdmissionReserved = true;
     memcpy(state.ownerCookie, client_cookie, sizeof(state.ownerCookie));
     state.pending = true;
     ++state.users;
@@ -12405,6 +12437,7 @@ cancelIwnDirectSaeLabForClient(const uint8_t client_cookie[
         return;
 
     IOInterruptEventSource *source = nullptr;
+    bool releaseLowerAdmission = false;
     IOInterruptState admissionIrq =
         IOSimpleLockLockDisableInterrupt(admissionLock);
     if (state.settingUp || state.stopping || state.tearingDown ||
@@ -12417,9 +12450,12 @@ cancelIwnDirectSaeLabForClient(const uint8_t client_cookie[
         IOInterruptState payloadIrq =
             IOSimpleLockLockDisableInterrupt(state.payloadLock);
         explicit_bzero(&state.request, sizeof(state.request));
-        iwnDirectSaeLabClearOwnershipLocked(state);
+        releaseLowerAdmission =
+            iwnDirectSaeLabClearOwnershipLocked(state);
         IOSimpleLockUnlockEnableInterrupt(state.payloadLock, payloadIrq);
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        if (releaseLowerAdmission)
+            iwnDirectSaeLabReleaseLowerAdmission(this);
         return;
     }
     if ((state.dispatching || state.active) && state.source != nullptr) {
@@ -12444,17 +12480,20 @@ cancelIwnDirectSaeLabAll()
 
     IOInterruptEventSource *source = nullptr;
     uint64_t activeGeneration = 0;
+    bool releaseLowerAdmission = false;
     IOInterruptState admissionIrq =
         IOSimpleLockLockDisableInterrupt(admissionLock);
     if (state.pending && state.payloadLock != nullptr) {
         IOInterruptState payloadIrq =
             IOSimpleLockLockDisableInterrupt(state.payloadLock);
         explicit_bzero(&state.request, sizeof(state.request));
-        iwnDirectSaeLabClearOwnershipLocked(state);
+        releaseLowerAdmission =
+            iwnDirectSaeLabClearOwnershipLocked(state);
         IOSimpleLockUnlockEnableInterrupt(state.payloadLock, payloadIrq);
     } else if (state.active && state.activeGeneration != 0) {
         activeGeneration = state.activeGeneration;
-        iwnDirectSaeLabClearOwnershipLocked(state);
+        releaseLowerAdmission =
+            iwnDirectSaeLabClearOwnershipLocked(state);
     } else if (state.dispatching) {
         state.cancelRequested = true;
         if (state.source != nullptr) {
@@ -12464,6 +12503,8 @@ cancelIwnDirectSaeLabAll()
         }
     }
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    if (releaseLowerAdmission)
+        iwnDirectSaeLabReleaseLowerAdmission(this);
     if (activeGeneration != 0)
         cancelIwnDirectSaeLabGeneration(this, activeGeneration);
     if (source != nullptr)

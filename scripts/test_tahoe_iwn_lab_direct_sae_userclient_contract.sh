@@ -22,6 +22,7 @@ relay = (root / "include/ClientKit/AirportItlwmSaeRelayV1.h").read_text()
 hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 iwn_h = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
 iwn_cpp = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
+iwn_var = (root / "itlwm/hal_iwn/if_iwnvar.h").read_text()
 
 
 def fail(message):
@@ -104,7 +105,8 @@ for token in (
 require(v2h, "AirportItlwmIwnDirectSaeLabStimulusLifecycle",
         "isolated one-slot lifecycle")
 for token in ("pending", "dispatching", "active", "cancelRequested",
-              "ownerCookie", "activeGeneration", "requestId"):
+              "lowerAdmissionReserved", "ownerCookie", "activeGeneration",
+              "requestId"):
     require(v2h, token, "exact cancellation fence")
 require(relay, "kAirportItlwmSaeRelaySelectorCount = 7",
         "unchanged PLTI selector ABI")
@@ -137,8 +139,17 @@ require(ready, "fHalService->isSaeWclCredentialAdmissionReady()",
         "lower IWN admission readiness")
 require(hal, "virtual bool isSaeWclCredentialAdmissionReady() { return false; }",
         "fail-closed HAL readiness")
+require(hal, "virtual bool reserveSaeWclCredentialAdmission() { return false; }",
+        "fail-closed HAL reservation")
+require(hal, "virtual void releaseSaeWclCredentialAdmission() {}",
+        "fail-closed HAL reservation release")
 require(iwn_h, "bool isSaeWclCredentialAdmissionReady() override;",
         "IWN readiness override")
+for token in ("bool reserveSaeWclCredentialAdmission() override;",
+              "void releaseSaeWclCredentialAdmission() override;"):
+    require(iwn_h, token, "IWN reservation override")
+require(iwn_var, "bool                sc_sae_wcl_admission_reserved;",
+        "lower scan-leaf reservation owner")
 iwn_ready = body(iwn_cpp, "isSaeWclCredentialAdmissionReady()",
                  "IWN readiness predicate")
 for token in ("iwn_sae_engine_runtime_enabled(sc)",
@@ -152,6 +163,33 @@ for token in ("iwn_sae_engine_runtime_enabled(sc)",
               "!sc->sc_sae_wcl_credential_staged",
               "iwn_sae_tx_lifecycle_leave(sc)"):
     require(iwn_ready, token, "lower IWN readiness fence")
+reserve = body(iwn_cpp, "reserveSaeWclCredentialAdmission()",
+               "IWN lower reservation")
+ordered(reserve, "lower reservation linearization",
+        "iwn_sae_tx_lifecycle_enter(sc, false)",
+        "IOLockLock(sc->sc_sae_tx_lifecycle_lock)",
+        "IOSimpleLockLock(sc->sc_scan_lease_lock)",
+        "!iwn_scan_lease_live_locked(sc)",
+        "!sc->sc_wcl_initial_scan_pending.queued",
+        "!sc->sc_sae_wcl_admission_reserved",
+        "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
+        "sc->sc_sae_wcl_admission_reserved = true;",
+        "IOSimpleLockUnlock(sc->sc_scan_lease_lock)")
+for token in ("!sc->sc_sae_engine_owner.active",
+              "sc->sc_sae_engine == NULL",
+              "!sc->sc_sae_wcl_credential_staged",
+              "sc->sc_sae_wcl_admission_reserved = false;"):
+    require(reserve, token, "reservation rollback fence")
+release = body(iwn_cpp, "releaseSaeWclCredentialAdmission()",
+               "IWN reservation release")
+ordered(release, "reservation release lifecycle order",
+        "iwn_sae_tx_lifecycle_enter(sc, true)",
+        "IOLockLock(sc->sc_sae_tx_lifecycle_lock)",
+        "IOSimpleLockLock(sc->sc_scan_lease_lock)",
+        "sc->sc_sae_wcl_admission_reserved = false;",
+        "IOSimpleLockUnlock(sc->sc_scan_lease_lock)",
+        "IOLockUnlock(sc->sc_sae_tx_lifecycle_lock)",
+        "iwn_sae_tx_lifecycle_leave(sc)")
 submit = body(v2, "IOReturn AirportItlwmUserClient::\nsExtIwnDirectSaeLabSubmit(",
               "Submit handler")
 ordered(submit, "Submit bounded copy/scrub",
@@ -169,7 +207,9 @@ queue = body(v2, "IOReturn AirportItlwm::\nqueueIwnDirectSaeLabStimulus(",
 ordered(queue, "no secret before readiness",
         "queryIwnDirectSaeLabReady(&ready)",
         "if (!readyForSecret)",
+        "fHalService->reserveSaeWclCredentialAdmission()",
         "state.request = *request;",
+        "state.lowerAdmissionReserved = true;",
         "signalIwnDirectSaeLabStimulus(state, admissionLock, source)")
 for token in ("associateSSID(", "ieee80211_new_state(", "raw +", "stageSaeWclCredential"):
     forbid(queue, token, "mailbox bypass")
@@ -179,6 +219,11 @@ action = body(v2, "static void\niwnDirectSaeLabStimulusInterruptAction(",
 for token in ("startIwnDirectSaeLabStimulus(&request",
               "explicit_bzero(&request", "cancelIwnDirectSaeLabGeneration"):
     require(action, token, "source action work")
+ordered(action, "reservation transfer through lower start",
+        "lowerAdmissionOwned = state.lowerAdmissionReserved;",
+        "state.lowerAdmissionReserved = false;",
+        "startIwnDirectSaeLabStimulus(&request",
+        "iwnDirectSaeLabReleaseLowerAdmission(that)")
 forbid(action, "runAction(", "off-gate action command gate")
 forbid(action, "args->", "borrowed UserClient pointer in action")
 require(v2, "teardownIwnDirectSaeLabStimulusSource(this, _fWorkloop)",
@@ -187,8 +232,22 @@ require(v2, "cancelIwnDirectSaeLabAll();", "drain cancellation")
 for token in ("cancelIwnDirectSaeLabForClient(sae_cookie)",
               "iwnDirectSaeLabCookieEqual"):
     require(v2, token, "exact UserClient cancellation")
+for token in ("releaseLowerAdmission =\n            iwnDirectSaeLabClearOwnershipLocked(state)",
+              "if (releaseLowerAdmission)\n            iwnDirectSaeLabReleaseLowerAdmission(this)",
+              "if (releaseLowerAdmission)\n        iwnDirectSaeLabReleaseLowerAdmission(that)"):
+    require(v2, token, "pending/teardown reservation release")
 require(sky, "ieee80211_sae_wcl_request_clear_if_generation", 
         "exact driver generation cancellation")
+
+scan_reserve = body(iwn_cpp, "iwn_scan_lease_reserve(",
+                    "physical scan lease reservation")
+for token in ("(sc->sc_sae_wcl_admission_reserved && !direct_sae_scan)",
+              "if (direct_sae_scan)",
+              "sc->sc_sae_wcl_admission_reserved = false;"):
+    require(scan_reserve, token, "atomic direct-SAE scan consumption")
+require(iwn_cpp,
+        "direct_sae_scan_generation != 0)) != 0",
+        "direct-SAE scan carries reservation-consume identity")
 
 lab = body(sky, "startIwnDirectSaeLabStimulus(", "Skywalk lab entry")
 for token in ("RequestIsWellFormed(request)", "LabStimulus",

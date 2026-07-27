@@ -350,6 +350,16 @@ public:
      * Keep this append-only virtual at the public ABI tail.
      */
     virtual bool isSaeWclCredentialAdmissionReady() { return false; }
+
+    /*
+     * Close the readiness-to-dispatch race for one bounded private SAE
+     * producer.  A successful reservation blocks competing physical scans
+     * only until the direct selected-BSS scan consumes it or the caller
+     * releases it.  It carries no identity or secret and is not a generic
+     * radio lease.  Backends without exact lower ownership stay fail-closed.
+     */
+    virtual bool reserveSaeWclCredentialAdmission() { return false; }
+    virtual void releaseSaeWclCredentialAdmission() {}
     
 protected:
     

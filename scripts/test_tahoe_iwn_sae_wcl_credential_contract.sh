@@ -189,8 +189,16 @@ for token in ("(ifp->if_flags & IFF_RUNNING) == 0",
 
 require(hal_hpp, "virtual bool isSaeWclCredentialAdmissionReady() { return false; }",
         "fail-closed HAL credential admission readiness")
+require(hal_hpp,
+        "virtual bool reserveSaeWclCredentialAdmission() { return false; }",
+        "fail-closed HAL credential admission reservation")
+require(hal_hpp, "virtual void releaseSaeWclCredentialAdmission() {}",
+        "fail-closed HAL credential admission release")
 require(iwn_hpp, "bool isSaeWclCredentialAdmissionReady() override;",
         "IWN credential admission readiness override")
+for token in ("bool reserveSaeWclCredentialAdmission() override;",
+              "void releaseSaeWclCredentialAdmission() override;"):
+    require(iwn_hpp, token, "IWN credential admission reservation override")
 admission = body(iwn_cpp, "isSaeWclCredentialAdmissionReady",
                  "credential admission readiness")
 ordered(admission, "readiness lifecycle/leaf order",
@@ -207,6 +215,7 @@ ordered(admission, "readiness lifecycle/leaf order",
 for token in ("iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)",
               "!iwn_scan_lease_live_locked(sc)",
               "!sc->sc_wcl_initial_scan_pending.queued",
+              "!sc->sc_sae_wcl_admission_reserved",
               "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
               "!sc->sc_sae_engine_owner.active",
               "sc->sc_sae_engine == NULL",
@@ -277,6 +286,9 @@ for token in ("sc_sae_wcl_credential_cancel_through_generation", "request_genera
 
 stop = iwn_method("iwn_sae_wcl_stop_begin")
 ordered(stop, "stop closes then scrubs credential", "iwn_sae_tx_lifecycle_close(sc, false)",
+        "IOSimpleLockLock(sc->sc_scan_lease_lock)",
+        "sc->sc_sae_wcl_admission_reserved = false;",
+        "IOSimpleLockUnlock(sc->sc_scan_lease_lock)",
         "IOSimpleLockLock(sc->sc_sae_wcl_credential_lock)",
         "sc->sc_sae_wcl_credential_staged", "generation = sc->sc_sae_wcl_credential.request_generation",
         "if (generation != 0)", "iwn_sae_wcl_credential_cancel_through_locked(sc, generation)",
@@ -284,12 +296,17 @@ ordered(stop, "stop closes then scrubs credential", "iwn_sae_tx_lifecycle_close(
 detach_begin = iwn_method("iwn_sae_wcl_detach_begin")
 ordered(detach_begin, "detach closes then final-scrubs credential",
         "iwn_sae_tx_lifecycle_close(sc, true)",
+        "IOSimpleLockLock(sc->sc_scan_lease_lock)",
+        "sc->sc_sae_wcl_admission_reserved = false;",
+        "IOSimpleLockUnlock(sc->sc_scan_lease_lock)",
         "IOSimpleLockLock(sc->sc_sae_wcl_credential_lock)",
         "iwn_sae_wcl_credential_clear_locked(sc)",
         "IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock)")
 
 attach = iwn_method("iwn_attach")
-ordered(attach, "one-slot setup", "sc->sc_sae_wcl_credential_lock = IOSimpleLockAlloc()",
+ordered(attach, "one-slot setup",
+        "sc->sc_sae_wcl_admission_reserved = false;",
+        "sc->sc_sae_wcl_credential_lock = IOSimpleLockAlloc()",
         "sc->sc_sae_wcl_credential_staged = false;",
         "sc->sc_sae_wcl_credential_cancel_valid = false;",
         "sc->sc_sae_wcl_credential_cancel_through_generation = 0;",

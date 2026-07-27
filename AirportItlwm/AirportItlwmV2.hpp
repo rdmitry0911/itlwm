@@ -425,6 +425,7 @@ struct AirportItlwmIwnDirectSaeLabStimulusLifecycle {
     bool dispatching;
     bool active;
     bool cancelRequested;
+    bool lowerAdmissionReserved;
     uint64_t nextRequestId;
     uint64_t requestId;
     uint64_t activeGeneration;

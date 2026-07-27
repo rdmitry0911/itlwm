@@ -439,6 +439,10 @@ struct iwn_softc {
 
     IOSimpleLock       *sc_scan_lease_lock;
     struct iwn_scan_lease sc_scan_lease;
+    /* One identity-free direct-SAE mailbox reservation.  The scan-lease
+     * leaf atomically excludes a competing physical scan until the direct
+     * selected-BSS scan consumes it. */
+    bool                sc_sae_wcl_admission_reserved;
     u_int64_t           sc_scan_lease_next_serial;
     struct task         scan_lease_replay_task;
     volatile u_int32_t  sc_scan_lease_replay_task_admission_state;

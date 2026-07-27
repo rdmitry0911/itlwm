@@ -1007,6 +1007,7 @@ isSaeWclCredentialAdmissionReady()
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         scan_idle = !iwn_scan_lease_live_locked(sc) &&
             !sc->sc_wcl_initial_scan_pending.queued &&
+            !sc->sc_sae_wcl_admission_reserved &&
             (sc->sc_flags & IWN_FLAG_SCANNING) == 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
 
@@ -1026,6 +1027,83 @@ isSaeWclCredentialAdmissionReady()
     iwn_sae_tx_lifecycle_leave(sc);
 
     return lifecycle_open && scan_idle && engine_idle && credential_empty;
+}
+
+bool ItlIwn::
+reserveSaeWclCredentialAdmission()
+{
+    struct iwn_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct _ifnet *ifp = IC2IFP(ic);
+    bool reserved = false;
+    bool engine_idle = false;
+    bool credential_empty = false;
+
+    if (!iwn_sae_engine_runtime_enabled(sc) ||
+        !iwn_sae_tx_lifecycle_enter(sc, false))
+        return false;
+
+    /*
+     * The scan leaf is the linearization point.  Once the identity-free bit
+     * is set, every ordinary physical-scan reserve fails until the direct
+     * SAE scan atomically consumes it.  The other leaves are checked without
+     * nesting; a failure rolls the bit back before returning.
+     */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching &&
+        sc->sc_scan_lease_lock != NULL &&
+        sc->sc_sae_engine_lock != NULL &&
+        sc->sc_sae_wcl_credential_lock != NULL &&
+        iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)) {
+        IOSimpleLockLock(sc->sc_scan_lease_lock);
+        if (!iwn_scan_lease_live_locked(sc) &&
+            !sc->sc_wcl_initial_scan_pending.queued &&
+            !sc->sc_sae_wcl_admission_reserved &&
+            (sc->sc_flags & IWN_FLAG_SCANNING) == 0) {
+            sc->sc_sae_wcl_admission_reserved = true;
+            reserved = true;
+        }
+        IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    }
+    if (reserved) {
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        engine_idle = sc->sc_sae_engine_task_ready &&
+            !sc->sc_sae_engine_stopping &&
+            !sc->sc_sae_engine_detaching &&
+            !sc->sc_sae_engine_owner.active &&
+            sc->sc_sae_engine == NULL;
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+
+        IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+        credential_empty = !sc->sc_sae_wcl_credential_staged;
+        IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+        if (!engine_idle || !credential_empty) {
+            IOSimpleLockLock(sc->sc_scan_lease_lock);
+            sc->sc_sae_wcl_admission_reserved = false;
+            IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+            reserved = false;
+        }
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    iwn_sae_tx_lifecycle_leave(sc);
+    return reserved;
+}
+
+void ItlIwn::
+releaseSaeWclCredentialAdmission()
+{
+    struct iwn_softc *sc = &com;
+
+    if (!iwn_sae_tx_lifecycle_enter(sc, true))
+        return;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (sc->sc_scan_lease_lock != NULL) {
+        IOSimpleLockLock(sc->sc_scan_lease_lock);
+        sc->sc_sae_wcl_admission_reserved = false;
+        IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    iwn_sae_tx_lifecycle_leave(sc);
 }
 
 IOReturn ItlIwn::
@@ -1555,6 +1633,11 @@ iwn_sae_wcl_stop_begin(struct iwn_softc *sc)
     if (sc == NULL)
         return;
     iwn_sae_tx_lifecycle_close(sc, false);
+    if (sc->sc_scan_lease_lock != NULL) {
+        IOSimpleLockLock(sc->sc_scan_lease_lock);
+        sc->sc_sae_wcl_admission_reserved = false;
+        IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    }
     if (sc->sc_sae_wcl_credential_lock == NULL)
         return;
     IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
@@ -1576,6 +1659,11 @@ iwn_sae_wcl_detach_begin(struct iwn_softc *sc)
     if (sc == NULL)
         return;
     iwn_sae_tx_lifecycle_close(sc, true);
+    if (sc->sc_scan_lease_lock != NULL) {
+        IOSimpleLockLock(sc->sc_scan_lease_lock);
+        sc->sc_sae_wcl_admission_reserved = false;
+        IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    }
     if (sc->sc_sae_wcl_credential_lock == NULL)
         return;
     IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
@@ -4157,6 +4245,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_engine_lab_enabled = false;
     sc->sc_scan_lease_lock = NULL;
     explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
+    sc->sc_sae_wcl_admission_reserved = false;
     sc->sc_scan_lease_next_serial = 0;
     sc->sc_scan_lease_replay_task_ready = false;
     sc->sc_scan_lease_replay_pending = false;
@@ -4313,6 +4402,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     }
     explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
     sc->sc_scan_lease.phase = IWN_SCAN_LEASE_IDLE;
+    sc->sc_sae_wcl_admission_reserved = false;
     sc->sc_scan_lease_next_serial = 0;
     __atomic_store_n(&sc->sc_scan_lease_replay_task_admission_state,
         IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
@@ -5955,7 +6045,8 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
                        u_int64_t upper_generation,
                        u_int64_t required_initial_handoff_serial,
                        u_int32_t *out_backend_generation,
-                       u_int64_t *out_serial)
+                       u_int64_t *out_serial,
+                       bool direct_sae_scan)
 {
     u_int64_t serial;
 
@@ -5983,11 +6074,14 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
             required_initial_handoff_serial;
     if (iwn_scan_lease_live_locked(sc) ||
         (sc->sc_flags & IWN_FLAG_SCANNING) != 0 ||
+        (sc->sc_sae_wcl_admission_reserved && !direct_sae_scan) ||
         (required_initial_handoff_serial != 0 && !exact_initial_pending) ||
         (initial_pending && !exact_initial_pending)) {
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
         return false;
     }
+    if (direct_sae_scan)
+        sc->sc_sae_wcl_admission_reserved = false;
     serial = ++sc->sc_scan_lease_next_serial;
     if (serial == 0)
         serial = ++sc->sc_scan_lease_next_serial;
@@ -6610,7 +6704,7 @@ iwn_scan_lease_replay_task(void *arg)
         const int error = that->iwn_scan_start(sc, IEEE80211_CHAN_2GHZ, 0,
             IWN_SCAN_LEASE_WCL_INITIAL, initial_generation,
             initial_handoff_serial,
-            &initial_backend_generation);
+            &initial_backend_generation, false);
 
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         if (sc->sc_wcl_initial_scan_pending.queued &&
@@ -6654,7 +6748,7 @@ beginWclBackgroundScan(uint64_t generation, uint32_t *outBackendGeneration)
     if (iwn_scan_start(&com, IEEE80211_CHAN_2GHZ, 1,
                        IWN_SCAN_LEASE_WCL_BACKGROUND, generation,
                        0,
-                       &backend_generation) != 0)
+                       &backend_generation, false) != 0)
         return kIOReturnBusy;
     if (backend_generation == 0)
         return kIOReturnAborted;
@@ -6702,7 +6796,7 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
 
     error = iwn_scan_start(&com, IEEE80211_CHAN_2GHZ, 0,
                            IWN_SCAN_LEASE_WCL_INITIAL, generation, 0,
-                           &backend_generation);
+                           &backend_generation, false);
     /* WCL initial ownership becomes active only at the post-WRPTR STARTED
      * edge.  Do not expose a reserve-time backend number to the upper
      * reducer: a reset/no-doorbell rejection must leave it in Starting and
@@ -6743,7 +6837,7 @@ beginStandardScan(uint64_t generation, bool background,
     error = iwn_scan_start(&com, IEEE80211_CHAN_2GHZ, background ? 1 : 0,
                            IWN_SCAN_LEASE_STANDARD_CONTROLLER, generation,
                            0,
-                           &backend_generation);
+                           &backend_generation, false);
     *outBackendGeneration = backend_generation;
     if (error == 0)
         return backend_generation != 0 ? kIOReturnSuccess : kIOReturnAborted;
@@ -6892,7 +6986,8 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
                 ieee80211_node_cleanup(ic, ic->ic_bss);
         }
         ic->ic_state = nstate;
-        if ((error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)) != 0) {
+        if ((error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0,
+            direct_sae_scan_generation != 0)) != 0) {
             printf("%s: could not initiate scan\n",
                 sc->sc_dev.dv_xname);
         } else if (direct_sae_scan_generation != 0 &&
@@ -11208,7 +11303,8 @@ int ItlIwn::
 iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
                enum iwn_scan_lease_owner owner, u_int64_t upper_generation,
                u_int64_t required_initial_handoff_serial,
-               u_int32_t *out_backend_generation)
+               u_int32_t *out_backend_generation,
+               bool direct_sae_scan)
 {
     struct ieee80211com *ic;
     u_int64_t serial = 0;
@@ -11258,7 +11354,8 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
         return EBUSY;
     if (!iwn_scan_lease_reserve(sc, owner, upper_generation,
                                 required_initial_handoff_serial,
-                                &backend_generation, &serial))
+                                &backend_generation, &serial,
+                                direct_sae_scan))
         return EBUSY;
     if (out_backend_generation != NULL)
         *out_backend_generation = backend_generation;
@@ -11363,12 +11460,13 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
 }
 
 int ItlIwn::
-iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan)
+iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan,
+         bool direct_sae_scan)
 {
     return iwn_scan_start(sc, flags, bgscan,
         bgscan ? IWN_SCAN_LEASE_GENERIC_BACKGROUND :
             IWN_SCAN_LEASE_GENERIC_FOREGROUND,
-        0, 0, NULL);
+        0, 0, NULL, direct_sae_scan);
 }
 
 int ItlIwn::
@@ -11759,7 +11857,7 @@ iwn_bgscan(struct ieee80211com *ic)
     ItlIwn *that = container_of(sc, ItlIwn, com);
     int error;
 
-    error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 1);
+    error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 1, false);
     if (error)
         XYLog("%s: could not initiate background scan\n",
             sc->sc_dev.dv_xname);

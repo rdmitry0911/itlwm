@@ -898,13 +898,13 @@ ordered(iwn_newstate, "direct SAE reads its STARTING generation before coalesce"
         "if (direct_sae_scan_generation != 0)", "return EAGAIN;",
         "return 0;")
 ordered(iwn_newstate, "direct SAE promotes only after fresh IWN scan submission",
-        "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)",
+        "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0,\n            direct_sae_scan_generation != 0)",
         "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
         "ieee80211_sae_wcl_request_scan_started(ic,",
         "direct_sae_scan_generation")
 for needle in (
         "kAirportItlwmPostPltiTraceEventIwnScanStateEntered",
-        "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)",
+        "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0,\n            direct_sae_scan_generation != 0)",
         "case IEEE80211_S_SCAN:\n    {",
 ):
     require(iwn_newstate, needle, "IWN scan-state trace without scan-policy change")
