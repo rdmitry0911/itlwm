@@ -6473,17 +6473,25 @@ iwn_newstate_preflight(struct ieee80211com *ic,
         return 0;
     if (iwn_wcl_initial_scan_pending_blocks_generic(sc))
         return 1;
-    if (ic->ic_state == IEEE80211_S_SCAN)
+    const bool public_associate_restart =
+        arg == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE;
+    if (ic->ic_state == IEEE80211_S_SCAN &&
+        !public_associate_restart)
         return iwn_scan_lease_defer_terminal_replay(sc, nstate, arg) ? 1 : 0;
-    if (ic->ic_state != IEEE80211_S_RUN)
+    if (ic->ic_state != IEEE80211_S_RUN &&
+        !(ic->ic_state == IEEE80211_S_SCAN &&
+          public_associate_restart))
         return 0;
     that = container_of(sc, ItlIwn, com);
     if (!iwn_scan_lease_defer_scan(sc, nstate, arg, &serial, &submit_abort))
         return 0;
 
-    /* Consume before generic epoch advancement.  A command failure cannot
-     * safely replay over a still-live radio transaction, so reset/reinit is
-     * the fail-closed recovery owner. */
+    /* Consume before generic epoch advancement.  Public ASSOCIATE must not
+     * coalesce onto a physical command whose directed SSID/probe template was
+     * built before the new policy existed.  The same fenced abort/replay path
+     * used for a live RUN scan starts one fresh command after the old terminal.
+     * A command failure cannot safely replay over a still-live radio
+     * transaction, so reset/reinit is the fail-closed recovery owner. */
     if (submit_abort && that->iwn_cmd(sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1) != 0) {
         iwn_scan_lease_abort_submission_failed(sc, serial);
         iwn_scan_lease_drop_replay(sc);

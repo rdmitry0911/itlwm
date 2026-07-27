@@ -11,6 +11,13 @@ import sys
 
 root = Path(sys.argv[1])
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
+proto_h = (
+    root / "itl80211/openbsd/net80211/ieee80211_proto.h"
+).read_text()
+proto = (
+    root / "itl80211/openbsd/net80211/ieee80211_proto.c"
+).read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 
 
 def fail(message: str) -> None:
@@ -40,7 +47,9 @@ tokens = (
     "TahoeAssociationAuthContracts::mayUseLocalPskPmk(",
     "ieee80211_public_initial_bssid_pin_arm(",
     "if (assocResult == kIOReturnSuccess) {",
-    "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);",
+    "ieee80211_new_state(\n"
+    "                ic, IEEE80211_S_SCAN,\n"
+    "                IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE);",
 )
 cursor = 0
 for token in tokens:
@@ -50,10 +59,41 @@ for token in tokens:
     cursor = found + len(token)
 
 success = body(public, "if (assocResult == kIOReturnSuccess) {")
-if success.count("ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);") != 1:
-    fail("successful association does not own one exact scan resume")
+if success.count("IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE") != 1:
+    fail("successful association does not own one exact fresh-scan resume")
 if "AirportItlwmPostPltiTraceBeginEpisode" in public:
     fail("public association was mislabeled as a WCL PMK-ready episode")
+
+required_header = (
+    "#define IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE (-3)",
+    "(_arg) == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE",
+)
+for token in required_header:
+    if token not in proto_h:
+        fail(f"missing private restart marker contract: {token}")
+
+epoch = body(proto, "ieee80211_pae_assoc_epoch_note_newstate(")
+if "arg == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE" not in epoch:
+    fail("public restart does not preserve the newly armed BSSID provenance")
+if "ieee80211_pae_assoc_epoch_begin_internal(ic, 1);" not in epoch:
+    fail("public restart does not use the narrow preservation owner")
+
+preflight = body(iwn, "iwn_newstate_preflight(")
+ordered_preflight = (
+    "arg == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE",
+    "ic->ic_state == IEEE80211_S_SCAN &&\n"
+    "        !public_associate_restart",
+    "iwn_scan_lease_defer_scan(sc, nstate, arg, &serial, &submit_abort)",
+    "IWN_CMD_SCAN_ABORT",
+)
+cursor = 0
+for token in ordered_preflight:
+    found = preflight.find(token, cursor)
+    if found < 0:
+        fail(f"missing ordered IWN abort/replay token: {token}")
+    cursor = found + len(token)
+if "sc->sc_scan_lease_replay_pending = true;" not in iwn:
+    fail("IWN lease does not retain the fresh public scan for terminal replay")
 
 print("Tahoe public associate scan-resume contract: PASS")
 PY

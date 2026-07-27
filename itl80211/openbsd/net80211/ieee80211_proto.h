@@ -95,6 +95,11 @@ struct ItlSaePmkContinuationIdentityV1;
  * instead normalize it before recording task state, retaining their historic
  * generic cleanup until they have an equivalent request-identity fence. */
 #define IEEE80211_NEWSTATE_ARG_SCAN_HOP (-2)
+/* A public association replaces any scan command which was built before its
+ * desired ESS/BSSID and RSN policy existed.  IWN carries this marker through
+ * its fenced abort/replay path, preserves the just-armed initial-BSSID
+ * provenance, and restores the historic -1 argument before lower callbacks. */
+#define IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE (-3)
 /*
  * The four direct-SAE hook fields are published and withdrawn under the
  * selected-BSS leaf.  Readers must take one coherent value snapshot before
@@ -323,7 +328,8 @@ extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 		enum ieee80211_state, int);
 #define IEEE80211_NEWSTATE_BACKEND_ARG(_nstate, _arg) \
 	(((_nstate) == IEEE80211_S_SCAN && \
-	  (_arg) == IEEE80211_NEWSTATE_ARG_SCAN_HOP) ? -1 : (_arg))
+	  ((_arg) == IEEE80211_NEWSTATE_ARG_SCAN_HOP || \
+	   (_arg) == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE)) ? -1 : (_arg))
 #define    ieee80211_new_state(_ic, _nstate, _arg) \
 do {    \
 if ((_ic)->ic_newstate_preflight == NULL || \

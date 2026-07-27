@@ -1856,11 +1856,15 @@ ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
 	    (ic->ic_state == IEEE80211_S_ASSOC &&
 	     nstate == IEEE80211_S_RUN))
 		return;
-	/* ieee80211_next_scan() is the only caller allowed to carry an unbound
-	 * public marker across SCAN->SCAN.  The tag remains intact through IWN's
-	 * deferred-scan replay; all untagged requests remain hard cancellations. */
-	if (ic->ic_state == IEEE80211_S_SCAN && nstate == IEEE80211_S_SCAN &&
-	    arg == IEEE80211_NEWSTATE_ARG_SCAN_HOP) {
+	/* Two exact scanner-owned edges may carry an unbound public marker.  A
+	 * channel hop preserves it within one scan.  A public association restart
+	 * preserves the marker while IWN aborts a command built before the new
+	 * ESS/BSSID policy and replays a fresh directed scan.  Every untagged
+	 * request remains a hard cancellation. */
+	if ((ic->ic_state == IEEE80211_S_SCAN && nstate == IEEE80211_S_SCAN &&
+	     arg == IEEE80211_NEWSTATE_ARG_SCAN_HOP) ||
+	    (nstate == IEEE80211_S_SCAN &&
+	     arg == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE)) {
 		(void)ieee80211_pae_assoc_epoch_begin_internal(ic, 1);
 		return;
 	}

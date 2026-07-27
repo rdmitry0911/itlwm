@@ -5816,16 +5816,19 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
             /*
              * Public ASSOCIATE is the complete join-intent carrier.  At this
              * point desired ESS/BSSID, RSN policy, and any local PMK are all
-             * committed.  Resume the ordinary scanner so net80211 can select
+             * committed.  Replace any physical command built before this
+             * policy, then resume the ordinary scanner so net80211 can select
              * the matching node and drive SCAN -> AUTH -> ASSOC -> RUN.
-             * Requiring a second userspace SCAN_REQ here leaves a valid
-             * request inert when Tahoe's public wrapper does not issue that
-             * optional scan carrier.
+             * Requiring a second userspace SCAN_REQ here, or coalescing onto
+             * an old undirected command, leaves a valid request inert when
+             * Tahoe's public wrapper does not issue that optional carrier.
              *
              * Arm the one-shot initial-BSSID provenance first because this
              * state transition may synchronously select and bind the BSS.
              */
-            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+            ieee80211_new_state(
+                ic, IEEE80211_S_SCAN,
+                IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE);
         }
     }
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
