@@ -229,7 +229,7 @@ for token in ("associateSSID(", "ieee80211_new_state(", "raw +", "stageSaeWclCre
     forbid(queue, token, "mailbox bypass")
 
 action = body(v2, "static void\niwnDirectSaeLabStimulusInterruptAction(",
-              "off-gate source action")
+              "workloop source action")
 for token in ("startIwnDirectSaeLabStimulus(&request",
               "dispatchOutcome", "iwnDirectSaeLabPublishOutcomeLocked",
               "explicit_bzero(&request", "cancelIwnDirectSaeLabGeneration"):
@@ -239,7 +239,7 @@ ordered(action, "reservation transfer through lower start",
         "state.lowerAdmissionReserved = false;",
         "startIwnDirectSaeLabStimulus(&request",
         "iwnDirectSaeLabReleaseLowerAdmission(that)")
-forbid(action, "runAction(", "off-gate action command gate")
+forbid(action, "runAction(", "workloop source direct command-gate action")
 forbid(action, "args->", "borrowed UserClient pointer in action")
 require(v2, "teardownIwnDirectSaeLabStimulusSource(this, _fWorkloop)",
         "source teardown")
@@ -278,6 +278,10 @@ for token in (
 for token in ("associateSSID(", "setWCL_ASSOCIATE", "publishPendingAssocTarget",
               "ieee80211_new_state(", "raw +"):
     forbid(lab, token, "lab entry bypass")
+common = body(sky, "startIwnDirectSaeCredential(",
+              "shared direct-SAE transaction")
+require(common, "!workloop->onThread()", "workloop-thread provenance fence")
+forbid(common, "workloop->inGate()", "impossible event-source off-gate fence")
 
-print("PASS: lab-only separate UserClient queues one exact IWN SAE stimulus off-gate and scrubs/cancels it by client-bound kernel state")
+print("PASS: lab-only separate UserClient queues one exact IWN SAE stimulus on its workloop source and scrubs/cancels it by client-bound kernel state")
 PY

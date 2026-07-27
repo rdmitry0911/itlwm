@@ -1926,8 +1926,9 @@ cancelIwnDirectSaeLabGeneration(AirportItlwm *that, uint64_t generation)
 }
 
 /* The source action is the sole place that can invoke the password-bearing
- * lower-half. It runs on the controller workloop with its command gate
- * released, so it cannot take WCL's recursive-gate publication path. */
+ * lower-half. It runs as a controller-workloop event rather than borrowing a
+ * UserClient call stack.  This lab path never publishes a WCL association
+ * owner or completion. */
 static void
 iwnDirectSaeLabStimulusInterruptAction(
     OSObject *owner, IOInterruptEventSource *sender, int /* count */)

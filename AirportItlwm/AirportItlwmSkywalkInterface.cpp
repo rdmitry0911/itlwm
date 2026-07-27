@@ -6518,11 +6518,13 @@ startIwnDirectSaeCredential(
         AirportItlwmIwnDirectSaeCredentialProvenance::LabStimulus) {
         IOWorkLoop *workloop = instance != nullptr ? instance->getWorkLoop()
                                                      : nullptr;
-        /* This path is intentionally entered only from the dedicated source:
-         * the workqueue owns serialization but its command gate is released.
-         * Do not turn a direct UserClient thread into a hidden WCL caller. */
-        if (workloop == nullptr || !workloop->onThread() ||
-            workloop->inGate()) {
+        /* This path is intentionally entered only from the dedicated event
+         * source. IOWorkLoop::runEventSources holds the recursive work-loop
+         * gate while it calls IOInterruptEventSource::checkForWork(), so
+         * inGate() is necessarily true here and is not evidence of a direct
+         * UserClient/IOCommandGate caller.  The work-loop thread identity is
+         * the fail-closed provenance and serialization fence. */
+        if (workloop == nullptr || !workloop->onThread()) {
             result = kIOReturnNotReady;
             goto out;
         }
