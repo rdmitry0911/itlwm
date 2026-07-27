@@ -165,7 +165,8 @@ for token in (
 require(common, "request->provenance ==\n        AirportItlwmIwnDirectSaeCredentialProvenance::LabStimulus",
         "lab off-gate context fence")
 require(common, "workloop->onThread()", "lab workloop owner fence")
-require(common, "workloop->inGate()", "lab command-gate release fence")
+require(common, "!workloop->onThread()", "lab workloop-thread provenance fence")
+forbid(common, "workloop->inGate()", "impossible event-source off-gate fence")
 
 owner = body(owner_registry, "struct AssociationOwner", "public owner")
 for token in ("password", "pmk", "psk", "kck", "pwe"):
