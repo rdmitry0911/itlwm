@@ -188,13 +188,34 @@ STATUS_RE = re.compile(
     rb"target_ssid_sha256=([0-9a-f]{64}) target_bssid_sha256=([0-9a-f]{64}) "
     rb"lease_seconds=([1-9][0-9]*) lease_remaining_seconds=([1-9][0-9]*)\n$"
 )
+HELPER_POSITIVE_STATES = frozenset({"initial-ready", "withdraw-armed", "recovered"})
+HELPER_FAILURE_STATES = frozenset({
+    "airport-itlwm-bsd-unresolved",
+    "airport-itlwm-service-unavailable",
+    "corewlan-input-unavailable",
+    "credential-input-invalid",
+    "initial-identity-timeout",
+    "initial-or-alternate-target-unavailable",
+    "interface-unavailable",
+    "not-started",
+    "post-association-alternate-unavailable",
+    "post-scan-initial-identity-lost",
+    "pre-withdrawal-identity-lost",
+    "public-association-failed",
+    "recovery-timeout",
+    "target-input-invalid",
+    "usage",
+    "withdrawal-arm-rejected",
+    "withdrawal-control-rejected",
+})
+HELPER_RESULT_PATTERN = "|".join(sorted(HELPER_POSITIVE_STATES | HELPER_FAILURE_STATES))
 HELPER_RE = re.compile(
-    r"^public_corewlan_recovery=(initial-ready|withdraw-armed|recovered) "
-    r"endpoint_binding=(airport-itlwm-bsd) "
-    r"discovery_attempts=([1-9][0-9]*) "
-    r"matching_records=([1-9][0-9]*) "
-    r"alternate_bss_count=([1-9][0-9]*) "
-    r"alternate_band_count=([1-9][0-9]*) "
+    rf"^public_corewlan_recovery=({HELPER_RESULT_PATTERN}) "
+    r"endpoint_binding=(airport-itlwm-bsd|unresolved) "
+    r"discovery_attempts=([0-9]+) "
+    r"matching_records=([0-9]+) "
+    r"alternate_bss_count=([0-9]+) "
+    r"alternate_band_count=([0-9]+) "
     r"alternate_ready=([01]) "
     r"scan_error_present=([01]) "
     r"association_error_present=([01]) "
@@ -1196,7 +1217,15 @@ class HelperOutput:
          scan_error, association_error, initial_exact, withdrawal_arm,
          pre_withdrawal_exact, withdrawal_control, recovery_same,
          recovery_different, cleanup_disassociate) = values
-        if state != expected_state or not 1 <= discovery <= 80 or matching_records != 1 or \
+        if (state not in HELPER_POSITIVE_STATES | HELPER_FAILURE_STATES or
+                fields[1] not in {"airport-itlwm-bsd", "unresolved"} or
+                not 0 <= discovery <= 80 or not 0 <= matching_records <= 80 or
+                not 0 <= alternate_count <= 80 or not 0 <= alternate_bands <= 2):
+            raise RunnerError("helper-grammar")
+        if state in HELPER_FAILURE_STATES:
+            raise RunnerError("helper-result-" + state)
+        if state != expected_state or fields[1] != "airport-itlwm-bsd" or \
+                not 1 <= discovery <= 80 or matching_records != 1 or \
                 alternate_count < 2 or alternate_bands != 2 or alternate_ready != 1 or \
                 scan_error != 0 or association_error != 0 or initial_exact != 1:
             raise RunnerError("helper-grammar")

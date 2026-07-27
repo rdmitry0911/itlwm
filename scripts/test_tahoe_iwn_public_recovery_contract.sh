@@ -7,13 +7,14 @@ runner="$root/scripts/run_tahoe_iwn_public_recovery.py"
 entrypoint="$root/scripts/run_tahoe_iwn_public_recovery.sh"
 stage="$root/scripts/prepare_tahoe_iwn_public_recovery_stage.sh"
 broker_source="$root/AirportItlwmLabPublicRecovery/airport_itlwm_lab_credential_broker.c"
+helper_source="$root/AirportItlwmLabPublicRecovery/airport_itlwm_lab_public_recovery.m"
 
 bash -n "$entrypoint"
 python3 -m py_compile "$runner"
 python3 "$runner" --self-test
 "$entrypoint" --self-test
 
-python3 - "$runner" "$entrypoint" "$stage" "$broker_source" <<'PY'
+python3 - "$runner" "$entrypoint" "$stage" "$broker_source" "$helper_source" <<'PY'
 from pathlib import Path
 import contextlib
 import io
@@ -27,6 +28,7 @@ runner_path = Path(sys.argv[1])
 entrypoint = Path(sys.argv[2]).read_text()
 stage_path = Path(sys.argv[3])
 broker_source = Path(sys.argv[4]).read_text()
+helper_source = Path(sys.argv[5]).read_text()
 source = runner_path.read_text()
 
 
@@ -538,12 +540,29 @@ for name, flags in (
     module.HelperOutput._validate_line(module.make_helper_line(name, flags), name)
 try:
     module.HelperOutput._validate_line(
+        module.make_helper_line(
+            "public-association-failed", (0, 0, 0, 0, 0, 0)
+        ),
+        "initial-ready",
+    )
+except module.RunnerError as error:
+    assert error.phase == "helper-result-public-association-failed"
+else:
+    raise AssertionError("fixed helper failure result was not reduced categorically")
+try:
+    module.HelperOutput._validate_line(
         module.make_helper_line("recovered", (1, 1, 1, 1, 0, 1)), "recovered"
     )
 except module.RunnerError:
     pass
 else:
     raise AssertionError("invalid recovered vector was accepted")
+
+native_failure_states = set(__import__("re").findall(
+    r'result = "([a-z0-9-]+)"', helper_source
+))
+native_failure_states.discard("recovered")
+assert native_failure_states == set(module.HELPER_FAILURE_STATES)
 
 candidate = {
     "source_commit": "a" * 40,
