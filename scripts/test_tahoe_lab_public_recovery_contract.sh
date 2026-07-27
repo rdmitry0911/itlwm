@@ -156,6 +156,8 @@ ordered(selection, "same-ESS alternate is observed without rendering it",
         "kCWChannelBand5GHz",
         "alternates >= kRequiredAlternateBssCount",
         "alternate_bands >= kRequiredAlternateBandCount")
+require(selection, "*scan_error_present = 0;",
+        "each bounded scan attempt reports only its own CoreWLAN error")
 bssid = body(source, "copy_canonical_bssid(NSString *value", "BSSID canonicalizer")
 for token in ("data.length != kBssidTextLength", "index % 3u == 2u",
               "byte >= 'A' && byte <= 'F'", "secure_bzero(canonical"):

@@ -442,6 +442,8 @@ scan_for_exact_target(CWInterface *interface,
         *alternate_band_count = 0;
     if (alternate_ready != NULL)
         *alternate_ready = 0;
+    if (scan_error_present != NULL)
+        *scan_error_present = 0;
     if (interface == nil || ssid_digest == NULL || bssid_digest == NULL)
         return nil;
     networks = [interface scanForNetworksWithName:nil error:&scan_error];
