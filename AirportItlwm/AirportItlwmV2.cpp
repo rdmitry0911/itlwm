@@ -5455,9 +5455,13 @@ static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
     payload->meta.ieLen = ieLen;
     payload->meta.chanSpec = chanSpec;
     payload->meta.ssidLen = ssidLen;
-    // AppleBCMWLANScanAdapter's BeaconMetaData builder sets bit 1 and
-    // explicitly clears bit 2; bit 2 is not an SSID-present marker.
-    payload->meta.flags |= TahoeScanContracts::kWclScanResultMetaFlags;
+    /* WCLBSSBeacon consumes bit 2 as the header-SSID validity edge.  Without
+     * it Tahoe retains the channel-only cache entry but CoreWLAN renders both
+     * SSID and BSSID as absent, even though the bytes below are populated.
+     * Keep Apple's base bit 1 for every result and add bit 2 only when this
+     * exact metadata header carries a non-empty SSID. */
+    payload->meta.flags =
+        TahoeScanContracts::buildWclScanResultMetaFlags(ssidLen);
     if (payload->meta.ssidLen != 0)
         memcpy(payload->meta.ssid, ni->ni_essid, payload->meta.ssidLen);
     const uint16_t primaryChannel =

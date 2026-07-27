@@ -14,12 +14,18 @@
 namespace TahoeScanContracts {
 
 static constexpr uint32_t kWclScanResultMetaFlags = 0x2;
-static constexpr uint32_t kWclScanResultSsidPresentLegacyMask = 0x4;
+static constexpr uint32_t kWclScanResultSsidPresentFlag = 0x4;
 static constexpr uint32_t kWclScanResultNoisePresentFlag = 1U << 12;
 static constexpr uint32_t kWclScanResultSnrPresentFlag = 1U << 13;
 static constexpr uint32_t kWclScanResultSignalPresentFlags =
     kWclScanResultNoisePresentFlag | kWclScanResultSnrPresentFlag;
 static constexpr size_t kBssidLength = 6;
+
+inline uint32_t buildWclScanResultMetaFlags(uint8_t ssidLength)
+{
+    return kWclScanResultMetaFlags |
+        (ssidLength != 0 ? kWclScanResultSsidPresentFlag : 0);
+}
 
 inline bool hasRenderableBssid(const uint8_t *bssid)
 {

@@ -1448,10 +1448,13 @@ void testTahoeScanResultLayout()
     require(sizeof(TahoeScanResultLayoutProbe) == 0x8d8,
             "Tahoe scan-result carrier size matches Apple80211GetWithIOCTL 0x8d8 buffer");
     require(TahoeScanContracts::kWclScanResultMetaFlags == 0x2,
-            "WCL scan-result BeaconMetaData flags match Apple bit-1-only builder");
-    require((TahoeScanContracts::kWclScanResultMetaFlags &
-             TahoeScanContracts::kWclScanResultSsidPresentLegacyMask) == 0,
-            "WCL scan-result BeaconMetaData clears the legacy bit-2 SSID hint");
+            "WCL scan-result BeaconMetaData preserves the Apple base bit");
+    require(TahoeScanContracts::kWclScanResultSsidPresentFlag == 0x4,
+            "WCL scan-result keeps the WCLBSSBeacon SSID-valid bit");
+    require(TahoeScanContracts::buildWclScanResultMetaFlags(0) == 0x2,
+            "empty WCL scan-result SSID publishes only the base metadata bit");
+    require(TahoeScanContracts::buildWclScanResultMetaFlags(4) == 0x6,
+            "non-empty WCL scan-result SSID publishes both validity bits");
     require(TahoeScanContracts::kWclScanResultNoisePresentFlag == 0x1000 &&
                 TahoeScanContracts::kWclScanResultSnrPresentFlag == 0x2000,
             "WCL scan-result keeps recovered noise and SNR presence bits separate");
