@@ -6934,19 +6934,24 @@ sae_out:
     }
 
     /*
-     * A normal CoreWLAN WCL candidate can carry the already-derived WPA2
-     * PMK in its native apple80211_key window.  It is not followed by a
-     * separate public CIPHER_KEY IOC on this path.  Consume that value only
-     * for the exact PMK cipher and length, and only under the existing
-     * audited PSK policy; CIPHER_PWD, PMKSA, MSK, malformed lengths, and all
-     * non-PSK/WPA3 vectors retain their established paths.  The pointer is
-     * used synchronously by associateSSID() to copy into ic_psk and is never
-     * retained beyond this WCL carrier invocation.
+     * A normal CoreWLAN WCL candidate can carry either an already-derived
+     * WPA2 PMK or its ASCII WPA/WPA2 passphrase in the native apple80211_key
+     * window.  Publishing SAE capability makes the latter carrier observable
+     * on ordinary WPA2 joins as well; it is not followed by a separate public
+     * CIPHER_KEY IOC.  The PMK form is consumed only at its exact length.  The
+     * password form is admitted only for the exact audited PSK-only auth set
+     * and is validated and derived in the bounded block below.  PMKSA, MSK,
+     * malformed inputs, SAE/transition, enterprise, and unknown vectors retain
+     * their established paths.  No pointer is retained beyond this call.
      */
     const bool directWclPmk =
         wcl_key_cipher == APPLE80211_CIPHER_PMK &&
         wcl_key_len == IEEE80211_PMK_LEN &&
         TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper);
+    const bool wclPskPasswordCarrier =
+        wcl_key_cipher == APPLE80211_CIPHER_PWD &&
+        TahoeAssociationAuthContracts::
+            mayDeriveWpaPskPmkFromWclPassword(auth_upper);
     const bool directWclPmkSha256PskCompatibility =
         directWclPmk &&
         auth_upper == TahoeAssociationAuthContracts::kAuthSha256Psk;
@@ -7036,34 +7041,104 @@ sae_out:
 
     IOReturn assocResult = kIOReturnSuccess;
     if (ap_mode != APPLE80211_AP_MODE_IBSS) {
+        char wclPskPassphrase[
+            kItlSaeWclCredentialV1PassphraseMaxLength + 1] = {};
+        uint8_t wclPskDerivedPmk[IEEE80211_PMK_LEN] = {};
+        bool wclPskPasswordReady = false;
         bool externalPmkReadyObserved = false;
         disassocIsVoluntary = false;
 
-        struct apple80211_authtype_data auth_type_data;
-        auth_type_data.version = APPLE80211_VERSION;
-        auth_type_data.authtype_upper = auth_upper;
-        auth_type_data.authtype_lower = auth_lower;
-        setAUTH_TYPE(&auth_type_data);
-
-        if (rsn_ie_len > 0) {
-            storeAssocRsnIeOverride(ic, rsn_ie,
-                                    associationOwner.boundedRsnIeLength);
+        if (wclPskPasswordCarrier) {
+            if (raw_ssid_len == 0 ||
+                raw_ssid_len > APPLE80211_MAX_SSID_LEN) {
+                assocResult = kIOReturnBadArgumentTahoe;
+                airportItlwmRegDiagRecordPmkIngress(
+                    "WCL_PWD",
+                    kAirportItlwmRegDiagPmkDecisionRejectInput,
+                    assocResult, auth_upper, wcl_key_len);
+            } else if (
+                wcl_key_len < kItlSaeWclCredentialV1PassphraseMinLength ||
+                wcl_key_len > kItlSaeWclCredentialV1PassphraseMaxLength) {
+                assocResult = kIOReturnBadArgumentTahoe;
+                airportItlwmRegDiagRecordPmkIngress(
+                    "WCL_PWD",
+                    kAirportItlwmRegDiagPmkDecisionRejectLength,
+                    assocResult, auth_upper, wcl_key_len);
+            } else {
+                const uint8_t *password =
+                    raw + TahoeAssociationContracts::kWclKeyPasswordOffset;
+                bool printableAscii = true;
+                for (uint32_t i = 0; i < wcl_key_len; i++) {
+                    if (password[i] < 0x20 || password[i] > 0x7e) {
+                        printableAscii = false;
+                        break;
+                    }
+                }
+                if (!printableAscii) {
+                    assocResult = kIOReturnBadArgumentTahoe;
+                    airportItlwmRegDiagRecordPmkIngress(
+                        "WCL_PWD",
+                        kAirportItlwmRegDiagPmkDecisionRejectInput,
+                        assocResult, auth_upper, wcl_key_len);
+                } else {
+                    memcpy(wclPskPassphrase, password, wcl_key_len);
+                    if (pbkdf2_sha1(
+                            wclPskPassphrase, ssid, raw_ssid_len, 4096,
+                            wclPskDerivedPmk,
+                            sizeof(wclPskDerivedPmk)) != 0) {
+                        assocResult = kIOReturnError;
+                        airportItlwmRegDiagRecordPmkIngress(
+                            "WCL_PWD",
+                            kAirportItlwmRegDiagPmkDecisionRejectInput,
+                            assocResult, auth_upper, wcl_key_len);
+                    } else {
+                        wclPskPasswordReady = true;
+                    }
+                }
+            }
+            explicit_bzero(wclPskPassphrase, sizeof(wclPskPassphrase));
         }
 
-        assocResult = associateSSID(const_cast<uint8_t *>(ssid), ssid_len,
-                                    *bssid, auth_lower, auth_upper,
-                                    directWclPmkBytes,
-                                    directWclPmk ? IEEE80211_PMK_LEN : 0,
-                                    0, directWclPmk, !directWclPmk,
-                                    directWclPmkSha256PskCompatibility,
-                                    &externalPmkReadyObserved);
+        const bool directWclLocalPmk =
+            directWclPmk || wclPskPasswordReady;
+        uint8_t *directWclLocalPmkBytes = directWclPmk
+            ? directWclPmkBytes
+            : (wclPskPasswordReady ? wclPskDerivedPmk : nullptr);
+        if (assocResult == kIOReturnSuccess) {
+            struct apple80211_authtype_data auth_type_data;
+            auth_type_data.version = APPLE80211_VERSION;
+            auth_type_data.authtype_upper = auth_upper;
+            auth_type_data.authtype_lower = auth_lower;
+            setAUTH_TYPE(&auth_type_data);
 
-        /* The direct WCL PMK has already passed the same bounded cipher,
-         * length, and PSK-policy admission above and was synchronously
-         * installed by associateSSID().  Treat that established fact as the
-         * PMK-ready handoff for the existing SCAN->SCAN resume predicate;
-         * it does not select a BSS or synthesize AUTH. */
-        if (directWclPmk && assocResult == kIOReturnSuccess)
+            if (rsn_ie_len > 0) {
+                storeAssocRsnIeOverride(
+                    ic, rsn_ie, associationOwner.boundedRsnIeLength);
+            }
+
+            assocResult = associateSSID(
+                const_cast<uint8_t *>(ssid), ssid_len, *bssid,
+                auth_lower, auth_upper, directWclLocalPmkBytes,
+                directWclLocalPmk ? IEEE80211_PMK_LEN : 0,
+                0, directWclLocalPmk, !directWclLocalPmk,
+                directWclPmkSha256PskCompatibility,
+                &externalPmkReadyObserved);
+            if (wclPskPasswordReady) {
+                airportItlwmRegDiagRecordPmkIngress(
+                    "WCL_PWD",
+                    kAirportItlwmRegDiagPmkDecisionAccepted,
+                    assocResult, auth_upper, IEEE80211_PMK_LEN);
+            }
+        }
+        explicit_bzero(wclPskPassphrase, sizeof(wclPskPassphrase));
+        explicit_bzero(wclPskDerivedPmk, sizeof(wclPskDerivedPmk));
+
+        /* The direct WCL PMK or bounded password-derived PMK has already
+         * passed its exact carrier policy and was synchronously installed by
+         * associateSSID(). Treat that established fact as the PMK-ready
+         * handoff for the existing SCAN->SCAN resume predicate; it does not
+         * select a BSS or synthesize AUTH. */
+        if (directWclLocalPmk && assocResult == kIOReturnSuccess)
             externalPmkReadyObserved = true;
 
         const TahoeExternalPmkScanResumeContracts::Facts scanResumeFacts = {

@@ -97,7 +97,8 @@ enum AirportItlwmRegDiagPmkSource {
     kAirportItlwmRegDiagPmkSourceCipherKey = 1,
     kAirportItlwmRegDiagPmkSourceCipherKeyMsk = 2,
     kAirportItlwmRegDiagPmkSourceCurPmk = 3,
-    kAirportItlwmRegDiagPmkSourcePlti = 4
+    kAirportItlwmRegDiagPmkSourcePlti = 4,
+    kAirportItlwmRegDiagPmkSourceWclPwd = 5
 };
 
 enum AirportItlwmRegDiagPmkDecision {

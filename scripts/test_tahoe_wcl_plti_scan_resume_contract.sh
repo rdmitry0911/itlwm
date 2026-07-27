@@ -3,10 +3,11 @@
 #
 # This is intentionally a source and pure-unit test only.  It proves that the
 # repair resumes the ordinary net80211 scan pipeline after a validated WCL
-# PMK handoff is ready.  That handoff is either the paired PLTI delivery or
-# the exact CIPHER_PMK value already embedded in the final WCL carrier.  The
-# separately compiled IWN exact-SAE-password ingress is prohibited from
-# borrowing this PMK route and is not a completed WPA3 association claim.
+# PMK handoff is ready.  That handoff is either the paired PLTI delivery, the
+# exact CIPHER_PMK value already embedded in the final WCL carrier, or the
+# bounded WPA/WPA2-PSK CIPHER_PWD carrier from which the driver derives the
+# standard PMK locally.  The separately compiled IWN exact-SAE-password
+# ingress is prohibited from borrowing either PSK route.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -185,21 +186,29 @@ ordered(legacy_hidden_assoc, "WCL PMK scan-resume ordering",
         "wcl_key_cipher == APPLE80211_CIPHER_PMK",
         "wcl_key_len == IEEE80211_PMK_LEN",
         "TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper)",
+        "const bool wclPskPasswordCarrier =",
+        "wcl_key_cipher == APPLE80211_CIPHER_PWD",
+        "mayDeriveWpaPskPmkFromWclPassword(auth_upper)",
         "raw + TahoeAssociationContracts::kWclKeyPasswordOffset",
+        "char wclPskPassphrase[",
         "bool externalPmkReadyObserved = false;",
+        "pbkdf2_sha1(",
+        "explicit_bzero(wclPskPassphrase",
+        "const bool directWclLocalPmk =",
         "&externalPmkReadyObserved);",
-        "if (directWclPmk && assocResult == kIOReturnSuccess)",
+        "explicit_bzero(wclPskDerivedPmk",
+        "if (directWclLocalPmk && assocResult == kIOReturnSuccess)",
         "externalPmkReadyObserved = true;",
         "TahoeExternalPmkScanResumeContracts::Facts scanResumeFacts",
         "shouldResumeScanAfterExternalPmk(scanResumeFacts)",
         "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);")
 for token in (
-        "directWclPmk ? IEEE80211_PMK_LEN : 0",
-        "0, directWclPmk, !directWclPmk,",
+        "directWclLocalPmk ? IEEE80211_PMK_LEN : 0",
+        "0, directWclLocalPmk, !directWclLocalPmk,",
         "directWclPmkSha256PskCompatibility,",
 ):
     require(legacy_hidden_assoc, token,
-            "exact direct-WCL PMK ownership handoff")
+            "exact direct-WCL local PMK ownership handoff")
 require(hidden_assoc, "TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper)",
         "exact existing PLTI PSK policy at scan-resume edge")
 
@@ -212,6 +221,20 @@ assert direct_sae_password_route("pure-sae", "pwd")
 assert direct_sae_password_route("sae-psk-transition", "pwd")
 assert not direct_sae_password_route("sae-psk-transition", "pmk")
 assert not direct_sae_password_route("wpa2-psk", "pwd")
+
+
+def wpa_psk_password_route(auth, cipher):
+    return cipher == "pwd" and auth in {
+        "wpa-psk", "wpa2-psk", "sha256-psk"
+    }
+
+
+assert wpa_psk_password_route("wpa-psk", "pwd")
+assert wpa_psk_password_route("wpa2-psk", "pwd")
+assert wpa_psk_password_route("sha256-psk", "pwd")
+assert not wpa_psk_password_route("wpa2-psk", "pmk")
+assert not wpa_psk_password_route("pure-sae", "pwd")
+assert not wpa_psk_password_route("sae-psk-transition", "pwd")
 resume_start = legacy_hidden_assoc.find(
     "const TahoeExternalPmkScanResumeContracts::Facts scanResumeFacts")
 resume_end = legacy_hidden_assoc.find("airportItlwmRegDiagRecordAssoc", resume_start)

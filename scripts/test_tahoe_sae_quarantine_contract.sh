@@ -20,6 +20,7 @@ bash "$root/scripts/test_net80211_pae_epoch_contract.sh"
 bash "$root/scripts/test_net80211_public_initial_bssid_pin_contract.sh"
 bash "$root/scripts/test_net80211_auth_status_contract.sh"
 bash "$root/scripts/test_tahoe_wcl_plti_scan_resume_contract.sh"
+bash "$root/scripts/test_tahoe_wcl_wpa_psk_password_pmk_contract.sh"
 bash "$root/scripts/test_tahoe_wcl_plti_scan_resume_runtime_evidence_contract.sh"
 bash "$root/scripts/test_tahoe_wcl_physical_scan_lifecycle_contract.sh"
 bash "$root/scripts/test_tahoe_wcl_physical_scan_trace_contract.sh"
@@ -297,7 +298,8 @@ ordered(legacy_hidden_assoc, "ordinary hidden association ingress",
 require(legacy_hidden_assoc, "return assocResult;",
         "ordinary hidden association error propagation")
 require(legacy_hidden_assoc,
-        "directWclPmkSha256PskCompatibility,\n                                    &externalPmkReadyObserved",
+        "directWclPmkSha256PskCompatibility,\n"
+        "                &externalPmkReadyObserved",
         "hidden association passes only its exact direct-PMK compatibility bit")
 
 

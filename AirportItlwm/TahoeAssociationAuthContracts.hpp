@@ -113,13 +113,12 @@ inline bool isAuditedWpa3PskTransition(uint32_t authtypeUpper)
 }
 
 /*
- * A CIPHER_PWD carrier identifies a user-supplied SAE password rather than
- * the WPA2-derived PMK used by the legacy transition fallback.  The direct
- * SAE WCL bridge may therefore admit exactly the pure-SAE selector and the
- * one audited SAE|WPA2-PSK transition selector.  This predicate does not
- * authorize a generic association or any PMK path; its only caller is the
- * separately compiled credential bridge, which still validates CIPHER_PWD
- * and the selected BSS profile before it starts SAE.
+ * A CIPHER_PWD carrier contains a passphrase rather than an already-derived
+ * PMK.  The direct SAE WCL bridge may admit exactly the pure-SAE selector and
+ * the one audited SAE|WPA2-PSK transition selector.  This predicate does not
+ * authorize a generic association or any WPA-PSK PBKDF2 path; its only caller
+ * is the separately compiled credential bridge, which still validates
+ * CIPHER_PWD and the selected BSS profile before it starts SAE.
  */
 inline bool mayUseDirectSaeWclCredential(uint32_t authtypeUpper)
 {
@@ -139,6 +138,19 @@ inline bool isAuditedPskPmkAuth(uint32_t authtypeUpper)
      */
     return authtypeUpper != 0 &&
            (authtypeUpper & ~kPskAuthMask) == 0;
+}
+
+/*
+ * With the SAE capability published, CoreWLAN can retain CIPHER_PWD for an
+ * ordinary WPA/WPA2-PSK association instead of replacing it with CIPHER_PMK.
+ * The Intel port's local net80211 PAE therefore derives the standard
+ * PBKDF2-SHA1 PMK only for the same exact PSK-only authorization set already
+ * admitted by the PMK carrier.  SAE transition, FT, enterprise, protocol
+ * bits, zero, and unknown companions must never borrow this password route.
+ */
+inline bool mayDeriveWpaPskPmkFromWclPassword(uint32_t authtypeUpper)
+{
+    return isAuditedPskPmkAuth(authtypeUpper);
 }
 
 inline bool requiresUnsupportedWpa3Auth(uint32_t authtypeUpper)

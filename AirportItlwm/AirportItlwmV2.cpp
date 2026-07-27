@@ -3859,6 +3859,8 @@ airportItlwmRegDiagPmkSourceForTag(const char *sourceTag)
         return kAirportItlwmRegDiagPmkSourceCipherKeyMsk;
     if (strcmp(sourceTag, "CUR_PMK") == 0)
         return kAirportItlwmRegDiagPmkSourceCurPmk;
+    if (strcmp(sourceTag, "WCL_PWD") == 0)
+        return kAirportItlwmRegDiagPmkSourceWclPwd;
     return kAirportItlwmRegDiagPmkSourceUnknown;
 }
 
