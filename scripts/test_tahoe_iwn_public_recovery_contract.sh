@@ -560,6 +560,17 @@ except module.RunnerError as error:
     assert error.phase == "helper-result-alternate-bss-insufficient"
 else:
     raise AssertionError("alternate BSS deficit was not reduced categorically")
+missing_initial = module.make_helper_line(
+    "initial-or-alternate-target-unavailable", (0, 0, 0, 0, 0, 0)
+).replace(b"matching_records=1", b"matching_records=0")
+try:
+    module.HelperOutput._validate_line(missing_initial, "initial-ready")
+except module.RunnerError as error:
+    assert error.phase == (
+        "helper-result-initial-bss-unavailable-same-ess-visible"
+    )
+else:
+    raise AssertionError("missing initial BSS with visible ESS was not classified")
 try:
     module.HelperOutput._validate_line(
         module.make_helper_line("recovered", (1, 1, 1, 1, 0, 1)), "recovered"

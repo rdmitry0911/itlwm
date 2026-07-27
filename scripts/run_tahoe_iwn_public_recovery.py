@@ -1227,7 +1227,11 @@ class HelperOutput:
                 if scan_error != 0:
                     raise RunnerError("helper-result-initial-scan-error")
                 if matching_records == 0:
-                    raise RunnerError("helper-result-initial-target-unavailable")
+                    if alternate_count > 0:
+                        raise RunnerError(
+                            "helper-result-initial-bss-unavailable-same-ess-visible"
+                        )
+                    raise RunnerError("helper-result-initial-ess-unavailable")
                 if matching_records > 1:
                     raise RunnerError("helper-result-initial-target-ambiguous")
                 if alternate_count < 2:
