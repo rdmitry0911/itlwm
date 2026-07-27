@@ -367,8 +367,8 @@ class BoundArtifacts:
     guest_stage_token: str
 
     @property
-    def guest_helper_path(self) -> str:
-        return f"{GUEST_STAGE_PREFIX}{self.guest_stage_token}/{HELPER_NAME}"
+    def guest_stage_path(self) -> str:
+        return f"{GUEST_STAGE_PREFIX}{self.guest_stage_token}"
 
 
 @dataclass(frozen=True)
@@ -897,7 +897,7 @@ class PinnedGuest:
 
     def verify_staged_helper(self, artifacts: BoundArtifacts) -> None:
         result = self.run(
-            ["/usr/bin/python3", "-I", "-", artifacts.guest_helper_path,
+            ["/usr/bin/python3", "-I", "-", artifacts.guest_stage_path,
              artifacts.helper_sha256, artifacts.helper_macho_uuid,
              artifacts.public_receipt_sha256],
             input_data=REMOTE_VERIFY_HELPER.encode("utf-8"),
@@ -914,7 +914,7 @@ class PinnedGuest:
             f"AIRPORT_ITLWM_LAB_TARGET_SSID_SHA256={target.ssid_sha256}",
             f"AIRPORT_ITLWM_LAB_TARGET_BSSID_SHA256={target.bssid_sha256}",
             "/usr/bin/python3", "-I", "-c", REMOTE_EXEC_HELPER,
-            artifacts.guest_helper_path, artifacts.helper_sha256,
+            artifacts.guest_stage_path, artifacts.helper_sha256,
             artifacts.helper_macho_uuid, artifacts.public_receipt_sha256,
         ]
         remote_command = "exec " + " ".join(quote_remote_shell_word(word) for word in remote_words)

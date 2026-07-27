@@ -91,6 +91,7 @@ for token in (
     "LABAP_BSS_RECOVERY_OWNER=WATCHDOG", "LABAP_BSS_RECOVERY_OWNER=NONE",
     "_recovery_owner", "_discard_proven_unarmed_state_dir",
     "os.execve(helper_fd", "dir_fd=stage_fd", "O_NOFOLLOW", "quote_remote_shell_word",
+    "guest_stage_path",
     "--withdraw", "--rollback", "--retire", "require_clean_eof",
 ):
     require(token, "bounded runtime bridge")
@@ -633,6 +634,17 @@ else:
     raise AssertionError("loaded-identity extra nested field was accepted")
 
 assert module.quote_remote_shell_word("x'y") == "'x'\"'\"'y'"
+bound_artifacts = module.BoundArtifacts(
+    "a" * 64,
+    "01234567-89AB-CDEF-0123-456789ABCDEF",
+    "b" * 64,
+    "stage-token",
+)
+assert bound_artifacts.guest_stage_path == (
+    module.GUEST_STAGE_PREFIX + "stage-token"
+)
+assert module.HELPER_NAME not in bound_artifacts.guest_stage_path
+assert "guest_helper_path" not in source
 with contextlib.redirect_stderr(io.StringIO()):
     try:
         module.parse_arguments(["--broker", "/tmp/untrusted"])
