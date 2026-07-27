@@ -58,7 +58,7 @@ def body(marker: str, label: str) -> str:
 
 for token in (
     "RUNTIME_SCHEMA = \"itlwm-tahoe-iwn-public-recovery-runtime/v1\"",
-    "STAGE_SCHEMA = \"itlwm-tahoe-iwn-public-recovery-stage-attestation/v1\"",
+    "STAGE_SCHEMA = \"itlwm-tahoe-iwn-public-recovery-stage-attestation/v2\"",
     "require_fifo_stdin", "stat.S_ISFIFO(metadata.st_mode)", "os.dup(descriptor)",
     "socket.SOCK_SEQPACKET", "socket.SCM_RIGHTS", "b\"HOST_FED\"",
     "b\"STARTED\"", "b\"ARMED\"", "b\"RELEASED\"", "b\"ABORTED\"",
@@ -90,8 +90,10 @@ for token in (
     "WATCHDOG_RETIRE_PROOF_TIMEOUT_SECONDS", "--recovery-owner",
     "LABAP_BSS_RECOVERY_OWNER=WATCHDOG", "LABAP_BSS_RECOVERY_OWNER=NONE",
     "_recovery_owner", "_discard_proven_unarmed_state_dir",
-    "os.execve(helper_fd", "dir_fd=stage_fd", "O_NOFOLLOW", "quote_remote_shell_word",
-    "guest_stage_path",
+    "os.execve(helper, [helper], os.environ)", "dir_fd=stage_fd", "O_NOFOLLOW",
+    "quote_remote_shell_word", "guest_stage_path",
+    "root_owned_nonwritable_guest_stage", "metadata.st_uid != 0",
+    "stat.S_IMODE(stage_metadata.st_mode) != 0o555",
     "--withdraw", "--rollback", "--retire", "require_clean_eof",
 ):
     require(token, "bounded runtime bridge")
@@ -99,7 +101,8 @@ for token in (
 for token in (
     "sys.stdin.read", "sys.stdin.buffer", "shell=True", "networksetup", "dtrace",
     "Popen(\"", "subprocess.run(\"", "DEFAULT_BROKER", "config.broker", "--broker",
-    "sys.path.insert", "communicate(",
+    "sys.path.insert", "communicate(", "os.execve(helper_fd",
+    "os.execve not in os.supports_fd",
 ):
     forbid(token, "secret/network/shell escape")
 
@@ -232,7 +235,7 @@ for token in ("raw_host_output_retained\": False", "raw_guest_output_retained\":
 if stage_path.exists():
     stage = stage_path.read_text()
     for token in (
-        "itlwm-tahoe-iwn-public-recovery-stage-attestation/v1",
+        "itlwm-tahoe-iwn-public-recovery-stage-attestation/v2",
         '"candidate_receipt_sha256"', '"public_recovery_receipt_sha256"',
         '"guest_dir_token"', '"helper"', '"macho_uuid"',
     ):

@@ -582,8 +582,9 @@ copy_stage_artifacts() {
 }
 
 verify_remote_stage() {
-    local helper_sha256="$1" helper_uuid="$2" receipt_sha256="$3" observed
-    observed="$("${SSH[@]}" /usr/bin/python3 -I - "$GUEST_DIR" "$helper_sha256" "$helper_uuid" "$receipt_sha256" 2>/dev/null <<'PY'
+    local helper_sha256="$1" helper_uuid="$2" receipt_sha256="$3" stage_state="$4" observed
+    case "$stage_state" in mutable|frozen) ;; *) fail "remote-stage-state-invalid" ;; esac
+    observed="$("${SSH[@]}" /usr/bin/python3 -I - "$GUEST_DIR" "$helper_sha256" "$helper_uuid" "$receipt_sha256" "$stage_state" 2>/dev/null <<'PY'
 import hashlib
 import os
 import re
@@ -592,25 +593,32 @@ import struct
 import sys
 import uuid
 
-stage, expected_helper_sha256, expected_uuid, expected_receipt_sha256 = sys.argv[1:]
+stage, expected_helper_sha256, expected_uuid, expected_receipt_sha256, stage_state = sys.argv[1:]
 prefix = "/private/tmp/aiam-iwn-public-recovery-"
 if not stage.startswith(prefix):
     raise SystemExit(1)
 token = stage[len(prefix):]
 if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", token) is None:
     raise SystemExit(1)
+if stage_state not in {"mutable", "frozen"}:
+    raise SystemExit(1)
 for parent in ("/private", "/private/tmp"):
     metadata = os.lstat(parent)
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+    if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode) or
+            metadata.st_uid != 0):
         raise SystemExit(1)
+expected_owner = os.geteuid() if stage_state == "mutable" else 0
+stage_mode = 0o700 if stage_state == "mutable" else 0o555
+helper_mode = 0o700 if stage_state == "mutable" else 0o555
+receipt_mode = 0o600 if stage_state == "mutable" else 0o444
 try:
     stage_fd = os.open(stage, os.O_RDONLY | os.O_NOFOLLOW)
 except (AttributeError, OSError):
     raise SystemExit(1)
 try:
     stage_metadata = os.fstat(stage_fd)
-    if (not stat.S_ISDIR(stage_metadata.st_mode) or
-            stat.S_IMODE(stage_metadata.st_mode) != 0o700):
+    if (not stat.S_ISDIR(stage_metadata.st_mode) or stage_metadata.st_uid != expected_owner or
+            stat.S_IMODE(stage_metadata.st_mode) != stage_mode):
         raise SystemExit(1)
     stage_identity = (stage_metadata.st_dev, stage_metadata.st_ino)
     helper_name = "airport_itlwm_lab_public_recovery"
@@ -626,14 +634,19 @@ try:
             raise SystemExit(1)
         try:
             before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != expected_owner or
+                    before.st_nlink != 1):
                 raise SystemExit(1)
             if executable and before.st_mode & 0o111 == 0:
                 raise SystemExit(1)
-            os.fchmod(fd, required_mode)
-            after = os.fstat(fd)
+            if stage_state == "mutable":
+                os.fchmod(fd, required_mode)
+                after = os.fstat(fd)
+            else:
+                after = before
             if ((after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or
-                    after.st_nlink != 1 or stat.S_IMODE(after.st_mode) != required_mode):
+                    after.st_uid != expected_owner or after.st_nlink != 1 or
+                    stat.S_IMODE(after.st_mode) != required_mode):
                 raise SystemExit(1)
             chunks = []
             while True:
@@ -654,15 +667,22 @@ try:
             raise SystemExit(1)
         if (stat.S_ISLNK(path_after.st_mode) or not stat.S_ISREG(path_after.st_mode) or
                 (path_after.st_dev, path_after.st_ino) != (final.st_dev, final.st_ino) or
-                path_after.st_nlink != 1 or stat.S_IMODE(path_after.st_mode) != required_mode):
+                path_after.st_uid != expected_owner or path_after.st_nlink != 1 or
+                stat.S_IMODE(path_after.st_mode) != required_mode):
             raise SystemExit(1)
         return data
 
 
-    helper_bytes = read_stage_file_nofollow(stage_fd, helper_name, executable=True, required_mode=0o700)
-    receipt_bytes = read_stage_file_nofollow(stage_fd, receipt_name, executable=False, required_mode=0o600)
-    if (helper_bytes != read_stage_file_nofollow(stage_fd, helper_name, executable=True, required_mode=0o700) or
-            receipt_bytes != read_stage_file_nofollow(stage_fd, receipt_name, executable=False, required_mode=0o600)):
+    helper_bytes = read_stage_file_nofollow(
+        stage_fd, helper_name, executable=True, required_mode=helper_mode
+    )
+    receipt_bytes = read_stage_file_nofollow(
+        stage_fd, receipt_name, executable=False, required_mode=receipt_mode
+    )
+    if (helper_bytes != read_stage_file_nofollow(
+            stage_fd, helper_name, executable=True, required_mode=helper_mode) or
+            receipt_bytes != read_stage_file_nofollow(
+                stage_fd, receipt_name, executable=False, required_mode=receipt_mode)):
         raise SystemExit(1)
     if set(os.listdir(stage_fd)) != expected_names:
         raise SystemExit(1)
@@ -672,7 +692,7 @@ finally:
 stage_after = os.lstat(stage)
 if (stat.S_ISLNK(stage_after.st_mode) or not stat.S_ISDIR(stage_after.st_mode) or
         (stage_after.st_dev, stage_after.st_ino) != stage_identity or
-        stat.S_IMODE(stage_after.st_mode) != 0o700):
+        stage_after.st_uid != expected_owner or stat.S_IMODE(stage_after.st_mode) != stage_mode):
     raise SystemExit(1)
 
 if len(helper_bytes) < 32:
@@ -702,13 +722,104 @@ helper_sha256 = hashlib.sha256(helper_bytes).hexdigest()
 receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
 if helper_sha256 != expected_helper_sha256 or found != expected_uuid or receipt_sha256 != expected_receipt_sha256:
     raise SystemExit(1)
-print("REMOTE_PUBLIC_RECOVERY_STAGE helper_sha256=%s helper_macho_uuid=%s receipt_sha256=%s" % (helper_sha256, found, receipt_sha256))
+print("REMOTE_PUBLIC_RECOVERY_STAGE state=%s helper_sha256=%s helper_macho_uuid=%s receipt_sha256=%s" % (stage_state, helper_sha256, found, receipt_sha256))
 PY
 )" || fail "remote-stage-rehash-or-macho-verification-failed"
 case "$observed" in
-    "REMOTE_PUBLIC_RECOVERY_STAGE helper_sha256=$helper_sha256 helper_macho_uuid=$helper_uuid receipt_sha256=$receipt_sha256") ;;
+    "REMOTE_PUBLIC_RECOVERY_STAGE state=$stage_state helper_sha256=$helper_sha256 helper_macho_uuid=$helper_uuid receipt_sha256=$receipt_sha256") ;;
     *) fail "remote-stage-verification-output-malformed" ;;
 esac
+}
+
+freeze_remote_stage() {
+    local observed
+    observed="$("${SSH[@]}" /usr/bin/sudo -n /usr/bin/python3 -I - "$GUEST_DIR" 2>/dev/null <<'PY'
+import os
+import re
+import stat
+import sys
+
+if len(sys.argv) != 2:
+    raise SystemExit(1)
+stage = sys.argv[1]
+prefix = "/private/tmp/aiam-iwn-public-recovery-"
+if not stage.startswith(prefix):
+    raise SystemExit(1)
+token = stage[len(prefix):]
+if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", token) is None:
+    raise SystemExit(1)
+for parent in ("/private", "/private/tmp"):
+    metadata = os.lstat(parent)
+    if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode) or
+            metadata.st_uid != 0):
+        raise SystemExit(1)
+
+stage_fd = os.open(stage, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    stage_before = os.fstat(stage_fd)
+    if (not stat.S_ISDIR(stage_before.st_mode) or stage_before.st_uid == 0 or
+            stat.S_IMODE(stage_before.st_mode) != 0o700):
+        raise SystemExit(1)
+    stage_identity = (stage_before.st_dev, stage_before.st_ino)
+    stage_owner = stage_before.st_uid
+    helper_name = "airport_itlwm_lab_public_recovery"
+    receipt_name = "iwn-public-recovery-receipt-v1.json"
+    if set(os.listdir(stage_fd)) != {helper_name, receipt_name}:
+        raise SystemExit(1)
+
+    def freeze_file(name, before_mode, final_mode):
+        descriptor = os.open(
+            name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=stage_fd
+        )
+        try:
+            before = os.fstat(descriptor)
+            path_before = os.lstat(name, dir_fd=stage_fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != stage_owner or
+                    before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != before_mode or
+                    stat.S_ISLNK(path_before.st_mode) or
+                    (path_before.st_dev, path_before.st_ino) != (before.st_dev, before.st_ino)):
+                raise SystemExit(1)
+            os.fchown(descriptor, 0, 0)
+            os.fchmod(descriptor, final_mode)
+            after = os.fstat(descriptor)
+            if ((after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or
+                    after.st_uid != 0 or after.st_gid != 0 or after.st_nlink != 1 or
+                    stat.S_IMODE(after.st_mode) != final_mode):
+                raise SystemExit(1)
+        finally:
+            os.close(descriptor)
+        path_after = os.lstat(name, dir_fd=stage_fd)
+        if (stat.S_ISLNK(path_after.st_mode) or not stat.S_ISREG(path_after.st_mode) or
+                (path_after.st_dev, path_after.st_ino) != (after.st_dev, after.st_ino) or
+                path_after.st_uid != 0 or path_after.st_gid != 0 or
+                path_after.st_nlink != 1 or stat.S_IMODE(path_after.st_mode) != final_mode):
+            raise SystemExit(1)
+
+    freeze_file(helper_name, 0o700, 0o555)
+    freeze_file(receipt_name, 0o600, 0o444)
+    if set(os.listdir(stage_fd)) != {helper_name, receipt_name}:
+        raise SystemExit(1)
+    os.fchown(stage_fd, 0, 0)
+    os.fchmod(stage_fd, 0o555)
+    stage_after = os.fstat(stage_fd)
+    if ((stage_after.st_dev, stage_after.st_ino) != stage_identity or
+            stage_after.st_uid != 0 or stage_after.st_gid != 0 or
+            stat.S_IMODE(stage_after.st_mode) != 0o555):
+        raise SystemExit(1)
+finally:
+    os.close(stage_fd)
+
+path_after = os.lstat(stage)
+if (stat.S_ISLNK(path_after.st_mode) or not stat.S_ISDIR(path_after.st_mode) or
+        (path_after.st_dev, path_after.st_ino) != stage_identity or
+        path_after.st_uid != 0 or path_after.st_gid != 0 or
+        stat.S_IMODE(path_after.st_mode) != 0o555):
+    raise SystemExit(1)
+print("REMOTE_PUBLIC_RECOVERY_STAGE_FROZEN")
+PY
+)" || fail "remote-stage-freeze-failed"
+    [ "$observed" = "REMOTE_PUBLIC_RECOVERY_STAGE_FROZEN" ] ||
+        fail "remote-stage-freeze-output-malformed"
 }
 
 validate_stage_report() {
@@ -754,7 +865,7 @@ if not isinstance(document, dict) or set(document) != {
         "gate_build_dir_token", "guest_dir_token", "source", "helper",
         "validation", "non_claims"}:
     raise SystemExit(1)
-if document["schema"] != "itlwm-tahoe-iwn-public-recovery-stage-attestation/v1":
+if document["schema"] != "itlwm-tahoe-iwn-public-recovery-stage-attestation/v2":
     raise SystemExit(1)
 hex64 = re.compile(r"[0-9a-f]{64}")
 if any(not isinstance(document[key], str) or hex64.fullmatch(document[key]) is None
@@ -784,6 +895,7 @@ required_validation = {
     "pinned_guest_host_key", "pinned_guest_build", "fresh_restricted_guest_directory",
     "helper_hash_matches_local_sidecar_receipt", "helper_macho_uuid_matches_local_sidecar_receipt",
     "guest_rehash_matches_local_bytes", "guest_macho_uuid_matches_local_bytes",
+    "root_owned_nonwritable_guest_stage",
 }
 if not isinstance(validation, dict) or set(validation) != required_validation or any(value is not True for value in validation.values()):
     raise SystemExit(1)
@@ -830,7 +942,7 @@ if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", gate_token) is None:
 if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", guest_token) is None:
     raise SystemExit(1)
 document = {
-    "schema": "itlwm-tahoe-iwn-public-recovery-stage-attestation/v1",
+    "schema": "itlwm-tahoe-iwn-public-recovery-stage-attestation/v2",
     "candidate_receipt_sha256": candidate_receipt_sha256,
     "public_recovery_receipt_sha256": public_receipt_sha256,
     "gate_build_dir_token": gate_token,
@@ -849,6 +961,7 @@ document = {
         "helper_macho_uuid_matches_local_sidecar_receipt": True,
         "guest_rehash_matches_local_bytes": True,
         "guest_macho_uuid_matches_local_bytes": True,
+        "root_owned_nonwritable_guest_stage": True,
     },
     "non_claims": {
         "helper_invoked": False,
@@ -902,7 +1015,9 @@ stage_public_recovery() {
     assert_pinned_guest_build
     create_remote_stage_directory
     copy_stage_artifacts
-    verify_remote_stage "${fields[5]}" "${fields[6]}" "${fields[4]}"
+    verify_remote_stage "${fields[5]}" "${fields[6]}" "${fields[4]}" mutable
+    freeze_remote_stage
+    verify_remote_stage "${fields[5]}" "${fields[6]}" "${fields[4]}" frozen
     write_stage_report "$values" || fail "stage-report-write-failed"
     printf '%s\n' 'STAGE_READY'
 }

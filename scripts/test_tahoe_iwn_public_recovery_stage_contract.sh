@@ -27,7 +27,7 @@ import json
 import sys
 
 document = {
-    "schema": "itlwm-tahoe-iwn-public-recovery-stage-attestation/v1",
+    "schema": "itlwm-tahoe-iwn-public-recovery-stage-attestation/v2",
     "candidate_receipt_sha256": "a" * 64,
     "public_recovery_receipt_sha256": "b" * 64,
     "gate_build_dir_token": "Gate_9",
@@ -49,6 +49,7 @@ document = {
         "helper_macho_uuid_matches_local_sidecar_receipt": True,
         "guest_rehash_matches_local_bytes": True,
         "guest_macho_uuid_matches_local_bytes": True,
+        "root_owned_nonwritable_guest_stage": True,
     },
     "non_claims": {
         "helper_invoked": False,
@@ -133,6 +134,13 @@ for token, label in (
     ("0xFEEDFACF", "remote thin Mach-O verification"),
     ("0x1B", "remote LC_UUID verification"),
     ("read_stage_file_nofollow", "fd-based remote artifact reader"),
+    ("freeze_remote_stage", "root-owned immutable guest staging transition"),
+    ("/usr/bin/sudo -n /usr/bin/python3 -I -", "bounded root freeze helper"),
+    ("os.fchown(descriptor, 0, 0)", "descriptor-owned root freeze"),
+    ("os.fchmod(descriptor, final_mode)", "descriptor-only nonwritable freeze"),
+    ("0o555", "root-owned executable and directory mode"),
+    ("0o444", "root-owned receipt mode"),
+    ("root_owned_nonwritable_guest_stage", "frozen-stage attestation"),
     ("os.open(stage, os.O_RDONLY | os.O_NOFOLLOW)", "no-follow stage-directory open"),
     ("os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)", "dir-fd no-follow remote artifact open"),
     ("stage_metadata = os.fstat(stage_fd)", "stage directory fd verification"),
@@ -146,7 +154,7 @@ for token, label in (
     ("O_NOFOLLOW", "no-follow report output gate"),
     ("0o600", "private report mode"),
     ("itlwm-tahoe-iwn-public-recovery-collection/v1", "collection report schema"),
-    ("itlwm-tahoe-iwn-public-recovery-stage-attestation/v1", "stage report schema"),
+    ("itlwm-tahoe-iwn-public-recovery-stage-attestation/v2", "stage report schema"),
     ("validate_stage_report()", "strict stage-report parser"),
     ("--validate-stage-report", "stage-report validator CLI"),
     ("stat.S_IMODE(metadata.st_mode) != 0o600", "private stage-report parser gate"),
@@ -202,7 +210,13 @@ for section, label in ((capture, "capture"), (collection, "collection report"), 
         raise SystemExit(f"FAIL: {label} does not load committed Python modules explicitly")
 
 stage = text[text.find("stage_public_recovery() {"):text.find("self_test() {")]
-ordered = ("make_stage_verification_worktree", "validate_stage_inputs", "require_clean_committed_source", "prepare_guest_transport", "create_remote_stage_directory", "copy_stage_artifacts", "verify_remote_stage", "write_stage_report")
+ordered = (
+    "make_stage_verification_worktree", "validate_stage_inputs",
+    "require_clean_committed_source", "prepare_guest_transport",
+    "create_remote_stage_directory", "copy_stage_artifacts",
+    "verify_remote_stage", "freeze_remote_stage", "verify_remote_stage",
+    "write_stage_report",
+)
 position = -1
 for token in ordered:
     next_position = stage.find(token, position + 1)

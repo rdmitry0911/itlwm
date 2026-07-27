@@ -72,7 +72,7 @@ from tahoe_source_identity import source_identity_domain, source_paths  # noqa: 
 
 
 RUNTIME_SCHEMA = "itlwm-tahoe-iwn-public-recovery-runtime/v1"
-STAGE_SCHEMA = "itlwm-tahoe-iwn-public-recovery-stage-attestation/v1"
+STAGE_SCHEMA = "itlwm-tahoe-iwn-public-recovery-stage-attestation/v2"
 BROKER_PROTOCOL = "tahoe-lab-credential-broker/v1"
 LABAP_SWITCHER = ROOT / "scripts" / "tahoe_labap_bss_switcher.sh"
 STATE_PREFIX = "/tmp/aiam-labap-bss-switch."
@@ -670,6 +670,7 @@ def bind_stage_report(
         "helper_hash_matches_local_sidecar_receipt",
         "helper_macho_uuid_matches_local_sidecar_receipt",
         "guest_rehash_matches_local_bytes", "guest_macho_uuid_matches_local_bytes",
+        "root_owned_nonwritable_guest_stage",
     }, "stage-report")
     require_all_false(document.get("non_claims"), {
         "helper_invoked", "target_identity_collected", "credential_collected",
@@ -732,14 +733,14 @@ for parent in ("/private", "/private/tmp"):
         raise SystemExit(1)
 stage_metadata = os.lstat(stage)
 if (stat.S_ISLNK(stage_metadata.st_mode) or not stat.S_ISDIR(stage_metadata.st_mode) or
-        stage_metadata.st_uid != os.geteuid() or stat.S_IMODE(stage_metadata.st_mode) != 0o700):
+        stage_metadata.st_uid != 0 or stat.S_IMODE(stage_metadata.st_mode) != 0o555):
     raise SystemExit(1)
 stage_fd = os.open(
     stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 )
 opened_stage = os.fstat(stage_fd)
-if (not stat.S_ISDIR(opened_stage.st_mode) or opened_stage.st_uid != os.geteuid() or
-        stat.S_IMODE(opened_stage.st_mode) != 0o700 or
+if (not stat.S_ISDIR(opened_stage.st_mode) or opened_stage.st_uid != 0 or
+        stat.S_IMODE(opened_stage.st_mode) != 0o555 or
         (opened_stage.st_dev, opened_stage.st_ino) != (stage_metadata.st_dev, stage_metadata.st_ino)):
     raise SystemExit(1)
 helper_name = "airport_itlwm_lab_public_recovery"
@@ -752,7 +753,8 @@ def open_checked(name, required_mode):
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(name, flags, dir_fd=stage_fd)
     metadata = os.fstat(descriptor)
-    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
+            metadata.st_nlink != 1 or
             stat.S_IMODE(metadata.st_mode) != required_mode):
         os.close(descriptor)
         raise SystemExit(1)
@@ -769,8 +771,8 @@ def open_checked(name, required_mode):
             raise SystemExit(1)
     return descriptor, b"".join(chunks)
 
-helper_fd, payload = open_checked(helper_name, 0o700)
-receipt_fd, receipt_payload = open_checked(receipt_name, 0o600)
+helper_fd, payload = open_checked(helper_name, 0o555)
+receipt_fd, receipt_payload = open_checked(receipt_name, 0o444)
 if (hashlib.sha256(payload).hexdigest() != expected_sha256 or
         hashlib.sha256(receipt_payload).hexdigest() != expected_receipt_sha256 or
         len(payload) < 32):
@@ -801,8 +803,6 @@ if found != expected_uuid:
 '''
 
 REMOTE_VERIFY_HELPER = REMOTE_HELPER_CHECK + r'''
-if os.execve not in os.supports_fd:
-    raise SystemExit(1)
 os.close(helper_fd)
 os.close(receipt_fd)
 os.close(stage_fd)
@@ -810,12 +810,10 @@ print("OK")
 '''
 
 REMOTE_EXEC_HELPER = REMOTE_HELPER_CHECK + r'''
-if os.execve not in os.supports_fd:
-    raise SystemExit(1)
+os.close(helper_fd)
 os.close(receipt_fd)
 os.close(stage_fd)
-os.set_inheritable(helper_fd, True)
-os.execve(helper_fd, [helper], os.environ)
+os.execve(helper, [helper], os.environ)
 raise SystemExit(1)
 '''
 
