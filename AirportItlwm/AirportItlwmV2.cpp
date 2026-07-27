@@ -12287,7 +12287,8 @@ airportItlwmIwnDirectSaeLabReadyGated(OSObject *owner, void *arg0,
 
     struct ieee80211com *ic = that->fHalService->get80211Controller();
     reply.readiness = ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
-        ic->ic_state == IEEE80211_S_SCAN
+        ic->ic_state == IEEE80211_S_SCAN &&
+        that->fHalService->isSaeWclCredentialAdmissionReady()
         ? kAirportItlwmIwnLabDirectSaeStimulusReady
         : kAirportItlwmIwnLabDirectSaeStimulusNotReady;
     return kIOReturnSuccess;

@@ -779,6 +779,64 @@ iwn_sae_engine_runtime_enabled(const struct iwn_softc *sc)
 #endif
 }
 
+/*
+ * Report whether a new private WCL credential can reach the driver-owned SAE
+ * worker without colliding with a physical scan or an older SAE request.
+ * This method deliberately reads no credential bytes.  Its snapshot is only
+ * an early secret-copy fence; stageSaeWclCredential() and the selected-BSS
+ * worker still perform the authoritative checks after admission.
+ */
+bool ItlIwn::
+isSaeWclCredentialAdmissionReady()
+{
+    struct iwn_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct _ifnet *ifp = IC2IFP(ic);
+    bool lifecycle_open = false;
+    bool scan_idle = false;
+    bool engine_idle = false;
+    bool credential_empty = false;
+
+    if (!iwn_sae_engine_runtime_enabled(sc) ||
+        !iwn_sae_tx_lifecycle_enter(sc, false))
+        return false;
+
+    /*
+     * Hold a lifecycle lease while visiting each separately ordered leaf so
+     * stop/detach cannot free one between the pointer test and its lock.
+     * Never hold two simple leaves together.
+     */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    lifecycle_open = !sc->sc_sae_tx_lifecycle_closed &&
+        !sc->sc_sae_tx_detaching && sc->sc_scan_lease_lock != NULL &&
+        sc->sc_sae_engine_lock != NULL &&
+        sc->sc_sae_wcl_credential_lock != NULL &&
+        iwn_sae_wcl_credential_stage_state_permitted(ic, ifp);
+    if (lifecycle_open) {
+        IOSimpleLockLock(sc->sc_scan_lease_lock);
+        scan_idle = !iwn_scan_lease_live_locked(sc) &&
+            !sc->sc_wcl_initial_scan_pending.queued &&
+            (sc->sc_flags & IWN_FLAG_SCANNING) == 0;
+        IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+
+        IOSimpleLockLock(sc->sc_sae_engine_lock);
+        engine_idle = sc->sc_sae_engine_task_ready &&
+            !sc->sc_sae_engine_stopping &&
+            !sc->sc_sae_engine_detaching &&
+            !sc->sc_sae_engine_owner.active &&
+            sc->sc_sae_engine == NULL;
+        IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+
+        IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+        credential_empty = !sc->sc_sae_wcl_credential_staged;
+        IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    iwn_sae_tx_lifecycle_leave(sc);
+
+    return lifecycle_open && scan_idle && engine_idle && credential_empty;
+}
+
 /* No secret belongs to this record.  The crypto engine itself is worker-only
  * and destroyed separately by that worker after this public identity has
  * been retired. */

@@ -340,6 +340,16 @@ public:
             *outBackendGeneration = 0;
         return kIOReturnUnsupported;
     }
+
+    /*
+     * A private SAE credential producer must not copy a secret until the
+     * lower backend can admit a fresh selected-BSS request.  This is a
+     * readiness snapshot, not a reservation: the actual stage/start path
+     * remains authoritative and must repeat every ownership check.  HALs
+     * without a driver-resident SAE owner stay fail-closed.
+     * Keep this append-only virtual at the public ABI tail.
+     */
+    virtual bool isSaeWclCredentialAdmissionReady() { return false; }
     
 protected:
     

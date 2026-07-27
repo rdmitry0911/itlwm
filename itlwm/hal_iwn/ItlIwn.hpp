@@ -98,6 +98,7 @@ public:
         const struct ItlSaeWclCredentialV1 *credential) override;
     void cancelSaeWclCredential(uint64_t request_generation) override;
     void purgeSaeWclCredentialStage() override;
+    bool isSaeWclCredentialAdmissionReady() override;
 
     IOReturn beginWclBackgroundScan(uint64_t generation,
                                     uint32_t *outBackendGeneration) override;

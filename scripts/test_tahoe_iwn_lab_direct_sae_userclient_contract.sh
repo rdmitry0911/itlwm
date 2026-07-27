@@ -19,6 +19,9 @@ v2h = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 agent = (root / "AirportItlwmAgent/src/userclient.c").read_text()
 relay = (root / "include/ClientKit/AirportItlwmSaeRelayV1.h").read_text()
+hal = (root / "include/HAL/ItlHalService.hpp").read_text()
+iwn_h = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
+iwn_cpp = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 
 
 def fail(message):
@@ -128,6 +131,27 @@ forbid(query, "XYLog", "QueryReady input logging")
 forbid(query, "queueIwnDirectSaeLabStimulus", "QueryReady stimulus")
 forbid(query, "startIwnDirectSaeLabStimulus", "QueryReady association")
 require(query, "queryIwnDirectSaeLabReady(&reply)", "identity-free readiness")
+ready = body(v2, "airportItlwmIwnDirectSaeLabReadyGated(",
+             "lower-backed readiness gate")
+require(ready, "fHalService->isSaeWclCredentialAdmissionReady()",
+        "lower IWN admission readiness")
+require(hal, "virtual bool isSaeWclCredentialAdmissionReady() { return false; }",
+        "fail-closed HAL readiness")
+require(iwn_h, "bool isSaeWclCredentialAdmissionReady() override;",
+        "IWN readiness override")
+iwn_ready = body(iwn_cpp, "isSaeWclCredentialAdmissionReady()",
+                 "IWN readiness predicate")
+for token in ("iwn_sae_engine_runtime_enabled(sc)",
+              "iwn_sae_tx_lifecycle_enter(sc, false)",
+              "iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)",
+              "!iwn_scan_lease_live_locked(sc)",
+              "!sc->sc_wcl_initial_scan_pending.queued",
+              "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
+              "!sc->sc_sae_engine_owner.active",
+              "sc->sc_sae_engine == NULL",
+              "!sc->sc_sae_wcl_credential_staged",
+              "iwn_sae_tx_lifecycle_leave(sc)"):
+    require(iwn_ready, token, "lower IWN readiness fence")
 submit = body(v2, "IOReturn AirportItlwmUserClient::\nsExtIwnDirectSaeLabSubmit(",
               "Submit handler")
 ordered(submit, "Submit bounded copy/scrub",

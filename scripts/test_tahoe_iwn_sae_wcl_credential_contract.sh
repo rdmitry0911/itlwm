@@ -187,6 +187,32 @@ for token in ("(ifp->if_flags & IFF_RUNNING) == 0",
               "ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL"):
     require(state_permitted, token, "STA scan/reconnect stage fence")
 
+require(hal_hpp, "virtual bool isSaeWclCredentialAdmissionReady() { return false; }",
+        "fail-closed HAL credential admission readiness")
+require(iwn_hpp, "bool isSaeWclCredentialAdmissionReady() override;",
+        "IWN credential admission readiness override")
+admission = body(iwn_cpp, "isSaeWclCredentialAdmissionReady",
+                 "credential admission readiness")
+ordered(admission, "readiness lifecycle/leaf order",
+        "iwn_sae_tx_lifecycle_enter(sc, false)",
+        "IOLockLock(sc->sc_sae_tx_lifecycle_lock)",
+        "IOSimpleLockLock(sc->sc_scan_lease_lock)",
+        "IOSimpleLockUnlock(sc->sc_scan_lease_lock)",
+        "IOSimpleLockLock(sc->sc_sae_engine_lock)",
+        "IOSimpleLockUnlock(sc->sc_sae_engine_lock)",
+        "IOSimpleLockLock(sc->sc_sae_wcl_credential_lock)",
+        "IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock)",
+        "IOLockUnlock(sc->sc_sae_tx_lifecycle_lock)",
+        "iwn_sae_tx_lifecycle_leave(sc)")
+for token in ("iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)",
+              "!iwn_scan_lease_live_locked(sc)",
+              "!sc->sc_wcl_initial_scan_pending.queued",
+              "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
+              "!sc->sc_sae_engine_owner.active",
+              "sc->sc_sae_engine == NULL",
+              "!sc->sc_sae_wcl_credential_staged"):
+    require(admission, token, "secret-free credential admission fence")
+
 stage = iwn_method("stageSaeWclCredential")
 ordered(stage, "stage input/copy/lifecycle order",
         "if (credential == NULL)", "iwn_sae_wcl_credential_lab_opted_in()",
