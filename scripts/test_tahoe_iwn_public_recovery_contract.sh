@@ -549,6 +549,17 @@ except module.RunnerError as error:
     assert error.phase == "helper-result-public-association-failed"
 else:
     raise AssertionError("fixed helper failure result was not reduced categorically")
+insufficient_alternates = module.make_helper_line(
+    "initial-or-alternate-target-unavailable", (0, 0, 0, 0, 0, 0)
+).replace(b"alternate_bss_count=2", b"alternate_bss_count=1").replace(
+    b"alternate_ready=1", b"alternate_ready=0"
+)
+try:
+    module.HelperOutput._validate_line(insufficient_alternates, "initial-ready")
+except module.RunnerError as error:
+    assert error.phase == "helper-result-alternate-bss-insufficient"
+else:
+    raise AssertionError("alternate BSS deficit was not reduced categorically")
 try:
     module.HelperOutput._validate_line(
         module.make_helper_line("recovered", (1, 1, 1, 1, 0, 1)), "recovered"

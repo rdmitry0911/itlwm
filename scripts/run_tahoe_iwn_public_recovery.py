@@ -1223,6 +1223,19 @@ class HelperOutput:
                 not 0 <= alternate_count <= 80 or not 0 <= alternate_bands <= 2):
             raise RunnerError("helper-grammar")
         if state in HELPER_FAILURE_STATES:
+            if state == "initial-or-alternate-target-unavailable":
+                if scan_error != 0:
+                    raise RunnerError("helper-result-initial-scan-error")
+                if matching_records == 0:
+                    raise RunnerError("helper-result-initial-target-unavailable")
+                if matching_records > 1:
+                    raise RunnerError("helper-result-initial-target-ambiguous")
+                if alternate_count < 2:
+                    raise RunnerError("helper-result-alternate-bss-insufficient")
+                if alternate_bands < 2:
+                    raise RunnerError("helper-result-alternate-band-insufficient")
+                if alternate_ready != 1:
+                    raise RunnerError("helper-result-alternate-readiness-inconsistent")
             raise RunnerError("helper-result-" + state)
         if state != expected_state or fields[1] != "airport-itlwm-bsd" or \
                 not 1 <= discovery <= 80 or matching_records != 1 or \
