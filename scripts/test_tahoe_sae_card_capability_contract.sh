@@ -28,8 +28,14 @@ int main()
     assert(sae[TahoeCapabilityContracts::kCardCapabilitySaeByte] ==
            (TahoeCapabilityContracts::kCardCapabilityByte9 |
             TahoeCapabilityContracts::kCardCapabilitySaeMask));
+    assert(baseline[TahoeCapabilityContracts::kCardCapabilityMfpByte] ==
+           TahoeCapabilityContracts::kCardCapabilityByte6);
+    assert(sae[TahoeCapabilityContracts::kCardCapabilityMfpByte] ==
+           (TahoeCapabilityContracts::kCardCapabilityByte6 |
+            TahoeCapabilityContracts::kCardCapabilityMfpMask));
     for (size_t index = 0; index < sizeof(sae); ++index) {
-        if (index != TahoeCapabilityContracts::kCardCapabilitySaeByte)
+        if (index != TahoeCapabilityContracts::kCardCapabilityMfpByte &&
+            index != TahoeCapabilityContracts::kCardCapabilitySaeByte)
             assert(sae[index] == baseline[index]);
     }
     return 0;

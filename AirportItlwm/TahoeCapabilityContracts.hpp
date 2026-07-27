@@ -29,9 +29,13 @@ static constexpr uint8_t kCardCapabilityByte8 = 0x01;
 static constexpr uint8_t kCardCapabilityByte9 = 0x02;
 /*
  * AppleBCMWLANCore::getCARD_CAPABILITIES maps feature flag 0x41 (WPA3 SAE)
- * to capability byte 9, bit 0x08.  Keep this out of the common baseline:
- * only a build that also exposes the complete SAE/PMF WCL ingress may opt in.
+ * to capability byte 9, bit 0x08.  IO80211's Apple80211Associate2 separately
+ * requires an MFP admission bit in capability byte 6 before it will accept an
+ * SAE selector.  Keep both out of the common baseline: only a build that also
+ * exposes the complete SAE/software-PMF WCL ingress may opt in.
  */
+static constexpr size_t kCardCapabilityMfpByte = 6;
+static constexpr uint8_t kCardCapabilityMfpMask = 0x10;
 static constexpr size_t kCardCapabilitySaeByte = 9;
 static constexpr uint8_t kCardCapabilitySaeMask = 0x08;
 
@@ -64,6 +68,7 @@ inline void applySaeCardCapability(uint8_t (&capabilities)[N])
     static_assert(N > kCardCapabilitySaeByte,
                   "CARD_CAPABILITIES carrier must expose the SAE byte");
 
+    capabilities[kCardCapabilityMfpByte] |= kCardCapabilityMfpMask;
     capabilities[kCardCapabilitySaeByte] |= kCardCapabilitySaeMask;
 }
 
