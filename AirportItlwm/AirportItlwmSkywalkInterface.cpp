@@ -4711,7 +4711,16 @@ getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *data)
     if (ret != kIOReturnSuccess)
         return ret;
     ret = getMCS_INDEX_SETImpl(&carrier->mcs_set);
-    if (ret != kIOReturnSuccess)
+    /*
+     * AppleBCMWLANNetAdapter::updateMCSSetSyc propagates the firmware-command
+     * status, but updateMCSSet accepts a zero entry count: it leaves the
+     * versioned MCS bitmap empty, installs it in IO80211BssManager, and still
+     * completes successfully.  kApple80211ErrNoCachedValue is our public-GET
+     * validity approximation for that same empty map, not a WCL transport
+     * failure.  Keep the public GET contract strict while admitting the
+     * reference-valid empty current-BSS carrier here.
+     */
+    if (ret != kIOReturnSuccess && ret != kApple80211ErrNoCachedValue)
         return ret;
 
     // The local link-state path uses the same normalized defaults when VHT or
