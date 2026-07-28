@@ -69,6 +69,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_assoc_comeback.h>
 
 #ifdef IEEE80211_DEBUG
 int	ieee80211_debug = 0;
@@ -934,6 +935,28 @@ ieee80211_watchdog(struct _ifnet *ifp)
         int sae_timeout_owned = 0;
 
         explicit_bzero(&sae_hooks, sizeof(sae_hooks));
+
+        /* Status 30 is not an association failure.  Retry only the exact
+         * pending request after its bounded AP-supplied comeback interval;
+         * do not cross the association epoch fence or revoke the SAE PMK.
+         * ieee80211_send_mgmt() arms the ordinary response timeout. */
+        if (ic->ic_opmode == IEEE80211_M_STA &&
+            ic->ic_assoc_comeback_pending && ic->ic_bss != NULL &&
+            ((!ic->ic_assoc_comeback_reassoc &&
+              ic->ic_state == IEEE80211_S_ASSOC) ||
+             (ic->ic_assoc_comeback_reassoc &&
+              ic->ic_state == IEEE80211_S_RUN &&
+              ic->ic_wcl_reassoc_owner_active))) {
+            int subtype = ic->ic_assoc_comeback_reassoc ?
+                IEEE80211_FC0_SUBTYPE_REASSOC_REQ :
+                IEEE80211_FC0_SUBTYPE_ASSOC_REQ;
+
+            ic->ic_assoc_comeback_pending = 0;
+            ic->ic_assoc_comeback_tu = 0;
+            ic->ic_assoc_status = 0xffff;
+            if (IEEE80211_SEND_MGMT(ic, ic->ic_bss, subtype, 0) == 0)
+                goto done;
+        }
 
         /* Capture ownership before the association fence below revokes the
          * driver's exact attempt.  The historical AUTH retry must not turn

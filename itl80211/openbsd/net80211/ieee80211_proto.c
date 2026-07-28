@@ -4243,6 +4243,13 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 
 	ostate = ic->ic_state;
 	explicit_bzero(&sae_hooks, sizeof(sae_hooks));
+	/* A real state-machine transition supersedes any delayed status-30
+	 * association request.  The watchdog retry deliberately sends directly
+	 * and therefore retains its retry count until success or failure. */
+	ic->ic_assoc_comeback_tu = 0;
+	ic->ic_assoc_comeback_pending = 0;
+	ic->ic_assoc_comeback_reassoc = 0;
+	ic->ic_assoc_comeback_retries = 0;
 	ic->ic_state = nstate;			/* state transition */
 	ni = ic->ic_bss;			/* NB: no reference held */
 	ieee80211_set_link_state(ic, LINK_STATE_DOWN);

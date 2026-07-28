@@ -73,6 +73,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_assoc_comeback.h>
 #include <net80211/ieee80211_sae_policy.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
@@ -3069,7 +3070,31 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     status =  LE_READ_2(frm); frm += 2;
 
     ic->ic_assoc_status = status;
+    if (status == IEEE80211_STATUS_TRY_AGAIN_LATER &&
+        ni == ic->ic_bss &&
+        ic->ic_assoc_comeback_retries <
+        IEEE80211_ASSOC_COMEBACK_MAX_RETRIES) {
+        struct ieee80211_assoc_comeback_plan comeback;
+
+        /* The fixed AID field follows status even on a rejected response.
+         * Preserve this exact selected BSS, association epoch, and SAE PMK
+         * until the AP-advertised comeback interval expires. */
+        if (ieee80211_assoc_comeback_parse(frm + 2,
+            (size_t)(efrm - (frm + 2)), &comeback)) {
+            ic->ic_assoc_comeback_tu = comeback.timeout_tu;
+            ic->ic_assoc_comeback_reassoc = reassoc != 0;
+            ic->ic_assoc_comeback_retries++;
+            ic->ic_assoc_comeback_pending = 1;
+            ic->ic_mgt_timer = (int)comeback.timeout_seconds;
+            ifp->if_timer = 1;
+            return;
+        }
+    }
     if (status == IEEE80211_STATUS_SUCCESS) {
+        ic->ic_assoc_comeback_tu = 0;
+        ic->ic_assoc_comeback_pending = 0;
+        ic->ic_assoc_comeback_reassoc = 0;
+        ic->ic_assoc_comeback_retries = 0;
         if (ic->ic_event_handler) {
             (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
         }
