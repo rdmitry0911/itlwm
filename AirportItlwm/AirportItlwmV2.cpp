@@ -5798,17 +5798,19 @@ static IOReturn clearTahoeWclAuthAssocCompletionLeaseGated(
 }
 #endif
 
-static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
-                                  unsigned int rawReason)
+static bool postTahoeWclLinkStateInd(AirportItlwm *controller,
+                                     bool linkUp,
+                                     unsigned int rawReason)
 {
     if (controller == nullptr || controller->fNetIf == nullptr ||
         controller->fHalService == nullptr)
         return false;
 
     struct ieee80211com *ic = controller->fHalService->get80211Controller();
-    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
-        ic->ic_bss == nullptr) {
-        XYLog("DEBUG %s SKIP ic=%p ic_state=%d ic_bss=%p\n", __FUNCTION__, ic,
+    if (ic == nullptr || ic->ic_bss == nullptr ||
+        (linkUp && ic->ic_state != IEEE80211_S_RUN)) {
+        XYLog("DEBUG %s SKIP link_up=%d ic=%p ic_state=%d ic_bss=%p\n",
+              __FUNCTION__, linkUp ? 1 : 0, ic,
               ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr);
         return false;
     }
@@ -5816,13 +5818,40 @@ static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
     TahoeWclLinkChangedPayload payload;
     bzero(&payload, sizeof(payload));
     IEEE80211_ADDR_COPY(payload.bssid, ic->ic_bss->ni_bssid);
-    payload.linkState = 1;
+    payload.linkState = linkUp ? 1 : 0;
     payload.interfaceType = kTahoeWclInfraInterfaceType;
     payload.reasonCode = buildTahoeWclLinkReason(rawReason);
 
     controller->postMessage(controller->fNetIf, kTahoeWclLinkChanged,
                             &payload, sizeof(payload), true);
     return true;
+}
+
+static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
+                                  unsigned int rawReason)
+{
+    return postTahoeWclLinkStateInd(controller, true, rawReason);
+}
+
+static IOReturn postTahoeWclLinkDownIndGated(
+    OSObject *target, void *arg0, void *, void *, void *)
+{
+    AirportItlwm *controller = OSDynamicCast(AirportItlwm, target);
+    if (controller == nullptr)
+        return kIOReturnBadArgument;
+
+    /*
+     * The lower deauth callback reaches this action before net80211 commits
+     * its parent link-down transition, while the selected BSS and reason are
+     * still authoritative.  Publish Apple's independent 0xd8 link-state
+     * carrier here so WCL receives LINK_DOWN_IND before the accepted parent
+     * link-down can complete its drain.  The legacy event-34 and 32-byte
+     * link-changed carriers keep their existing, separate owners.
+     */
+    const unsigned int rawReason =
+        static_cast<unsigned int>((uintptr_t)arg0);
+    return postTahoeWclLinkStateInd(controller, false, rawReason)
+        ? kIOReturnSuccess : kIOReturnNotReady;
 }
 
 static void publishResolvedCountryCodeProperty(AirportItlwm *controller)
@@ -8555,6 +8584,19 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     gate->runAction(postMessageGated,
                     (void *)(uintptr_t)apple80211Msg, msgData,
                     (void *)(uintptr_t)msgDataLen);
+#if __IO80211_TARGET >= __MAC_26_0
+    if (msgCode == IEEE80211_EVT_STA_DEAUTH) {
+        /*
+         * Apple publishes the 16-byte WCL 0xd8 link-down indication as a
+         * distinct carrier.  Keep it ordered after DEAUTH_RECEIVED and before
+         * eventHandler returns to ieee80211_recv_deauth(), which performs the
+         * lower state transition and accepted parent link-down publication.
+         */
+        (void)gate->runAction(
+            postTahoeWclLinkDownIndGated,
+            (void *)(uintptr_t)ic->ic_deauth_reason, NULL, NULL);
+    }
+#endif
 }
 
 void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
