@@ -3090,6 +3090,24 @@ iwm_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
      * private IWN scan-hop tag across that queue; it keeps its established
      * generic cleanup semantics until that distinct race is hardened. */
     arg = IEEE80211_NEWSTATE_BACKEND_ARG(nstate, arg);
+
+    /*
+     * IWM has no firmware-side work for AUTH -> ASSOC.  Completing this
+     * no-op lower transition through newstate_task instead moves the generic
+     * Association Request onto systq.  Its if_start() uses the deliberately
+     * non-blocking main command gate and can lose the only transmit kick while
+     * the workloop is still finishing the successful Authentication response.
+     *
+     * Commit the generic transition on that originating workloop instead.
+     * iwm_start() then enters the recursive gate and the Association Request
+     * crosses the real TX doorbell before the AUTH receive edge can retire.
+     */
+    if (ic->ic_state == IEEE80211_S_AUTH &&
+        nstate == IEEE80211_S_ASSOC) {
+        sc->ns_nstate = nstate;
+        sc->ns_arg = arg;
+        return sc->sc_newstate(ic, nstate, arg);
+    }
     
     /*
      * Prevent attemps to transition towards the same state, unless
