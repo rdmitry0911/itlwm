@@ -1348,6 +1348,22 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
             if (skb_freed > 1)
                 info->flags |= IEEE80211_TX_STAT_ACK;
 
+            const u_int8_t tx_subtype =
+                (u_int8_t)(le16toh(txd->fc) &
+                IEEE80211_FC0_SUBTYPE_MASK);
+            if (ieee80211_is_mgmt(txd->fc) &&
+                (tx_subtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+                 tx_subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ)) {
+                IWX_AUTH_DIAG("iwm_rx_tx_cmd_single: ASSOC completion "
+                    "subtype=0x%02x qid=%d idx=%d status=0x%02x "
+                    "acked=%u failure_frame=%u frame_len=%u\n",
+                    tx_subtype, qid, ring->tail,
+                    (unsigned)(status & IWM_TX_STATUS_MSK),
+                    (info->flags & IEEE80211_TX_STAT_ACK) != 0,
+                    (unsigned)tx_resp->failure_frame,
+                    (unsigned)txd->totlen);
+            }
+
             info->status.rates[0].count = tx_resp->failure_frame + 1;
             iwl_mvm_hwrate_to_tx_status(le32_to_cpu(tx_resp->initial_rate),
                             info);
@@ -1871,8 +1887,18 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     iwm_update_sched(sc, ring->qid, ring->cur, tx->sta_id, le16toh(tx->len));
     
     /* Kick TX ring. */
+    const int doorbell_idx = ring->cur;
     ring->cur = (ring->cur + 1) % IWM_TX_RING_COUNT;
     IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    if (type == IEEE80211_FC0_TYPE_MGT &&
+        (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+         subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ)) {
+        IWX_AUTH_DIAG("iwm_tx: ASSOC doorbell subtype=0x%02x "
+            "qid=%d idx=%d next=%d frame_len=%u tx_flags=0x%08x\n",
+            subtype, ring->qid, doorbell_idx, ring->cur,
+            (unsigned)le16toh(tx->len),
+            (unsigned)le32toh(tx->tx_flags));
+    }
     
     /* Mark TX ring as full if we reach a certain threshold. */
     if (++ring->queued > IWM_TX_RING_HIMARK) {
@@ -3597,6 +3623,17 @@ _iwm_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
         m = mq_dequeue(&ic->ic_mgtq);
         if (m) {
             ni = (struct ieee80211_node *)mbuf_pkthdr_rcvif(m);
+            struct ieee80211_frame *mwh =
+                mtod(m, struct ieee80211_frame *);
+            const u_int8_t msubtype =
+                mwh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+            if (msubtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+                msubtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ) {
+                IWX_AUTH_DIAG("_iwm_start_task: dequeue ASSOC "
+                    "subtype=0x%02x frame_len=%lu state=%u\n",
+                    msubtype, (unsigned long)mbuf_pkthdr_len(m),
+                    (unsigned)ic->ic_state);
+            }
             goto sendit;
         }
         

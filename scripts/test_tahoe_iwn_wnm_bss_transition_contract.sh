@@ -16,6 +16,7 @@ node_c = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 output_c = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 proto_c = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
 skywalk = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 
 
 def fail(message: str) -> None:
@@ -38,6 +39,10 @@ def order(text: str, label: str, *tokens: str) -> None:
 
 require(output_c, "IEEE80211_EXTCAP_BSS_TRANSITION >> 16",
         "association-request BSS Transition advertisement")
+require(output_c, "ic->ic_caps & IEEE80211_C_WNM_BSS_TRANSITION",
+        "backend-scoped BSS Transition advertisement")
+require(iwn, "IEEE80211_C_WNM_BSS_TRANSITION",
+        "IWN BSS Transition capability")
 order(input_c, "protected BTM request ownership",
       "ieee80211_wnm_bss_transition_arm(ic, ni->ni_bssid,",
       "ieee80211_begin_wnm_bgscan(&ic->ic_if)",

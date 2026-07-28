@@ -3070,6 +3070,15 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     
     capinfo = LE_READ_2(frm); frm += 2;
     status =  LE_READ_2(frm); frm += 2;
+    IWX_AUTH_DIAG("ieee80211_recv_assoc_resp: ASSOC RX "
+        "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
+        "status=%u state=%u frame_len=%lu\n",
+        reassoc ? IEEE80211_FC0_SUBTYPE_REASSOC_RESP :
+        IEEE80211_FC0_SUBTYPE_ASSOC_RESP,
+        wh->i_addr2[0], wh->i_addr2[1], wh->i_addr2[2],
+        wh->i_addr2[3], wh->i_addr2[4], wh->i_addr2[5],
+        (unsigned)status, (unsigned)ic->ic_state,
+        (unsigned long)mbuf_len(m));
 
     ic->ic_assoc_status = status;
     if (status == IEEE80211_STATUS_TRY_AGAIN_LATER &&

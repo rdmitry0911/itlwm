@@ -212,6 +212,7 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
 	struct ieee80211com *ic = (struct ieee80211com *)ifp;
 	struct ieee80211_frame *wh;
 	uint16_t auth_seq = 0xffff;
+	size_t frame_len;
 	int enqueue_dropped;
 
 	if (ni == NULL)
@@ -271,6 +272,7 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
             const u_int8_t *auth_body = (const u_int8_t *)wh + sizeof(*wh);
             auth_seq = (uint16_t)(auth_body[2] | (auth_body[3] << 8));
         }
+        frame_len = mbuf_pkthdr_len(m);
         enqueue_dropped = mq_enqueue(&ic->ic_mgtq, m);
         if (enqueue_dropped == 0) {
             const int subtype = type & IEEE80211_FC0_SUBTYPE_MASK;
@@ -293,6 +295,21 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
                 ni->ni_macaddr[2], ni->ni_macaddr[3],
                 ni->ni_macaddr[4], ni->ni_macaddr[5],
                 (unsigned)auth_seq,
+                enqueue_dropped ? 0 : 1, enqueue_dropped);
+        } else if ((type & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+            (type & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_REASSOC_REQ) {
+            IWX_AUTH_DIAG("ieee80211_mgmt_output: enqueue ASSOC "
+                "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
+                "frame_len=%lu wnm_cap=%u queue=ic_mgtq "
+                "enqueued=%d dropped=%d\n",
+                type & IEEE80211_FC0_SUBTYPE_MASK,
+                ni->ni_macaddr[0], ni->ni_macaddr[1],
+                ni->ni_macaddr[2], ni->ni_macaddr[3],
+                ni->ni_macaddr[4], ni->ni_macaddr[5],
+                (unsigned long)frame_len,
+                (ic->ic_caps & IEEE80211_C_WNM_BSS_TRANSITION) != 0,
                 enqueue_dropped ? 0 : 1, enqueue_dropped);
         }
         ifp->if_timer = 1;
@@ -1730,7 +1747,7 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	    ((ic->ic_flags & IEEE80211_F_HTON) ? sizeof(struct ieee80211_ie_htcap) + sizeof(struct ieee80211_wme_info) : 0) +
         ((ic->ic_flags & IEEE80211_F_VHTON) ? sizeof(struct ieee80211_ie_vhtcap) + 2 : 0) +
         ((ic->ic_flags & IEEE80211_F_HEON) ? (sizeof(struct ieee80211_he_cap_elem) + 2 + 1 + sizeof(struct ieee80211_he_mcs_nss_supp) + IEEE80211_HE_PPE_THRES_MAX_LEN) : 0) +
-	    2 + 3);
+	    ((ic->ic_caps & IEEE80211_C_WNM_BSS_TRANSITION) ? 2 + 3 : 0));
 	if (m == NULL)
 		return NULL;
 
@@ -1788,7 +1805,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	if (ic->ic_flags & IEEE80211_F_HEON)
 		frm = ieee80211_add_hecaps(frm, ic);
 
-	frm = ieee80211_add_wnm_extcaps(frm);
+	if (ic->ic_caps & IEEE80211_C_WNM_BSS_TRANSITION)
+		frm = ieee80211_add_wnm_extcaps(frm);
 
     size_t l = frm - mtod(m, u_int8_t *);
     mbuf_pkthdr_setlen(m, l);

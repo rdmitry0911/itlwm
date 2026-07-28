@@ -4510,6 +4510,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
         IEEE80211_C_MONITOR |    /* monitor mode supported */
         IEEE80211_C_SHSLOT |    /* short slot time supported */
         IEEE80211_C_SHPREAMBLE |    /* short preamble supported */
+        IEEE80211_C_WNM_BSS_TRANSITION | /* generic 802.11v BTM */
         IEEE80211_C_PMGT;        /* power saving supported */
 
     /* No optional HT features supported for now, */
