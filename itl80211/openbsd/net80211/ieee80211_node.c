@@ -1484,6 +1484,20 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
     if (ic->ic_opmode == IEEE80211_M_STA &&
         ieee80211_sae_wcl_request_scan_selection_held(ic))
         return;
+
+    /*
+     * This terminal belongs to a scan that was already active when the BTM
+     * request arrived.  It cannot prove a fresh target observation.  Release
+     * its net80211 ownership now and retry only after the backend terminal
+     * path has retired the old firmware lease.
+     */
+    if (bgscan &&
+        ieee80211_wnm_bss_transition_fresh_scan_pending(ic)) {
+        ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                          IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+        timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 1);
+        return;
+    }
     
     ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
     

@@ -197,6 +197,14 @@ extern	int ieee80211_wnm_bss_transition_arm(struct ieee80211com *,
 	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int8_t,
 	    u_int8_t, u_int8_t);
 extern	void ieee80211_wnm_bss_transition_clear(struct ieee80211com *);
+extern	int ieee80211_wnm_bss_transition_defer_fresh_scan(
+	    struct ieee80211com *);
+extern	int ieee80211_wnm_bss_transition_fresh_scan_pending(
+	    struct ieee80211com *);
+extern	int ieee80211_wnm_bss_transition_retry_fresh_scan(
+	    struct ieee80211com *);
+extern	void ieee80211_wnm_bss_transition_fresh_scan_started(
+	    struct ieee80211com *);
 /* Returns 0 with no owner, 1 for the exact target, and -1 for an active
  * transition whose target does not match this scan node. */
 extern	int ieee80211_wnm_bss_transition_candidate_disposition(

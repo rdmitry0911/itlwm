@@ -3895,7 +3895,7 @@ ieee80211_recv_wnm_bss_transition_req(struct ieee80211com *ic, mbuf_t m,
 	u_int8_t target_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t dialog_token, request_mode, target_channel = 0;
 	size_t offset;
-	int armed = 0;
+	int armed = 0, scan_error;
 
 	explicit_bzero(target_bssid, sizeof(target_bssid));
 	if (ic == NULL || ni == NULL || ic->ic_opmode != IEEE80211_M_STA ||
@@ -3952,7 +3952,12 @@ ieee80211_recv_wnm_bss_transition_req(struct ieee80211com *ic, mbuf_t m,
 	    target_channel);
 	if (!armed)
 		goto reject;
-	if (ieee80211_begin_wnm_bgscan(&ic->ic_if) == 0)
+	scan_error = ieee80211_begin_wnm_bgscan(&ic->ic_if);
+	if (scan_error == 0)
+		return;
+	if (scan_error == EBUSY &&
+	    (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 &&
+	    ieee80211_wnm_bss_transition_defer_fresh_scan(ic))
 		return;
 	ieee80211_wnm_bss_transition_clear(ic);
 

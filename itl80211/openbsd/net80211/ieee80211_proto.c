@@ -1044,6 +1044,93 @@ ieee80211_wnm_bss_transition_clear(struct ieee80211com *ic)
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 }
 
+/*
+ * A BTM request can arrive while a periodic or WCL background census owns
+ * the firmware scan command.  Mark that completion as ineligible to satisfy
+ * this request; its terminal path will schedule one fresh driver-owned scan.
+ */
+int
+ieee80211_wnm_bss_transition_defer_fresh_scan(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	int deferred = 0;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 &&
+	    transition->candidate_confirmed == 0) {
+		transition->fresh_scan_pending = 1;
+		transition->scan_retry_count = 0;
+		deferred = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return deferred;
+}
+
+int
+ieee80211_wnm_bss_transition_fresh_scan_pending(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_wnm_bss_transition *transition;
+	int pending = 0;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	pending = transition->active != 0 &&
+	    transition->candidate_confirmed == 0 &&
+	    transition->fresh_scan_pending != 0;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return pending;
+}
+
+int
+ieee80211_wnm_bss_transition_retry_fresh_scan(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	int retry = 0;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 &&
+	    transition->candidate_confirmed == 0 &&
+	    transition->fresh_scan_pending != 0 &&
+	    transition->scan_retry_count < 50) {
+		transition->scan_retry_count++;
+		retry = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return retry;
+}
+
+void
+ieee80211_wnm_bss_transition_fresh_scan_started(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0) {
+		transition->fresh_scan_pending = 0;
+		transition->scan_retry_count = 0;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
 int
 ieee80211_wnm_bss_transition_candidate_disposition(
     struct ieee80211com *ic, const struct ieee80211_node *ni)

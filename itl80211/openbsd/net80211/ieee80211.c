@@ -184,6 +184,36 @@ ieee80211_begin_wnm_bgscan(struct _ifnet *ifp)
 }
 
 void
+ieee80211_wnm_bgscan_retry_timeout(void *arg)
+{
+    struct _ifnet *ifp = (struct _ifnet *)arg;
+    struct ieee80211com *ic = (struct ieee80211com *)ifp;
+    u_int8_t dialog_token = 0;
+    int error;
+
+    if (ic == NULL ||
+        !ieee80211_wnm_bss_transition_fresh_scan_pending(ic))
+        return;
+
+    error = ieee80211_begin_wnm_bgscan(ifp);
+    if (error == 0) {
+        ieee80211_wnm_bss_transition_fresh_scan_started(ic);
+        return;
+    }
+    if (error == EBUSY &&
+        ieee80211_wnm_bss_transition_retry_fresh_scan(ic)) {
+        timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 100);
+        return;
+    }
+
+    if (ieee80211_wnm_bss_transition_active(ic, &dialog_token) &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
+        (void)ieee80211_send_bss_transition_response(ic, ic->ic_bss,
+            dialog_token, IEEE80211_WNM_BSS_TM_REJECT_NO_SUITABLE, NULL);
+    ieee80211_wnm_bss_transition_clear(ic);
+}
+
+void
 ieee80211_bgscan_timeout(void *arg)
 {
     struct _ifnet *ifp = (struct _ifnet *)arg;
@@ -319,6 +349,8 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     ieee80211_set_link_state(ic, LINK_STATE_DOWN);
     
     timeout_set(&ic->ic_bgscan_timeout, ieee80211_bgscan_timeout, ifp);
+    timeout_set(&ic->ic_wnm_bgscan_retry_timeout,
+                ieee80211_wnm_bgscan_retry_timeout, ifp);
 }
 
 void
@@ -330,6 +362,8 @@ ieee80211_ifdetach(struct _ifnet *ifp)
     ieee80211_public_initial_bssid_pin_disarm(ic);
     ieee80211_wnm_bss_transition_clear(ic);
     (void)ieee80211_pae_assoc_epoch_begin(ic);
+    timeout_del(&ic->ic_wnm_bgscan_retry_timeout);
+    timeout_free(&ic->ic_wnm_bgscan_retry_timeout);
     timeout_del(&ic->ic_bgscan_timeout);
     timeout_free(&ic->ic_bgscan_timeout);
     ieee80211_proto_detach(ifp);

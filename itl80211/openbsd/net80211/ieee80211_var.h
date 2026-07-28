@@ -522,6 +522,8 @@ struct ieee80211_wnm_bss_transition {
 	u_int8_t		target_channel;
 	u_int8_t		active;
 	u_int8_t		candidate_confirmed;
+	u_int8_t		fresh_scan_pending;
+	u_int8_t		scan_retry_count;
 };
 
 /*
@@ -788,6 +790,7 @@ struct ieee80211com {
                             void *arg);
     void            *ic_apsta_event_arg;
 	CTimeout*		ic_bgscan_timeout;
+	CTimeout*		ic_wnm_bgscan_retry_timeout;
 	uint32_t		ic_bgscan_fail;
 	u_int8_t		ic_myaddr[IEEE80211_ADDR_LEN];
 	struct ieee80211_rateset ic_sup_rates[IEEE80211_MODE_MAX];
