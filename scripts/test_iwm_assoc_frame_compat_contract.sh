@@ -38,6 +38,8 @@ def ordered(text: str, label: str, *tokens: str) -> None:
 
 require(var_h, "IEEE80211_C_WNM_BSS_TRANSITION 0x00200000",
         "explicit BTM backend capability")
+require(iwm, "#include <linux/iwx_diag_log.h>",
+        "IWM association diagnostic carrier")
 require(output_c,
         "((ic->ic_caps & IEEE80211_C_WNM_BSS_TRANSITION) ? 2 + 3 : 0)",
         "conditional association-frame reservation")

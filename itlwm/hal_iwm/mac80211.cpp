@@ -122,6 +122,7 @@
 #include "ItlIwm.hpp"
 #include <net/ethernet.h>
 #include <IOKit/IOCommandGate.h>
+#include <linux/iwx_diag_log.h>
 #include <net80211/ieee80211_priv.h>
 #include "rs.h"
 
