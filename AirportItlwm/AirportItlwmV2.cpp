@@ -6288,10 +6288,11 @@ bool AirportItlwmBootNub::start(IOService *provider)
         stop(provider);
         return false;
     }
-    // Apple's AppleBCMWLANUserClient triggers bootChipImage after IOKit
-    // matches it against the controller.  This nub replicates that pattern:
-    // IOKit matched us against AirportItlwm, now trigger the async boot.
-    controller->scheduleTahoeBootThreadCall();
+    // Keep the compatibility personality published, but do not use its early
+    // provider match as the boot trigger.  On a cold boot that match precedes
+    // airportd's BSD-event subscription, so bootChipImage's one-shot
+    // DRIVER_AVAILABLE message is lost.  The first bootstrap POWER=ON ingress
+    // below is the local late-userland equivalent and owns the boot trigger.
     return true;
 }
 
@@ -11281,6 +11282,15 @@ setPOWER(OSObject *object,
         tahoeRequestedPowerState = (uint8_t)requestedState;
         if (tahoeBootstrapPowerWindowOpen) {
             tahoeBootstrapPowerPending = true;
+            // The cold-boot trace proves POWER=ON arrives only after interface
+            // attach and airportd event-sink setup.  A transient OFF can
+            // legitimately precede it while the interface is registered, so
+            // it must not consume the one-shot boot call.  If the user keeps
+            // Wi-Fi off, their later ON request enters this same edge.
+            if (requestedState == kWiFiPowerOn) {
+                XYLog("Tahoe boot trigger: bootstrap POWER=ON\n");
+                scheduleTahoeBootThreadCall();
+            }
             return kIOReturnSuccess;
         }
 #if __IO80211_TARGET >= __MAC_26_0
@@ -12337,8 +12347,9 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
 #endif
     if (!productPltiType && !labDirectSaeType) {
         // Defer to base class so existing IO80211APIUserClient
-        // dispatch is preserved unchanged.  The separately compiled lab
-        // artifact additionally intercepts its own diagnostic type.
+        // dispatch is preserved unchanged. Unlike AppleBCMWLAN, the local
+        // Tahoe stack does not open this delegated client during cold boot;
+        // bootstrap POWER=ON above is the observed late-userland trigger.
         return IO80211Controller::newUserClient(owningTask, securityID,
                                                 type, properties,
                                                 handler);

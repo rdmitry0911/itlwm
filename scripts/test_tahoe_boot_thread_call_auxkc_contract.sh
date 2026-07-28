@@ -128,6 +128,46 @@ require(build_script, "nm -u \"$OUTPUT_BINARY\" | grep -qx '_thread_call_cancel_
 if cpp.count("thread_call_enter(tahoeBootThreadCall)") != 1:
     fail("only the locked one-shot scheduler may submit the boot thread call")
 
+boot_nub_start = cpp.find("bool AirportItlwmBootNub::start(IOService *provider)")
+if boot_nub_start < 0:
+    fail("missing AirportItlwmBootNub::start")
+boot_nub_end = cpp.find("\n}\n\nstatic IORegistryEntry *", boot_nub_start)
+if boot_nub_end < 0:
+    fail("cannot delimit AirportItlwmBootNub::start")
+boot_nub = cpp[boot_nub_start:boot_nub_end]
+forbid(boot_nub, "scheduleTahoeBootThreadCall()",
+       "pre-airportd boot scheduling from boot nub")
+
+new_user_client_start = cpp.find("IOReturn AirportItlwm::\nnewUserClient(")
+if new_user_client_start < 0:
+    fail("missing AirportItlwm::newUserClient")
+new_user_client_end = cpp.find(
+    "\n}\n\n#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS",
+    new_user_client_start)
+if new_user_client_end < 0:
+    fail("cannot delimit AirportItlwm::newUserClient")
+new_user_client = cpp[new_user_client_start:new_user_client_end]
+forbid(new_user_client, "scheduleTahoeBootThreadCall();",
+       "unobserved delegated-user-client boot trigger")
+
+set_power_start = cpp.find("IOReturn AirportItlwm::\nsetPOWER(")
+if set_power_start < 0:
+    fail("missing AirportItlwm::setPOWER")
+set_power_end = cpp.find("\n}\n\n#if __IO80211_TARGET < __MAC_26_0",
+                         set_power_start)
+if set_power_end < 0:
+    fail("cannot delimit AirportItlwm::setPOWER")
+set_power = cpp[set_power_start:set_power_end]
+ordered(set_power, "late bootstrap POWER=ON boot scheduling",
+        "tahoeRequestedPowerState = (uint8_t)requestedState;",
+        "if (tahoeBootstrapPowerWindowOpen)",
+        "tahoeBootstrapPowerPending = true;",
+        "if (requestedState == kWiFiPowerOn)",
+        "scheduleTahoeBootThreadCall();",
+        "return kIOReturnSuccess;")
+if set_power.count("scheduleTahoeBootThreadCall();") != 1:
+    fail("bootstrap POWER=ON must own exactly one boot schedule edge")
+
 handler_start = cpp.find("handleTahoeBootChipImage(thread_call_param_t param0")
 if handler_start < 0:
     fail("missing boot callback handler")
