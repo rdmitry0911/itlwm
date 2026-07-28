@@ -40,6 +40,16 @@ detach(IOPCIDevice *device)
 bool ItlIwm::
 attach(IOPCIDevice *device)
 {
+    wclScanLock = IOSimpleLockAlloc();
+    if (wclScanLock == NULL)
+        return false;
+    wclScanPhase = ItlIwmWclScanPhase::Idle;
+    wclScanUpperGeneration = 0;
+    wclScanBackendGeneration = 0;
+    wclScanNextBackendGeneration = 0;
+    wclScanPublicationInvalidated = false;
+    wclScanNeedsReopen = false;
+
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
     if (!iwm_attach(&com, &pci)) {
@@ -87,6 +97,10 @@ releaseAll()
     }
     pci.pa_tag = NULL;
     pci.workloop = NULL;
+    if (wclScanLock != NULL) {
+        IOSimpleLockFree(wclScanLock);
+        wclScanLock = NULL;
+    }
 }
 
 IOReturn ItlIwm::
@@ -138,6 +152,405 @@ void ItlIwm::
 clearScanningFlags()
 {
     com.sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN);
+}
+
+static void
+iwm_wcl_scan_ticket_reset_locked(ItlIwm *that)
+{
+    that->wclScanPhase = ItlIwmWclScanPhase::Idle;
+    that->wclScanUpperGeneration = 0;
+    that->wclScanBackendGeneration = 0;
+    that->wclScanPublicationInvalidated = false;
+}
+
+static uint32_t
+iwm_wcl_scan_next_backend_generation_locked(ItlIwm *that)
+{
+    ++that->wclScanNextBackendGeneration;
+    if (that->wclScanNextBackendGeneration == 0)
+        ++that->wclScanNextBackendGeneration;
+    return that->wclScanNextBackendGeneration;
+}
+
+static void
+iwm_wcl_scan_publish_started(ItlIwm *that, uint64_t generation,
+                             uint32_t backendGeneration)
+{
+    struct ieee80211com *ic = &that->com.sc_ic;
+    if (ic->ic_event_handler == NULL || generation == 0 ||
+        backendGeneration == 0)
+        return;
+
+    struct ieee80211_wcl_scan_started started;
+    explicit_bzero(&started, sizeof(started));
+    started.generation = generation;
+    started.backend_generation = backendGeneration;
+    (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_STARTED, &started);
+    explicit_bzero(&started, sizeof(started));
+}
+
+static void
+iwm_wcl_scan_publish_start_rejected(ItlIwm *that, uint64_t generation,
+                                    uint32_t backendGeneration)
+{
+    struct ieee80211com *ic = &that->com.sc_ic;
+    if (ic->ic_event_handler == NULL || generation == 0)
+        return;
+
+    struct ieee80211_wcl_scan_start_rejected rejected;
+    explicit_bzero(&rejected, sizeof(rejected));
+    rejected.generation = generation;
+    rejected.backend_generation = backendGeneration;
+    (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_START_REJECTED,
+                            &rejected);
+    explicit_bzero(&rejected, sizeof(rejected));
+}
+
+void ItlIwm::
+publishWclScanTerminal(const ItlIwmWclScanTerminal *terminal,
+                       uint32_t status)
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    if (terminal == NULL || !terminal->publish ||
+        terminal->upperGeneration == 0 ||
+        terminal->backendGeneration == 0 ||
+        ic->ic_event_handler == NULL)
+        return;
+
+    struct ieee80211_wcl_scan_terminal event;
+    explicit_bzero(&event, sizeof(event));
+    event.generation = terminal->upperGeneration;
+    event.backend_generation = terminal->backendGeneration;
+    event.status = status;
+    (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_TERMINAL, &event);
+    explicit_bzero(&event, sizeof(event));
+}
+
+IOReturn ItlIwm::
+beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    bool startNow = false;
+
+    if (generation == 0 || outBackendGeneration == NULL)
+        return kIOReturnBadArgument;
+    *outBackendGeneration = 0;
+    if (wclScanLock == NULL || ic->ic_state != IEEE80211_S_SCAN ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        (ic->ic_if.if_flags & IFF_RUNNING) == 0 ||
+        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+        ic->ic_mgt_timer != 0 || ic->ic_des_esslen != 0)
+        return kIOReturnBusy;
+
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase != ItlIwmWclScanPhase::Idle) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return kIOReturnBusy;
+    }
+    wclScanUpperGeneration = generation;
+    wclScanBackendGeneration = 0;
+    wclScanPublicationInvalidated = false;
+    if ((com.sc_flags & IWM_FLAG_SCANNING) != 0) {
+        /*
+         * Do not reuse the boot scan's terminal or cache.  Its exact terminal
+         * only advances this ticket to InitialStarting; iwm_endscan() then
+         * performs controlled cleanup and queues one fresh IWM command.
+         */
+        wclScanPhase = ItlIwmWclScanPhase::InitialQueued;
+    } else {
+        wclScanPhase = ItlIwmWclScanPhase::InitialStarting;
+        startNow = true;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+
+    if (startNow)
+        ieee80211_begin_scan(&ic->ic_if);
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwm::
+beginWclBackgroundScan(uint64_t generation,
+                       uint32_t *outBackendGeneration)
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    bool rejectedBeforeSubmit = false;
+
+    if (generation == 0 || outBackendGeneration == NULL)
+        return kIOReturnBadArgument;
+    *outBackendGeneration = 0;
+    if (wclScanLock == NULL || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == NULL || ic->ic_mgt_timer != 0 ||
+        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+        (com.sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) != 0 ||
+        ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+         !ic->ic_bss->ni_port_valid))
+        return kIOReturnBusy;
+
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase != ItlIwmWclScanPhase::Idle) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return kIOReturnBusy;
+    }
+    wclScanPhase = ItlIwmWclScanPhase::BackgroundStarting;
+    wclScanUpperGeneration = generation;
+    wclScanBackendGeneration = 0;
+    wclScanPublicationInvalidated = false;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+
+    ieee80211_begin_cache_bgscan(&ic->ic_if);
+
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase == ItlIwmWclScanPhase::BackgroundActive &&
+        wclScanUpperGeneration == generation) {
+        *outBackendGeneration = wclScanBackendGeneration;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return kIOReturnSuccess;
+    }
+    /*
+     * A very short scan may already have published its tagged terminal.  In
+     * that case the upper reducer owns a Pending completion and will recover
+     * the backend generation from the terminal mailbox.
+     */
+    if (wclScanPhase == ItlIwmWclScanPhase::Idle) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return kIOReturnSuccess;
+    }
+    if (wclScanPhase == ItlIwmWclScanPhase::BackgroundStarting &&
+        wclScanUpperGeneration == generation) {
+        iwm_wcl_scan_ticket_reset_locked(this);
+        rejectedBeforeSubmit = true;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (rejectedBeforeSubmit) {
+        /* ieee80211_begin_cache_bgscan() has a void result and trusts a zero
+         * ic_bgscan_start return.  If the IWM callback did not cross its
+         * post-submit edge, retract those generic policy bits as part of the
+         * same rejected request. */
+        ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                          IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+    }
+    return kIOReturnBusy;
+}
+
+void ItlIwm::
+noteWclInitialScanCommandStarted()
+{
+    uint64_t generation = 0;
+    uint32_t backendGeneration = 0;
+
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase == ItlIwmWclScanPhase::InitialStarting) {
+        backendGeneration =
+            iwm_wcl_scan_next_backend_generation_locked(this);
+        wclScanBackendGeneration = backendGeneration;
+        wclScanPhase = ItlIwmWclScanPhase::InitialActive;
+        generation = wclScanUpperGeneration;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    iwm_wcl_scan_publish_started(this, generation, backendGeneration);
+}
+
+void ItlIwm::
+noteWclInitialScanCommandRejected()
+{
+    uint64_t generation = 0;
+    uint32_t backendGeneration = 0;
+
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase == ItlIwmWclScanPhase::InitialStarting) {
+        generation = wclScanUpperGeneration;
+        backendGeneration = wclScanBackendGeneration;
+        iwm_wcl_scan_ticket_reset_locked(this);
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    iwm_wcl_scan_publish_start_rejected(this, generation,
+                                        backendGeneration);
+}
+
+void ItlIwm::
+noteWclBackgroundScanCommandStarted()
+{
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase == ItlIwmWclScanPhase::BackgroundStarting) {
+        wclScanBackendGeneration =
+            iwm_wcl_scan_next_backend_generation_locked(this);
+        wclScanPhase = ItlIwmWclScanPhase::BackgroundActive;
+        __atomic_store_n(&com.sc_ic.ic_wcl_scan_active, 1,
+                         __ATOMIC_RELEASE);
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+}
+
+void ItlIwm::
+noteWclScanRadioReady()
+{
+    bool publish = false;
+
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanNeedsReopen) {
+        wclScanNeedsReopen = false;
+        publish = true;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (publish && com.sc_ic.ic_event_handler != NULL)
+        (*com.sc_ic.ic_event_handler)(&com.sc_ic,
+                                     IEEE80211_EVT_WCL_SCAN_REOPENED, NULL);
+}
+
+ItlIwmWclScanTerminalKind ItlIwm::
+claimWclScanTerminal(ItlIwmWclScanTerminal *terminal)
+{
+    if (terminal == NULL || wclScanLock == NULL)
+        return ItlIwmWclScanTerminalKind::None;
+    explicit_bzero(terminal, sizeof(*terminal));
+
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase == ItlIwmWclScanPhase::InitialQueued) {
+        if (wclScanPublicationInvalidated) {
+            iwm_wcl_scan_ticket_reset_locked(this);
+            IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+            return ItlIwmWclScanTerminalKind::None;
+        }
+        wclScanPhase = ItlIwmWclScanPhase::InitialStarting;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return ItlIwmWclScanTerminalKind::ReplayInitial;
+    }
+
+    ItlIwmWclScanTerminalKind kind =
+        ItlIwmWclScanTerminalKind::None;
+    if (wclScanPhase == ItlIwmWclScanPhase::InitialActive)
+        kind = ItlIwmWclScanTerminalKind::Foreground;
+    else if (wclScanPhase == ItlIwmWclScanPhase::BackgroundActive)
+        kind = ItlIwmWclScanTerminalKind::Background;
+    if (kind != ItlIwmWclScanTerminalKind::None) {
+        terminal->upperGeneration = wclScanUpperGeneration;
+        terminal->backendGeneration = wclScanBackendGeneration;
+        terminal->publish = !wclScanPublicationInvalidated;
+        iwm_wcl_scan_ticket_reset_locked(this);
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return kind;
+}
+
+IOReturn ItlIwm::
+abortWclBackgroundScan(uint64_t generation)
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    ItlIwmWclScanTerminal terminal;
+    ItlIwmWclScanTerminalKind kind =
+        ItlIwmWclScanTerminalKind::None;
+
+    if (generation == 0 || wclScanLock == NULL)
+        return kIOReturnBadArgument;
+
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool active = wclScanUpperGeneration == generation &&
+        (wclScanPhase == ItlIwmWclScanPhase::InitialActive ||
+         wclScanPhase == ItlIwmWclScanPhase::BackgroundActive);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!active)
+        return kIOReturnNotReady;
+    if (iwm_scan_abort(&com) != 0)
+        return kIOReturnError;
+
+    explicit_bzero(&terminal, sizeof(terminal));
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanUpperGeneration == generation) {
+        if (wclScanPhase == ItlIwmWclScanPhase::InitialActive)
+            kind = ItlIwmWclScanTerminalKind::Foreground;
+        else if (wclScanPhase == ItlIwmWclScanPhase::BackgroundActive)
+            kind = ItlIwmWclScanTerminalKind::Background;
+        if (kind != ItlIwmWclScanTerminalKind::None) {
+            terminal.upperGeneration = wclScanUpperGeneration;
+            terminal.backendGeneration = wclScanBackendGeneration;
+            terminal.publish = !wclScanPublicationInvalidated;
+            iwm_wcl_scan_ticket_reset_locked(this);
+        }
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+
+    if (kind == ItlIwmWclScanTerminalKind::Foreground) {
+        ieee80211_end_scan_controlled(
+            &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND);
+    } else if (kind == ItlIwmWclScanTerminalKind::Background) {
+        __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once, 1,
+                         __ATOMIC_RELEASE);
+        ieee80211_end_scan(&ic->ic_if);
+        __atomic_store_n(&ic->ic_wcl_scan_active, 0, __ATOMIC_RELEASE);
+    }
+    publishWclScanTerminal(
+        &terminal, IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED);
+    return kIOReturnSuccess;
+}
+
+void ItlIwm::
+invalidateWclBackgroundScan()
+{
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase != ItlIwmWclScanPhase::Idle)
+        wclScanPublicationInvalidated = true;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+}
+
+void ItlIwm::
+invalidateWclScanForReset()
+{
+    uint64_t generation = 0;
+    uint32_t backendGeneration = 0;
+    bool rejectStart = false;
+    bool invalidateActive = false;
+
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    generation = wclScanUpperGeneration;
+    backendGeneration = wclScanBackendGeneration;
+    rejectStart =
+        wclScanPhase == ItlIwmWclScanPhase::InitialQueued ||
+        wclScanPhase == ItlIwmWclScanPhase::InitialStarting ||
+        wclScanPhase == ItlIwmWclScanPhase::BackgroundStarting;
+    invalidateActive =
+        wclScanPhase == ItlIwmWclScanPhase::InitialActive ||
+        wclScanPhase == ItlIwmWclScanPhase::BackgroundActive;
+    iwm_wcl_scan_ticket_reset_locked(this);
+    wclScanNeedsReopen = true;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    __atomic_store_n(&com.sc_ic.ic_wcl_scan_active, 0, __ATOMIC_RELEASE);
+
+    if (rejectStart) {
+        iwm_wcl_scan_publish_start_rejected(this, generation,
+                                            backendGeneration);
+    } else if (invalidateActive && generation != 0 &&
+               backendGeneration != 0 &&
+               com.sc_ic.ic_event_handler != NULL) {
+        struct ieee80211_wcl_scan_invalidation invalidation;
+        explicit_bzero(&invalidation, sizeof(invalidation));
+        invalidation.generation = generation;
+        invalidation.backend_generation = backendGeneration;
+        (*com.sc_ic.ic_event_handler)(
+            &com.sc_ic, IEEE80211_EVT_WCL_SCAN_INVALIDATED, &invalidation);
+        explicit_bzero(&invalidation, sizeof(invalidation));
+    }
 }
 
 IOReturn ItlIwm::

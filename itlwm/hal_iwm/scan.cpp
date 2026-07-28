@@ -870,6 +870,7 @@ iwm_scan(struct iwm_softc *sc)
         err = iwm_lmac_scan(sc, 0);
     if (err && err != 1) {
         XYLog("%s: %d could not initiate scan, err=%d\n", DEVNAME(sc), __LINE__, err);
+        noteWclInitialScanCommandRejected();
         return err;
     }
     
@@ -881,6 +882,8 @@ iwm_scan(struct iwm_softc *sc)
         ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
     
     sc->sc_flags |= IWM_FLAG_SCANNING;
+    noteWclScanRadioReady();
+    noteWclInitialScanCommandStarted();
     if ((sc->sc_flags & IWM_FLAG_BGSCAN) == 0) {
         ieee80211_set_link_state(ic, LINK_STATE_DOWN);
         ieee80211_node_cleanup(ic, ic->ic_bss);
@@ -912,6 +915,7 @@ iwm_bgscan(struct ieee80211com *ic)
     }
     
     sc->sc_flags |= IWM_FLAG_BGSCAN;
+    that->noteWclBackgroundScanCommandStarted();
     return 0;
 }
 

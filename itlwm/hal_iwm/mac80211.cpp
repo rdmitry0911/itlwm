@@ -3128,6 +3128,8 @@ iwm_endscan(struct iwm_softc *sc)
 {
     struct ieee80211_node *ni, *nextbs;
     struct ieee80211com *ic = &sc->sc_ic;
+    ItlIwm *that = container_of(sc, ItlIwm, com);
+    ItlIwmWclScanTerminal terminal;
     
 //    ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
 //    for (; ni != NULL; ni = nextbs) {
@@ -3137,9 +3139,38 @@ iwm_endscan(struct iwm_softc *sc)
     
     if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
         return;
-    
+
+    explicit_bzero(&terminal, sizeof(terminal));
+    const ItlIwmWclScanTerminalKind wclTerminal =
+        that->claimWclScanTerminal(&terminal);
     sc->sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN);
-    ieee80211_end_scan(&ic->ic_if);
+    if (wclTerminal == ItlIwmWclScanTerminalKind::ReplayInitial) {
+        /* The retiring boot scan is not the WCL result owner.  Drain it
+         * without a generic terminal or selection, then queue one fresh
+         * firmware command whose post-submit edge receives its own backend
+         * generation. */
+        ieee80211_end_scan_controlled(
+            &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_HANDOFF);
+        ieee80211_begin_scan(&ic->ic_if);
+        return;
+    }
+    if (wclTerminal == ItlIwmWclScanTerminalKind::Foreground) {
+        ieee80211_end_scan_controlled(
+            &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND);
+    } else {
+        if (wclTerminal == ItlIwmWclScanTerminalKind::Background)
+            __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once, 1,
+                             __ATOMIC_RELEASE);
+        ieee80211_end_scan(&ic->ic_if);
+        if (wclTerminal == ItlIwmWclScanTerminalKind::Background)
+            __atomic_store_n(&ic->ic_wcl_scan_active, 0,
+                             __ATOMIC_RELEASE);
+    }
+    if (wclTerminal == ItlIwmWclScanTerminalKind::Foreground ||
+        wclTerminal == ItlIwmWclScanTerminalKind::Background)
+        that->publishWclScanTerminal(
+            &terminal,
+            IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE);
 }
 
 /*
@@ -3616,11 +3647,13 @@ iwm_stop(struct _ifnet *ifp)
 {
     struct iwm_softc *sc = (struct iwm_softc*)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
+    ItlIwm *that = container_of(sc, ItlIwm, com);
     struct iwm_node *in = (struct iwm_node *)ic->ic_bss;
     int i, s;
 
     /* This direct sc_newstate(INIT) path intentionally bypasses the macro. */
     (void)ieee80211_pae_assoc_epoch_begin(ic);
+    that->invalidateWclScanForReset();
     s = splnet();
     
     //    rw_assert_wrlock(&sc->ioctl_rwl);

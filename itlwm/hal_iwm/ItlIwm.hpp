@@ -33,6 +33,28 @@
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
+enum class ItlIwmWclScanPhase : uint8_t {
+    Idle,
+    InitialQueued,
+    InitialStarting,
+    InitialActive,
+    BackgroundStarting,
+    BackgroundActive,
+};
+
+enum class ItlIwmWclScanTerminalKind : uint8_t {
+    None,
+    ReplayInitial,
+    Foreground,
+    Background,
+};
+
+struct ItlIwmWclScanTerminal {
+    uint64_t upperGeneration;
+    uint32_t backendGeneration;
+    bool publish;
+};
+
 class ItlIwm : public ItlHalService, ItlDriverInfo, ItlDriverController {
     OSDeclareDefaultStructors(ItlIwm)
     
@@ -44,6 +66,25 @@ public:
     IOReturn enable(IONetworkInterface *netif) override;
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
+
+    IOReturn beginWclBackgroundScan(
+        uint64_t generation,
+        uint32_t *outBackendGeneration) override;
+    IOReturn beginWclInitialScan(
+        uint64_t generation,
+        uint32_t *outBackendGeneration) override;
+    IOReturn abortWclBackgroundScan(uint64_t generation) override;
+    void invalidateWclBackgroundScan() override;
+
+    void noteWclInitialScanCommandStarted();
+    void noteWclInitialScanCommandRejected();
+    void noteWclBackgroundScanCommandStarted();
+    void noteWclScanRadioReady();
+    ItlIwmWclScanTerminalKind claimWclScanTerminal(
+        ItlIwmWclScanTerminal *terminal);
+    void publishWclScanTerminal(
+        const ItlIwmWclScanTerminal *terminal, uint32_t status);
+    void invalidateWclScanForReset();
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwm_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -430,6 +471,13 @@ public:
     IOPCIDevice *pciNub;
     struct pci_attach_args pci;
     struct iwm_softc com;
+    IOSimpleLock *wclScanLock;
+    ItlIwmWclScanPhase wclScanPhase;
+    uint64_t wclScanUpperGeneration;
+    uint32_t wclScanBackendGeneration;
+    uint32_t wclScanNextBackendGeneration;
+    bool wclScanPublicationInvalidated;
+    bool wclScanNeedsReopen;
 };
 
 #endif /* ItlIwm_hpp */

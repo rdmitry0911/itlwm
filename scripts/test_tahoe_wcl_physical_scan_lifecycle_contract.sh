@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Static + pure-unit regression gate for the exact IWN-owned Tahoe WCL scan
-# layer.  IWM/IWX intentionally remain fail-closed until they own an equally
+# Static + pure-unit regression gate for the exact IWN/IWM-owned Tahoe WCL
+# scan layer.  IWX intentionally remains fail-closed until it owns an equally
 # strict firmware-terminal lease.
 set -euo pipefail
 
@@ -26,7 +26,9 @@ i80211_proto = (root / "itl80211/openbsd/net80211/ieee80211_proto.h").read_text(
 i80211 = (root / "itl80211/openbsd/net80211/ieee80211.c").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 iwm = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
+iwm_hpp = (root / "itlwm/hal_iwm/ItlIwm.hpp").read_text()
 iwm_mac = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
+iwm_scan = (root / "itlwm/hal_iwm/scan.cpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 iwn_var = (root / "itlwm/hal_iwn/if_iwnvar.h").read_text()
 iwm_var = (root / "itlwm/hal_iwm/if_iwmvar.h").read_text()
@@ -252,11 +254,157 @@ for token in ("beginWclBackgroundScan", "beginWclInitialScan",
               "kIOReturnUnsupported"):
     require(hal_service, token, "fail-closed HAL WCL boundary")
 
-for source, label in ((iwm, "IWM"), (iwx, "IWX"),
-                      (iwm_mac, "IWM mac80211")):
+for source, label in ((iwx, "IWX"), (iwx_var, "IWX var")):
     forbid(source, "WCL_SCAN", f"{label} premature WCL owner")
-for source, label in ((iwm_var, "IWM var"), (iwx_var, "IWX var")):
-    forbid(source, "WCL_SCAN", f"{label} premature WCL marker")
+
+for token in (
+        "ItlIwmWclScanPhase",
+        "InitialQueued",
+        "InitialStarting",
+        "InitialActive",
+        "BackgroundStarting",
+        "BackgroundActive",
+        "beginWclInitialScan(",
+        "beginWclBackgroundScan(",
+        "abortWclBackgroundScan(",
+        "invalidateWclBackgroundScan() override",
+        "claimWclScanTerminal(",
+        "publishWclScanTerminal(",
+        "invalidateWclScanForReset()",
+        "IOSimpleLock *wclScanLock",
+        "wclScanBackendGeneration",
+        "wclScanPublicationInvalidated",
+        "wclScanNeedsReopen",
+):
+    require(iwm_hpp, token, "IWM exact WCL owner declaration")
+
+iwm_initial = body(
+    iwm,
+    "beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)",
+    "IWM beginWclInitialScan")
+for token in (
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "ic->ic_opmode != IEEE80211_M_STA",
+        "(ic->ic_if.if_flags & IFF_RUNNING) == 0",
+        "(ic->ic_flags & IEEE80211_F_BGSCAN) != 0",
+        "ic->ic_mgt_timer != 0",
+        "ic->ic_des_esslen != 0",
+):
+    require(iwm_initial, token, "IWM initial admission fence")
+ordered(iwm_initial, "IWM fresh initial physical scan",
+        "wclScanUpperGeneration = generation",
+        "if ((com.sc_flags & IWM_FLAG_SCANNING) != 0)",
+        "wclScanPhase = ItlIwmWclScanPhase::InitialQueued",
+        "wclScanPhase = ItlIwmWclScanPhase::InitialStarting",
+        "ieee80211_begin_scan(&ic->ic_if)")
+require(iwm_initial, "*outBackendGeneration = 0;",
+        "IWM initial STARTED-only backend publication")
+
+iwm_background = body(
+    iwm,
+    "beginWclBackgroundScan(uint64_t generation,",
+    "IWM beginWclBackgroundScan")
+ordered(iwm_background, "IWM background physical scan",
+        "wclScanPhase = ItlIwmWclScanPhase::BackgroundStarting",
+        "ieee80211_begin_cache_bgscan(&ic->ic_if)",
+        "wclScanPhase == ItlIwmWclScanPhase::BackgroundActive",
+        "*outBackendGeneration = wclScanBackendGeneration")
+
+iwm_initial_started = body(
+    iwm, "noteWclInitialScanCommandStarted()",
+    "IWM initial post-submit owner")
+ordered(iwm_initial_started, "IWM initial backend generation",
+        "wclScanPhase == ItlIwmWclScanPhase::InitialStarting",
+        "iwm_wcl_scan_next_backend_generation_locked(this)",
+        "wclScanPhase = ItlIwmWclScanPhase::InitialActive",
+        "iwm_wcl_scan_publish_started")
+
+iwm_radio_ready = body(
+    iwm, "noteWclScanRadioReady()", "IWM radio-ready fence")
+ordered(iwm_radio_ready, "IWM reset reopening",
+        "if (wclScanNeedsReopen)",
+        "wclScanNeedsReopen = false",
+        "IEEE80211_EVT_WCL_SCAN_REOPENED")
+
+iwm_claim = body(
+    iwm, "claimWclScanTerminal(ItlIwmWclScanTerminal *terminal)",
+    "IWM terminal claim")
+ordered(iwm_claim, "IWM initial handoff",
+        "wclScanPhase == ItlIwmWclScanPhase::InitialQueued",
+        "wclScanPhase = ItlIwmWclScanPhase::InitialStarting",
+        "ItlIwmWclScanTerminalKind::ReplayInitial")
+for token in (
+        "ItlIwmWclScanPhase::InitialActive",
+        "ItlIwmWclScanTerminalKind::Foreground",
+        "ItlIwmWclScanPhase::BackgroundActive",
+        "ItlIwmWclScanTerminalKind::Background",
+        "terminal->upperGeneration = wclScanUpperGeneration",
+        "terminal->backendGeneration = wclScanBackendGeneration",
+        "terminal->publish = !wclScanPublicationInvalidated",
+):
+    require(iwm_claim, token, "IWM exact terminal ticket")
+
+iwm_foreground_submit = body(
+    iwm_scan, "iwm_scan(struct iwm_softc *sc)",
+    "IWM foreground command submit")
+ordered(iwm_foreground_submit, "IWM post-submit STARTED edge",
+        "sc->sc_flags |= IWM_FLAG_SCANNING",
+        "noteWclScanRadioReady()",
+        "noteWclInitialScanCommandStarted()")
+require(iwm_foreground_submit, "noteWclInitialScanCommandRejected()",
+        "IWM pre-submit initial rejection")
+
+iwm_background_submit = body(
+    iwm_scan, "iwm_bgscan(struct ieee80211com *ic)",
+    "IWM background command submit")
+ordered(iwm_background_submit, "IWM background activation",
+        "sc->sc_flags |= IWM_FLAG_BGSCAN",
+        "that->noteWclBackgroundScanCommandStarted()")
+
+iwm_terminal = body(
+    iwm_mac, "iwm_endscan(struct iwm_softc *sc)",
+    "IWM firmware scan terminal")
+ordered(iwm_terminal, "IWM queued initial handoff",
+        "that->claimWclScanTerminal(&terminal)",
+        "ItlIwmWclScanTerminalKind::ReplayInitial",
+        "IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
+        "ieee80211_begin_scan(&ic->ic_if)")
+ordered(iwm_terminal, "IWM exact foreground terminal",
+        "ItlIwmWclScanTerminalKind::Foreground",
+        "IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND")
+ordered(iwm_terminal, "IWM tagged terminal publication",
+        "ItlIwmWclScanTerminalKind::Background",
+        "ic_wcl_scan_suppress_scan_done_once",
+        "that->publishWclScanTerminal(",
+        "IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE")
+
+iwm_abort = body(
+    iwm, "abortWclBackgroundScan(uint64_t generation)",
+    "IWM WCL abort")
+ordered(iwm_abort, "IWM physical abort terminal",
+        "iwm_scan_abort(&com)",
+        "IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND",
+        "ic_wcl_scan_suppress_scan_done_once",
+        "IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED")
+
+iwm_reset = body(
+    iwm, "invalidateWclScanForReset()", "IWM reset invalidation")
+for token in (
+        "iwm_wcl_scan_publish_start_rejected",
+        "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
+        "wclScanNeedsReopen = true",
+):
+    require(iwm_reset, token, "IWM reset closure")
+for token in (
+        "IEEE80211_EVT_WCL_SCAN_STARTED",
+        "IEEE80211_EVT_WCL_SCAN_START_REJECTED",
+        "IEEE80211_EVT_WCL_SCAN_TERMINAL",
+):
+    require(iwm, token, "IWM exact upper event mapping")
+iwm_stop = body(iwm_mac, "iwm_stop(struct _ifnet *ifp)",
+                "IWM hardware stop")
+require(iwm_stop, "that->invalidateWclScanForReset();",
+        "IWM stop reset invalidation")
 
 for token in ("IWN_SCAN_LEASE_WCL_BACKGROUND", "IWN_SCAN_LEASE_WCL_INITIAL",
               "IWN_SCAN_LEASE_GENERIC_FOREGROUND",
