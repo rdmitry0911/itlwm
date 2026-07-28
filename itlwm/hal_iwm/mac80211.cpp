@@ -3020,6 +3020,13 @@ iwm_newstate_task(void *psc)
     enum ieee80211_state ostate = ic->ic_state;
     int arg = sc->ns_arg;
     int err = 0, s = splnet();
+
+    if (nstate == IEEE80211_S_RUN)
+        IWX_AUTH_DIAG(
+            "iwm_newstate_task: RUN start old_state=%u queued_state=%u "
+            "shutdown=%u\n",
+            (unsigned)ostate, (unsigned)nstate,
+            (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0 ? 1U : 0U);
     
     if (sc->sc_flags & IWM_FLAG_SHUTDOWN) {
         /* iwm_stop() is waiting for us. */
@@ -3091,6 +3098,10 @@ iwm_newstate_task(void *psc)
             
         case IEEE80211_S_RUN:
             err = that->iwm_run(sc);
+            IWX_AUTH_DIAG(
+                "iwm_newstate_task: RUN lower_complete result=%d "
+                "state_before_commit=%u\n",
+                err, (unsigned)ic->ic_state);
             break;
     }
     
@@ -3098,8 +3109,14 @@ out:
     if ((sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0) {
         if (err)
             task_add(systq, &sc->init_task);
-        else
-            sc->sc_newstate(ic, nstate, arg);
+        else {
+            const int stateResult = sc->sc_newstate(ic, nstate, arg);
+            if (nstate == IEEE80211_S_RUN)
+                IWX_AUTH_DIAG(
+                    "iwm_newstate_task: RUN state_commit result=%d "
+                    "committed_state=%u\n",
+                    stateResult, (unsigned)ic->ic_state);
+        }
     }
     //        refcnt_rele_wake(&sc->task_refs);
     splx(s);
@@ -3162,7 +3179,11 @@ iwm_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     
     sc->ns_nstate = nstate;
     sc->ns_arg = arg;
-    
+
+    if (nstate == IEEE80211_S_RUN)
+        IWX_AUTH_DIAG(
+            "iwm_newstate: queue RUN old_state=%u queued_state=%u\n",
+            (unsigned)ic->ic_state, (unsigned)nstate);
     that->iwm_add_task(sc, sc->sc_nswq, &sc->newstate_task);
     
     return 0;

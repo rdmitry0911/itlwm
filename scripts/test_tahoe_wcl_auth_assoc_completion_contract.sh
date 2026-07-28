@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Static regression gate for Tahoe's two-stage WCL association boundary:
-# generic Core status (0x4e/0x08), then a strictly candidate-owned
-# JoinAdapter completion (0xd3/0x1c).
+# Static regression gate for Tahoe's two-stage association boundary:
+# generic Core status (0x4e/0x08), then an exact selected-BSS JoinAdapter
+# completion (0xd3/0x1c) owned by either WCL or public IOC_ASSOCIATE.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -137,7 +137,7 @@ for token in (
 ):
     require(capture, token, "S_ASSOC selected-BSS capture gate")
 
-# The owner match prevents a generic/public association, alternate candidate,
+# The owner match prevents an ownerless association, alternate candidate,
 # stale owner, or duplicate publication from entering the JoinManager path.
 matches = body(v2, "static bool tahoeWclAuthAssocCompletionMatchesOwner(",
                "candidate owner matcher")
@@ -171,6 +171,8 @@ for token in (
         "owner.authAssocCompletionPublished = false",
 ):
     require(publisher, token, "one-shot completion publication")
+forbid(publisher, "!owner.publicCarrier",
+       "public completion exclusion from common publisher")
 
 deauth_case = between(v2,
                       "case IEEE80211_EVT_STA_DEAUTH:",
@@ -188,6 +190,46 @@ public_assoc = body(sky, "setASSOCIATE(struct apple80211_assoc_data *ad)",
                     "public association setter")
 require(public_assoc, "getTahoeOwnerRegistry().association =",
         "public association clears old WCL owner")
+ordered(public_assoc, "public completion lease precedes scan resume",
+        "tahoePublicAssociationOwnerMatchesRequest(",
+        "if (instance != nullptr && !preservePublicCompletionOwner)",
+        "assocResult = associateSSID(",
+        "tahoeBuildPublicAssociationOwner(ad, &publicOwner)",
+        "getTahoeOwnerRegistry().association = publicOwner",
+        "ieee80211_new_state(")
+
+public_match = body(
+    sky, "tahoePublicAssociationOwnerMatchesRequest(",
+    "public duplicate-owner matcher")
+for token in (
+        "owner.publicCarrier",
+        "owner.authAssocCompletionArmed",
+        "owner.apMode != request->ad_mode",
+        "owner.authLower != request->ad_auth_lower",
+        "owner.authUpper != request->ad_auth_upper",
+        "owner.ssidLength != request->ad_ssid_len",
+        "owner.rsnIeLength != request->ad_rsn_ie_len",
+        "owner.selectedBssid",
+        "owner.candidateBssid",
+        "memcmp(owner.ssid, request->ad_ssid",
+):
+    require(public_match, token, "exact public duplicate fence")
+
+public_build = body(
+    sky, "tahoeBuildPublicAssociationOwner(",
+    "public completion-owner builder")
+for token in (
+        "request->ad_mode != APPLE80211_AP_MODE_INFRA",
+        "TahoeScanContracts::hasRenderableBssid(request->ad_bssid.octet)",
+        "owner->hasCarrier = true",
+        "owner->publicCarrier = true",
+        "owner->selectedFromCandidate = true",
+        "owner->authAssocCompletionArmed = true",
+        "owner->candidateCount = 1",
+        "owner->selectedBssid",
+        "owner->candidateBssid",
+):
+    require(public_build, token, "public JoinAdapter completion lease")
 
 wcl_assoc = body(sky, "setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)",
                  "WCL association setter")
@@ -209,6 +251,7 @@ require(abort, 'clearExternalPmkEligibilityLocked("setWCL_JOIN_ABORT")',
         "join abort clears candidate owner")
 
 for token in (
+        "publicCarrier",
         "authAssocCompletionArmed",
         "authAssocCompletionPublished",
         "selectedBssid",

@@ -424,6 +424,67 @@ tahoeSeedBssManagerAssociatedAuthType(
         kAppleBssManagerAssociatedAuthTypeLen);
 }
 
+static bool
+tahoePublicAssociationOwnerMatchesRequest(
+    const TahoeOwnerRegistry::AssociationOwner &owner,
+    const struct apple80211_assoc_data *request)
+{
+    if (request == nullptr || !owner.hasCarrier || !owner.publicCarrier ||
+        !owner.selectedFromCandidate || !owner.authAssocCompletionArmed ||
+        owner.apMode != request->ad_mode ||
+        owner.authLower != request->ad_auth_lower ||
+        owner.authUpper != request->ad_auth_upper ||
+        owner.ssidLength != request->ad_ssid_len ||
+        owner.rsnIeLength != request->ad_rsn_ie_len ||
+        owner.candidateCount != 1 ||
+        !TahoeScanContracts::hasRenderableBssid(request->ad_bssid.octet) ||
+        !IEEE80211_ADDR_EQ(owner.selectedBssid,
+                           request->ad_bssid.octet) ||
+        !IEEE80211_ADDR_EQ(owner.candidateBssid,
+                           request->ad_bssid.octet))
+        return false;
+
+    return memcmp(owner.ssid, request->ad_ssid,
+                  request->ad_ssid_len) == 0;
+}
+
+static bool
+tahoeBuildPublicAssociationOwner(
+    const struct apple80211_assoc_data *request,
+    TahoeOwnerRegistry::AssociationOwner *owner)
+{
+    if (request == nullptr || owner == nullptr ||
+        request->ad_mode != APPLE80211_AP_MODE_INFRA ||
+        request->ad_ssid_len == 0 ||
+        request->ad_ssid_len > APPLE80211_MAX_SSID_LEN ||
+        !TahoeScanContracts::hasRenderableBssid(request->ad_bssid.octet))
+        return false;
+
+    *owner = TahoeOwnerRegistry::AssociationOwner{};
+    owner->hasCarrier = true;
+    owner->publicCarrier = true;
+    owner->selectedFromCandidate = true;
+    owner->authAssocCompletionArmed = true;
+    owner->authAssocCompletionPublished = false;
+    owner->apMode = request->ad_mode;
+    owner->authLower = request->ad_auth_lower;
+    owner->authUpper = request->ad_auth_upper;
+    owner->ssidLength = request->ad_ssid_len;
+    owner->rsnIeLength = request->ad_rsn_ie_len;
+    owner->boundedRsnIeLength =
+        TahoeAssociationContracts::boundedRsnIeLength(
+            request->ad_rsn_ie_len, APPLE80211_MAX_RSN_IE_LEN);
+    owner->candidateCount = 1;
+    memcpy(owner->ssid, request->ad_ssid, request->ad_ssid_len);
+    memcpy(owner->selectedBssid, request->ad_bssid.octet,
+           sizeof(owner->selectedBssid));
+    memcpy(owner->candidateBssid, request->ad_bssid.octet,
+           sizeof(owner->candidateBssid));
+    memcpy(owner->contextBssid, request->ad_bssid.octet,
+           sizeof(owner->contextBssid));
+    return true;
+}
+
 namespace {
 
 static_assert(TahoeBssManagerContracts::kBeaconMetaDataSize ==
@@ -5751,9 +5812,22 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         return kIOReturnError;
     }
 
-    /* A public association is not a WCL JoinAdapter request.  Evict any
-     * preceding WCL candidate ledger before it can reach AUTH/ASSOC. */
-    if (instance != nullptr)
+    /*
+     * Tahoe routes an ordinary CoreWLAN association through the same
+     * JoinAdapter completion consumer as a WCL candidate.  Evict a preceding
+     * WCL/public ledger on a new request, but preserve the exact public lease
+     * when CoreWLAN repeats the same IOC while AUTH/ASSOC is already in
+     * flight.  Clearing that duplicate used to make the successful on-air
+     * response ownerless, so 0x4e was published but the required 0xd3
+     * completion could never be sent.
+     */
+    const bool preservePublicCompletionOwner =
+        instance != nullptr &&
+        (ic->ic_state == IEEE80211_S_AUTH ||
+         ic->ic_state == IEEE80211_S_ASSOC) &&
+        tahoePublicAssociationOwnerMatchesRequest(
+            instance->getTahoeOwnerRegistry().association, ad);
+    if (instance != nullptr && !preservePublicCompletionOwner)
         instance->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
 
@@ -5812,6 +5886,17 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
                                     ad->ad_auth_upper, ad->ad_key.key,
                                     ad->ad_key.key_len, ad->ad_key.key_index,
                                     true, false, false, nullptr);
+        /*
+         * associateSSID() can clear stale credential/association ownership.
+         * Publish the exact public completion lease only after that policy
+         * transaction succeeds and before SCAN resume can synchronously bind
+         * the selected BSS and enter AUTH.
+         */
+        if (assocResult == kIOReturnSuccess && instance != nullptr) {
+            TahoeOwnerRegistry::AssociationOwner publicOwner{};
+            if (tahoeBuildPublicAssociationOwner(ad, &publicOwner))
+                instance->getTahoeOwnerRegistry().association = publicOwner;
+        }
         /* CoreWLAN's BSSID is an initial selected candidate on this public
          * path. Arm only after association policy setup succeeded; WCL
          * reaches the shared associateSSID() but never reaches this arm. */

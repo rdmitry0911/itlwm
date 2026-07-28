@@ -125,6 +125,11 @@ struct TahoeOwnerRegistry {
 
     struct AssociationOwner {
         bool hasCarrier = false;
+        // The ordinary IOC_ASSOCIATE path is still completed through
+        // Tahoe's JoinAdapter carrier.  Keep its provenance explicit so an
+        // exact duplicate public request can preserve its in-flight lease
+        // without ever inheriting a preceding WCL candidate.
+        bool publicCarrier = false;
         bool selectedFromCandidate = false;
         // Set immediately before the accepted WCL request resumes normal
         // scan/selection.  Parsed carriers that are blocked, stale, or never

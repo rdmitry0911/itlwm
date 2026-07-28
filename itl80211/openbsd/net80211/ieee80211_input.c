@@ -3316,7 +3316,15 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         ni->ni_rsn_supp_state = RSNA_SUPP_PTKSTART;
     } else if (ic->ic_flags & IEEE80211_F_WEPON)
         ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
-    
+
+    IWX_AUTH_DIAG(
+        "ieee80211_recv_assoc_resp: ASSOC parsed peer="
+        "%02x:%02x:%02x:%02x:%02x:%02x aid=%u rate=0x%02x "
+        "node_flags=0x%08x request_state=RUN\n",
+        wh->i_addr2[0], wh->i_addr2[1], wh->i_addr2[2],
+        wh->i_addr2[3], wh->i_addr2[4], wh->i_addr2[5],
+        (unsigned)ni->ni_associd, (unsigned)rate,
+        (unsigned)ni->ni_flags);
     ieee80211_new_state(ic, IEEE80211_S_RUN,
                         IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 }

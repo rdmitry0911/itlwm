@@ -69,8 +69,18 @@ for source, token, label in (
          "IWM association completion evidence"),
         (input_c, "ieee80211_recv_assoc_resp: ASSOC RX",
          "net80211 association-response evidence"),
+        (input_c, "ieee80211_recv_assoc_resp: ASSOC parsed",
+         "net80211 association-parse evidence"),
+        (iwm, "iwm_newstate: queue RUN",
+         "IWM RUN queue evidence"),
+        (iwm, "iwm_newstate_task: RUN start",
+         "IWM RUN task-start evidence"),
+        (iwm, "iwm_newstate_task: RUN lower_complete",
+         "IWM RUN firmware-programming evidence"),
+        (iwm, "iwm_newstate_task: RUN state_commit",
+         "IWM RUN generic-state commit evidence"),
 ):
     require(source, token, label)
 
-print("PASS: IWM keeps its proven association frame while IWN/IWX retain BTM and every IWM ASSOC TX/RX boundary is observable")
+print("PASS: IWM keeps its proven association frame while IWN/IWX retain BTM and every IWM ASSOC TX/RX/RUN boundary is observable")
 PY

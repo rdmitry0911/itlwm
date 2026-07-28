@@ -5676,7 +5676,9 @@ static bool buildTahoeWclAuthAssocCompletePayload(
 /*
  * STA_ASSOC_DONE is delivered from net80211 before it leaves S_ASSOC.  Carry
  * the exact selected-BSS snapshot observed at that edge into the controller
- * gate, then revalidate it there before publishing the WCL-only 0xd3.  The
+ * gate, then revalidate it there before publishing the JoinAdapter 0xd3.  The
+ * owner may originate from an explicit WCL candidate or from Tahoe's ordinary
+ * public IOC_ASSOCIATE carrier; both must name the exact selected BSS.  The
  * request owns no node or IE pointer, so it cannot extend a stale association
  * lifetime across the lower callback / command-gate boundary.
  */
@@ -5728,9 +5730,9 @@ static bool tahoeWclAuthAssocCompletionMatchesOwner(
 }
 
 /*
- * WCLJoinManager accepts 0xd3 only for the candidate that its JoinAdapter
+ * WCLJoinManager accepts 0xd3 only for the association that its JoinAdapter
  * owns.  This action is deliberately narrower than the generic 0x4e status
- * bulletin: it rejects public associations, WCL reassociation, stale scan
+ * bulletin: it rejects ownerless associations, WCL reassociation, stale scan
  * epochs, alternate candidates, and every retry/failure edge for which we do
  * not have Apple's complete candidate ledger.
  */
@@ -8504,10 +8506,25 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
                 return;
 
             TahoeWclAuthAssocCompletionRequest request;
-            if (captureTahoeWclAuthAssocCompletionRequest(ic, &request)) {
-                (void)gate->runAction(postTahoeWclAuthAssocCompleteGated,
-                                      &request);
-            }
+            const bool captured =
+                captureTahoeWclAuthAssocCompletionRequest(ic, &request);
+            IOReturn completionResult = kIOReturnNotReady;
+            if (captured)
+                completionResult =
+                    gate->runAction(postTahoeWclAuthAssocCompleteGated,
+                                    &request);
+
+            const TahoeOwnerRegistry::AssociationOwner &owner =
+                that->getTahoeOwnerRegistry().association;
+            IWX_AUTH_DIAG(
+                "eventHandler: ASSOC completion captured=%u result=0x%08x "
+                "carrier=%u public=%u armed=%u published=%u\n",
+                captured ? 1U : 0U,
+                static_cast<unsigned int>(completionResult),
+                owner.hasCarrier ? 1U : 0U,
+                owner.publicCarrier ? 1U : 0U,
+                owner.authAssocCompletionArmed ? 1U : 0U,
+                owner.authAssocCompletionPublished ? 1U : 0U);
             return;
         }
 #else
