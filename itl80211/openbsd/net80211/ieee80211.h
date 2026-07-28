@@ -696,6 +696,28 @@ enum {
 #define IEEE80211_ACTION_SA_QUERY_RESP	1
 
 /*
+ * WNM BSS Transition Management action field values and request/status bits
+ * (802.11-2016 9.6.13.9).  The STA path uses only the bounded candidate-list
+ * form; no WNM sleep/offload state is inferred from these definitions.
+ */
+#define IEEE80211_ACTION_WNM_BSS_TRANS_QUERY	6
+#define IEEE80211_ACTION_WNM_BSS_TRANS_REQ	7
+#define IEEE80211_ACTION_WNM_BSS_TRANS_RESP	8
+
+#define IEEE80211_WNM_BSS_TM_REQ_PREF_CAND_LIST	0x01
+#define IEEE80211_WNM_BSS_TM_REQ_ABRIDGED	0x02
+#define IEEE80211_WNM_BSS_TM_REQ_DISASSOC_IMMINENT	0x04
+#define IEEE80211_WNM_BSS_TM_REQ_BSS_TERMINATION	0x08
+#define IEEE80211_WNM_BSS_TM_REQ_ESS_DISASSOC	0x10
+
+#define IEEE80211_WNM_BSS_TM_ACCEPT	0
+#define IEEE80211_WNM_BSS_TM_REJECT_UNSPECIFIED	1
+#define IEEE80211_WNM_BSS_TM_REJECT_NO_SUITABLE	7
+
+/* Reason 12 is the BSS-transition disassociation reason in current 802.11. */
+#define IEEE80211_REASON_BSS_TRANSITION_DISASSOC	12
+
+/*
  * HT Action field values (see 802.11-2012 8.5.12 Table 8-229).
  */
 #define IEEE80211_ACTION_NOTIFYCW		0

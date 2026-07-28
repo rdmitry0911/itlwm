@@ -506,6 +506,25 @@ struct ieee80211_public_initial_bssid_pin {
 };
 
 /*
+ * One protected WNM BSS Transition request may steer the next association.
+ * This is public radio identity only: no credential, PMK, raw frame, node
+ * reference, or callback is retained.  `candidate_confirmed` is set only
+ * after the normal RSN-capability matcher observes the advertised target in
+ * a fresh background scan.  The selected-BSS leaf lock serializes the fixed
+ * record across RX, scan completion, and the next WCL association carrier.
+ */
+struct ieee80211_wnm_bss_transition {
+	u_int8_t		source_bssid[IEEE80211_ADDR_LEN];
+	u_int8_t		target_bssid[IEEE80211_ADDR_LEN];
+	u_int8_t		ssid[IEEE80211_NWID_LEN];
+	u_int8_t		ssid_len;
+	u_int8_t		dialog_token;
+	u_int8_t		target_channel;
+	u_int8_t		active;
+	u_int8_t		candidate_confirmed;
+};
+
+/*
  * One explicit direct-WCL SAE request, kept separately from both the
  * selected scan BSS and the private driver credential staging slot.  This is
  * public association identity only: it contains no passphrase, PMK, PWE,
@@ -813,6 +832,8 @@ struct ieee80211com {
 	struct ieee80211_sae_peer_rx_admission ic_sae_peer_rx_admission;
 	/* Public initial-BSS hint only; never represents raw/legacy/WCL pinning. */
 	struct ieee80211_public_initial_bssid_pin ic_public_initial_bssid_pin;
+	/* Protected 802.11v target hint, consumed by one replacement join. */
+	struct ieee80211_wnm_bss_transition ic_wnm_bss_transition;
 	/* Direct-WCL SAE request identity and monotonic nonzero generation.  The
 	 * fixed record is public control-plane state only; credentials remain in
 	 * the driver's separately scrubbed private staging slot. */
@@ -1318,6 +1339,7 @@ void	ieee80211_set_ess(struct ieee80211com *, struct ieee80211_ess *,
 void    ieee80211_deselect_ess(struct ieee80211com *);
 struct ieee80211_ess *ieee80211_get_ess(struct ieee80211com *, const char *, int);
 void ieee80211_begin_cache_bgscan(struct _ifnet *);
+int ieee80211_begin_wnm_bgscan(struct _ifnet *);
 
 extern	int ieee80211_cache_size;
 

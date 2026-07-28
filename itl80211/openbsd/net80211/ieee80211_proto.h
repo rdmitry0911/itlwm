@@ -192,6 +192,29 @@ extern	void ieee80211_public_initial_bssid_pin_port_valid(
  * USE_APPLE_SUPPLICANT LINK_UP edge without changing WCL/raw semantics. */
 extern	int ieee80211_public_initial_bssid_pin_should_defer_link_up(
 	    struct ieee80211com *, struct ieee80211_node *);
+extern	int ieee80211_wnm_bss_transition_arm(struct ieee80211com *,
+	    const u_int8_t[IEEE80211_ADDR_LEN],
+	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int8_t,
+	    u_int8_t, u_int8_t);
+extern	void ieee80211_wnm_bss_transition_clear(struct ieee80211com *);
+/* Returns 0 with no owner, 1 for the exact target, and -1 for an active
+ * transition whose target does not match this scan node. */
+extern	int ieee80211_wnm_bss_transition_candidate_disposition(
+	    struct ieee80211com *, const struct ieee80211_node *);
+extern	int ieee80211_wnm_bss_transition_active(
+	    struct ieee80211com *, u_int8_t *);
+extern	int ieee80211_wnm_bss_transition_confirm_candidate(
+	    struct ieee80211com *, const struct ieee80211_node *, u_int8_t *,
+	    u_int8_t[IEEE80211_ADDR_LEN]);
+extern	int ieee80211_wnm_bss_transition_copy_retarget(
+	    struct ieee80211com *, const u_int8_t *, u_int8_t,
+	    u_int8_t[IEEE80211_ADDR_LEN]);
+extern	void ieee80211_wnm_bss_transition_consume(
+	    struct ieee80211com *, const u_int8_t *, u_int8_t,
+	    const u_int8_t[IEEE80211_ADDR_LEN]);
+extern	int ieee80211_send_bss_transition_response(struct ieee80211com *,
+	    struct ieee80211_node *, u_int8_t, u_int8_t,
+	    const u_int8_t[IEEE80211_ADDR_LEN]);
 extern	void ieee80211_pae_mfp_txn_complete(struct ieee80211com *,
 	    u_int64_t, u_int8_t, int);
 extern	void ieee80211_pae_mfp_txn_abort(struct ieee80211com *);

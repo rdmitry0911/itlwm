@@ -144,6 +144,8 @@ void    ieee80211_recv_sa_query_resp(struct ieee80211com *, mbuf_t,
 #endif
 void    ieee80211_recv_action(struct ieee80211com *, mbuf_t,
                               struct ieee80211_node *);
+void    ieee80211_recv_wnm_bss_transition_req(struct ieee80211com *, mbuf_t,
+                                              struct ieee80211_node *);
 #ifndef IEEE80211_STA_ONLY
 void    ieee80211_recv_pspoll(struct ieee80211com *, mbuf_t,
                               struct ieee80211_node *);
@@ -3875,6 +3877,91 @@ ieee80211_recv_sa_query_resp(struct ieee80211com *ic, mbuf_t m,
 }
 #endif
 
+/*
+ * BSS Transition Management Request:
+ * [1] Category [1] Action [1] Dialog Token [1] Request Mode
+ * [2] Disassociation Timer [1] Validity Interval [optional fields/IEs]
+ *
+ * The driver accepts only a concrete Neighbor Report candidate.  It keeps
+ * the source link up during a fresh background scan and defers its response
+ * until the ordinary RSN matcher confirms the target.
+ */
+void
+ieee80211_recv_wnm_bss_transition_req(struct ieee80211com *ic, mbuf_t m,
+    struct ieee80211_node *ni)
+{
+	const struct ieee80211_frame *wh;
+	const u_int8_t *frm, *end, *ie;
+	u_int8_t target_bssid[IEEE80211_ADDR_LEN];
+	u_int8_t dialog_token, request_mode, target_channel = 0;
+	size_t offset;
+	int armed = 0;
+
+	explicit_bzero(target_bssid, sizeof(target_bssid));
+	if (ic == NULL || ni == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_RUN || ic->ic_bss != ni ||
+	    ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+	    !ni->ni_port_valid) ||
+	    mbuf_len(m) < sizeof(*wh) + 7)
+		return;
+
+	wh = mtod(m, struct ieee80211_frame *);
+	if (!IEEE80211_ADDR_EQ(wh->i_addr2, ni->ni_bssid))
+		return;
+	frm = (const u_int8_t *)&wh[1];
+	end = (const u_int8_t *)wh + mbuf_len(m);
+	dialog_token = frm[2];
+	request_mode = frm[3];
+	offset = 7;
+
+	if ((request_mode & IEEE80211_WNM_BSS_TM_REQ_BSS_TERMINATION) != 0) {
+		if ((size_t)(end - frm) < offset + 12)
+			goto reject;
+		offset += 12;
+	}
+	if ((request_mode & IEEE80211_WNM_BSS_TM_REQ_ESS_DISASSOC) != 0) {
+		u_int8_t url_len;
+
+		if ((size_t)(end - frm) < offset + 1)
+			goto reject;
+		url_len = frm[offset++];
+		if ((size_t)(end - frm) < offset + url_len)
+			goto reject;
+		offset += url_len;
+	}
+	if ((request_mode & IEEE80211_WNM_BSS_TM_REQ_PREF_CAND_LIST) == 0)
+		goto reject;
+
+	while ((size_t)(end - frm) >= offset + 2) {
+		size_t ie_len;
+
+		ie = frm + offset;
+		ie_len = ie[1];
+		if ((size_t)(end - frm) < offset + 2 + ie_len)
+			goto reject;
+		if (ie[0] == IEEE80211_ELEMID_NBR_REPORT && ie_len >= 13) {
+			IEEE80211_ADDR_COPY(target_bssid, ie + 2);
+			target_channel = ie[13];
+			break;
+		}
+		offset += 2 + ie_len;
+	}
+
+	armed = ieee80211_wnm_bss_transition_arm(ic, ni->ni_bssid,
+	    target_bssid, ni->ni_essid, ni->ni_esslen, dialog_token,
+	    target_channel);
+	if (!armed)
+		goto reject;
+	if (ieee80211_begin_wnm_bgscan(&ic->ic_if) == 0)
+		return;
+	ieee80211_wnm_bss_transition_clear(ic);
+
+reject:
+	(void)ieee80211_send_bss_transition_response(ic, ni, dialog_token,
+	    IEEE80211_WNM_BSS_TM_REJECT_NO_SUITABLE, NULL);
+	explicit_bzero(target_bssid, sizeof(target_bssid));
+}
+
 /*-
  * Action frame format:
  * [1] Category
@@ -3919,6 +4006,10 @@ ieee80211_recv_action(struct ieee80211com *ic, mbuf_t m,
                     break;
 #endif
             }
+            break;
+        case IEEE80211_CATEG_WNM:
+            if (frm[1] == IEEE80211_ACTION_WNM_BSS_TRANS_REQ)
+                ieee80211_recv_wnm_bss_transition_req(ic, m, ni);
             break;
         default:
             DPRINTF(("action frame category %d not handled\n", frm[0]));

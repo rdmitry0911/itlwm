@@ -152,6 +152,37 @@ ieee80211_begin_cache_bgscan(struct _ifnet *ifp)
     }
 }
 
+/*
+ * Start one driver-owned BSS Transition candidate census while preserving
+ * the live source association.  Unlike a cache-only WCL scan, completion is
+ * allowed to steer the connection, but node selection remains constrained
+ * by the protected WNM target record.
+ */
+int
+ieee80211_begin_wnm_bgscan(struct _ifnet *ifp)
+{
+    struct ieee80211com *ic = (struct ieee80211com *)ifp;
+    int error;
+
+    if (ic == NULL || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_mgt_timer != 0 || (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+        ic->ic_bgscan_start == NULL)
+        return EBUSY;
+    if ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+        (ic->ic_bss == NULL || !ic->ic_bss->ni_port_valid))
+        return EBUSY;
+
+    error = ic->ic_bgscan_start(ic);
+    if (error != 0)
+        return error;
+
+    /* Keep only the live ic_bss; every target must be observed afresh. */
+    ieee80211_free_allnodes(ic, 0);
+    ic->ic_flags |= IEEE80211_F_BGSCAN;
+    ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+    return 0;
+}
+
 void
 ieee80211_bgscan_timeout(void *arg)
 {
@@ -230,6 +261,8 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
            sizeof(ic->ic_sae_peer_rx_admission));
     memset(&ic->ic_public_initial_bssid_pin, 0,
            sizeof(ic->ic_public_initial_bssid_pin));
+    memset(&ic->ic_wnm_bss_transition, 0,
+           sizeof(ic->ic_wnm_bss_transition));
     ic->ic_sae_wcl_request_next_generation = 0;
     ic->ic_sae_wcl_policy_generation = 0;
     memset(&ic->ic_sae_wcl_request, 0,
@@ -295,6 +328,7 @@ ieee80211_ifdetach(struct _ifnet *ifp)
     
     /* Close future async STA owners before queues, crypto, and nodes vanish. */
     ieee80211_public_initial_bssid_pin_disarm(ic);
+    ieee80211_wnm_bss_transition_clear(ic);
     (void)ieee80211_pae_assoc_epoch_begin(ic);
     timeout_del(&ic->ic_bgscan_timeout);
     timeout_free(&ic->ic_bgscan_timeout);

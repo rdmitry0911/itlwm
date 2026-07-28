@@ -909,6 +909,16 @@ ieee80211_public_initial_bssid_pin_clear_locked(struct ieee80211com *ic)
 	    sizeof(ic->ic_public_initial_bssid_pin));
 }
 
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
+static void
+ieee80211_wnm_bss_transition_clear_locked(struct ieee80211com *ic)
+{
+	if (ic == NULL)
+		return;
+	explicit_bzero(&ic->ic_wnm_bss_transition,
+	    sizeof(ic->ic_wnm_bss_transition));
+}
+
 static int
 ieee80211_bssid_is_unicast_nonzero(
     const u_int8_t bssid[IEEE80211_ADDR_LEN])
@@ -977,6 +987,201 @@ ieee80211_public_initial_bssid_pin_disarm(struct ieee80211com *ic)
 		return;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	ieee80211_public_initial_bssid_pin_clear_locked(ic);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+int
+ieee80211_wnm_bss_transition_arm(struct ieee80211com *ic,
+    const u_int8_t source_bssid[IEEE80211_ADDR_LEN],
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN],
+    const u_int8_t *ssid, u_int8_t ssid_len, u_int8_t dialog_token,
+    u_int8_t target_channel)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	int armed = 0;
+
+	if (ic == NULL || source_bssid == NULL || target_bssid == NULL ||
+	    ssid == NULL || ssid_len == 0 || ssid_len > IEEE80211_NWID_LEN ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    !ieee80211_bssid_is_unicast_nonzero(source_bssid) ||
+	    !ieee80211_bssid_is_unicast_nonzero(target_bssid) ||
+	    IEEE80211_ADDR_EQ(source_bssid, target_bssid) ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+	    IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, source_bssid) &&
+	    ic->ic_bss->ni_esslen == ssid_len &&
+	    memcmp(ic->ic_bss->ni_essid, ssid, ssid_len) == 0) {
+		transition = &ic->ic_wnm_bss_transition;
+		ieee80211_wnm_bss_transition_clear_locked(ic);
+		IEEE80211_ADDR_COPY(transition->source_bssid, source_bssid);
+		IEEE80211_ADDR_COPY(transition->target_bssid, target_bssid);
+		memcpy(transition->ssid, ssid, ssid_len);
+		transition->ssid_len = ssid_len;
+		transition->dialog_token = dialog_token;
+		transition->target_channel = target_channel;
+		transition->active = 1;
+		armed = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return armed;
+}
+
+void
+ieee80211_wnm_bss_transition_clear(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_clear_locked(ic);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+int
+ieee80211_wnm_bss_transition_candidate_disposition(
+    struct ieee80211com *ic, const struct ieee80211_node *ni)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_wnm_bss_transition *transition;
+	int disposition = 0;
+
+	if (ic == NULL || ni == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0) {
+		disposition =
+		    IEEE80211_ADDR_EQ(transition->target_bssid, ni->ni_bssid) &&
+		    transition->ssid_len == ni->ni_esslen &&
+		    memcmp(transition->ssid, ni->ni_essid,
+		    transition->ssid_len) == 0 &&
+		    (transition->target_channel == 0 ||
+		    transition->target_channel ==
+		    ieee80211_chan2ieee(ic, ni->ni_chan)) ? 1 : -1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return disposition;
+}
+
+int
+ieee80211_wnm_bss_transition_active(struct ieee80211com *ic,
+    u_int8_t *dialog_token)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_wnm_bss_transition *transition;
+	int active = 0;
+
+	if (dialog_token != NULL)
+		*dialog_token = 0;
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0) {
+		active = 1;
+		if (dialog_token != NULL)
+			*dialog_token = transition->dialog_token;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return active;
+}
+
+int
+ieee80211_wnm_bss_transition_confirm_candidate(
+    struct ieee80211com *ic, const struct ieee80211_node *ni,
+    u_int8_t *dialog_token, u_int8_t target_bssid[IEEE80211_ADDR_LEN])
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	int confirmed = 0;
+
+	if (dialog_token != NULL)
+		*dialog_token = 0;
+	if (target_bssid != NULL)
+		explicit_bzero(target_bssid, IEEE80211_ADDR_LEN);
+	if (ic == NULL || ni == NULL || dialog_token == NULL ||
+	    target_bssid == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 &&
+	    IEEE80211_ADDR_EQ(transition->target_bssid, ni->ni_bssid) &&
+	    transition->ssid_len == ni->ni_esslen &&
+	    memcmp(transition->ssid, ni->ni_essid, transition->ssid_len) == 0 &&
+	    (transition->target_channel == 0 ||
+	    transition->target_channel == ieee80211_chan2ieee(ic, ni->ni_chan))) {
+		transition->candidate_confirmed = 1;
+		*dialog_token = transition->dialog_token;
+		IEEE80211_ADDR_COPY(target_bssid, transition->target_bssid);
+		confirmed = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return confirmed;
+}
+
+int
+ieee80211_wnm_bss_transition_copy_retarget(struct ieee80211com *ic,
+    const u_int8_t *ssid, u_int8_t ssid_len,
+    u_int8_t target_bssid[IEEE80211_ADDR_LEN])
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	int retarget = 0;
+
+	if (target_bssid != NULL)
+		explicit_bzero(target_bssid, IEEE80211_ADDR_LEN);
+	if (ic == NULL || ssid == NULL || ssid_len == 0 ||
+	    ssid_len > IEEE80211_NWID_LEN || target_bssid == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 && transition->candidate_confirmed != 0 &&
+	    transition->ssid_len == ssid_len &&
+	    memcmp(transition->ssid, ssid, ssid_len) == 0) {
+		IEEE80211_ADDR_COPY(target_bssid, transition->target_bssid);
+		retarget = 1;
+	} else if (transition->active != 0 &&
+	    transition->candidate_confirmed != 0) {
+		/* A different explicit join supersedes the completed transition. */
+		ieee80211_wnm_bss_transition_clear_locked(ic);
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return retarget;
+}
+
+void
+ieee80211_wnm_bss_transition_consume(struct ieee80211com *ic,
+    const u_int8_t *ssid, u_int8_t ssid_len,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN])
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+
+	if (ic == NULL || ssid == NULL || target_bssid == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 && transition->candidate_confirmed != 0 &&
+	    transition->ssid_len == ssid_len &&
+	    memcmp(transition->ssid, ssid, ssid_len) == 0 &&
+	    IEEE80211_ADDR_EQ(transition->target_bssid, target_bssid))
+		ieee80211_wnm_bss_transition_clear_locked(ic);
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 }
 

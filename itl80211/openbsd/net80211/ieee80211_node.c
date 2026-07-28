@@ -1052,9 +1052,11 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
                     int bgscan)
 {
     u_int8_t rate;
-    int fail;
+    int fail, wnm_target;
     
     fail = 0;
+    wnm_target = bgscan ?
+        ieee80211_wnm_bss_transition_candidate_disposition(ic, ni) : 0;
 
     /*
      * Apple/macOS: skip ALL BSS filtering when AUTO_JOIN && des_esslen==0.
@@ -1118,7 +1120,8 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
          memcmp(ni->ni_essid, ic->ic_des_essid, ic->ic_des_esslen) != 0))
         fail |= IEEE80211_NODE_ASSOCFAIL_ESSID;
     if ((ic->ic_flags & IEEE80211_F_DESBSSID) &&
-        !IEEE80211_ADDR_EQ(ic->ic_des_bssid, ni->ni_bssid))
+        !IEEE80211_ADDR_EQ(ic->ic_des_bssid, ni->ni_bssid) &&
+        wnm_target != 1)
         fail |= IEEE80211_NODE_ASSOCFAIL_BSSID;
     
     if (ic->ic_flags & IEEE80211_F_RSNON) {
@@ -1215,6 +1218,23 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
     
     ieee80211_node_newstate(curbs, IEEE80211_STA_CACHE);
     ieee80211_node_join_bss(ic, selbs); /* frees arg and ic->ic_bss */
+}
+
+/* Implements ni->ni_unref_cb() for a confirmed 802.11v target.  The source
+ * BTM response and disassociation have both left the hardware queue before
+ * this callback tears down the old BSS and lets WCL restage SAE credentials
+ * for the retained target identity. */
+void
+ieee80211_node_wnm_reconnect(struct ieee80211com *ic,
+    struct ieee80211_node *ni)
+{
+    if (ic == NULL || ni == NULL || ni != ic->ic_bss)
+        return;
+    ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
+    ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                      IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+    ieee80211_new_state(ic, IEEE80211_S_SCAN,
+                        IEEE80211_FC0_SUBTYPE_DEAUTH);
 }
 
 void
@@ -1367,6 +1387,12 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
 
         if (curbs && ieee80211_node_cmp(ic->ic_bss, ni) == 0)
             *curbs = ni;
+
+        /* A protected BTM request owns one exact scan target.  Preserve the
+         * current-BSS lookup above, but do not let RSSI or band preference
+         * replace the AP-provided candidate with another same-ESS node. */
+        if (ieee80211_wnm_bss_transition_candidate_disposition(ic, ni) < 0)
+            continue;
 
         int fail = ieee80211_match_bss(ic, ni, bgscan);
         if (fail != 0) {
@@ -1564,6 +1590,54 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
     selbs = ieee80211_node_choose_bss(ic, bgscan, &curbs);
     if (bgscan) {
         struct ieee80211_node_switch_bss_arg *arg;
+        u_int8_t wnm_dialog_token = 0;
+        u_int8_t wnm_target_bssid[IEEE80211_ADDR_LEN];
+
+        explicit_bzero(wnm_target_bssid, sizeof(wnm_target_bssid));
+        if (ieee80211_wnm_bss_transition_active(ic,
+            &wnm_dialog_token)) {
+            if (selbs == NULL ||
+                !ieee80211_wnm_bss_transition_confirm_candidate(
+                    ic, selbs, &wnm_dialog_token, wnm_target_bssid)) {
+                (void)ieee80211_send_bss_transition_response(
+                    ic, ic->ic_bss, wnm_dialog_token,
+                    IEEE80211_WNM_BSS_TM_REJECT_NO_SUITABLE, NULL);
+                ieee80211_wnm_bss_transition_clear(ic);
+                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+                return;
+            }
+
+            /* Accept while the protected source association and its IGTK/PTK
+             * are still live, then serialize source leave behind both
+             * management transmissions. */
+            if (ieee80211_send_bss_transition_response(
+                ic, ic->ic_bss, wnm_dialog_token,
+                IEEE80211_WNM_BSS_TM_ACCEPT, wnm_target_bssid) != 0) {
+                ieee80211_wnm_bss_transition_clear(ic);
+                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+                return;
+            }
+            ieee80211_stop_ampdu_tx(ic, ic->ic_bss,
+                                    IEEE80211_FC0_SUBTYPE_DEAUTH);
+            if (IEEE80211_SEND_MGMT(ic, ic->ic_bss,
+                    IEEE80211_FC0_SUBTYPE_DEAUTH,
+                    IEEE80211_REASON_BSS_TRANSITION_DISASSOC) != 0) {
+                ieee80211_wnm_bss_transition_clear(ic);
+                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+                return;
+            }
+            (void)ieee80211_pae_assoc_epoch_begin(ic);
+            ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
+            ic->ic_bss->ni_unref_arg = NULL;
+            ic->ic_bss->ni_unref_arg_size = 0;
+            ic->ic_bss->ni_unref_cb = ieee80211_node_wnm_reconnect;
+            explicit_bzero(wnm_target_bssid,
+                           sizeof(wnm_target_bssid));
+            return;
+        }
         
         ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
         if (!roamscan) {

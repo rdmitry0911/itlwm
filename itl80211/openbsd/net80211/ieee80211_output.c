@@ -120,6 +120,18 @@ mbuf_t ieee80211_get_sa_query(struct ieee80211com *,
 mbuf_t ieee80211_get_action(struct ieee80211com *,
 	    struct ieee80211_node *, u_int8_t, u_int8_t, int);
 
+static u_int8_t *
+ieee80211_add_wnm_extcaps(u_int8_t *frm)
+{
+	/* Extended Capabilities bit 19: BSS Transition Management support. */
+	*frm++ = IEEE80211_ELEMID_XCAPS;
+	*frm++ = 3;
+	*frm++ = 0;
+	*frm++ = 0;
+	*frm++ = (u_int8_t)(IEEE80211_EXTCAP_BSS_TRANSITION >> 16);
+	return frm;
+}
+
 /*
  * IEEE 802.11 output routine. Normally this will directly call the
  * Ethernet output routine because 802.11 encapsulation is called
@@ -1717,7 +1729,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 		2 + IEEE80211_WPAIE_MAXLEN : 0) +
 	    ((ic->ic_flags & IEEE80211_F_HTON) ? sizeof(struct ieee80211_ie_htcap) + sizeof(struct ieee80211_wme_info) : 0) +
         ((ic->ic_flags & IEEE80211_F_VHTON) ? sizeof(struct ieee80211_ie_vhtcap) + 2 : 0) +
-        ((ic->ic_flags & IEEE80211_F_HEON) ? (sizeof(struct ieee80211_he_cap_elem) + 2 + 1 + sizeof(struct ieee80211_he_mcs_nss_supp) + IEEE80211_HE_PPE_THRES_MAX_LEN) : 0));
+        ((ic->ic_flags & IEEE80211_F_HEON) ? (sizeof(struct ieee80211_he_cap_elem) + 2 + 1 + sizeof(struct ieee80211_he_mcs_nss_supp) + IEEE80211_HE_PPE_THRES_MAX_LEN) : 0) +
+	    2 + 3);
 	if (m == NULL)
 		return NULL;
 
@@ -1772,8 +1785,10 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (ic->ic_flags & IEEE80211_F_VHTON)
         frm = ieee80211_add_vhtcaps(frm, ic);
     
-    if (ic->ic_flags & IEEE80211_F_HEON)
-        frm = ieee80211_add_hecaps(frm, ic);
+	if (ic->ic_flags & IEEE80211_F_HEON)
+		frm = ieee80211_add_hecaps(frm, ic);
+
+	frm = ieee80211_add_wnm_extcaps(frm);
 
     size_t l = frm - mtod(m, u_int8_t *);
     mbuf_pkthdr_setlen(m, l);
@@ -2111,6 +2126,55 @@ ieee80211_get_action(struct ieee80211com *ic, struct ieee80211_node *ni,
 		break;
 	}
 	return m;
+}
+
+/*
+ * Transmit one WNM BSS Transition Management Response while the source BSS
+ * is still current.  Status zero carries the exact scan-confirmed target;
+ * rejection responses intentionally carry no candidate list.
+ */
+int
+ieee80211_send_bss_transition_response(struct ieee80211com *ic,
+    struct ieee80211_node *ni, u_int8_t dialog_token, u_int8_t status,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN])
+{
+	struct _ifnet *ifp;
+	mbuf_t m;
+	u_int8_t *frm;
+	u_int len;
+	int ret;
+
+	if (ic == NULL || ni == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_RUN || ni != ic->ic_bss)
+		return EINVAL;
+	if (status == IEEE80211_WNM_BSS_TM_ACCEPT && target_bssid == NULL)
+		return EINVAL;
+
+	len = 5 + (status == IEEE80211_WNM_BSS_TM_ACCEPT ?
+	    IEEE80211_ADDR_LEN : 0);
+	m = ieee80211_getmgmt(MBUF_DONTWAIT, MT_DATA, len);
+	if (m == NULL)
+		return ENOMEM;
+	frm = mtod(m, u_int8_t *);
+	*frm++ = IEEE80211_CATEG_WNM;
+	*frm++ = IEEE80211_ACTION_WNM_BSS_TRANS_RESP;
+	*frm++ = dialog_token;
+	*frm++ = status;
+	*frm++ = 0;	/* BSS Termination Delay */
+	if (status == IEEE80211_WNM_BSS_TM_ACCEPT) {
+		IEEE80211_ADDR_COPY(frm, target_bssid);
+		frm += IEEE80211_ADDR_LEN;
+	}
+	mbuf_pkthdr_setlen(m, len);
+	mbuf_setlen(m, len);
+
+	ifp = &ic->ic_if;
+	ieee80211_ref_node(ni);
+	ret = ieee80211_mgmt_output(ifp, ni, m,
+	    IEEE80211_FC0_SUBTYPE_ACTION);
+	if (ret != 0)
+		ieee80211_release_node(ic, ni);
+	return ret;
 }
 
 /*

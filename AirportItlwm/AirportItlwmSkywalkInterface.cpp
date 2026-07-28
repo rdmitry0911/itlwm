@@ -6803,7 +6803,15 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
     const struct ether_addr *candidate_bssid =
         reinterpret_cast<const struct ether_addr *>(
             raw + TahoeAssociationContracts::kFirstCandidateBssidOffset);
-    const struct ether_addr *bssid = candidate_count > 0 ? candidate_bssid : context_bssid;
+    struct ether_addr wnm_target_bssid{};
+    const bool wnm_retarget =
+        raw_ssid_len > 0 && raw_ssid_len <= APPLE80211_MAX_SSID_LEN &&
+        ieee80211_wnm_bss_transition_copy_retarget(
+            ic, ssid, static_cast<uint8_t>(raw_ssid_len),
+            wnm_target_bssid.octet) != 0;
+    const struct ether_addr *bssid = wnm_retarget
+        ? &wnm_target_bssid
+        : (candidate_count > 0 ? candidate_bssid : context_bssid);
 
     if (ssid_len > APPLE80211_MAX_SSID_LEN)
         ssid_len = APPLE80211_MAX_SSID_LEN;
@@ -6857,7 +6865,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
          * candidate never reaches the private credential parser. */
         if (ap_mode != APPLE80211_AP_MODE_INFRA || raw_ssid_len == 0 ||
             raw_ssid_len > kItlSaeWclCredentialV1SsidMaxLength ||
-            candidate_count == 0 ||
+            (candidate_count == 0 && !wnm_retarget) ||
             candidate_count > TahoeAssociationContracts::kMaximumCandidateCount ||
             wcl_key_cipher != APPLE80211_CIPHER_PWD ||
             wcl_key_len < kItlSaeWclCredentialV1PassphraseMinLength ||
@@ -6867,9 +6875,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
             saeResult = kIOReturnNotReady;
             goto sae_out;
         }
-        memcpy(saeBssid,
-               raw + TahoeAssociationContracts::kFirstCandidateBssidOffset,
-               sizeof(saeBssid));
+        memcpy(saeBssid, bssid->octet, sizeof(saeBssid));
         if (!itl_sae_wcl_credential_bssid_is_unicast_nonzero(saeBssid))
             goto sae_out;
 
@@ -6909,6 +6915,9 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         directRequest.wclOwner = &owner;
         saeResult = startIwnDirectSaeCredential(&directRequest, nullptr,
                                                 nullptr);
+        if (saeResult == kIOReturnSuccess && wnm_retarget)
+            ieee80211_wnm_bss_transition_consume(
+                ic, ssid, static_cast<uint8_t>(raw_ssid_len), saeBssid);
 
 sae_out:
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
@@ -7182,6 +7191,10 @@ sae_out:
                                    reinterpret_cast<const uint8_t *>(bssid),
                                    auth_lower, auth_upper, rsn_ie_len,
                                    assocResult);
+    if (assocResult == kIOReturnSuccess && wnm_retarget)
+        ieee80211_wnm_bss_transition_consume(
+            ic, ssid, static_cast<uint8_t>(raw_ssid_len),
+            wnm_target_bssid.octet);
     return assocResult;
 }
 
