@@ -5808,7 +5808,7 @@ static bool postTahoeWclLinkStateInd(AirportItlwm *controller,
 
     struct ieee80211com *ic = controller->fHalService->get80211Controller();
     if (ic == nullptr || ic->ic_bss == nullptr ||
-        (linkUp && ic->ic_state != IEEE80211_S_RUN)) {
+        ic->ic_state != IEEE80211_S_RUN) {
         XYLog("DEBUG %s SKIP link_up=%d ic=%p ic_state=%d ic_bss=%p\n",
               __FUNCTION__, linkUp ? 1 : 0, ic,
               ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr);
@@ -7987,6 +7987,16 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
     }
     if (action == kAirportItlwmDeferredPowerAvailabilityPublishOff) {
         that->cancelDeferredPowerOnAvailabilityRaw();
+        /*
+         * Apple's normal firmware link event and its independent
+         * sendInternalLinkDownInd fallback both publish the 16-byte 0xd8
+         * carrier.  IWN radio disable has no firmware deauth completion, so
+         * close WCL's active link explicitly while the selected RUN BSS is
+         * still authoritative.  Queue it before DRIVER_UNAVAILABLE and
+         * before disableAdapterCore tears the lower state down.  rawReason=0
+         * maps to Apple's 0xff unknown/administrative reason.
+         */
+        postTahoeWclLinkStateInd(that, false, 0);
         postTahoeDriverAvailabilityTransition(
             that, TahoeDriverAvailabilityContracts::Transition::PowerOff);
         return kIOReturnSuccess;
