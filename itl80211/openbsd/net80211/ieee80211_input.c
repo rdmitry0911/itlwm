@@ -2181,6 +2181,14 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                         rsn.rsn_nunknownakms)) {
                         ni->ni_sae_scan_flags |=
                             IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK;
+                    } else if (
+                        ieee80211_sae_scan_akm_is_exact_transition_sha256_psk(
+                        rsn.rsn_akms == (IEEE80211_AKM_SAE |
+                        IEEE80211_AKM_PSK | IEEE80211_AKM_SHA256_PSK),
+                        rsn.rsn_nakms, rsn.rsn_nknownakms,
+                        rsn.rsn_nunknownakms)) {
+                        ni->ni_sae_scan_flags |=
+                            IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK_SHA256_PSK;
                     } else if (ieee80211_sae_scan_akm_is_ambiguous(
                         rsn.rsn_nakms, rsn.rsn_nknownakms,
                         rsn.rsn_nunknownakms)) {

@@ -2566,9 +2566,9 @@ ieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked(
 
 	flags = selected->sae_scan_flags;
 	if ((flags & IEEE80211_SAE_SCAN_CENSUS_COMPLETE) == 0 ||
-	    (flags & IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK) == 0 ||
+	    !ieee80211_sae_scan_transition_akm_census_is_supported(flags) ||
 	    (flags & ~(IEEE80211_SAE_ADMISSION_GROUP19_HNP_ALLOWED_FLAGS |
-	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK)) != 0)
+	    IEEE80211_SAE_SCAN_TRANSITION_AKM_MASK)) != 0)
 		return 0;
 
 	out->group = IEEE80211_SAE_ADMISSION_GROUP_19;

@@ -33,6 +33,14 @@
 #define IEEE80211_SAE_SCAN_CENSUS_COMPLETE		0x00020000u
 /* Exact RSN SAE|PSK transition census: two known, non-duplicate AKMs only. */
 #define IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK		0x00040000u
+/* Same personal transition profile with the optional standardized
+ * WPA-PSK-SHA256 AKM also advertised.  The direct owner still elects SAE;
+ * this fact only prevents a third fully known personal AKM from being
+ * misclassified as an unknown/enterprise transition. */
+#define IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK_SHA256_PSK	0x00080000u
+#define IEEE80211_SAE_SCAN_TRANSITION_AKM_MASK \
+	(IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK | \
+	 IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK_SHA256_PSK)
 
 /*
  * Strict normal-SAE accepts a completed census and only plain optional
@@ -46,7 +54,7 @@
 /* This fact is meaningful only to an explicit local WCL SAE request. */
 #define IEEE80211_SAE_SCAN_TRANSITION_PROFILE_ALLOWED_MASK \
 	(IEEE80211_SAE_SCAN_STRICT_PROFILE_ALLOWED_MASK | \
-	 IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK)
+	 IEEE80211_SAE_SCAN_TRANSITION_AKM_MASK)
 
 #define IEEE80211_SAE_RSNXE_FIELD_LEN_MASK	0x0fu
 #define IEEE80211_SAE_RSNXE_H2E		(1u << 5)
@@ -256,6 +264,32 @@ ieee80211_sae_scan_akm_is_exact_transition(int exact_sae_psk,
 }
 
 /*
+ * hostapd and other common AP implementations may advertise the optional
+ * SHA-256 PSK AKM beside the ordinary PSK and SAE suites.  It remains a
+ * bounded personal transition profile: all three suites must be distinct,
+ * known, and the bitset owner must have proved this exact set.
+ */
+static inline int
+ieee80211_sae_scan_akm_is_exact_transition_sha256_psk(
+    int exact_sae_psk_sha256_psk, uint16_t advertised_count,
+    uint16_t known_count, uint16_t unknown_count)
+{
+	return exact_sae_psk_sha256_psk && advertised_count == 3 &&
+	    known_count == 3 && unknown_count == 0;
+}
+
+static inline int
+ieee80211_sae_scan_transition_akm_census_is_supported(uint32_t scan_flags)
+{
+	uint32_t transition = scan_flags &
+	    IEEE80211_SAE_SCAN_TRANSITION_AKM_MASK;
+
+	return transition == IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK ||
+	    transition ==
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK_SHA256_PSK;
+}
+
+/*
  * Strict normal-SAE profile fact, not an association authorization.  Password
  * Identifier, SAE-PK, H2E-only, malformed/unknown, duplicate-suite, and any
  * later unmodeled scan fact all fail closed.  A plain RSNXE H2E bit remains
@@ -289,7 +323,7 @@ ieee80211_sae_scan_profile_is_transition(int rsn_only, int exact_sae_psk,
 	return rsn_only && exact_sae_psk && ess && !ibss && privacy &&
 	    !no_pairwise && ccmp_pairwise && ccmp_group && bip_group_mgmt &&
 	    mfpc && !mfpr &&
-	    (scan_flags & IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK) != 0 &&
+	    ieee80211_sae_scan_transition_akm_census_is_supported(scan_flags) &&
 	    (scan_flags & IEEE80211_SAE_SCAN_CENSUS_COMPLETE) != 0 &&
 	    (scan_flags & ~IEEE80211_SAE_SCAN_TRANSITION_PROFILE_ALLOWED_MASK) == 0;
 }

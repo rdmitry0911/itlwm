@@ -234,14 +234,36 @@ main(void)
 	assert(ieee80211_sae_scan_akm_is_exact_transition(1, 2, 2, 0));
 	assert(!ieee80211_sae_scan_akm_is_exact_transition(0, 2, 2, 0));
 	assert(!ieee80211_sae_scan_akm_is_exact_transition(1, 2, 1, 1));
+	assert(ieee80211_sae_scan_akm_is_exact_transition_sha256_psk(
+	    1, 3, 3, 0));
+	assert(!ieee80211_sae_scan_akm_is_exact_transition_sha256_psk(
+	    0, 3, 3, 0));
+	assert(!ieee80211_sae_scan_akm_is_exact_transition_sha256_psk(
+	    1, 3, 2, 1));
+	assert(ieee80211_sae_scan_transition_akm_census_is_supported(
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK));
+	assert(ieee80211_sae_scan_transition_akm_census_is_supported(
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK_SHA256_PSK));
+	assert(!ieee80211_sae_scan_transition_akm_census_is_supported(
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK |
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK_SHA256_PSK));
 	assert(ieee80211_sae_scan_profile_is_transition(1, 1, 1, 0, 1, 0,
 	    1, 1, 1, 1, 0,
 	    IEEE80211_SAE_SCAN_CENSUS_COMPLETE |
 	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK));
+	assert(ieee80211_sae_scan_profile_is_transition(1, 1, 1, 0, 1, 0,
+	    1, 1, 1, 1, 0,
+	    IEEE80211_SAE_SCAN_CENSUS_COMPLETE |
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK_SHA256_PSK));
 	assert(!ieee80211_sae_scan_profile_is_transition(1, 1, 1, 0, 1, 0,
 	    1, 1, 1, 1, 1,
 	    IEEE80211_SAE_SCAN_CENSUS_COMPLETE |
 	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK));
+	assert(!ieee80211_sae_scan_profile_is_transition(1, 1, 1, 0, 1, 0,
+	    1, 1, 1, 1, 0,
+	    IEEE80211_SAE_SCAN_CENSUS_COMPLETE |
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK |
+	    IEEE80211_SAE_SCAN_AKM_EXACT_SAE_PSK_SHA256_PSK));
 	assert(!strict_profile(0));
 	assert(!strict_profile(IEEE80211_SAE_SCAN_RSNXE_PRESENT |
 	    IEEE80211_SAE_SCAN_RSNXE_H2E |

@@ -137,9 +137,13 @@ ieee80211_sae_selected_bss_profile(const struct ieee80211_node *ni)
     if (ieee80211_sae_scan_profile_is_transition(
         ni->ni_supported_rsnprotos == IEEE80211_PROTO_RSN &&
         ni->ni_rsnprotos == IEEE80211_PROTO_RSN,
-        ni->ni_supported_rsnakms ==
+        ((ni->ni_supported_rsnakms ==
         (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK) &&
-        ni->ni_rsnakms == (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK),
+        ni->ni_rsnakms == (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK)) ||
+        (ni->ni_supported_rsnakms == (IEEE80211_AKM_SAE |
+        IEEE80211_AKM_PSK | IEEE80211_AKM_SHA256_PSK) &&
+        ni->ni_rsnakms == (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK |
+        IEEE80211_AKM_SHA256_PSK))),
         (ni->ni_capinfo & IEEE80211_CAPINFO_ESS) != 0,
         (ni->ni_capinfo & IEEE80211_CAPINFO_IBSS) != 0,
         (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) != 0,
