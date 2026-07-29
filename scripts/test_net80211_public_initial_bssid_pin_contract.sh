@@ -224,9 +224,9 @@ forbid(shared_assoc, "ieee80211_public_initial_bssid_pin_port_valid",
 
 # The actual selection is tied to node replacement rather than a request-side
 # BSSID, so a stale scan candidate cannot acquire release authority.
-join = body(node_c, "ieee80211_node_join_bss(", "node join BSS")
+join = body(node_c, "void\nieee80211_node_join_bss(", "node join BSS")
 ordered(join, "selected BSS replaces before pin bind",
-        "ieee80211_pae_assoc_epoch_begin_replacement(ic);",
+        "replacement_epoch = ieee80211_pae_assoc_epoch_begin_replacement(ic);",
         "(*ic->ic_node_copy)(ic, ic->ic_bss, selbs);",
         "ni = ic->ic_bss;",
         "ieee80211_pae_selected_bss_capture(ic, ni, sae_profile,",
