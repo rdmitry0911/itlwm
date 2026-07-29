@@ -12,6 +12,7 @@ import sys
 
 root = Path(sys.argv[1])
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
+v2_header = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 owner = (root / "AirportItlwm/TahoeOwnerRegistry.hpp").read_text()
 open_resume = (
@@ -380,20 +381,42 @@ ordered(wcl_assoc, "same-identity public/WCL lease preservation",
         "tahoePublicAssociationOwnerMatchesWclIdentity(",
         "getTahoeOwnerRegistry().publicAssociation =")
 
-# A hidden candidate that arrives while PowerOn has not reached SCAN was not
-# accepted: no payload or completion owner is retained.  Returning success at
-# this edge loses the user's join until a long upper-layer timeout.  Preserve
-# WCL's normal retry ownership by reporting the transient NotReady result.
-early_power_on = body(
-    wcl_assoc, "if (ic->ic_state < IEEE80211_S_SCAN)",
-    "early PowerOn WCL association")
+# Tahoe 25C56 calls resetAutoCountry before touching the WCL candidate and
+# propagates a non-zero firmware/config result.  Intel has no corresponding
+# Broadcom iovar, so the controller preflight uses the already-owned PowerOn
+# availability epoch.  Both the lifecycle fence and lower SCAN fence precede
+# replacement of the completion owner or parsing of candidate fields.
+require(v2_header, "prepareTahoeWclAssociationBackend() const;",
+        "association backend preflight declaration")
+backend_preflight = body(
+    v2, "IOReturn AirportItlwm::prepareTahoeWclAssociationBackend() const",
+    "association backend preflight")
 for token in (
-        "NOT_READY: ic_state=%d < SCAN",
-        "kIOReturnNotReady);",
+        "power_state == kWiFiPowerOn",
+        "kAirportItlwmPmBootInProgressBit",
+        "kAirportItlwmPmPermanentFailureBit",
+        "kAirportItlwmPmDriverAvailabilityPendingBit",
+        "(lifecycleState & unavailableMask) == 0",
+        "NOT_READY: power_state=%u pm_flags=0x%x hal=%p",
         "return kIOReturnNotReady;",
+        "return kIOReturnSuccess;",
 ):
-    require(early_power_on, token, "early WCL association retry status")
-forbid(early_power_on, "kIOReturnSuccess",
+    require(backend_preflight, token, "reference-aligned backend preflight")
+
+ordered(wcl_assoc, "preflight before candidate mutation",
+        "prepareTahoeWclAssociationBackend()",
+        "if (backendResult != kIOReturnSuccess)",
+        "return backendResult;",
+        "fHalService->get80211Controller()",
+        "ic->ic_state < IEEE80211_S_SCAN",
+        "return kIOReturnNotReady;",
+        "getTahoeOwnerRegistry().association =",
+        "reinterpret_cast<const uint8_t *>(candidates)")
+
+early_power_on = body(
+    wcl_assoc, "if (backendResult != kIOReturnSuccess)",
+    "early PowerOn WCL association")
+forbid(early_power_on, "kIOReturnSuccess;",
        "false success for an unretained early WCL association")
 
 ordered(wcl_assoc, "open WCL completion lease precedes normal scan resume",

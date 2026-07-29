@@ -8060,6 +8060,40 @@ uint64_t AirportItlwm::armDeferredPowerOnAvailability()
     return epoch;
 }
 
+IOReturn AirportItlwm::prepareTahoeWclAssociationBackend() const
+{
+    const UInt32 lifecycleState = pmPowerStateFlags;
+    const UInt32 unavailableMask =
+        kAirportItlwmPmBootInProgressBit |
+        kAirportItlwmPmPermanentFailureBit |
+        kAirportItlwmPmDriverAvailabilityPendingBit;
+    const bool ready =
+        power_state == kWiFiPowerOn &&
+        fHalService != NULL &&
+        (lifecycleState & unavailableMask) == 0;
+
+    /*
+     * Tahoe 25C56 AppleBCMWLANCore::setWCL_ASSOCIATE calls virtual +0xeb8,
+     * AppleBCMWLANCore::resetAutoCountry(), before it clears association
+     * state or delegates the candidate to JoinAdapter.  resetAutoCountry()
+     * synchronously programs the live firmware and returns its non-zero
+     * result unchanged, so a candidate cannot be accepted while PowerOn has
+     * not made the backend usable.
+     *
+     * Intel has no Broadcom autocountry iovar.  Its equivalent preflight is
+     * the controller-owned lifecycle edge: logical radio ON, no boot/failure
+     * state, and no deferred DRIVER_AVAILABLE epoch.  The pending bit is
+     * cleared only by the first post-reset SCAN-ready edge, immediately
+     * before the PowerOn availability carrier is published.
+     */
+    if (!ready) {
+        XYLog("DEBUG %s NOT_READY: power_state=%u pm_flags=0x%x hal=%p\n",
+              __FUNCTION__, power_state, lifecycleState, fHalService);
+        return kIOReturnNotReady;
+    }
+    return kIOReturnSuccess;
+}
+
 enum AirportItlwmDeferredPowerAvailabilityAction {
     kAirportItlwmDeferredPowerAvailabilityPublishOn = 1,
     kAirportItlwmDeferredPowerAvailabilityCancel,

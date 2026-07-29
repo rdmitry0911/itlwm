@@ -6868,6 +6868,39 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         return kIOReturnBadArgument;
     }
 
+    /*
+     * The reference Core performs resetAutoCountry() and propagates its
+     * failure before it reads or mutates candidate-owned association state.
+     * Preserve that ordering with the Intel lifecycle preflight.  In
+     * particular, a stale pre-PowerOn RUN state must not make an early WCL
+     * retry look consumable while DRIVER_AVAILABLE is still pending.
+     */
+    const IOReturn backendResult = instance != nullptr
+        ? instance->prepareTahoeWclAssociationBackend()
+        : kIOReturnNotReady;
+    if (backendResult != kIOReturnSuccess) {
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                       nullptr, 0, nullptr, 0, 0, 0,
+                                       backendResult);
+        return backendResult;
+    }
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state < IEEE80211_S_SCAN) {
+        /*
+         * The lifecycle preflight is authoritative for PowerOn, while this
+         * second fence covers a lower reset that has not exposed a usable
+         * net80211 scan state.  Neither fence retains the caller's payload or
+         * replaces a completion owner.
+         */
+        XYLog("DEBUG %s NOT_READY: ic=%p ic_state=%d < SCAN\n",
+              __FUNCTION__, ic, ic != nullptr ? ic->ic_state : -1);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                       nullptr, 0, nullptr, 0, 0, 0,
+                                       kIOReturnNotReady);
+        return kIOReturnNotReady;
+    }
+
     /* A replacement WCL carrier starts a new WCL candidate ledger even if it
      * is later rejected.  Its parsed identity below decides whether it also
      * replaces the independent public lease: Tahoe can submit both public and
@@ -6877,7 +6910,6 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         instance->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
 
-    struct ieee80211com *ic = fHalService->get80211Controller();
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
 
     // Extract fields from the apple80211AssocCandidates carrier recovered from IO80211Family.
@@ -7163,26 +7195,6 @@ sae_out:
     tahoeSeedBssManagerAuthContext(bssManager, associationOwner);
     tahoeSeedBssManagerAssociatedAuthType(
         bssManager, associationOwner.authLower, associationOwner.authUpper);
-
-    if (ic->ic_state < IEEE80211_S_SCAN) {
-        /*
-         * A WCL association carrier is a retryable command, and success means
-         * that its join intent was accepted.  Before SCAN the lower radio
-         * cannot consume the candidate, and this method retains neither the
-         * caller's payload nor a completion lease.  A success return here
-         * therefore discarded the first auto-join sent during PowerOn and
-         * delayed reconnection until WCL's much later timeout retry.  Report
-         * the honest transient status so WCL can resubmit after availability.
-         */
-        XYLog("DEBUG %s NOT_READY: ic_state=%d < SCAN\n",
-              __FUNCTION__, ic->ic_state);
-        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
-                                       ssid, ssid_len,
-                                       reinterpret_cast<const uint8_t *>(bssid),
-                                       auth_lower, auth_upper, rsn_ie_len,
-                                       kIOReturnNotReady);
-        return kIOReturnNotReady;
-    }
 
     if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
         XYLog("DEBUG %s SKIP: already in ASSOC/AUTH ic_state=%d\n", __FUNCTION__, ic->ic_state);
