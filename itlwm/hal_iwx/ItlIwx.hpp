@@ -141,6 +141,28 @@
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
+enum class ItlIwxWclScanPhase : uint8_t {
+    Idle,
+    InitialQueued,
+    InitialStarting,
+    InitialActive,
+    BackgroundStarting,
+    BackgroundActive,
+};
+
+enum class ItlIwxWclScanTerminalKind : uint8_t {
+    None,
+    ReplayInitial,
+    Foreground,
+    Background,
+};
+
+struct ItlIwxWclScanTerminal {
+    uint64_t upperGeneration;
+    uint32_t backendGeneration;
+    bool publish;
+};
+
 class ItlIwx : public ItlHalService, ItlDriverInfo, ItlDriverController {
     OSDeclareDefaultStructors(ItlIwx)
     
@@ -186,6 +208,25 @@ public:
     IOReturn submitSaeAuthFrame(
         const struct ItlSaeAuthTxRequestV1 *request) override;
     void cancelSaeAuthFrame(uint64_t ticket) override;
+
+    IOReturn beginWclBackgroundScan(
+        uint64_t generation,
+        uint32_t *outBackendGeneration) override;
+    IOReturn beginWclInitialScan(
+        uint64_t generation,
+        uint32_t *outBackendGeneration) override;
+    IOReturn abortWclBackgroundScan(uint64_t generation) override;
+    void invalidateWclBackgroundScan() override;
+
+    void noteWclInitialScanCommandStarted();
+    void noteWclInitialScanCommandRejected();
+    void noteWclBackgroundScanCommandStarted();
+    void noteWclScanRadioReady();
+    ItlIwxWclScanTerminalKind claimWclScanTerminal(
+        ItlIwxWclScanTerminal *terminal);
+    void publishWclScanTerminal(
+        const ItlIwxWclScanTerminal *terminal, uint32_t status);
+    void invalidateWclScanForReset();
 
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -625,6 +666,13 @@ public:
     IOCommandGate *fSaeTxGate;
     struct pci_attach_args pci;
     struct iwx_softc com;
+    IOSimpleLock *wclScanLock;
+    ItlIwxWclScanPhase wclScanPhase;
+    uint64_t wclScanUpperGeneration;
+    uint32_t wclScanBackendGeneration;
+    uint32_t wclScanNextBackendGeneration;
+    bool wclScanPublicationInvalidated;
+    bool wclScanNeedsReopen;
 };
 
 #endif
