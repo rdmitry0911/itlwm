@@ -158,6 +158,12 @@ struct TahoeOwnerRegistry {
         uint8_t contextBssid[6] = {};
     } association;
 
+    // Public IOC_ASSOCIATE has a lifecycle independent from WCL's candidate
+    // ledger and from external-PMK cache maintenance.  In particular,
+    // CLEAR_PMKSA_CACHE may run after an open-network association request and
+    // must not revoke the completion that CoreWLAN is still waiting for.
+    AssociationOwner publicAssociation;
+
     bool isDynSarFailSafeMode(uint64_t nowTicks) const
     {
         return TahoeQosDynsarContracts::isDynSarFailSafeMode(

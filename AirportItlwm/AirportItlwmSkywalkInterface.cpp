@@ -485,6 +485,32 @@ tahoeBuildPublicAssociationOwner(
     return true;
 }
 
+static bool
+tahoePublicAssociationOwnerMatchesWclIdentity(
+    const TahoeOwnerRegistry::AssociationOwner &owner,
+    const uint8_t *ssid,
+    uint32_t ssidLength,
+    const struct ether_addr *bssid,
+    uint16_t apMode,
+    uint32_t authLower,
+    uint32_t authUpper)
+{
+    if (!owner.hasCarrier || !owner.publicCarrier ||
+        !owner.selectedFromCandidate || !owner.authAssocCompletionArmed ||
+        ssid == nullptr || ssidLength == 0 ||
+        ssidLength > APPLE80211_MAX_SSID_LEN || bssid == nullptr ||
+        apMode != APPLE80211_AP_MODE_INFRA ||
+        owner.apMode != apMode ||
+        owner.authLower != authLower || owner.authUpper != authUpper ||
+        owner.ssidLength != ssidLength ||
+        !TahoeScanContracts::hasRenderableBssid(bssid->octet) ||
+        !IEEE80211_ADDR_EQ(owner.selectedBssid, bssid->octet) ||
+        !IEEE80211_ADDR_EQ(owner.candidateBssid, bssid->octet))
+        return false;
+
+    return memcmp(owner.ssid, ssid, ssidLength) == 0;
+}
+
 namespace {
 
 static_assert(TahoeBssManagerContracts::kBeaconMetaDataSize ==
@@ -3696,8 +3722,9 @@ updateDriverBssManagerRateAndMcs()
     if (bssManager == nullptr)
         return;
     if (instance != nullptr) {
-        const auto &association =
-            instance->getTahoeOwnerRegistry().association;
+        const auto &registry = instance->getTahoeOwnerRegistry();
+        const auto &association = registry.association.hasCarrier
+            ? registry.association : registry.publicAssociation;
         tahoeSeedBssManagerAuthContext(bssManager, association);
         if (association.hasCarrier) {
             tahoeSeedBssManagerAssociatedAuthType(
@@ -4652,10 +4679,13 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
     // ownership does not survive these edges; carrying a stale PMK into
     // a new association attempt would risk a host-supplicant MIC built
     // from a wrong PMK on a fresh edge.
-    /* The WCL candidate ledger and the PMK owner describe the same
-     * in-flight association.  Reset both on every cancellation edge so a
-     * later public/replacement association cannot inherit a completion
-     * candidate from an abandoned WCL request. */
+    /* The WCL candidate ledger and the PMK owner describe the same in-flight
+     * association, so PMK maintenance retires that ledger.  Public
+     * IOC_ASSOCIATE completion is deliberately separate: Tahoe can issue
+     * CLEAR_PMKSA_CACHE between a valid open-network request and its on-air
+     * response, and that key-cache edge is not a cancellation of the public
+     * join.  Real leave/disassociate/abort/replacement paths clear the public
+     * lease explicitly at their own ingress. */
     if (instance != nullptr)
         instance->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
@@ -5826,10 +5856,12 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         (ic->ic_state == IEEE80211_S_AUTH ||
          ic->ic_state == IEEE80211_S_ASSOC) &&
         tahoePublicAssociationOwnerMatchesRequest(
-            instance->getTahoeOwnerRegistry().association, ad);
-    if (instance != nullptr && !preservePublicCompletionOwner)
-        instance->getTahoeOwnerRegistry().association =
-            TahoeOwnerRegistry::AssociationOwner{};
+            instance->getTahoeOwnerRegistry().publicAssociation, ad);
+    if (instance != nullptr && !preservePublicCompletionOwner) {
+        auto &registry = instance->getTahoeOwnerRegistry();
+        registry.association = TahoeOwnerRegistry::AssociationOwner{};
+        registry.publicAssociation = TahoeOwnerRegistry::AssociationOwner{};
+    }
 
     /* Public IOC_ASSOCIATE carries no audited PMF request field. Never let a
      * prior hidden WCL carrier auto-enable protected management here. */
@@ -5895,7 +5927,8 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         if (assocResult == kIOReturnSuccess && instance != nullptr) {
             TahoeOwnerRegistry::AssociationOwner publicOwner{};
             if (tahoeBuildPublicAssociationOwner(ad, &publicOwner))
-                instance->getTahoeOwnerRegistry().association = publicOwner;
+                instance->getTahoeOwnerRegistry().publicAssociation =
+                    publicOwner;
         }
         /* CoreWLAN's BSSID is an initial selected candidate on this public
          * path. Arm only after association policy setup succeeded; WCL
@@ -5943,6 +5976,10 @@ setDISASSOCIATE(void *ad)
     /* Disassociation cancels any initial public provenance before its
      * early-return paths decide whether a lower deauth is needed. */
     ieee80211_public_initial_bssid_pin_disarm(ic);
+
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
 
     // External PMK eligibility does not survive any disassociate
     // edge that this selector represents, including the early-return
@@ -6654,9 +6691,12 @@ startIwnDirectSaeCredential(
      * empty.  This prevents a diagnostic lower-half run from claiming an
      * Apple JoinAdapter completion. */
     if (request->wclOwner != nullptr) {
-        if (instance != nullptr)
+        if (instance != nullptr) {
             instance->getTahoeOwnerRegistry().association =
                 TahoeOwnerRegistry::AssociationOwner{};
+            instance->getTahoeOwnerRegistry().publicAssociation =
+                TahoeOwnerRegistry::AssociationOwner{};
+        }
     } else {
         if (instance == nullptr ||
             instance->clearIwnDirectSaeLabAssociationOwner() !=
@@ -6827,9 +6867,11 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         return kIOReturnBadArgument;
     }
 
-    /* A replacement WCL carrier starts a new candidate ledger even if it is
-     * later rejected.  This mirrors JoinAdapter's per-request ownership and
-     * prevents an old selected BSSID from completing the replacement. */
+    /* A replacement WCL carrier starts a new WCL candidate ledger even if it
+     * is later rejected.  Its parsed identity below decides whether it also
+     * replaces the independent public lease: Tahoe can submit both public and
+     * WCL views of the same join, and an open-network WCL view has no PMK
+     * resume branch of its own. */
     if (instance != nullptr)
         instance->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
@@ -6900,6 +6942,14 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 
     if (ssid_len > APPLE80211_MAX_SSID_LEN)
         ssid_len = APPLE80211_MAX_SSID_LEN;
+
+    if (instance != nullptr &&
+        !tahoePublicAssociationOwnerMatchesWclIdentity(
+            instance->getTahoeOwnerRegistry().publicAssociation,
+            ssid, raw_ssid_len, bssid, ap_mode, auth_lower, auth_upper)) {
+        instance->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
+    }
 
     uint32_t assocPolicyFlags = tahoeAssociationRegDiagPolicyFlags(auth_upper);
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
@@ -7293,6 +7343,10 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
     ieee80211_public_initial_bssid_pin_disarm(ic);
     if (!data)
         return kIOReturnError;
+
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
 
     // WCL leave is the canonical Apple lifecycle edge that invalidates
     // any externally delivered PMK. Clear before any early return so
@@ -7999,9 +8053,12 @@ setWCL_REASSOC(apple80211_reassoc *data)
     /* A steady-state reassociation has its own WCL terminal owner.  Retire
      * any join-completion lease unconditionally, including the PSK-present
      * path that intentionally retains the current PMK. */
-    if (instance != nullptr)
+    if (instance != nullptr) {
         instance->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
+        instance->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
+    }
 
     // A reassociation start invalidates an externally delivered PMK:
     // the host supplicant must re-install a fresh PMK through
@@ -8212,6 +8269,9 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
     // attempt must not survive into the next join. Clear before the
     // state machine moves so the cleared eligibility is observable
     // to the next association edge.
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
     clearExternalPmkEligibilityLocked("setWCL_JOIN_ABORT");
 
     // AppleBCMWLANCore::setWCL_JOIN_ABORT does not reject NULL. It maps NULL to

@@ -161,14 +161,15 @@ ordered(publisher, "gated completion validation before publication",
         "ieee80211_pae_assoc_epoch_current(ic) != request->associationEpoch",
         "ieee80211_pae_selected_bss_copyout_current",
         "ieee80211_pae_selected_bss_identity_matches",
-        "tahoeWclAuthAssocCompletionMatchesOwner",
+        "owner = &registry.association",
+        "owner = &registry.publicAssociation",
         "buildTahoeWclAuthAssocCompletePayload",
-        "owner.authAssocCompletionPublished = true",
+        "owner->authAssocCompletionPublished = true",
         "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE")
 for token in (
         "sizeof(payload)",
         "if (result != kIOReturnSuccess)",
-        "owner.authAssocCompletionPublished = false",
+        "owner->authAssocCompletionPublished = false",
 ):
     require(publisher, token, "one-shot completion publication")
 forbid(publisher, "!owner.publicCarrier",
@@ -180,22 +181,29 @@ deauth_case = between(v2,
                       "STA_DEAUTH case")
 require(deauth_case, "clearTahoeWclAuthAssocCompletionLeaseGated",
         "deauthentication completion-lease clear")
+deauth_clear = body(v2, "static IOReturn clearTahoeWclAuthAssocCompletionLeaseGated(",
+                    "deauthentication lease clear action")
+for token in ("registry.association =", "registry.publicAssociation ="):
+    require(deauth_clear, token, "deauthentication clears both leases")
 
 clear = body(sky, "clearExternalPmkEligibilityLocked(const char *reason_tag)",
              "shared association lifecycle clear")
 require(clear, "getTahoeOwnerRegistry().association =",
-        "shared cancellation clears candidate owner")
+        "PMK maintenance clears WCL candidate owner")
+forbid(clear, "publicAssociation",
+       "PMK maintenance cancellation of public completion lease")
 
 public_assoc = body(sky, "setASSOCIATE(struct apple80211_assoc_data *ad)",
                     "public association setter")
-require(public_assoc, "getTahoeOwnerRegistry().association =",
+require(public_assoc, "registry.association =",
         "public association clears old WCL owner")
 ordered(public_assoc, "public completion lease precedes scan resume",
         "tahoePublicAssociationOwnerMatchesRequest(",
         "if (instance != nullptr && !preservePublicCompletionOwner)",
+        "registry.publicAssociation =",
         "assocResult = associateSSID(",
         "tahoeBuildPublicAssociationOwner(ad, &publicOwner)",
-        "getTahoeOwnerRegistry().association = publicOwner",
+        "getTahoeOwnerRegistry().publicAssociation =",
         "ieee80211_new_state(")
 
 public_match = body(
@@ -234,24 +242,65 @@ for token in (
 wcl_assoc = body(sky, "setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)",
                  "WCL association setter")
 for token in (
-        "A replacement WCL carrier starts a new candidate ledger",
+        "A replacement WCL carrier starts a new WCL candidate ledger",
+        "tahoePublicAssociationOwnerMatchesWclIdentity(",
+        "getTahoeOwnerRegistry().publicAssociation =",
         "associationOwner.authAssocCompletionArmed = true",
         "associationOwner.authAssocCompletionPublished = false",
 ):
     require(wcl_assoc, token, "WCL lease lifecycle")
+ordered(wcl_assoc, "same-identity public/WCL lease preservation",
+        "getTahoeOwnerRegistry().association =",
+        "tahoePublicAssociationOwnerMatchesWclIdentity(",
+        "getTahoeOwnerRegistry().publicAssociation =")
+
+wcl_public_match = body(
+    sky, "tahoePublicAssociationOwnerMatchesWclIdentity(",
+    "public/WCL duplicate identity matcher")
+for token in (
+        "owner.publicCarrier",
+        "owner.authAssocCompletionArmed",
+        "owner.apMode != apMode",
+        "owner.authLower != authLower",
+        "owner.authUpper != authUpper",
+        "owner.ssidLength != ssidLength",
+        "owner.selectedBssid",
+        "owner.candidateBssid",
+        "memcmp(owner.ssid, ssid, ssidLength)",
+):
+    require(wcl_public_match, token, "exact public/WCL duplicate fence")
 
 reassoc = body(sky, "setWCL_REASSOC(apple80211_reassoc *data)",
                "WCL reassociation setter")
-require(reassoc, "getTahoeOwnerRegistry().association =",
-        "reassociation retires join-completion lease")
+for token in (
+        "getTahoeOwnerRegistry().association =",
+        "getTahoeOwnerRegistry().publicAssociation =",
+):
+    require(reassoc, token, "reassociation retires both completion leases")
 
 abort = body(sky, "setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)",
              "WCL join abort setter")
-require(abort, 'clearExternalPmkEligibilityLocked("setWCL_JOIN_ABORT")',
-        "join abort clears candidate owner")
+ordered(abort, "join abort clears both completion leases",
+        "getTahoeOwnerRegistry().publicAssociation =",
+        'clearExternalPmkEligibilityLocked("setWCL_JOIN_ABORT")')
+
+for marker, label in (
+        ("setDISASSOCIATE(void *ad)", "public disassociate"),
+        ("setWCL_LEAVE_NETWORK(apple80211_leave_network *data)", "WCL leave"),
+):
+    current = body(sky, marker, label)
+    require(current, "getTahoeOwnerRegistry().publicAssociation =",
+            f"{label} clears public completion lease")
+
+pmksa = body(sky, "setCLEAR_PMKSA_CACHE(void *req)", "PMKSA cache clear")
+require(pmksa, 'clearExternalPmkEligibilityLocked("setCLEAR_PMKSA_CACHE")',
+        "PMKSA key-state reset")
+forbid(pmksa, "publicAssociation",
+       "PMKSA cache clear cancellation of public completion")
 
 for token in (
         "publicCarrier",
+        "AssociationOwner publicAssociation",
         "authAssocCompletionArmed",
         "authAssocCompletionPublished",
         "selectedBssid",

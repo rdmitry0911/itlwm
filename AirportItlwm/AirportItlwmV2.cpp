@@ -5764,10 +5764,15 @@ static IOReturn postTahoeWclAuthAssocCompleteGated(
         !IEEE80211_ADDR_EQ(current.bssid, ic->ic_bss->ni_bssid))
         return kIOReturnNotReady;
 
-    TahoeOwnerRegistry::AssociationOwner &owner =
-        that->getTahoeOwnerRegistry().association;
-    if (!tahoeWclAuthAssocCompletionMatchesOwner(owner, current, ic->ic_bss))
-        return kIOReturnNotReady;
+    TahoeOwnerRegistry &registry = that->getTahoeOwnerRegistry();
+    TahoeOwnerRegistry::AssociationOwner *owner = &registry.association;
+    if (!tahoeWclAuthAssocCompletionMatchesOwner(
+            *owner, current, ic->ic_bss)) {
+        owner = &registry.publicAssociation;
+        if (!tahoeWclAuthAssocCompletionMatchesOwner(
+                *owner, current, ic->ic_bss))
+            return kIOReturnNotReady;
+    }
 
     apple80211_wcl_auth_assoc_complete_event payload;
     if (!buildTahoeWclAuthAssocCompletePayload(current.bssid, &payload))
@@ -5776,7 +5781,7 @@ static IOReturn postTahoeWclAuthAssocCompleteGated(
     /* Claim before dispatch so a synchronous nested callback cannot publish
      * the same candidate twice.  A local dispatch failure releases only this
      * unconsumed lease; it never manufactures a retry completion. */
-    owner.authAssocCompletionPublished = true;
+    owner->authAssocCompletionPublished = true;
     const IOReturn result = AirportItlwm::postMessageGated(
         target,
         (void *)(uintptr_t)APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE,
@@ -5784,7 +5789,7 @@ static IOReturn postTahoeWclAuthAssocCompleteGated(
         (void *)(uintptr_t)sizeof(payload),
         nullptr);
     if (result != kIOReturnSuccess)
-        owner.authAssocCompletionPublished = false;
+        owner->authAssocCompletionPublished = false;
     return result;
 }
 
@@ -5794,8 +5799,9 @@ static IOReturn clearTahoeWclAuthAssocCompletionLeaseGated(
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
     if (that == nullptr)
         return kIOReturnBadArgument;
-    that->getTahoeOwnerRegistry().association =
-        TahoeOwnerRegistry::AssociationOwner{};
+    TahoeOwnerRegistry &registry = that->getTahoeOwnerRegistry();
+    registry.association = TahoeOwnerRegistry::AssociationOwner{};
+    registry.publicAssociation = TahoeOwnerRegistry::AssociationOwner{};
     return kIOReturnSuccess;
 }
 #endif
@@ -8514,8 +8520,11 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
                     gate->runAction(postTahoeWclAuthAssocCompleteGated,
                                     &request);
 
+            const TahoeOwnerRegistry &registry =
+                that->getTahoeOwnerRegistry();
             const TahoeOwnerRegistry::AssociationOwner &owner =
-                that->getTahoeOwnerRegistry().association;
+                registry.association.hasCarrier
+                    ? registry.association : registry.publicAssociation;
             IWX_AUTH_DIAG(
                 "eventHandler: ASSOC completion captured=%u result=0x%08x "
                 "carrier=%u public=%u armed=%u published=%u\n",
@@ -12536,8 +12545,9 @@ airportItlwmClearIwnDirectSaeLabAssociationOwnerGated(
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
     if (that == nullptr)
         return kIOReturnNotReady;
-    that->getTahoeOwnerRegistry().association =
-        TahoeOwnerRegistry::AssociationOwner{};
+    TahoeOwnerRegistry &registry = that->getTahoeOwnerRegistry();
+    registry.association = TahoeOwnerRegistry::AssociationOwner{};
+    registry.publicAssociation = TahoeOwnerRegistry::AssociationOwner{};
     return kIOReturnSuccess;
 }
 
