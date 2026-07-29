@@ -8801,6 +8801,17 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     }
 
     if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED) {
+        /*
+         * WCL_LEAVE_NETWORK removes the last OpenBSD ESS and del_ess()
+         * consequently clears AUTO_JOIN.  AppleBCMWLANCore has no equivalent
+         * local admission latch: once powerOn() reports the backend ready,
+         * replayed WCL requests may scan immediately.  Mirror the bootstrap
+         * policy here, at the lower driver's confirmed S_SCAN/IFF_RUNNING
+         * edge, so an empty-ESS wake can accept that replay without changing
+         * an explicitly configured ESS policy.
+         */
+        if (TAILQ_EMPTY(&ic->ic_ess))
+            ic->ic_flags |= IEEE80211_F_AUTO_JOIN;
         that->reopenWclPhysicalScanAfterRadioReset();
         that->reopenStandardPhysicalScanAfterRadioReset();
         /*

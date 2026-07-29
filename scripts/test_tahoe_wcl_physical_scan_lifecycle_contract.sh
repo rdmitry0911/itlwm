@@ -141,13 +141,20 @@ require(event, "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "confirmed radio-reset reopening fence")
 ordered(event, "radio-ready reopens both scan admission planes",
         "IEEE80211_EVT_WCL_SCAN_REOPENED",
+        "TAILQ_EMPTY(&ic->ic_ess)",
+        "ic->ic_flags |= IEEE80211_F_AUTO_JOIN",
         "reopenWclPhysicalScanAfterRadioReset()",
         "reopenStandardPhysicalScanAfterRadioReset()",
         "noteRadioScanReadyAndQueuePowerOnAvailability()")
 reopened_start = event.find("if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED)")
 reopened_end = event.find("if (msgCode == IEEE80211_EVT_STANDARD_SCAN_INVALIDATED)",
                           reopened_start)
-require(event[reopened_start:reopened_end],
+reopened = event[reopened_start:reopened_end]
+require(reopened, "TAILQ_EMPTY(&ic->ic_ess)",
+        "empty-ESS wake scan policy fence")
+require(reopened, "ic->ic_flags |= IEEE80211_F_AUTO_JOIN",
+        "wake WCL initial-scan admission restore")
+require(reopened,
         "noteRadioScanReadyAndQueuePowerOnAvailability()",
         "backend-ready PowerOn availability")
 ordered(event, "PowerOn backend-ready edge precedes generic scan terminal",
