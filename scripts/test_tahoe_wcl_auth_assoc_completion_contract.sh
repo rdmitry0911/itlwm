@@ -14,6 +14,9 @@ root = Path(sys.argv[1])
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 owner = (root / "AirportItlwm/TahoeOwnerRegistry.hpp").read_text()
+open_resume = (
+    root / "AirportItlwm/TahoeWclOpenScanResumeContracts.hpp"
+).read_text()
 header = (root / "include/Airport/apple80211_var.h").read_text()
 parity = (root / "AirportItlwm/TahoePayloadParity.hpp").read_text()
 unit = (root / "tests/tahoe_payload_builders_test.cpp").read_text()
@@ -253,6 +256,45 @@ ordered(wcl_assoc, "same-identity public/WCL lease preservation",
         "getTahoeOwnerRegistry().association =",
         "tahoePublicAssociationOwnerMatchesWclIdentity(",
         "getTahoeOwnerRegistry().publicAssociation =")
+ordered(wcl_assoc, "open WCL completion lease precedes normal scan resume",
+        "const TahoeWclOpenScanResumeContracts::Facts openScanResumeFacts",
+        "shouldResumeScanAfterOpenAssociation(openScanResumeFacts)",
+        "associationOwner.authAssocCompletionArmed = true",
+        "getTahoeOwnerRegistry().association =",
+        "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);")
+for token in (
+        "ap_mode == APPLE80211_AP_MODE_INFRA",
+        "auth_lower == APPLE80211_AUTHTYPE_OPEN",
+        "auth_upper == APPLE80211_AUTHTYPE_NONE",
+        "wcl_key_len == 0",
+        "rsn_ie_len == 0",
+        "candidate_count > 0",
+        "TahoeScanContracts::hasRenderableBssid(bssid->octet)",
+        "OPEN_READY_SCAN_RESUME",
+):
+    require(wcl_assoc, token, "fail-closed open WCL scan resume")
+
+open_predicate = body(
+    open_resume, "constexpr bool shouldResumeScanAfterOpenAssociation",
+    "pure open WCL scan-resume predicate")
+for token in (
+        "facts.associationAccepted",
+        "facts.infrastructureMode",
+        "facts.openAuthLower",
+        "facts.noUpperAuth",
+        "facts.noCredential",
+        "facts.noRsnIe",
+        "facts.stateIsScan",
+        "facts.hasSelectedCandidate",
+        "facts.selectedBssidRenderable",
+):
+    require(open_predicate, token, "complete open WCL admission fence")
+for token in (
+        "ieee80211_node_choose_bss",
+        "IEEE80211_S_AUTH",
+        "IEEE80211_SEND_MGMT",
+):
+    forbid(open_predicate, token, "lower-layer shortcut in pure open predicate")
 
 wcl_public_match = body(
     sky, "tahoePublicAssociationOwnerMatchesWclIdentity(",

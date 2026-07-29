@@ -25,6 +25,7 @@
 #include "TahoeScanContracts.hpp"
 #include "TahoeSkywalkIoctlRoutes.hpp"
 #include "TahoeTxRxChainContracts.hpp"
+#include "TahoeWclOpenScanResumeContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 #include <HAL/ItlSaeDriverTarget.h>
@@ -7293,13 +7294,33 @@ sae_out:
             (ic->ic_flags & IEEE80211_F_PSK) != 0,
             ic->ic_external_pmk_owner != 0,
         };
-        if (TahoeExternalPmkScanResumeContracts::
-                shouldResumeScanAfterExternalPmk(scanResumeFacts)) {
+        const bool resumeAfterExternalPmk =
+            TahoeExternalPmkScanResumeContracts::
+                shouldResumeScanAfterExternalPmk(scanResumeFacts);
+        const TahoeWclOpenScanResumeContracts::Facts openScanResumeFacts = {
+            assocResult == kIOReturnSuccess,
+            ap_mode == APPLE80211_AP_MODE_INFRA,
+            auth_lower == APPLE80211_AUTHTYPE_OPEN,
+            auth_upper == APPLE80211_AUTHTYPE_NONE,
+            wcl_key_len == 0,
+            rsn_ie_len == 0,
+            ic->ic_state == IEEE80211_S_SCAN,
+            candidate_count > 0 &&
+                candidate_count <=
+                    TahoeAssociationContracts::kMaximumCandidateCount,
+            TahoeScanContracts::hasRenderableBssid(bssid->octet),
+        };
+        const bool resumeAfterOpenAssociation =
+            TahoeWclOpenScanResumeContracts::
+                shouldResumeScanAfterOpenAssociation(openScanResumeFacts);
+        if (resumeAfterExternalPmk || resumeAfterOpenAssociation) {
             // Do not select a BSS or synthesize AUTH here.  SCAN->SCAN lets
             // backend preserve an active scan or restart its normal scan
             // completion path, where net80211 performs ordinary
             // selection.
-            XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
+            XYLog(resumeAfterOpenAssociation
+                      ? "wcl_assoc OPEN_READY_SCAN_RESUME\n"
+                      : "wcl_assoc PMK_READY_SCAN_RESUME\n");
             /* ieee80211_new_state(SCAN) can synchronously select this BSS,
              * so commit the exact WCL lease before invoking it.  Every
              * completion consumer additionally verifies the selected-BSS
@@ -7309,14 +7330,17 @@ sae_out:
             if (instance != nullptr)
                 instance->getTahoeOwnerRegistry().association =
                     associationOwner;
-            AirportItlwmPostPltiTraceBeginEpisode(ic);
-            /* Safe-only PMF ingress boundary: the event means that WCL's
-             * explicit per-association PMF request still reaches the normal
-             * scan-resume path.  It exposes neither the opaque request value
-             * nor any selected-network information. */
-            if (ic->ic_pae_mfp_requested)
-                AirportItlwmPostPltiTraceRecord(
-                    ic, kAirportItlwmPostPltiTraceEventWclPmfRequestRetained);
+            if (resumeAfterExternalPmk) {
+                AirportItlwmPostPltiTraceBeginEpisode(ic);
+                /* Safe-only PMF ingress boundary: the event means that WCL's
+                 * explicit per-association PMF request still reaches the
+                 * normal scan-resume path.  It exposes neither the opaque
+                 * request value nor any selected-network information. */
+                if (ic->ic_pae_mfp_requested)
+                    AirportItlwmPostPltiTraceRecord(
+                        ic,
+                        kAirportItlwmPostPltiTraceEventWclPmfRequestRetained);
+            }
             ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
         }
     }

@@ -31,6 +31,7 @@
 #include "AirportItlwm/TahoeScanContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
 #include "AirportItlwm/TahoeTxRxChainContracts.hpp"
+#include "AirportItlwm/TahoeWclOpenScanResumeContracts.hpp"
 #include "itlwm/hal_iwx/IwxMfpIgtkContracts.hpp"
 #include "include/Airport/IO80211BssManager.h"
 
@@ -1786,6 +1787,62 @@ void testTahoeExternalPmkScanResumeContracts()
             "external-PMK scan resume preserves only audited PSK transition policy");
 }
 
+void testTahoeWclOpenScanResumeContracts()
+{
+    using namespace TahoeWclOpenScanResumeContracts;
+
+    const Facts accepted = {
+        true,  // association policy setup succeeded
+        true,  // infrastructure candidate
+        true,  // Open-System lower authentication
+        true,  // no upper authentication selector
+        true,  // no WEP/WPA credential carrier
+        true,  // no RSN IE
+        true,  // net80211 still waits in SCAN
+        true,  // WCL supplied at least one bounded candidate
+        true,  // selected BSSID is nonzero and renderable
+    };
+    require(shouldResumeScanAfterOpenAssociation(accepted),
+            "open WCL scan resume accepts exact Open/None candidate");
+
+    Facts rejected = accepted;
+    rejected.associationAccepted = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume rejects failed policy setup");
+    rejected = accepted;
+    rejected.infrastructureMode = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume rejects IBSS and unknown modes");
+    rejected = accepted;
+    rejected.openAuthLower = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume rejects shared-key authentication");
+    rejected = accepted;
+    rejected.noUpperAuth = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume rejects WPA, SAE, and unknown upper auth");
+    rejected = accepted;
+    rejected.noCredential = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume cannot admit WEP or password carriers");
+    rejected = accepted;
+    rejected.noRsnIe = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume rejects protected RSN candidates");
+    rejected = accepted;
+    rejected.stateIsScan = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume preserves later net80211 states");
+    rejected = accepted;
+    rejected.hasSelectedCandidate = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume rejects ownerless candidates");
+    rejected = accepted;
+    rejected.selectedBssidRenderable = false;
+    require(!shouldResumeScanAfterOpenAssociation(rejected),
+            "open WCL scan resume rejects zero or malformed BSSID");
+}
+
 void testTahoeWclPhysicalScanContracts()
 {
     using namespace TahoeWclPhysicalScanContracts;
@@ -2899,6 +2956,7 @@ int main()
     testTahoeBssManagerContracts();
     testTahoeAssociationAuthContracts();
     testTahoeExternalPmkScanResumeContracts();
+    testTahoeWclOpenScanResumeContracts();
     testTahoeWclPhysicalScanContracts();
     testTahoePostPltiTraceContracts();
     testTahoePostPltiTraceMatrixSealedPrefixes();
@@ -2906,6 +2964,6 @@ int main()
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 35 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK and physical-WCL scan lifecycles, safe post-PLTI and IWX PMF/BIP trace matrices, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 36 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK, open-WCL and physical-WCL scan lifecycles, safe post-PLTI and IWX PMF/BIP trace matrices, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
     return 0;
 }
