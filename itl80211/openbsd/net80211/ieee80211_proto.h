@@ -340,6 +340,10 @@ extern	int ieee80211_sae_wcl_request_pmk_claim_assoc_current(
  * it can enqueue Association Request. */
 extern	int ieee80211_sae_wcl_request_pmk_continue_assoc(
 	    struct ieee80211com *, const struct ItlSaePmkContinuationIdentityV1 *);
+/* A genuine new association carrier supersedes a retired direct-SAE owner
+ * and may re-enable the ordinary Open/WPA2 association path. */
+extern	void ieee80211_sae_wcl_fresh_carrier_accepted(
+	    struct ieee80211com *);
 /*
  * A controller may admit exactly one bounded Algorithm-3 peer-RX relay for
  * the current selected BSS.  The RX path receives a copied epoch/generation

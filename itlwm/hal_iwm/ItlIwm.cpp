@@ -238,10 +238,15 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
     if (wclScanLock == NULL || ic->ic_state != IEEE80211_S_SCAN ||
         ic->ic_opmode != IEEE80211_M_STA ||
         (ic->ic_if.if_flags & IFF_RUNNING) == 0 ||
-        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
         ic->ic_mgt_timer != 0 || ic->ic_des_esslen != 0)
         return kIOReturnBusy;
 
+    /*
+     * AppleBCMWLANScanAdapter accepts a valid WCL carrier independently of
+     * legacy background-scan state.  Use wclScanPhase/IWM_FLAG_SCANNING as
+     * the physical overlap owner below; IEEE80211_F_BGSCAN can remain set
+     * briefly after link loss even though no lower background owner exists.
+     */
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
     if (wclScanPhase != ItlIwmWclScanPhase::Idle) {

@@ -858,6 +858,10 @@ struct ieee80211com {
 	struct ieee80211_sae_wcl_request ic_sae_wcl_request;
 	/* A public direct-SAE completion fence; it never retains key material. */
 	struct ieee80211_sae_wcl_pmk_claim ic_sae_wcl_pmk_claim;
+	/* A completed direct-SAE RUN owner may be retried by net80211 before WCL
+	 * has supplied its replacement association carrier.  Keep that narrow
+	 * interval fail-closed so it cannot fall through to Open System auth. */
+	u_int8_t		ic_sae_wcl_fresh_carrier_required;
 	/* begin() sets this brief leaf-owned reservation before it invalidates a
 	 * prior RSN policy.  A concurrent legacy node_join_bss() then yields back
 	 * to SCAN rather than letting a busy direct request erase its selection. */

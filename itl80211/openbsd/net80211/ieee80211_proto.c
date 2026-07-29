@@ -1942,6 +1942,17 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 	} else {
 		ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	}
+	/* The reference WCL lifecycle owns retry after an established join: it
+	 * aborts the old JoinAdapter attempt and later supplies a new association
+	 * carrier.  Remember only that ownership boundary while the exact direct
+	 * SAE RUN request is still visible.  The request and its RSN/PMK policy
+	 * are scrubbed immediately below as before. */
+	if (ic->ic_state == IEEE80211_S_RUN &&
+	    ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
+	    ic->ic_sae_wcl_request.generation != 0 &&
+	    ic->ic_sae_wcl_policy_generation ==
+	    ic->ic_sae_wcl_request.generation)
+		ic->ic_sae_wcl_fresh_carrier_required = 1;
 	/* A real cancellation wins over the brief pre-policy reservation too.
 	 * begin() rechecks this value after its out-of-lock WEP teardown before
 	 * it can publish any new direct request. */
@@ -2114,6 +2125,7 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
 	ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
+	ic->ic_sae_wcl_fresh_carrier_required = 0;
 	ic->ic_sae_wcl_request_policy_starting = 0;
 	ic->ic_sae_wcl_request_join_active = 0;
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
@@ -2161,6 +2173,31 @@ ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
 		return;
 	}
 	(void)ieee80211_pae_assoc_epoch_begin(ic);
+}
+
+/*
+ * A genuinely new public/WCL association request supersedes the short wait
+ * left by a retired direct-SAE RUN owner.  This value carries no identity or
+ * credential and is serialized with the request generation it protects.
+ */
+void
+ieee80211_sae_wcl_fresh_carrier_accepted(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request_revocation revocation;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	bzero(&revocation, sizeof(revocation));
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	/* Supersede the old generation before the caller writes the fresh
+	 * carrier's Open/WPA2 policy.  clear_locked() would otherwise erase that
+	 * newly written policy when it tears down the old direct-SAE owner. */
+	ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
+	ic->ic_sae_wcl_fresh_carrier_required = 0;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation);
 }
 
 /*
@@ -2273,6 +2310,9 @@ ieee80211_sae_wcl_request_begin(struct ieee80211com *ic,
 	request->ssid_len = (u_int8_t)ssid_len;
 	memcpy(request->ssid, ssid, ssid_len);
 	request->phase = IEEE80211_SAE_WCL_REQUEST_PENDING;
+	/* Publication of this new generation is the exact replacement carrier
+	 * awaited after a prior direct-SAE RUN retry boundary. */
+	ic->ic_sae_wcl_fresh_carrier_required = 0;
 
 out_clear_reservation:
 	ic->ic_sae_wcl_request_policy_starting = 0;
@@ -3208,7 +3248,12 @@ ieee80211_sae_wcl_request_auth_owner_state(struct ieee80211com *ic,
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
 	if (ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_NONE) {
-		if (ic->ic_sae_wcl_request.generation != 0 ||
+		if (ic->ic_sae_wcl_fresh_carrier_required != 0) {
+			/* WCL owns retry after its direct-SAE RUN attempt.  Stay in
+			 * scan until its next association carrier arrives instead of
+			 * emitting a stale Open-System authentication frame. */
+			state = IEEE80211_SAE_WCL_AUTH_OWNER_REJECTED;
+		} else if (ic->ic_sae_wcl_request.generation != 0 ||
 		    ic->ic_sae_wcl_request.association_epoch != 0) {
 			ieee80211_sae_wcl_request_clear_locked(ic, &revocation);
 			state = IEEE80211_SAE_WCL_AUTH_OWNER_REJECTED;

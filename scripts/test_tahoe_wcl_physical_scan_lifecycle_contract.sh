@@ -91,8 +91,10 @@ for token in ("ic->ic_opmode != IEEE80211_M_STA",
               "ieee80211_sae_wcl_request_scan_selection_held(ic)",
               "ieee80211_sae_wcl_request_scan_selection_owned(ic)"):
     require(request, token, "trusted S_SCAN initial admission")
-require(request, "(ic->ic_flags & IEEE80211_F_BGSCAN) != 0",
-        "BSSID-only radio-reset recovery keeps background scans blocked")
+if request.count("(ic->ic_flags & IEEE80211_F_BGSCAN) != 0") != 1:
+    fail("only associated WCL admission may reject a live background scan")
+require(request, "AppleBCMWLANScanAdapter::startScan",
+        "reference WCL admission rationale")
 forbid(request, "IEEE80211_F_BGSCAN |\n                             IEEE80211_F_DESBSSID",
        "BSSID-only radio-reset recovery must not reject the fresh census")
 forbid(request, "~IEEE80211_F_DESBSSID",
@@ -319,11 +321,14 @@ for token in (
         "ic->ic_state != IEEE80211_S_SCAN",
         "ic->ic_opmode != IEEE80211_M_STA",
         "(ic->ic_if.if_flags & IFF_RUNNING) == 0",
-        "(ic->ic_flags & IEEE80211_F_BGSCAN) != 0",
         "ic->ic_mgt_timer != 0",
         "ic->ic_des_esslen != 0",
 ):
     require(iwm_initial, token, "IWM initial admission fence")
+forbid(iwm_initial, "(ic->ic_flags & IEEE80211_F_BGSCAN) != 0",
+       "IWM WCL admission must use its exact physical owner")
+require(iwm_initial, "AppleBCMWLANScanAdapter",
+        "IWM reference WCL admission rationale")
 ordered(iwm_initial, "IWM fresh initial physical scan",
         "wclScanUpperGeneration = generation",
         "if ((com.sc_flags & IWM_FLAG_SCANNING) != 0)",
@@ -471,11 +476,12 @@ ordered(initial_begin, "IWN initial WCL admission",
         "IWN_SCAN_LEASE_WCL_INITIAL")
 require(initial_begin, "*outBackendGeneration = 0;",
         "initial STARTED-only backend publication")
-for token in ("(ic->ic_flags & IEEE80211_F_BGSCAN) != 0",
-              "ic->ic_des_esslen != 0",
+for token in ("ic->ic_des_esslen != 0",
               "ieee80211_sae_wcl_request_scan_selection_held(ic)",
               "ieee80211_sae_wcl_request_scan_selection_owned(ic)"):
     require(initial_begin, token, "IWN BSSID-only recovery admission fence")
+forbid(initial_begin, "(ic->ic_flags & IEEE80211_F_BGSCAN) != 0",
+       "IWN initial admission must use the exact lower scan lease")
 forbid(initial_begin, "IEEE80211_F_BGSCAN |\n                         IEEE80211_F_DESBSSID",
        "IWN BSSID-only recovery must reach the WCL initial queue")
 forbid(initial_begin, "~IEEE80211_F_DESBSSID",
@@ -544,11 +550,12 @@ ordered(iwn_start, "WCL foreground scan is an S_SCAN operation",
         "ic->ic_state != IEEE80211_S_SCAN",
         "iwn_scan_submit(sc, flags, bgscan, serial",
         "controller_foreground, wcl_foreground")
-for token in ("(ic->ic_flags & IEEE80211_F_BGSCAN) != 0",
-              "ic->ic_des_esslen != 0",
+for token in ("ic->ic_des_esslen != 0",
               "ieee80211_sae_wcl_request_scan_selection_held(ic)",
               "ieee80211_sae_wcl_request_scan_selection_owned(ic)"):
     require(iwn_start, token, "IWN submit BSSID-only recovery admission fence")
+forbid(iwn_start, "(ic->ic_flags & IEEE80211_F_BGSCAN) != 0",
+       "IWN WCL submit must use the exact lower scan lease")
 forbid(iwn_start, "IEEE80211_F_BGSCAN |\n                          IEEE80211_F_DESBSSID",
        "IWN submit BSSID-only recovery must remain reachable")
 forbid(iwn_start, "~IEEE80211_F_DESBSSID",

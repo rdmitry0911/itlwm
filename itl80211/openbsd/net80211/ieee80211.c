@@ -300,6 +300,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
            sizeof(ic->ic_sae_wcl_request));
     memset(&ic->ic_sae_wcl_pmk_claim, 0,
            sizeof(ic->ic_sae_wcl_pmk_claim));
+    ic->ic_sae_wcl_fresh_carrier_required = 0;
     ic->ic_sae_wcl_request_policy_starting = 0;
     ic->ic_sae_wcl_request_join_active = 0;
     memset(ic->ic_bss_blacklist_requested, 0,

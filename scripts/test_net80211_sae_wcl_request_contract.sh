@@ -20,6 +20,9 @@ proto_c = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
 node_h = (root / "itl80211/openbsd/net80211/ieee80211_node.h").read_text()
 node_c = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 ieee_c = (root / "itl80211/openbsd/net80211/ieee80211.c").read_text()
+skywalk_cpp = (
+    root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+).read_text()
 
 
 def fail(message):
@@ -83,6 +86,7 @@ for token in (
     "u_int64_t\t\tic_sae_wcl_request_next_generation;",
     "u_int64_t\t\tic_sae_wcl_policy_generation;",
     "struct ieee80211_sae_wcl_request ic_sae_wcl_request;",
+    "u_int8_t\t\tic_sae_wcl_fresh_carrier_required;",
     "u_int8_t\t\tic_sae_wcl_request_policy_starting;",
     "u_int8_t\t\tic_sae_wcl_request_join_active;",
     "ic_sae_wcl_request_revoke",
@@ -126,6 +130,7 @@ for token in (
     "ieee80211_sae_wcl_request_bound_current",
     "ieee80211_sae_wcl_request_copyout_bound_current",
     "ieee80211_sae_wcl_peer_rx_admit",
+    "ieee80211_sae_wcl_fresh_carrier_accepted",
 ):
     require(proto_h, token, "public request API declaration")
 
@@ -223,6 +228,7 @@ for token in (
         "explicit_bzero(ic->ic_psk",
         "ic->ic_sae_wcl_policy_generation = generation",
         "request->phase = IEEE80211_SAE_WCL_REQUEST_PENDING",
+        "ic->ic_sae_wcl_fresh_carrier_required = 0",
         "ic->ic_sae_wcl_request_policy_starting = 0",
 ):
     require(policy_begin, token, "pure-SAE policy begin fence")
@@ -232,6 +238,7 @@ ordered(policy_begin, "reservation protects out-of-lock WEP teardown",
         "ic->ic_sae_wcl_request_policy_starting == 0",
         "ic->ic_sae_wcl_policy_generation = generation",
         "request->phase = IEEE80211_SAE_WCL_REQUEST_PENDING",
+        "ic->ic_sae_wcl_fresh_carrier_required = 0",
         "ic->ic_sae_wcl_request_policy_starting = 0",
         "IOSimpleLockUnlockEnableInterrupt")
 policy_begin_code = strip_comments(policy_begin)
@@ -343,6 +350,11 @@ require(begin, "ic->ic_sae_wcl_request_policy_starting = 0",
         "ordinary epoch cancels a policy reservation")
 require(begin, "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
         "ordinary epoch request cancellation")
+ordered(begin, "direct-SAE RUN cancellation waits for a fresh carrier",
+        "ic->ic_state == IEEE80211_S_RUN",
+        "IEEE80211_SAE_WCL_REQUEST_BOUND",
+        "ic->ic_sae_wcl_fresh_carrier_required = 1",
+        "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)")
 ordered(begin, "ordinary epoch revokes after the leaf lock",
         "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
         "IOSimpleLockUnlockEnableInterrupt",
@@ -365,6 +377,8 @@ require(destroy, "ic->ic_sae_wcl_request_join_active = 0",
         "terminal join-fence scrub")
 require(destroy, "ic->ic_sae_wcl_request_policy_starting = 0",
         "terminal policy-reservation scrub")
+require(destroy, "ic->ic_sae_wcl_fresh_carrier_required = 0",
+        "terminal fresh-carrier wait scrub")
 ordered(destroy, "terminal scrub revokes after the leaf lock",
         "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
         "IOSimpleLockUnlockEnableInterrupt",
@@ -375,6 +389,7 @@ for token in (
         "ic->ic_sae_wcl_request_next_generation = 0;",
         "ic->ic_sae_wcl_policy_generation = 0;",
         "memset(&ic->ic_sae_wcl_request, 0,",
+        "ic->ic_sae_wcl_fresh_carrier_required = 0;",
         "ic->ic_sae_wcl_request_policy_starting = 0;",
         "ic->ic_sae_wcl_request_join_active = 0;",
 ):
@@ -535,6 +550,7 @@ for token in (
     "IEEE80211_SAE_WCL_AUTH_OWNER_READY",
     "IEEE80211_SAE_WCL_AUTH_OWNER_REJECTED",
     "IEEE80211_SAE_WCL_REQUEST_BOUND",
+    "ic->ic_sae_wcl_fresh_carrier_required != 0",
     "ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic)",
     "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
     "ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation)",
@@ -544,6 +560,32 @@ ordered(auth_owner, "S_AUTH rejection revokes after the leaf lock",
         "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
         "IOSimpleLockUnlockEnableInterrupt",
         "ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation)")
+
+newstate_note = body(
+    proto_c, "void\nieee80211_pae_assoc_epoch_note_newstate",
+    "pre-driver state request fence")
+require(newstate_note, "(void)ieee80211_pae_assoc_epoch_begin(ic);",
+        "every non-forward state edge keeps ordinary epoch teardown")
+
+fresh_carrier = body(
+    proto_c, "void\nieee80211_sae_wcl_fresh_carrier_accepted",
+    "fresh association carrier acceptance")
+ordered(fresh_carrier, "fresh carrier clears under the selected-BSS leaf",
+        "ic->ic_pae_selected_bss_lock",
+        "IOSimpleLockLockDisableInterrupt(lock)",
+        "ieee80211_sae_wcl_request_clear_locked(ic, &revocation)",
+        "ic->ic_sae_wcl_fresh_carrier_required = 0",
+        "IOSimpleLockUnlockEnableInterrupt(lock, irq)",
+        "ieee80211_sae_wcl_request_revocation_deliver(ic, &revocation)")
+
+associate = body(
+    skywalk_cpp, "AirportItlwmSkywalkInterface::associateSSID(",
+    "shared public/WCL association carrier")
+ordered(associate, "new non-SAE carrier supersedes retired direct SAE",
+        "requiresUnsupportedWpa3Auth(",
+        "struct ieee80211com *ic",
+        "ieee80211_sae_wcl_fresh_carrier_accepted(ic)",
+        "ieee80211_public_initial_bssid_pin_disarm(ic)")
 
 newstate_start = proto_c.find("int\nieee80211_newstate")
 newstate_end = proto_c.find("void\nieee80211_set_link_state",
@@ -698,6 +740,7 @@ class RequestModel:
         self.join_active = False
         self.policy_starting = False
         self.policy_generation = 0
+        self.fresh_carrier_required = False
         self.run_stable = True
         self.owner_ready = True
         self.revoked = []
@@ -778,8 +821,20 @@ class RequestModel:
         self.phase = self.PENDING
         self.identity = identity
         self.policy_generation = self.generation
+        self.fresh_carrier_required = False
         self.policy_starting = False
         return self.generation
+
+    def retire_direct_run_owner(self):
+        if self.phase == self.BOUND and self.generation and \
+                self.policy_generation == self.generation:
+            self.fresh_carrier_required = True
+        self.policy_generation = 0
+        self.clear()
+
+    def fresh_carrier_accepted(self):
+        self.clear()
+        self.fresh_carrier_required = False
 
     def join_begin(self):
         if self.policy_starting:
@@ -831,7 +886,8 @@ class RequestModel:
 
     def auth_owner_state(self, epoch, identity):
         if self.phase == self.NONE:
-            return self.OWNER_NONE
+            return self.OWNER_REJECTED if self.fresh_carrier_required \
+                else self.OWNER_NONE
         if self.owner_ready and self.phase == self.BOUND and \
                 self.epoch == epoch and self.identity == identity:
             return self.OWNER_READY
@@ -946,6 +1002,30 @@ assert reservation.resume()
 assert not reservation.policy_held_for_scan() and reservation.policy_selects_scan()
 reservation.ordinary_cancel()
 assert not reservation.policy_held_for_scan() and not reservation.policy_selects_scan()
+
+restart = RequestModel()
+restart_generation = restart.policy_begin(target_a)
+assert restart_generation == 1
+assert restart.resume() and restart.controlled_replacement()
+assert restart.bind(11, target_a, "pure")
+restart.retire_direct_run_owner()
+assert restart.phase == restart.NONE and restart.fresh_carrier_required
+assert restart.auth_owner_state(12, target_a) == restart.OWNER_REJECTED
+restart.fresh_carrier_accepted()
+assert restart.auth_owner_state(12, target_a) == restart.OWNER_NONE
+replacement_generation = restart.policy_begin(target_a)
+assert replacement_generation == 2 and not restart.fresh_carrier_required
+
+superseded = RequestModel()
+superseded_generation = superseded.policy_begin(target_a)
+assert superseded_generation == 1
+assert superseded.resume() and superseded.controlled_replacement()
+assert superseded.bind(13, target_a, "pure")
+superseded.fresh_carrier_accepted()
+assert superseded.phase == superseded.NONE
+assert superseded.policy_generation == 0
+assert superseded.revoked == [superseded_generation]
+assert not superseded.fresh_carrier_required
 
 print("net80211 direct-WCL SAE request contract: passed")
 PY

@@ -1071,6 +1071,10 @@ IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssi
 
     struct ieee80211com *ic = fHalService->get80211Controller();
 
+    /* A new public or WCL carrier supersedes any completed direct-SAE owner
+     * that was deliberately waiting in SCAN for WCL to restart the join. */
+    ieee80211_sae_wcl_fresh_carrier_accepted(ic);
+
     /* associateSSID() is shared with WCL.  Any direct desired-BSSID rewrite
      * first retires the public-only one-shot provenance; setASSOCIATE() may
      * arm a fresh marker only after this full public configuration succeeds. */
@@ -6502,11 +6506,13 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
     } else if (ic->ic_state == IEEE80211_S_SCAN) {
         if (ic->ic_opmode != IEEE80211_M_STA ||
             (ic->ic_ac.ac_if.if_flags & IFF_RUNNING) == 0 ||
-            /* After radio teardown a deselected ESS can retain only a
-             * BSSID pin.  Allow a fresh WCL initial census in that exact
-             * state, but retain the pin; a directed request still has an
-             * ESS or SAE selection ownership and is rejected below. */
-            (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+            /* AppleBCMWLANCore passes every otherwise-valid WCL scan
+             * carrier to AppleBCMWLANScanAdapter::startScan; it does not
+             * treat the legacy net80211 BGSCAN bit as WCL admission state.
+             * After link loss that bit can outlive its lower scan owner, so
+             * let the exact WCL lease below arbitrate the fresh census.
+             * Keep the BSSID pin: a directed request still has an ESS or
+             * SAE selection owner and is rejected by the remaining fences. */
             (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
             ic->ic_mgt_timer != 0 || ic->ic_des_esslen != 0 ||
             ieee80211_sae_wcl_request_scan_selection_held(ic) ||
