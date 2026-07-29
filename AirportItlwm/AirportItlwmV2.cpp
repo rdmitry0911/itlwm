@@ -8091,6 +8091,7 @@ IOReturn AirportItlwm::prepareTahoeWclAssociationBackend() const
     const bool ready =
         power_state == kWiFiPowerOn &&
         fHalService != NULL &&
+        (lifecycleState & kAirportItlwmPmSystemOnBit) != 0 &&
         (lifecycleState & unavailableMask) == 0;
 
     /*

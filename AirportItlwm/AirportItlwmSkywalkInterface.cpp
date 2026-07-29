@@ -6208,6 +6208,23 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
     RT2_SET(2); sRT.scanReqCount++;
     if (sd == nullptr)
         return kIOReturnBadArgument;
+
+    /*
+     * AppleBCMWLANCore's system PowerOn is synchronous: public scan work
+     * cannot be admitted until its live firmware backend is usable.  IWN
+     * reaches that point asynchronously, so apply the same controller-owned
+     * readiness fence used by WCL association before resetting an iterator
+     * or scheduling the FAST cache terminal.  Otherwise a wake-time FAST
+     * request can drain the complete pre-sleep node cache while
+     * DRIVER_AVAILABLE is still pending, leaving WCL nothing to associate
+     * after the PowerOn bulletin.
+     */
+    const IOReturn backendResult = instance != nullptr
+        ? instance->prepareTahoeWclAssociationBackend()
+        : kIOReturnNotReady;
+    if (backendResult != kIOReturnSuccess)
+        return backendResult;
+
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic == nullptr)
         return kIOReturnNotReady;

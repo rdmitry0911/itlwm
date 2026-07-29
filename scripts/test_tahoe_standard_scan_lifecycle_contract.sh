@@ -62,6 +62,7 @@ setter = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nsetSCAN_REQ",
               "standard SCAN_REQ setter")
 for token in (
         "APPLE80211_SCAN_TYPE_FAST",
+        "prepareTahoeWclAssociationBackend()",
         "scheduleScanSource(100)",
         "reserveStandardPhysicalScan",
         "fHalService->beginStandardScan",
@@ -75,6 +76,13 @@ for token in (
     require(setter, token, "normal scan setter")
 forbid(setter, "if (fScanResultWrapping)",
        "completed result iterator blocking the next scan")
+ordered(setter, "PowerOn readiness precedes every scan side effect",
+        "prepareTahoeWclAssociationBackend()",
+        "if (backendResult != kIOReturnSuccess)",
+        "return backendResult;",
+        "fNextNodeToSend = NULL;",
+        "fScanResultWrapping = false;",
+        "if (sd->scan_type == APPLE80211_SCAN_TYPE_FAST)")
 ordered(setter, "new request resets the prior result iterator",
         "fNextNodeToSend = NULL;",
         "fScanResultWrapping = false;",

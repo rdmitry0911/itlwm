@@ -393,6 +393,7 @@ backend_preflight = body(
     "association backend preflight")
 for token in (
         "power_state == kWiFiPowerOn",
+        "kAirportItlwmPmSystemOnBit",
         "kAirportItlwmPmBootInProgressBit",
         "kAirportItlwmPmPermanentFailureBit",
         "kAirportItlwmPmDriverAvailabilityPendingBit",
