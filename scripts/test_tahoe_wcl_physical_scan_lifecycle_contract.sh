@@ -149,11 +149,11 @@ reopened_end = event.find("if (msgCode == IEEE80211_EVT_STANDARD_SCAN_INVALIDATE
 forbid(event[reopened_start:reopened_end],
        "noteRadioScanReadyAndQueuePowerOnAvailability()",
        "pre-terminal PowerOn availability")
-ordered(event, "generic terminal census precedes PowerOn availability",
+ordered(event, "PowerOn availability precedes generic terminal census",
         "case IEEE80211_EVT_SCAN_DONE:",
-        "gate->runAction(postMessageGated,",
         "if (msgCode == IEEE80211_EVT_SCAN_DONE)",
-        "noteRadioScanReadyAndQueuePowerOnAvailability()")
+        "noteRadioScanReadyAndQueuePowerOnAvailability()",
+        "gate->runAction(postMessageGated,")
 scan_done = event[event.find("case IEEE80211_EVT_SCAN_DONE:"):]
 forbid(scan_done[:scan_done.find("case IEEE80211_EVT_WCL_REASSOC_DONE:")],
        "claimWclPhysicalScanCompletion", "generic SCAN_DONE WCL claim")

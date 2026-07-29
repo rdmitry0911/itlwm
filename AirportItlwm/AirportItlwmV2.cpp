@@ -8926,21 +8926,23 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             XYLog("DEBUG %s UNHANDLED msgCode=%d\n", __FUNCTION__, msgCode);
             return;
     }
-    // Defer postMessage to workloop context — cannot call from interrupt thread.
-    gate->runAction(postMessageGated,
-                    (void *)(uintptr_t)apple80211Msg, msgData,
-                    (void *)(uintptr_t)msgDataLen);
     if (msgCode == IEEE80211_EVT_SCAN_DONE) {
         /*
          * net80211 emits this only after the generic foreground scan has
          * populated its node tree. The legacy IWN reset path starts that scan
          * inside enable(), whereas Tahoe's reference powerOn() returns a
-         * usable firmware backend before WCL submits discovery. Treat the
-         * inherited scan terminal as the local equivalent usability edge:
-         * publish SCAN_DONE first, then DRIVER_AVAILABLE and wake setPOWER.
+         * usable firmware backend before any externally visible wake or scan
+         * terminal. Treat the inherited scan terminal as the local equivalent
+         * usability edge, but publish DRIVER_AVAILABLE first. Otherwise Tahoe
+         * can consume the complete scan cache while isDriverAvailable is
+         * still false and never submit the cached candidate after wake.
          */
         that->noteRadioScanReadyAndQueuePowerOnAvailability();
     }
+    // Defer postMessage to workloop context — cannot call from interrupt thread.
+    gate->runAction(postMessageGated,
+                    (void *)(uintptr_t)apple80211Msg, msgData,
+                    (void *)(uintptr_t)msgDataLen);
 #if __IO80211_TARGET >= __MAC_26_0
     if (msgCode == IEEE80211_EVT_STA_DEAUTH) {
         /*
