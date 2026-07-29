@@ -12525,6 +12525,8 @@ iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
         goto out;
     }
 
+    __atomic_store_n(&ic->ic_initial_scan_census_only, 1,
+                     __ATOMIC_RELEASE);
     ieee80211_begin_scan(ifp);
 
     /*
@@ -12661,6 +12663,8 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
 
     s = splnet();
     explicit_bzero(&reset_event, sizeof(reset_event));
+    __atomic_store_n(&ic->ic_initial_scan_census_only, 0,
+                     __ATOMIC_RELEASE);
 
     //    rw_assert_wrlock(&sc->ioctl_rwl);
 

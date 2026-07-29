@@ -1455,6 +1455,9 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
         ic, kAirportItlwmPostPltiTraceEventScanCompleted);
     
     const int generic_terminal = mode == IEEE80211_SCAN_COMPLETION_GENERIC;
+    const int initial_scan_census_only =
+        __atomic_exchange_n(&ic->ic_initial_scan_census_only, 0,
+                            __ATOMIC_ACQ_REL) != 0;
     const int suppress_generic_scan_done = generic_terminal &&
         __atomic_exchange_n(&ic->ic_wcl_scan_suppress_scan_done_once, 0,
                             __ATOMIC_ACQ_REL) != 0;
@@ -1473,6 +1476,24 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
      * back into ieee80211_next_scan(), select a BSS, or join it. */
     if (!generic_terminal) {
         ieee80211_reset_scan(ifp);
+        return;
+    }
+
+    /*
+     * AppleBCMWLANCore::scanComplete() publishes the completed census and
+     * returns.  It never turns a retained pre-power-cycle SSID into an
+     * implicit join; only the later JoinAdapter::performJoin() consumes the
+     * WCL candidate.  Preserve that ordering for exactly the hardware-enable
+     * scan.  SCAN_DONE and node cleanup above remain visible, while BSS
+     * selection, AUTH, and association completion stay unowned until the
+     * explicit association carrier arrives.
+     */
+    if (initial_scan_census_only) {
+        if (bgscan)
+            ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                              IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventSelectionHeld);
         return;
     }
 

@@ -709,6 +709,15 @@ struct ieee80211com {
     /* True only while an exact lower WCL lease owns an associated bgscan. */
     volatile u_int32_t ic_wcl_scan_active;
     /*
+     * A hardware-enable scan is a discovery census, not association intent.
+     * The exact backend arms this one-shot immediately before its initial
+     * ieee80211_begin_scan().  Whichever terminal retires that scan consumes
+     * it; a generic terminal still publishes SCAN_DONE but must not run the
+     * OpenBSD BSS selector afterwards.  Apple/WCL owns the later explicit
+     * JoinAdapter request, including when a desired ESS survived radio-off.
+     */
+    volatile u_int32_t ic_initial_scan_census_only;
+    /*
      * Optional private owner for an already-selected SAE S_AUTH attempt.
      * generic ieee80211_newstate() calls ic_sae_auth_hold only after it has
      * committed S_AUTH and before any historic Open-System AUTH branch can

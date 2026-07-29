@@ -675,6 +675,7 @@ for token in ("IEEE80211_EVT_WCL_SCAN_TERMINAL",
               "ieee80211_wcl_scan_started",
               "ieee80211_wcl_scan_start_rejected",
               "ic_wcl_scan_suppress_scan_done_once",
+              "ic_initial_scan_census_only",
               "ic_newstate_preflight"):
     require(i80211_var, token, "net80211 exact WCL contract")
 require(i80211_node, "__atomic_exchange_n",
@@ -692,6 +693,22 @@ ordered(controlled_end, "controlled terminal suppresses generic completion and s
         "if (!generic_terminal)",
         "ieee80211_reset_scan(ifp)",
         "return;")
+ordered(controlled_end, "initial hardware census publishes but never joins",
+        "const int initial_scan_census_only",
+        "IEEE80211_EVT_SCAN_DONE",
+        "if (!generic_terminal)",
+        "if (initial_scan_census_only)",
+        "kAirportItlwmPostPltiTraceEventSelectionHeld",
+        "return;")
+require(i80211, "ic->ic_initial_scan_census_only = 0;",
+        "initial census one-shot initialization")
+for source, label in ((iwn, "IWN"), (iwm_mac, "IWM"), (iwx, "IWX")):
+    ordered(source, f"{label} hardware-enable census arm",
+            "__atomic_store_n(&ic->ic_initial_scan_census_only, 1",
+            "ieee80211_begin_scan(ifp)")
+    ordered(source, f"{label} stop clears census owner",
+            "__atomic_store_n(&ic->ic_initial_scan_census_only, 0",
+            "__ATOMIC_RELEASE)")
 ordered(i80211_proto, "preflight before epoch",
         "ic_newstate_preflight", "ieee80211_pae_assoc_epoch_note_newstate")
 require(i80211, "ic_wcl_scan_active",

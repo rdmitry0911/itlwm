@@ -280,6 +280,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     ic->ic_newstate_preflight = NULL;
     ic->ic_wcl_scan_suppress_scan_done_once = 0;
     ic->ic_wcl_scan_active = 0;
+    ic->ic_initial_scan_census_only = 0;
     /* A missing leaf lock leaves the dormant snapshot unpublishable. */
 	if (ic->ic_pae_selected_bss_lock == NULL)
 		ic->ic_pae_selected_bss_lock = IOSimpleLockAlloc();

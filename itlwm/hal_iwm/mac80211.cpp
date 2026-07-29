@@ -3598,6 +3598,8 @@ iwm_init(struct _ifnet *ifp)
         return 0;
     }
     
+    __atomic_store_n(&ic->ic_initial_scan_census_only, 1,
+                     __ATOMIC_RELEASE);
     ieee80211_begin_scan(ifp);
     
     /*
@@ -3730,6 +3732,8 @@ iwm_stop(struct _ifnet *ifp)
 
     /* This direct sc_newstate(INIT) path intentionally bypasses the macro. */
     (void)ieee80211_pae_assoc_epoch_begin(ic);
+    __atomic_store_n(&ic->ic_initial_scan_census_only, 0,
+                     __ATOMIC_RELEASE);
     that->invalidateWclScanForReset();
     s = splnet();
     

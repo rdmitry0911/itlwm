@@ -14297,9 +14297,11 @@ iwn_init(struct _ifnet *ifp)
     iwn_sae_tx_reopen(sc);
     iwn_sae_engine_reopen(sc);
 
-    if (ic->ic_opmode != IEEE80211_M_MONITOR)
+    if (ic->ic_opmode != IEEE80211_M_MONITOR) {
+        __atomic_store_n(&ic->ic_initial_scan_census_only, 1,
+                         __ATOMIC_RELEASE);
         ieee80211_begin_scan(ifp);
-    else
+    } else
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
 
     /* WCL's reopen fence is also the controller's lower-ready edge.  It must
@@ -14323,6 +14325,8 @@ iwn_stop(struct _ifnet *ifp)
     struct ieee80211com *ic = &sc->sc_ic;
 
     timeout_del(&sc->calib_to);
+    __atomic_store_n(&ic->ic_initial_scan_census_only, 0,
+                     __ATOMIC_RELEASE);
     ifp->if_timer = sc->sc_tx_timer = 0;
     ifp->if_flags &= ~IFF_RUNNING;
     ifq_clr_oactive(&ifp->if_snd);
