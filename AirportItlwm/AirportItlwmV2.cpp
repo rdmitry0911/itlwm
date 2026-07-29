@@ -8357,13 +8357,13 @@ void AirportItlwm::publishDeferredPowerOffAvailability()
     cancelDeferredPowerOnAvailabilityRaw();
 }
 
-void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
+bool AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
 {
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
         fWclPhysicalScanLifecycle;
     IOSimpleLock *lock = lifecycle.admissionLock;
     if (lock == NULL)
-        return;
+        return false;
 
     uint64_t epoch = 0;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
@@ -8375,7 +8375,7 @@ void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
     }
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
     if (epoch == 0)
-        return;
+        return false;
 
     /* eventHandler() runs on the lower task context.  The existing generic
      * event path enters this same gate before using controller postMessage;
@@ -8394,6 +8394,7 @@ void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
             lifecycle.powerOnPublishQueued = false;
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
     }
+    return true;
 }
 
 IOReturn AirportItlwm::
@@ -8931,13 +8932,17 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
          * net80211 emits this only after the generic foreground scan has
          * populated its node tree. The legacy IWN reset path starts that scan
          * inside enable(), whereas Tahoe's reference powerOn() returns a
-         * usable firmware backend before any externally visible wake or scan
-         * terminal. Treat the inherited scan terminal as the local equivalent
-         * usability edge, but publish DRIVER_AVAILABLE first. Otherwise Tahoe
-         * can consume the complete scan cache while isDriverAvailable is
-         * still false and never submit the cached candidate after wake.
+         * usable firmware backend without exposing a bootstrap SCAN_DONE.
+         * Treat the inherited terminal as the local equivalent usability
+         * edge, publish DRIVER_AVAILABLE, and consume that one internal
+         * terminal. Waking the synchronous PowerOn waiter between two
+         * command-gate publications lets POWER_CHANGED race the synthetic
+         * terminal and can strand WCL without a reconnect scan after wake.
+         * A later user-requested scan has no pending PowerOn epoch and keeps
+         * the normal generic SCAN_DONE path below.
          */
-        that->noteRadioScanReadyAndQueuePowerOnAvailability();
+        if (that->noteRadioScanReadyAndQueuePowerOnAvailability())
+            return;
     }
     // Defer postMessage to workloop context — cannot call from interrupt thread.
     gate->runAction(postMessageGated,

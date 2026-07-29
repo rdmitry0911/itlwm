@@ -149,10 +149,11 @@ reopened_end = event.find("if (msgCode == IEEE80211_EVT_STANDARD_SCAN_INVALIDATE
 forbid(event[reopened_start:reopened_end],
        "noteRadioScanReadyAndQueuePowerOnAvailability()",
        "pre-terminal PowerOn availability")
-ordered(event, "PowerOn availability precedes generic terminal census",
+ordered(event, "PowerOn bootstrap census is consumed before generic terminal",
         "case IEEE80211_EVT_SCAN_DONE:",
         "if (msgCode == IEEE80211_EVT_SCAN_DONE)",
         "noteRadioScanReadyAndQueuePowerOnAvailability()",
+        "return;",
         "gate->runAction(postMessageGated,")
 scan_done = event[event.find("case IEEE80211_EVT_SCAN_DONE:"):]
 forbid(scan_done[:scan_done.find("case IEEE80211_EVT_WCL_REASSOC_DONE:")],
@@ -616,13 +617,16 @@ ordered(availability_wait, "generation-bound PowerOn wait",
 require(availability_wait, "sleepResult == THREAD_TIMED_OUT",
         "bounded lower-ready wait")
 availability_note = body(v2,
-    "void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()",
+    "bool AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()",
     "radio-ready PowerOn note")
 ordered(availability_note, "radio-ready notification is gated",
         "lifecycle.readyPowerOnEpoch = lifecycle.pendingPowerOnEpoch",
         "lifecycle.powerOnPublishQueued = true",
         "gate->runAction(publishDeferredPowerAvailabilityGated",
-        "kAirportItlwmDeferredPowerAvailabilityPublishOn")
+        "kAirportItlwmDeferredPowerAvailabilityPublishOn",
+        "return true;")
+require(availability_note, "return false;",
+        "ordinary generic scans are not consumed as bootstrap")
 forbid(availability_note, "postTahoeDriverAvailabilityTransition",
        "off-gate PowerOn publication")
 
