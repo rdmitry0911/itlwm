@@ -8626,11 +8626,14 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED) {
         that->reopenWclPhysicalScanAfterRadioReset();
         that->reopenStandardPhysicalScanAfterRadioReset();
-        /* The lower IWN producer emits REOPENED only after its synchronous
-         * first S_SCAN transition. Reopen tickets before publishing PowerOn,
-         * so a synchronous WCL consumer cannot observe a ready carrier while
-         * its own physical-scan admission remains draining. */
-        that->noteRadioScanReadyAndQueuePowerOnAvailability();
+        /*
+         * IWN reaches REOPENED after firmware configuration and the first
+         * S_SCAN transition, but unlike Broadcom powerOn() it has already
+         * launched a generic physical scan. Reopen admission here; defer
+         * DRIVER_AVAILABLE until that inherited lower transaction publishes
+         * its terminal census below. Otherwise WCL can issue its first
+         * post-PowerOn selection while the only fresh BSS tree is incomplete.
+         */
         return;
     }
 
@@ -8906,6 +8909,17 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     gate->runAction(postMessageGated,
                     (void *)(uintptr_t)apple80211Msg, msgData,
                     (void *)(uintptr_t)msgDataLen);
+    if (msgCode == IEEE80211_EVT_SCAN_DONE) {
+        /*
+         * net80211 emits this only after the generic foreground scan has
+         * populated its node tree. The legacy IWN reset path starts that scan
+         * inside enable(), whereas Tahoe's reference powerOn() returns a
+         * usable firmware backend before WCL submits discovery. Treat the
+         * inherited scan terminal as the local equivalent usability edge:
+         * publish SCAN_DONE first, then DRIVER_AVAILABLE and wake setPOWER.
+         */
+        that->noteRadioScanReadyAndQueuePowerOnAvailability();
+    }
 #if __IO80211_TARGET >= __MAC_26_0
     if (msgCode == IEEE80211_EVT_STA_DEAUTH) {
         /*

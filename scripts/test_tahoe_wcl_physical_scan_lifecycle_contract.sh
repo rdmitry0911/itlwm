@@ -139,10 +139,20 @@ require(event, "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
         "hardware-reset invalidation fence")
 require(event, "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "confirmed radio-reset reopening fence")
-ordered(event, "radio-ready availability order",
+ordered(event, "radio-ready reopens both scan admission planes",
         "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "reopenWclPhysicalScanAfterRadioReset()",
-        "reopenStandardPhysicalScanAfterRadioReset()",
+        "reopenStandardPhysicalScanAfterRadioReset()")
+reopened_start = event.find("if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED)")
+reopened_end = event.find("if (msgCode == IEEE80211_EVT_STANDARD_SCAN_INVALIDATED)",
+                          reopened_start)
+forbid(event[reopened_start:reopened_end],
+       "noteRadioScanReadyAndQueuePowerOnAvailability()",
+       "pre-terminal PowerOn availability")
+ordered(event, "generic terminal census precedes PowerOn availability",
+        "case IEEE80211_EVT_SCAN_DONE:",
+        "gate->runAction(postMessageGated,",
+        "if (msgCode == IEEE80211_EVT_SCAN_DONE)",
         "noteRadioScanReadyAndQueuePowerOnAvailability()")
 scan_done = event[event.find("case IEEE80211_EVT_SCAN_DONE:"):]
 forbid(scan_done[:scan_done.find("case IEEE80211_EVT_WCL_REASSOC_DONE:")],

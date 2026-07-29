@@ -86,7 +86,7 @@ enum
      * equivalent IWN lower-ready wait bounded so a firmware failure is
      * returned to WCL instead of parking an airportd caller indefinitely.
      */
-    kAirportItlwmPowerOnReadyTimeoutMs = 10000
+    kAirportItlwmPowerOnReadyTimeoutMs = 15000
 };
 
 // WiFi radio power states (matches Apple's apple80211_power_state)
