@@ -8076,6 +8076,8 @@ armDeferredPowerOnAvailability(bool wakeBulletinPending)
     lifecycle.readyPowerOnEpoch = 0;
     lifecycle.powerOnPublishQueued = false;
     lifecycle.powerOnWakeBulletinPending = wakeBulletinPending;
+    lifecycle.powerOnWakeScanTerminalObserved = false;
+    lifecycle.powerOnWakeAvailabilityAckObserved = false;
     const uint64_t epoch = lifecycle.pendingPowerOnEpoch;
     OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit,
                   &pmPowerStateFlags);
@@ -8147,6 +8149,8 @@ cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch)
         lifecycle.readyPowerOnEpoch = 0;
         lifecycle.powerOnPublishQueued = false;
         lifecycle.powerOnWakeBulletinPending = false;
+        lifecycle.powerOnWakeScanTerminalObserved = false;
+        lifecycle.powerOnWakeAvailabilityAckObserved = false;
         OSBitAndAtomic(~static_cast<UInt32>(
                            kAirportItlwmPmDriverAvailabilityPendingBit),
                        &pmPowerStateFlags);
@@ -8169,6 +8173,8 @@ void AirportItlwm::cancelDeferredPowerOnAvailabilityRaw()
         lifecycle.readyPowerOnEpoch = 0;
         lifecycle.powerOnPublishQueued = false;
         lifecycle.powerOnWakeBulletinPending = false;
+        lifecycle.powerOnWakeScanTerminalObserved = false;
+        lifecycle.powerOnWakeAvailabilityAckObserved = false;
         OSBitAndAtomic(~static_cast<UInt32>(
                            kAirportItlwmPmDriverAvailabilityPendingBit),
                        &pmPowerStateFlags);
@@ -8247,9 +8253,14 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
             lifecycle.pendingPowerOnEpoch == 0 &&
             lifecycle.readyPowerOnEpoch == 0 &&
             !lifecycle.powerOnPublishQueued &&
-            lifecycle.powerOnWakeBulletinPending;
-        if (publish)
+            lifecycle.powerOnWakeBulletinPending &&
+            lifecycle.powerOnWakeScanTerminalObserved &&
+            lifecycle.powerOnWakeAvailabilityAckObserved;
+        if (publish) {
             lifecycle.powerOnWakeBulletinPending = false;
+            lifecycle.powerOnWakeScanTerminalObserved = false;
+            lifecycle.powerOnWakeAvailabilityAckObserved = false;
+        }
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
         if (!publish)
             return kIOReturnAborted;
@@ -8439,7 +8450,8 @@ bool AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
     return true;
 }
 
-bool AirportItlwm::publishDeferredWakePowerChangedAtScanTerminal()
+bool AirportItlwm::
+noteDeferredWakePowerChangedEdge(bool scanTerminalEdge)
 {
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
         fWclPhysicalScanLifecycle;
@@ -8449,23 +8461,40 @@ bool AirportItlwm::publishDeferredWakePowerChangedAtScanTerminal()
 
     uint64_t epoch = 0;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
-    if (lifecycle.powerOnWakeBulletinPending &&
-        lifecycle.pendingPowerOnEpoch == 0 &&
-        lifecycle.readyPowerOnEpoch == 0 &&
-        !lifecycle.powerOnPublishQueued)
-        epoch = lifecycle.availabilityEpoch;
+    const bool claimedScanTerminal =
+        scanTerminalEdge && lifecycle.powerOnWakeBulletinPending;
+    if (lifecycle.powerOnWakeBulletinPending) {
+        if (scanTerminalEdge)
+            lifecycle.powerOnWakeScanTerminalObserved = true;
+        else
+            lifecycle.powerOnWakeAvailabilityAckObserved = true;
+        if (lifecycle.powerOnWakeScanTerminalObserved &&
+            lifecycle.powerOnWakeAvailabilityAckObserved &&
+            lifecycle.pendingPowerOnEpoch == 0 &&
+            lifecycle.readyPowerOnEpoch == 0 &&
+            !lifecycle.powerOnPublishQueued)
+            epoch = lifecycle.availabilityEpoch;
+    }
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
     if (epoch == 0)
-        return false;
+        return claimedScanTerminal;
 
     IOCommandGate *gate = getCommandGate();
+    IOWorkLoop *workLoop = getWorkLoop();
     if (gate == NULL)
-        return false;
-    return gate->runAction(
-               publishDeferredPowerAvailabilityGated,
-               (void *)(uintptr_t)
-                   kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
-               (void *)(uintptr_t)epoch, NULL, NULL) == kIOReturnSuccess;
+        return claimedScanTerminal;
+    const IOReturn result = workLoop != NULL && workLoop->inGate()
+        ? publishDeferredPowerAvailabilityGated(
+              this,
+              (void *)(uintptr_t)
+                  kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
+              (void *)(uintptr_t)epoch, NULL, NULL)
+        : gate->runAction(
+              publishDeferredPowerAvailabilityGated,
+              (void *)(uintptr_t)
+                  kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
+              (void *)(uintptr_t)epoch, NULL, NULL);
+    return claimedScanTerminal || result == kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
@@ -8966,13 +8995,14 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             sRT.scanDoneCount++;
             /*
              * The first IWN post-reset census is the asynchronous tail of
-             * reference powerOn(), not a public user scan.  Availability was
-             * already published at REOPENED; now publish only POWER_CHANGED,
-             * after WCL has had time to leave its wake-time SUSPEND state.
-             * Consume this inherited terminal exactly as the synchronous
-             * reference path, which has no bootstrap generic SCAN_DONE.
+             * reference powerOn(), not a public user scan.  Retain this edge
+             * until IO80211Family calls WCL_CONFIG_BG_PARAMS after consuming
+             * DRIVER_AVAILABLE.  Whichever edge arrives second publishes
+             * POWER_CHANGED; consume the inherited terminal even when its
+             * peer acknowledgement is still pending.
              */
-            if (that->publishDeferredWakePowerChangedAtScanTerminal())
+            if (that->noteDeferredWakePowerChangedEdge(
+                    /*scanTerminalEdge=*/true))
                 return;
             // Generic scans retain the historical Core scan-complete bulletin.
             apple80211Msg = APPLE80211_M_SCAN_DONE;

@@ -8356,6 +8356,18 @@ setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
+    /*
+     * IO80211Family sends this selector only after its DRIVER_AVAILABLE
+     * consumer has changed isDriverAvailable to one.  During system wake it
+     * is therefore the observable family-side acknowledgement paired with
+     * the first post-reset scan terminal.  The controller rendezvous only
+     * records that ordering edge; unsupported Intel PFN programming remains
+     * fail-closed below.
+     */
+    if (instance != nullptr)
+        instance->noteDeferredWakePowerChangedEdge(
+            /*scanTerminalEdge=*/false);
+
     // Tahoe delegates dynamic PFN override and unassociated-scan timing to
     // BGScanAdapter. Intel has no matching background-scan owner or transport.
     return kIOReturnUnsupported;

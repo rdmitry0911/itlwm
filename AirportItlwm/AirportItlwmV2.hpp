@@ -343,6 +343,8 @@ struct AirportItlwmWclPhysicalScanLifecycle {
     uint64_t readyPowerOnEpoch;
     bool powerOnPublishQueued;
     bool powerOnWakeBulletinPending;
+    bool powerOnWakeScanTerminalObserved;
+    bool powerOnWakeAvailabilityAckObserved;
 };
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -627,7 +629,7 @@ public:
     void cancelDeferredPowerOnAvailability();
     void publishDeferredPowerOffAvailability();
     bool noteRadioScanReadyAndQueuePowerOnAvailability();
-    bool publishDeferredWakePowerChangedAtScanTerminal();
+    bool noteDeferredWakePowerChangedEdge(bool scanTerminalEdge);
 #if __IO80211_TARGET >= __MAC_26_0
     // Called for either a deferred IWX TX terminal worker record or the
     // post-reset invalidation carrier. The borrowed event is copied into a

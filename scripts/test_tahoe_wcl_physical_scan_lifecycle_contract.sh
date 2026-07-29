@@ -154,15 +154,15 @@ ordered(event, "PowerOn backend-ready edge precedes generic scan terminal",
         "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "noteRadioScanReadyAndQueuePowerOnAvailability()",
         "case IEEE80211_EVT_SCAN_DONE:",
-        "publishDeferredWakePowerChangedAtScanTerminal()",
+        "noteDeferredWakePowerChangedEdge(",
         "gate->runAction(postMessageGated,")
 scan_done = event[event.find("case IEEE80211_EVT_SCAN_DONE:"):]
 forbid(scan_done[:scan_done.find("case IEEE80211_EVT_WCL_REASSOC_DONE:")],
        "claimWclPhysicalScanCompletion", "generic SCAN_DONE WCL claim")
 forbid(scan_done, "noteRadioScanReadyAndQueuePowerOnAvailability()",
        "scan terminal must not own PowerOn availability")
-require(scan_done, "publishDeferredWakePowerChangedAtScanTerminal()",
-        "scan terminal owns only the deferred wake bulletin")
+require(scan_done, "noteDeferredWakePowerChangedEdge(",
+        "scan terminal owns its deferred wake rendezvous edge")
 
 publisher = body(v2, "postWclPhysicalScanCompletionGated(",
                  "physical WCL completion publisher")
@@ -568,7 +568,9 @@ ordered(iwn_init, "IWN lower-ready fence after first scan state",
 
 for token in ("availabilityEpoch", "pendingPowerOnEpoch",
               "readyPowerOnEpoch", "powerOnPublishQueued",
-              "powerOnWakeBulletinPending"):
+              "powerOnWakeBulletinPending",
+              "powerOnWakeScanTerminalObserved",
+              "powerOnWakeAvailabilityAckObserved"):
     require(v2_hpp, token, "post-radio-ready availability epoch state")
 require(v2_hpp, "kAirportItlwmPmDriverAvailabilityPendingBit",
         "deferred PowerOn lifecycle bit")
@@ -607,6 +609,8 @@ ordered(availability_publish,
         "lifecycle.availabilityEpoch == expectedEpoch",
         "lifecycle.pendingPowerOnEpoch == 0",
         "lifecycle.powerOnWakeBulletinPending",
+        "lifecycle.powerOnWakeScanTerminalObserved",
+        "lifecycle.powerOnWakeAvailabilityAckObserved",
         "APPLE80211_M_POWER_CHANGED")
 availability_arm = body(v2,
                        "armDeferredPowerOnAvailability(bool wakeBulletinPending)",
@@ -614,6 +618,8 @@ availability_arm = body(v2,
 ordered(availability_arm, "pending availability bit armed under lock",
         "lifecycle.powerOnPublishQueued = false",
         "lifecycle.powerOnWakeBulletinPending = wakeBulletinPending",
+        "lifecycle.powerOnWakeScanTerminalObserved = false",
+        "lifecycle.powerOnWakeAvailabilityAckObserved = false",
         "OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit",
         "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
 availability_cancel = body(v2,
@@ -622,6 +628,8 @@ availability_cancel = body(v2,
 ordered(availability_cancel, "pending availability bit cleared under lock",
         "lifecycle.powerOnPublishQueued = false",
         "lifecycle.powerOnWakeBulletinPending = false",
+        "lifecycle.powerOnWakeScanTerminalObserved = false",
+        "lifecycle.powerOnWakeAvailabilityAckObserved = false",
         "kAirportItlwmPmDriverAvailabilityPendingBit",
         "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
 availability_wait = body(v2,
@@ -650,15 +658,30 @@ require(availability_note, "return false;",
 forbid(availability_note, "postTahoeDriverAvailabilityTransition",
        "off-gate PowerOn publication")
 wake_note = body(v2,
-    "bool AirportItlwm::publishDeferredWakePowerChangedAtScanTerminal()",
-    "scan-terminal wake bulletin note")
-ordered(wake_note, "wake bulletin waits for accepted availability",
+    "noteDeferredWakePowerChangedEdge(bool scanTerminalEdge)",
+    "wake bulletin rendezvous note")
+ordered(wake_note, "wake bulletin waits for both reference-derived edges",
         "lifecycle.powerOnWakeBulletinPending",
+        "lifecycle.powerOnWakeScanTerminalObserved = true",
+        "lifecycle.powerOnWakeAvailabilityAckObserved = true",
+        "lifecycle.powerOnWakeScanTerminalObserved &&",
+        "lifecycle.powerOnWakeAvailabilityAckObserved &&",
         "lifecycle.pendingPowerOnEpoch == 0",
         "lifecycle.readyPowerOnEpoch == 0",
+        "workLoop->inGate()",
         "kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged")
 forbid(wake_note, "postMessage(",
        "off-gate POWER_CHANGED publication")
+
+bg_params = body(sky,
+    "setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)",
+    "WCL_CONFIG_BG_PARAMS")
+ordered(bg_params, "family availability acknowledgement rendezvous",
+        "if (data == nullptr)",
+        "instance != nullptr",
+        "instance->noteDeferredWakePowerChangedEdge(",
+        "/*scanTerminalEdge=*/false",
+        "return kIOReturnUnsupported")
 
 radio_power_entry = body(v2,
                          "int AirportItlwm::handlePowerStateChange(uint32_t newState,",
