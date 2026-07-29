@@ -6209,8 +6209,6 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
     if (sd == nullptr)
         return kIOReturnBadArgument;
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (fScanResultWrapping)
-        return 22;
     if (ic == nullptr)
         return kIOReturnNotReady;
 
@@ -6220,7 +6218,9 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
      * ic_tree already has nodes from the internal scan, the framework
      * can iterate them right away.  Without this reset, a stale
      * fScanResultWrapping=true from a previous cycle causes SCAN_RESULT
-     * to return 5 ("end") before returning any nodes.
+     * to return 5 ("end") before returning any nodes.  In particular, the
+     * terminal latch from a completed result iteration is not scan admission
+     * state: a new request must always begin a new result cycle.
      */
     fNextNodeToSend = NULL;
     fScanResultWrapping = false;

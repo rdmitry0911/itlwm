@@ -73,6 +73,12 @@ for token in (
         "ieee80211_begin_scan(&ic->ic_ac.ac_if);",
 ):
     require(setter, token, "normal scan setter")
+forbid(setter, "if (fScanResultWrapping)",
+       "completed result iterator blocking the next scan")
+ordered(setter, "new request resets the prior result iterator",
+        "fNextNodeToSend = NULL;",
+        "fScanResultWrapping = false;",
+        "if (sd->scan_type == APPLE80211_SCAN_TYPE_FAST)")
 if setter.count("scheduleScanSource(100)") != 1:
     fail("FAST cache timer must be armed exactly once")
 fast = setter.find("if (sd->scan_type == APPLE80211_SCAN_TYPE_FAST)")
