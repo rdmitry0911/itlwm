@@ -12385,11 +12385,40 @@ iwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     struct iwx_softc *sc = (struct iwx_softc *)ifp->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     struct ieee80211_node *ni = ic->ic_bss;
+    int err;
 
     /* IWX queues state work without a per-request epoch.  Do not carry the
      * private IWN scan-hop tag across that queue; it keeps its established
      * generic cleanup semantics until that distinct race is hardened. */
     arg = IEEE80211_NEWSTATE_BACKEND_ARG(nstate, arg);
+
+    /*
+     * A successful Authentication response reaches this callback on the
+     * main RX workloop.  Deferring the otherwise sequential AUTH -> ASSOC
+     * work to sc_nswq makes net80211 enqueue the Association Request there.
+     * iwx_start() then uses a deliberately non-blocking main command gate;
+     * if RX still owns that gate, the sole management-queue TX kick is lost.
+     *
+     * Preserve IWX's required lower-layer ordering: submit the asynchronous
+     * TLC configuration first, then commit the generic state transition on
+     * the originating workloop.  The recursive command-gate entry made by
+     * iwx_start() can consequently drain the Association Request before the
+     * Authentication receive edge retires.
+     */
+    if (ic->ic_state == IEEE80211_S_AUTH &&
+        nstate == IEEE80211_S_ASSOC) {
+        err = that->iwx_rs_init(sc, (iwx_node *)ni, false);
+        if (err) {
+            XYLog("%s: could not init rate scaling (error %d)\n",
+                  DEVNAME(sc), err);
+            if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0)
+                that->iwx_add_task(sc, systq, &sc->init_task);
+            return err;
+        }
+        sc->ns_nstate = nstate;
+        sc->ns_arg = arg;
+        return sc->sc_newstate(ic, nstate, arg);
+    }
     
     /*
      * Prevent attemps to transition towards the same state, unless
