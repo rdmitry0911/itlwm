@@ -8669,13 +8669,15 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         that->reopenWclPhysicalScanAfterRadioReset();
         that->reopenStandardPhysicalScanAfterRadioReset();
         /*
-         * IWN reaches REOPENED after firmware configuration and the first
-         * S_SCAN transition, but unlike Broadcom powerOn() it has already
-         * launched a generic physical scan. Reopen admission here; defer
-         * DRIVER_AVAILABLE until that inherited lower transaction publishes
-         * its terminal census below. Otherwise WCL can issue its first
-         * post-PowerOn selection while the only fresh BSS tree is incomplete.
+         * IWN reaches REOPENED only after firmware configuration and the
+         * first S_SCAN transition.  That is the Intel equivalent of the
+         * synchronous backend-ready edge inside AppleBCMWLANCore::powerOn():
+         * the reference publishes DRIVER_AVAILABLE there and does not wait
+         * for a scan terminal.  Publish before the inherited census completes
+         * so PostOffice can consume DRIVER_AVAILABLE and POWER_CHANGED before
+         * exposing that first complete result set to WCL.
          */
+        that->noteRadioScanReadyAndQueuePowerOnAvailability();
         return;
     }
 
@@ -8945,23 +8947,6 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             break;
         default:
             XYLog("DEBUG %s UNHANDLED msgCode=%d\n", __FUNCTION__, msgCode);
-            return;
-    }
-    if (msgCode == IEEE80211_EVT_SCAN_DONE) {
-        /*
-         * net80211 emits this only after the generic foreground scan has
-         * populated its node tree. The legacy IWN reset path starts that scan
-         * inside enable(), whereas Tahoe's reference powerOn() returns a
-         * usable firmware backend without exposing a bootstrap SCAN_DONE.
-         * Treat the inherited terminal as the local equivalent usability
-         * edge, publish DRIVER_AVAILABLE, and consume that one internal
-         * terminal. Waking the synchronous PowerOn waiter between two
-         * command-gate publications lets POWER_CHANGED race the synthetic
-         * terminal and can strand WCL without a reconnect scan after wake.
-         * A later user-requested scan has no pending PowerOn epoch and keeps
-         * the normal generic SCAN_DONE path below.
-         */
-        if (that->noteRadioScanReadyAndQueuePowerOnAvailability())
             return;
     }
     // Defer postMessage to workloop context — cannot call from interrupt thread.

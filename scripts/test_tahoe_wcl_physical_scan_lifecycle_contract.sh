@@ -142,22 +142,24 @@ require(event, "IEEE80211_EVT_WCL_SCAN_REOPENED",
 ordered(event, "radio-ready reopens both scan admission planes",
         "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "reopenWclPhysicalScanAfterRadioReset()",
-        "reopenStandardPhysicalScanAfterRadioReset()")
+        "reopenStandardPhysicalScanAfterRadioReset()",
+        "noteRadioScanReadyAndQueuePowerOnAvailability()")
 reopened_start = event.find("if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED)")
 reopened_end = event.find("if (msgCode == IEEE80211_EVT_STANDARD_SCAN_INVALIDATED)",
                           reopened_start)
-forbid(event[reopened_start:reopened_end],
-       "noteRadioScanReadyAndQueuePowerOnAvailability()",
-       "pre-terminal PowerOn availability")
-ordered(event, "PowerOn bootstrap census is consumed before generic terminal",
-        "case IEEE80211_EVT_SCAN_DONE:",
-        "if (msgCode == IEEE80211_EVT_SCAN_DONE)",
+require(event[reopened_start:reopened_end],
         "noteRadioScanReadyAndQueuePowerOnAvailability()",
-        "return;",
+        "backend-ready PowerOn availability")
+ordered(event, "PowerOn backend-ready edge precedes generic scan terminal",
+        "IEEE80211_EVT_WCL_SCAN_REOPENED",
+        "noteRadioScanReadyAndQueuePowerOnAvailability()",
+        "case IEEE80211_EVT_SCAN_DONE:",
         "gate->runAction(postMessageGated,")
 scan_done = event[event.find("case IEEE80211_EVT_SCAN_DONE:"):]
 forbid(scan_done[:scan_done.find("case IEEE80211_EVT_WCL_REASSOC_DONE:")],
        "claimWclPhysicalScanCompletion", "generic SCAN_DONE WCL claim")
+forbid(scan_done, "noteRadioScanReadyAndQueuePowerOnAvailability()",
+       "scan terminal must not own PowerOn availability")
 
 publisher = body(v2, "postWclPhysicalScanCompletionGated(",
                  "physical WCL completion publisher")
@@ -631,7 +633,7 @@ ordered(availability_note, "radio-ready notification is gated",
         "kAirportItlwmDeferredPowerAvailabilityPublishOn",
         "return true;")
 require(availability_note, "return false;",
-        "ordinary generic scans are not consumed as bootstrap")
+        "ordinary reopened events do not republish availability")
 forbid(availability_note, "postTahoeDriverAvailabilityTransition",
        "off-gate PowerOn publication")
 
@@ -667,7 +669,7 @@ ordered(system_power,
         "enableAdapter(netif)",
         "kAirportItlwmDeferredPowerAvailabilityCancelEpoch")
 forbid(system_power, "waitForDeferredPowerOnAvailability(",
-       "system IOPM callback blocking on a full Intel scan")
+       "system IOPM callback blocking on Intel backend readiness")
 require(system_power, "publishDeferredPowerOffAvailability();",
         "serialized system PowerOff cancellation")
 forbid(system_power, "Transition::PowerOn",
