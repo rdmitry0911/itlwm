@@ -80,7 +80,13 @@ enum
 enum
 {
     kAirportItlwmRxPendingCapacity = 256,
-    kAirportItlwmTxCompletionPendingCapacity = 256
+    kAirportItlwmTxCompletionPendingCapacity = 256,
+    /*
+     * Tahoe's setPOWER remains synchronous through powerOn().  Keep the
+     * equivalent IWN lower-ready wait bounded so a firmware failure is
+     * returned to WCL instead of parking an airportd caller indefinitely.
+     */
+    kAirportItlwmPowerOnReadyTimeoutMs = 10000
 };
 
 // WiFi radio power states (matches Apple's apple80211_power_state)
@@ -611,7 +617,10 @@ public:
     static IOReturn tsleepHandler(OSObject* owner, void* arg0 = 0, void* arg1 = 0, void* arg2 = 0, void* arg3 = 0);
     static void eventHandler(struct ieee80211com *, int, void *);
     uint64_t armDeferredPowerOnAvailability();
+    IOReturn waitForDeferredPowerOnAvailability(uint64_t expectedEpoch,
+                                                uint32_t timeoutMs);
     IOReturn prepareTahoeWclAssociationBackend() const;
+    bool cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch);
     void cancelDeferredPowerOnAvailabilityRaw();
     void cancelDeferredPowerOnAvailability();
     void publishDeferredPowerOffAvailability();

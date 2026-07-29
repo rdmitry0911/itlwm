@@ -572,6 +572,13 @@ ordered(availability_publish, "serialized PowerOff invalidates then publishes",
 require(availability_publish,
         "kAirportItlwmDeferredPowerAvailabilityCancel",
         "serialized cancellation action")
+require(availability_publish,
+        "kAirportItlwmDeferredPowerAvailabilityCancelEpoch",
+        "generation-bound cancellation action")
+ordered(availability_publish,
+        "PowerOn availability publishes before waking synchronous setPOWER",
+        "Transition::PowerOn",
+        "gate->commandWakeup(waitEvent, /*oneThread=*/false)")
 availability_arm = body(v2,
                        "uint64_t AirportItlwm::armDeferredPowerOnAvailability()",
                        "deferred PowerOn arm")
@@ -586,6 +593,18 @@ ordered(availability_cancel, "pending availability bit cleared under lock",
         "lifecycle.powerOnPublishQueued = false",
         "kAirportItlwmPmDriverAvailabilityPendingBit",
         "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
+availability_wait = body(v2,
+    "waitForDeferredPowerOnAvailability(uint64_t expectedEpoch,",
+    "synchronous lower-ready wait")
+ordered(availability_wait, "generation-bound PowerOn wait",
+        "clock_interval_to_deadline(timeoutMs, kMillisecondScale",
+        "lifecycle.availabilityEpoch == expectedEpoch",
+        "lifecycle.pendingPowerOnEpoch == 0",
+        "kAirportItlwmPmDriverAvailabilityPendingBit",
+        "gate->commandSleep(",
+        "&lifecycle.availabilityEpoch, deadline, THREAD_ABORTSAFE)")
+require(availability_wait, "sleepResult == THREAD_TIMED_OUT",
+        "bounded lower-ready wait")
 availability_note = body(v2,
     "void AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()",
     "radio-ready PowerOn note")
@@ -605,12 +624,19 @@ require(radio_power_entry, "gate->runAction(handlePowerStateChangeGated, &args)"
 radio_power = body(v2,
                    "int AirportItlwm::handlePowerStateChangeCore",
                    "radio power transition core")
-require(radio_power, "armDeferredPowerOnAvailability();",
-        "PowerOn arm before lower enable")
+ordered(radio_power, "PowerOn waits for the exact lower-ready epoch",
+        "armDeferredPowerOnAvailability()",
+        "enableAdapter(netif)",
+        "waitForDeferredPowerOnAvailability(",
+        "kAirportItlwmDeferredPowerAvailabilityCancelEpoch")
 require(radio_power, "publishDeferredPowerOffAvailability();",
         "serialized PowerOff cancellation")
 forbid(radio_power, "Transition::PowerOn",
        "optimistic radio PowerOn carrier")
+power_setter = body(v2, "setPOWER(OSObject *object,",
+                    "setPOWER")
+require(power_setter, "return handlePowerStateChange(requestedState, NULL);",
+        "Tahoe setPOWER propagates synchronous PowerOn status")
 system_power = body(v2,
                     "void AirportItlwm::handleSystemPowerStateChange",
                     "system power transition")

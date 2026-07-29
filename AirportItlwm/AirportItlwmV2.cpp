@@ -8098,7 +8098,36 @@ enum AirportItlwmDeferredPowerAvailabilityAction {
     kAirportItlwmDeferredPowerAvailabilityPublishOn = 1,
     kAirportItlwmDeferredPowerAvailabilityCancel,
     kAirportItlwmDeferredPowerAvailabilityPublishOff,
+    kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
 };
+
+bool AirportItlwm::
+cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch)
+{
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (expectedEpoch == 0 || lock == NULL)
+        return false;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    const bool cancel =
+        lifecycle.availabilityEpoch == expectedEpoch &&
+        lifecycle.pendingPowerOnEpoch == expectedEpoch;
+    if (cancel) {
+        ++lifecycle.availabilityEpoch;
+        if (lifecycle.availabilityEpoch == 0)
+            ++lifecycle.availabilityEpoch;
+        lifecycle.pendingPowerOnEpoch = 0;
+        lifecycle.readyPowerOnEpoch = 0;
+        lifecycle.powerOnPublishQueued = false;
+        OSBitAndAtomic(~static_cast<UInt32>(
+                           kAirportItlwmPmDriverAvailabilityPendingBit),
+                       &pmPowerStateFlags);
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    return cancel;
+}
 
 void AirportItlwm::cancelDeferredPowerOnAvailabilityRaw()
 {
@@ -8133,13 +8162,28 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
     if (that == NULL)
         return kIOReturnNotReady;
 
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        that->fWclPhysicalScanLifecycle;
+    void *const waitEvent = &lifecycle.availabilityEpoch;
+    IOCommandGate *const gate = that->getCommandGate();
+
     /* The final public carrier and every cancellation run through this one
      * command-gate action.  The gate therefore orders a concurrent radio-off
      * after a ready edge (On then Off), or invalidates the epoch before a
      * later ready edge can publish a stale On carrier. */
     if (action == kAirportItlwmDeferredPowerAvailabilityCancel) {
         that->cancelDeferredPowerOnAvailabilityRaw();
+        if (gate != NULL)
+            gate->commandWakeup(waitEvent, /*oneThread=*/false);
         return kIOReturnSuccess;
+    }
+    if (action == kAirportItlwmDeferredPowerAvailabilityCancelEpoch) {
+        const uint64_t expectedEpoch = (uint64_t)(uintptr_t)arg1;
+        const bool canceled =
+            that->cancelDeferredPowerOnAvailabilityEpochRaw(expectedEpoch);
+        if (gate != NULL)
+            gate->commandWakeup(waitEvent, /*oneThread=*/false);
+        return canceled ? kIOReturnSuccess : kIOReturnAborted;
     }
     if (action == kAirportItlwmDeferredPowerAvailabilityPublishOff) {
         that->cancelDeferredPowerOnAvailabilityRaw();
@@ -8155,6 +8199,8 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
         postTahoeWclLinkStateInd(that, false, 0);
         postTahoeDriverAvailabilityTransition(
             that, TahoeDriverAvailabilityContracts::Transition::PowerOff);
+        if (gate != NULL)
+            gate->commandWakeup(waitEvent, /*oneThread=*/false);
         return kIOReturnSuccess;
     }
     if (action != kAirportItlwmDeferredPowerAvailabilityPublishOn)
@@ -8164,8 +8210,6 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
     if (expectedEpoch == 0 || that->fNetIf == NULL)
         return kIOReturnNotReady;
 
-    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
-        that->fWclPhysicalScanLifecycle;
     IOSimpleLock *lock = lifecycle.admissionLock;
     if (lock == NULL)
         return kIOReturnNotReady;
@@ -8190,7 +8234,57 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
 
     postTahoeDriverAvailabilityTransition(
         that, TahoeDriverAvailabilityContracts::Transition::PowerOn);
+    if (gate != NULL)
+        gate->commandWakeup(waitEvent, /*oneThread=*/false);
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+waitForDeferredPowerOnAvailability(uint64_t expectedEpoch,
+                                   uint32_t timeoutMs)
+{
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    IOCommandGate *gate = getCommandGate();
+    IOWorkLoop *workLoop = getWorkLoop();
+    if (expectedEpoch == 0 || timeoutMs == 0 || lock == NULL ||
+        gate == NULL || workLoop == NULL || !workLoop->inGate())
+        return kIOReturnNotReady;
+
+    AbsoluteTime deadline;
+    clock_interval_to_deadline(timeoutMs, kMillisecondScale,
+                               reinterpret_cast<uint64_t *>(&deadline));
+    IOReturn sleepResult = THREAD_AWAKENED;
+
+    for (;;) {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+        const bool completed =
+            lifecycle.availabilityEpoch == expectedEpoch &&
+            lifecycle.pendingPowerOnEpoch == 0 &&
+            lifecycle.readyPowerOnEpoch == 0 &&
+            !lifecycle.powerOnPublishQueued;
+        const bool superseded =
+            lifecycle.availabilityEpoch != expectedEpoch ||
+            lifecycle.stopping || lifecycle.tearingDown;
+        IOSimpleLockUnlockEnableInterrupt(lock, irq);
+
+        if (completed &&
+            (pmPowerStateFlags &
+                 kAirportItlwmPmDriverAvailabilityPendingBit) == 0 &&
+            power_state != kWiFiPowerOff)
+            return kIOReturnSuccess;
+        if (superseded || power_state == kWiFiPowerOff)
+            return kIOReturnAborted;
+        if (sleepResult == THREAD_TIMED_OUT)
+            return kIOReturnTimeout;
+
+        sleepResult = gate->commandSleep(
+            &lifecycle.availabilityEpoch, deadline, THREAD_ABORTSAFE);
+        if (sleepResult != THREAD_AWAKENED &&
+            sleepResult != THREAD_TIMED_OUT)
+            return kIOReturnAborted;
+    }
 }
 
 void AirportItlwm::cancelDeferredPowerOnAvailability()
@@ -11564,9 +11658,9 @@ setPOWER(OSObject *object,
             return kIOReturnSuccess;
         }
 #if __IO80211_TARGET >= __MAC_26_0
-        handlePowerStateChange(requestedState, NULL);
+        return handlePowerStateChange(requestedState, NULL);
 #else
-        handlePowerStateChange(requestedState, bsdInterface);
+        return handlePowerStateChange(requestedState, bsdInterface);
 #endif
     }
     return kIOReturnSuccess;
@@ -11794,18 +11888,34 @@ int AirportItlwm::handlePowerStateChangeCore(uint32_t newState,
         /* enableAdapter() only queues IWN activation.  Arm before it so a
          * fast init task cannot beat this record, then publish PowerOn from
          * the tagged post-S_SCAN lower-ready edge. */
-        armDeferredPowerOnAvailability();
+        const uint64_t availabilityEpoch =
+            armDeferredPowerOnAvailability();
         err = enableAdapter(netif);
+        if (err == kIOReturnSuccess)
+            err = waitForDeferredPowerOnAvailability(
+                availabilityEpoch, kAirportItlwmPowerOnReadyTimeoutMs);
         if (err != kIOReturnSuccess)
-            cancelDeferredPowerOnAvailability();
+            publishDeferredPowerAvailabilityGated(
+                this,
+                (void *)(uintptr_t)
+                    kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
+                (void *)(uintptr_t)availabilityEpoch, NULL, NULL);
     }
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOff) {
         // OFF→STANDBY: power on (into standby mode)
         power_state = kWiFiPowerStandby;
-        armDeferredPowerOnAvailability();
+        const uint64_t availabilityEpoch =
+            armDeferredPowerOnAvailability();
         err = enableAdapter(netif);
+        if (err == kIOReturnSuccess)
+            err = waitForDeferredPowerOnAvailability(
+                availabilityEpoch, kAirportItlwmPowerOnReadyTimeoutMs);
         if (err != kIOReturnSuccess)
-            cancelDeferredPowerOnAvailability();
+            publishDeferredPowerAvailabilityGated(
+                this,
+                (void *)(uintptr_t)
+                    kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
+                (void *)(uintptr_t)availabilityEpoch, NULL, NULL);
     }
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOn) {
         // ON→STANDBY: power off (into standby)
