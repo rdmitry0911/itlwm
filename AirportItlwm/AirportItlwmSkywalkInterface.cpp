@@ -7318,9 +7318,10 @@ sae_out:
             // backend preserve an active scan or restart its normal scan
             // completion path, where net80211 performs ordinary
             // selection.
-            XYLog(resumeAfterOpenAssociation
-                      ? "wcl_assoc OPEN_READY_SCAN_RESUME\n"
-                      : "wcl_assoc PMK_READY_SCAN_RESUME\n");
+            if (resumeAfterOpenAssociation)
+                XYLog("wcl_assoc OPEN_READY_SCAN_RESUME\n");
+            else
+                XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
             /* ieee80211_new_state(SCAN) can synchronously select this BSS,
              * so commit the exact WCL lease before invoking it.  Every
              * completion consumer additionally verifies the selected-BSS
