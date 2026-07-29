@@ -342,6 +342,7 @@ struct AirportItlwmWclPhysicalScanLifecycle {
     uint64_t pendingPowerOnEpoch;
     uint64_t readyPowerOnEpoch;
     bool powerOnPublishQueued;
+    bool powerOnWakeBulletinPending;
 };
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -616,7 +617,8 @@ public:
 
     static IOReturn tsleepHandler(OSObject* owner, void* arg0 = 0, void* arg1 = 0, void* arg2 = 0, void* arg3 = 0);
     static void eventHandler(struct ieee80211com *, int, void *);
-    uint64_t armDeferredPowerOnAvailability();
+    uint64_t armDeferredPowerOnAvailability(
+        bool wakeBulletinPending = false);
     IOReturn waitForDeferredPowerOnAvailability(uint64_t expectedEpoch,
                                                 uint32_t timeoutMs);
     IOReturn prepareTahoeWclAssociationBackend() const;

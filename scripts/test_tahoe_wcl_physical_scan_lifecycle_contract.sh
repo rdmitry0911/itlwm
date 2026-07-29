@@ -562,7 +562,8 @@ ordered(iwn_init, "IWN lower-ready fence after first scan state",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
 
 for token in ("availabilityEpoch", "pendingPowerOnEpoch",
-              "readyPowerOnEpoch", "powerOnPublishQueued"):
+              "readyPowerOnEpoch", "powerOnPublishQueued",
+              "powerOnWakeBulletinPending"):
     require(v2_hpp, token, "post-radio-ready availability epoch state")
 require(v2_hpp, "kAirportItlwmPmDriverAvailabilityPendingBit",
         "deferred PowerOn lifecycle bit")
@@ -587,14 +588,17 @@ require(availability_publish,
         "kAirportItlwmDeferredPowerAvailabilityCancelEpoch",
         "generation-bound cancellation action")
 ordered(availability_publish,
-        "PowerOn availability publishes before waking synchronous setPOWER",
+        "PowerOn availability precedes an optional system wake bulletin",
         "Transition::PowerOn",
+        "if (publishWakeBulletin && that->fNetIf != NULL)",
+        "APPLE80211_M_POWER_CHANGED",
         "gate->commandWakeup(waitEvent, /*oneThread=*/false)")
 availability_arm = body(v2,
-                       "uint64_t AirportItlwm::armDeferredPowerOnAvailability()",
+                       "armDeferredPowerOnAvailability(bool wakeBulletinPending)",
                        "deferred PowerOn arm")
 ordered(availability_arm, "pending availability bit armed under lock",
         "lifecycle.powerOnPublishQueued = false",
+        "lifecycle.powerOnWakeBulletinPending = wakeBulletinPending",
         "OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit",
         "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
 availability_cancel = body(v2,
@@ -602,6 +606,7 @@ availability_cancel = body(v2,
     "deferred PowerOn invalidation")
 ordered(availability_cancel, "pending availability bit cleared under lock",
         "lifecycle.powerOnPublishQueued = false",
+        "lifecycle.powerOnWakeBulletinPending = false",
         "kAirportItlwmPmDriverAvailabilityPendingBit",
         "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
 availability_wait = body(v2,
@@ -655,14 +660,14 @@ system_power = body(v2,
                     "void AirportItlwm::handleSystemPowerStateChange",
                     "system power transition")
 ordered(system_power,
-        "system PowerOn preserves reference powerOn-before-wake ordering",
+        "system PowerOn defers the ordered wake edge without blocking IOPM",
         "const uint64_t availabilityEpoch",
-        "armDeferredPowerOnAvailability()",
+        "armDeferredPowerOnAvailability(",
+        "/*wakeBulletinPending=*/true",
         "enableAdapter(netif)",
-        "waitForDeferredPowerOnAvailability(",
-        "kAirportItlwmDeferredPowerAvailabilityCancelEpoch",
-        "readyResult == kIOReturnSuccess && fNetIf",
-        "APPLE80211_M_POWER_CHANGED")
+        "kAirportItlwmDeferredPowerAvailabilityCancelEpoch")
+forbid(system_power, "waitForDeferredPowerOnAvailability(",
+       "system IOPM callback blocking on a full Intel scan")
 require(system_power, "publishDeferredPowerOffAvailability();",
         "serialized system PowerOff cancellation")
 forbid(system_power, "Transition::PowerOn",

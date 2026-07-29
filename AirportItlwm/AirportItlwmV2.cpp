@@ -8059,7 +8059,8 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     return kIOReturnSuccess;
 }
 
-uint64_t AirportItlwm::armDeferredPowerOnAvailability()
+uint64_t AirportItlwm::
+armDeferredPowerOnAvailability(bool wakeBulletinPending)
 {
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
         fWclPhysicalScanLifecycle;
@@ -8074,6 +8075,7 @@ uint64_t AirportItlwm::armDeferredPowerOnAvailability()
     lifecycle.pendingPowerOnEpoch = lifecycle.availabilityEpoch;
     lifecycle.readyPowerOnEpoch = 0;
     lifecycle.powerOnPublishQueued = false;
+    lifecycle.powerOnWakeBulletinPending = wakeBulletinPending;
     const uint64_t epoch = lifecycle.pendingPowerOnEpoch;
     OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit,
                   &pmPowerStateFlags);
@@ -8143,6 +8145,7 @@ cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch)
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
         lifecycle.powerOnPublishQueued = false;
+        lifecycle.powerOnWakeBulletinPending = false;
         OSBitAndAtomic(~static_cast<UInt32>(
                            kAirportItlwmPmDriverAvailabilityPendingBit),
                        &pmPowerStateFlags);
@@ -8164,6 +8167,7 @@ void AirportItlwm::cancelDeferredPowerOnAvailabilityRaw()
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
         lifecycle.powerOnPublishQueued = false;
+        lifecycle.powerOnWakeBulletinPending = false;
         OSBitAndAtomic(~static_cast<UInt32>(
                            kAirportItlwmPmDriverAvailabilityPendingBit),
                        &pmPowerStateFlags);
@@ -8242,10 +8246,13 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
         lifecycle.pendingPowerOnEpoch == expectedEpoch &&
         lifecycle.readyPowerOnEpoch == expectedEpoch &&
         lifecycle.powerOnPublishQueued;
+    const bool publishWakeBulletin =
+        publish && lifecycle.powerOnWakeBulletinPending;
     if (publish) {
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
         lifecycle.powerOnPublishQueued = false;
+        lifecycle.powerOnWakeBulletinPending = false;
         OSBitAndAtomic(~static_cast<UInt32>(
                            kAirportItlwmPmDriverAvailabilityPendingBit),
                        &that->pmPowerStateFlags);
@@ -8256,6 +8263,18 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
 
     postTahoeDriverAvailabilityTransition(
         that, TahoeDriverAvailabilityContracts::Transition::PowerOn);
+    /*
+     * AppleBCMWLANCore::powerOnSystem() publishes POWER_CHANGED immediately
+     * after its synchronous powerOn() has published DRIVER_AVAILABLE.  IWN
+     * activation is asynchronous and its initial census can exceed IOPM's
+     * two-second callback budget.  Keep the same externally observable
+     * ordering on this lower-ready command-gate edge without holding the
+     * system PM callback until the census completes.
+     */
+    if (publishWakeBulletin && that->fNetIf != NULL) {
+        that->postMessage(that->fNetIf, APPLE80211_M_POWER_CHANGED,
+                          NULL, 0, true);
+    }
     if (gate != NULL)
         gate->commandWakeup(waitEvent, /*oneThread=*/false);
     return kIOReturnSuccess;
@@ -11996,26 +12015,26 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
     // logical radio state, but powerOffSystem() enters powerOff(true) and
     // powerOnSystem() enters powerOn(): the normal unavailable/available 0x37
     // carriers therefore still bracket the physical sleep/wake transition.
-    // PowerOn is deferred until IWN reaches its first post-reset scan state.
+    // PowerOn publication is deferred until IWN reaches its first post-reset
+    // scan state.  The IOPM callback itself must remain non-blocking because
+    // the Intel initial census can exceed the framework's callback budget.
     if (powerOn) {
         IOReturn readyResult = kIOReturnSuccess;
         if (power_state) {
             /*
              * Tahoe 25C56 powerOnSystem() calls powerOn() to completion
              * before posting APPLE80211_M_POWER_CHANGED.  IWN activation is
-             * asynchronous, so preserve that observable ordering by waiting
-             * for the exact lower-ready epoch.  Otherwise WCL reacts to the
-             * wake bulletin while isDriverAvailable is still false, consumes
-             * the first scan cycle, and has no result left to associate once
-             * the lower device finally becomes ready.
+             * asynchronous.  Arm the wake bulletin as part of the same epoch
+             * so the lower-ready publisher emits DRIVER_AVAILABLE then
+             * POWER_CHANGED from one command-gate action.  Do not commandSleep
+             * here: blocking IOPM for a full Intel scan can stall completion
+             * of the system wake.
              */
             const uint64_t availabilityEpoch =
-                armDeferredPowerOnAvailability();
-            readyResult = enableAdapter(netif);
-            if (readyResult == kIOReturnSuccess)
-                readyResult = waitForDeferredPowerOnAvailability(
-                    availabilityEpoch,
-                    kAirportItlwmPowerOnReadyTimeoutMs);
+                armDeferredPowerOnAvailability(
+                    /*wakeBulletinPending=*/true);
+            readyResult = availabilityEpoch != 0
+                ? enableAdapter(netif) : kIOReturnNotReady;
             if (readyResult != kIOReturnSuccess)
                 publishDeferredPowerAvailabilityGated(
                     this,
@@ -12023,10 +12042,10 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
                         kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
                     (void *)(uintptr_t)availabilityEpoch, NULL, NULL);
         }
-        if (readyResult == kIOReturnSuccess && fNetIf)
+        if (!power_state && readyResult == kIOReturnSuccess && fNetIf)
             postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
         else if (readyResult != kIOReturnSuccess)
-            XYLog("DEBUG %s lower-ready wait failed: 0x%x\n",
+            XYLog("DEBUG %s lower-ready arm failed: 0x%x\n",
                   __FUNCTION__, readyResult);
     } else {
         if (power_state) {
