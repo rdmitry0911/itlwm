@@ -379,6 +379,23 @@ ordered(wcl_assoc, "same-identity public/WCL lease preservation",
         "getTahoeOwnerRegistry().association =",
         "tahoePublicAssociationOwnerMatchesWclIdentity(",
         "getTahoeOwnerRegistry().publicAssociation =")
+
+# A hidden candidate that arrives while PowerOn has not reached SCAN was not
+# accepted: no payload or completion owner is retained.  Returning success at
+# this edge loses the user's join until a long upper-layer timeout.  Preserve
+# WCL's normal retry ownership by reporting the transient NotReady result.
+early_power_on = body(
+    wcl_assoc, "if (ic->ic_state < IEEE80211_S_SCAN)",
+    "early PowerOn WCL association")
+for token in (
+        "NOT_READY: ic_state=%d < SCAN",
+        "kIOReturnNotReady);",
+        "return kIOReturnNotReady;",
+):
+    require(early_power_on, token, "early WCL association retry status")
+forbid(early_power_on, "kIOReturnSuccess",
+       "false success for an unretained early WCL association")
+
 ordered(wcl_assoc, "open WCL completion lease precedes normal scan resume",
         "const TahoeWclOpenScanResumeContracts::Facts openScanResumeFacts",
         "shouldResumeScanAfterOpenAssociation(openScanResumeFacts)",

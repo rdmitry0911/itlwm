@@ -7165,13 +7165,23 @@ sae_out:
         bssManager, associationOwner.authLower, associationOwner.authUpper);
 
     if (ic->ic_state < IEEE80211_S_SCAN) {
-        XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
+        /*
+         * A WCL association carrier is a retryable command, and success means
+         * that its join intent was accepted.  Before SCAN the lower radio
+         * cannot consume the candidate, and this method retains neither the
+         * caller's payload nor a completion lease.  A success return here
+         * therefore discarded the first auto-join sent during PowerOn and
+         * delayed reconnection until WCL's much later timeout retry.  Report
+         * the honest transient status so WCL can resubmit after availability.
+         */
+        XYLog("DEBUG %s NOT_READY: ic_state=%d < SCAN\n",
+              __FUNCTION__, ic->ic_state);
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
                                        ssid, ssid_len,
                                        reinterpret_cast<const uint8_t *>(bssid),
                                        auth_lower, auth_upper, rsn_ie_len,
-                                       kIOReturnSuccess);
-        return kIOReturnSuccess;
+                                       kIOReturnNotReady);
+        return kIOReturnNotReady;
     }
 
     if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
