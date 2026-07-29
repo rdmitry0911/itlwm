@@ -819,6 +819,7 @@ public:
     void invalidateStandardPhysicalScan(uint64_t generation,
                                         uint32_t backendGeneration);
     void reopenStandardPhysicalScanAfterRadioReset();
+    bool associationScanOwnersIdle() const;
     IOReturn reserveWclPhysicalScan(uint64_t *generation);
     TahoeWclPhysicalScanContracts::StartDisposition
         activateWclPhysicalScan(uint64_t generation,

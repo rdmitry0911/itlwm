@@ -250,7 +250,11 @@ for token in (
 ):
     forbid(resume, token, "unsafe shortcut in WCL scan-resume block")
 if resume.count("ieee80211_new_state(ic,") != 1:
-    fail("WCL scan-resume block must contain exactly one normal state request")
+    fail("WCL fallback block must contain exactly one normal state request")
+require(resume, "tahoeJoinCachedWclCandidate(",
+        "reference-aligned cached candidate join")
+require(resume, "associationScanOwnersIdle()",
+        "physical scan-owner idle fence")
 require(resume, "PMK_READY_SCAN_RESUME", "credential-safe local progress marker")
 
 # Preserve the lower-layer semantics that make SCAN->SCAN safe. IWX and the

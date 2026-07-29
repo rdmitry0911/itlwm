@@ -419,11 +419,12 @@ early_power_on = body(
 forbid(early_power_on, "kIOReturnSuccess;",
        "false success for an unretained early WCL association")
 
-ordered(wcl_assoc, "open WCL completion lease precedes normal scan resume",
+ordered(wcl_assoc, "open WCL completion lease precedes direct join or scan fallback",
         "const TahoeWclOpenScanResumeContracts::Facts openScanResumeFacts",
         "shouldResumeScanAfterOpenAssociation(openScanResumeFacts)",
         "associationOwner.authAssocCompletionArmed = true",
         "getTahoeOwnerRegistry().association =",
+        "tahoeJoinCachedWclCandidate(",
         "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);")
 for token in (
         "ap_mode == APPLE80211_AP_MODE_INFRA",
@@ -433,9 +434,13 @@ for token in (
         "rsn_ie_len == 0",
         "candidate_count > 0",
         "TahoeScanContracts::hasRenderableBssid(bssid->octet)",
+        "associationOwner.selectedFromCandidate",
+        "associationScanOwnersIdle()",
         "OPEN_READY_SCAN_RESUME",
 ):
-    require(wcl_assoc, token, "fail-closed open WCL scan resume")
+    require(wcl_assoc, token, "fail-closed open WCL direct join/fallback")
+require(sky, "CACHED_CANDIDATE_DIRECT_JOIN",
+        "cached-candidate direct join marker")
 
 open_predicate = body(
     open_resume, "constexpr bool shouldResumeScanAfterOpenAssociation",

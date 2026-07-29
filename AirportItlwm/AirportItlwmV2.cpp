@@ -2545,6 +2545,27 @@ void AirportItlwm::reopenStandardPhysicalScanAfterRadioReset()
     IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
 }
 
+bool AirportItlwm::associationScanOwnersIdle() const
+{
+    const AirportItlwmStandardScanLifecycle &standard =
+        fStandardScanLifecycle;
+    const AirportItlwmWclPhysicalScanLifecycle &wcl =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *admissionLock = wcl.admissionLock;
+    if (admissionLock == NULL)
+        return false;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    const bool idle =
+        !standard.cachedTerminalPending &&
+        !standard.cachedTerminalPublishing &&
+        TahoeStandardScanContracts::idle(&standard.physicalState) &&
+        !wcl.settingUp && !wcl.stopping && !wcl.tearingDown &&
+        wcl.state.phase == TahoeWclPhysicalScanContracts::Phase::Idle;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    return idle;
+}
+
 bool AirportItlwm::scanSourceCallbackLive(IOTimerEventSource *sender)
 {
     AirportItlwmScanSourceLifecycle &state = fScanSourceLifecycle;

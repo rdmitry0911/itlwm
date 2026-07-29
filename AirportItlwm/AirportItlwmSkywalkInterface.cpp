@@ -6857,6 +6857,43 @@ cancelIwnDirectSaeLabStimulus(uint64_t generation)
 }
 #endif /* AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS */
 
+/*
+ * Tahoe 25C56 AppleBCMWLANCore::setWCL_ASSOCIATE passes the selected
+ * candidate directly to JoinAdapter::performJoin(); scanComplete() is only
+ * the result-publication edge and is not re-entered as a prerequisite for
+ * that join.  Our lower layer keeps the completed census as net80211 nodes,
+ * so consume only the exact WCL BSSID already present in that stable cache.
+ * A missing, stale, policy-mismatched, or concurrently scanned candidate is
+ * not guessed: the caller retains the existing directed-scan fallback.
+ */
+static bool
+tahoeJoinCachedWclCandidate(struct ieee80211com *ic,
+                            const uint8_t bssid[IEEE80211_ADDR_LEN],
+                            bool scanOwnersIdle)
+{
+    struct ieee80211_node *candidate;
+
+    if (ic == nullptr || bssid == nullptr || !scanOwnersIdle ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN ||
+        __atomic_load_n(&ic->ic_wcl_scan_active, __ATOMIC_ACQUIRE) != 0)
+        return false;
+
+    candidate = ieee80211_find_node(ic, bssid);
+    if (candidate == nullptr || candidate == ic->ic_bss ||
+        candidate->ni_fails != 0 ||
+        candidate->ni_chan == IEEE80211_CHAN_ANYC ||
+        candidate->ni_esslen != ic->ic_des_esslen ||
+        memcmp(candidate->ni_essid, ic->ic_des_essid,
+               ic->ic_des_esslen) != 0 ||
+        ieee80211_match_bss(ic, candidate, 0) != 0)
+        return false;
+
+    XYLog("wcl_assoc CACHED_CANDIDATE_DIRECT_JOIN\n");
+    ieee80211_node_join_bss(ic, candidate);
+    return true;
+}
+
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 {
@@ -7336,18 +7373,12 @@ sae_out:
             TahoeWclOpenScanResumeContracts::
                 shouldResumeScanAfterOpenAssociation(openScanResumeFacts);
         if (resumeAfterExternalPmk || resumeAfterOpenAssociation) {
-            // Do not select a BSS or synthesize AUTH here.  SCAN->SCAN lets
-            // backend preserve an active scan or restart its normal scan
-            // completion path, where net80211 performs ordinary
-            // selection.
-            if (resumeAfterOpenAssociation)
-                XYLog("wcl_assoc OPEN_READY_SCAN_RESUME\n");
-            else
-                XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
-            /* ieee80211_new_state(SCAN) can synchronously select this BSS,
-             * so commit the exact WCL lease before invoking it.  Every
-             * completion consumer additionally verifies the selected-BSS
-             * epoch, SSID, and BSSID before it may claim this one-shot. */
+            /*
+             * Commit the exact WCL lease before either JoinAdapter-equivalent
+             * path can synchronously bind this BSS.  Every completion
+             * consumer additionally verifies the selected-BSS epoch, SSID,
+             * and BSSID before it may claim this one-shot.
+             */
             associationOwner.authAssocCompletionArmed = true;
             associationOwner.authAssocCompletionPublished = false;
             if (instance != nullptr)
@@ -7364,7 +7395,28 @@ sae_out:
                         ic,
                         kAirportItlwmPostPltiTraceEventWclPmfRequestRetained);
             }
-            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+
+            /*
+             * The reference JoinAdapter consumes the candidate directly.
+             * Do the same only when both physical-scan owners are idle and
+             * the exact selected BSSID still passes the newly committed
+             * net80211 policy.  Otherwise preserve the directed physical
+             * scan fallback needed when userspace supplied a stale cache
+             * entry or raced a scan terminal.
+             */
+            const bool joinedCachedCandidate =
+                associationOwner.selectedFromCandidate &&
+                instance != nullptr &&
+                tahoeJoinCachedWclCandidate(
+                    ic, associationOwner.selectedBssid,
+                    instance->associationScanOwnersIdle());
+            if (!joinedCachedCandidate) {
+                if (resumeAfterOpenAssociation)
+                    XYLog("wcl_assoc OPEN_READY_SCAN_RESUME\n");
+                else
+                    XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
+                ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+            }
         }
     }
 
