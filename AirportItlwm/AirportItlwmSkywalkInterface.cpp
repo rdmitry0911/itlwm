@@ -8360,9 +8360,10 @@ setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)
      * IO80211Family sends this selector only after its DRIVER_AVAILABLE
      * consumer has changed isDriverAvailable to one.  During system wake it
      * is therefore the observable family-side acknowledgement paired with
-     * the first post-reset scan terminal.  The controller rendezvous only
-     * records that ordering edge; unsupported Intel PFN programming remains
-     * fail-closed below.
+     * the first post-reset scan terminal.  The controller records that edge
+     * and defers any resulting message through its workloop doorbell so this
+     * family callback returns first.  Unsupported Intel PFN programming
+     * remains fail-closed below.
      */
     if (instance != nullptr)
         instance->noteDeferredWakePowerChangedEdge(

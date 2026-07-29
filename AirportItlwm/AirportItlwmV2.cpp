@@ -2716,6 +2716,7 @@ static void wclPhysicalScanTerminalInterruptAction(
     uint64_t generation = 0;
     uint32_t backendGeneration = 0;
     uint32_t terminalStatus = 0;
+    uint64_t wakePowerChangedEpoch = 0;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     if (!state.settingUp && !state.stopping && !state.tearingDown &&
         sender == state.source && state.snapshotReady &&
@@ -2727,11 +2728,22 @@ static void wclPhysicalScanTerminalInterruptAction(
         backendGeneration = state.state.activeBackendGeneration;
         terminalStatus = state.state.terminalStatus;
     }
+    if (!state.settingUp && !state.stopping && !state.tearingDown &&
+        sender == state.source && state.powerOnWakePublishQueued &&
+        state.powerOnWakeBulletinPending &&
+        state.powerOnWakeScanTerminalObserved &&
+        state.powerOnWakeAvailabilityAckObserved &&
+        state.pendingPowerOnEpoch == 0 &&
+        state.readyPowerOnEpoch == 0 &&
+        !state.powerOnPublishQueued)
+        wakePowerChangedEpoch = state.availabilityEpoch;
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
 
     if (generation != 0 && backendGeneration != 0)
         dispatchWclPhysicalScanTerminal(that, generation, backendGeneration,
                                         terminalStatus);
+    if (wakePowerChangedEpoch != 0)
+        that->dispatchDeferredWakePowerChanged(wakePowerChangedEpoch);
 }
 
 static bool setupWclPhysicalScanTerminalSource(AirportItlwm *that,
@@ -8078,6 +8090,7 @@ armDeferredPowerOnAvailability(bool wakeBulletinPending)
     lifecycle.powerOnWakeBulletinPending = wakeBulletinPending;
     lifecycle.powerOnWakeScanTerminalObserved = false;
     lifecycle.powerOnWakeAvailabilityAckObserved = false;
+    lifecycle.powerOnWakePublishQueued = false;
     const uint64_t epoch = lifecycle.pendingPowerOnEpoch;
     OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit,
                   &pmPowerStateFlags);
@@ -8151,6 +8164,7 @@ cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch)
         lifecycle.powerOnWakeBulletinPending = false;
         lifecycle.powerOnWakeScanTerminalObserved = false;
         lifecycle.powerOnWakeAvailabilityAckObserved = false;
+        lifecycle.powerOnWakePublishQueued = false;
         OSBitAndAtomic(~static_cast<UInt32>(
                            kAirportItlwmPmDriverAvailabilityPendingBit),
                        &pmPowerStateFlags);
@@ -8175,6 +8189,7 @@ void AirportItlwm::cancelDeferredPowerOnAvailabilityRaw()
         lifecycle.powerOnWakeBulletinPending = false;
         lifecycle.powerOnWakeScanTerminalObserved = false;
         lifecycle.powerOnWakeAvailabilityAckObserved = false;
+        lifecycle.powerOnWakePublishQueued = false;
         OSBitAndAtomic(~static_cast<UInt32>(
                            kAirportItlwmPmDriverAvailabilityPendingBit),
                        &pmPowerStateFlags);
@@ -8255,11 +8270,13 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
             !lifecycle.powerOnPublishQueued &&
             lifecycle.powerOnWakeBulletinPending &&
             lifecycle.powerOnWakeScanTerminalObserved &&
-            lifecycle.powerOnWakeAvailabilityAckObserved;
+            lifecycle.powerOnWakeAvailabilityAckObserved &&
+            lifecycle.powerOnWakePublishQueued;
         if (publish) {
             lifecycle.powerOnWakeBulletinPending = false;
             lifecycle.powerOnWakeScanTerminalObserved = false;
             lifecycle.powerOnWakeAvailabilityAckObserved = false;
+            lifecycle.powerOnWakePublishQueued = false;
         }
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
         if (!publish)
@@ -8463,6 +8480,7 @@ noteDeferredWakePowerChangedEdge(bool scanTerminalEdge)
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     const bool claimedScanTerminal =
         scanTerminalEdge && lifecycle.powerOnWakeBulletinPending;
+    IOInterruptEventSource *source = NULL;
     if (lifecycle.powerOnWakeBulletinPending) {
         if (scanTerminalEdge)
             lifecycle.powerOnWakeScanTerminalObserved = true;
@@ -8472,29 +8490,66 @@ noteDeferredWakePowerChangedEdge(bool scanTerminalEdge)
             lifecycle.powerOnWakeAvailabilityAckObserved &&
             lifecycle.pendingPowerOnEpoch == 0 &&
             lifecycle.readyPowerOnEpoch == 0 &&
-            !lifecycle.powerOnPublishQueued)
+            !lifecycle.powerOnPublishQueued &&
+            !lifecycle.powerOnWakePublishQueued &&
+            !lifecycle.settingUp && !lifecycle.stopping &&
+            !lifecycle.tearingDown && lifecycle.source != NULL) {
             epoch = lifecycle.availabilityEpoch;
+            lifecycle.powerOnWakePublishQueued = true;
+            ++lifecycle.users;
+            source = lifecycle.source;
+            source->retain();
+        }
     }
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
-    if (epoch == 0)
+    if (epoch == 0 || source == NULL)
         return claimedScanTerminal;
 
+    /*
+     * WCL_CONFIG_BG_PARAMS is itself an IO80211Family callback.  Do not post
+     * POWER_CHANGED recursively from that setter: signal the already-owned
+     * controller workloop source so the family callback returns first.
+     */
+    source->interruptOccurred(0, 0, 0);
+    source->release();
+    releaseWclPhysicalScanLifecycleUser(lifecycle, lock);
+    return claimedScanTerminal || !scanTerminalEdge;
+}
+
+void AirportItlwm::
+dispatchDeferredWakePowerChanged(uint64_t expectedEpoch)
+{
     IOCommandGate *gate = getCommandGate();
     IOWorkLoop *workLoop = getWorkLoop();
-    if (gate == NULL)
-        return claimedScanTerminal;
-    const IOReturn result = workLoop != NULL && workLoop->inGate()
-        ? publishDeferredPowerAvailabilityGated(
-              this,
-              (void *)(uintptr_t)
-                  kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
-              (void *)(uintptr_t)epoch, NULL, NULL)
-        : gate->runAction(
-              publishDeferredPowerAvailabilityGated,
-              (void *)(uintptr_t)
-                  kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
-              (void *)(uintptr_t)epoch, NULL, NULL);
-    return claimedScanTerminal || result == kIOReturnSuccess;
+    IOReturn result = kIOReturnNotReady;
+    if (gate != NULL) {
+        result = workLoop != NULL && workLoop->inGate()
+            ? publishDeferredPowerAvailabilityGated(
+                  this,
+                  (void *)(uintptr_t)
+                      kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
+                  (void *)(uintptr_t)expectedEpoch, NULL, NULL)
+            : gate->runAction(
+                  publishDeferredPowerAvailabilityGated,
+                  (void *)(uintptr_t)
+                      kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
+                  (void *)(uintptr_t)expectedEpoch, NULL, NULL);
+    }
+    if (result == kIOReturnSuccess)
+        return;
+
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (lock == NULL)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    if (lifecycle.availabilityEpoch == expectedEpoch &&
+        lifecycle.powerOnWakeBulletinPending &&
+        lifecycle.powerOnWakeScanTerminalObserved &&
+        lifecycle.powerOnWakeAvailabilityAckObserved)
+        lifecycle.powerOnWakePublishQueued = false;
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
 }
 
 IOReturn AirportItlwm::

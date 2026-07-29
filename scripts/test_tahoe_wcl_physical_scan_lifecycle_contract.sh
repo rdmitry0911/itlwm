@@ -570,7 +570,8 @@ for token in ("availabilityEpoch", "pendingPowerOnEpoch",
               "readyPowerOnEpoch", "powerOnPublishQueued",
               "powerOnWakeBulletinPending",
               "powerOnWakeScanTerminalObserved",
-              "powerOnWakeAvailabilityAckObserved"):
+              "powerOnWakeAvailabilityAckObserved",
+              "powerOnWakePublishQueued"):
     require(v2_hpp, token, "post-radio-ready availability epoch state")
 require(v2_hpp, "kAirportItlwmPmDriverAvailabilityPendingBit",
         "deferred PowerOn lifecycle bit")
@@ -611,6 +612,7 @@ ordered(availability_publish,
         "lifecycle.powerOnWakeBulletinPending",
         "lifecycle.powerOnWakeScanTerminalObserved",
         "lifecycle.powerOnWakeAvailabilityAckObserved",
+        "lifecycle.powerOnWakePublishQueued",
         "APPLE80211_M_POWER_CHANGED")
 availability_arm = body(v2,
                        "armDeferredPowerOnAvailability(bool wakeBulletinPending)",
@@ -620,6 +622,7 @@ ordered(availability_arm, "pending availability bit armed under lock",
         "lifecycle.powerOnWakeBulletinPending = wakeBulletinPending",
         "lifecycle.powerOnWakeScanTerminalObserved = false",
         "lifecycle.powerOnWakeAvailabilityAckObserved = false",
+        "lifecycle.powerOnWakePublishQueued = false",
         "OSBitOrAtomic(kAirportItlwmPmDriverAvailabilityPendingBit",
         "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
 availability_cancel = body(v2,
@@ -630,6 +633,7 @@ ordered(availability_cancel, "pending availability bit cleared under lock",
         "lifecycle.powerOnWakeBulletinPending = false",
         "lifecycle.powerOnWakeScanTerminalObserved = false",
         "lifecycle.powerOnWakeAvailabilityAckObserved = false",
+        "lifecycle.powerOnWakePublishQueued = false",
         "kAirportItlwmPmDriverAvailabilityPendingBit",
         "IOSimpleLockUnlockEnableInterrupt(lock, irq)")
 availability_wait = body(v2,
@@ -668,10 +672,30 @@ ordered(wake_note, "wake bulletin waits for both reference-derived edges",
         "lifecycle.powerOnWakeAvailabilityAckObserved &&",
         "lifecycle.pendingPowerOnEpoch == 0",
         "lifecycle.readyPowerOnEpoch == 0",
-        "workLoop->inGate()",
-        "kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged")
+        "lifecycle.powerOnWakePublishQueued = true",
+        "source->interruptOccurred(0, 0, 0)",
+        "releaseWclPhysicalScanLifecycleUser(lifecycle, lock)")
 forbid(wake_note, "postMessage(",
        "off-gate POWER_CHANGED publication")
+forbid(wake_note, "publishDeferredPowerAvailabilityGated(",
+       "recursive WCL setter POWER_CHANGED publication")
+
+wake_dispatch = body(v2,
+    "dispatchDeferredWakePowerChanged(uint64_t expectedEpoch)",
+    "deferred workloop wake bulletin dispatch")
+ordered(wake_dispatch, "workloop wake bulletin dispatch",
+        "workLoop->inGate()",
+        "kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged",
+        "result == kIOReturnSuccess",
+        "lifecycle.powerOnWakePublishQueued = false")
+
+source_action = body(v2,
+    "wclPhysicalScanTerminalInterruptAction(",
+    "shared WCL workloop source action")
+ordered(source_action, "workloop source observes and dispatches wake bulletin",
+        "state.powerOnWakePublishQueued",
+        "wakePowerChangedEpoch = state.availabilityEpoch",
+        "dispatchDeferredWakePowerChanged(wakePowerChangedEpoch)")
 
 bg_params = body(sky,
     "setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)",
