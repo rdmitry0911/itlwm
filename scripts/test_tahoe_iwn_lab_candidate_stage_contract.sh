@@ -55,6 +55,8 @@ for token in \
     'GIT_CONFIG_KEY_0=core.excludesFile' \
     'capture_tahoe_iwn_lab_candidate_receipt.py' \
     'load_direct_runtime_candidate_receipt' \
+    'candidate_receipt_has_private_mode()' \
+    'candidate_receipt_has_private_mode "$CANDIDATE_RECEIPT" ||' \
     'candidate-receipt-must-be-private-0600' \
     'stat.S_IMODE(value.st_mode) != 0o600' \
     'PINNED_GUEST_HOSTKEY_LINE=' \
@@ -106,6 +108,11 @@ from pathlib import Path
 import sys
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
+
+if "<<'PY' ||" in text:
+    raise SystemExit(
+        "FAIL: candidate-stage Python heredoc may not own a shell OR-list"
+    )
 
 
 def require_order(*tokens: str) -> None:

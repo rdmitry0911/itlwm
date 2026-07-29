@@ -1011,12 +1011,8 @@ if stat.S_IMODE(output.stat().st_mode) != 0o600:
 PY
 }
 
-stage_candidate() {
-    require_clean_committed_source
-    CANDIDATE_RECEIPT="$(canonical_existing_regular_file "$CANDIDATE_RECEIPT")" ||
-        fail "candidate-receipt-must-be-absolute-regular-non-symlink-file"
-    python3 - "$CANDIDATE_RECEIPT" <<'PY' ||
-        fail "candidate-receipt-must-be-private-0600"
+candidate_receipt_has_private_mode() {
+    python3 - "$1" <<'PY'
 import os
 import stat
 import sys
@@ -1026,6 +1022,14 @@ if (stat.S_ISLNK(value.st_mode) or not stat.S_ISREG(value.st_mode) or
         value.st_nlink != 1 or stat.S_IMODE(value.st_mode) != 0o600):
     raise SystemExit(1)
 PY
+}
+
+stage_candidate() {
+    require_clean_committed_source
+    CANDIDATE_RECEIPT="$(canonical_existing_regular_file "$CANDIDATE_RECEIPT")" ||
+        fail "candidate-receipt-must-be-absolute-regular-non-symlink-file"
+    candidate_receipt_has_private_mode "$CANDIDATE_RECEIPT" ||
+        fail "candidate-receipt-must-be-private-0600"
     ARCHIVE="$(canonical_existing_regular_file "$ARCHIVE")" ||
         fail "archive-must-be-absolute-regular-non-symlink-file"
     TRACE_CLIENT="$(canonical_existing_regular_file "$TRACE_CLIENT")" ||
