@@ -484,7 +484,7 @@ PAYLOAD_TYPES = [
         "implementation_checks": [
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
-                "tokens": ["kTahoeWclScanResultHeaderLen = 0x44", "kTahoeWclScanResultMaxIELen = 0x800", "buildTahoeWclScanResultPayload", "APPLE80211_M_WCL_SCAN_RESULT", "TahoeScanContracts::kWclScanResultMetaFlags"],
+                "tokens": ["kTahoeWclScanResultHeaderLen = 0x44", "kTahoeWclScanResultMaxIELen = 0x800", "buildTahoeWclScanResultPayload", "APPLE80211_M_WCL_SCAN_RESULT", "TahoeScanContracts::buildWclScanResultMetaFlags"],
             },
         ],
         "invalid_semantics": "null controller/node/channel and zero BSSID reject before WCL_SCAN_RESULT publication",
@@ -536,11 +536,13 @@ PAYLOAD_TYPES = [
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
                 "tokens": [
                     "buildTahoeWclAuthAssocCompletePayload",
-                    "captureTahoeWclAuthAssocCompletionRequest",
+                    "captureTahoeWclSelectedBssRequest",
+                    "recordTahoeWclAuthSuccessGated",
                     "postTahoeWclAuthAssocCompleteGated",
                     "tahoeWclAuthAssocCompletionMatchesOwner",
                     "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE",
-                    "IEEE80211_EVT_STA_ASSOC_DONE",
+                    "IEEE80211_EVT_STA_AUTH_DONE",
+                    "IEEE80211_EVT_STA_ASSOC_VALIDATED",
                 ],
             },
             {
@@ -548,6 +550,9 @@ PAYLOAD_TYPES = [
                 "tokens": [
                     "authAssocCompletionArmed",
                     "authAssocCompletionPublished",
+                    "authSuccessRecorded",
+                    "authSuccessEpoch",
+                    "authSuccessBssid",
                     "candidateBssid",
                     "selectedBssid",
                 ],

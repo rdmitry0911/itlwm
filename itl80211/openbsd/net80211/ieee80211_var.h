@@ -1218,6 +1218,16 @@ struct ieee80211_wcl_scan_start_rejected {
 };
 
 /*
+ * Successful selected-STA authentication, fully parsed association, and
+ * no-RSN RUN are three distinct host facts.  Tahoe's WCL completion bridge
+ * value-copies/revalidates their selected-BSS epoch; these events carry no
+ * credential and their borrowed data pointer is always NULL.
+ */
+#define IEEE80211_EVT_STA_AUTH_DONE               18
+#define IEEE80211_EVT_STA_ASSOC_VALIDATED         19
+#define IEEE80211_EVT_STA_OPEN_RUN_DONE           20
+
+/*
  * Host-owned WCL reassociation owner contract recovered from the public
  * AppleBCMWLAN binary (AppleBCMWLANCore::setWCL_REASSOC and the
  * NetAdapter::sendReassocCommand callback/event family). The local Intel

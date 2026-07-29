@@ -217,11 +217,13 @@ for token in (
 	if token in copyout:
 		fail(f"selected BSS copyout must remain fixed-value and inactive: {token}")
 
-# The selected-BSS copyout has exactly two production consumers: the bounded
-# Algorithm-3 RX leaf and the separately contract-tested Tahoe WCL
-# auth/association-completion publisher.  Both must remain exact value-only
-# identity checks; a new source file or a third call in the controller is a
-# lifecycle expansion and must fail this gate.
+# The selected-BSS copyout has two source-level production consumers: the
+# bounded Algorithm-3 RX leaf and the separately contract-tested Tahoe WCL
+# completion bridge.  The bridge has four serialized reads: edge capture,
+# auth-ledger revalidation, validated-association revalidation, and open-RUN
+# revalidation.  All must remain exact value-only identity checks; a new source
+# file or another call in the controller is a lifecycle expansion and must fail
+# this gate.
 copyout_references = []
 for directory in (root / "itl80211", root / "AirportItlwm"):
 	for suffix in ("*.c", "*.h", "*.cpp", "*.hpp"):
@@ -235,11 +237,13 @@ if sorted(copyout_references) != [
 	"itl80211/openbsd/net80211/ieee80211_proto.h",
 ]:
 	fail("selected BSS copyout must have only the bounded peer-RX and gated WCL completion consumers")
-if v2_cpp.count("ieee80211_pae_selected_bss_copyout_current(") != 2:
-	fail("WCL completion may use exactly its capture and gated revalidation copyouts")
+if v2_cpp.count("ieee80211_pae_selected_bss_copyout_current(") != 4:
+	fail("WCL completion must keep exactly four serialized selected-BSS copyouts")
 for marker in (
-	"static bool captureTahoeWclAuthAssocCompletionRequest(",
+	"static bool captureTahoeWclSelectedBssRequest(",
+	"static IOReturn recordTahoeWclAuthSuccessGated(",
 	"static IOReturn postTahoeWclAuthAssocCompleteGated(",
+	"static IOReturn postTahoeWclOpenJoinCompletionGated(",
 ):
 	require(body(v2_cpp, marker, "gated WCL completion copyout owner"),
 		"ieee80211_pae_selected_bss_copyout_current",

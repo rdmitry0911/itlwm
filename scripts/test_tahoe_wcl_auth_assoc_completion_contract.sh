@@ -20,6 +20,15 @@ open_resume = (
 header = (root / "include/Airport/apple80211_var.h").read_text()
 parity = (root / "AirportItlwm/TahoePayloadParity.hpp").read_text()
 unit = (root / "tests/tahoe_payload_builders_test.cpp").read_text()
+net_var = (
+    root / "itl80211/openbsd/net80211/ieee80211_var.h"
+).read_text()
+net_input = (
+    root / "itl80211/openbsd/net80211/ieee80211_input.c"
+).read_text()
+net_proto = (
+    root / "itl80211/openbsd/net80211/ieee80211_proto.c"
+).read_text()
 
 
 def fail(message):
@@ -112,50 +121,99 @@ for token in (
 ):
     require(unit, token, "standalone ABI regression")
 
-# The generic status is published first for every successful association.  The
-# gated completion attempt is deliberately best effort afterwards: a rejected
-# 0xd3 must never retract or hide the already-issued 0x4e status bulletin.
+# The early association callback is status-plane only.  It must not construct
+# 0xd3 before mandatory rates/IE parsing has validated the response.
 assoc_case = between(v2,
                      "case IEEE80211_EVT_STA_ASSOC_DONE:",
-                     "case IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE:",
+                     "case IEEE80211_EVT_STA_AUTH_DONE:",
                      "STA_ASSOC_DONE case")
-ordered(assoc_case, "0x4e before candidate completion",
+ordered(assoc_case, "early status-only publication",
         "buildTahoeWclAssocStatusPayload(0, 0, &assocStatus)",
         "APPLE80211_M_WCL_AUTH_ASSOC_EVENT",
-        "captureTahoeWclAuthAssocCompletionRequest(ic, &request)",
-        "gate->runAction(postTahoeWclAuthAssocCompleteGated",
         "return;")
-forbid(assoc_case, "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE",
-       "direct ungated 0xd3 selector in STA_ASSOC_DONE")
+for token in (
+        "postTahoeWclAuthAssocCompleteGated",
+        "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE",
+        "captureTahoeWclSelectedBssRequest",
+):
+    forbid(assoc_case, token, "0xd3 work in early STA_ASSOC_DONE")
 
-# Capture is restricted to the normal pre-RUN association state and carries a
-# value snapshot tied to the exact selected-BSS epoch.
-capture = body(v2, "static bool captureTahoeWclAuthAssocCompletionRequest(",
+# A real successful authentication response records the exact selected-BSS
+# epoch before the transition to ASSOC.
+auth_case = between(v2,
+                    "case IEEE80211_EVT_STA_AUTH_DONE:",
+                    "case IEEE80211_EVT_STA_ASSOC_VALIDATED:",
+                    "STA_AUTH_DONE case")
+for token in (
+        "captureTahoeWclSelectedBssRequest(",
+        "IEEE80211_S_AUTH",
+        "recordTahoeWclAuthSuccessGated",
+        "SUCCESS_LEDGER",
+):
+    require(auth_case, token, "authentication success ledger")
+
+auth_recorder = body(v2, "static IOReturn recordTahoeWclAuthSuccessGated(",
+                     "gated authentication success recorder")
+ordered(auth_recorder, "authentication identity before ledger publication",
+        "ic->ic_state != IEEE80211_S_AUTH",
+        "ieee80211_pae_assoc_epoch_current(ic)",
+        "ieee80211_pae_selected_bss_copyout_current",
+        "tahoeWclSelectedBssMatchesOwner",
+        "owner->authSuccessRecorded = true",
+        "owner->authSuccessEpoch = request->associationEpoch",
+        "owner->authSuccessBssid")
+
+# Only the later, fully parsed association callback may consume that ledger and
+# publish the candidate-matched 0xd3.
+validated_case = between(v2,
+                         "case IEEE80211_EVT_STA_ASSOC_VALIDATED:",
+                         "case IEEE80211_EVT_STA_OPEN_RUN_DONE:",
+                         "STA_ASSOC_VALIDATED case")
+ordered(validated_case, "validated association completion",
+        "captureTahoeWclSelectedBssRequest(",
+        "IEEE80211_S_ASSOC",
+        "gate->runAction(postTahoeWclAuthAssocCompleteGated",
+        "VALIDATED_COMPLETION",
+        "return;")
+
+# Capture is parameterized by the exact AUTH/ASSOC state and carries a value
+# snapshot tied to the exact selected-BSS epoch.
+capture = body(v2, "static bool captureTahoeWclSelectedBssRequest(",
                "completion snapshot capture")
 for token in (
-        "ic->ic_state != IEEE80211_S_ASSOC",
+        "ic->ic_state != expectedState",
         "ieee80211_pae_assoc_epoch_current(ic)",
         "ieee80211_pae_selected_bss_copyout_current",
         "IEEE80211_ADDR_EQ(request->selected.bssid, ic->ic_bss->ni_bssid)",
 ):
-    require(capture, token, "S_ASSOC selected-BSS capture gate")
+    require(capture, token, "selected-BSS capture gate")
 
 # The owner match prevents an ownerless association, alternate candidate,
 # stale owner, or duplicate publication from entering the JoinManager path.
-matches = body(v2, "static bool tahoeWclAuthAssocCompletionMatchesOwner(",
-               "candidate owner matcher")
+identity_match = body(v2, "static bool tahoeWclSelectedBssMatchesOwner(",
+                      "candidate identity matcher")
 for token in (
         "owner.hasCarrier",
         "owner.selectedFromCandidate",
         "owner.authAssocCompletionArmed",
-        "owner.authAssocCompletionPublished",
         "owner.candidateCount == 0",
         "selected.ssid_len != owner.ssidLength",
         "owner.selectedBssid",
         "owner.candidateBssid",
         "memcmp(selected.ssid, owner.ssid, selected.ssid_len)",
 ):
-    require(matches, token, "candidate owner fence")
+    require(identity_match, token, "candidate identity fence")
+
+matches = body(v2, "static bool tahoeWclAuthAssocCompletionMatchesOwner(",
+               "authenticated candidate owner matcher")
+for token in (
+        "tahoeWclSelectedBssMatchesOwner",
+        "owner.authSuccessRecorded",
+        "owner.authSuccessEpoch == selected.epoch",
+        "owner.authSuccessBssid",
+        "!owner.authAssocCompletionPublished",
+):
+    require(matches, token, "authenticated completion fence")
 
 publisher = body(v2, "static IOReturn postTahoeWclAuthAssocCompleteGated(",
                  "gated 0xd3 publisher")
@@ -177,6 +235,71 @@ for token in (
     require(publisher, token, "one-shot completion publication")
 forbid(publisher, "!owner.publicCarrier",
        "public completion exclusion from common publisher")
+
+# Open networks have no key-done edge.  Their exact post-RUN owner publishes
+# WCL link-up/connect-complete once, without fabricating RSN key completion.
+open_case = between(v2,
+                    "case IEEE80211_EVT_STA_OPEN_RUN_DONE:",
+                    "case IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE:",
+                    "STA_OPEN_RUN_DONE case")
+for token in (
+        "postTahoeWclOpenJoinCompletionGated",
+        "RUN_COMPLETION",
+        "return;",
+):
+    require(open_case, token, "open RUN completion dispatch")
+
+open_completion = body(
+    v2, "static IOReturn postTahoeWclOpenJoinCompletionGated(",
+    "gated open RUN completion")
+ordered(open_completion, "open completion exact owner before publication",
+        "ic->ic_state != IEEE80211_S_RUN",
+        "IEEE80211_F_RSNON",
+        "ieee80211_pae_selected_bss_copyout_current",
+        "tahoeWclOpenJoinCompletionMatchesOwner",
+        "owner->connectCompletionPublished = true",
+        "postTahoeWclLinkUpInd",
+        "postTahoeWclConnectCompleteEvent")
+open_match = body(
+    v2, "static bool tahoeWclOpenJoinCompletionMatchesOwner(",
+    "open completion owner matcher")
+for token in (
+        "tahoeWclSelectedBssMatchesOwner",
+        "owner.authLower == APPLE80211_AUTHTYPE_OPEN",
+        "owner.authUpper == APPLE80211_AUTHTYPE_NONE",
+        "owner.rsnIeLength == 0",
+        "owner.authSuccessRecorded",
+        "owner.authSuccessEpoch == selected.epoch",
+        "owner.authSuccessBssid",
+        "owner.authAssocCompletionPublished",
+        "!owner.connectCompletionPublished",
+):
+    require(open_match, token, "open completion owner fence")
+for token in (
+        "postRsnHandshakeDoneGated",
+        "APPLE80211_M_RSN_HANDSHAKE_DONE",
+        "handleKeyDone",
+):
+    forbid(open_completion, token, "fabricated key completion on open RUN")
+
+for token in (
+        "IEEE80211_EVT_STA_AUTH_DONE               18",
+        "IEEE80211_EVT_STA_ASSOC_VALIDATED         19",
+        "IEEE80211_EVT_STA_OPEN_RUN_DONE           20",
+):
+    require(net_var, token, "split net80211 completion event")
+ordered(net_input, "validated association after mandatory setup",
+        "/* supported rates element is mandatory */",
+        "ieee80211_setup_rates",
+        "IEEE80211_EVT_STA_ASSOC_VALIDATED",
+        "ieee80211_new_state(ic, IEEE80211_S_RUN")
+ordered(net_proto, "Open-System auth ledger before ASSOC",
+        "if (status != 0)",
+        "IEEE80211_EVT_STA_AUTH_DONE",
+        "ieee80211_new_state(ic, IEEE80211_S_ASSOC")
+ordered(net_proto, "open RUN after real link state",
+        "ieee80211_set_link_state(ic, LINK_STATE_UP)",
+        "IEEE80211_EVT_STA_OPEN_RUN_DONE")
 
 deauth_case = between(v2,
                       "case IEEE80211_EVT_STA_DEAUTH:",
@@ -345,6 +468,10 @@ for token in (
         "AssociationOwner publicAssociation",
         "authAssocCompletionArmed",
         "authAssocCompletionPublished",
+        "authSuccessRecorded",
+        "authSuccessEpoch",
+        "authSuccessBssid",
+        "connectCompletionPublished",
         "selectedBssid",
         "candidateBssid",
 ):

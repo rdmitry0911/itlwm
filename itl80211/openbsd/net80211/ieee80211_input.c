@@ -3106,6 +3106,9 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         ic->ic_assoc_comeback_pending = 0;
         ic->ic_assoc_comeback_reassoc = 0;
         ic->ic_assoc_comeback_retries = 0;
+        /* Status-plane publication stays early and independent.  The WCL
+         * auth/assoc completion is emitted only after mandatory rates and
+         * association setup have been validated below. */
         if (ic->ic_event_handler) {
             (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
         }
@@ -3325,6 +3328,9 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         wh->i_addr2[3], wh->i_addr2[4], wh->i_addr2[5],
         (unsigned)ni->ni_associd, (unsigned)rate,
         (unsigned)ni->ni_flags);
+    if (ic->ic_event_handler != NULL)
+        (*ic->ic_event_handler)(ic,
+            IEEE80211_EVT_STA_ASSOC_VALIDATED, NULL);
     ieee80211_new_state(ic, IEEE80211_S_RUN,
                         IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 }

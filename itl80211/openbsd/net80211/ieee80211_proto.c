@@ -3161,6 +3161,12 @@ ieee80211_sae_wcl_request_pmk_continue_assoc(struct ieee80211com *ic,
 	if (!claimed || ic->ic_newstate == NULL)
 		return 0;
 
+	/* A successful direct-SAE Confirm/PMK claim is the real authentication
+	 * success edge for this selected BSS.  Record it before entering ASSOC,
+	 * exactly as the Open-System response path does below. */
+	if (ic->ic_event_handler != NULL)
+		(*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_AUTH_DONE, NULL);
+
 	/* The standard forward AUTH -> ASSOC edge preserves this epoch.  The
 	 * private argument makes ieee80211_newstate() repeat the exact claim check
 	 * after it has committed S_ASSOC and immediately before it queues the
@@ -4452,6 +4458,9 @@ ieee80211_auth_open(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 			ic->ic_stats.is_rx_auth_fail++;
 			return;
 		}
+		if (ic->ic_event_handler != NULL)
+			(*ic->ic_event_handler)(ic,
+			    IEEE80211_EVT_STA_AUTH_DONE, NULL);
 		ieee80211_new_state(ic, IEEE80211_S_ASSOC,
 		    wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK);
 		break;
@@ -4845,9 +4854,9 @@ justcleanup:
             /* Tahoe's non-public paths retain their historical S_RUN link
              * publication.  Only the exact public initial-BSS marker waits
              * for port-valid, so it cannot expose DESBSSID before release. */
-            if ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
-                !ieee80211_public_initial_bssid_pin_should_defer_link_up(
-                ic, ni)) {
+			if ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
+			    !ieee80211_public_initial_bssid_pin_should_defer_link_up(
+			    ic, ni)) {
 #elif (defined IO80211FAMILY_V2)
             if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms) ||
                 !(ic->ic_flags & IEEE80211_F_RSNON)) {
@@ -4860,6 +4869,11 @@ justcleanup:
 				 */
 				ieee80211_set_link_state(ic, LINK_STATE_UP);
 				ni->ni_assoc_fail = 0;
+				if (ic->ic_opmode == IEEE80211_M_STA &&
+				    (ic->ic_flags & IEEE80211_F_RSNON) == 0 &&
+				    ic->ic_event_handler != NULL)
+					(*ic->ic_event_handler)(
+					    ic, IEEE80211_EVT_STA_OPEN_RUN_DONE, NULL);
 			}
             ni->ni_fails = 0;
             ni = ieee80211_find_node(ic, ni->ni_macaddr);

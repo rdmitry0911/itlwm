@@ -5674,24 +5674,26 @@ static bool buildTahoeWclAuthAssocCompletePayload(
 
 #if __IO80211_TARGET >= __MAC_26_0
 /*
- * STA_ASSOC_DONE is delivered from net80211 before it leaves S_ASSOC.  Carry
- * the exact selected-BSS snapshot observed at that edge into the controller
- * gate, then revalidate it there before publishing the JoinAdapter 0xd3.  The
- * owner may originate from an explicit WCL candidate or from Tahoe's ordinary
- * public IOC_ASSOCIATE carrier; both must name the exact selected BSS.  The
- * request owns no node or IE pointer, so it cannot extend a stale association
- * lifetime across the lower callback / command-gate boundary.
+ * Authentication success and fully validated association are distinct
+ * net80211 edges.  Carry the exact selected-BSS snapshot observed at either
+ * edge into the controller gate, then revalidate it there before recording
+ * authentication or publishing the JoinAdapter 0xd3.  The owner may originate
+ * from an explicit WCL candidate or from Tahoe's ordinary public IOC_ASSOCIATE
+ * carrier; both must name the exact selected BSS.  The request owns no node or
+ * IE pointer, so it cannot extend a stale association lifetime across the
+ * lower callback / command-gate boundary.
  */
 struct TahoeWclAuthAssocCompletionRequest {
     uint64_t associationEpoch;
     struct ieee80211_pae_selected_bss selected;
 };
 
-static bool captureTahoeWclAuthAssocCompletionRequest(
+static bool captureTahoeWclSelectedBssRequest(
     struct ieee80211com *ic,
+    enum ieee80211_state expectedState,
     TahoeWclAuthAssocCompletionRequest *request)
 {
-    if (ic == nullptr || ic->ic_state != IEEE80211_S_ASSOC ||
+    if (ic == nullptr || ic->ic_state != expectedState ||
         ic->ic_bss == nullptr || request == nullptr)
         return false;
 
@@ -5707,14 +5709,13 @@ static bool captureTahoeWclAuthAssocCompletionRequest(
     return true;
 }
 
-static bool tahoeWclAuthAssocCompletionMatchesOwner(
+static bool tahoeWclSelectedBssMatchesOwner(
     const TahoeOwnerRegistry::AssociationOwner &owner,
     const struct ieee80211_pae_selected_bss &selected,
     const struct ieee80211_node *bss)
 {
     if (!owner.hasCarrier || !owner.selectedFromCandidate ||
         !owner.authAssocCompletionArmed ||
-        owner.authAssocCompletionPublished ||
         owner.apMode != APPLE80211_AP_MODE_INFRA ||
         owner.candidateCount == 0 ||
         owner.candidateCount > TahoeAssociationContracts::kMaximumCandidateCount ||
@@ -5727,6 +5728,59 @@ static bool tahoeWclAuthAssocCompletionMatchesOwner(
         return false;
 
     return memcmp(selected.ssid, owner.ssid, selected.ssid_len) == 0;
+}
+
+static bool tahoeWclAuthAssocCompletionMatchesOwner(
+    const TahoeOwnerRegistry::AssociationOwner &owner,
+    const struct ieee80211_pae_selected_bss &selected,
+    const struct ieee80211_node *bss)
+{
+    return tahoeWclSelectedBssMatchesOwner(owner, selected, bss) &&
+           owner.authSuccessRecorded &&
+           owner.authSuccessEpoch == selected.epoch &&
+           IEEE80211_ADDR_EQ(owner.authSuccessBssid, selected.bssid) &&
+           !owner.authAssocCompletionPublished;
+}
+
+static IOReturn recordTahoeWclAuthSuccessGated(
+    OSObject *target, void *arg0, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    const TahoeWclAuthAssocCompletionRequest *request =
+        static_cast<const TahoeWclAuthAssocCompletionRequest *>(arg0);
+    if (that == nullptr || request == nullptr ||
+        request->associationEpoch == 0 || that->fHalService == nullptr)
+        return kIOReturnBadArgument;
+
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_AUTH ||
+        ic->ic_bss == nullptr ||
+        ieee80211_pae_assoc_epoch_current(ic) != request->associationEpoch)
+        return kIOReturnNotReady;
+
+    struct ieee80211_pae_selected_bss current;
+    bzero(&current, sizeof(current));
+    if (!ieee80211_pae_selected_bss_copyout_current(
+            ic, request->associationEpoch, &current) ||
+        !ieee80211_pae_selected_bss_identity_matches(
+            &request->selected, request->associationEpoch,
+            current.bssid, current.ssid, current.ssid_len) ||
+        !IEEE80211_ADDR_EQ(current.bssid, ic->ic_bss->ni_bssid))
+        return kIOReturnNotReady;
+
+    TahoeOwnerRegistry &registry = that->getTahoeOwnerRegistry();
+    TahoeOwnerRegistry::AssociationOwner *owner = &registry.association;
+    if (!tahoeWclSelectedBssMatchesOwner(*owner, current, ic->ic_bss)) {
+        owner = &registry.publicAssociation;
+        if (!tahoeWclSelectedBssMatchesOwner(
+                *owner, current, ic->ic_bss))
+            return kIOReturnNotReady;
+    }
+
+    owner->authSuccessRecorded = true;
+    owner->authSuccessEpoch = request->associationEpoch;
+    IEEE80211_ADDR_COPY(owner->authSuccessBssid, current.bssid);
+    return kIOReturnSuccess;
 }
 
 /*
@@ -5957,6 +6011,66 @@ static IOReturn postTahoeWclJoinCompletionGated(
         postTahoeWclConnectCompleteEvent(controller);
     return linkPublished && connectPublished ? kIOReturnSuccess
                                               : kIOReturnNotReady;
+}
+
+static bool tahoeWclOpenJoinCompletionMatchesOwner(
+    const TahoeOwnerRegistry::AssociationOwner &owner,
+    const struct ieee80211_pae_selected_bss &selected,
+    const struct ieee80211_node *bss)
+{
+    return tahoeWclSelectedBssMatchesOwner(owner, selected, bss) &&
+           owner.authLower == APPLE80211_AUTHTYPE_OPEN &&
+           owner.authUpper == APPLE80211_AUTHTYPE_NONE &&
+           owner.rsnIeLength == 0 &&
+           owner.authSuccessRecorded &&
+           owner.authSuccessEpoch == selected.epoch &&
+           IEEE80211_ADDR_EQ(owner.authSuccessBssid, selected.bssid) &&
+           owner.authAssocCompletionPublished &&
+           !owner.connectCompletionPublished;
+}
+
+static IOReturn postTahoeWclOpenJoinCompletionGated(
+    OSObject *target, void *, void *, void *, void *)
+{
+    AirportItlwm *controller = OSDynamicCast(AirportItlwm, target);
+    if (controller == nullptr || controller->fHalService == nullptr ||
+        controller->fNetIf == nullptr)
+        return kIOReturnNotReady;
+
+    struct ieee80211com *ic =
+        controller->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr ||
+        (ic->ic_flags & IEEE80211_F_RSNON) != 0)
+        return kIOReturnNotReady;
+
+    const uint64_t epoch = ieee80211_pae_assoc_epoch_current(ic);
+    struct ieee80211_pae_selected_bss current;
+    bzero(&current, sizeof(current));
+    if (epoch == 0 ||
+        !ieee80211_pae_selected_bss_copyout_current(ic, epoch, &current) ||
+        !IEEE80211_ADDR_EQ(current.bssid, ic->ic_bss->ni_bssid))
+        return kIOReturnNotReady;
+
+    TahoeOwnerRegistry &registry = controller->getTahoeOwnerRegistry();
+    TahoeOwnerRegistry::AssociationOwner *owner = &registry.association;
+    if (!tahoeWclOpenJoinCompletionMatchesOwner(
+            *owner, current, ic->ic_bss)) {
+        owner = &registry.publicAssociation;
+        if (!tahoeWclOpenJoinCompletionMatchesOwner(
+                *owner, current, ic->ic_bss))
+            return kIOReturnNotReady;
+    }
+
+    owner->connectCompletionPublished = true;
+    const bool linkPublished = postTahoeWclLinkUpInd(controller, 0);
+    const bool connectPublished =
+        postTahoeWclConnectCompleteEvent(controller);
+    if (!linkPublished || !connectPublished) {
+        owner->connectCompletionPublished = false;
+        return kIOReturnNotReady;
+    }
+    return kIOReturnSuccess;
 }
 
 static bool postTahoeJoinAcceptedSsidChangedEvent(AirportItlwm *controller)
@@ -8495,25 +8609,51 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 #if __IO80211_TARGET >= __MAC_26_0
         {
             /*
-             * Preserve the reference order.  The 0x4e status bulletin is
-             * consumed by the generic association plane; WCLJoinManager only
-             * advances JOIN_ASSOC_COMPLETE when the following 0xd3 / 0x1c
-             * carrier names the selected candidate.  0x4e remains visible
-             * for every successful net80211 association; the stricter 0xd3
-             * path below is separately fenced to an active WCL candidate.
+             * This early net80211 callback is status-plane only: mandatory
+             * rates and the remainder of the association response have not
+             * yet been validated.  Keep 0x4e independent and let the later
+             * STA_ASSOC_VALIDATED edge own candidate-matched 0xd3.
              */
             apple80211_wcl_assoc_status_event assocStatus;
             buildTahoeWclAssocStatusPayload(0, 0, &assocStatus);
-            if (gate->runAction(postMessageGated,
-                                (void *)(uintptr_t)APPLE80211_M_WCL_AUTH_ASSOC_EVENT,
-                                &assocStatus,
-                                (void *)(uintptr_t)sizeof(assocStatus)) !=
-                kIOReturnSuccess)
-                return;
+            (void)gate->runAction(
+                postMessageGated,
+                (void *)(uintptr_t)APPLE80211_M_WCL_AUTH_ASSOC_EVENT,
+                &assocStatus,
+                (void *)(uintptr_t)sizeof(assocStatus));
+            return;
+        }
+#else
+            apple80211Msg = APPLE80211_M_ASSOC_DONE;
+            break;
+#endif
+        case IEEE80211_EVT_STA_AUTH_DONE:
+#if __IO80211_TARGET >= __MAC_26_0
+        {
+            TahoeWclAuthAssocCompletionRequest request;
+            const bool captured =
+                captureTahoeWclSelectedBssRequest(
+                    ic, IEEE80211_S_AUTH, &request);
+            IOReturn result = kIOReturnNotReady;
+            if (captured)
+                result = gate->runAction(
+                    recordTahoeWclAuthSuccessGated, &request);
+            XYLog("wcl_auth SUCCESS_LEDGER captured=%u result=0x%08x\n",
+                  captured ? 1U : 0U,
+                  static_cast<unsigned int>(result));
+            return;
+        }
+#else
+            return;
+#endif
+        case IEEE80211_EVT_STA_ASSOC_VALIDATED:
+#if __IO80211_TARGET >= __MAC_26_0
+        {
 
             TahoeWclAuthAssocCompletionRequest request;
             const bool captured =
-                captureTahoeWclAuthAssocCompletionRequest(ic, &request);
+                captureTahoeWclSelectedBssRequest(
+                    ic, IEEE80211_S_ASSOC, &request);
             IOReturn completionResult = kIOReturnNotReady;
             if (captured)
                 completionResult =
@@ -8534,11 +8674,29 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
                 owner.publicCarrier ? 1U : 0U,
                 owner.authAssocCompletionArmed ? 1U : 0U,
                 owner.authAssocCompletionPublished ? 1U : 0U);
+            XYLog(
+                "wcl_assoc VALIDATED_COMPLETION captured=%u "
+                "result=0x%08x armed=%u published=%u\n",
+                captured ? 1U : 0U,
+                static_cast<unsigned int>(completionResult),
+                owner.authAssocCompletionArmed ? 1U : 0U,
+                owner.authAssocCompletionPublished ? 1U : 0U);
             return;
         }
 #else
-            apple80211Msg = APPLE80211_M_ASSOC_DONE;
-            break;
+            return;
+#endif
+        case IEEE80211_EVT_STA_OPEN_RUN_DONE:
+#if __IO80211_TARGET >= __MAC_26_0
+        {
+            const IOReturn result =
+                gate->runAction(postTahoeWclOpenJoinCompletionGated);
+            XYLog("wcl_open RUN_COMPLETION result=0x%08x\n",
+                  static_cast<unsigned int>(result));
+            return;
+        }
+#else
+            return;
 #endif
         case IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE:
             RT_SET(2);

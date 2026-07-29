@@ -140,6 +140,17 @@ struct TahoeOwnerRegistry {
         // WCL carrier so an old candidate cannot complete a later public or
         // replacement association.
         bool authAssocCompletionPublished = false;
+        // Normal 0xd3 success is not derived from association status alone.
+        // Retain the exact successful authentication epoch/BSSID observed by
+        // net80211 so the later fully-validated association edge can consume
+        // only its own preceding authentication result.
+        bool authSuccessRecorded = false;
+        uint64_t authSuccessEpoch = 0;
+        uint8_t authSuccessBssid[6] = {};
+        // Open networks have no RSN key-done callback.  Their post-RUN WCL
+        // link/connect completion is therefore a separate one-shot owned by
+        // this same authenticated and associated candidate.
+        bool connectCompletionPublished = false;
         uint16_t apMode = 0;
         uint32_t authLower = 0;
         uint32_t authUpper = 0;

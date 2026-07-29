@@ -147,8 +147,10 @@ STATE_MACHINES = [
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
                 "tokens": [
                     "buildTahoeWclAssocStatusPayload(0, 0, &assocStatus)",
-                    "captureTahoeWclAuthAssocCompletionRequest",
+                    "captureTahoeWclSelectedBssRequest",
+                    "recordTahoeWclAuthSuccessGated",
                     "postTahoeWclAuthAssocCompleteGated",
+                    "postTahoeWclOpenJoinCompletionGated",
                     "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE",
                     "postTahoeWclConnectCompleteEvent",
                     "APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT",
