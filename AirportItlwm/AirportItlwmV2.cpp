@@ -8802,16 +8802,20 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 
     if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED) {
         /*
-         * WCL_LEAVE_NETWORK removes the last OpenBSD ESS and del_ess()
-         * consequently clears AUTO_JOIN.  AppleBCMWLANCore has no equivalent
-         * local admission latch: once powerOn() reports the backend ready,
-         * replayed WCL requests may scan immediately.  Mirror the bootstrap
-         * policy here, at the lower driver's confirmed S_SCAN/IFF_RUNNING
-         * edge, so an empty-ESS wake can accept that replay without changing
-         * an explicitly configured ESS policy.
+         * A system sleep does not require WCLNetManager to issue
+         * WCL_LEAVE_NETWORK, so the Intel reset can retain the preceding
+         * ic_des_essid even though no OpenBSD ESS still owns it.  The
+         * reference scanComplete() only publishes the power-on census; it
+         * never turns that retained SSID into an implicit join.  The later
+         * WCL JoinAdapter carrier owns selection instead.  Remove the stale
+         * local selection at the lower driver's confirmed S_SCAN/IFF_RUNNING
+         * edge, then mirror the bootstrap auto-scan policy before exposing
+         * DRIVER_AVAILABLE.  Preserve an explicitly configured ESS list.
          */
-        if (TAILQ_EMPTY(&ic->ic_ess))
+        if (TAILQ_EMPTY(&ic->ic_ess)) {
+            ieee80211_deselect_ess(ic);
             ic->ic_flags |= IEEE80211_F_AUTO_JOIN;
+        }
         that->reopenWclPhysicalScanAfterRadioReset();
         that->reopenStandardPhysicalScanAfterRadioReset();
         /*

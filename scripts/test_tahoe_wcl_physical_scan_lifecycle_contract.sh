@@ -142,6 +142,7 @@ require(event, "IEEE80211_EVT_WCL_SCAN_REOPENED",
 ordered(event, "radio-ready reopens both scan admission planes",
         "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "TAILQ_EMPTY(&ic->ic_ess)",
+        "ieee80211_deselect_ess(ic)",
         "ic->ic_flags |= IEEE80211_F_AUTO_JOIN",
         "reopenWclPhysicalScanAfterRadioReset()",
         "reopenStandardPhysicalScanAfterRadioReset()",
@@ -152,11 +153,20 @@ reopened_end = event.find("if (msgCode == IEEE80211_EVT_STANDARD_SCAN_INVALIDATE
 reopened = event[reopened_start:reopened_end]
 require(reopened, "TAILQ_EMPTY(&ic->ic_ess)",
         "empty-ESS wake scan policy fence")
+require(reopened, "ieee80211_deselect_ess(ic)",
+        "stale pre-power-cycle desired-ESS teardown")
 require(reopened, "ic->ic_flags |= IEEE80211_F_AUTO_JOIN",
         "wake WCL initial-scan admission restore")
 require(reopened,
         "noteRadioScanReadyAndQueuePowerOnAvailability()",
         "backend-ready PowerOn availability")
+deselect = body(i80211_node, "ieee80211_deselect_ess(struct ieee80211com *ic)",
+                "canonical desired-ESS deselect")
+ordered(deselect, "wake desired-ESS and security teardown",
+        "memset(ic->ic_des_essid, 0, IEEE80211_NWID_LEN)",
+        "ic->ic_des_esslen = 0",
+        "ieee80211_disable_wep(ic)",
+        "ieee80211_disable_rsn(ic)")
 ordered(event, "PowerOn backend-ready edge precedes generic scan terminal",
         "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "noteRadioScanReadyAndQueuePowerOnAvailability()",
