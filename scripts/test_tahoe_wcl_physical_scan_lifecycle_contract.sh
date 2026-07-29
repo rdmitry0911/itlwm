@@ -650,8 +650,15 @@ require(power_setter, "return handlePowerStateChange(requestedState, NULL);",
 system_power = body(v2,
                     "void AirportItlwm::handleSystemPowerStateChange",
                     "system power transition")
-require(system_power, "armDeferredPowerOnAvailability();",
-        "system PowerOn arm")
+ordered(system_power,
+        "system PowerOn preserves reference powerOn-before-wake ordering",
+        "const uint64_t availabilityEpoch",
+        "armDeferredPowerOnAvailability()",
+        "enableAdapter(netif)",
+        "waitForDeferredPowerOnAvailability(",
+        "kAirportItlwmDeferredPowerAvailabilityCancelEpoch",
+        "readyResult == kIOReturnSuccess && fNetIf",
+        "APPLE80211_M_POWER_CHANGED")
 require(system_power, "publishDeferredPowerOffAvailability();",
         "serialized system PowerOff cancellation")
 forbid(system_power, "Transition::PowerOn",

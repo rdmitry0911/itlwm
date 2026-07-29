@@ -11990,13 +11990,36 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
     // carriers therefore still bracket the physical sleep/wake transition.
     // PowerOn is deferred until IWN reaches its first post-reset scan state.
     if (powerOn) {
+        IOReturn readyResult = kIOReturnSuccess;
         if (power_state) {
-            armDeferredPowerOnAvailability();
-            if (enableAdapter(netif) != kIOReturnSuccess)
-                cancelDeferredPowerOnAvailability();
+            /*
+             * Tahoe 25C56 powerOnSystem() calls powerOn() to completion
+             * before posting APPLE80211_M_POWER_CHANGED.  IWN activation is
+             * asynchronous, so preserve that observable ordering by waiting
+             * for the exact lower-ready epoch.  Otherwise WCL reacts to the
+             * wake bulletin while isDriverAvailable is still false, consumes
+             * the first scan cycle, and has no result left to associate once
+             * the lower device finally becomes ready.
+             */
+            const uint64_t availabilityEpoch =
+                armDeferredPowerOnAvailability();
+            readyResult = enableAdapter(netif);
+            if (readyResult == kIOReturnSuccess)
+                readyResult = waitForDeferredPowerOnAvailability(
+                    availabilityEpoch,
+                    kAirportItlwmPowerOnReadyTimeoutMs);
+            if (readyResult != kIOReturnSuccess)
+                publishDeferredPowerAvailabilityGated(
+                    this,
+                    (void *)(uintptr_t)
+                        kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
+                    (void *)(uintptr_t)availabilityEpoch, NULL, NULL);
         }
-        if (fNetIf)
+        if (readyResult == kIOReturnSuccess && fNetIf)
             postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
+        else if (readyResult != kIOReturnSuccess)
+            XYLog("DEBUG %s lower-ready wait failed: 0x%x\n",
+                  __FUNCTION__, readyResult);
     } else {
         if (power_state) {
             publishDeferredPowerOffAvailability();
