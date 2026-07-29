@@ -8123,6 +8123,7 @@ enum AirportItlwmDeferredPowerAvailabilityAction {
     kAirportItlwmDeferredPowerAvailabilityCancel,
     kAirportItlwmDeferredPowerAvailabilityPublishOff,
     kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
+    kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
 };
 
 bool AirportItlwm::
@@ -8229,6 +8230,34 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
             gate->commandWakeup(waitEvent, /*oneThread=*/false);
         return kIOReturnSuccess;
     }
+    if (action ==
+        kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged) {
+        const uint64_t expectedEpoch = (uint64_t)(uintptr_t)arg1;
+        if (expectedEpoch == 0 || that->fNetIf == NULL)
+            return kIOReturnNotReady;
+
+        IOSimpleLock *lock = lifecycle.admissionLock;
+        if (lock == NULL)
+            return kIOReturnNotReady;
+
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+        const bool publish =
+            that->power_state != kWiFiPowerOff &&
+            lifecycle.availabilityEpoch == expectedEpoch &&
+            lifecycle.pendingPowerOnEpoch == 0 &&
+            lifecycle.readyPowerOnEpoch == 0 &&
+            !lifecycle.powerOnPublishQueued &&
+            lifecycle.powerOnWakeBulletinPending;
+        if (publish)
+            lifecycle.powerOnWakeBulletinPending = false;
+        IOSimpleLockUnlockEnableInterrupt(lock, irq);
+        if (!publish)
+            return kIOReturnAborted;
+
+        that->postMessage(that->fNetIf, APPLE80211_M_POWER_CHANGED,
+                          NULL, 0, true);
+        return kIOReturnSuccess;
+    }
     if (action != kAirportItlwmDeferredPowerAvailabilityPublishOn)
         return kIOReturnBadArgument;
 
@@ -8246,13 +8275,10 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
         lifecycle.pendingPowerOnEpoch == expectedEpoch &&
         lifecycle.readyPowerOnEpoch == expectedEpoch &&
         lifecycle.powerOnPublishQueued;
-    const bool publishWakeBulletin =
-        publish && lifecycle.powerOnWakeBulletinPending;
     if (publish) {
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
         lifecycle.powerOnPublishQueued = false;
-        lifecycle.powerOnWakeBulletinPending = false;
         OSBitAndAtomic(~static_cast<UInt32>(
                            kAirportItlwmPmDriverAvailabilityPendingBit),
                        &that->pmPowerStateFlags);
@@ -8264,17 +8290,13 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
     postTahoeDriverAvailabilityTransition(
         that, TahoeDriverAvailabilityContracts::Transition::PowerOn);
     /*
-     * AppleBCMWLANCore::powerOnSystem() publishes POWER_CHANGED immediately
-     * after its synchronous powerOn() has published DRIVER_AVAILABLE.  IWN
-     * activation is asynchronous and its initial census can exceed IOPM's
-     * two-second callback budget.  Keep the same externally observable
-     * ordering on this lower-ready command-gate edge without holding the
-     * system PM callback until the census completes.
+     * AppleBCMWLANCore::powerOn() publishes DRIVER_AVAILABLE at
+     * 0x15e0245/0x15e0278/0x15e02ab, then continues backend restoration until
+     * its 0x15e04b0 return.  powerOnSystem() publishes POWER_CHANGED only
+     * after that return.  IWN's REOPENED event is the first edge; retain the
+     * wake bulletin for the post-reset census terminal, which is the local
+     * asynchronous equivalent of the later synchronous return edge.
      */
-    if (publishWakeBulletin && that->fNetIf != NULL) {
-        that->postMessage(that->fNetIf, APPLE80211_M_POWER_CHANGED,
-                          NULL, 0, true);
-    }
     if (gate != NULL)
         gate->commandWakeup(waitEvent, /*oneThread=*/false);
     return kIOReturnSuccess;
@@ -8415,6 +8437,35 @@ bool AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
     }
     return true;
+}
+
+bool AirportItlwm::publishDeferredWakePowerChangedAtScanTerminal()
+{
+    AirportItlwmWclPhysicalScanLifecycle &lifecycle =
+        fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = lifecycle.admissionLock;
+    if (lock == NULL)
+        return false;
+
+    uint64_t epoch = 0;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    if (lifecycle.powerOnWakeBulletinPending &&
+        lifecycle.pendingPowerOnEpoch == 0 &&
+        lifecycle.readyPowerOnEpoch == 0 &&
+        !lifecycle.powerOnPublishQueued)
+        epoch = lifecycle.availabilityEpoch;
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    if (epoch == 0)
+        return false;
+
+    IOCommandGate *gate = getCommandGate();
+    if (gate == NULL)
+        return false;
+    return gate->runAction(
+               publishDeferredPowerAvailabilityGated,
+               (void *)(uintptr_t)
+                   kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged,
+               (void *)(uintptr_t)epoch, NULL, NULL) == kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
@@ -8913,6 +8964,16 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         case IEEE80211_EVT_SCAN_DONE:
             RT_SET(25);
             sRT.scanDoneCount++;
+            /*
+             * The first IWN post-reset census is the asynchronous tail of
+             * reference powerOn(), not a public user scan.  Availability was
+             * already published at REOPENED; now publish only POWER_CHANGED,
+             * after WCL has had time to leave its wake-time SUSPEND state.
+             * Consume this inherited terminal exactly as the synchronous
+             * reference path, which has no bootstrap generic SCAN_DONE.
+             */
+            if (that->publishDeferredWakePowerChangedAtScanTerminal())
+                return;
             // Generic scans retain the historical Core scan-complete bulletin.
             apple80211Msg = APPLE80211_M_SCAN_DONE;
             scanStatus = data ? *(UInt32 *)data : 0;
@@ -12000,20 +12061,21 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
     // logical radio state, but powerOffSystem() enters powerOff(true) and
     // powerOnSystem() enters powerOn(): the normal unavailable/available 0x37
     // carriers therefore still bracket the physical sleep/wake transition.
-    // PowerOn publication is deferred until IWN reaches its first post-reset
-    // scan state.  The IOPM callback itself must remain non-blocking because
+    // DRIVER_AVAILABLE publication is deferred until IWN reaches its first
+    // post-reset scan state.  POWER_CHANGED remains pending until the initial
+    // census terminal, mirroring the later return edge of reference
+    // powerOn().  The IOPM callback itself must remain non-blocking because
     // the Intel initial census can exceed the framework's callback budget.
     if (powerOn) {
         IOReturn readyResult = kIOReturnSuccess;
         if (power_state) {
             /*
-             * Tahoe 25C56 powerOnSystem() calls powerOn() to completion
-             * before posting APPLE80211_M_POWER_CHANGED.  IWN activation is
-             * asynchronous.  Arm the wake bulletin as part of the same epoch
-             * so the lower-ready publisher emits DRIVER_AVAILABLE then
-             * POWER_CHANGED from one command-gate action.  Do not commandSleep
-             * here: blocking IOPM for a full Intel scan can stall completion
-             * of the system wake.
+             * Tahoe 25C56 powerOnSystem() calls powerOn() to completion before
+             * posting APPLE80211_M_POWER_CHANGED.  IWN activation is
+             * asynchronous.  Arm both edges in one epoch: REOPENED publishes
+             * DRIVER_AVAILABLE, while the inherited census terminal publishes
+             * POWER_CHANGED.  Do not commandSleep here: blocking IOPM for a
+             * full Intel scan can stall completion of the system wake.
              */
             const uint64_t availabilityEpoch =
                 armDeferredPowerOnAvailability(

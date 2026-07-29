@@ -154,12 +154,15 @@ ordered(event, "PowerOn backend-ready edge precedes generic scan terminal",
         "IEEE80211_EVT_WCL_SCAN_REOPENED",
         "noteRadioScanReadyAndQueuePowerOnAvailability()",
         "case IEEE80211_EVT_SCAN_DONE:",
+        "publishDeferredWakePowerChangedAtScanTerminal()",
         "gate->runAction(postMessageGated,")
 scan_done = event[event.find("case IEEE80211_EVT_SCAN_DONE:"):]
 forbid(scan_done[:scan_done.find("case IEEE80211_EVT_WCL_REASSOC_DONE:")],
        "claimWclPhysicalScanCompletion", "generic SCAN_DONE WCL claim")
 forbid(scan_done, "noteRadioScanReadyAndQueuePowerOnAvailability()",
        "scan terminal must not own PowerOn availability")
+require(scan_done, "publishDeferredWakePowerChangedAtScanTerminal()",
+        "scan terminal owns only the deferred wake bulletin")
 
 publisher = body(v2, "postWclPhysicalScanCompletionGated(",
                  "physical WCL completion publisher")
@@ -590,11 +593,21 @@ require(availability_publish,
         "kAirportItlwmDeferredPowerAvailabilityCancelEpoch",
         "generation-bound cancellation action")
 ordered(availability_publish,
-        "PowerOn availability precedes an optional system wake bulletin",
+        "PowerOn availability leaves the later wake bulletin pending",
         "Transition::PowerOn",
-        "if (publishWakeBulletin && that->fNetIf != NULL)",
-        "APPLE80211_M_POWER_CHANGED",
         "gate->commandWakeup(waitEvent, /*oneThread=*/false)")
+forbid(availability_publish[
+           availability_publish.find(
+               "kAirportItlwmDeferredPowerAvailabilityPublishOn"):],
+       "publishWakeBulletin",
+       "combined availability and wake publication")
+ordered(availability_publish,
+        "scan-terminal wake bulletin is epoch-bound and serialized",
+        "kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged",
+        "lifecycle.availabilityEpoch == expectedEpoch",
+        "lifecycle.pendingPowerOnEpoch == 0",
+        "lifecycle.powerOnWakeBulletinPending",
+        "APPLE80211_M_POWER_CHANGED")
 availability_arm = body(v2,
                        "armDeferredPowerOnAvailability(bool wakeBulletinPending)",
                        "deferred PowerOn arm")
@@ -636,6 +649,16 @@ require(availability_note, "return false;",
         "ordinary reopened events do not republish availability")
 forbid(availability_note, "postTahoeDriverAvailabilityTransition",
        "off-gate PowerOn publication")
+wake_note = body(v2,
+    "bool AirportItlwm::publishDeferredWakePowerChangedAtScanTerminal()",
+    "scan-terminal wake bulletin note")
+ordered(wake_note, "wake bulletin waits for accepted availability",
+        "lifecycle.powerOnWakeBulletinPending",
+        "lifecycle.pendingPowerOnEpoch == 0",
+        "lifecycle.readyPowerOnEpoch == 0",
+        "kAirportItlwmDeferredPowerAvailabilityPublishWakePowerChanged")
+forbid(wake_note, "postMessage(",
+       "off-gate POWER_CHANGED publication")
 
 radio_power_entry = body(v2,
                          "int AirportItlwm::handlePowerStateChange(uint32_t newState,",

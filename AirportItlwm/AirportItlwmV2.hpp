@@ -627,6 +627,7 @@ public:
     void cancelDeferredPowerOnAvailability();
     void publishDeferredPowerOffAvailability();
     bool noteRadioScanReadyAndQueuePowerOnAvailability();
+    bool publishDeferredWakePowerChangedAtScanTerminal();
 #if __IO80211_TARGET >= __MAC_26_0
     // Called for either a deferred IWX TX terminal worker record or the
     // post-reset invalidation carrier. The borrowed event is copied into a
