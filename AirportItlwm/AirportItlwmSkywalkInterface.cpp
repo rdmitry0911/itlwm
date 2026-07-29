@@ -1503,14 +1503,22 @@ inputPacket(IO80211NetworkPacket *packet, packet_info_tag *tag,
 }
 
 static IOSkywalkTxSubmissionQueue *
-airportItlwmTxQueueForIndex(AirportItlwm *driver, unsigned char queueId)
+airportItlwmTxQueueForIndex(AirportItlwm *driver, bool apsta,
+                            unsigned char queueId)
 {
     // Skywalk inventory accessors return framework-borrowed raw pointers.
     // They deliberately remain callable through detachInterface(): that
     // recursive framework fence completes before releaseAll() drops queues
     // or pools, including on a partial start rollback.
-    (void)queueId;
-    if (driver == nullptr || driver->fTxQueue == nullptr)
+    if (driver == nullptr)
+        return nullptr;
+    if (apsta) {
+        const unsigned int index =
+            static_cast<unsigned int>(queueId) %
+            kAirportItlwmAPSTATxSubQueueCount;
+        return driver->fAPSTATxQueues[index];
+    }
+    if (driver->fTxQueue == nullptr)
         return nullptr;
     return driver->fTxQueue;
 }
@@ -1520,7 +1528,9 @@ pendingPackets(unsigned char queueId)
 {
     AirportItlwm *controller = instance;
     IOSkywalkTxSubmissionQueue *queue =
-        airportItlwmTxQueueForIndex(controller, queueId);
+        airportItlwmTxQueueForIndex(
+            controller, getInterfaceRole() == APPLE80211_VIF_SOFT_AP,
+            queueId);
     return queue != nullptr ? queue->getPacketCount() : 0;
 }
 
@@ -1529,7 +1539,9 @@ packetSpace(unsigned char queueId)
 {
     AirportItlwm *controller = instance;
     IOSkywalkTxSubmissionQueue *queue =
-        airportItlwmTxQueueForIndex(controller, queueId);
+        airportItlwmTxQueueForIndex(
+            controller, getInterfaceRole() == APPLE80211_VIF_SOFT_AP,
+            queueId);
     return queue != nullptr ? queue->getFreeSpace() : 0;
 }
 
@@ -1537,6 +1549,10 @@ UInt64 AirportItlwmSkywalkInterface::
 getTxQueueDepth(void)
 {
     AirportItlwm *controller = instance;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP)
+        return controller != nullptr && controller->fAPSTATxQueues[0] != nullptr
+            ? kAirportItlwmSkywalkQueueCapacity
+            : 0;
     return controller != nullptr && controller->fTxQueue != nullptr
         ? controller->fSkywalkTxQueueDepth
         : 0;
@@ -1546,6 +1562,10 @@ UInt64 AirportItlwmSkywalkInterface::
 getRxQueueCapacity(void)
 {
     AirportItlwm *controller = instance;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP)
+        return controller != nullptr && controller->fAPSTARxQueue != nullptr
+            ? kAirportItlwmSkywalkQueueCapacity
+            : 0;
     return controller != nullptr && controller->fRxQueue != nullptr
         ? controller->fSkywalkRxQueueCapacity
         : 0;
@@ -1555,6 +1575,10 @@ void *AirportItlwmSkywalkInterface::
 getMultiCastQueue(void)
 {
     AirportItlwm *controller = instance;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP)
+        return controller != nullptr
+            ? controller->fAPSTAMultiCastQueue
+            : nullptr;
     return controller != nullptr ? controller->fMultiCastQueue : nullptr;
 }
 
@@ -1562,6 +1586,8 @@ void *AirportItlwmSkywalkInterface::
 getRxCompQueue(void)
 {
     AirportItlwm *controller = instance;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP)
+        return controller != nullptr ? controller->fAPSTARxQueue : nullptr;
     return controller != nullptr ? controller->fRxQueue : nullptr;
 }
 
@@ -1569,20 +1595,26 @@ void *AirportItlwmSkywalkInterface::
 getTxCompQueue(void)
 {
     AirportItlwm *controller = instance;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP)
+        return controller != nullptr ? controller->fAPSTATxCompQueue : nullptr;
     return controller != nullptr ? controller->fTxCompQueue : nullptr;
 }
 
 void *AirportItlwmSkywalkInterface::
-getTxSubQueue(apple80211_wme_ac)
+getTxSubQueue(apple80211_wme_ac ac)
 {
     AirportItlwm *controller = instance;
-    return airportItlwmTxQueueForIndex(controller, 0);
+    return airportItlwmTxQueueForIndex(
+        controller, getInterfaceRole() == APPLE80211_VIF_SOFT_AP,
+        static_cast<unsigned char>(ac.value));
 }
 
 void *AirportItlwmSkywalkInterface::
 getTxPacketPool(void)
 {
     AirportItlwm *controller = instance;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP)
+        return controller != nullptr ? controller->fAPSTATxPool : nullptr;
     return controller != nullptr ? controller->fTxPool : nullptr;
 }
 
@@ -1590,6 +1622,8 @@ void *AirportItlwmSkywalkInterface::
 getRxPacketPool(void)
 {
     AirportItlwm *controller = instance;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP)
+        return controller != nullptr ? controller->fAPSTARxPool : nullptr;
     return controller != nullptr ? controller->fRxPool : nullptr;
 }
 
@@ -1597,6 +1631,11 @@ int AirportItlwmSkywalkInterface::
 getNumTxQueues(void)
 {
     AirportItlwm *controller = instance;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP) {
+        if (controller == nullptr || controller->fAPSTATxQueues[0] == nullptr)
+            return 0;
+        return kAirportItlwmAPSTATxSubQueueCount;
+    }
     return controller != nullptr && controller->fTxQueue != nullptr ? 1 : 0;
 }
 
@@ -1608,6 +1647,20 @@ enableDatapath(void)
         controller, AirportItlwmLifecycleAdmission::StartingOrLive);
     if (!lifecycle.admitted())
         return;
+
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP) {
+        if (controller->fAPSTATxCompQueue)
+            controller->fAPSTATxCompQueue->enable();
+        if (controller->fAPSTARxQueue) {
+            controller->fAPSTARxQueue->enable();
+            controller->fAPSTARxQueue->requestEnqueue(nullptr, 0);
+        }
+        for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+            if (controller->fAPSTATxQueues[i])
+                controller->fAPSTATxQueues[i]->enable();
+        }
+        return;
+    }
 
     if (controller->fTxCompQueue)
         controller->fTxCompQueue->enable();
@@ -1630,6 +1683,20 @@ disableDatapath(void)
     // the controller has entered Draining. Queue lifetime is held through
     // that framework fence, so this pure queue-disable callback stays
     // callable; unlike enableDatapath it cannot reopen the data path.
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP) {
+        for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+            if (controller->fAPSTATxQueues[i])
+                controller->fAPSTATxQueues[i]->disable();
+        }
+        if (controller->fAPSTAMultiCastQueue)
+            controller->fAPSTAMultiCastQueue->disable();
+        if (controller->fAPSTARxQueue)
+            controller->fAPSTARxQueue->disable();
+        if (controller->fAPSTATxCompQueue)
+            controller->fAPSTATxCompQueue->disable();
+        return;
+    }
+
     if (controller->fTxQueue)
         controller->fTxQueue->disable();
     if (controller->fMultiCastQueue)
@@ -3651,7 +3718,8 @@ setBSDName(char const *bsdName)
 {
     IO80211InfraProtocol::setBSDName(bsdName);
 
-    if (instance == nullptr || bsdName == nullptr || bsdName[0] == '\0')
+    if (instance == nullptr || bsdName == nullptr || bsdName[0] == '\0' ||
+        getInterfaceRole() != 1)
         return;
 
     OSString *value = OSString::withCString(bsdName);
@@ -3662,7 +3730,7 @@ setBSDName(char const *bsdName)
 }
 
 bool AirportItlwmSkywalkInterface::
-bindController(AirportItlwm *provider)
+bindController(AirportItlwm *provider, UInt role, UInt interfaceId)
 {
     // Recovered Apple APSTA construction uses a split contract: subclass
     // no-arg init first, then a separate parameter-binding path wires the
@@ -3679,8 +3747,8 @@ bindController(AirportItlwm *provider)
     // exposes admission-gated schedule/cancel methods, so this interface must
     // never cache a raw pointer that can outlive controller teardown.
     scanSource = NULL;
-    setInterfaceRole(1);
-    setInterfaceId(1);
+    setInterfaceRole(role);
+    setInterfaceId(interfaceId);
     return true;
 }
 
@@ -7556,28 +7624,10 @@ setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
             return static_cast<IOReturn>(kAirportItlwmAPSTACreateFailedReturn);
         case 7: {
             /*
-             * Recovered APSTA role-7 acquisition contract.
-             *
-             * Role 7 (APPLE80211_VIF_SOFT_AP) is the only public
-             * create carrier routed into the host APSTA owner. The
-             * owner owns the APSTA state block, station table,
-             * AP-up gate, SoftAP selector mirror, and net80211
-             * station-event binding, but a create request must not
-             * report success until the lower HAL backend explicitly
-             * advertises and starts AP/GO firmware mode.
-             *
-             * Shipped iwx/iwm builds are STA-only: neither backend
-             * advertises AP mode.  Fail before creating the optional
-             * APSTA owner in that case.  This is deliberately a
-             * containment quarantine, not APSTA parity closure: an
-             * opt-in AP-capable backend must retain the owner path
-             * below and provide selector admission, producer-bridge
-             * draining, and a full concurrent lifetime proof.
-             *
-             * The precheck returns the same lower-gate result that
-             * startLowerIfReady() would return for the current HAL,
-             * while avoiding publication of an owner which can never
-             * start in this runtime.
+             * Reference keeps APSTA materialization and AP radio bring-up as
+             * separate phases.  Role-7 create publishes the child interface
+             * first; CHANNEL/HOST_AP_MODE later provide the information
+             * required by the lower AP backend.
              */
             if (instance == nullptr) {
                 return kIOReturnNotReady;
@@ -7585,19 +7635,17 @@ setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
             if (instance->fHalService == nullptr) {
                 return kIOReturnNotReady;
             }
-            if (!instance->fHalService->supportsAPMode()) {
-                return kIOReturnUnsupported;
-            }
             AirportItlwmAPSTAOwner *owner =
                 instance->ensureAPSTAOwner(data);
             if (owner == nullptr) {
                 return static_cast<IOReturn>(
                     kAirportItlwmAPSTARawInvalidArgumentReturn);
             }
-            IOReturn lowerRet = owner->startLowerIfReady();
-            if (lowerRet != kIOReturnSuccess) {
+            IOReturn materializeRet =
+                instance->materializeAPSTAInterface(data);
+            if (materializeRet != kIOReturnSuccess) {
                 instance->deleteAPSTAOwner();
-                return lowerRet;
+                return materializeRet;
             }
             return kIOReturnSuccess;
         }

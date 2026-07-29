@@ -1760,28 +1760,17 @@ setVIRTUAL_IF_CREATE(OSObject *object, struct apple80211_virt_if_create_data* da
         case APPLE80211_VIF_AWDL:
             return static_cast<IOReturn>(0xe00002bd);
         case APPLE80211_VIF_SOFT_AP: {
-            /*
-             * The shipped iwx/iwm runtime is STA-only: neither HAL
-             * advertises AP mode.  Preserve the lower start-gate
-             * result, but fail before publishing an APSTA owner that
-             * cannot run.  This is a shipped-runtime containment
-             * quarantine, not APSTA parity closure; any AP-capable
-             * opt-in backend must retain the owner path and prove
-             * selector admission plus producer-bridge draining.
-             */
             if (fHalService == nullptr)
                 return kIOReturnNotReady;
-            if (!fHalService->supportsAPMode())
-                return kIOReturnUnsupported;
             AirportItlwmAPSTAOwner *owner = ensureAPSTAOwner(data);
             if (owner == nullptr) {
                 return static_cast<IOReturn>(
                     kAirportItlwmAPSTARawInvalidArgumentReturn);
             }
-            IOReturn lowerRet = owner->startLowerIfReady();
-            if (lowerRet != kIOReturnSuccess) {
+            IOReturn materializeRet = materializeAPSTAInterface(data);
+            if (materializeRet != kIOReturnSuccess) {
                 deleteAPSTAOwner();
-                return lowerRet;
+                return materializeRet;
             }
             return kIOReturnSuccess;
         }

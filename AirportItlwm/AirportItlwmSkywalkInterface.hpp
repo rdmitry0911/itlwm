@@ -66,7 +66,7 @@ public:
     virtual bool setLinkStateInternal(IO80211LinkState, uint, bool, uint, uint) override;
     virtual void setCurrentApAddress(ether_addr *) override;
     virtual IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *) override;
-    bool bindController(AirportItlwm *);
+    bool bindController(AirportItlwm *, UInt role = 1, UInt interfaceId = 1);
     bool publishTahoeBssidChangedFromCurrentBss(const char *);
 #else
     virtual bool init(IOService *) override;

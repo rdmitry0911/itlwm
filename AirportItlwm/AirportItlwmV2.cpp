@@ -777,7 +777,6 @@ AirportItlwmIO80211PacketPool::newPacketWithDescriptor(
 #include "Airport/CCFaultReporter.h"
 
 
-static constexpr UInt32 kAirportItlwmSkywalkQueueCapacity = 256;
 
 IO80211WorkQueue *_fWorkloop;
 IOCommandGate *_fCommandGate;
@@ -6667,6 +6666,18 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
         return count;
     }
 
+    bool apstaQueue = false;
+    for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+        if (queue == that->fAPSTATxQueues[i]) {
+            apstaQueue = true;
+            break;
+        }
+    }
+    IOSkywalkTxCompletionQueue *completionQueue =
+        apstaQueue ? that->fAPSTATxCompQueue : that->fTxCompQueue;
+    IO80211SkywalkInterface *networkInterface =
+        apstaQueue ? that->fAPSTANetIf : that->fNetIf;
+
     sRT.txCbCnt++;
     UInt32 consumed = 0;
     UInt32 delivered = 0;
@@ -6753,13 +6764,14 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
     }
 
     sRT.txPktSent += delivered;
-    if (delivered != 0 && that->fNetIf != nullptr) {
+    if (delivered != 0 && networkInterface != nullptr) {
         apple80211_wme_ac ac = { APPLE80211_WME_AC_BE };
-        that->fNetIf->recordOutputPacket(ac, static_cast<int>(delivered),
-                                         static_cast<int>(deliveredBytes));
+        networkInterface->recordOutputPacket(
+            ac, static_cast<int>(delivered),
+            static_cast<int>(deliveredBytes));
     }
-    if (stagedCompletions != 0 && that->fTxCompQueue != nullptr) {
-        IOReturn ret = that->fTxCompQueue->requestEnqueue(nullptr, 0);
+    if (stagedCompletions != 0 && completionQueue != nullptr) {
+        IOReturn ret = completionQueue->requestEnqueue(nullptr, 0);
         if (ret != kIOReturnSuccess && sRT.txCbCnt <= 3)
             XYLog("skywalkTxAction: tx completion requestEnqueue failed "
                   "0x%x pending=%u\n",
@@ -6904,7 +6916,11 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
 {
     sRT.rxCbCnt++;
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
-    if (that == nullptr || that->fNetIf == nullptr || packets == nullptr)
+    IO80211SkywalkInterface *networkInterface =
+        that != nullptr && queue == that->fAPSTARxQueue
+            ? that->fAPSTANetIf
+            : (that != nullptr ? that->fNetIf : nullptr);
+    if (that == nullptr || networkInterface == nullptr || packets == nullptr)
         return 0;
 
     UInt32 produced = 0;
@@ -6929,7 +6945,7 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
 
         ether_header *eh = reinterpret_cast<ether_header *>(
             static_cast<uint8_t *>(base) + dataOffset);
-        IOReturn ret = that->fNetIf->inputPacket(
+        IOReturn ret = networkInterface->inputPacket(
             reinterpret_cast<IO80211NetworkPacket *>(pkt),
             &tag,
             eh,
@@ -6945,9 +6961,9 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
         producedBytes += dataLength != 0 ? dataLength : stagedLength;
     }
     if (produced != 0) {
-        that->fNetIf->recordInputPacket(static_cast<int>(produced),
-                                        static_cast<int>(producedBytes));
-        that->fNetIf->updateRxCounter(produced);
+        networkInterface->recordInputPacket(static_cast<int>(produced),
+                                            static_cast<int>(producedBytes));
+        networkInterface->updateRxCounter(produced);
     }
     (void)queue;
     (void)refCon;
@@ -6993,7 +7009,19 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 
     AirportItlwm *that = OSDynamicCast(AirportItlwm, ifp->controller);
     AirportItlwmControllerLifecycleOperationGuard lifecycle(that, false);
-    if (!lifecycle.admitted() || !that->fRxPool || !that->fRxQueue) {
+    if (!lifecycle.admitted()) {
+        if (m != nullptr)
+            mbuf_freem(m);
+        return ENXIO;
+    }
+    const bool apsta =
+        that->isHostApRunning() &&
+        that->fAPSTARxPool != nullptr && that->fAPSTARxQueue != nullptr;
+    IOSkywalkPacketBufferPool *rxPool =
+        apsta ? that->fAPSTARxPool : that->fRxPool;
+    IOSkywalkRxCompletionQueue *rxQueue =
+        apsta ? that->fAPSTARxQueue : that->fRxQueue;
+    if (rxPool == nullptr || rxQueue == nullptr) {
         if (m != nullptr)
             mbuf_freem(m);
         return ENXIO;
@@ -7034,7 +7062,7 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 
     // Allocate an IOSkywalkPacket from the RX pool
     IOSkywalkPacket *rxPkt = NULL;
-    IOReturn allocRet = that->fRxPool->allocatePacket(1, &rxPkt, 0);
+    IOReturn allocRet = rxPool->allocatePacket(1, &rxPkt, 0);
     if (allocRet != kIOReturnSuccess || !rxPkt) {
         sRT.rxAllocFail++;
         if (sRT.rxAllocFail <= 5)
@@ -7127,8 +7155,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
             XYLog("skywalkRxInput: pending stage failed (drop #%u) "
                   "pending=%u RXenabled=%d RXwl=%p\n",
                   sRT.rxEnqFail, that->fRxPendingCount,
-                  that->fRxQueue->isEnabled() ? 1 : 0,
-                  that->fRxQueue->getWorkLoop());
+                  rxQueue->isEnabled() ? 1 : 0,
+                  rxQueue->getWorkLoop());
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol,
                                       static_cast<IOReturn>(ENOSPC));
@@ -7140,7 +7168,7 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         return ENOSPC;
     }
 
-    IOReturn ret = that->fRxQueue->requestEnqueue(nullptr, 0);
+    IOReturn ret = rxQueue->requestEnqueue(nullptr, 0);
 
     mbuf_freem(m);
 
@@ -7150,8 +7178,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
             XYLog("skywalkRxInput: requestEnqueue failed 0x%x (fail #%u) "
                   "pending=%u RXenabled=%d RXwl=%p\n",
                   ret, sRT.rxEnqFail, that->fRxPendingCount,
-                  that->fRxQueue->isEnabled() ? 1 : 0,
-                  that->fRxQueue->getWorkLoop());
+                  rxQueue->isEnabled() ? 1 : 0,
+                  rxQueue->getWorkLoop());
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, ret);
         if (diagEapol)
@@ -7536,18 +7564,9 @@ void AirportItlwm::releaseAPSTAOwnerClaimed()
      * a future explicitly-enabled APSTA backend from skipping stopAPMode()
      * because its lower HAL was already gone.
      */
-    if (fAPSTAOwner == NULL)
+    if (fAPSTAOwner == NULL && fAPSTANetIf == NULL)
         return;
-
-#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
-    if (fHalService != NULL) {
-        struct ieee80211com *ic = fHalService->get80211Controller();
-        if (ic != NULL)
-            ieee80211_apsta_event_unregister(ic, fAPSTAOwner);
-    }
-#endif
-    fAPSTAOwner->release();
-    fAPSTAOwner = NULL;
+    deleteAPSTAOwner();
 }
 
 void AirportItlwm::stopHalAndDrainClaimed()
@@ -9418,6 +9437,15 @@ bool AirportItlwm::init(OSDictionary *properties)
     fTxCompletionPendingTail = 0;
     fTxCompletionPendingCount = 0;
     fAPSTAOwner = NULL;
+    fAPSTANetIf = NULL;
+    fAPSTATxPool = NULL;
+    fAPSTARxPool = NULL;
+    memset(fAPSTATxQueues, 0, sizeof(fAPSTATxQueues));
+    fAPSTATxCompQueue = NULL;
+    fAPSTARxQueue = NULL;
+    fAPSTAMultiCastQueue = NULL;
+    fAPSTAInterfaceProviderAttached = false;
+    fAPSTAInterfaceAttached = false;
     scanSource = NULL;
     memset(fAPSTACoreFeatureFlags, 0, sizeof(fAPSTACoreFeatureFlags));
     fAPSTACorePrivateFeatureByte4d59 = 0;
@@ -15281,6 +15309,200 @@ AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *crea
     return fAPSTAOwner;
 }
 
+IOReturn AirportItlwm::materializeAPSTAInterface(
+    const struct apple80211_virt_if_create_data *create)
+{
+    if (create == nullptr || create->role != APPLE80211_VIF_SOFT_AP)
+        return kIOReturnBadArgument;
+    if (fAPSTANetIf != nullptr)
+        return kIOReturnSuccess;
+    if (_fWorkloop == nullptr)
+        return kIOReturnNotReady;
+
+    AirportItlwmSkywalkInterface *interface =
+        new AirportItlwmSkywalkInterface;
+    if (interface == nullptr)
+        return kIOReturnNoMemory;
+    fAPSTANetIf = interface;
+
+    if (!interface->init() ||
+        !interface->bindController(this, APPLE80211_VIF_SOFT_AP, 2)) {
+        teardownAPSTAInterface();
+        return kIOReturnError;
+    }
+
+    ether_addr apMac;
+    memcpy(apMac.octet, create->mac, IEEE80211_ADDR_LEN);
+    if ((apMac.octet[0] | apMac.octet[1] | apMac.octet[2] |
+         apMac.octet[3] | apMac.octet[4] | apMac.octet[5]) == 0 &&
+        fHalService != nullptr &&
+        fHalService->get80211Controller() != nullptr) {
+        memcpy(apMac.octet,
+               fHalService->get80211Controller()->ic_myaddr,
+               IEEE80211_ADDR_LEN);
+    }
+    interface->setInitMacAddress(apMac);
+    interface->setProperty(kIOMACAddress, apMac.octet,
+                           kIOEthernetAddressSize);
+
+    if (!interface->attach(this)) {
+        teardownAPSTAInterface();
+        return kIOReturnError;
+    }
+    fAPSTAInterfaceProviderAttached = true;
+
+    if (!attachInterface(interface, this)) {
+        teardownAPSTAInterface();
+        return kIOReturnError;
+    }
+    fAPSTAInterfaceAttached = true;
+
+    IOSkywalkEthernetInterface::RegistrationInfo registrationInfo;
+    bzero(&registrationInfo, sizeof(registrationInfo));
+    if (!interface->initRegistrationInfo(
+            &registrationInfo, 1, sizeof(registrationInfo))) {
+        teardownAPSTAInterface();
+        return kIOReturnError;
+    }
+
+    AirportItlwmAPSTARegistrationInfoLayout *apRegistration =
+        reinterpret_cast<AirportItlwmAPSTARegistrationInfoLayout *>(
+            &registrationInfo);
+    apRegistration->interfaceSubFamily0c = 3;
+    apRegistration->registrationType14 = 2;
+    apRegistration->registrationOptions24 = 0x8000000080ULL;
+    apRegistration->bsdNamePrefix30 = "ap";
+    apRegistration->bsdUnitNumber38 = 1;
+    apRegistration->powerFlags40 = 6;
+    memcpy(apRegistration->hardwareAddress108, apMac.octet,
+           IEEE80211_ADDR_LEN);
+
+    IOSkywalkPacketBufferPool::PoolOptions poolOpts = {};
+    poolOpts.packetCount = kAirportItlwmSkywalkQueueCapacity;
+    poolOpts.bufferCount = kAirportItlwmSkywalkQueueCapacity;
+    poolOpts.bufferSize = SKYWALK_BUF_SIZE;
+    poolOpts.maxBuffersPerPacket = 1;
+    poolOpts.poolFlags = 1;
+
+    fAPSTATxPool = AirportItlwmIO80211PacketPool::withName(
+        "AirportItlwm-APSTA-TX", interface, &poolOpts);
+    fAPSTARxPool = AirportItlwmIO80211PacketPool::withName(
+        "AirportItlwm-APSTA-RX", interface, &poolOpts);
+    if (fAPSTATxPool == nullptr || fAPSTARxPool == nullptr) {
+        teardownAPSTAInterface();
+        return kIOReturnNoMemory;
+    }
+
+    for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+        fAPSTATxQueues[i] = IOSkywalkTxSubmissionQueue::withPool(
+            fAPSTATxPool, kAirportItlwmSkywalkQueueCapacity, i, this,
+            skywalkTxAction, nullptr, 0);
+        if (fAPSTATxQueues[i] == nullptr) {
+            teardownAPSTAInterface();
+            return kIOReturnNoMemory;
+        }
+    }
+    fAPSTATxCompQueue = IOSkywalkTxCompletionQueue::withPool(
+        fAPSTATxPool, kAirportItlwmSkywalkQueueCapacity, 0, this,
+        skywalkTxCompletionAction, nullptr, 0);
+    fAPSTARxQueue = IOSkywalkRxCompletionQueue::withPool(
+        fAPSTARxPool, kAirportItlwmSkywalkQueueCapacity, 0, this,
+        skywalkRxAction, nullptr, 0);
+    fAPSTAMultiCastQueue =
+        AirportItlwmSkywalkMulticastQueue::withInterface(interface);
+    if (fAPSTATxCompQueue == nullptr || fAPSTARxQueue == nullptr ||
+        fAPSTAMultiCastQueue == nullptr) {
+        teardownAPSTAInterface();
+        return kIOReturnNoMemory;
+    }
+
+    for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+        if (_fWorkloop->addEventSource(fAPSTATxQueues[i]) !=
+            kIOReturnSuccess) {
+            teardownAPSTAInterface();
+            return kIOReturnError;
+        }
+    }
+    if (_fWorkloop->addEventSource(fAPSTATxCompQueue) != kIOReturnSuccess ||
+        _fWorkloop->addEventSource(fAPSTARxQueue) != kIOReturnSuccess ||
+        _fWorkloop->addEventSource(fAPSTAMultiCastQueue) !=
+            kIOReturnSuccess) {
+        teardownAPSTAInterface();
+        return kIOReturnError;
+    }
+
+    IOSkywalkPacketQueue *queues[
+        kAirportItlwmAPSTARegisterQueueCount] = {};
+    for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i)
+        queues[i] = fAPSTATxQueues[i];
+    queues[kAirportItlwmAPSTATxSubQueueCount] = fAPSTATxCompQueue;
+    queues[kAirportItlwmAPSTATxSubQueueCount + 1] = fAPSTARxQueue;
+
+    IOReturn registrationResult = interface->registerEthernetInterface(
+        &registrationInfo, queues,
+        kAirportItlwmAPSTARegisterQueueCount,
+        fAPSTATxPool, fAPSTARxPool, 0);
+    if (registrationResult != kIOReturnSuccess) {
+        XYLog("APSTA materialization: registerEthernetInterface failed 0x%x\n",
+              registrationResult);
+        teardownAPSTAInterface();
+        return registrationResult;
+    }
+
+    interface->start(this);
+    interface->deferBSDAttach(false);
+    XYLog("APSTA materialization: role=7 requested=%s published-prefix=ap unit=1\n",
+          create->bsd_name);
+    return kIOReturnSuccess;
+}
+
+void AirportItlwm::teardownAPSTAInterface()
+{
+    if (_fWorkloop != nullptr) {
+        if (fAPSTAMultiCastQueue != nullptr &&
+            fAPSTAMultiCastQueue->getWorkLoop() == _fWorkloop) {
+            fAPSTAMultiCastQueue->disable();
+            _fWorkloop->removeEventSource(fAPSTAMultiCastQueue);
+        }
+        if (fAPSTATxCompQueue != nullptr &&
+            fAPSTATxCompQueue->getWorkLoop() == _fWorkloop) {
+            fAPSTATxCompQueue->disable();
+            _fWorkloop->removeEventSource(fAPSTATxCompQueue);
+        }
+        for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+            if (fAPSTATxQueues[i] != nullptr &&
+                fAPSTATxQueues[i]->getWorkLoop() == _fWorkloop) {
+                fAPSTATxQueues[i]->disable();
+                _fWorkloop->removeEventSource(fAPSTATxQueues[i]);
+            }
+        }
+        if (fAPSTARxQueue != nullptr &&
+            fAPSTARxQueue->getWorkLoop() == _fWorkloop) {
+            fAPSTARxQueue->disable();
+            _fWorkloop->removeEventSource(fAPSTARxQueue);
+        }
+    }
+
+    const bool hadInterfaceAttachment = fAPSTAInterfaceAttached;
+    if (hadInterfaceAttachment && fAPSTANetIf != nullptr)
+        detachInterface(fAPSTANetIf, true);
+    fAPSTAInterfaceAttached = false;
+
+    if (!hadInterfaceAttachment && fAPSTAInterfaceProviderAttached &&
+        fAPSTANetIf != nullptr)
+        fAPSTANetIf->detach(this);
+    fAPSTAInterfaceProviderAttached = false;
+
+    OSSafeReleaseNULL(fAPSTAMultiCastQueue);
+    OSSafeReleaseNULL(fAPSTATxCompQueue);
+    for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i)
+        OSSafeReleaseNULL(fAPSTATxQueues[i]);
+    OSSafeReleaseNULL(fAPSTARxQueue);
+    OSSafeReleaseNULL(fAPSTATxPool);
+    OSSafeReleaseNULL(fAPSTARxPool);
+    OSSafeReleaseNULL(fAPSTANetIf);
+}
+
 /*
  * Host APSTA owner cleanup.
  *
@@ -15298,7 +15520,7 @@ AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *crea
  */
 void AirportItlwm::deleteAPSTAOwner()
 {
-    if (fAPSTAOwner == NULL) {
+    if (fAPSTAOwner == NULL && fAPSTANetIf == NULL) {
         return;
     }
     /*
@@ -15316,8 +15538,11 @@ void AirportItlwm::deleteAPSTAOwner()
         }
     }
 #endif
-    fAPSTAOwner->release();
-    fAPSTAOwner = NULL;
+    if (fAPSTAOwner != NULL) {
+        fAPSTAOwner->release();
+        fAPSTAOwner = NULL;
+    }
+    teardownAPSTAInterface();
 }
 
 IOReturn AirportItlwm::deleteAPSTAOwnerForBSDName(const uint8_t *bsdName)

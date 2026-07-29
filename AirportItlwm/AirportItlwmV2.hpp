@@ -79,6 +79,7 @@ enum
 
 enum
 {
+    kAirportItlwmSkywalkQueueCapacity = 256,
     kAirportItlwmRxPendingCapacity = 256,
     kAirportItlwmTxCompletionPendingCapacity = 256,
     /*
@@ -950,6 +951,9 @@ public:
      */
     AirportItlwmAPSTAOwner *ensureAPSTAOwner(
         const struct apple80211_virt_if_create_data *create);
+    IOReturn materializeAPSTAInterface(
+        const struct apple80211_virt_if_create_data *create);
+    void teardownAPSTAInterface();
     IOReturn deleteAPSTAOwnerForBSDName(const uint8_t *bsdName);
     void deleteAPSTAOwner();
     bool isAPSTACoreFeatureFlagSet(uint32_t bit) const;
@@ -981,6 +985,16 @@ public:
     ItlHalService *fHalService;
     bool fHalAttached;
     AirportItlwmAPSTAOwner *fAPSTAOwner;
+    IO80211SkywalkInterface *fAPSTANetIf;
+    IOSkywalkPacketBufferPool *fAPSTATxPool;
+    IOSkywalkPacketBufferPool *fAPSTARxPool;
+    IOSkywalkTxSubmissionQueue
+        *fAPSTATxQueues[kAirportItlwmAPSTATxSubQueueCount];
+    IOSkywalkTxCompletionQueue *fAPSTATxCompQueue;
+    IOSkywalkRxCompletionQueue *fAPSTARxQueue;
+    IOEventSource *fAPSTAMultiCastQueue;
+    bool fAPSTAInterfaceProviderAttached;
+    bool fAPSTAInterfaceAttached;
     uint8_t fAPSTACoreFeatureFlags[kAirportItlwmAPSTACoreFeatureFlagByteCount];
     // Mirrors Apple core-private +0x4d59; current Intel backends publish zero.
     uint8_t fAPSTACorePrivateFeatureByte4d59;
