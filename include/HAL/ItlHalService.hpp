@@ -185,6 +185,15 @@ public:
         return kIOReturnUnsupported;
     }
     virtual IOReturn stopAPMode() { return kIOReturnUnsupported; }
+    /*
+     * Submit one Ethernet frame to the active AP context. Ownership moves
+     * to the HAL only on kIOReturnSuccess; on every other return the caller
+     * still owns the mbuf.
+     */
+    virtual IOReturn transmitAPData(mbuf_t packet) {
+        (void)packet;
+        return kIOReturnUnsupported;
+    }
     virtual IOReturn updateAPBeacon(const void *templateBytes,
                                     size_t templateLength,
                                     uint16_t beaconInterval,

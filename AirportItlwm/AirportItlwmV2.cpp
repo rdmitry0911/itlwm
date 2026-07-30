@@ -6587,7 +6587,8 @@ copyUInt32Property(IORegistryEntry *entry, const char *name, uint32_t *value)
 // Packet param is IOSkywalkPacket * const * (PKP mangling) — the array
 // entries are const, but the packets themselves are mutable.
 static bool
-skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt)
+skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt,
+                               bool apsta)
 {
     if (that == nullptr || that->fTxCompletionPendingLock == nullptr ||
         pkt == nullptr)
@@ -6599,6 +6600,8 @@ skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt)
         kAirportItlwmTxCompletionPendingCapacity) {
         that->fTxCompletionPendingPackets[that->fTxCompletionPendingTail] =
             pkt;
+        that->fTxCompletionPendingAPSTA[that->fTxCompletionPendingTail] =
+            apsta;
         that->fTxCompletionPendingTail =
             (that->fTxCompletionPendingTail + 1) %
             kAirportItlwmTxCompletionPendingCapacity;
@@ -6610,40 +6613,70 @@ skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt)
 }
 
 static IOSkywalkPacket *
-skywalkTxPopCompletionPacket(AirportItlwm *that)
+skywalkTxPopCompletionPacket(AirportItlwm *that, bool matchRole,
+                             bool requestedAPSTA, bool *packetAPSTA)
 {
     if (that == nullptr || that->fTxCompletionPendingLock == nullptr)
         return nullptr;
 
     IOLockLock(that->fTxCompletionPendingLock);
     IOSkywalkPacket *pkt = nullptr;
-    if (that->fTxCompletionPendingCount != 0) {
-        pkt = that->fTxCompletionPendingPackets[
-            that->fTxCompletionPendingHead];
-        that->fTxCompletionPendingPackets[that->fTxCompletionPendingHead] =
-            nullptr;
-        that->fTxCompletionPendingHead =
-            (that->fTxCompletionPendingHead + 1) %
+    const UInt32 count = that->fTxCompletionPendingCount;
+    UInt32 read = that->fTxCompletionPendingHead;
+    UInt32 write = that->fTxCompletionPendingHead;
+    for (UInt32 i = 0; i < count; i++) {
+        IOSkywalkPacket *saved =
+            that->fTxCompletionPendingPackets[read];
+        const bool savedAPSTA =
+            that->fTxCompletionPendingAPSTA[read];
+        that->fTxCompletionPendingPackets[read] = nullptr;
+        that->fTxCompletionPendingAPSTA[read] = false;
+        read = (read + 1) %
             kAirportItlwmTxCompletionPendingCapacity;
-        that->fTxCompletionPendingCount--;
+
+        if (pkt == nullptr &&
+            (!matchRole || savedAPSTA == requestedAPSTA)) {
+            pkt = saved;
+            if (packetAPSTA != nullptr)
+                *packetAPSTA = savedAPSTA;
+            continue;
+        }
+
+        that->fTxCompletionPendingPackets[write] = saved;
+        that->fTxCompletionPendingAPSTA[write] = savedAPSTA;
+        write = (write + 1) %
+            kAirportItlwmTxCompletionPendingCapacity;
+    }
+    that->fTxCompletionPendingTail = write;
+    if (pkt != nullptr) {
+        that->fTxCompletionPendingCount = count - 1;
+        that->fTxCompletionPendingPackets[write] = nullptr;
+        that->fTxCompletionPendingAPSTA[write] = false;
     }
     IOLockUnlock(that->fTxCompletionPendingLock);
     return pkt;
 }
 
 static void
-skywalkTxReleaseCompletedPacket(AirportItlwm *that, IOSkywalkPacket *pkt)
+skywalkTxReleaseCompletedPacket(AirportItlwm *that, IOSkywalkPacket *pkt,
+                                bool apsta)
 {
     if (pkt == nullptr)
         return;
 
-    if (that != nullptr && that->fTxCompQueue != nullptr) {
-        pkt->completeWithQueue(that->fTxCompQueue,
+    IOSkywalkTxCompletionQueue *completionQueue =
+        that == nullptr ? nullptr :
+        (apsta ? that->fAPSTATxCompQueue : that->fTxCompQueue);
+    if (completionQueue != nullptr) {
+        pkt->completeWithQueue(completionQueue,
                                kIOSkywalkPacketDirectionTx, 0);
         return;
     }
-    if (that != nullptr && that->fTxPool != nullptr)
-        that->fTxPool->deallocatePacket(pkt);
+    IOSkywalkPacketBufferPool *pool =
+        that == nullptr ? nullptr :
+        (apsta ? that->fAPSTATxPool : that->fTxPool);
+    if (pool != nullptr)
+        pool->deallocatePacket(pkt);
 }
 
 static void
@@ -6652,8 +6685,10 @@ skywalkTxDrainCompletionPackets(AirportItlwm *that)
     if (that == nullptr)
         return;
 
-    while (IOSkywalkPacket *pkt = skywalkTxPopCompletionPacket(that))
-        skywalkTxReleaseCompletedPacket(that, pkt);
+    bool apsta = false;
+    while (IOSkywalkPacket *pkt = skywalkTxPopCompletionPacket(
+               that, false, false, &apsta))
+        skywalkTxReleaseCompletedPacket(that, pkt, apsta);
 }
 
 static unsigned int
@@ -6661,6 +6696,11 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
                 IOSkywalkPacket * const *packets, UInt32 count, void *refCon)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    AirportItlwmAPSTASkywalkInterface *apstaInterface =
+        OSDynamicCast(AirportItlwmAPSTASkywalkInterface, owner);
+    if (that == nullptr && apstaInterface != nullptr) {
+        that = static_cast<AirportItlwm *>(apstaInterface->getController());
+    }
     if (!that || !packets) {
         sRT.txPktDrop += count;
         return count;
@@ -6690,7 +6730,7 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
             sRT.txPktDrop++;
             continue;
         }
-        if (!skywalkTxStageCompletionPacket(that, pkt)) {
+        if (!skywalkTxStageCompletionPacket(that, pkt, apstaQueue)) {
             sRT.txPktDrop++;
             if (sRT.txCbCnt <= 3)
                 XYLog("skywalkTxAction: completion stage failed pkt %u/%u "
@@ -6751,7 +6791,22 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
             continue;
         }
 
-        IOReturn outRet = that->outputPacket(m, NULL);
+        IOReturn outRet = kIOReturnOutputDropped;
+        if (apstaQueue) {
+            /*
+             * The recovered APSTA forwardPacket body has already selected
+             * this role-7 submission queue. Do not collapse it into the
+             * primary STA if_snd path: the AP HAL owns PAN-context 802.11
+             * encapsulation and moves mbuf ownership only on success.
+             */
+            if (that->fHalService != nullptr)
+                outRet = that->fHalService->transmitAPData(m);
+            if (outRet != kIOReturnSuccess &&
+                mbuf_type(m) != MBUF_TYPE_FREE)
+                that->freePacket(m);
+        } else {
+            outRet = that->outputPacket(m, NULL);
+        }
         if (txEapol)
             airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathTx, "output",
                                       dataLen, outRet);
@@ -6778,6 +6833,204 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
                   ret, that->fTxCompletionPendingCount);
     }
     return consumed;
+}
+
+/*
+ * Tahoe APSTA forwardPacket bridge.
+ *
+ * The reference AppleBCMWLANIO80211APSTAInterface::forwardPacket selects its
+ * TX subqueue with:
+ *
+ *   byteOffset = (packet->getServiceClass() >> 4) & 0xff8;
+ *   queue = state->txSubQueues[byteOffset / sizeof(void *)];
+ *   queue->forwardPacket(packet);
+ *
+ * AppleBCMWLANPCIeSkywalkTxSubmissionQueue::forwardPacket then duplicates the
+ * caller-owned IO80211NetworkPacket into the APSTA TX pool, preserves the
+ * packet headroom/data span, tags link multicast from the Ethernet DA, and
+ * directly calls the queue's dequeue action with the duplicate.  Our role-7
+ * interface occupies the Infra ABI, where Tahoe's concrete APSTA
+ * forwardPacket slot aliases setCurrentApAddress.  That slot thunk calls this
+ * method to reproduce the same ownership and queue-action boundary without
+ * routing AP traffic through the primary STA if_snd.
+ */
+static kern_packet_t
+airportItlwmSkywalkPacketHandle(IOSkywalkPacket *packet)
+{
+    /*
+     * Tahoe IOSkywalkPacket::mPacketHandle is the kern_packet_t cell at
+     * object offset 0x28.  getHeadroom()/getServiceClass() are callable by
+     * Apple's in-KC drivers but are not exported to third-party kexts; the
+     * equivalent kern_packet_get_* symbols are likewise not eligible during
+     * AuxKC binding.  Keep this single recovered layout access fenced here.
+     */
+    if (packet == nullptr)
+        return 0;
+    return *reinterpret_cast<kern_packet_t *>(
+        reinterpret_cast<uint8_t *>(packet) + 0x28);
+}
+
+static uint32_t
+airportItlwmSkywalkPacketServiceClass(kern_packet_t handle)
+{
+    /*
+     * kern_packet_t is a pointer with its type/subtype in the low nibble.
+     * The kernel packet starts with struct __kern_quantum; its public
+     * __quantum prefix stores qum_svc_class at +0x14 (flow id 0x10,
+     * qum_len +0x10, service class +0x14).  This is the storage read by
+     * IOSkywalkNetworkPacket::getServiceClass and by the inlined
+     * __packet_get_service_class helper.  Reading the fixed public prefix
+     * avoids a non-AuxKC-exported function reference.
+     */
+    const uintptr_t packetAddress =
+        static_cast<uintptr_t>(handle & ~static_cast<kern_packet_t>(0x0f));
+    if (packetAddress == 0)
+        return static_cast<uint32_t>(PKT_SC_BE);
+    return *reinterpret_cast<const uint32_t *>(packetAddress + 0x14);
+}
+
+void AirportItlwm::forwardAPSTAPacket(IO80211NetworkPacket *packet)
+{
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false);
+    if (!lifecycle.admitted() || packet == nullptr ||
+        !isHostApRunning() || fAPSTATxPool == nullptr) {
+        return;
+    }
+
+    const kern_packet_t sourceHandle =
+        airportItlwmSkywalkPacketHandle(packet);
+    if (sourceHandle == 0) {
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt < 3)
+            XYLog("APSTA forwardPacket: source packet handle unavailable\n");
+        return;
+    }
+
+    const uint32_t serviceClass =
+        airportItlwmSkywalkPacketServiceClass(sourceHandle);
+    const uint32_t queueByteOffset = (serviceClass >> 4) & 0xff8U;
+    const uint32_t queueIndex =
+        queueByteOffset / static_cast<uint32_t>(sizeof(void *));
+    if (queueIndex >= kAirportItlwmAPSTATxSubQueueCount) {
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt < 3) {
+            XYLog("APSTA forwardPacket: invalid service class=0x%x "
+                  "queue-offset=0x%x\n",
+                  serviceClass, queueByteOffset);
+        }
+        return;
+    }
+
+    IOSkywalkTxSubmissionQueue *queue = fAPSTATxQueues[queueIndex];
+    if (queue == nullptr || !queue->isEnabled()) {
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt < 3) {
+            XYLog("APSTA forwardPacket: queue %u unavailable enabled=%u\n",
+                  queueIndex,
+                  queue != nullptr && queue->isEnabled() ? 1U : 0U);
+        }
+        return;
+    }
+
+    /*
+     * Tahoe keeps the first-data offset equal to network-packet headroom
+     * for this Ethernet forward path.  getDataOffset() is the exported
+     * virtual representation of the same span; getHeadroom() itself is
+     * available only to Apple-internal KC clients.
+     */
+    const UInt16 dataOffset = packet->getDataOffset();
+    const UInt32 dataLength = packet->getDataLength();
+    void *sourceBase = packet->getDataVirtualAddress();
+    if (sourceBase == nullptr || dataLength < sizeof(ether_header) ||
+        dataOffset > SKYWALK_BUF_SIZE ||
+        dataLength > SKYWALK_BUF_SIZE - dataOffset) {
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt < 3) {
+            XYLog("APSTA forwardPacket: invalid source base=%p offset=%u "
+                  "length=%u\n",
+                  sourceBase, dataOffset, dataLength);
+        }
+        return;
+    }
+
+    IOSkywalkPacket *duplicate = nullptr;
+    IOReturn ret = fAPSTATxPool->allocatePacket(1, &duplicate, 0);
+    if (ret != kIOReturnSuccess || duplicate == nullptr) {
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt < 3)
+            XYLog("APSTA forwardPacket: duplicate allocation failed 0x%x\n",
+                  ret);
+        return;
+    }
+
+    ret = duplicate->prepareWithQueue(
+        nullptr, kIOSkywalkPacketDirectionTx, 0);
+    if (ret != kIOReturnSuccess) {
+        duplicate->completeWithQueue(
+            nullptr, kIOSkywalkPacketDirectionTx, 0);
+        fAPSTATxPool->deallocatePacket(duplicate);
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt < 3)
+            XYLog("APSTA forwardPacket: duplicate prepare failed 0x%x\n",
+                  ret);
+        return;
+    }
+
+    IOSkywalkNetworkPacket *duplicateNetwork =
+        static_cast<IOSkywalkNetworkPacket *>(duplicate);
+    void *destinationBase = duplicate->getDataVirtualAddress();
+    if (destinationBase == nullptr) {
+        duplicate->completeWithQueue(
+            nullptr, kIOSkywalkPacketDirectionTx, 0);
+        fAPSTATxPool->deallocatePacket(duplicate);
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt < 3)
+            XYLog("APSTA forwardPacket: duplicate buffer unavailable\n");
+        return;
+    }
+
+    memmove(static_cast<uint8_t *>(destinationBase) + dataOffset,
+            static_cast<uint8_t *>(sourceBase) + dataOffset,
+            dataLength);
+    ret = duplicate->setDataOffsetAndLength(dataOffset, dataLength);
+    if (ret != kIOReturnSuccess) {
+        duplicate->completeWithQueue(
+            nullptr, kIOSkywalkPacketDirectionTx, 0);
+        fAPSTATxPool->deallocatePacket(duplicate);
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt < 3) {
+            XYLog("APSTA forwardPacket: duplicate span failed 0x%x "
+                  "offset=%u length=%u\n",
+                  ret, dataOffset, dataLength);
+        }
+        return;
+    }
+
+    const uint8_t *ethernetFrame =
+        static_cast<const uint8_t *>(destinationBase) + dataOffset;
+    if ((ethernetFrame[0] & 0x01U) != 0)
+        (void)duplicateNetwork->setIsLinkMulticast(true);
+
+    IOSkywalkPacket *packets[1] = { duplicate };
+    const unsigned int consumed =
+        skywalkTxAction(this, queue, packets, 1, nullptr);
+    if (consumed != 1) {
+        duplicate->completeWithQueue(
+            nullptr, kIOSkywalkPacketDirectionTx, 0);
+        fAPSTATxPool->deallocatePacket(duplicate);
+        sRT.txPktDrop++;
+        if (sRT.txCbCnt <= 3)
+            XYLog("APSTA forwardPacket: queue action consumed=%u\n",
+                  consumed);
+        return;
+    }
+
+    if (sRT.txCbCnt <= 3) {
+        XYLog("APSTA forwardPacket: service=0x%x queue=%u length=%u "
+              "multicast=%u\n",
+              serviceClass, queueIndex, dataLength,
+              (ethernetFrame[0] & 0x01U) != 0 ? 1U : 0U);
+    }
 }
 
 // Skywalk RX completion producer action.  AppleBCMWLAN stages prepared RX
@@ -6956,6 +7209,11 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
 {
     sRT.rxCbCnt++;
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    AirportItlwmAPSTASkywalkInterface *apstaInterface =
+        OSDynamicCast(AirportItlwmAPSTASkywalkInterface, owner);
+    if (that == nullptr && apstaInterface != nullptr) {
+        that = static_cast<AirportItlwm *>(apstaInterface->getController());
+    }
     const bool apstaQueue =
         that != nullptr && queue == that->fAPSTARxQueue;
     IO80211SkywalkInterface *networkInterface =
@@ -6993,7 +7251,6 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
             eh,
             nullptr,
             false);
-
         if (airportItlwmEthernetBufferIsEapol(eh, dataLength)) {
             airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx,
                                       "producer-input", dataLength, ret);
@@ -7013,16 +7270,24 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
 }
 
 static UInt32
-skywalkTxCompletionAction(OSObject *owner, IOSkywalkTxCompletionQueue *,
+skywalkTxCompletionAction(OSObject *owner,
+                          IOSkywalkTxCompletionQueue *queue,
                           IOSkywalkPacket **packets, UInt32 count, void *)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    AirportItlwmAPSTASkywalkInterface *apstaInterface =
+        OSDynamicCast(AirportItlwmAPSTASkywalkInterface, owner);
+    if (that == nullptr && apstaInterface != nullptr) {
+        that = static_cast<AirportItlwm *>(apstaInterface->getController());
+    }
     if (that == nullptr || packets == nullptr)
         return 0;
+    const bool apstaQueue = queue == that->fAPSTATxCompQueue;
 
     UInt32 produced = 0;
     for (; produced < count; produced++) {
-        IOSkywalkPacket *pkt = skywalkTxPopCompletionPacket(that);
+        IOSkywalkPacket *pkt = skywalkTxPopCompletionPacket(
+            that, true, apstaQueue, nullptr);
         if (pkt == nullptr)
             break;
         packets[produced] = pkt;
@@ -9479,6 +9744,8 @@ bool AirportItlwm::init(OSDictionary *properties)
     fRxPendingCount = 0;
     fTxCompletionPendingLock = IOLockAlloc();
     memset(fTxCompletionPendingPackets, 0, sizeof(fTxCompletionPendingPackets));
+    memset(fTxCompletionPendingAPSTA, 0,
+           sizeof(fTxCompletionPendingAPSTA));
     fTxCompletionPendingHead = 0;
     fTxCompletionPendingTail = 0;
     fTxCompletionPendingCount = 0;
@@ -15397,17 +15664,11 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
     if (_fWorkloop == nullptr)
         return kIOReturnNotReady;
 
-    AirportItlwmSkywalkInterface *interface =
-        new AirportItlwmSkywalkInterface;
+    AirportItlwmAPSTASkywalkInterface *interface =
+        new AirportItlwmAPSTASkywalkInterface;
     if (interface == nullptr)
         return kIOReturnNoMemory;
     fAPSTANetIf = interface;
-
-    if (!interface->init() ||
-        !interface->bindController(this, APPLE80211_VIF_SOFT_AP, 2)) {
-        teardownAPSTAInterface();
-        return kIOReturnError;
-    }
 
     ether_addr apMac;
     memcpy(apMac.octet, create->mac, IEEE80211_ADDR_LEN);
@@ -15419,7 +15680,11 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
             apMac.octet[0] ^= 0x02;
         }
     }
-    interface->setInitMacAddress(apMac);
+    if (!interface->initWithController(
+            this, &apMac, APPLE80211_VIF_SOFT_AP, "ap")) {
+        teardownAPSTAInterface();
+        return kIOReturnError;
+    }
     interface->setProperty(kIOMACAddress, apMac.octet,
                            kIOEthernetAddressSize);
 
@@ -15434,6 +15699,18 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
         return kIOReturnError;
     }
     fAPSTAInterfaceAttached = true;
+
+    /*
+     * AppleBCMWLANIO80211APSTAInterface::start(core, registrationInfo)
+     * enters its IO80211VirtualInterface::start parent before it registers
+     * the role-7 queue inventory with Skywalk.  Starting after
+     * registerEthernetInterface leaves the dynamic BSD client racing a
+     * not-yet-started provider and the ap1 flowswitch attach returns EBUSY.
+     */
+    if (!interface->start(this)) {
+        teardownAPSTAInterface();
+        return kIOReturnError;
+    }
 
     IOSkywalkEthernetInterface::RegistrationInfo registrationInfo;
     bzero(&registrationInfo, sizeof(registrationInfo));
@@ -15473,7 +15750,7 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
 
     for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
         fAPSTATxQueues[i] = IOSkywalkTxSubmissionQueue::withPool(
-            fAPSTATxPool, kAirportItlwmSkywalkQueueCapacity, i, this,
+            fAPSTATxPool, kAirportItlwmSkywalkQueueCapacity, i, interface,
             skywalkTxAction, nullptr, 0);
         if (fAPSTATxQueues[i] == nullptr) {
             teardownAPSTAInterface();
@@ -15481,10 +15758,10 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
         }
     }
     fAPSTATxCompQueue = IOSkywalkTxCompletionQueue::withPool(
-        fAPSTATxPool, kAirportItlwmSkywalkQueueCapacity, 0, this,
+        fAPSTATxPool, kAirportItlwmSkywalkQueueCapacity, 0, interface,
         skywalkTxCompletionAction, nullptr, 0);
     fAPSTARxQueue = IOSkywalkRxCompletionQueue::withPool(
-        fAPSTARxPool, kAirportItlwmSkywalkQueueCapacity, 0, this,
+        fAPSTARxPool, kAirportItlwmSkywalkQueueCapacity, 0, interface,
         skywalkRxAction, nullptr, 0);
     fAPSTAMultiCastQueue =
         AirportItlwmSkywalkMulticastQueue::withInterface(interface);
@@ -15527,8 +15804,17 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
         return registrationResult;
     }
 
-    interface->start(this);
-    interface->deferBSDAttach(false);
+    /*
+     * The recovered reference success edge does not use the generic
+     * deferBSDAttach(false) helper (which calls registerService(0)).
+     * It registers APSTA with option 2, then seeds running=false until the
+     * later HostAP success path publishes carrier/link-up.  The local infra
+     * init may have installed IODeferBSDAttach, so remove only that property
+     * before reproducing the exact role-7 service-registration edge.
+     */
+    interface->removeProperty("IODeferBSDAttach");
+    interface->registerService(2U);
+    interface->setRunningState(false);
     XYLog("APSTA materialization: role=7 requested=%s published-prefix=ap unit=1\n",
           create->bsd_name);
     return kIOReturnSuccess;
@@ -15536,18 +15822,35 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
 
 void AirportItlwm::setAPSTADatapathEnabled(bool enable)
 {
-    AirportItlwmSkywalkInterface *interface =
-        OSDynamicCast(AirportItlwmSkywalkInterface, fAPSTANetIf);
+    AirportItlwmAPSTASkywalkInterface *interface =
+        OSDynamicCast(AirportItlwmAPSTASkywalkInterface, fAPSTANetIf);
     if (interface == nullptr)
         return;
 
-    if (enable)
+    bool linkTransitionAccepted = true;
+    if (enable) {
+        /*
+         * AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal's
+         * recovered success tail first publishes Skywalk carrier
+         * reportLinkStatus(3, 0x80), then enableAPInterface invokes the
+         * VirtualInterface two-argument setLinkState(UP, 1) entry.  APSTA
+         * start deliberately seeds the Skywalk running bit false; publish
+         * the matching true edge before enabling the queues so packets
+         * already accepted by the BSD/flowswitch side can reach the netif
+         * submission rings.
+         */
+        (void)interface->reportLinkStatus(3U, 0x80U);
+        interface->setRunningState(true);
+        interface->setLinkState(kIO80211NetworkLinkUp, 1U);
         interface->enableDatapath();
-    else
+    } else {
         interface->disableDatapath();
+        interface->setRunningState(false);
+    }
 
-    XYLog("APSTA datapath %s RX=%u TX=%u TXC=%u\n",
+    XYLog("APSTA datapath %s link=%u RX=%u TX=%u TXC=%u\n",
           enable ? "enabled" : "disabled",
+          linkTransitionAccepted ? 1U : 0U,
           fAPSTARxQueue != nullptr && fAPSTARxQueue->isEnabled() ? 1U : 0U,
           fAPSTATxQueues[0] != nullptr &&
               fAPSTATxQueues[0]->isEnabled() ? 1U : 0U,

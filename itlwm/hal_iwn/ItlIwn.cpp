@@ -3733,6 +3733,12 @@ bool ItlIwn::attach(IOPCIDevice *device)
 {
     /* iwn_attach() may fail after publishing an event source; detach owns it. */
     fSaeTxGate = NULL;
+    bzero(apPsQueue, sizeof(apPsQueue));
+    apPsQueueHead = 0;
+    apPsQueueTail = 0;
+    apPsQueueCount = 0;
+    apPsQueueReady = true;
+    apTimSet = false;
     iwn_reset_ap_runtime_state();
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
@@ -3746,6 +3752,7 @@ bool ItlIwn::attach(IOPCIDevice *device)
 
 void ItlIwn::iwn_reset_ap_runtime_state()
 {
+    iwn_purge_ap_ps_queue();
     apFirmwareTransitionActive = false;
     apFirmwareDeactivationReplySeen = false;
     apFirmwareDeactivationNotificationSeen = false;
@@ -3758,9 +3765,30 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     bzero(apFirmwareSsid, sizeof(apFirmwareSsid));
     bzero(apFirmwareBeacon, sizeof(apFirmwareBeacon));
     bzero(apClientMac, sizeof(apClientMac));
+    apClientNodeInstalled = false;
     apClientAuthenticated = false;
     apClientAssociated = false;
+    apClientPowerSave = false;
     apClientAid = 0;
+    apTimSet = false;
+}
+
+void ItlIwn::iwn_purge_ap_ps_queue()
+{
+    if (!apPsQueueReady)
+        return;
+    while (apPsQueueCount != 0) {
+        mbuf_t packet = apPsQueue[apPsQueueHead];
+        apPsQueue[apPsQueueHead] = NULL;
+        apPsQueueHead =
+            (apPsQueueHead + 1) % IWN_AP_PS_QUEUE_LEN;
+        apPsQueueCount--;
+        if (packet != NULL)
+            mbuf_freem(packet);
+    }
+    bzero(apPsQueue, sizeof(apPsQueue));
+    apPsQueueHead = 0;
+    apPsQueueTail = 0;
 }
 
 int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
@@ -3902,6 +3930,7 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
     data->tx_apple_nrate_valid = 0;
     data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
     data->ap_mgmt = true;
+    data->ap_data = false;
     iwn_sae_tx_data_clear(data);
     data->diag_subtype =
         wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
@@ -3964,6 +3993,287 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         com.qfullmsk |= 1 << ring->qid;
     iwn_refresh_tx_timer(&com);
     return 0;
+}
+
+int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
+    bool psDelivery)
+{
+    const size_t ethernetLength =
+        ethernetPacket != NULL ? mbuf_pkthdr_len(ethernetPacket) : 0;
+    static uint32_t apDataTxRejectCount = 0;
+    if (ethernetPacket == NULL ||
+        ethernetLength < ETHER_HDR_LEN ||
+        ethernetLength - ETHER_HDR_LEN >
+            IWN_AP_DATA_PAYLOAD_SIZE - LLC_SNAPFRAMELEN ||
+        !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        !apClientAssociated ||
+        com.command_queue != IWN_IPAN_CMD_QUEUE ||
+        IWN_IPAN_BE_QUEUE >= com.ntxqs) {
+        if (++apDataTxRejectCount <= 32) {
+            XYLog("%s: AP Ethernet TX reject #%u length=%u active=%u "
+                  "stage=%u associated=%u command_queue=%u ntxqs=%u\n",
+                  com.sc_dev.dv_xname,
+                  static_cast<unsigned>(apDataTxRejectCount),
+                  static_cast<unsigned>(ethernetLength),
+                  apFirmwareTransitionActive ? 1U : 0U,
+                  static_cast<unsigned>(apFirmwareStage),
+                  apClientAssociated ? 1U : 0U,
+                  static_cast<unsigned>(com.command_queue),
+                  static_cast<unsigned>(com.ntxqs));
+        }
+        return EINVAL;
+    }
+
+    struct ether_header ethernetHeader;
+    if (mbuf_copydata(ethernetPacket, 0, sizeof(ethernetHeader),
+                      &ethernetHeader) != 0) {
+        return EINVAL;
+    }
+    const bool multicast =
+        IEEE80211_IS_MULTICAST(ethernetHeader.ether_dhost);
+    if (!multicast &&
+        !IEEE80211_ADDR_EQ(ethernetHeader.ether_dhost, apClientMac)) {
+        if (++apDataTxRejectCount <= 32) {
+            XYLog("%s: AP Ethernet TX reject #%u unreachable "
+                  "dst=%02x:%02x:%02x:%02x:%02x:%02x "
+                  "client=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                  com.sc_dev.dv_xname,
+                  static_cast<unsigned>(apDataTxRejectCount),
+                  ethernetHeader.ether_dhost[0],
+                  ethernetHeader.ether_dhost[1],
+                  ethernetHeader.ether_dhost[2],
+                  ethernetHeader.ether_dhost[3],
+                  ethernetHeader.ether_dhost[4],
+                  ethernetHeader.ether_dhost[5],
+                  apClientMac[0], apClientMac[1], apClientMac[2],
+                  apClientMac[3], apClientMac[4], apClientMac[5]);
+        }
+        return EHOSTUNREACH;
+    }
+
+    /*
+     * mac80211 stops a sleeping station's TXQ, sets its AID in the TIM and
+     * only releases one frame after PS-Poll (or all frames on an awake
+     * edge).  Taking ownership here keeps the Skywalk submission contract
+     * unchanged while reproducing that queue boundary.
+     */
+    if (!multicast && apClientPowerSave && !psDelivery) {
+        return iwn_queue_ap_ps_packet(ethernetPacket);
+    }
+
+    if (!multicast && psDelivery) {
+        const int sleepTxError = iwn_allow_ap_client_sleep_tx();
+        if (sleepTxError != 0) {
+            if (++apDataTxRejectCount <= 32) {
+                XYLog("%s: AP Ethernet TX reject #%u sleep-count=%d\n",
+                      com.sc_dev.dv_xname,
+                      static_cast<unsigned>(apDataTxRejectCount),
+                      sleepTxError);
+            }
+            return sleepTxError;
+        }
+    }
+
+    struct iwn_tx_ring *ring = &com.txq[IWN_IPAN_BE_QUEUE];
+    if (ring->queued >= IWN_TX_RING_COUNT - 1) {
+        if (++apDataTxRejectCount <= 32)
+            XYLog("%s: AP Ethernet TX reject #%u ring-full queued=%u\n",
+                  com.sc_dev.dv_xname,
+                  static_cast<unsigned>(apDataTxRejectCount),
+                  static_cast<unsigned>(ring->queued));
+        return ENOBUFS;
+    }
+    if (ring->first_tb == NULL || ring->ap_payload == NULL) {
+        if (++apDataTxRejectCount <= 32) {
+            XYLog("%s: AP Ethernet TX reject #%u ring storage "
+                  "first_tb=%p payload=%p\n",
+                  com.sc_dev.dv_xname,
+                  static_cast<unsigned>(apDataTxRejectCount),
+                  ring->first_tb, ring->ap_payload);
+        }
+        return ENXIO;
+    }
+
+    const size_t headerLength = sizeof(struct ieee80211_frame);
+    const size_t bodyLength =
+        LLC_SNAPFRAMELEN + ethernetLength - ETHER_HDR_LEN;
+    const size_t frameLength = headerLength + bodyLength;
+    const size_t firstTransportBufferLength = IWN_TX_FIRST_TB_SIZE;
+    const size_t commandAndHeaderLength =
+        4 + sizeof(struct iwn_cmd_data) + headerLength;
+    if (frameLength > UINT16_MAX ||
+        commandAndHeaderLength <= firstTransportBufferLength) {
+        return EMSGSIZE;
+    }
+
+    struct iwn_tx_desc *desc = &ring->desc[ring->cur];
+    struct iwn_tx_data *data = &ring->data[ring->cur];
+    struct iwn_tx_cmd *cmd = &ring->cmd[ring->cur];
+    bzero(desc, sizeof(*desc));
+    bzero(cmd, sizeof(*cmd));
+
+    cmd->code = IWN_CMD_TX_DATA;
+    cmd->qid = ring->qid;
+    cmd->idx = ring->cur;
+
+    struct iwn_cmd_data *tx =
+        reinterpret_cast<struct iwn_cmd_data *>(cmd->data);
+    uint32_t flags = IWN_TX_AUTO_SEQ;
+    if (!multicast)
+        flags |= IWN_TX_NEED_ACK | IWN_TX_LINKQ;
+    tx->flags = htole32(flags);
+    tx->len = htole16(static_cast<uint16_t>(frameLength));
+    tx->id = multicast ?
+        IWN5000_ID_PAN_BROADCAST : IWN5000_ID_PAN_CLIENT;
+    tx->lifetime = htole32(IWN_LIFETIME_INFINITE);
+    tx->rts_ntries = 60;
+    tx->data_ntries = 15;
+    tx->tid = IWN_NONQOS_TID;
+    tx->timeout = 0;
+    tx->linkq = 0;
+    if (apFirmwareConfig.channel <= 14) {
+        tx->plcp = iwn_rates[IWN_RATE_1M_INDEX].plcp;
+        tx->rflags = IWN_RFLAG_CCK;
+    } else {
+        tx->plcp = iwn_rates[IWN_RATE_6M_INDEX].plcp;
+        tx->rflags = 0;
+    }
+    tx->rflags |= IWN_RFLAG_ANT(IWN_LSB(com.txchainmask));
+
+    struct ieee80211_frame frame;
+    bzero(&frame, sizeof(frame));
+    frame.i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_DATA;
+    frame.i_fc[1] = IEEE80211_FC1_DIR_FROMDS;
+    if (moreData)
+        frame.i_fc[1] |= IEEE80211_FC1_MORE_DATA;
+    IEEE80211_ADDR_COPY(frame.i_addr1, ethernetHeader.ether_dhost);
+    IEEE80211_ADDR_COPY(frame.i_addr2, apFirmwareConfig.bssid);
+    IEEE80211_ADDR_COPY(frame.i_addr3, ethernetHeader.ether_shost);
+    memcpy(reinterpret_cast<uint8_t *>(tx + 1),
+           &frame, sizeof(frame));
+
+    uint8_t *frameBody =
+        ring->ap_payload +
+        ring->cur * IWN_AP_DATA_PAYLOAD_SIZE;
+    bzero(frameBody, bodyLength);
+    struct llc *llc = reinterpret_cast<struct llc *>(frameBody);
+    llc->llc_dsap = LLC_SNAP_LSAP;
+    llc->llc_ssap = LLC_SNAP_LSAP;
+    llc->llc_control = LLC_UI;
+    llc->llc_snap.ether_type = ethernetHeader.ether_type;
+    if (ethernetLength > ETHER_HDR_LEN &&
+        mbuf_copydata(ethernetPacket, ETHER_HDR_LEN,
+            ethernetLength - ETHER_HDR_LEN,
+            frameBody + LLC_SNAPFRAMELEN) != 0) {
+        bzero(desc, sizeof(*desc));
+        bzero(cmd, sizeof(*cmd));
+        return EINVAL;
+    }
+
+    data->m = ethernetPacket;
+    data->ni = NULL;
+    data->totlen = static_cast<int>(frameLength);
+    data->ampdu_txmcs = 0;
+    data->ampdu_nframes = 0;
+    data->tx_apple_nrate = 0;
+    data->tx_apple_nrate_valid = 0;
+    data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+    data->ap_mgmt = false;
+    data->ap_data = true;
+    iwn_sae_tx_data_clear(data);
+    data->diag_subtype = 0xff;
+    data->diag_auth_seq = 0xffff;
+    IEEE80211_ADDR_COPY(data->diag_peer, ethernetHeader.ether_dhost);
+
+    const bus_addr_t firstTransportBufferAddress =
+        ring->first_tb_dma.paddr +
+        ring->cur * IWN_TX_FIRST_TB_STRIDE;
+    const bus_addr_t firmwareScratchAddress =
+        firstTransportBufferAddress + 4 +
+        offsetof(struct iwn_cmd_data, scratch);
+    tx->loaddr = htole32(IWN_LOADDR(firmwareScratchAddress));
+    tx->hiaddr = IWN_HIADDR(firmwareScratchAddress);
+    memcpy(ring->first_tb +
+               ring->cur * IWN_TX_FIRST_TB_STRIDE,
+           cmd, firstTransportBufferLength);
+
+    desc->nsegs = 3;
+    desc->segs[0].addr =
+        htole32(IWN_LOADDR(firstTransportBufferAddress));
+    desc->segs[0].len = htole16(
+        IWN_HIADDR(firstTransportBufferAddress) |
+        firstTransportBufferLength << 4);
+    const bus_addr_t commandRemainderAddress =
+        data->cmd_paddr + firstTransportBufferLength;
+    desc->segs[1].addr =
+        htole32(IWN_LOADDR(commandRemainderAddress));
+    desc->segs[1].len = htole16(
+        IWN_HIADDR(commandRemainderAddress) |
+        (commandAndHeaderLength - firstTransportBufferLength) << 4);
+    const bus_addr_t frameBodyAddress =
+        ring->ap_payload_dma.paddr +
+        ring->cur * IWN_AP_DATA_PAYLOAD_SIZE;
+    desc->segs[2].addr = htole32(IWN_LOADDR(frameBodyAddress));
+    desc->segs[2].len = htole16(
+        IWN_HIADDR(frameBodyAddress) | bodyLength << 4);
+
+    com.ops.update_sched(
+        &com, ring->qid, ring->cur, tx->id,
+        static_cast<uint16_t>(frameLength));
+    ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
+    IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    if (++ring->queued > IWN_TX_RING_HIMARK)
+        com.qfullmsk |= 1 << ring->qid;
+    iwn_refresh_tx_timer(&com);
+
+    return 0;
+}
+
+IOReturn ItlIwn::iwn_ap_data_tx_action(OSObject *target, void *arg0,
+    void *, void *, void *)
+{
+    ItlIwn *that = OSDynamicCast(ItlIwn, target);
+    if (that == NULL || arg0 == NULL)
+        return kIOReturnBadArgument;
+    const int error = that->iwn_send_ap_data_frame(
+        static_cast<mbuf_t>(arg0));
+    if (error == 0)
+        return kIOReturnSuccess;
+    if (error == ENOBUFS)
+        return kIOReturnNoResources;
+    return kIOReturnOutputDropped;
+}
+
+IOReturn ItlIwn::transmitAPData(mbuf_t packet)
+{
+    if (packet == NULL)
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getMainCommandGate();
+    IOWorkLoop *workLoop = getMainWorkLoop();
+    if (gate == NULL || workLoop == NULL)
+        return kIOReturnNotReady;
+
+    /*
+     * APSTA Skywalk submission queues are attached to the same controller
+     * IO80211WorkQueue as the IWN command gate. Their dequeue action already
+     * runs with that work-loop gate held, exactly like the reference PCIe
+     * Skywalk TX queue. attemptAction() rejects this recursive entry with
+     * kIOReturnCannotLock before the frame reaches the PAN ring, so reuse the
+     * existing serialized context. Keep attemptAction for any caller that is
+     * not already on the gated work loop.
+     */
+    const IOReturn result = workLoop->inGate()
+        ? iwn_ap_data_tx_action(this, packet, NULL, NULL, NULL)
+        : gate->attemptAction(&ItlIwn::iwn_ap_data_tx_action, packet);
+    if (result != kIOReturnSuccess) {
+        XYLog("%s: AP Ethernet TX gate failed result=0x%x workloop=%p "
+              "in_gate=%u\n",
+              com.sc_dev.dv_xname, result,
+              workLoop, workLoop->inGate() ? 1U : 0U);
+    }
+    return result;
 }
 
 bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,
@@ -4051,14 +4361,9 @@ bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,
     IEEE80211_ADDR_COPY(reply->i_addr3, apFirmwareConfig.bssid);
 
     const int error = iwn_send_ap_mgmt_frame(response, outputOffset);
-    XYLog("%s: AP probe request from "
-          "%02x:%02x:%02x:%02x:%02x:%02x directed=%u "
-          "response_queue=%d\n",
-          com.sc_dev.dv_xname,
-          request->i_addr2[0], request->i_addr2[1],
-          request->i_addr2[2], request->i_addr2[3],
-          request->i_addr2[4], request->i_addr2[5],
-          exactSsid ? 1U : 0U, error);
+    if (error != 0)
+        XYLog("%s: AP probe response queue failed error=%d\n",
+              com.sc_dev.dv_xname, error);
     explicit_bzero(response, templateLength);
     ::free(response);
     return true;
@@ -4089,6 +4394,35 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         return false;
     }
 
+    /*
+     * Authentication starts a fresh per-peer power-save lifetime.  Retire
+     * any buffered frames and remove the old AID from the beacon before the
+     * station can receive a new successful response.
+     */
+    if (apTimSet) {
+        const int timError = iwn_update_ap_tim(false);
+        if (timError != 0) {
+            XYLog("%s: AP authentication TIM clear failed error=%d\n",
+                  com.sc_dev.dv_xname, timError);
+            return true;
+        }
+    }
+    iwn_purge_ap_ps_queue();
+
+    if (apClientNodeInstalled &&
+        !IEEE80211_ADDR_EQ(apClientMac, request->i_addr2)) {
+        const int removeError = iwn_remove_ap_client_node(apClientMac);
+        if (removeError != 0) {
+            XYLog("%s: AP open authentication could not replace client "
+                  "remove=%d\n", com.sc_dev.dv_xname, removeError);
+            return true;
+        }
+        apClientNodeInstalled = false;
+        apClientAssociated = false;
+        apClientPowerSave = false;
+        apClientAid = 0;
+    }
+
     uint8_t response[sizeof(struct ieee80211_frame) + 6];
     bzero(response, sizeof(response));
     struct ieee80211_frame *wh =
@@ -4111,6 +4445,7 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
         apClientAuthenticated = true;
         apClientAssociated = false;
+        apClientPowerSave = false;
         apClientAid = 0;
     }
     XYLog("%s: AP open authentication request from "
@@ -4223,13 +4558,27 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     *out++ = sizeof(extendedRates);
     memcpy(out, extendedRates, sizeof(extendedRates));
 
-    int error = iwn_add_ap_client_node(request->i_addr2);
+    int error = 0;
+    if (!apClientNodeInstalled) {
+        error = iwn_add_ap_client_node(request->i_addr2);
+        if (error == 0)
+            apClientNodeInstalled = true;
+    } else {
+        /*
+         * Reassociation of the same station reuses its firmware table
+         * entry.  Reissuing ADD_STA for id 2 is a firmware-fatal contract
+         * violation; DVM removes the entry on disassociation, while a
+         * reassociation that arrives without that edge updates it in place.
+         */
+        error = iwn_wake_ap_client_node();
+    }
     if (error == 0)
         error = iwn_send_ap_client_link_quality();
     if (error == 0)
         error = iwn_send_ap_mgmt_frame(response, sizeof(response));
     if (error == 0) {
         apClientAssociated = true;
+        apClientPowerSave = false;
         apClientAid = aid;
     }
     XYLog("%s: AP association request from "
@@ -4239,6 +4588,106 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
           request->i_addr2[2], request->i_addr2[3],
           request->i_addr2[4], request->i_addr2[5],
           static_cast<unsigned>(aid), error);
+    return true;
+}
+
+bool ItlIwn::iwn_handle_ap_disconnect(
+    const struct ieee80211_frame *request, size_t frameLength)
+{
+    if (request == NULL ||
+        !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        frameLength < sizeof(*request) + sizeof(uint16_t) ||
+        (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+            IEEE80211_FC0_TYPE_MGT) {
+        return false;
+    }
+    const uint8_t subtype =
+        request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    if (subtype != IEEE80211_FC0_SUBTYPE_DEAUTH &&
+        subtype != IEEE80211_FC0_SUBTYPE_DISASSOC) {
+        return false;
+    }
+    if (!apClientNodeInstalled ||
+        !IEEE80211_ADDR_EQ(request->i_addr1, apFirmwareConfig.bssid) ||
+        !IEEE80211_ADDR_EQ(request->i_addr2, apClientMac)) {
+        return true;
+    }
+
+    const int removeError = iwn_remove_ap_client_node(apClientMac);
+    if (removeError == 0) {
+        if (apTimSet) {
+            const int timError = iwn_update_ap_tim(false);
+            if (timError != 0)
+                XYLog("%s: AP disconnect TIM clear failed error=%d\n",
+                      com.sc_dev.dv_xname, timError);
+        }
+        iwn_purge_ap_ps_queue();
+        apClientNodeInstalled = false;
+        apClientAuthenticated = false;
+        apClientAssociated = false;
+        apClientPowerSave = false;
+        apClientAid = 0;
+    }
+    XYLog("%s: AP client disconnect subtype=0x%02x remove=%d\n",
+          com.sc_dev.dv_xname, static_cast<unsigned>(subtype),
+          removeError);
+    return true;
+}
+
+bool ItlIwn::iwn_handle_ap_ps_poll(
+    const struct ieee80211_frame_pspoll *request, size_t frameLength)
+{
+    if (request == NULL ||
+        frameLength < sizeof(*request) ||
+        (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+            IEEE80211_FC0_TYPE_CTL ||
+        (request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) !=
+            IEEE80211_FC0_SUBTYPE_PS_POLL) {
+        return false;
+    }
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        !IEEE80211_ADDR_EQ(request->i_bssid,
+                           apFirmwareConfig.bssid)) {
+        return false;
+    }
+    if (!apClientAssociated ||
+        !IEEE80211_ADDR_EQ(request->i_ta, apClientMac) ||
+        (LE_READ_2(request->i_aid) & 0x3fff) != apClientAid) {
+        return true;
+    }
+
+    if (apPsQueueCount == 0) {
+        if (apTimSet) {
+            const int timError = iwn_update_ap_tim(false);
+            if (timError != 0)
+                XYLog("%s: AP empty PS-Poll TIM clear failed error=%d\n",
+                      com.sc_dev.dv_xname, timError);
+        }
+        return true;
+    }
+
+    mbuf_t packet = apPsQueue[apPsQueueHead];
+    const bool moreData = apPsQueueCount > 1;
+    const int error =
+        iwn_send_ap_data_frame(packet, moreData, true);
+    if (error == 0) {
+        apPsQueue[apPsQueueHead] = NULL;
+        apPsQueueHead =
+            (apPsQueueHead + 1) % IWN_AP_PS_QUEUE_LEN;
+        apPsQueueCount--;
+        if (apPsQueueCount == 0) {
+            const int timError = iwn_update_ap_tim(false);
+            if (timError != 0)
+                XYLog("%s: AP PS-Poll TIM clear failed error=%d\n",
+                      com.sc_dev.dv_xname, timError);
+        }
+    }
+    if (error != 0)
+        XYLog("%s: AP PS-Poll delivery failed aid=%u error=%d\n",
+              com.sc_dev.dv_xname,
+              static_cast<unsigned>(apClientAid), error);
     return true;
 }
 
@@ -4262,6 +4711,28 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
         !IEEE80211_ADDR_EQ(wh->i_addr1, apFirmwareConfig.bssid) ||
         !IEEE80211_ADDR_EQ(wh->i_addr2, apClientMac)) {
         return false;
+    }
+
+    /*
+     * DVM lets firmware learn the sleeping edge from the station's PM bit,
+     * but the awake edge is an explicit ADD_STA modify.  mac80211 expresses
+     * that edge as STA_NOTIFY_AWAKE and iwl_sta_modify_ps_wake() clears only
+     * STA_FLG_PWR_SAVE_MSK.  Mirror that exact command here before either a
+     * null-data frame is consumed or its Ethernet payload reaches BSD.
+     */
+    const bool powerSave =
+        (wh->i_fc[1] & IEEE80211_FC1_PWR_MGT) != 0;
+    if (powerSave) {
+        apClientPowerSave = true;
+    } else if (apClientPowerSave) {
+        const int wakeError = iwn_wake_ap_client_node();
+        if (wakeError == 0)
+            apClientPowerSave = false;
+        if (wakeError != 0)
+            XYLog("%s: AP client wake update failed error=%d\n",
+                  com.sc_dev.dv_xname, wakeError);
+        if (wakeError == 0)
+            iwn_drain_ap_ps_queue();
     }
 
     /*
@@ -4324,23 +4795,13 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
     }
 
     ml_enqueue(frames, ethernetPacket);
-    static uint32_t apDataRxCount = 0;
-    if (++apDataRxCount <= 16) {
-        XYLog("%s: AP Ethernet RX #%u ether_type=0x%04x "
-              "length=%u client=%02x:%02x:%02x:%02x:%02x:%02x\n",
-              com.sc_dev.dv_xname,
-              static_cast<unsigned>(apDataRxCount),
-              static_cast<unsigned>(ntohs(ethernetHeader->ether_type)),
-              static_cast<unsigned>(ethernetLength),
-              apClientMac[0], apClientMac[1], apClientMac[2],
-              apClientMac[3], apClientMac[4], apClientMac[5]);
-    }
     return true;
 }
 
 void ItlIwn::
 detach(IOPCIDevice *device)
 {
+    iwn_purge_ap_ps_queue();
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     struct iwn_softc *sc = &com;
 
@@ -4832,6 +5293,53 @@ int ItlIwn::iwn_add_ap_client_node(const uint8_t *macAddress)
     return com.ops.add_node(&com, &node, 1);
 }
 
+int ItlIwn::iwn_remove_ap_client_node(const uint8_t *macAddress)
+{
+    if (macAddress == NULL)
+        return EINVAL;
+
+    struct iwn_remove_node node;
+    bzero(&node, sizeof(node));
+    node.count = 1;
+    IEEE80211_ADDR_COPY(node.macaddr, macAddress);
+    return iwn_cmd(
+        &com, IWN_CMD_REMOVE_NODE, &node, sizeof(node), 1);
+}
+
+int ItlIwn::iwn_wake_ap_client_node()
+{
+    /*
+     * Exact DVM iwl_sta_modify_ps_wake() wire contract.  In iwn_node_info,
+     * control is ADD_STA.mode, htflags is station_flags and htmask is
+     * station_flags_msk.  A zero value under the PS mask marks station 2
+     * awake without disturbing its PAN identity or rate configuration.
+     */
+    struct iwn_node_info node;
+    bzero(&node, sizeof(node));
+    node.control = IWN_NODE_UPDATE;
+    node.id = IWN5000_ID_PAN_CLIENT;
+    node.htmask = htole32(IWN_PWR_SAVE);
+    return com.ops.add_node(&com, &node, 1);
+}
+
+int ItlIwn::iwn_allow_ap_client_sleep_tx()
+{
+    /*
+     * Exact DVM iwl_sta_modify_sleep_tx_count(..., 1) command.  This is
+     * issued for an immediately deliverable frame while the peer's PM bit
+     * says asleep; firmware consumes the count for the following TX.
+     */
+    struct iwn_node_info node;
+    bzero(&node, sizeof(node));
+    node.control = IWN_NODE_UPDATE;
+    node.id = IWN5000_ID_PAN_CLIENT;
+    node.flags = IWN_FLAG_SET_SLEEP_TX_COUNT;
+    node.htflags = htole32(IWN_PWR_SAVE);
+    node.htmask = htole32(IWN_PWR_SAVE);
+    node.sleep_tx_count = htole16(1);
+    return com.ops.add_node(&com, &node, 1);
+}
+
 int ItlIwn::iwn_send_ap_client_link_quality()
 {
     struct iwn_cmd_link_quality linkq;
@@ -5034,6 +5542,119 @@ int ItlIwn::iwn_send_ap_beacon(const struct ItlHalApConfig *config)
     explicit_bzero(command, commandLength);
     ::free(command);
     return error;
+}
+
+int ItlIwn::iwn_update_ap_tim(bool pending)
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        apClientAid == 0 ||
+        apFirmwareConfig.beaconTemplate != apFirmwareBeacon) {
+        return EINVAL;
+    }
+    if (apTimSet == pending)
+        return 0;
+
+    const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
+    size_t offset = fixedLength;
+    while (offset + 2 <= apFirmwareConfig.beaconTemplateLength) {
+        const size_t elementLength = apFirmwareBeacon[offset + 1];
+        if (offset + 2 + elementLength >
+            apFirmwareConfig.beaconTemplateLength) {
+            return EINVAL;
+        }
+        if (apFirmwareBeacon[offset] == IEEE80211_ELEMID_TIM) {
+            if (elementLength < 4)
+                return EINVAL;
+            const size_t bitmapOffset =
+                apFirmwareBeacon[offset + 4] & 0xfe;
+            const size_t aidByte = apClientAid >> 3;
+            const size_t bitmapLength = elementLength - 3;
+            if (aidByte < bitmapOffset ||
+                aidByte >= bitmapOffset + bitmapLength) {
+                return ENOTSUP;
+            }
+            uint8_t *aidBitmap =
+                &apFirmwareBeacon[offset + 5 +
+                    aidByte - bitmapOffset];
+            const uint8_t oldValue = *aidBitmap;
+            const uint8_t aidMask =
+                static_cast<uint8_t>(1U << (apClientAid & 7));
+            if (pending)
+                *aidBitmap |= aidMask;
+            else
+                *aidBitmap &= ~aidMask;
+            const int error =
+                iwn_send_ap_beacon(&apFirmwareConfig);
+            if (error != 0) {
+                *aidBitmap = oldValue;
+                return error;
+            }
+            apTimSet = pending;
+            return 0;
+        }
+        offset += 2 + elementLength;
+    }
+    return ENOENT;
+}
+
+int ItlIwn::iwn_queue_ap_ps_packet(mbuf_t packet, bool atFront)
+{
+    if (packet == NULL || !apPsQueueReady)
+        return EINVAL;
+    if (apPsQueueCount >= IWN_AP_PS_QUEUE_LEN)
+        return ENOBUFS;
+
+    const uint8_t oldHead = apPsQueueHead;
+    const uint8_t oldTail = apPsQueueTail;
+    if (atFront) {
+        apPsQueueHead =
+            (apPsQueueHead + IWN_AP_PS_QUEUE_LEN - 1) %
+                IWN_AP_PS_QUEUE_LEN;
+        apPsQueue[apPsQueueHead] = packet;
+    } else {
+        apPsQueue[apPsQueueTail] = packet;
+        apPsQueueTail =
+            (apPsQueueTail + 1) % IWN_AP_PS_QUEUE_LEN;
+    }
+    apPsQueueCount++;
+
+    if (apPsQueueCount == 1) {
+        const int timError = iwn_update_ap_tim(true);
+        if (timError != 0) {
+            if (atFront)
+                apPsQueue[apPsQueueHead] = NULL;
+            else
+                apPsQueue[oldTail] = NULL;
+            apPsQueueHead = oldHead;
+            apPsQueueTail = oldTail;
+            apPsQueueCount = 0;
+            return timError;
+        }
+    }
+    return 0;
+}
+
+void ItlIwn::iwn_drain_ap_ps_queue()
+{
+    while (!apClientPowerSave && apPsQueueCount != 0) {
+        mbuf_t packet = apPsQueue[apPsQueueHead];
+        const bool moreData = apPsQueueCount > 1;
+        const int error =
+            iwn_send_ap_data_frame(packet, moreData, false);
+        if (error != 0)
+            break;
+        apPsQueue[apPsQueueHead] = NULL;
+        apPsQueueHead =
+            (apPsQueueHead + 1) % IWN_AP_PS_QUEUE_LEN;
+        apPsQueueCount--;
+    }
+    if (apPsQueueCount == 0 && apTimSet) {
+        const int timError = iwn_update_ap_tim(false);
+        if (timError != 0)
+            XYLog("%s: AP awake-drain TIM clear failed error=%d\n",
+                  com.sc_dev.dv_xname, timError);
+    }
 }
 
 int ItlIwn::iwn_send_ap_rxon_assoc()
@@ -6681,7 +7302,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
      * coalesce that prefix with the rest of the command, but PAN q7 needs
      * the original transport shape.  Allocate the pool for that queue only.
      */
-    if (qid == IWN_IPAN_MGMT_QUEUE) {
+    if (qid == IWN_IPAN_MGMT_QUEUE || qid == IWN_IPAN_BE_QUEUE) {
         size = IWN_TX_RING_COUNT * IWN_TX_FIRST_TB_STRIDE;
         error = iwn_dma_contig_alloc(sc->sc_dmat, &ring->first_tb_dma,
             (void **)&ring->first_tb, size, IWN_TX_FIRST_TB_STRIDE);
@@ -6690,7 +7311,10 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
                 sc->sc_dev.dv_xname);
             goto fail;
         }
-        size = IWN_TX_RING_COUNT * IWN_AP_MGMT_PAYLOAD_SIZE;
+        const bus_size_t payloadStride =
+            qid == IWN_IPAN_BE_QUEUE ?
+                IWN_AP_DATA_PAYLOAD_SIZE : IWN_AP_MGMT_PAYLOAD_SIZE;
+        size = IWN_TX_RING_COUNT * payloadStride;
         error = iwn_dma_contig_alloc(sc->sc_dmat, &ring->ap_payload_dma,
             (void **)&ring->ap_payload, size, 64);
         if (error != 0) {
@@ -6710,6 +7334,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
         data->ap_mgmt = false;
+        data->ap_data = false;
         iwn_sae_tx_data_clear(data);
         paddr += sizeof (struct iwn_tx_cmd);
 
@@ -6757,6 +7382,7 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
         data->ap_mgmt = false;
+        data->ap_data = false;
         iwn_sae_tx_data_clear(data);
     }
     /* Clear TX descriptors. */
@@ -6808,6 +7434,7 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
         data->ap_mgmt = false;
+        data->ap_data = false;
         iwn_sae_tx_data_clear(data);
         if (data->map != NULL) {
             bus_dmamap_destroy(sc->sc_dmat, data->map);
@@ -8532,10 +9159,18 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
             ifp->netStat->inputErrors++;
             return;
         }
-    } else if (len < sizeof (*wh)) {
-        ic->ic_stats.is_rx_tooshort++;
-        ifp->netStat->inputErrors++;
-        return;
+    } else {
+        const uint8_t frameType =
+            len >= 1 ? head[0] & IEEE80211_FC0_TYPE_MASK : 0xff;
+        const size_t minimumLength =
+            frameType == IEEE80211_FC0_TYPE_CTL ?
+                sizeof(struct ieee80211_frame_cts) :
+                sizeof(*wh);
+        if (len < minimumLength) {
+            ic->ic_stats.is_rx_tooshort++;
+            ifp->netStat->inputErrors++;
+            return;
+        }
     }
     
     m1 = getController()->allocatePacket(IWN_RBUF_SIZE);
@@ -8627,6 +9262,16 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         return;
     }
     if (iwn_handle_ap_assoc_req(wh, len)) {
+        mbuf_freem(m);
+        return;
+    }
+    if (iwn_handle_ap_disconnect(wh, len)) {
+        mbuf_freem(m);
+        return;
+    }
+    if (iwn_handle_ap_ps_poll(
+            reinterpret_cast<const struct ieee80211_frame_pspoll *>(wh),
+            len)) {
         mbuf_freem(m);
         return;
     }
@@ -9299,14 +9944,35 @@ iwn5000_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     if (desc->qid < sc->first_agg_txq) {
         int txfail = (status != IWN_TX_STATUS_SUCCESS &&
                       status != IWN_TX_STATUS_DIRECT_DONE);
-        if (ring->data[desc->idx].ap_mgmt) {
-            XYLog("%s: AP management raw TX status=0x%02x "
+        mbuf_t apPsFilteredPacket = NULL;
+        if (status == IWN_TX_STATUS_FAIL_DEST_PS &&
+            ring->data[desc->idx].ap_data &&
+            ring->data[desc->idx].m != NULL) {
+            /*
+             * Linux reports DEST_PS as TX_FILTERED so mac80211 puts the
+             * same frame back behind the station's PS gate and advertises
+             * it through TIM.  Preserve the mbuf across normal completion;
+             * the AP PS queue becomes its new owner below.
+             */
+            apPsFilteredPacket = ring->data[desc->idx].m;
+            ring->data[desc->idx].m = NULL;
+        }
+        if ((ring->data[desc->idx].ap_mgmt ||
+             ring->data[desc->idx].ap_data) &&
+            status != IWN_TX_STATUS_SUCCESS &&
+            status != IWN_TX_STATUS_DIRECT_DONE &&
+            status != IWN_TX_STATUS_FAIL_DEST_PS) {
+            XYLog("%s: AP %s raw TX status=0x%02x "
                   "qid=%u idx=%u station=%u\n",
                   sc->sc_dev.dv_xname,
+                  ring->data[desc->idx].ap_data ? "data" : "management",
                   static_cast<unsigned>(status),
                   static_cast<unsigned>(desc->qid),
                   static_cast<unsigned>(desc->idx),
-                  static_cast<unsigned>(IWN5000_ID_PAN_BROADCAST));
+                  static_cast<unsigned>(
+                      ring->data[desc->idx].ap_data ?
+                          IWN5000_ID_PAN_CLIENT :
+                          IWN5000_ID_PAN_BROADCAST));
         }
         /* DIAGNOSTIC (auth-ACK boundary): capture the firmware TX status
          * for the pending AUTH(seq=1) frame. status==SUCCESS/DIRECT_DONE +
@@ -9340,8 +10006,18 @@ iwn5000_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         /* Reset TX scheduler slot. */
         iwn5000_reset_sched(sc, desc->qid, desc->idx);
 
-        that->iwn_tx_done(sc, desc, stat->ackfailcnt, stat->rate,
-                          stat->rflags, txfail, desc->qid, letoh16(stat->len));
+        that->iwn_tx_done(
+            sc, desc, stat->ackfailcnt, stat->rate, stat->rflags,
+            apPsFilteredPacket != NULL ? 0 : txfail,
+            desc->qid, letoh16(stat->len));
+        if (apPsFilteredPacket != NULL) {
+            that->apClientPowerSave = true;
+            const int queueError =
+                that->iwn_queue_ap_ps_packet(
+                    apPsFilteredPacket, true);
+            if (queueError != 0)
+                mbuf_freem(apPsFilteredPacket);
+        }
     } else {
         memcpy(&ssn, &stat->stat.status + stat->nframes, sizeof(ssn));
         ssn = le32toh(ssn) & 0xfff;
@@ -9370,6 +10046,7 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
     data->tx_apple_nrate_valid = 0;
     data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
     data->ap_mgmt = false;
+    data->ap_data = false;
     iwn_sae_tx_data_clear(data);
 }
 
@@ -9430,23 +10107,25 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     struct iwn_tx_data *data = &ring->data[desc->idx];
     struct iwn_node *wn = (struct iwn_node *)data->ni;
 
-    if (data->ap_mgmt) {
+    if (data->ap_mgmt || data->ap_data) {
         if (txfail)
             ifp->netStat->outputErrors++;
-        XYLog("%s: AP management TX complete subtype=0x%02x "
-              "auth_seq=%u peer=%02x:%02x:%02x:%02x:%02x:%02x "
-              "txfail=%d ackfailcnt=%u qid=%d\n",
-              sc->sc_dev.dv_xname, data->diag_subtype,
-              static_cast<unsigned>(data->diag_auth_seq),
-              data->diag_peer[0], data->diag_peer[1],
-              data->diag_peer[2], data->diag_peer[3],
-              data->diag_peer[4], data->diag_peer[5],
-              txfail, static_cast<unsigned>(ackfailcnt), qid);
+        if (txfail)
+            XYLog("%s: AP %s TX failed peer="
+                  "%02x:%02x:%02x:%02x:%02x:%02x "
+                  "ackfailcnt=%u qid=%d\n",
+                  sc->sc_dev.dv_xname,
+                  data->ap_data ? "data" : "management",
+                  data->diag_peer[0], data->diag_peer[1],
+                  data->diag_peer[2], data->diag_peer[3],
+                  data->diag_peer[4], data->diag_peer[5],
+                  static_cast<unsigned>(ackfailcnt), qid);
         if (data->m != NULL)
             mbuf_freem(data->m);
         data->m = NULL;
         data->totlen = 0;
         data->ap_mgmt = false;
+        data->ap_data = false;
         data->diag_subtype = 0xff;
         data->diag_auth_seq = 0xffff;
         explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
@@ -10766,6 +11445,8 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
     data->tx_apple_nrate = tx_apple_nrate;
     data->tx_apple_nrate_valid = tx_apple_nrate_valid ? 1 : 0;
     data->post_plti_trace_class = post_plti_trace_class;
+    data->ap_mgmt = false;
+    data->ap_data = false;
     iwn_sae_tx_data_clear(data);
     if (sae_request != NULL) {
         data->sae_active = true;

@@ -252,6 +252,7 @@ const char *convertApple80211IOCTLToString(signed int cmd);
 }
 
 class AirportItlwmAPSTAOwner;
+class IO80211NetworkPacket;
 struct apple80211_virt_if_create_data;
 
 /*
@@ -954,6 +955,7 @@ public:
     bool copyPermanentHardwareAddress(uint8_t *address) const;
     IOReturn materializeAPSTAInterface(
         const struct apple80211_virt_if_create_data *create);
+    void forwardAPSTAPacket(IO80211NetworkPacket *packet);
     void setAPSTADatapathEnabled(bool enable);
     void teardownAPSTAInterface();
     IOReturn deleteAPSTAOwnerForBSDName(const uint8_t *bsdName);
@@ -1022,6 +1024,7 @@ public:
     UInt32 fRxPendingCount;
     IOLock *fTxCompletionPendingLock;
     IOSkywalkPacket *fTxCompletionPendingPackets[kAirportItlwmTxCompletionPendingCapacity];
+    bool fTxCompletionPendingAPSTA[kAirportItlwmTxCompletionPendingCapacity];
     UInt32 fTxCompletionPendingHead;
     UInt32 fTxCompletionPendingTail;
     UInt32 fTxCompletionPendingCount;

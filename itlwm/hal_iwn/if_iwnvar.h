@@ -162,6 +162,7 @@ struct iwn_tx_data {
      * station rate-control path or releasing a synthetic node reference.
      */
     bool ap_mgmt;
+    bool ap_data;
 
     /*
      * Descriptor-local, credential-free ownership for a direct SAE
@@ -207,6 +208,7 @@ struct iwn_tx_ring {
 #define IWN_TX_FIRST_TB_SIZE           20
 #define IWN_TX_FIRST_TB_STRIDE         64
 #define IWN_AP_MGMT_PAYLOAD_SIZE       512
+#define IWN_AP_DATA_PAYLOAD_SIZE       2048
     struct iwn_dma_info    desc_dma;
     struct iwn_dma_info    cmd_dma;
     struct iwn_dma_info    first_tb_dma;

@@ -41,6 +41,10 @@
 
 #define super IO80211InfraProtocol
 OSDefineMetaClassAndStructors(AirportItlwmSkywalkInterface, IO80211InfraProtocol);
+#if __IO80211_TARGET >= __MAC_26_0
+OSDefineMetaClassAndStructors(AirportItlwmAPSTASkywalkInterface,
+                             IO80211SapProtocol);
+#endif
 
 static_assert(TahoeAssociationAuthContracts::kAuthWpa2Psk ==
                   APPLE80211_AUTHTYPE_WPA2_PSK,
@@ -1522,6 +1526,474 @@ airportItlwmTxQueueForIndex(AirportItlwm *driver, bool apsta,
         return nullptr;
     return driver->fTxQueue;
 }
+
+#if __IO80211_TARGET >= __MAC_26_0
+bool AirportItlwmAPSTASkywalkInterface::
+initWithController(AirportItlwm *provider, ether_addr *address, UInt role,
+                   char const *name)
+{
+    controller = nullptr;
+    bzero(&macAddress, sizeof(macAddress));
+    if (provider == nullptr || address == nullptr ||
+        !IO80211VirtualInterface::init(provider, address, role, name)) {
+        return false;
+    }
+
+    controller = provider;
+    macAddress = *address;
+    setInterfaceRole(role);
+    setInterfaceId(2);
+    setInitMacAddress(macAddress);
+    return true;
+}
+
+void AirportItlwmAPSTASkywalkInterface::free()
+{
+    IO80211VirtualInterface::free();
+    controller = nullptr;
+    bzero(&macAddress, sizeof(macAddress));
+}
+
+void *AirportItlwmAPSTASkywalkInterface::getInterfaceSubFamily()
+{
+    return reinterpret_cast<void *>(3);
+}
+
+const char *AirportItlwmAPSTASkywalkInterface::getBSDNamePrefix()
+{
+    return "ap";
+}
+
+UInt AirportItlwmAPSTASkywalkInterface::getBSDUnitNumber()
+{
+    return 1;
+}
+
+void *AirportItlwmAPSTASkywalkInterface::getController()
+{
+    return controller;
+}
+
+bool AirportItlwmAPSTASkywalkInterface::isCommandProhibited(int)
+{
+    return false;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+processBSDCommand(ifnet_t interface, UInt cmd, void *data)
+{
+    if ((isApple80211GetIoctl(cmd) || isApple80211SetIoctl(cmd)) &&
+        data != nullptr) {
+        apple80211req *request = static_cast<apple80211req *>(data);
+        if (request->req_data == nullptr)
+            return kIOReturnUnsupported;
+
+        const bool get = isApple80211GetIoctl(cmd);
+        switch (request->req_type) {
+            case APPLE80211_IOC_SSID:
+                return get
+                    ? getSSID(static_cast<apple80211_ssid_data *>(
+                          request->req_data))
+                    : setSSID(static_cast<apple80211_ssid_data *>(
+                          request->req_data));
+            case APPLE80211_IOC_CHANNEL:
+                return get
+                    ? getCHANNEL(static_cast<apple80211_channel_data *>(
+                          request->req_data))
+                    : setCHANNEL(static_cast<apple80211_channel_data *>(
+                          request->req_data));
+            case APPLE80211_IOC_STATE:
+                return get
+                    ? getSTATE(static_cast<apple80211_state_data *>(
+                          request->req_data))
+                    : kIOReturnUnsupported;
+            case APPLE80211_IOC_OP_MODE:
+                return get
+                    ? getOP_MODE(static_cast<apple80211_opmode_data *>(
+                          request->req_data))
+                    : kIOReturnUnsupported;
+            case APPLE80211_IOC_HOST_AP_MODE:
+                return get
+                    ? kIOReturnUnsupported
+                    : setHOST_AP_MODE(
+                          static_cast<apple80211_network_data *>(
+                              request->req_data));
+            case APPLE80211_IOC_POWER:
+                if (controller == nullptr)
+                    return kIOReturnNotReady;
+                return get
+                    ? controller->getPOWER(
+                          this, static_cast<apple80211_power_data *>(
+                                    request->req_data))
+                    : controller->setPOWER(
+                          this, static_cast<apple80211_power_data *>(
+                                    request->req_data));
+            default:
+                break;
+        }
+    }
+    return IO80211VirtualInterface::processBSDCommand(interface, cmd, data);
+}
+
+UInt64 AirportItlwmAPSTASkywalkInterface::getTxQueueDepth()
+{
+    return controller != nullptr && controller->fAPSTATxQueues[0] != nullptr
+        ? kAirportItlwmSkywalkQueueCapacity : 0;
+}
+
+UInt64 AirportItlwmAPSTASkywalkInterface::getRxQueueCapacity()
+{
+    return controller != nullptr && controller->fAPSTARxQueue != nullptr
+        ? kAirportItlwmSkywalkQueueCapacity : 0;
+}
+
+void *AirportItlwmAPSTASkywalkInterface::getMultiCastQueue()
+{
+    return controller != nullptr ? controller->fAPSTAMultiCastQueue : nullptr;
+}
+
+int AirportItlwmAPSTASkywalkInterface::getTxHeadroom()
+{
+    return kAirportItlwmAPSTADefaultTxHeadroom;
+}
+
+void *AirportItlwmAPSTASkywalkInterface::getRxCompQueue()
+{
+    return controller != nullptr ? controller->fAPSTARxQueue : nullptr;
+}
+
+void *AirportItlwmAPSTASkywalkInterface::getTxCompQueue()
+{
+    return controller != nullptr ? controller->fAPSTATxCompQueue : nullptr;
+}
+
+void *AirportItlwmAPSTASkywalkInterface::
+getTxSubQueue(apple80211_wme_ac ac)
+{
+    return airportItlwmTxQueueForIndex(
+        controller, true, static_cast<unsigned char>(ac.value));
+}
+
+void *AirportItlwmAPSTASkywalkInterface::getTxPacketPool()
+{
+    return controller != nullptr ? controller->fAPSTATxPool : nullptr;
+}
+
+void *AirportItlwmAPSTASkywalkInterface::getRxPacketPool()
+{
+    return controller != nullptr ? controller->fAPSTARxPool : nullptr;
+}
+
+void AirportItlwmAPSTASkywalkInterface::enableDatapath()
+{
+    AirportItlwm *driver = controller;
+    if (driver == nullptr)
+        return;
+    if (driver->fAPSTATxCompQueue != nullptr)
+        driver->fAPSTATxCompQueue->enable();
+    if (driver->fAPSTARxQueue != nullptr) {
+        driver->fAPSTARxQueue->enable();
+        (void)driver->fAPSTARxQueue->requestEnqueue(nullptr, 0);
+    }
+    for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+        if (driver->fAPSTATxQueues[i] != nullptr)
+            driver->fAPSTATxQueues[i]->enable();
+    }
+}
+
+void AirportItlwmAPSTASkywalkInterface::disableDatapath()
+{
+    AirportItlwm *driver = controller;
+    if (driver == nullptr)
+        return;
+    for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+        if (driver->fAPSTATxQueues[i] != nullptr)
+            driver->fAPSTATxQueues[i]->disable();
+    }
+    if (driver->fAPSTAMultiCastQueue != nullptr)
+        driver->fAPSTAMultiCastQueue->disable();
+    if (driver->fAPSTARxQueue != nullptr)
+        driver->fAPSTARxQueue->disable();
+    if (driver->fAPSTATxCompQueue != nullptr)
+        driver->fAPSTATxCompQueue->disable();
+}
+
+int AirportItlwmAPSTASkywalkInterface::getNumTxQueues()
+{
+    return controller != nullptr && controller->fAPSTATxQueues[0] != nullptr
+        ? kAirportItlwmAPSTATxSubQueueCount : 0;
+}
+
+void AirportItlwmAPSTASkywalkInterface::
+forwardPacket(IO80211NetworkPacket *packet)
+{
+    if (controller != nullptr)
+        controller->forwardAPSTAPacket(packet);
+}
+
+void AirportItlwmAPSTASkywalkInterface::setMacAddress(ether_addr &address)
+{
+    if (controller == nullptr || controller->fAPSTAOwner == nullptr)
+        return;
+    if (controller->fAPSTAOwner->setMacAddress(address.octet) ==
+        kIOReturnSuccess) {
+        macAddress = address;
+        setInitMacAddress(macAddress);
+    }
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getSSID(struct apple80211_ssid_data *data)
+{
+    return controller != nullptr
+        ? controller->getAPSTA_SSID(
+              this, reinterpret_cast<AirportItlwmAPSTASsidDataLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getCHANNEL(struct apple80211_channel_data *data)
+{
+    return controller != nullptr
+        ? controller->getCHANNEL(this, data) : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getSTATE(struct apple80211_state_data *data)
+{
+    return controller != nullptr
+        ? controller->getAPSTA_STATE(
+              this, reinterpret_cast<AirportItlwmAPSTAStateDataLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getOP_MODE(struct apple80211_opmode_data *data)
+{
+    return controller != nullptr
+        ? controller->getAPSTA_OP_MODE(
+              this, reinterpret_cast<AirportItlwmAPSTAOpModeDataLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getSTATION_LIST(struct apple80211_sta_data *data)
+{
+    return controller != nullptr
+        ? controller->getAPSTA_STATION_LIST(this, data) : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getSTA_IE_LIST(struct apple80211_sta_ie_data *data)
+{
+    return controller != nullptr
+        ? controller->getAPSTA_STA_IE_LIST(
+              this, reinterpret_cast<AirportItlwmAPSTAStaIEDataLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getKEY_RSC(struct apple80211_key *data)
+{
+    return controller != nullptr
+        ? controller->getAPSTA_KEY_RSC(
+              this, reinterpret_cast<AirportItlwmAPSTAKeyRscDataLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getSTA_STATS(struct apple80211_sta_stats_data *data)
+{
+    return controller != nullptr
+        ? controller->getAPSTA_STA_STATS(
+              this, reinterpret_cast<AirportItlwmAPSTAStaStatsDataLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getPEER_CACHE_MAXIMUM_SIZE(
+    struct apple80211_peer_cache_maximum_size *data)
+{
+    return controller != nullptr
+        ? controller->getAPSTA_PEER_CACHE_MAXIMUM_SIZE(
+              this,
+              reinterpret_cast<
+                  AirportItlwmAPSTAPeerCacheMaximumSizeLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getHOST_AP_MODE_HIDDEN(struct apple80211_host_ap_mode_hidden_t *data)
+{
+    return controller != nullptr
+        ? controller->getHOST_AP_MODE_HIDDEN(
+              this,
+              reinterpret_cast<
+                  AirportItlwmAPSTAHostApModeHiddenOutputLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getSOFTAP_PARAMS(struct apple80211_softap_params *data)
+{
+    return controller != nullptr
+        ? controller->getSOFTAP_PARAMS(
+              this,
+              reinterpret_cast<AirportItlwmAPSTASoftAPParamsOutputLayout *>(
+                  data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+getSOFTAP_STATS(struct apple80211_softap_stats *data)
+{
+    return controller != nullptr
+        ? controller->getSOFTAP_STATS(
+              this,
+              reinterpret_cast<AirportItlwmAPSTASoftAPStatsLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setSSID(struct apple80211_ssid_data *data)
+{
+    return controller != nullptr
+        ? controller->setAPSTA_SSID(this, data) : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setCIPHER_KEY(struct apple80211_key *data)
+{
+    return controller != nullptr
+        ? controller->setAPSTA_CIPHER_KEY(this, data) : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setCHANNEL(struct apple80211_channel_data *data)
+{
+    return controller != nullptr
+        ? controller->setAPSTA_CHANNEL(this, data) : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setHOST_AP_MODE(struct apple80211_network_data *data)
+{
+    return controller != nullptr
+        ? controller->setHOST_AP_MODE(
+              this,
+              reinterpret_cast<
+                  AirportItlwmAPSTAHostApModeNetworkDataLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setSTA_AUTHORIZE(struct apple80211_sta_authorize_data *data)
+{
+    return controller != nullptr
+        ? controller->setSTA_AUTHORIZE(
+              this,
+              reinterpret_cast<AirportItlwmAPSTAStaAuthorizeInputLayout *>(
+                  data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setSTA_DISASSOCIATE(struct apple80211_sta_disassoc_data *data)
+{
+    return controller != nullptr
+        ? controller->setSTA_DISASSOCIATE(
+              this,
+              reinterpret_cast<AirportItlwmAPSTAStaDisassocInputLayout *>(data),
+              false)
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setSTA_DEAUTH(struct apple80211_sta_disassoc_data *data)
+{
+    return controller != nullptr
+        ? controller->setSTA_DISASSOCIATE(
+              this,
+              reinterpret_cast<AirportItlwmAPSTAStaDisassocInputLayout *>(data),
+              true)
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setRSN_CONF(struct apple80211_rsn_conf_data *data)
+{
+    return controller != nullptr
+        ? controller->setRSN_CONF(this, data) : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setPEER_CACHE_CONTROL(struct apple80211_peer_cache_control *data)
+{
+    return controller != nullptr
+        ? controller->setPEER_CACHE_CONTROL(
+              this,
+              reinterpret_cast<AirportItlwmAPSTAPeerCacheControlLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setHOST_AP_MODE_HIDDEN(struct apple80211_host_ap_mode_hidden_t *data)
+{
+    return controller != nullptr
+        ? controller->setHOST_AP_MODE_HIDDEN(
+              this,
+              reinterpret_cast<AirportItlwmAPSTAHostApModeHiddenLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setSOFTAP_PARAMS(struct apple80211_softap_params *data)
+{
+    return controller != nullptr
+        ? controller->setSOFTAP_PARAMS(
+              this,
+              reinterpret_cast<AirportItlwmAPSTASoftAPParamsInputLayout *>(
+                  data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setSOFTAP_TRIGGER_CSA(struct apple80211_softap_csa_params *data)
+{
+    return controller != nullptr
+        ? controller->setSOFTAP_TRIGGER_CSA(
+              this, reinterpret_cast<AirportItlwmAPSTACsaInputLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setSOFTAP_WIFI_NETWORK_INFO_IE(
+    struct apple80211_softap_wifi_network_info *data)
+{
+    return controller != nullptr
+        ? controller->setSOFTAP_WIFI_NETWORK_INFO_IE(
+              this,
+              reinterpret_cast<
+                  AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *>(data))
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setSOFTAP_EXTENDED_CAPABILITIES_IE(
+    struct apple80211_softap_extended_capabilities_info *data)
+{
+    return controller != nullptr
+        ? controller->setSOFTAP_EXTENDED_CAPABILITIES_IE(this, data)
+        : kIOReturnNotReady;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::
+setMIS_MAX_STA(struct apple80211_mis_max_sta *data)
+{
+    return controller != nullptr
+        ? controller->setMIS_MAX_STA(this, data) : kIOReturnNotReady;
+}
+#endif
 
 SInt64 AirportItlwmSkywalkInterface::
 pendingPackets(unsigned char queueId)
@@ -3941,7 +4413,7 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
      * true means the transition was accepted, false means it was rejected.
      */
     if (ret &&
-        instance != nullptr && instance->fNetIf != nullptr &&
+        instance != nullptr && this == instance->fNetIf &&
         (state == kIO80211NetworkLinkUp ||
          state == kIO80211NetworkLinkDown)) {
         apple80211_link_changed_event_data ed;
@@ -3998,6 +4470,23 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
 void AirportItlwmSkywalkInterface::
 setCurrentApAddress(ether_addr *addr)
 {
+    /*
+     * The C++ vptr starts 16 bytes after the __ZTV symbol.  In Apple's
+     * concrete APSTA vtable, forwardPacket(IO80211NetworkPacket *) is stored
+     * at __ZTV+0xe88, therefore the machine-call offset is vptr+0xe78.
+     * The linked local IO80211InfraProtocol vtable places
+     * setCurrentApAddress at that exact vptr-relative offset.  The pointer
+     * parameter has the same machine ABI, so alias only role 7 and preserve
+     * the ordinary infra setter for the primary STA.
+     */
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP) {
+        AirportItlwm *controller = instance;
+        if (controller != nullptr) {
+            controller->forwardAPSTAPacket(
+                reinterpret_cast<IO80211NetworkPacket *>(addr));
+        }
+        return;
+    }
     IO80211InfraInterface::setCurrentApAddress(addr);
 }
 

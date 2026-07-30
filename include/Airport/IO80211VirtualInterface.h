@@ -1,13 +1,20 @@
 #ifndef IO80211VirtualInterface_h
 #define IO80211VirtualInterface_h
 
+#if __IO80211_TARGET >= __MAC_26_0
+#include "IO80211SkywalkInterface.h"
+#else
 #include "IO80211Interface.h"
+#endif
 #include "apple_private_spi.h"
 
+#if __IO80211_TARGET < __MAC_26_0
 typedef UInt64 IO80211FlowQueueHash;
+#endif
 typedef UInt kIO80211InterfaceType;
 class IO80211PeerManager;
 class RSNSupplicant;
+class IO80211Controller;
 
 struct TxPacketRequest;
 struct ifmediareq;
@@ -17,6 +24,132 @@ struct apple80211_awdl_statistics;
 struct apple80211_lowlatency_peer_statistics_evevt;
 struct apple80211_p2p_airplay_statistics;
 struct apple80211_awdl_sidecar_statistics;
+
+#if __IO80211_TARGET >= __MAC_26_0
+
+/*
+ * Tahoe 25C56 ABI.
+ *
+ * IO80211VirtualInterface::superClass resolves to
+ * IO80211SkywalkInterface::gMetaClass in the KDK image.  The previous local
+ * IOService inheritance was a pre-Skywalk declaration and cannot be used for
+ * role-7 SAP objects: it omits the complete Skywalk prefix and consequently
+ * never installs the VirtualInterface ifnet/output pipeline.
+ *
+ * IO80211SkywalkInterface ends at __ZTV slot 462.  The declarations below are
+ * the exact 25C56 extension at slots 463..504; setMacAddress at 488 is pure in
+ * the family base and the sixteen reserved entries occupy 489..504.
+ */
+struct peerSlotDataStats;
+struct packetCounters_t;
+
+class IO80211VirtualInterface : public IO80211SkywalkInterface {
+    OSDeclareAbstractStructors(IO80211VirtualInterface)
+
+public:
+    virtual void free() APPLE_KEXT_OVERRIDE;
+    virtual bool start(IOService *) APPLE_KEXT_OVERRIDE;
+    virtual void stop(IOService *) APPLE_KEXT_OVERRIDE;
+    virtual IOReturn enable(UInt) APPLE_KEXT_OVERRIDE;
+    virtual bool attach(IOService *) APPLE_KEXT_OVERRIDE;
+    virtual void detach(IOService *) APPLE_KEXT_OVERRIDE;
+    virtual bool terminate(IOOptionBits = 0) APPLE_KEXT_OVERRIDE;
+    virtual IOReturn configureReport(IOReportChannelList *, UInt, void *,
+                                     void *) APPLE_KEXT_OVERRIDE;
+    virtual IOReturn updateReport(IOReportChannelList *, UInt, void *,
+                                  void *) APPLE_KEXT_OVERRIDE;
+    virtual bool prepareBSDInterface(ifnet_t, UInt) APPLE_KEXT_OVERRIDE;
+    virtual IOReturn processBSDCommand(ifnet_t, UInt, void *)
+        APPLE_KEXT_OVERRIDE;
+    virtual SInt32 setInterfaceEnable(bool) APPLE_KEXT_OVERRIDE;
+    virtual UInt32 getFeatureFlags() APPLE_KEXT_OVERRIDE;
+    virtual void *createPeerManager() APPLE_KEXT_OVERRIDE;
+    virtual void postMessage(UInt, void *, unsigned long, bool)
+        APPLE_KEXT_OVERRIDE;
+    virtual IOReturn inputPacket(IO80211NetworkPacket *, packet_info_tag *,
+                                 ether_header *, bool *, bool)
+        APPLE_KEXT_OVERRIDE;
+    virtual SInt64 pendingPackets(unsigned char) APPLE_KEXT_OVERRIDE;
+    virtual SInt64 packetSpace(unsigned char) APPLE_KEXT_OVERRIDE;
+    virtual IO80211LinkState linkState() APPLE_KEXT_OVERRIDE;
+    virtual void setScanningState(UInt, bool, apple80211_scan_data *, int)
+        APPLE_KEXT_OVERRIDE;
+    virtual void updateLinkParameters(apple80211_interface_availability *)
+        APPLE_KEXT_OVERRIDE;
+    virtual void updateInterfaceCoexRiskPct(unsigned long long)
+        APPLE_KEXT_OVERRIDE;
+    virtual SInt64 getWmeTxCounters(unsigned long long *)
+        APPLE_KEXT_OVERRIDE;
+    virtual void setWoWEnabled(bool) APPLE_KEXT_OVERRIDE;
+    virtual bool wowEnabled() APPLE_KEXT_OVERRIDE;
+    virtual void printDataPath(userPrintCtx *) APPLE_KEXT_OVERRIDE;
+    virtual bool findOrCreateFlowQueue(IO80211FlowQueueHash)
+        APPLE_KEXT_OVERRIDE;
+    virtual UInt64 findOrCreateFlowQueueWithCache(IO80211FlowQueueHash, bool *)
+        APPLE_KEXT_OVERRIDE;
+    virtual UInt64 findExistingFlowQueue(IO80211FlowQueueHash)
+        APPLE_KEXT_OVERRIDE;
+    virtual void removePacketQueue(IO80211FlowQueueHash const *)
+        APPLE_KEXT_OVERRIDE;
+    virtual void flushPacketQueues() APPLE_KEXT_OVERRIDE;
+    virtual void setDebugFlags(unsigned long long, UInt)
+        APPLE_KEXT_OVERRIDE;
+    virtual SInt64 debugFlags() APPLE_KEXT_OVERRIDE;
+    virtual int getEventPipeSize() APPLE_KEXT_OVERRIDE;
+    virtual UInt64 createEventPipe(IO80211APIUserClient *)
+        APPLE_KEXT_OVERRIDE;
+    virtual void *getP2PSkywalkPeerMgr() APPLE_KEXT_OVERRIDE;
+    virtual void *findPeer(ether_addr &) APPLE_KEXT_OVERRIDE;
+
+    virtual bool init(IO80211Controller *, ether_addr *, UInt, char const *);
+    virtual void setLinkState(IO80211LinkState, UInt);
+    virtual void forwardPacket(IO80211NetworkPacket *);
+    virtual void handleIoctl(ifnet_t, unsigned long, void *);
+    virtual void addPeerToCache(unsigned char *);
+    virtual void deletePeerFromCache(unsigned char *);
+    virtual bool handleDebugCmd(apple80211_debug_command *);
+    virtual IOReturn getPeerSlotDataStats(ether_addr *, bool,
+                                          peerSlotDataStats *);
+    virtual IOReturn getPeerDataStats(ether_addr *, bool, packetCounters_t *);
+    virtual IOReturn clearPeerDataStats(ether_addr *, bool);
+    virtual void setAwdlCurrentChannelSequenceIndex(UInt);
+    virtual bool isOutputFlowControlled();
+    virtual void setOutputFlowControlled();
+    virtual void clearOutputFlowControlled();
+    virtual void flushFlowQueues(ether_addr *);
+    virtual UInt32 configureAQMOutput();
+    virtual bool attachToBpf();
+    virtual bool configureIfnet();
+    virtual void reset();
+    virtual void dupAndTransmitMcastPacket(IO80211NetworkPacket *,
+                                           unsigned char *,
+                                           unsigned char *);
+    virtual void freeMulticastPacket(IO80211NetworkPacket *);
+    virtual void triggerAWDLMulticastTx(UInt, unsigned char);
+    virtual void p2pMulticastTx(IO80211NetworkPacket **, UInt);
+    virtual void sendPendingPacketsToStack(IO80211NetworkPacket **, UInt);
+    virtual void freePendingPackets(IO80211NetworkPacket **, UInt);
+    virtual void setMacAddress(ether_addr &) = 0;
+
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  0);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  1);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  2);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  3);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  4);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  5);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  6);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  7);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  8);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface,  9);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface, 10);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface, 11);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface, 12);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface, 13);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface, 14);
+    OSMetaClassDeclareReservedUnused(IO80211VirtualInterface, 15);
+};
+
+#else
 
 class IO80211VirtualInterface : public IOService {
     OSDeclareDefaultStructors(IO80211VirtualInterface)
@@ -251,5 +384,6 @@ public:
     char buf[0x300];
 };
 
+#endif /* __IO80211_TARGET >= __MAC_26_0 */
 
 #endif /* IO80211VirtualInterface_h */

@@ -10,10 +10,8 @@
 #ifndef IO80211SapProtocol_h
 #define IO80211SapProtocol_h
 
-#include "IO80211SkywalkInterface.h"
+#include "IO80211VirtualInterface.h"
 #include "apple80211_var.h"
-
-class IO80211SapProtocol;
 
 struct apple80211_host_ap_mode_hidden_t;
 struct apple80211_mis_max_sta;
@@ -30,6 +28,63 @@ struct apple80211_sta_ie_data;
 struct apple80211_sta_stats_data;
 
 #if __IO80211_TARGET >= __MAC_26_0
+
+/*
+ * Tahoe's metaclass chain is:
+ *
+ *   IO80211SapProtocol -> IO80211VirtualInterface
+ *                       -> IO80211SkywalkInterface
+ *
+ * Slots 505..531 are pure in the 25C56 family image and are implemented by
+ * AppleBCMWLANIO80211APSTAInterface in the reference driver.  Keeping the
+ * complete class declaration here lets a third-party role-7 object inherit
+ * the real VirtualInterface ifnet/output machinery while providing the SAP
+ * control plane locally.
+ */
+class IO80211SapProtocol : public IO80211VirtualInterface {
+    OSDeclareAbstractStructors(IO80211SapProtocol)
+
+public:
+    virtual IOReturn getSSID(struct apple80211_ssid_data *) = 0;
+    virtual IOReturn getCHANNEL(struct apple80211_channel_data *) = 0;
+    virtual IOReturn getSTATE(struct apple80211_state_data *) = 0;
+    virtual IOReturn getOP_MODE(struct apple80211_opmode_data *) = 0;
+    virtual IOReturn getSTATION_LIST(struct apple80211_sta_data *) = 0;
+    virtual IOReturn getSTA_IE_LIST(struct apple80211_sta_ie_data *) = 0;
+    virtual IOReturn getKEY_RSC(struct apple80211_key *) = 0;
+    virtual IOReturn getSTA_STATS(struct apple80211_sta_stats_data *) = 0;
+    virtual IOReturn getPEER_CACHE_MAXIMUM_SIZE(
+        struct apple80211_peer_cache_maximum_size *) = 0;
+    virtual IOReturn getHOST_AP_MODE_HIDDEN(
+        struct apple80211_host_ap_mode_hidden_t *) = 0;
+    virtual IOReturn getSOFTAP_PARAMS(struct apple80211_softap_params *) = 0;
+    virtual IOReturn getSOFTAP_STATS(struct apple80211_softap_stats *) = 0;
+
+    virtual IOReturn setSSID(struct apple80211_ssid_data *) = 0;
+    virtual IOReturn setCIPHER_KEY(struct apple80211_key *) = 0;
+    virtual IOReturn setCHANNEL(struct apple80211_channel_data *) = 0;
+    virtual IOReturn setHOST_AP_MODE(struct apple80211_network_data *) = 0;
+    virtual IOReturn setSTA_AUTHORIZE(
+        struct apple80211_sta_authorize_data *) = 0;
+    virtual IOReturn setSTA_DISASSOCIATE(
+        struct apple80211_sta_disassoc_data *) = 0;
+    virtual IOReturn setSTA_DEAUTH(
+        struct apple80211_sta_disassoc_data *) = 0;
+    virtual IOReturn setRSN_CONF(struct apple80211_rsn_conf_data *) = 0;
+    virtual IOReturn setPEER_CACHE_CONTROL(
+        struct apple80211_peer_cache_control *) = 0;
+    virtual IOReturn setHOST_AP_MODE_HIDDEN(
+        struct apple80211_host_ap_mode_hidden_t *) = 0;
+    virtual IOReturn setSOFTAP_PARAMS(
+        struct apple80211_softap_params *) = 0;
+    virtual IOReturn setSOFTAP_TRIGGER_CSA(
+        struct apple80211_softap_csa_params *) = 0;
+    virtual IOReturn setSOFTAP_WIFI_NETWORK_INFO_IE(
+        struct apple80211_softap_wifi_network_info *) = 0;
+    virtual IOReturn setSOFTAP_EXTENDED_CAPABILITIES_IE(
+        struct apple80211_softap_extended_capabilities_info *) = 0;
+    virtual IOReturn setMIS_MAX_STA(struct apple80211_mis_max_sta *) = 0;
+};
 
 enum {
     kIO80211VtableSlotByteStride = 8,

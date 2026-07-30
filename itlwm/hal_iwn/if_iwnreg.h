@@ -449,6 +449,7 @@ struct iwn_tx_cmd {
 #define IWN_CMD_EDCA_PARAMS         19
 #define IWN_CMD_TIMING             20
 #define IWN_CMD_ADD_NODE         24
+#define IWN_CMD_REMOVE_NODE      25
 #define IWN_CMD_TX_DATA             28
 #define IWN_CMD_LINK_QUALITY         78
 #define IWN_CMD_SET_LED             72
@@ -659,6 +660,7 @@ struct iwn_node_info {
  * no VI timeslice is active.
  */
 #define IWN_IPAN_MGMT_QUEUE      7
+#define IWN_IPAN_BE_QUEUE        5
 #define IWN_IPAN_CMD_QUEUE       9
 
     uint8_t        flags;
@@ -667,6 +669,7 @@ struct iwn_node_info {
 #define IWN_FLAG_SET_TXRATE        (1 << 2)
 #define IWN_FLAG_SET_ADDBA        (1 << 3)
 #define IWN_FLAG_SET_DELBA        (1 << 4)
+#define IWN_FLAG_SET_SLEEP_TX_COUNT    (1 << 5)
 
     uint16_t    reserved3;
     uint16_t    kflags;
@@ -690,6 +693,7 @@ struct iwn_node_info {
     uint32_t    htflags;
 #define IWN_AMDPU_SIZE_FACTOR(x)    ((x) << 19)
 #define IWN_AMDPU_SIZE_FACTOR_MASK    ((0x3) << 19)
+#define IWN_PWR_SAVE             (1 << 8)
 #define IWN_PAN_STATION        (1 << 13)
 #define IWN_40MHZ_ENABLE        (1 << 21)
 #define IWN_MIMO_DISABLE        (1 << 22)
@@ -702,7 +706,16 @@ struct iwn_node_info {
     uint8_t        addba_tid;
     uint8_t        delba_tid;
     uint16_t    addba_ssn;
-    uint32_t    reserved7;
+    uint16_t    sleep_tx_count;
+    uint16_t    reserved7;
+} __packed;
+
+/* Structure for command IWN_CMD_REMOVE_NODE. */
+struct iwn_remove_node {
+    uint8_t        count;
+    uint8_t        reserved1[3];
+    uint8_t        macaddr[IEEE80211_ADDR_LEN];
+    uint16_t    reserved2;
 } __packed;
 
 struct iwn4965_node_info {
@@ -727,7 +740,8 @@ struct iwn4965_node_info {
     uint8_t        addba_tid;
     uint8_t        delba_tid;
     uint16_t    addba_ssn;
-    uint32_t    reserved7;
+    uint16_t    sleep_tx_count;
+    uint16_t    reserved7;
 } __packed;
 
 #define IWN_RFLAG_MCS        (1 << 0)

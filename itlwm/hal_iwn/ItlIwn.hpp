@@ -86,6 +86,7 @@ public:
     bool supportsAPMode() const override;
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
+    IOReturn transmitAPData(mbuf_t packet) override;
     void iwn_reset_ap_runtime_state();
     int iwn_build_ap_rxon(struct iwn_rxon *, const struct ItlHalApConfig *);
     int iwn_send_ap_pan_params(const struct ItlHalApConfig *);
@@ -93,6 +94,9 @@ public:
     int iwn_add_ap_broadcast_node();
     int iwn_send_ap_broadcast_link_quality(int);
     int iwn_add_ap_client_node(const uint8_t *);
+    int iwn_remove_ap_client_node(const uint8_t *);
+    int iwn_wake_ap_client_node();
+    int iwn_allow_ap_client_sleep_tx();
     int iwn_send_ap_client_link_quality();
     int iwn_send_ap_sensitivity();
     int iwn_send_ap_timing(const struct ItlHalApConfig *);
@@ -100,9 +104,20 @@ public:
     int iwn_send_ap_beacon(const struct ItlHalApConfig *);
     int iwn_send_ap_rxon_assoc();
     int iwn_send_ap_mgmt_frame(const void *, size_t);
+    int iwn_send_ap_data_frame(mbuf_t, bool moreData = false,
+        bool psDelivery = false);
+    int iwn_update_ap_tim(bool);
+    int iwn_queue_ap_ps_packet(mbuf_t, bool atFront = false);
+    void iwn_purge_ap_ps_queue();
+    void iwn_drain_ap_ps_queue();
+    static IOReturn iwn_ap_data_tx_action(OSObject *, void *, void *,
+        void *, void *);
     bool iwn_handle_ap_probe_req(const struct ieee80211_frame *, size_t);
     bool iwn_handle_ap_open_auth(const struct ieee80211_frame *, size_t);
     bool iwn_handle_ap_assoc_req(const struct ieee80211_frame *, size_t);
+    bool iwn_handle_ap_disconnect(const struct ieee80211_frame *, size_t);
+    bool iwn_handle_ap_ps_poll(
+        const struct ieee80211_frame_pspoll *, size_t);
     bool iwn_handle_ap_data(mbuf_t, size_t, struct mbuf_list *);
     void iwn_note_ap_firmware_event(int, int);
     void iwn_continue_ap_after_deactivation();
@@ -450,9 +465,18 @@ public:
     uint8_t apFirmwareSsid[IEEE80211_NWID_LEN];
     uint8_t apFirmwareBeacon[MCLBYTES];
     uint8_t apClientMac[IEEE80211_ADDR_LEN];
+    bool apClientNodeInstalled;
     bool apClientAuthenticated;
     bool apClientAssociated;
+    bool apClientPowerSave;
     uint16_t apClientAid;
+    enum { IWN_AP_PS_QUEUE_LEN = 16 };
+    mbuf_t apPsQueue[IWN_AP_PS_QUEUE_LEN];
+    uint8_t apPsQueueHead;
+    uint8_t apPsQueueTail;
+    uint8_t apPsQueueCount;
+    bool apPsQueueReady;
+    bool apTimSet;
     struct pci_attach_args pci;
     struct iwn_softc com;
 };

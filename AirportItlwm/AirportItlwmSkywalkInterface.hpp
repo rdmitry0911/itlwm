@@ -35,6 +35,87 @@ class AirportItlwm;
 struct AirportItlwmIwnDirectSaeCredentialRequest;
 #endif
 
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * Role-7 must be a real SAP/VirtualInterface object.  Reusing the primary
+ * IO80211InfraProtocol class creates a visible BSD AP interface, but it does
+ * not install IO80211VirtualInterface::configureIfnet/forwardPacket and the
+ * outbound AP path is therefore never entered.
+ */
+class AirportItlwmAPSTASkywalkInterface : public IO80211SapProtocol {
+    OSDeclareDefaultStructors(AirportItlwmAPSTASkywalkInterface)
+
+public:
+    bool initWithController(AirportItlwm *, ether_addr *, UInt,
+                            char const *);
+    void free() override;
+
+    void *getInterfaceSubFamily() override;
+    const char *getBSDNamePrefix() override;
+    UInt getBSDUnitNumber() override;
+    void *getController() override;
+    bool isCommandProhibited(int) override;
+    IOReturn processBSDCommand(ifnet_t, UInt, void *) override;
+
+    UInt64 getTxQueueDepth() override;
+    UInt64 getRxQueueCapacity() override;
+    void *getMultiCastQueue() override;
+    int getTxHeadroom() override;
+    void *getRxCompQueue() override;
+    void *getTxCompQueue() override;
+    void *getTxSubQueue(apple80211_wme_ac) override;
+    void *getTxPacketPool() override;
+    void *getRxPacketPool() override;
+    void enableDatapath() override;
+    void disableDatapath() override;
+    int getNumTxQueues() override;
+
+    void forwardPacket(IO80211NetworkPacket *) override;
+    void setMacAddress(ether_addr &) override;
+
+    IOReturn getSSID(struct apple80211_ssid_data *) override;
+    IOReturn getCHANNEL(struct apple80211_channel_data *) override;
+    IOReturn getSTATE(struct apple80211_state_data *) override;
+    IOReturn getOP_MODE(struct apple80211_opmode_data *) override;
+    IOReturn getSTATION_LIST(struct apple80211_sta_data *) override;
+    IOReturn getSTA_IE_LIST(struct apple80211_sta_ie_data *) override;
+    IOReturn getKEY_RSC(struct apple80211_key *) override;
+    IOReturn getSTA_STATS(struct apple80211_sta_stats_data *) override;
+    IOReturn getPEER_CACHE_MAXIMUM_SIZE(
+        struct apple80211_peer_cache_maximum_size *) override;
+    IOReturn getHOST_AP_MODE_HIDDEN(
+        struct apple80211_host_ap_mode_hidden_t *) override;
+    IOReturn getSOFTAP_PARAMS(struct apple80211_softap_params *) override;
+    IOReturn getSOFTAP_STATS(struct apple80211_softap_stats *) override;
+    IOReturn setSSID(struct apple80211_ssid_data *) override;
+    IOReturn setCIPHER_KEY(struct apple80211_key *) override;
+    IOReturn setCHANNEL(struct apple80211_channel_data *) override;
+    IOReturn setHOST_AP_MODE(struct apple80211_network_data *) override;
+    IOReturn setSTA_AUTHORIZE(
+        struct apple80211_sta_authorize_data *) override;
+    IOReturn setSTA_DISASSOCIATE(
+        struct apple80211_sta_disassoc_data *) override;
+    IOReturn setSTA_DEAUTH(struct apple80211_sta_disassoc_data *) override;
+    IOReturn setRSN_CONF(struct apple80211_rsn_conf_data *) override;
+    IOReturn setPEER_CACHE_CONTROL(
+        struct apple80211_peer_cache_control *) override;
+    IOReturn setHOST_AP_MODE_HIDDEN(
+        struct apple80211_host_ap_mode_hidden_t *) override;
+    IOReturn setSOFTAP_PARAMS(struct apple80211_softap_params *) override;
+    IOReturn setSOFTAP_TRIGGER_CSA(
+        struct apple80211_softap_csa_params *) override;
+    IOReturn setSOFTAP_WIFI_NETWORK_INFO_IE(
+        struct apple80211_softap_wifi_network_info *) override;
+    IOReturn setSOFTAP_EXTENDED_CAPABILITIES_IE(
+        struct apple80211_softap_extended_capabilities_info *) override;
+    IOReturn setMIS_MAX_STA(struct apple80211_mis_max_sta *) override;
+
+private:
+    AirportItlwm *controller;
+    ether_addr macAddress;
+};
+#endif
+
 class AirportItlwmSkywalkInterface : public IO80211InfraProtocol {
     OSDeclareDefaultStructors(AirportItlwmSkywalkInterface)
 
