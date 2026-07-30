@@ -2281,7 +2281,8 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                         controller, AirportItlwmLifecycleAdmission::LiveOnly);
                     if (!lifecycle.admitted())
                         return kIOReturnNotReady;
-                    if (controller->fAPSTAOwner != NULL) {
+                    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP &&
+                        controller->fAPSTAOwner != NULL) {
                         return controller->getAPSTA_SSID(
                             this,
                             (AirportItlwmAPSTASsidDataLayout *)req->req_data);
@@ -2291,7 +2292,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             }
             return airportItlwmRunDispatchLive(
                 instance, [this, req](AirportItlwm *controller) {
-                    return controller->setAPSTA_SSID(
+                    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP) {
+                        return controller->setAPSTA_SSID(
+                            this, (apple80211_ssid_data *)req->req_data);
+                    }
+                    return controller->setSSID(
                         this, (apple80211_ssid_data *)req->req_data);
                 });
         case APPLE80211_IOC_BSSID:
@@ -2353,8 +2358,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return airportItlwmRunDispatchLive(
                     instance, [this, req](AirportItlwm *controller) {
-                        return controller->setAPSTA_CHANNEL(
-                            this, (apple80211_channel_data *)req->req_data);
+                        if (getInterfaceRole() ==
+                            APPLE80211_VIF_SOFT_AP) {
+                            return controller->setAPSTA_CHANNEL(
+                                this,
+                                (apple80211_channel_data *)req->req_data);
+                        }
+                        return setCHANNELImpl(
+                            (apple80211_channel_data *)req->req_data);
                     });
             return kIOReturnUnsupported;
         case APPLE80211_IOC_AUTH_TYPE:
@@ -2651,7 +2662,8 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                         controller, AirportItlwmLifecycleAdmission::LiveOnly);
                     if (!lifecycle.admitted())
                         return kIOReturnNotReady;
-                    if (controller->fAPSTAOwner != NULL) {
+                    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP &&
+                        controller->fAPSTAOwner != NULL) {
                         return controller->getAPSTA_STATE(
                             this,
                             (AirportItlwmAPSTAStateDataLayout *)req->req_data);
@@ -2814,7 +2826,8 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                         controller, AirportItlwmLifecycleAdmission::LiveOnly);
                     if (!lifecycle.admitted())
                         return kIOReturnNotReady;
-                    if (controller->fAPSTAOwner != NULL) {
+                    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP &&
+                        controller->fAPSTAOwner != NULL) {
                         return controller->getAPSTA_OP_MODE(
                             this,
                             (AirportItlwmAPSTAOpModeDataLayout *)req->req_data);
@@ -3046,7 +3059,8 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     controller, AirportItlwmLifecycleAdmission::LiveOnly);
                 if (!lifecycle.admitted())
                     return kIOReturnNotReady;
-                if (controller->fAPSTAOwner != NULL) {
+                if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP &&
+                    controller->fAPSTAOwner != NULL) {
                     return controller->setAPSTA_CIPHER_KEY(
                         this, (apple80211_key *)req->req_data);
                 }
@@ -3103,7 +3117,8 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                         controller, AirportItlwmLifecycleAdmission::LiveOnly);
                     if (!lifecycle.admitted())
                         return kIOReturnNotReady;
-                    if (controller->fAPSTAOwner != NULL) {
+                    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP &&
+                        controller->fAPSTAOwner != NULL) {
                         return controller->getAPSTA_PEER_CACHE_MAXIMUM_SIZE(
                             this,
                             (AirportItlwmAPSTAPeerCacheMaximumSizeLayout *)req->req_data);
@@ -8727,6 +8742,28 @@ setSET_MAC_ADDRESSImpl(apple80211_set_mac_address_data *data)
         return kIOReturnBadArgumentTahoe;
 
     const uint8_t *mac = data->mac;
+    if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP) {
+        if (instance == nullptr || instance->fAPSTAOwner == nullptr ||
+            instance->fAPSTANetIf != this)
+            return kIOReturnNotReady;
+
+        IOReturn ret = instance->fAPSTAOwner->setMacAddress(mac);
+        if (ret != kIOReturnSuccess)
+            return ret;
+
+        ether_addr roleMac;
+        memcpy(roleMac.octet, mac, IEEE80211_ADDR_LEN);
+        setInitMacAddress(roleMac);
+        setProperty(kIOMACAddress, const_cast<uint8_t *>(mac),
+                    kIOEthernetAddressSize);
+        if (mExpansionData2 != nullptr &&
+            mExpansionData2->fBSDInterface != nullptr)
+            setLinkLayerAddress(&roleMac);
+        postMessage(APPLE80211_M_LINK_ADDRESS_CHANGED,
+                    const_cast<uint8_t *>(mac), IEEE80211_ADDR_LEN, true);
+        return kIOReturnSuccess;
+    }
+
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr)
         return kIOReturnNotReady;

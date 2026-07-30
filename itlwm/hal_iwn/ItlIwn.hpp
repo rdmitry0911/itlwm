@@ -86,7 +86,23 @@ public:
     bool supportsAPMode() const override;
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
+    void iwn_reset_ap_runtime_state();
     int iwn_build_ap_rxon(struct iwn_rxon *, const struct ItlHalApConfig *);
+    int iwn_send_ap_pan_params(const struct ItlHalApConfig *);
+    int iwn_send_ap_stop_pan_params();
+    int iwn_add_ap_broadcast_node();
+    int iwn_send_ap_broadcast_link_quality(int);
+    int iwn_send_ap_sensitivity();
+    int iwn_send_ap_timing(const struct ItlHalApConfig *);
+    int iwn_send_ap_edca();
+    int iwn_send_ap_beacon(const struct ItlHalApConfig *);
+    int iwn_send_ap_rxon_assoc();
+    int iwn_send_ap_mgmt_frame(const void *, size_t);
+    bool iwn_handle_ap_probe_req(const struct ieee80211_frame *, size_t);
+    bool iwn_handle_ap_open_auth(const struct ieee80211_frame *, size_t);
+    bool iwn_handle_ap_assoc_req(const struct ieee80211_frame *, size_t);
+    void iwn_note_ap_firmware_event(int, int);
+    void iwn_continue_ap_after_deactivation();
 
     /* One-ticket, real IWN management-TX path for the SAE relay. */
     IOReturn submitSaeAuthFrame(
@@ -253,6 +269,8 @@ public:
     static void        iwn_watchdog(struct _ifnet *);
     static int        iwn_ioctl(struct _ifnet *, u_long, caddr_t);
     int        iwn_cmd(struct iwn_softc *, int, const void *, int, int);
+    int        iwn_set_cmd_in_flight(struct iwn_softc *);
+    void       iwn_clear_cmd_in_flight(struct iwn_softc *);
     static int        iwn4965_add_node(struct iwn_softc *, struct iwn_node_info *,
                 int);
     static int        iwn5000_add_node(struct iwn_softc *, struct iwn_node_info *,
@@ -417,6 +435,21 @@ public:
     IOInterruptEventSource* fInterrupt;
     /* Private driver workloop gate; never AirportItlwm's policy gate. */
     IOCommandGate *fSaeTxGate;
+    bool apFirmwareTransitionActive;
+    bool apFirmwareDeactivationReplySeen;
+    bool apFirmwareDeactivationNotificationSeen;
+    bool apFirmwarePostDeactivateQueued;
+    bool apFirmwareUnassociatedReplySeen;
+    bool apFirmwareUnassociatedNotificationSeen;
+    uint8_t apFirmwareStage;
+    struct ItlHalApConfig apFirmwareConfig;
+    struct iwn_rxon apFirmwareRxon;
+    uint8_t apFirmwareSsid[IEEE80211_NWID_LEN];
+    uint8_t apFirmwareBeacon[MCLBYTES];
+    uint8_t apClientMac[IEEE80211_ADDR_LEN];
+    bool apClientAuthenticated;
+    bool apClientAssociated;
+    uint16_t apClientAid;
     struct pci_attach_args pci;
     struct iwn_softc com;
 };

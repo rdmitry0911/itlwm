@@ -3697,8 +3697,32 @@ iwn_publish_mfp_capability(struct iwn_softc *sc)
 }
 
 #ifndef IWN_APGO_FIRMWARE_BACKEND_OPT_IN
-#define IWN_APGO_FIRMWARE_BACKEND_OPT_IN 0
+#define IWN_APGO_FIRMWARE_BACKEND_OPT_IN 1
 #endif
+
+enum {
+    IWN_AP_STAGE_IDLE = 0,
+    IWN_AP_STAGE_INITIAL_RXON,
+    IWN_AP_STAGE_TIMING,
+    IWN_AP_STAGE_UNASSOCIATED_RXON,
+    IWN_AP_STAGE_ADD_NODE,
+    IWN_AP_STAGE_LINK_QUALITY,
+    IWN_AP_STAGE_PAN_PARAMS,
+    IWN_AP_STAGE_EDCA,
+    IWN_AP_STAGE_FIRST_BEACON,
+    IWN_AP_STAGE_ASSOCIATED_RXON,
+    IWN_AP_STAGE_SENSITIVITY,
+    IWN_AP_STAGE_TXPOWER,
+    IWN_AP_STAGE_POWER,
+    IWN_AP_STAGE_SECOND_BEACON,
+    IWN_AP_STAGE_POST_ASSOC_EDCA,
+    IWN_AP_STAGE_THIRD_BEACON,
+    IWN_AP_STAGE_FINAL_RXON_ASSOC,
+    IWN_AP_STAGE_FINAL_POWER,
+    IWN_AP_STAGE_RUNNING,
+    IWN_AP_STAGE_STOP_RXON,
+    IWN_AP_STAGE_STOP_PAN_PARAMS
+};
 
 #ifdef DELAY
 #undef DELAY
@@ -3709,6 +3733,7 @@ bool ItlIwn::attach(IOPCIDevice *device)
 {
     /* iwn_attach() may fail after publishing an event source; detach owns it. */
     fSaeTxGate = NULL;
+    iwn_reset_ap_runtime_state();
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
     if (!iwn_attach(&com, &pci)) {
@@ -3716,6 +3741,517 @@ bool ItlIwn::attach(IOPCIDevice *device)
         releaseAll();
         return false;
     }
+    return true;
+}
+
+void ItlIwn::iwn_reset_ap_runtime_state()
+{
+    apFirmwareTransitionActive = false;
+    apFirmwareDeactivationReplySeen = false;
+    apFirmwareDeactivationNotificationSeen = false;
+    apFirmwarePostDeactivateQueued = false;
+    apFirmwareUnassociatedReplySeen = false;
+    apFirmwareUnassociatedNotificationSeen = false;
+    apFirmwareStage = IWN_AP_STAGE_IDLE;
+    bzero(&apFirmwareConfig, sizeof(apFirmwareConfig));
+    bzero(&apFirmwareRxon, sizeof(apFirmwareRxon));
+    bzero(apFirmwareSsid, sizeof(apFirmwareSsid));
+    bzero(apFirmwareBeacon, sizeof(apFirmwareBeacon));
+    bzero(apClientMac, sizeof(apClientMac));
+    apClientAuthenticated = false;
+    apClientAssociated = false;
+    apClientAid = 0;
+}
+
+int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
+    size_t frameLength)
+{
+    const size_t headerLength = sizeof(struct ieee80211_frame);
+    if (frameBytes == NULL || frameLength <= headerLength ||
+        frameLength > MCLBYTES ||
+        !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        com.command_queue != IWN_IPAN_CMD_QUEUE ||
+        IWN_IPAN_MGMT_QUEUE >= com.ntxqs) {
+        return EINVAL;
+    }
+
+    const struct ieee80211_frame *wh =
+        static_cast<const struct ieee80211_frame *>(frameBytes);
+    if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+            IEEE80211_FC0_TYPE_MGT ||
+        !IEEE80211_ADDR_EQ(wh->i_addr2, apFirmwareConfig.bssid) ||
+        !IEEE80211_ADDR_EQ(wh->i_addr3, apFirmwareConfig.bssid)) {
+        return EINVAL;
+    }
+
+    struct iwn_tx_ring *ring = &com.txq[IWN_IPAN_MGMT_QUEUE];
+    if (ring->queued >= IWN_TX_RING_COUNT - 1)
+        return ENOBUFS;
+
+    struct iwn_tx_desc *desc = &ring->desc[ring->cur];
+    struct iwn_tx_data *data = &ring->data[ring->cur];
+    struct iwn_tx_cmd *cmd = &ring->cmd[ring->cur];
+    bzero(desc, sizeof(*desc));
+    bzero(cmd, sizeof(*cmd));
+
+    cmd->code = IWN_CMD_TX_DATA;
+    cmd->qid = ring->qid;
+    cmd->idx = ring->cur;
+
+    struct iwn_cmd_data *tx =
+        reinterpret_cast<struct iwn_cmd_data *>(cmd->data);
+    tx->len = htole16(static_cast<uint16_t>(frameLength));
+    /*
+     * DVM gives 2.4 GHz authentication/association/EAPOL frames an
+     * explicit Bluetooth-priority bypass.  The 6235 has advanced 3-wire
+     * coexistence enabled even when its companion USB Bluetooth function is
+     * not passed through to the guest.  Without IGNORE_BT the PAN VO queue
+     * can retain the frame indefinitely waiting for an external grant.
+     */
+    /*
+     * DVM bypasses advanced-BT arbitration for Authentication frames, but
+     * not for an Association Response.  Applying IGNORE_BT to every AP
+     * management response changes the reference command contract.
+     */
+    const bool ignoreBluetooth =
+        (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_AUTH &&
+        apFirmwareConfig.channel <= 14;
+    const bool insertTimestamp =
+        (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_PROBE_RESP;
+    tx->flags = htole32(
+        IWN_TX_NEED_ACK | IWN_TX_AUTO_SEQ |
+        (insertTimestamp ? IWN_TX_INSERT_TSTAMP : 0) |
+        (ignoreBluetooth ? IWN_TX_BT_DISABLE : 0));
+    tx->id = IWN5000_ID_PAN_BROADCAST;
+    tx->lifetime = htole32(IWN_LIFETIME_INFINITE);
+    tx->rts_ntries = 60;
+    tx->data_ntries = 15;
+    tx->tid = IWN_NONQOS_TID;
+    tx->timeout = htole16(2);
+    if (apFirmwareConfig.channel <= 14) {
+        tx->plcp = iwn_rates[IWN_RATE_1M_INDEX].plcp;
+        tx->rflags = IWN_RFLAG_CCK;
+    } else {
+        tx->plcp = iwn_rates[IWN_RATE_6M_INDEX].plcp;
+        tx->rflags = 0;
+    }
+    /*
+     * DVM rotates the shared management antenna for every beacon and
+     * management frame.  The first Auth response after enabling the AP in
+     * the 6235 reference trace uses antenna B (rflags 0x82), while the old
+     * fixed-first-chain path always emitted antenna A (0x42).  Select the
+     * second valid chain when present to reproduce that first response.
+     */
+    uint8_t managementAntenna = IWN_LSB(com.txchainmask);
+    const uint8_t remainingAntennas =
+        com.txchainmask & ~managementAntenna;
+    if (remainingAntennas != 0)
+        managementAntenna = IWN_LSB(remainingAntennas);
+    tx->rflags |= IWN_RFLAG_ANT(managementAntenna);
+    tx->loaddr = htole32(IWN_LOADDR(data->scratch_paddr));
+    tx->hiaddr = IWN_HIADDR(data->scratch_paddr);
+
+    unsigned int maxChunks = 1;
+    mbuf_t m = NULL;
+    if (mbuf_allocpacket(MBUF_DONTWAIT, frameLength,
+            &maxChunks, &m) != 0 || m == NULL) {
+        return ENOMEM;
+    }
+    mbuf_setlen(m, frameLength);
+    mbuf_pkthdr_setlen(m, frameLength);
+    memcpy(mtod(m, void *), frameBytes, frameLength);
+
+    /*
+     * Match DVM's normal TX transport: the 802.11 header is inline with the
+     * firmware command and the remaining frame body is a mapped payload
+     * segment.  Keeping short management frames wholly inline was a useful
+     * DMA diagnostic, but did not change the PAN FIFO stall.
+     */
+    memcpy(reinterpret_cast<uint8_t *>(tx + 1),
+           frameBytes, headerLength);
+    /*
+     * mac80211 assigns one monotonically increasing management sequence
+     * before DVM builds the TX command.  This AP path owns no net80211 AP
+     * sequence counter, but its q7 descriptor order is the same serialization
+     * boundary: reference q7 indices 0, 1, 2 carried sequence numbers 1, 2,
+     * 3 for two Probe Responses and the following Auth Response.
+     */
+    struct ieee80211_frame *submittedHeader =
+        reinterpret_cast<struct ieee80211_frame *>(tx + 1);
+    LE_WRITE_2(submittedHeader->i_seq,
+        static_cast<uint16_t>(((ring->cur + 1) & 0x0fff) << 4));
+    mbuf_adj(m, headerLength);
+    IOPhysicalSegment segments[IWN_MAX_SCATTER - 1];
+    int nsegments = 0;
+
+    data->m = m;
+    data->ni = NULL;
+    data->totlen = static_cast<int>(frameLength);
+    data->ampdu_txmcs = 0;
+    data->ampdu_nframes = 0;
+    data->tx_apple_nrate = 0;
+    data->tx_apple_nrate_valid = 0;
+    data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+    data->ap_mgmt = true;
+    iwn_sae_tx_data_clear(data);
+    data->diag_subtype =
+        wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    data->diag_auth_seq =
+        data->diag_subtype == IEEE80211_FC0_SUBTYPE_AUTH &&
+        frameLength >= headerLength + 4 ?
+        LE_READ_2(static_cast<const uint8_t *>(frameBytes) +
+                  headerLength + 2) :
+        0xffff;
+    IEEE80211_ADDR_COPY(data->diag_peer, wh->i_addr1);
+
+    /*
+     * Gen1 PCIe transport presents TX commands as a dedicated 20-byte first
+     * TB (command header through the bidirectional scratch pointer), then
+     * the remainder of the command plus the 802.11 header, and only then the
+     * frame body.  The generic itlwm path coalesces the first two TBs, which
+     * works for the BSS queues but leaves the 6235 PAN management queue
+     * admitted without retiring.  Preserve the exact DVM transport shape for
+     * the concurrent AP queue.
+     */
+    const size_t firstTransportBufferLength = 20;
+    const size_t commandAndHeaderLength =
+        4 + sizeof(*tx) + headerLength;
+    if (commandAndHeaderLength <= firstTransportBufferLength) {
+        mbuf_freem(m);
+        data->m = NULL;
+        data->ap_mgmt = false;
+        return EINVAL;
+    }
+    const size_t bodyLength = frameLength - headerLength;
+    if (commandAndHeaderLength + bodyLength <= sizeof(*cmd)) {
+        /*
+         * A/B runtime validation on the 6235 shows that PAN/FIFO5 stops at
+         * TB2 when Tahoe maps the tiny management body above 4 GB.  Keep the
+         * exact three-TB DVM descriptor, but place short Auth/Assoc bodies in
+         * the unused tail of the already-low per-slot command DMA buffer.
+         * Longer management bodies continue through the mapped-payload path
+         * until the AP data-plane layer provides a dedicated low DMA pool.
+         */
+        memcpy(reinterpret_cast<uint8_t *>(cmd) + commandAndHeaderLength,
+               static_cast<const uint8_t *>(frameBytes) + headerLength,
+               bodyLength);
+        segments[0].location =
+            data->cmd_paddr + commandAndHeaderLength;
+        segments[0].length = bodyLength;
+        nsegments = 1;
+    } else {
+        nsegments = data->map->cursor->getPhysicalSegmentsWithCoalesce(
+            m, segments, IWN_MAX_SCATTER - 1);
+        if (nsegments == 0) {
+            mbuf_freem(m);
+            data->m = NULL;
+            data->ap_mgmt = false;
+            return ENOMEM;
+        }
+    }
+    desc->nsegs = 2 + nsegments;
+    desc->segs[0].addr = htole32(IWN_LOADDR(data->cmd_paddr));
+    desc->segs[0].len = htole16(
+        IWN_HIADDR(data->cmd_paddr) |
+        firstTransportBufferLength << 4);
+    const bus_addr_t commandRemainderAddress =
+        data->cmd_paddr + firstTransportBufferLength;
+    desc->segs[1].addr =
+        htole32(IWN_LOADDR(commandRemainderAddress));
+    desc->segs[1].len = htole16(
+        IWN_HIADDR(commandRemainderAddress) |
+        (commandAndHeaderLength - firstTransportBufferLength) << 4);
+    for (int index = 0; index < nsegments; index++) {
+        desc->segs[index + 2].addr =
+            htole32(IWN_LOADDR(segments[index].location));
+        desc->segs[index + 2].len =
+            htole16(IWN_HIADDR(segments[index].location) |
+                    segments[index].length << 4);
+    }
+
+    com.ops.update_sched(
+        &com, ring->qid, ring->cur, tx->id,
+        static_cast<uint16_t>(frameLength));
+    ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
+    IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    if (++ring->queued > IWN_TX_RING_HIMARK)
+        com.qfullmsk |= 1 << ring->qid;
+    iwn_refresh_tx_timer(&com);
+    return 0;
+}
+
+bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,
+    size_t frameLength)
+{
+    const size_t headerLength = sizeof(*request);
+    const size_t fixedBeaconLength = headerLength + 12;
+    if (request == NULL ||
+        !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        frameLength < headerLength + 2 ||
+        apFirmwareConfig.beaconTemplateLength < fixedBeaconLength ||
+        (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+            IEEE80211_FC0_TYPE_MGT ||
+        (request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) !=
+            IEEE80211_FC0_SUBTYPE_PROBE_REQ) {
+        return false;
+    }
+
+    const bool addressedToAp =
+        IEEE80211_ADDR_EQ(request->i_addr1, apFirmwareConfig.bssid);
+    const bool broadcastDestination =
+        IEEE80211_IS_MULTICAST(request->i_addr1);
+    if (!addressedToAp && !broadcastDestination)
+        return false;
+
+    const uint8_t *cursor =
+        reinterpret_cast<const uint8_t *>(request) + headerLength;
+    const uint8_t *end =
+        reinterpret_cast<const uint8_t *>(request) + frameLength;
+    const uint8_t *ssid = NULL;
+    while (cursor + 2 <= end) {
+        const size_t elementLength = cursor[1];
+        if (cursor + 2 + elementLength > end)
+            break;
+        if (cursor[0] == IEEE80211_ELEMID_SSID) {
+            ssid = cursor;
+            break;
+        }
+        cursor += 2 + elementLength;
+    }
+    const bool wildcard =
+        ssid != NULL && ssid[1] == 0;
+    const bool exactSsid =
+        ssid != NULL &&
+        ssid[1] == apFirmwareConfig.ssidLength &&
+        memcmp(ssid + 2, apFirmwareSsid, ssid[1]) == 0;
+    if (!wildcard && !exactSsid)
+        return true;
+
+    const size_t templateLength = apFirmwareConfig.beaconTemplateLength;
+    uint8_t *response = static_cast<uint8_t *>(
+        malloc(templateLength, M_DEVBUF, M_NOWAIT | M_ZERO));
+    if (response == NULL)
+        return true;
+
+    const uint8_t *templateBytes =
+        static_cast<const uint8_t *>(apFirmwareConfig.beaconTemplate);
+    memcpy(response, templateBytes, fixedBeaconLength);
+    size_t inputOffset = fixedBeaconLength;
+    size_t outputOffset = fixedBeaconLength;
+    while (inputOffset + 2 <= templateLength) {
+        const size_t elementLength =
+            static_cast<size_t>(templateBytes[inputOffset + 1]);
+        const size_t totalLength = 2 + elementLength;
+        if (inputOffset + totalLength > templateLength)
+            break;
+        if (templateBytes[inputOffset] != IEEE80211_ELEMID_TIM) {
+            memcpy(response + outputOffset,
+                   templateBytes + inputOffset, totalLength);
+            outputOffset += totalLength;
+        }
+        inputOffset += totalLength;
+    }
+
+    struct ieee80211_frame *reply =
+        reinterpret_cast<struct ieee80211_frame *>(response);
+    reply->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_PROBE_RESP;
+    reply->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    LE_WRITE_2(reply->i_dur,
+        apFirmwareConfig.channel <= 14 ? 0x013a : 0x003c);
+    IEEE80211_ADDR_COPY(reply->i_addr1, request->i_addr2);
+    IEEE80211_ADDR_COPY(reply->i_addr2, apFirmwareConfig.bssid);
+    IEEE80211_ADDR_COPY(reply->i_addr3, apFirmwareConfig.bssid);
+
+    const int error = iwn_send_ap_mgmt_frame(response, outputOffset);
+    XYLog("%s: AP probe request from "
+          "%02x:%02x:%02x:%02x:%02x:%02x directed=%u "
+          "response_queue=%d\n",
+          com.sc_dev.dv_xname,
+          request->i_addr2[0], request->i_addr2[1],
+          request->i_addr2[2], request->i_addr2[3],
+          request->i_addr2[4], request->i_addr2[5],
+          exactSsid ? 1U : 0U, error);
+    explicit_bzero(response, templateLength);
+    ::free(response);
+    return true;
+}
+
+bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
+    size_t frameLength)
+{
+    const size_t headerLength = sizeof(*request);
+    if (request == NULL ||
+        !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        frameLength < headerLength + 6 ||
+        (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+            IEEE80211_FC0_TYPE_MGT ||
+        (request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) !=
+            IEEE80211_FC0_SUBTYPE_AUTH ||
+        !IEEE80211_ADDR_EQ(request->i_addr1, apFirmwareConfig.bssid) ||
+        !IEEE80211_ADDR_EQ(request->i_addr3, apFirmwareConfig.bssid)) {
+        return false;
+    }
+
+    const uint8_t *auth =
+        reinterpret_cast<const uint8_t *>(request) + headerLength;
+    if (LE_READ_2(auth) != IEEE80211_AUTH_ALG_OPEN ||
+        LE_READ_2(auth + 2) != IEEE80211_AUTH_OPEN_REQUEST ||
+        LE_READ_2(auth + 4) != IEEE80211_STATUS_SUCCESS) {
+        return false;
+    }
+
+    uint8_t response[sizeof(struct ieee80211_frame) + 6];
+    bzero(response, sizeof(response));
+    struct ieee80211_frame *wh =
+        reinterpret_cast<struct ieee80211_frame *>(response);
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_AUTH;
+    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    /* At 1 Mbps the ACK exchange occupies 314 us. */
+    LE_WRITE_2(wh->i_dur, 0x013a);
+    IEEE80211_ADDR_COPY(wh->i_addr1, request->i_addr2);
+    IEEE80211_ADDR_COPY(wh->i_addr2, apFirmwareConfig.bssid);
+    IEEE80211_ADDR_COPY(wh->i_addr3, apFirmwareConfig.bssid);
+    uint8_t *body = response + sizeof(*wh);
+    LE_WRITE_2(body, IEEE80211_AUTH_ALG_OPEN);
+    LE_WRITE_2(body + 2, IEEE80211_AUTH_OPEN_RESPONSE);
+    LE_WRITE_2(body + 4, IEEE80211_STATUS_SUCCESS);
+
+    const int error = iwn_send_ap_mgmt_frame(response, sizeof(response));
+    if (error == 0) {
+        IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
+        apClientAuthenticated = true;
+        apClientAssociated = false;
+        apClientAid = 0;
+    }
+    XYLog("%s: AP open authentication request from "
+          "%02x:%02x:%02x:%02x:%02x:%02x response_queue=%d\n",
+          com.sc_dev.dv_xname,
+          request->i_addr2[0], request->i_addr2[1],
+          request->i_addr2[2], request->i_addr2[3],
+          request->i_addr2[4], request->i_addr2[5], error);
+    return true;
+}
+
+bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
+    size_t frameLength)
+{
+    const size_t headerLength = sizeof(*request);
+    const size_t fixedLength = 4;
+    if (request == NULL ||
+        !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        frameLength < headerLength + fixedLength ||
+        (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+            IEEE80211_FC0_TYPE_MGT ||
+        (request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) !=
+            IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+        !IEEE80211_ADDR_EQ(request->i_addr1, apFirmwareConfig.bssid) ||
+        !IEEE80211_ADDR_EQ(request->i_addr3, apFirmwareConfig.bssid)) {
+        return false;
+    }
+
+    const uint8_t *body =
+        reinterpret_cast<const uint8_t *>(request) + headerLength;
+    const uint16_t capability = LE_READ_2(body);
+    const uint8_t *cursor = body + fixedLength;
+    const uint8_t *end =
+        reinterpret_cast<const uint8_t *>(request) + frameLength;
+    const uint8_t *ssid = NULL;
+    const uint8_t *rates = NULL;
+    while (cursor + 2 <= end) {
+        const size_t elementLength = cursor[1];
+        if (cursor + 2 + elementLength > end)
+            break;
+        if (cursor[0] == IEEE80211_ELEMID_SSID)
+            ssid = cursor;
+        else if (cursor[0] == IEEE80211_ELEMID_RATES)
+            rates = cursor;
+        cursor += 2 + elementLength;
+    }
+
+    const bool authenticated =
+        apClientAuthenticated &&
+        IEEE80211_ADDR_EQ(apClientMac, request->i_addr2);
+    const bool valid =
+        authenticated &&
+        (capability & IEEE80211_CAPINFO_ESS) != 0 &&
+        ssid != NULL &&
+        ssid[1] == apFirmwareConfig.ssidLength &&
+        memcmp(ssid + 2, apFirmwareSsid, ssid[1]) == 0 &&
+        rates != NULL && rates[1] != 0 &&
+        rates[1] <= IEEE80211_RATE_MAXSIZE;
+    if (!valid) {
+        XYLog("%s: AP association request rejected from "
+              "%02x:%02x:%02x:%02x:%02x:%02x authenticated=%u "
+              "ssid_valid=%u rates_valid=%u\n",
+              com.sc_dev.dv_xname,
+              request->i_addr2[0], request->i_addr2[1],
+              request->i_addr2[2], request->i_addr2[3],
+              request->i_addr2[4], request->i_addr2[5],
+              authenticated ? 1U : 0U,
+              ssid != NULL &&
+                  ssid[1] == apFirmwareConfig.ssidLength &&
+                  memcmp(ssid + 2, apFirmwareSsid, ssid[1]) == 0 ? 1U : 0U,
+              rates != NULL && rates[1] != 0 &&
+                  rates[1] <= IEEE80211_RATE_MAXSIZE ? 1U : 0U);
+        return true;
+    }
+
+    const uint8_t supportedRates[] = {
+        0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
+    };
+    const uint8_t extendedRates[] = { 0x30, 0x48, 0x60, 0x6c };
+    uint8_t response[
+        sizeof(struct ieee80211_frame) + 6 +
+        2 + sizeof(supportedRates) +
+        2 + sizeof(extendedRates)];
+    bzero(response, sizeof(response));
+    struct ieee80211_frame *wh =
+        reinterpret_cast<struct ieee80211_frame *>(response);
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
+    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    IEEE80211_ADDR_COPY(wh->i_addr1, request->i_addr2);
+    IEEE80211_ADDR_COPY(wh->i_addr2, apFirmwareConfig.bssid);
+    IEEE80211_ADDR_COPY(wh->i_addr3, apFirmwareConfig.bssid);
+
+    uint8_t *out = response + sizeof(*wh);
+    LE_WRITE_2(out, IEEE80211_CAPINFO_ESS |
+                    (apFirmwareConfig.channel <= 14 ?
+                        IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
+    out += 2;
+    LE_WRITE_2(out, IEEE80211_STATUS_SUCCESS);
+    out += 2;
+    const uint16_t aid = 1;
+    LE_WRITE_2(out, aid | 0xc000);
+    out += 2;
+    *out++ = IEEE80211_ELEMID_RATES;
+    *out++ = sizeof(supportedRates);
+    memcpy(out, supportedRates, sizeof(supportedRates));
+    out += sizeof(supportedRates);
+    *out++ = IEEE80211_ELEMID_XRATES;
+    *out++ = sizeof(extendedRates);
+    memcpy(out, extendedRates, sizeof(extendedRates));
+
+    const int error = iwn_send_ap_mgmt_frame(response, sizeof(response));
+    if (error == 0) {
+        apClientAssociated = true;
+        apClientAid = aid;
+    }
+    XYLog("%s: AP association request from "
+          "%02x:%02x:%02x:%02x:%02x:%02x aid=%u response_queue=%d\n",
+          com.sc_dev.dv_xname,
+          request->i_addr2[0], request->i_addr2[1],
+          request->i_addr2[2], request->i_addr2[3],
+          request->i_addr2[4], request->i_addr2[5],
+          static_cast<unsigned>(aid), error);
     return true;
 }
 
@@ -3894,6 +4430,12 @@ IOReturn ItlIwn::enable(IONetworkInterface *netif)
 IOReturn ItlIwn::disable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    /*
+     * A whole-radio quiesce destroys both firmware contexts.  Do not retain
+     * a logically-running PAN owner across radio off/sleep: the next public
+     * HostAP start must program a fresh context after lower activation.
+     */
+    iwn_reset_ap_runtime_state();
     if (!(ifp->if_flags & IFF_UP)) {
         return kIOReturnSuccess;
     }
@@ -4002,7 +4544,9 @@ bool ItlIwn::supportsAPMode() const
 {
 #if IWN_APGO_FIRMWARE_BACKEND_OPT_IN
 #ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
-    return true;
+    return com.hw_type != IWN_HW_REV_TYPE_4965 &&
+        com.eeprom_pan_capable &&
+        (com.tlv_feature_flags & IWN_UCODE_TLV_FLAGS_PAN) != 0;
 #else
     return false;
 #endif
@@ -4039,29 +4583,517 @@ int ItlIwn::iwn_build_ap_rxon(struct iwn_rxon *rxon,
     }
 
     bzero(rxon, sizeof(*rxon));
-    IEEE80211_ADDR_COPY(rxon->myaddr, ic->ic_myaddr);
+    /*
+     * DVM's AP RXON context is keyed by the AP vif address, not by the
+     * concurrently published station address.  The role-7 interface owns
+     * config->bssid, and its beacon source address must match RXON node_addr.
+     */
+    IEEE80211_ADDR_COPY(rxon->myaddr, config->bssid);
     IEEE80211_ADDR_COPY(rxon->bssid, config->bssid);
-    IEEE80211_ADDR_COPY(rxon->wlap, config->bssid);
-    rxon->mode = IWN_MODE_HOSTAP;
+    /*
+     * DVM exposes a concurrent AP through the PAN context.  Its AP device
+     * type is CP (7); HOSTAP (1) belongs to a legacy BSS-context mode which
+     * the 6x35 firmware does not admit as the second interface.
+     */
+    rxon->mode = IWN_MODE_CP;
     rxon->chan = static_cast<uint8_t>(config->channel);
-    rxon->flags = htole32(IWN_RXON_TSF | IWN_RXON_CTS_TO_SELF);
+    /*
+     * Match DVM's first associated WIPAN_RXON exactly.  Operational
+     * short-slot/CTS/protection flags are committed later by
+     * WIPAN_RXON_ASSOC, after the post-association beacon/EDCA sequence.
+     */
+    rxon->flags = htole32(IWN_RXON_TSF);
     if (IEEE80211_IS_CHAN_2GHZ(chan)) {
         rxon->flags |= htole32(IWN_RXON_AUTO | IWN_RXON_24GHZ);
         if (ic->ic_flags & IEEE80211_F_USEPROT) {
             rxon->flags |= htole32(IWN_RXON_TGG_PROT);
         }
+        rxon->cck_mask = 0x0f;
+    } else {
+        rxon->cck_mask = 0;
     }
-    rxon->filter = htole32(IWN_FILTER_MULTICAST | IWN_FILTER_BSS |
-                           IWN_FILTER_BEACON);
-    rxon->cck_mask = 0x0f;
-    rxon->ofdm_mask = 0xff;
+    /*
+     * Enabling beaconing marks the AP context associated.  The CP context
+     * routes frames addressed to its node/BSSID without promiscuous mode.
+     */
+    rxon->filter = htole32(IWN_FILTER_BSS);
+    rxon->ofdm_mask = 0x15;
     rxon->ht_single_mask = 0xff;
     rxon->ht_dual_mask = 0xff;
     rxon->ht_triple_mask = 0xff;
+    /*
+     * DVM keeps one receive chain awake while an unassociated PAN context
+     * is idle.  Programming every active chain as idle changes 0x2406 into
+     * 0x2806 on a 2x2 6235, and the firmware never acknowledges the first
+     * WIPAN_RXON.
+     */
     rxon->rxchain = htole16(IWN_RXCHAIN_VALID(com.rxchainmask) |
                             IWN_RXCHAIN_MIMO_COUNT(com.nrxchains) |
-                            IWN_RXCHAIN_IDLE_COUNT(com.nrxchains));
+                            IWN_RXCHAIN_IDLE_COUNT(1));
     return 0;
+}
+
+int ItlIwn::iwn_send_ap_pan_params(const struct ItlHalApConfig *config)
+{
+    if (config == NULL)
+        return EINVAL;
+
+    const uint16_t beaconInterval =
+        config->beaconInterval != 0 ? config->beaconInterval : 100;
+    /*
+     * Keep both materialized firmware contexts schedulable while the idle
+     * framework BSS coexists with role-7.  A narrow BSS slot is required for
+     * the guest's inbound management RX path; PAN gets the remainder of the
+     * three-beacon admission window.
+     */
+    /*
+     * IWL_MIN_SLOT_TIME is 20 TU in DVM.  A live 6235 APSTA trace confirms
+     * that an active, unassociated PAN AP receives a 20 TU BSS slot and the
+     * remainder of the three-DTIM window (20/580 for DTIM 2, hence 20/280
+     * for the DTIM 1 Tahoe lab AP).  The earlier 10 TU approximation let FH
+     * fill PAN FIFO5 but could leave its management frames unselected.
+     */
+    const uint16_t minimumSlotWidth = 20;
+    const uint32_t admissionWindow =
+        static_cast<uint32_t>(beaconInterval) * 3;
+    const uint16_t panSlotWidth = static_cast<uint16_t>(
+        admissionWindow > 0xffffU + minimumSlotWidth ?
+            0xffffU :
+            (admissionWindow > minimumSlotWidth ?
+                admissionWindow - minimumSlotWidth : minimumSlotWidth));
+    struct iwn_cmd_wipan_params command;
+    bzero(&command, sizeof(command));
+    command.flags = htole16(IWN_WIPAN_PARAMS_SLOTTED_MODE);
+    command.nslots = 2;
+    command.slots[0].type = 0;
+    command.slots[0].width = htole16(minimumSlotWidth);
+    command.slots[1].type = 1;
+    command.slots[1].width = htole16(panSlotWidth);
+    return iwn_cmd(
+        &com, IWN_CMD_WIPAN_PARAMS, &command, sizeof(command), 1);
+}
+
+int ItlIwn::iwn_send_ap_stop_pan_params()
+{
+    /*
+     * Linux DVM tears down an inactive PAN vif by returning the scheduler to
+     * WLAN-only service: the BSS slot gets 300 TU and the PAN slot gets zero.
+     * This is deliberately separate from iwn_stop(); the concurrently-owned
+     * STA context remains initialized and can keep scanning or associating.
+     */
+    struct iwn_cmd_wipan_params command;
+    bzero(&command, sizeof(command));
+    command.nslots = 2;
+    command.slots[0].type = 0;
+    command.slots[0].width = htole16(300);
+    command.slots[1].type = 1;
+    command.slots[1].width = 0;
+    return iwn_cmd(
+        &com, IWN_CMD_WIPAN_PARAMS, &command, sizeof(command), 1);
+}
+
+int ItlIwn::iwn_add_ap_broadcast_node()
+{
+    struct iwn_node_info node;
+    bzero(&node, sizeof(node));
+    IEEE80211_ADDR_COPY(node.macaddr, etherbroadcastaddr);
+    node.id = IWN5000_ID_PAN_BROADCAST;
+    node.htflags = htole32(IWN_PAN_STATION);
+    return com.ops.add_node(&com, &node, 1);
+}
+
+int ItlIwn::iwn_send_ap_broadcast_link_quality(int ridx)
+{
+    struct iwn_cmd_link_quality linkq;
+    bzero(&linkq, sizeof(linkq));
+    linkq.id = IWN5000_ID_PAN_BROADCAST;
+    const uint8_t txant = IWN_LSB(com.txchainmask);
+    linkq.antmsk_1stream = txant;
+    linkq.antmsk_2stream = IWN_ANT_AB;
+    /*
+     * Match DVM's zero-initialized PAN broadcast LQ command.  Broadcast
+     * management traffic is not aggregated, so the limit is immaterial,
+     * but firmware observes the exact transport contract.
+     */
+    linkq.ampdu_max = IWN_AMPDU_MAX_UNLIMITED;
+    linkq.ampdu_threshold = 3;
+    linkq.ampdu_limit = htole16(4000);
+    const struct iwn_rate *rate = &iwn_rates[ridx];
+    for (int index = 0; index < IWN_MAX_TX_RETRIES; index++) {
+        linkq.retry[index].plcp = rate->plcp;
+        linkq.retry[index].rflags =
+            IWN_RFLAG_ANT(txant) |
+            (IWN_RIDX_IS_CCK(ridx) ? IWN_RFLAG_CCK : 0);
+    }
+    return iwn_cmd(
+        &com, IWN_CMD_LINK_QUALITY, &linkq, sizeof(linkq), 1);
+}
+
+int ItlIwn::iwn_send_ap_sensitivity()
+{
+    /*
+     * RX sensitivity is device-global even though RXON is per context.
+     * Linux DVM reinitializes the 6x35 work table immediately after the
+     * associated WIPAN_RXON and before TX power/CAM.  The older generic iwn
+     * table has different 6000-family energy and Barker-MRC values, so build
+     * the exact live-6235 command here instead of inheriting the idle BSS
+     * context's calibration state.
+     */
+    struct iwn_enhanced_sensitivity_cmd command;
+    bzero(&command, sizeof(command));
+    command.which = htole16(IWN_SENSITIVITY_WORKTBL);
+    command.energy_cck = htole16(110);
+    command.energy_ofdm = htole16(110);
+    command.corr_ofdm_x1 = htole16(105);
+    command.corr_ofdm_mrc_x1 = htole16(192);
+    command.corr_cck_mrc_x4 = htole16(160);
+    command.corr_ofdm_x4 = htole16(80);
+    command.corr_ofdm_mrc_x4 = htole16(128);
+    command.corr_barker = htole16(190);
+    command.corr_barker_mrc = htole16(336);
+    command.corr_cck_x4 = htole16(125);
+    command.energy_ofdm_th = htole16(62);
+
+    int commandLength = sizeof(struct iwn_sensitivity_cmd);
+    if (com.sc_flags & IWN_FLAG_ENH_SENS) {
+        commandLength = sizeof(command);
+        command.ofdm_det_slope_mrc = htole16(668);
+        command.ofdm_det_icept_mrc = htole16(4);
+        command.ofdm_det_slope = htole16(486);
+        command.ofdm_det_icept = htole16(37);
+        command.cck_det_slope_mrc = htole16(853);
+        command.cck_det_icept_mrc = htole16(4);
+        command.cck_det_slope = htole16(476);
+        command.cck_det_icept = htole16(99);
+    }
+    return iwn_cmd(
+        &com, IWN_CMD_SET_SENSITIVITY,
+        &command, commandLength, 1);
+}
+
+int ItlIwn::iwn_send_ap_timing(const struct ItlHalApConfig *config)
+{
+    if (config == NULL)
+        return EINVAL;
+
+    const uint16_t beaconInterval =
+        config->beaconInterval != 0 ? config->beaconInterval : 100;
+    struct iwn_cmd_timing command;
+    bzero(&command, sizeof(command));
+    command.bintval = htole16(beaconInterval);
+    command.binitval = htole32(
+        static_cast<uint32_t>(beaconInterval) * IEEE80211_DUR_TU);
+    command.lintval = htole16(10);
+    command.dtim_period =
+        config->dtimPeriod != 0 ? config->dtimPeriod : 1;
+    return iwn_cmd(
+        &com, IWN_CMD_WIPAN_TIMING, &command, sizeof(command), 1);
+}
+
+int ItlIwn::iwn_send_ap_edca()
+{
+#define IWN_AP_EXP2(x) ((1 << (x)) - 1)
+    struct iwn_edca_params command;
+    bzero(&command, sizeof(command));
+    /*
+     * WIPAN_QOS_PARAM is not a replace-by-presence command.  DVM only
+     * commits the supplied access categories when UPDATE is asserted.
+     * Without it the command still gets a successful generic reply, while
+     * the PAN transmit FIFOs retain their reset QoS state.
+     */
+    /*
+     * The final, transmitting 6235 APSTA state uses UPDATE|TGN (0x3).
+     * UPDATE alone appears in the earlier pre-beacon staging commands, but
+     * the reference enables TGN before q7 Probe/Auth traffic is admitted.
+     */
+    command.flags = htole32(IWN_EDCA_UPDATE | IWN_EDCA_FLG_TGN);
+    static const uint8_t firmwareAcToNet80211[EDCA_NUM_AC] = {
+        EDCA_AC_BK, EDCA_AC_BE, EDCA_AC_VI, EDCA_AC_VO
+    };
+    for (int firmwareAc = 0; firmwareAc < EDCA_NUM_AC; firmwareAc++) {
+        const int aci = firmwareAcToNet80211[firmwareAc];
+        const struct ieee80211_edca_ac_params *ac =
+            &com.sc_ic.ic_edca_ac[aci];
+        command.ac[firmwareAc].aifsn = ac->ac_aifsn;
+        command.ac[firmwareAc].cwmin =
+            htole16(IWN_AP_EXP2(ac->ac_ecwmin));
+        command.ac[firmwareAc].cwmax =
+            htole16(IWN_AP_EXP2(ac->ac_ecwmax));
+        command.ac[firmwareAc].txoplimit =
+            htole16(IEEE80211_TXOP_TO_US(ac->ac_txoplimit));
+    }
+    const int error = iwn_cmd(
+        &com, IWN_CMD_WIPAN_EDCA_PARAMS, &command, sizeof(command), 1);
+#undef IWN_AP_EXP2
+    return error;
+}
+
+int ItlIwn::iwn_send_ap_beacon(const struct ItlHalApConfig *config)
+{
+    const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
+    if (config == NULL || config->beaconTemplate == NULL ||
+        config->beaconTemplateLength < fixedLength ||
+        config->beaconTemplateLength >
+            MCLBYTES - sizeof(struct iwn_cmd_beacon)) {
+        return EINVAL;
+    }
+
+    const size_t commandLength =
+        sizeof(struct iwn_cmd_beacon) + config->beaconTemplateLength;
+    struct iwn_cmd_beacon *command =
+        static_cast<struct iwn_cmd_beacon *>(
+            malloc(commandLength, M_DEVBUF, M_NOWAIT | M_ZERO));
+    if (command == NULL)
+        return ENOMEM;
+
+    command->tx.len =
+        htole16(static_cast<uint16_t>(config->beaconTemplateLength));
+    command->tx.flags = htole32(
+        IWN_TX_AUTO_SEQ | IWN_TX_INSERT_TSTAMP | IWN_TX_LINKQ);
+    command->tx.id = IWN5000_ID_PAN_BROADCAST;
+    command->tx.lifetime = htole32(IWN_LIFETIME_INFINITE);
+    /*
+     * TX_LINKQ makes the PAN broadcast station's retry table authoritative.
+     * Linux therefore leaves both retry limits and the low rate byte zero;
+     * only modulation/antenna flags remain in this template command.
+     */
+    command->tx.rts_ntries = 0;
+    command->tx.data_ntries = 0;
+    if (config->channel <= 14) {
+        command->tx.plcp = 0;
+        command->tx.rflags = IWN_RFLAG_CCK;
+    } else {
+        command->tx.plcp = 0;
+    }
+    command->tx.rflags |= IWN_RFLAG_ANT(IWN_LSB(com.txchainmask));
+
+    const uint8_t *templateBytes =
+        static_cast<const uint8_t *>(config->beaconTemplate);
+    memcpy(command->frame, templateBytes, config->beaconTemplateLength);
+    size_t offset = fixedLength;
+    while (offset + 2 <= config->beaconTemplateLength) {
+        const size_t elementLength =
+            static_cast<size_t>(templateBytes[offset + 1]);
+        if (offset + 2 + elementLength > config->beaconTemplateLength)
+            break;
+        if (templateBytes[offset] == IEEE80211_ELEMID_TIM) {
+            command->tim_idx = htole16(static_cast<uint16_t>(offset));
+            command->tim_size = static_cast<uint8_t>(elementLength);
+            break;
+        }
+        offset += 2 + elementLength;
+    }
+    if (command->tim_idx == 0) {
+        explicit_bzero(command, commandLength);
+        ::free(command);
+        return EINVAL;
+    }
+
+    const int error = iwn_cmd(
+        &com, IWN_CMD_TX_BEACON, command,
+        static_cast<int>(commandLength), 1);
+    explicit_bzero(command, commandLength);
+    ::free(command);
+    return error;
+}
+
+int ItlIwn::iwn_send_ap_rxon_assoc()
+{
+    struct iwn_rxon_assoc command;
+    bzero(&command, sizeof(command));
+    command.flags = apFirmwareRxon.flags;
+    if (apFirmwareConfig.channel <= 14) {
+        /*
+         * DVM's AP setup first admits the CP context with the minimal
+         * 2.4-GHz flags, then commits the operational protection policy
+         * through WIPAN_RXON_ASSOC after the final beacon/QoS update.
+         */
+        command.flags |= htole32(
+            IWN_RXON_SHSLOT | IWN_RXON_TGG_PROT |
+            IWN_RXON_CTS_TO_SELF);
+    }
+    command.filter = apFirmwareRxon.filter;
+    command.ofdm_mask = apFirmwareRxon.ofdm_mask;
+    command.cck_mask = apFirmwareRxon.cck_mask;
+    command.ht_single_mask = apFirmwareRxon.ht_single_mask;
+    command.ht_dual_mask = apFirmwareRxon.ht_dual_mask;
+    command.ht_triple_mask = apFirmwareRxon.ht_triple_mask;
+    command.rxchain = apFirmwareRxon.rxchain;
+    command.acquisition = apFirmwareRxon.acquisition;
+    return iwn_cmd(
+        &com, IWN_CMD_WIPAN_RXON_ASSOC,
+        &command, sizeof(command), 1);
+}
+
+void ItlIwn::iwn_continue_ap_after_deactivation()
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwarePostDeactivateQueued ||
+        !apFirmwareDeactivationReplySeen ||
+        !apFirmwareDeactivationNotificationSeen) {
+        return;
+    }
+
+    apFirmwarePostDeactivateQueued = true;
+    apFirmwareStage = IWN_AP_STAGE_TIMING;
+    const int error = iwn_send_ap_timing(&apFirmwareConfig);
+    if (error != 0) {
+        XYLog("%s: AP timing command queue failed error=%d\n",
+              com.sc_dev.dv_xname, error);
+        apFirmwareTransitionActive = false;
+        apFirmwareStage = IWN_AP_STAGE_IDLE;
+        return;
+    }
+    XYLog("%s: AP post-deactivation timing queued channel=%u\n",
+          com.sc_dev.dv_xname, apFirmwareConfig.channel);
+}
+
+void ItlIwn::iwn_note_ap_firmware_event(int command, int notification)
+{
+    if (!apFirmwareTransitionActive)
+        return;
+
+    int error = 0;
+    if (apFirmwareStage == IWN_AP_STAGE_STOP_RXON) {
+        if (command == IWN_CMD_WIPAN_RXON)
+            apFirmwareDeactivationReplySeen = true;
+        if (notification == IWN_WIPAN_DEACTIVATION_COMPLETE)
+            apFirmwareDeactivationNotificationSeen = true;
+        if (apFirmwareDeactivationReplySeen &&
+            apFirmwareDeactivationNotificationSeen &&
+            !apFirmwarePostDeactivateQueued) {
+            apFirmwarePostDeactivateQueued = true;
+            apFirmwareStage = IWN_AP_STAGE_STOP_PAN_PARAMS;
+            error = iwn_send_ap_stop_pan_params();
+        }
+        if (error != 0) {
+            XYLog("%s: AP stop PAN parameters queue failed error=%d\n",
+                  com.sc_dev.dv_xname, error);
+            iwn_reset_ap_runtime_state();
+        }
+        return;
+    }
+    if (apFirmwareStage == IWN_AP_STAGE_STOP_PAN_PARAMS) {
+        if (command == IWN_CMD_WIPAN_PARAMS) {
+            XYLog("%s: AP PAN context stopped; STA context preserved\n",
+                  com.sc_dev.dv_xname);
+            iwn_reset_ap_runtime_state();
+        }
+        return;
+    }
+
+    const int ridx = apFirmwareConfig.channel <= 14 ?
+        IWN_RIDX_CCK : IWN_RIDX_OFDM;
+
+    if (apFirmwareStage == IWN_AP_STAGE_INITIAL_RXON) {
+        if (command == IWN_CMD_WIPAN_RXON)
+            apFirmwareDeactivationReplySeen = true;
+        if (notification == IWN_WIPAN_DEACTIVATION_COMPLETE)
+            apFirmwareDeactivationNotificationSeen = true;
+        iwn_continue_ap_after_deactivation();
+        return;
+    }
+
+    if (apFirmwareStage == IWN_AP_STAGE_TIMING &&
+        command == IWN_CMD_WIPAN_TIMING) {
+        struct iwn_rxon unassociatedRxon = apFirmwareRxon;
+        unassociatedRxon.filter &= ~htole32(IWN_FILTER_BSS);
+        apFirmwareUnassociatedReplySeen = false;
+        apFirmwareUnassociatedNotificationSeen = false;
+        apFirmwareStage = IWN_AP_STAGE_UNASSOCIATED_RXON;
+        error = iwn_cmd(&com, IWN_CMD_WIPAN_RXON,
+                        &unassociatedRxon, com.rxonsz, 1);
+    } else if (apFirmwareStage == IWN_AP_STAGE_UNASSOCIATED_RXON) {
+        if (command == IWN_CMD_WIPAN_RXON)
+            apFirmwareUnassociatedReplySeen = true;
+        if (notification == IWN_WIPAN_DEACTIVATION_COMPLETE)
+            apFirmwareUnassociatedNotificationSeen = true;
+        if (apFirmwareUnassociatedReplySeen &&
+            apFirmwareUnassociatedNotificationSeen) {
+            apFirmwareStage = IWN_AP_STAGE_ADD_NODE;
+            error = iwn_add_ap_broadcast_node();
+        }
+    } else if (apFirmwareStage == IWN_AP_STAGE_ADD_NODE &&
+               command == IWN_CMD_ADD_NODE) {
+        apFirmwareStage = IWN_AP_STAGE_LINK_QUALITY;
+        error = iwn_send_ap_broadcast_link_quality(ridx);
+    } else if (apFirmwareStage == IWN_AP_STAGE_LINK_QUALITY &&
+               command == IWN_CMD_LINK_QUALITY) {
+        apFirmwareStage = IWN_AP_STAGE_PAN_PARAMS;
+        error = iwn_send_ap_pan_params(&apFirmwareConfig);
+    } else if (apFirmwareStage == IWN_AP_STAGE_PAN_PARAMS &&
+               command == IWN_CMD_WIPAN_PARAMS) {
+        apFirmwareStage = IWN_AP_STAGE_EDCA;
+        error = iwn_send_ap_edca();
+    } else if (apFirmwareStage == IWN_AP_STAGE_EDCA &&
+               command == IWN_CMD_WIPAN_EDCA_PARAMS) {
+        apFirmwareStage = IWN_AP_STAGE_FIRST_BEACON;
+        error = iwn_send_ap_beacon(&apFirmwareConfig);
+    } else if (apFirmwareStage == IWN_AP_STAGE_FIRST_BEACON &&
+               command == IWN_CMD_TX_BEACON) {
+        /*
+         * Match DVM's operational AP RX chain transition.  The idle,
+         * unassociated PAN context is admitted with one idle receiver
+         * (0x2406 on a 2x2 6235).  Once beaconing is enabled DVM recomputes
+         * the chain in CAM: every active receiver remains awake and
+         * MIMO_FORCE is asserted (0x6806).  Carry the same value into both
+         * the associated WIPAN_RXON below and the final RXON_ASSOC command.
+         * Leaving the pre-association 0x2406 in place lets FH fetch q7
+         * descriptors but can leave the PAN radio FIFO without TX_DONE.
+         */
+        apFirmwareRxon.rxchain = htole16(
+            IWN_RXCHAIN_VALID(com.rxchainmask) |
+            IWN_RXCHAIN_MIMO_COUNT(com.nrxchains) |
+            IWN_RXCHAIN_IDLE_COUNT(com.nrxchains) |
+            IWN_RXCHAIN_MIMO_FORCE);
+        apFirmwareStage = IWN_AP_STAGE_ASSOCIATED_RXON;
+        error = iwn_cmd(&com, IWN_CMD_WIPAN_RXON,
+                        &apFirmwareRxon, com.rxonsz, 1);
+    } else if (apFirmwareStage == IWN_AP_STAGE_ASSOCIATED_RXON &&
+               command == IWN_CMD_WIPAN_RXON) {
+        apFirmwareStage = IWN_AP_STAGE_SENSITIVITY;
+        error = iwn_send_ap_sensitivity();
+    } else if (apFirmwareStage == IWN_AP_STAGE_SENSITIVITY &&
+               command == IWN_CMD_SET_SENSITIVITY) {
+        apFirmwareStage = IWN_AP_STAGE_TXPOWER;
+        error = com.ops.set_txpower(&com, 1);
+    } else if (apFirmwareStage == IWN_AP_STAGE_TXPOWER &&
+               command == IWN_CMD_TXPOWER_DBM) {
+        apFirmwareStage = IWN_AP_STAGE_POWER;
+        error = iwn_set_pslevel(&com, 0, 0, 1);
+    } else if (apFirmwareStage == IWN_AP_STAGE_POWER &&
+               command == IWN_CMD_SET_POWER_MODE) {
+        apFirmwareStage = IWN_AP_STAGE_SECOND_BEACON;
+        error = iwn_send_ap_beacon(&apFirmwareConfig);
+    } else if (apFirmwareStage == IWN_AP_STAGE_SECOND_BEACON &&
+               command == IWN_CMD_TX_BEACON) {
+        apFirmwareStage = IWN_AP_STAGE_POST_ASSOC_EDCA;
+        error = iwn_send_ap_edca();
+    } else if (apFirmwareStage == IWN_AP_STAGE_POST_ASSOC_EDCA &&
+               command == IWN_CMD_WIPAN_EDCA_PARAMS) {
+        apFirmwareStage = IWN_AP_STAGE_THIRD_BEACON;
+        error = iwn_send_ap_beacon(&apFirmwareConfig);
+    } else if (apFirmwareStage == IWN_AP_STAGE_THIRD_BEACON &&
+               command == IWN_CMD_TX_BEACON) {
+        apFirmwareStage = IWN_AP_STAGE_FINAL_RXON_ASSOC;
+        error = iwn_send_ap_rxon_assoc();
+    } else if (apFirmwareStage == IWN_AP_STAGE_FINAL_RXON_ASSOC &&
+               command == IWN_CMD_WIPAN_RXON_ASSOC) {
+        apFirmwareStage = IWN_AP_STAGE_FINAL_POWER;
+        error = iwn_set_pslevel(&com, 0, 0, 1);
+    } else if (apFirmwareStage == IWN_AP_STAGE_FINAL_POWER &&
+               command == IWN_CMD_SET_POWER_MODE) {
+        apFirmwareStage = IWN_AP_STAGE_RUNNING;
+        XYLog("%s: AP PAN context running after DVM RXON/beacon/EDCA "
+              "transition\n", com.sc_dev.dv_xname);
+    }
+
+    if (error != 0) {
+        XYLog("%s: AP firmware stage=%u queue failed error=%d\n",
+              com.sc_dev.dv_xname,
+              static_cast<unsigned>(apFirmwareStage), error);
+        iwn_reset_ap_runtime_state();
+    }
 }
 
 IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
@@ -4072,18 +5104,80 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
     if (config == NULL) {
         return kIOReturnBadArgument;
     }
+    if (config->ssid == NULL ||
+        config->ssidLength == 0 ||
+        config->ssidLength > sizeof(apFirmwareSsid) ||
+        config->beaconTemplate == NULL ||
+        config->beaconTemplateLength == 0 ||
+        config->beaconTemplateLength > sizeof(apFirmwareBeacon)) {
+        return kIOReturnBadArgument;
+    }
+    if (apFirmwareTransitionActive)
+        return kIOReturnBusy;
 
     struct iwn_rxon ap_rxon;
     int error = iwn_build_ap_rxon(&ap_rxon, config);
     if (error != 0) {
         return kIOReturnBadArgument;
     }
+    struct ieee80211com *ic = &com.sc_ic;
+    struct _ifnet *ifp = &ic->ic_ac.ac_if;
+    if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) !=
+        (IFF_UP | IFF_RUNNING)) {
+        return kIOReturnNotReady;
+    }
+    if ((com.sc_flags & IWN_FLAG_SCANNING) != 0) {
+        XYLog("%s: AP transition deferred while scan is active\n",
+              com.sc_dev.dv_xname);
+        return kIOReturnBusy;
+    }
+    /*
+     * DVM exposes APSTA as two firmware contexts: the existing net80211 STA
+     * remains the BSS context while this role-7 interface owns PAN.  Do not
+     * overwrite sc->rxon or ic_opmode; both describe the still-live BSS
+     * station context.  The PAN context has a separate WIPAN command family.
+     *
+     * Before programming CP/AP state, DVM first sends a P2P deactivation
+     * RXON and waits for both its command reply and notification 0xbd.  The
+     * rest of the sequence is queued by iwn_note_ap_firmware_event() only
+     * after that boundary.  This avoids wedging 6x35 firmware with a direct
+     * transition from its reset PAN state to CP.
+     */
+    bzero(&apFirmwareConfig, sizeof(apFirmwareConfig));
+    apFirmwareConfig = *config;
+    memcpy(apFirmwareSsid, config->ssid, config->ssidLength);
+    memcpy(apFirmwareBeacon, config->beaconTemplate,
+           config->beaconTemplateLength);
+    apFirmwareConfig.ssid = apFirmwareSsid;
+    apFirmwareConfig.beaconTemplate = apFirmwareBeacon;
+    memcpy(&apFirmwareRxon, &ap_rxon, sizeof(apFirmwareRxon));
 
-    error = iwn_cmd(&com, IWN_CMD_RXON, &ap_rxon, com.rxonsz, 1);
+    apFirmwareTransitionActive = true;
+    apFirmwareDeactivationReplySeen = false;
+    apFirmwareDeactivationNotificationSeen = false;
+    apFirmwarePostDeactivateQueued = false;
+    apFirmwareUnassociatedReplySeen = false;
+    apFirmwareUnassociatedNotificationSeen = false;
+    apFirmwareStage = IWN_AP_STAGE_INITIAL_RXON;
+
+    struct iwn_rxon deactivateRxon = ap_rxon;
+    bzero(deactivateRxon.bssid, sizeof(deactivateRxon.bssid));
+    bzero(deactivateRxon.wlap, sizeof(deactivateRxon.wlap));
+    deactivateRxon.filter = 0;
+    deactivateRxon.mode = IWN_MODE_P2P;
+    error = iwn_cmd(&com, IWN_CMD_WIPAN_RXON,
+                    &deactivateRxon, com.rxonsz, 1);
     if (error != 0) {
+        apFirmwareTransitionActive = false;
+        XYLog("%s: AP PAN deactivation queue failed error=%d\n",
+              com.sc_dev.dv_xname, error);
         return kIOReturnError;
     }
-    memcpy(&com.rxon, &ap_rxon, sizeof(com.rxon));
+    XYLog("%s: AP PAN deactivation queued channel=%u interval=%u "
+          "dtim=%u ssid_len=%zu\n",
+          com.sc_dev.dv_xname, config->channel,
+          config->beaconInterval, config->dtimPeriod,
+          config->ssidLength);
     return kIOReturnSuccess;
 }
 
@@ -4092,9 +5186,38 @@ IOReturn ItlIwn::stopAPMode()
     if (!supportsAPMode()) {
         return kIOReturnSuccess;
     }
-    struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
-    if ((ifp->if_flags & IFF_RUNNING) != 0) {
-        iwn_stop(ifp);
+    XYLog("%s: AP stop requested transition_active=%u stage=%u\n",
+          com.sc_dev.dv_xname,
+          static_cast<unsigned>(apFirmwareTransitionActive),
+          static_cast<unsigned>(apFirmwareStage));
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage == IWN_AP_STAGE_IDLE) {
+        iwn_reset_ap_runtime_state();
+        return kIOReturnSuccess;
+    }
+    if (apFirmwareStage == IWN_AP_STAGE_STOP_RXON ||
+        apFirmwareStage == IWN_AP_STAGE_STOP_PAN_PARAMS) {
+        return kIOReturnSuccess;
+    }
+    if (apFirmwareStage != IWN_AP_STAGE_RUNNING) {
+        return kIOReturnBusy;
+    }
+
+    apFirmwareDeactivationReplySeen = false;
+    apFirmwareDeactivationNotificationSeen = false;
+    apFirmwarePostDeactivateQueued = false;
+    apFirmwareStage = IWN_AP_STAGE_STOP_RXON;
+
+    struct iwn_rxon deactivateRxon = apFirmwareRxon;
+    bzero(deactivateRxon.bssid, sizeof(deactivateRxon.bssid));
+    bzero(deactivateRxon.wlap, sizeof(deactivateRxon.wlap));
+    deactivateRxon.filter = 0;
+    deactivateRxon.mode = IWN_MODE_P2P;
+    const int error = iwn_cmd(&com, IWN_CMD_WIPAN_RXON,
+                              &deactivateRxon, com.rxonsz, 1);
+    if (error != 0) {
+        apFirmwareStage = IWN_AP_STAGE_RUNNING;
+        return kIOReturnError;
     }
     return kIOReturnSuccess;
 }
@@ -4214,6 +5337,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_pct = pa->pa_pc;
     sc->sc_pcitag = pa->pa_tag;
     sc->sc_dmat = pa->pa_dmat;
+    __atomic_store_n(&sc->sc_cmd_in_flight, 0, __ATOMIC_RELEASE);
     /* An early attach unwind may run detach before the PMF locks exist.
      * CLOSED is safe in that case: no hook has been published yet. */
     __atomic_store_n(&sc->sc_mfp_pae_callback_state,
@@ -4678,6 +5802,8 @@ iwn4965_attach(struct iwn_softc *sc, pci_product_id_t pid)
     sc->first_agg_txq = IWN4965_FIRST_AGG_TXQUEUE;
     sc->ndmachnls = IWN4965_NDMACHNLS;
     sc->broadcast_id = IWN4965_ID_BROADCAST;
+    sc->command_queue = IWN_DEFAULT_CMD_QUEUE;
+    sc->eeprom_pan_capable = false;
     sc->rxonsz = IWN4965_RXONSZ;
     sc->schedsz = IWN4965_SCHEDSZ;
     sc->fw_text_maxsz = IWN4965_FW_TEXT_MAXSZ;
@@ -4718,6 +5844,8 @@ iwn5000_attach(struct iwn_softc *sc, pci_product_id_t pid)
     sc->first_agg_txq = IWN5000_FIRST_AGG_TXQUEUE;
     sc->ndmachnls = IWN5000_NDMACHNLS;
     sc->broadcast_id = IWN5000_ID_BROADCAST;
+    sc->command_queue = IWN_DEFAULT_CMD_QUEUE;
+    sc->eeprom_pan_capable = false;
     sc->rxonsz = IWN5000_RXONSZ;
     sc->schedsz = IWN5000_SCHEDSZ;
     sc->fw_text_maxsz = IWN5000_FW_TEXT_MAXSZ;
@@ -5415,6 +6543,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+        data->ap_mgmt = false;
         iwn_sae_tx_data_clear(data);
         paddr += sizeof (struct iwn_tx_cmd);
 
@@ -5461,6 +6590,7 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+        data->ap_mgmt = false;
         iwn_sae_tx_data_clear(data);
     }
     /* Clear TX descriptors. */
@@ -5502,6 +6632,8 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         }
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
+        data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+        data->ap_mgmt = false;
         iwn_sae_tx_data_clear(data);
         if (data->map != NULL) {
             bus_dmamap_destroy(sc->sc_dmat, data->map);
@@ -5575,6 +6707,8 @@ iwn_read_eeprom(struct iwn_softc *sc)
     /* Check if HT support is bonded out. */
     if (val & htole16(IWN_EEPROM_SKU_CAP_11N))
         sc->sc_flags |= IWN_FLAG_HAS_11N;
+    sc->eeprom_pan_capable =
+        (val & htole16(IWN_EEPROM_SKU_CAP_IPAN)) != 0;
 
     iwn_read_prom_data(sc, IWN_EEPROM_RFCFG, &val, 2);
     sc->rfcfg = letoh16(val);
@@ -7304,6 +8438,24 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         mbuf_freem(m);
         return;
     }
+    /*
+     * APSTA owns a distinct PAN MAC context.  Do not feed frames addressed
+     * to that role into the concurrently-live station net80211 state
+     * machine.  Open-System Authentication is host-generated on Intel DVM:
+     * unlike Broadcom FullMAC, the firmware does not synthesize seq=2.
+     */
+    if (iwn_handle_ap_probe_req(wh, len)) {
+        mbuf_freem(m);
+        return;
+    }
+    if (iwn_handle_ap_open_auth(wh, len)) {
+        mbuf_freem(m);
+        return;
+    }
+    if (iwn_handle_ap_assoc_req(wh, len)) {
+        mbuf_freem(m);
+        return;
+    }
     if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
         IEEE80211_FC0_TYPE_MGT) {
         const uint8_t subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
@@ -7969,6 +9121,15 @@ iwn5000_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     if (desc->qid < sc->first_agg_txq) {
         int txfail = (status != IWN_TX_STATUS_SUCCESS &&
                       status != IWN_TX_STATUS_DIRECT_DONE);
+        if (ring->data[desc->idx].ap_mgmt) {
+            XYLog("%s: AP management raw TX status=0x%02x "
+                  "qid=%u idx=%u station=%u\n",
+                  sc->sc_dev.dv_xname,
+                  static_cast<unsigned>(status),
+                  static_cast<unsigned>(desc->qid),
+                  static_cast<unsigned>(desc->idx),
+                  static_cast<unsigned>(IWN5000_ID_PAN_BROADCAST));
+        }
         /* DIAGNOSTIC (auth-ACK boundary): capture the firmware TX status
          * for the pending AUTH(seq=1) frame. status==SUCCESS/DIRECT_DONE +
          * ackfailcnt==0 => the AP ACKed our auth frame (so a missing seq=2
@@ -8030,6 +9191,7 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
     data->tx_apple_nrate = 0;
     data->tx_apple_nrate_valid = 0;
     data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+    data->ap_mgmt = false;
     iwn_sae_tx_data_clear(data);
 }
 
@@ -8089,6 +9251,32 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     struct iwn_tx_ring *ring = &sc->txq[qid];
     struct iwn_tx_data *data = &ring->data[desc->idx];
     struct iwn_node *wn = (struct iwn_node *)data->ni;
+
+    if (data->ap_mgmt) {
+        if (txfail)
+            ifp->netStat->outputErrors++;
+        XYLog("%s: AP management TX complete subtype=0x%02x "
+              "auth_seq=%u peer=%02x:%02x:%02x:%02x:%02x:%02x "
+              "txfail=%d ackfailcnt=%u qid=%d\n",
+              sc->sc_dev.dv_xname, data->diag_subtype,
+              static_cast<unsigned>(data->diag_auth_seq),
+              data->diag_peer[0], data->diag_peer[1],
+              data->diag_peer[2], data->diag_peer[3],
+              data->diag_peer[4], data->diag_peer[5],
+              txfail, static_cast<unsigned>(ackfailcnt), qid);
+        if (data->m != NULL)
+            mbuf_freem(data->m);
+        data->m = NULL;
+        data->totlen = 0;
+        data->ap_mgmt = false;
+        data->diag_subtype = 0xff;
+        data->diag_auth_seq = 0xffff;
+        explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
+        ring->queued--;
+        iwn_clear_oactive(sc, ring);
+        iwn_refresh_tx_timer(sc);
+        return;
+    }
 
     if (data->ni == NULL) {
         iwn_refresh_tx_timer(sc);
@@ -8172,10 +9360,11 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
 void ItlIwn::
 iwn_cmd_done(struct iwn_softc *sc, struct iwn_rx_desc *desc)
 {
-    struct iwn_tx_ring *ring = &sc->txq[4];
+    ItlIwn *that = container_of(sc, ItlIwn, com);
+    struct iwn_tx_ring *ring = &sc->txq[sc->command_queue];
     struct iwn_tx_data *data;
 
-    if ((desc->qid & 0xf) != 4)
+    if ((desc->qid & 0xf) != sc->command_queue)
         return;    /* Not a command ack. */
 
     data = &ring->data[desc->idx];
@@ -8188,6 +9377,7 @@ iwn_cmd_done(struct iwn_softc *sc, struct iwn_rx_desc *desc)
         mbuf_freem(data->m);
         data->m = NULL;
     }
+    that->iwn_clear_cmd_in_flight(sc);
     wakeupOn(&ring->desc[desc->idx]);
 }
 
@@ -8214,6 +9404,38 @@ iwn_notif_intr(struct iwn_softc *sc)
         bus_dmamap_sync(sc->sc_dmat, data->map, 0, sizeof (*desc),
             BUS_DMASYNC_POSTREAD);
         desc = mtod(data->m, struct iwn_rx_desc *);
+
+        if (!(desc->qid & 0x80) &&
+            (desc->qid & 0xf) == sc->command_queue &&
+            desc->idx < IWN_TX_RING_COUNT) {
+            struct iwn_tx_ring *commandRing =
+                &sc->txq[sc->command_queue];
+            struct iwn_tx_data *commandData =
+                &commandRing->data[desc->idx];
+            const struct iwn_tx_cmd *completedCommand =
+                commandData->m != NULL ?
+                mtod(commandData->m, const struct iwn_tx_cmd *) :
+                &commandRing->cmd[desc->idx];
+            if (apFirmwareTransitionActive &&
+                completedCommand->code == IWN_CMD_ADD_NODE) {
+                const uint32_t replyLength =
+                    letoh32(desc->len) & IWN_RX_DESC_LEN_MASK;
+                const uint8_t addNodeStatus =
+                    replyLength != 0 ?
+                    *(reinterpret_cast<const uint8_t *>(desc + 1)) : 0xff;
+                XYLog("%s: AP PAN broadcast ADD_NODE reply "
+                      "status=0x%02x len=%u\n",
+                      sc->sc_dev.dv_xname,
+                      static_cast<unsigned>(addNodeStatus),
+                      static_cast<unsigned>(replyLength));
+            }
+            if (apFirmwareTransitionActive)
+                iwn_note_ap_firmware_event(completedCommand->code, -1);
+        }
+        if (apFirmwareTransitionActive &&
+            desc->type == IWN_WIPAN_DEACTIVATION_COMPLETE) {
+            iwn_note_ap_firmware_event(-1, desc->type);
+        }
 
         if (sc->auth_seq1_tx_pending) {
             sc->auth_seq1_tx_notif_count++;
@@ -9724,7 +10946,131 @@ iwn_watchdog(struct _ifnet *ifp)
             goto done;
         }
         if (--sc->sc_tx_timer == 0) {
-            XYLog("%s: device timeout\n", sc->sc_dev.dv_xname);
+            uint32_t panMgmtReadPointer = 0xffffffff;
+            uint32_t panMgmtStatus = 0xffffffff;
+            uint32_t queueChainMask = 0xffffffff;
+            uint32_t schedulerInterruptMask = 0xffffffff;
+            uint32_t schedulerTxFifos = 0xffffffff;
+            uint32_t schedulerGpControl = 0xffffffff;
+            uint32_t schedulerChainExtension = 0xffffffff;
+            uint32_t schedulerAggregation = 0xffffffff;
+            uint32_t schedulerEnableControl = 0xffffffff;
+            uint32_t panMgmtContext1 = 0xffffffff;
+            uint32_t panMgmtContext2 = 0xffffffff;
+            if (sc->hw_type != IWN_HW_REV_TYPE_4965 &&
+                iwn_nic_lock(sc) == 0) {
+                panMgmtReadPointer = iwn_prph_read(
+                    sc, IWN5000_SCHED_QUEUE_RDPTR(IWN_IPAN_MGMT_QUEUE));
+                panMgmtStatus = iwn_prph_read(
+                    sc, IWN5000_SCHED_QUEUE_STATUS(IWN_IPAN_MGMT_QUEUE));
+                queueChainMask =
+                    iwn_prph_read(sc, IWN5000_SCHED_QCHAIN_SEL);
+                schedulerInterruptMask =
+                    iwn_prph_read(sc, IWN5000_SCHED_INTR_MASK);
+                schedulerTxFifos =
+                    iwn_prph_read(sc, IWN5000_SCHED_TXFACT);
+                schedulerGpControl =
+                    iwn_prph_read(sc, IWN5000_SCHED_GP_CTRL);
+                schedulerChainExtension =
+                    iwn_prph_read(sc, IWN5000_SCHED_CHAINEXT_EN);
+                schedulerAggregation =
+                    iwn_prph_read(sc, IWN5000_SCHED_AGGR_SEL);
+                schedulerEnableControl =
+                    iwn_prph_read(sc, IWN5000_SCHED_EN_CTRL);
+                panMgmtContext1 = iwn_mem_read(
+                    sc, sc->sched_base +
+                    IWN5000_SCHED_QUEUE_OFFSET(IWN_IPAN_MGMT_QUEUE));
+                panMgmtContext2 = iwn_mem_read(
+                    sc, sc->sched_base +
+                    IWN5000_SCHED_QUEUE_OFFSET(IWN_IPAN_MGMT_QUEUE) + 4);
+                iwn_nic_unlock(sc);
+            }
+            struct iwn_tx_ring *panMgmt =
+                &sc->txq[IWN_IPAN_MGMT_QUEUE];
+            struct iwn_tx_desc *panDescriptor =
+                &panMgmt->desc[panMgmt->read];
+            struct iwn_tx_cmd *panCommand =
+                &panMgmt->cmd[panMgmt->read];
+            struct iwn_cmd_data *panTx =
+                reinterpret_cast<struct iwn_cmd_data *>(panCommand->data);
+            struct iwn_tx_data *panData =
+                &panMgmt->data[panMgmt->read];
+            const uint16_t byteCount = letoh16(
+                sc->sched[IWN_IPAN_MGMT_QUEUE * IWN5000_SCHED_COUNT +
+                          panMgmt->read]);
+            XYLog("%s: device timeout PAN management "
+                  "queued=%d cur=%d read=%d scd_read=0x%08x "
+                  "scd_status=0x%08x qchain=0x%08x intr=0x%08x "
+                  "byte_count=0x%04x wrptr=0x%08x\n",
+                  sc->sc_dev.dv_xname, panMgmt->queued, panMgmt->cur,
+                  panMgmt->read, panMgmtReadPointer, panMgmtStatus,
+                  queueChainMask, schedulerInterruptMask,
+                  static_cast<unsigned>(byteCount),
+                  IWN_READ(sc, IWN_HBUS_TARG_WRPTR));
+            XYLog("%s: device timeout PAN transport "
+                  "txfact=0x%08x gp=0x%08x ctx1=0x%08x ctx2=0x%08x "
+                  "chainext=0x%08x aggr=0x%08x enctrl=0x%08x "
+                  "fh5_config=0x%08x fh5_status=0x%08x "
+                  "tssr=0x%08x txerr=0x%08x "
+                  "cbbc7=0x%08x expected_cbbc7=0x%08x\n",
+                  sc->sc_dev.dv_xname, schedulerTxFifos,
+                  schedulerGpControl, panMgmtContext1, panMgmtContext2,
+                  schedulerChainExtension, schedulerAggregation,
+                  schedulerEnableControl,
+                  IWN_READ(sc, IWN_FH_TX_CONFIG(5)),
+                  IWN_READ(sc, IWN_FH_TXBUF_STATUS(5)),
+                  IWN_READ(sc, IWN_FH_TX_STATUS),
+                  IWN_READ(sc, IWN_FH_TX_ERROR),
+                  IWN_READ(sc, IWN_FH_CBBC_QUEUE(IWN_IPAN_MGMT_QUEUE)),
+                  static_cast<uint32_t>(panMgmt->desc_dma.paddr >> 8));
+            XYLog("%s: device timeout PAN FH5 "
+                  "tfbd0=0x%08x tfbd1=0x%08x sram=0x%08x\n",
+                  sc->sc_dev.dv_xname,
+                  IWN_READ(sc, IWN_FH_TFBD_CTRL0(5)),
+                  IWN_READ(sc, IWN_FH_TFBD_CTRL1(5)),
+                  IWN_READ(sc, IWN_FH_SRAM_ADDR(5)));
+            XYLog("%s: device timeout PAN descriptor "
+                  "desc_paddr=0x%llx cmd_paddr=0x%llx scratch=0x%llx "
+                  "nsegs=%u seg0_addr=0x%08x seg0_len=0x%04x "
+                  "seg1_addr=0x%08x seg1_len=0x%04x "
+                  "seg2_addr=0x%08x seg2_len=0x%04x "
+                  "cmd=%u/%u/%u txid=%u txlen=%u txflags=0x%08x "
+                  "totlen=%d ap_mgmt=%u\n",
+                  sc->sc_dev.dv_xname,
+                  static_cast<unsigned long long>(
+                      panMgmt->desc_dma.paddr),
+                  static_cast<unsigned long long>(panData->cmd_paddr),
+                  static_cast<unsigned long long>(panData->scratch_paddr),
+                  static_cast<unsigned>(panDescriptor->nsegs),
+                  static_cast<unsigned>(letoh32(
+                      panDescriptor->segs[0].addr)),
+                  static_cast<unsigned>(letoh16(
+                      panDescriptor->segs[0].len)),
+                  static_cast<unsigned>(letoh32(
+                      panDescriptor->segs[1].addr)),
+                  static_cast<unsigned>(letoh16(
+                      panDescriptor->segs[1].len)),
+                  static_cast<unsigned>(letoh32(
+                      panDescriptor->segs[2].addr)),
+                  static_cast<unsigned>(letoh16(
+                      panDescriptor->segs[2].len)),
+                  static_cast<unsigned>(panCommand->code),
+                  static_cast<unsigned>(panCommand->qid),
+                  static_cast<unsigned>(panCommand->idx),
+                  static_cast<unsigned>(panTx->id),
+                  static_cast<unsigned>(letoh16(panTx->len)),
+                  static_cast<unsigned>(letoh32(panTx->flags)),
+                  panData->totlen,
+                  static_cast<unsigned>(panData->ap_mgmt));
+            for (int qid = 0; qid < sc->ntxqs; qid++) {
+                if (sc->txq[qid].queued != 0) {
+                    XYLog("%s: device timeout pending qid=%d "
+                          "queued=%d cur=%d read=%d\n",
+                          sc->sc_dev.dv_xname, qid,
+                          sc->txq[qid].queued, sc->txq[qid].cur,
+                          sc->txq[qid].read);
+                }
+            }
             that->iwn_stop(ifp);
             task_add(systq, &sc->init_task);
             ifp->netStat->outputErrors++;
@@ -9802,6 +11148,108 @@ iwn_ioctl(struct _ifnet *ifp, u_long cmd, caddr_t data)
  * Send a command to the firmware.
  */
 int ItlIwn::
+iwn_set_cmd_in_flight(struct iwn_softc *sc)
+{
+    int transitionTries;
+
+    /*
+     * 4965 does not need the APMG host-command wake workaround.  DVM
+     * devices from 5000 onward do: keep MAC_ACCESS_REQ asserted from the
+     * first HCMD doorbell until firmware reclaims the final descriptor.
+     */
+    if (sc->hw_type == IWN_HW_REV_TYPE_4965)
+        return 0;
+
+    for (transitionTries = 0; transitionTries < 3000;
+         transitionTries++) {
+        int32_t state = __atomic_load_n(
+            &sc->sc_cmd_in_flight, __ATOMIC_ACQUIRE);
+        if (state > 0) {
+            if (state == INT32_MAX)
+                return EBUSY;
+            int32_t expected = state;
+            if (__atomic_compare_exchange_n(
+                    &sc->sc_cmd_in_flight, &expected, state + 1, false,
+                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+                return 0;
+            continue;
+        }
+        if (state < 0) {
+            DELAY(10);
+            continue;
+        }
+
+        int32_t expected = 0;
+        if (!__atomic_compare_exchange_n(
+                &sc->sc_cmd_in_flight, &expected, -1, false,
+                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            continue;
+
+        IWN_SETBITS(sc, IWN_GP_CNTRL, IWN_GP_CNTRL_MAC_ACCESS_REQ);
+        for (int wakeTries = 0; wakeTries < 1500; wakeTries++) {
+            if ((IWN_READ(sc, IWN_GP_CNTRL) &
+                 (IWN_GP_CNTRL_MAC_ACCESS_ENA |
+                  IWN_GP_CNTRL_SLEEP)) ==
+                IWN_GP_CNTRL_MAC_ACCESS_ENA) {
+                __atomic_store_n(
+                    &sc->sc_cmd_in_flight, 1, __ATOMIC_RELEASE);
+                return 0;
+            }
+            DELAY(10);
+        }
+
+        IWN_CLRBITS(sc, IWN_GP_CNTRL, IWN_GP_CNTRL_MAC_ACCESS_REQ);
+        __atomic_store_n(&sc->sc_cmd_in_flight, 0, __ATOMIC_RELEASE);
+        XYLog("%s: failed to wake NIC for host command\n",
+              sc->sc_dev.dv_xname);
+        return ETIMEDOUT;
+    }
+
+    XYLog("%s: host-command wake transition timed out\n",
+          sc->sc_dev.dv_xname);
+    return ETIMEDOUT;
+}
+
+void ItlIwn::
+iwn_clear_cmd_in_flight(struct iwn_softc *sc)
+{
+    if (sc->hw_type == IWN_HW_REV_TYPE_4965)
+        return;
+
+    for (int transitionTries = 0; transitionTries < 3000;
+         transitionTries++) {
+        int32_t state = __atomic_load_n(
+            &sc->sc_cmd_in_flight, __ATOMIC_ACQUIRE);
+        if (state == 0)
+            return;
+        if (state < 0) {
+            DELAY(10);
+            continue;
+        }
+        if (state > 1) {
+            int32_t expected = state;
+            if (__atomic_compare_exchange_n(
+                    &sc->sc_cmd_in_flight, &expected, state - 1, false,
+                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+                return;
+            continue;
+        }
+
+        int32_t expected = 1;
+        if (!__atomic_compare_exchange_n(
+                &sc->sc_cmd_in_flight, &expected, -2, false,
+                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            continue;
+        IWN_CLRBITS(sc, IWN_GP_CNTRL, IWN_GP_CNTRL_MAC_ACCESS_REQ);
+        __atomic_store_n(&sc->sc_cmd_in_flight, 0, __ATOMIC_RELEASE);
+        return;
+    }
+
+    XYLog("%s: host-command wake release timed out\n",
+          sc->sc_dev.dv_xname);
+}
+
+int ItlIwn::
 iwn_cmd(struct iwn_softc *sc, int code, const void *buf, int size, int async)
 {
     return iwn_cmd_with_doorbell_hook(sc, code, buf, size, async,
@@ -9816,7 +11264,7 @@ iwn_cmd_with_doorbell_hook(struct iwn_softc *sc, int code, const void *buf,
                            void *doorbell_context)
 {
     struct iwn_ops *ops = &sc->ops;
-    struct iwn_tx_ring *ring = &sc->txq[4];
+    struct iwn_tx_ring *ring = &sc->txq[sc->command_queue];
     struct iwn_tx_desc *desc;
     struct iwn_tx_data *data;
     struct iwn_tx_cmd *cmd;
@@ -9911,11 +11359,27 @@ iwn_cmd_with_doorbell_hook(struct iwn_softc *sc, int code, const void *buf,
         return ECANCELED;
     }
 
+    error = iwn_set_cmd_in_flight(sc);
+    if (error != 0) {
+        if (m != NULL) {
+            explicit_bzero(cmd, totlen);
+            mbuf_freem(m);
+            data->m = NULL;
+            data->map->dm_nsegs = 0;
+        } else {
+            explicit_bzero(cmd, sizeof(*cmd));
+        }
+        explicit_bzero(desc, sizeof(*desc));
+        return error;
+    }
+
+    const int submittedIndex = ring->cur;
+
     /* Update TX scheduler. */
-    ops->update_sched(sc, ring->qid, ring->cur, 0, 0);
+    ops->update_sched(sc, ring->qid, submittedIndex, 0, 0);
 
     /* Kick command ring. */
-    ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
+    ring->cur = (submittedIndex + 1) % IWN_TX_RING_COUNT;
     IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
     if (post_doorbell != NULL)
         (*post_doorbell)(sc, doorbell_context);
@@ -13320,33 +14784,94 @@ iwn5000_post_alive(struct iwn_softc *sc)
 
     IWN_SETBITS(sc, IWN_FH_TX_CHICKEN, IWN_FH_TX_CHICKEN_SCHED_RETRY);
 
-    /* Enable chain mode for all queues, except command queue. */
-    iwn_prph_write(sc, IWN5000_SCHED_QCHAIN_SEL, 0xfffef);
+    iwn_prph_write(sc, IWN5000_SCHED_QCHAIN_SEL,
+        sc->command_queue == IWN_IPAN_CMD_QUEUE ?
+        0 : (0xfffff & ~(1U << sc->command_queue)));
     iwn_prph_write(sc, IWN5000_SCHED_AGGR_SEL, 0);
 
-    for (qid = 0; qid < IWN5000_NTXQUEUES; qid++) {
-        iwn_prph_write(sc, IWN5000_SCHED_QUEUE_RDPTR(qid), 0);
-        IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | 0);
+    if (sc->command_queue == IWN_IPAN_CMD_QUEUE) {
+        static const uint8_t qid2fifo[] = {
+            3, 2, 1, 0, 0, 4, 2, 5, 4, 7, 5
+        };
+        uint32_t chainSelection = 0;
 
+        /*
+         * Match gen1 iwlwifi's two transport phases exactly.  tx_start
+         * configures HCMD q9 first; alive_notify then configures each fixed
+         * data queue with one indivisible
+         * INACTIVE -> chain/context/pointers -> ACTIVE transition.  Batching
+         * every INACTIVE write before a second ACTIVE pass leaves the visible
+         * q7 status correct but does not reproduce the scheduler's internal
+         * transition state.
+         */
+        qid = IWN_IPAN_CMD_QUEUE;
+        iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
+            IWN5000_TXQ_STATUS_CHGACT);
+        iwn_prph_clrbits(sc, IWN5000_SCHED_AGGR_SEL, 1U << qid);
+        IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | 0);
+        iwn_prph_write(sc, IWN5000_SCHED_QUEUE_RDPTR(qid), 0);
         iwn_mem_write(sc, sc->sched_base +
             IWN5000_SCHED_QUEUE_OFFSET(qid), 0);
-        /* Set scheduler window size and frame limit. */
         iwn_mem_write(sc, sc->sched_base +
             IWN5000_SCHED_QUEUE_OFFSET(qid) + 4,
             IWN_SCHED_LIMIT << 16 | IWN_SCHED_WINSZ);
-    }
-
-    /* Enable interrupts for all our 20 queues. */
-    iwn_prph_write(sc, IWN5000_SCHED_INTR_MASK, 0xfffff);
-    /* Identify TX FIFO rings (0-7). */
-    iwn_prph_write(sc, IWN5000_SCHED_TXFACT, 0xff);
-
-    /* Mark TX rings (4 EDCA + cmd + 2 HCCA) as active. */
-    for (qid = 0; qid < 7; qid++) {
-        static uint8_t qid2fifo[] = { 3, 2, 1, 0, 7, 5, 6 };
         iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
             IWN5000_TXQ_STATUS_ACTIVE | qid2fifo[qid]);
+
+        iwn_prph_write(sc, IWN5000_SCHED_INTR_MASK, 0);
+        iwn_prph_write(sc, IWN5000_SCHED_TXFACT, 0xff);
+
+        for (qid = 0; qid < 11; qid++) {
+            if (qid == IWN_IPAN_CMD_QUEUE)
+                continue;
+            iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
+                IWN5000_TXQ_STATUS_CHGACT);
+            chainSelection |= 1U << qid;
+            iwn_prph_write(sc, IWN5000_SCHED_QCHAIN_SEL,
+                chainSelection);
+            iwn_prph_clrbits(sc, IWN5000_SCHED_AGGR_SEL, 1U << qid);
+            IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | 0);
+            iwn_prph_write(sc, IWN5000_SCHED_QUEUE_RDPTR(qid), 0);
+            iwn_mem_write(sc, sc->sched_base +
+                IWN5000_SCHED_QUEUE_OFFSET(qid), 0);
+            iwn_mem_write(sc, sc->sched_base +
+                IWN5000_SCHED_QUEUE_OFFSET(qid) + 4,
+                IWN_SCHED_LIMIT << 16 | IWN_SCHED_WINSZ);
+            iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
+                IWN5000_TXQ_STATUS_ACTIVE | qid2fifo[qid]);
+        }
+        for (qid = 11; qid < IWN5000_NTXQUEUES; qid++) {
+            IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | 0);
+            iwn_prph_write(sc, IWN5000_SCHED_QUEUE_RDPTR(qid), 0);
+            iwn_mem_write(sc, sc->sched_base +
+                IWN5000_SCHED_QUEUE_OFFSET(qid), 0);
+            iwn_mem_write(sc, sc->sched_base +
+                IWN5000_SCHED_QUEUE_OFFSET(qid) + 4,
+                IWN_SCHED_LIMIT << 16 | IWN_SCHED_WINSZ);
+        }
+    } else {
+        static const uint8_t qid2fifo[] = { 3, 2, 1, 0, 7, 5, 6 };
+        for (qid = 0; qid < IWN5000_NTXQUEUES; qid++) {
+            IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | 0);
+            iwn_prph_write(sc, IWN5000_SCHED_QUEUE_RDPTR(qid), 0);
+            iwn_mem_write(sc, sc->sched_base +
+                IWN5000_SCHED_QUEUE_OFFSET(qid), 0);
+            iwn_mem_write(sc, sc->sched_base +
+                IWN5000_SCHED_QUEUE_OFFSET(qid) + 4,
+                IWN_SCHED_LIMIT << 16 | IWN_SCHED_WINSZ);
+        }
+        iwn_prph_write(sc, IWN5000_SCHED_INTR_MASK, 0xfffff);
+        iwn_prph_write(sc, IWN5000_SCHED_TXFACT, 0xff);
+        for (qid = 0; qid < 7; qid++) {
+            iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
+                IWN5000_TXQ_STATUS_ACTIVE | qid2fifo[qid]);
+        }
     }
+    XYLog("%s: DVM command queue=%u firmware_flags=0x%08x "
+          "eeprom_ipan=%u\n", sc->sc_dev.dv_xname,
+          static_cast<unsigned>(sc->command_queue),
+          static_cast<unsigned>(sc->tlv_feature_flags),
+          static_cast<unsigned>(sc->eeprom_pan_capable));
 
     /* DIAGNOSTIC (passthrough TX): capture the DMA addresses and the SCD
      * DRAM-base / queue-status register read-backs while the NIC lock is
@@ -14159,6 +15684,8 @@ iwn_hw_stop(struct iwn_softc *sc)
     emit_reset_event = that->iwn_sae_tx_snapshot_reset(sc, &reset_event);
     that->iwn_sae_tx_cancel_all(sc);
 
+    __atomic_store_n(&sc->sc_cmd_in_flight, 0, __ATOMIC_RELEASE);
+    IWN_CLRBITS(sc, IWN_GP_CNTRL, IWN_GP_CNTRL_MAC_ACCESS_REQ);
     IWN_WRITE(sc, IWN_RESET, IWN_RESET_NEVO);
 
     /* Disable interrupts. */
@@ -14272,6 +15799,11 @@ iwn_init(struct _ifnet *ifp)
         XYLog("%s: could not read firmware\n", sc->sc_dev.dv_xname);
         goto fail;
     }
+    sc->command_queue =
+        sc->hw_type != IWN_HW_REV_TYPE_4965 &&
+        sc->eeprom_pan_capable &&
+        (sc->tlv_feature_flags & IWN_UCODE_TLV_FLAGS_PAN) != 0 ?
+        IWN_IPAN_CMD_QUEUE : IWN_DEFAULT_CMD_QUEUE;
 
     /* Initialize hardware and upload firmware. */
     error = iwn_hw_init(sc);

@@ -951,6 +951,7 @@ public:
      */
     AirportItlwmAPSTAOwner *ensureAPSTAOwner(
         const struct apple80211_virt_if_create_data *create);
+    bool copyPermanentHardwareAddress(uint8_t *address) const;
     IOReturn materializeAPSTAInterface(
         const struct apple80211_virt_if_create_data *create);
     void teardownAPSTAInterface();
@@ -984,6 +985,8 @@ public:
     IOWorkLoop *fWatchdogWorkLoop;
     ItlHalService *fHalService;
     bool fHalAttached;
+    ether_addr fPermanentHardwareAddress;
+    bool fPermanentHardwareAddressValid;
     AirportItlwmAPSTAOwner *fAPSTAOwner;
     IO80211SkywalkInterface *fAPSTANetIf;
     IOSkywalkPacketBufferPool *fAPSTATxPool;

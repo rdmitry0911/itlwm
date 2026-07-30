@@ -50,6 +50,8 @@ struct ItlHalApConfig {
     uint16_t beaconInterval;
     uint8_t  dtimPeriod;
     uint32_t maxStations;
+    const uint8_t *ssid;
+    size_t ssidLength;
     const void *beaconTemplate;
     size_t beaconTemplateLength;
 };
@@ -176,7 +178,7 @@ public:
      * All parameter pointers are borrowed for the duration of the
      * call. The HAL must not retain pointers, must not free them, and
      * must complete any necessary copy before returning.
-     */
+    */
     virtual bool supportsAPMode() const { return false; }
     virtual IOReturn startAPMode(const struct ItlHalApConfig *config) {
         (void)config;

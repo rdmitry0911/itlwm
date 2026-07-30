@@ -156,6 +156,12 @@ struct iwn_tx_data {
     uint32_t tx_apple_nrate;
     uint8_t tx_apple_nrate_valid;
     uint8_t post_plti_trace_class;
+    /*
+     * A frame owned by the concurrent PAN/AP context has no net80211 STA
+     * node to retain.  Completion must reclaim it without running the
+     * station rate-control path or releasing a synthetic node reference.
+     */
+    bool ap_mgmt;
 
     /*
      * Descriptor-local, credential-free ownership for a direct SAE
@@ -437,6 +443,13 @@ struct iwn_softc {
 #define IWN_FLAG_BGSCAN        (1 << 9)
 #define IWN_FLAG_SCANNING    (1 << 10)
 
+    /*
+     * Number of HCMD descriptors which firmware has not yet reclaimed.
+     * Negative values are short transition states while the first command
+     * wakes the MAC or the final completion releases the wake request.
+     */
+    volatile int32_t   sc_cmd_in_flight;
+
     IOSimpleLock       *sc_scan_lease_lock;
     struct iwn_scan_lease sc_scan_lease;
     /* One identity-free direct-SAE mailbox reservation.  The scan-lease
@@ -463,6 +476,8 @@ struct iwn_softc {
     int            agg_queue_mask;
     int            ndmachnls;
     uint8_t            broadcast_id;
+    uint8_t            command_queue;
+    bool               eeprom_pan_capable;
     int            rxonsz;
     int            schedsz;
     uint32_t        fw_text_maxsz;

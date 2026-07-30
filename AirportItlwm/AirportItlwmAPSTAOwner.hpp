@@ -57,6 +57,8 @@ public:
                                       state.resetState26c != 0; }
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;
+    void copyMacAddress(uint8_t *address) const;
+    IOReturn setMacAddress(const uint8_t *address);
 
     AirportItlwmAPSTAStateBlock *stateBlock() { return &state; }
     const AirportItlwmAPSTAStateBlock *stateBlock() const { return &state; }

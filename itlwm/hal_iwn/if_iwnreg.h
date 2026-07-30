@@ -120,6 +120,7 @@
 #define IWN_FH_TXBUF_STATUS(qid)    (0x1d08 + (qid) * 32)
 #define IWN_FH_TX_CHICKEN        0x1e98
 #define IWN_FH_TX_STATUS        0x1eb0
+#define IWN_FH_TX_ERROR         0x1eb8
 
 /*
  * TX scheduler registers.
@@ -138,8 +139,10 @@
 #define IWN4965_SCHED_QUEUE_STATUS(qid)    (IWN_SCHED_BASE + 0x104 + (qid) * 4)
 #define IWN5000_SCHED_INTR_MASK        (IWN_SCHED_BASE + 0x108)
 #define IWN5000_SCHED_QUEUE_STATUS(qid)    (IWN_SCHED_BASE + 0x10c + (qid) * 4)
+#define IWN5000_SCHED_GP_CTRL        (IWN_SCHED_BASE + 0x1a8)
 #define IWN5000_SCHED_CHAINEXT_EN    (IWN_SCHED_BASE + 0x244)
 #define IWN5000_SCHED_AGGR_SEL        (IWN_SCHED_BASE + 0x248)
+#define IWN5000_SCHED_EN_CTRL         (IWN_SCHED_BASE + 0x254)
 
 /*
  * Offsets in TX scheduler's SRAM.
@@ -342,8 +345,8 @@
 #define IWN4965_TXQ_STATUS_INACTIVE    0x0007fc00
 #define IWN4965_TXQ_STATUS_AGGR_ENA    (1 << 5 | 1 << 8)
 #define IWN4965_TXQ_STATUS_CHGACT    (1 << 10)
-#define IWN5000_TXQ_STATUS_ACTIVE    0x00ff0018
-#define IWN5000_TXQ_STATUS_INACTIVE    0x00ff0010
+#define IWN5000_TXQ_STATUS_ACTIVE    0x017f0018
+#define IWN5000_TXQ_STATUS_INACTIVE    0x017f0010
 #define IWN5000_TXQ_STATUS_CHGACT    (1 << 19)
 
 /* Possible flags for registers IWN_APMG_CLK_*. */
@@ -454,6 +457,7 @@ struct iwn_tx_cmd {
 #define IWN_CMD_SET_POWER_MODE        119
 #define IWN_CMD_SCAN            128
 #define IWN_CMD_SCAN_ABORT        129
+#define IWN_CMD_TX_BEACON         145
 #define IWN_CMD_TXPOWER_DBM        149
 #define IWN_CMD_TXPOWER            151
 #define IWN5000_CMD_TX_ANT_CONFIG    152
@@ -462,6 +466,12 @@ struct iwn_tx_cmd {
 #define IWN_CMD_SET_CRITICAL_TEMP    164
 #define IWN_CMD_SET_SENSITIVITY        168
 #define IWN_CMD_PHY_CALIB        176
+#define IWN_CMD_WIPAN_PARAMS        178
+#define IWN_CMD_WIPAN_RXON          179
+#define IWN_CMD_WIPAN_TIMING        180
+#define IWN_CMD_WIPAN_RXON_ASSOC    182
+#define IWN_CMD_WIPAN_EDCA_PARAMS   183
+#define IWN_WIPAN_DEACTIVATION_COMPLETE 189
 #define IWN_CMD_BT_COEX_PRIOTABLE    204
 #define IWN_CMD_BT_COEX_PROT        205
 
@@ -493,6 +503,9 @@ struct iwn_rxon {
 #define IWN_MODE_STA        3
 #define IWN_MODE_IBSS        4
 #define IWN_MODE_MONITOR    6
+#define IWN_MODE_CP         7
+#define IWN_MODE_2STA       8
+#define IWN_MODE_P2P        9
 
     uint8_t        air;
     uint16_t    rxchain;
@@ -605,7 +618,22 @@ struct iwn_cmd_timing {
     uint16_t    atim;
     uint32_t    binitval;
     uint16_t    lintval;
-    uint16_t    reserved;
+    uint8_t     dtim_period;
+    uint8_t     delta_cp_bss_tbtts;
+} __packed;
+
+struct iwn_wipan_slot {
+    uint16_t width;
+    uint8_t type;
+    uint8_t reserved;
+} __packed;
+
+struct iwn_cmd_wipan_params {
+    uint16_t flags;
+#define IWN_WIPAN_PARAMS_SLOTTED_MODE    (1 << 3)
+    uint8_t reserved;
+    uint8_t nslots;
+    struct iwn_wipan_slot slots[10];
 } __packed;
 
 /* Structure for command IWN_CMD_ADD_NODE. */
@@ -620,7 +648,17 @@ struct iwn_node_info {
     uint8_t        id;
 #define IWN_ID_BSS         0
 #define IWN5000_ID_BROADCAST    15
+#define IWN5000_ID_PAN_BROADCAST    14
 #define IWN4965_ID_BROADCAST    31
+
+#define IWN_DEFAULT_CMD_QUEUE    4
+/*
+ * DVM aliases management traffic to the PAN VO queue.  The PAN AC mapping
+ * is VO/VI/BE/BK -> 7/6/5/4; queue 6 is VI and may remain unscheduled when
+ * no VI timeslice is active.
+ */
+#define IWN_IPAN_MGMT_QUEUE      7
+#define IWN_IPAN_CMD_QUEUE       9
 
     uint8_t        flags;
 #define IWN_FLAG_SET_KEY        (1 << 0)
@@ -651,6 +689,7 @@ struct iwn_node_info {
     uint32_t    htflags;
 #define IWN_AMDPU_SIZE_FACTOR(x)    ((x) << 19)
 #define IWN_AMDPU_SIZE_FACTOR_MASK    ((0x3) << 19)
+#define IWN_PAN_STATION        (1 << 13)
 #define IWN_40MHZ_ENABLE        (1 << 21)
 #define IWN_MIMO_DISABLE        (1 << 22)
 #define IWN_AMDPU_DENSITY(x)        ((x) << 23)
@@ -744,6 +783,15 @@ struct iwn_cmd_data {
     uint8_t        tid;
     uint16_t    timeout;
     uint16_t    txop;
+} __packed;
+
+/* Structure for command IWN_CMD_TX_BEACON. */
+struct iwn_cmd_beacon {
+    struct iwn_cmd_data tx;
+    uint16_t tim_idx;
+    uint8_t tim_size;
+    uint8_t reserved;
+    uint8_t frame[0];
 } __packed;
 
 /* Structure for command IWN_CMD_LINK_QUALITY. */

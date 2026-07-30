@@ -26,6 +26,94 @@ static bool apsta_mac_is_zero(const uint8_t *mac)
     return true;
 }
 
+static size_t apsta_build_open_beacon(
+    uint8_t *output,
+    size_t outputCapacity,
+    const uint8_t *bssid,
+    const uint8_t *ssid,
+    size_t ssidLength,
+    uint16_t channel,
+    uint16_t beaconInterval,
+    uint8_t dtimPeriod)
+{
+    const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
+    const bool is2GHz = channel <= 14;
+    const uint8_t rates2GHz[] = {
+        0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
+    };
+    const uint8_t rates5GHz[] = {
+        0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c
+    };
+    const uint8_t extendedRates2GHz[] = { 0x30, 0x48, 0x60, 0x6c };
+    const size_t required =
+        fixedLength +
+        2 + ssidLength +
+        2 + sizeof(rates2GHz) +
+        3 +
+        6 +
+        (is2GHz ? 2 + sizeof(extendedRates2GHz) : 0);
+    if (output == nullptr || bssid == nullptr || ssid == nullptr ||
+        ssidLength == 0 ||
+        ssidLength > kAirportItlwmAPSTAGetSsidMaxLength ||
+        channel == 0 || channel > UINT8_MAX ||
+        outputCapacity < required) {
+        return 0;
+    }
+
+    bzero(output, required);
+    struct ieee80211_frame *frame =
+        reinterpret_cast<struct ieee80211_frame *>(output);
+    frame->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_BEACON;
+    frame->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    IEEE80211_ADDR_COPY(frame->i_addr1, etherbroadcastaddr);
+    IEEE80211_ADDR_COPY(frame->i_addr2, bssid);
+    IEEE80211_ADDR_COPY(frame->i_addr3, bssid);
+
+    uint8_t *cursor = output + sizeof(*frame) + 8;
+    const uint16_t interval = htole16(
+        beaconInterval != 0 ? beaconInterval : 100);
+    const uint16_t capability = htole16(
+        IEEE80211_CAPINFO_ESS |
+        (is2GHz ? IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
+    memcpy(cursor, &interval, sizeof(interval));
+    cursor += sizeof(interval);
+    memcpy(cursor, &capability, sizeof(capability));
+    cursor += sizeof(capability);
+
+    *cursor++ = IEEE80211_ELEMID_SSID;
+    *cursor++ = static_cast<uint8_t>(ssidLength);
+    memcpy(cursor, ssid, ssidLength);
+    cursor += ssidLength;
+
+    *cursor++ = IEEE80211_ELEMID_RATES;
+    *cursor++ = static_cast<uint8_t>(sizeof(rates2GHz));
+    if (is2GHz)
+        memcpy(cursor, rates2GHz, sizeof(rates2GHz));
+    else
+        memcpy(cursor, rates5GHz, sizeof(rates5GHz));
+    cursor += sizeof(rates2GHz);
+
+    *cursor++ = IEEE80211_ELEMID_DSPARMS;
+    *cursor++ = 1;
+    *cursor++ = static_cast<uint8_t>(channel);
+
+    *cursor++ = IEEE80211_ELEMID_TIM;
+    *cursor++ = 4;
+    *cursor++ = 0;
+    *cursor++ = dtimPeriod != 0 ? dtimPeriod : 1;
+    *cursor++ = 0;
+    *cursor++ = 0;
+
+    if (is2GHz) {
+        *cursor++ = IEEE80211_ELEMID_XRATES;
+        *cursor++ = static_cast<uint8_t>(sizeof(extendedRates2GHz));
+        memcpy(cursor, extendedRates2GHz, sizeof(extendedRates2GHz));
+        cursor += sizeof(extendedRates2GHz);
+    }
+    return static_cast<size_t>(cursor - output);
+}
+
 static void apsta_copy_mac_prefix(
     uint32_t *dwordOut,
     uint16_t *tailOut,
@@ -330,6 +418,40 @@ bool AirportItlwmAPSTAOwner::initWithController(
     role = create->role;
 
     memcpy(mac, create->mac, IEEE80211_ADDR_LEN);
+    if (apsta_mac_is_zero(mac) &&
+        controller->copyPermanentHardwareAddress(mac)) {
+        /*
+         * Reference APSTA publication owns an address distinct from the
+         * infrastructure role.  Derive a local address from the physical
+         * identity for a zero-MAC laboratory carrier, then avoid colliding
+         * with a privacy address that macOS may already have assigned to STA.
+         */
+        mac[0] |= 0x02;
+        uint8_t infrastructureMac[IEEE80211_ADDR_LEN] = {};
+        bool haveInfrastructureMac = false;
+        if (controller->fNetIf != nullptr) {
+            OSData *property = OSDynamicCast(
+                OSData, controller->fNetIf->getProperty(kIOMACAddress));
+            if (property != nullptr &&
+                property->getLength() >= IEEE80211_ADDR_LEN) {
+                memcpy(infrastructureMac, property->getBytesNoCopy(),
+                       IEEE80211_ADDR_LEN);
+                haveInfrastructureMac = true;
+            }
+        }
+        if (!haveInfrastructureMac && controller->fHalService != nullptr) {
+            struct ieee80211com *ic =
+                controller->fHalService->get80211Controller();
+            if (ic != nullptr) {
+                memcpy(infrastructureMac, ic->ic_myaddr,
+                       IEEE80211_ADDR_LEN);
+                haveInfrastructureMac = true;
+            }
+        }
+        if (haveInfrastructureMac &&
+            IEEE80211_ADDR_EQ(mac, infrastructureMac))
+            mac[0] ^= 0x04;
+    }
     if (create->bsd_name[0] != 0) {
         strlcpy(bsdNameStorage, reinterpret_cast<const char *>(create->bsd_name), sizeof(bsdNameStorage));
     } else {
@@ -459,6 +581,19 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     cfg.maxStations = state.softapMaxAssoc04;
     cfg.beaconInterval = state.softapBeaconInterval14;
     cfg.dtimPeriod = static_cast<uint8_t>(state.softapDtimPeriod16);
+    cfg.ssid = state.softapSsid278;
+    cfg.ssidLength = state.softapSsidLength274;
+    uint8_t beaconTemplate[256];
+    cfg.beaconTemplateLength = apsta_build_open_beacon(
+        beaconTemplate, sizeof(beaconTemplate), mac,
+        cfg.ssid, cfg.ssidLength, cfg.channel,
+        cfg.beaconInterval, cfg.dtimPeriod);
+    if (cfg.beaconTemplateLength == 0) {
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        state.resetState26c = 0;
+        return kIOReturnBadArgument;
+    }
+    cfg.beaconTemplate = beaconTemplate;
     IOReturn ret = owner->fHalService->startAPMode(&cfg);
     if (ret == kIOReturnSuccess) {
         lifecycle = kAirportItlwmAPSTAOwnerRunning;
@@ -497,6 +632,31 @@ bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const
         return false;
     }
     return strncmp(bsdNameStorage, reinterpret_cast<const char *>(name), sizeof(bsdNameStorage)) == 0;
+}
+
+void AirportItlwmAPSTAOwner::copyMacAddress(uint8_t *address) const
+{
+    if (address != nullptr)
+        memcpy(address, mac, IEEE80211_ADDR_LEN);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setMacAddress(const uint8_t *address)
+{
+    if (address == nullptr || apsta_mac_is_zero(address) ||
+        IEEE80211_IS_MULTICAST(address))
+        return kIOReturnBadArgument;
+
+    /*
+     * AppleBCMWLANIO80211APSTAInterface::setMacAddress keeps this update on
+     * the APSTA firmware/BSS owner and rejects it after the AP-up state has
+     * been entered.  Do not route a role-7 address through the shared
+     * infrastructure ieee80211com.
+     */
+    if (state.resetState26c != 0)
+        return kIOReturnError;
+
+    memcpy(mac, address, IEEE80211_ADDR_LEN);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmAPSTAOwner::getSSID(AirportItlwmAPSTASsidDataLayout *out) const
@@ -578,18 +738,20 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
         }
     }
 
-    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+    if (owner == nullptr || owner->fHalService == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASetHostApModeNotUpReturn);
     }
 
     if (in == nullptr || in->ssidLength1c == 0) {
-        return stopLower();
+        return isApRunning() ? stopLower() : kIOReturnSuccess;
     }
 
     state.softapSsidLength274 = in->ssidLength1c;
     bzero(state.softapSsid278, sizeof(state.softapSsid278));
     memcpy(state.softapSsid278, in->ssid20, in->ssidLength1c);
-    return kIOReturnSuccess;
+    if (isApRunning())
+        return kIOReturnSuccess;
+    return startLowerIfReady();
 }
 
 IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)

@@ -9378,6 +9378,8 @@ bool AirportItlwm::init(OSDictionary *properties)
     fTahoeBootCallRetained = false;
     fTahoeBootCallOwner = nullptr;
     fHalAttached = false;
+    bzero(&fPermanentHardwareAddress, sizeof(fPermanentHardwareAddress));
+    fPermanentHardwareAddressValid = false;
     fSkywalkInterfaceProviderAttached = false;
     fSkywalkInterfaceAttached = false;
     fSkywalkEthernetAttached = false;
@@ -9468,6 +9470,14 @@ IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
     if (!pciNub || !fHalService) {
         XYLog("DEBUG %s FAIL: pciNub=%p fHalService=%p\n", __FUNCTION__, pciNub, fHalService);
         return NULL;
+    }
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic != nullptr &&
+        !IEEE80211_ADDR_EQ(ic->ic_myaddr, etheranyaddr) &&
+        !IEEE80211_IS_MULTICAST(ic->ic_myaddr)) {
+        memcpy(fPermanentHardwareAddress.octet, ic->ic_myaddr,
+               IEEE80211_ADDR_LEN);
+        fPermanentHardwareAddressValid = true;
     }
 
     // Panic timer: catch hangs inside IO80211Controller::probe()
@@ -10037,6 +10047,22 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     fHalAttached = true;
+    /*
+     * The DVM HAL learns the EEPROM address during attach, after probe has
+     * already run.  Freeze that hardware identity here, before IO80211Family
+     * can apply a privacy address to the infrastructure interface, so a
+     * later zero-MAC APSTA create has a valid role-local derivation.
+     */
+    {
+        struct ieee80211com *ic = fHalService->get80211Controller();
+        if (!fPermanentHardwareAddressValid && ic != nullptr &&
+            !IEEE80211_ADDR_EQ(ic->ic_myaddr, etheranyaddr) &&
+            !IEEE80211_IS_MULTICAST(ic->ic_myaddr)) {
+            memcpy(fPermanentHardwareAddress.octet, ic->ic_myaddr,
+                   IEEE80211_ADDR_LEN);
+            fPermanentHardwareAddressValid = true;
+        }
+    }
     SD_SET(9); // HAL attached
     sDiag.step = 6;
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
@@ -15309,6 +15335,14 @@ AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *crea
     return fAPSTAOwner;
 }
 
+bool AirportItlwm::copyPermanentHardwareAddress(uint8_t *address) const
+{
+    if (!fPermanentHardwareAddressValid || address == nullptr)
+        return false;
+    memcpy(address, fPermanentHardwareAddress.octet, IEEE80211_ADDR_LEN);
+    return true;
+}
+
 IOReturn AirportItlwm::materializeAPSTAInterface(
     const struct apple80211_virt_if_create_data *create)
 {
@@ -15334,12 +15368,12 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
     ether_addr apMac;
     memcpy(apMac.octet, create->mac, IEEE80211_ADDR_LEN);
     if ((apMac.octet[0] | apMac.octet[1] | apMac.octet[2] |
-         apMac.octet[3] | apMac.octet[4] | apMac.octet[5]) == 0 &&
-        fHalService != nullptr &&
-        fHalService->get80211Controller() != nullptr) {
-        memcpy(apMac.octet,
-               fHalService->get80211Controller()->ic_myaddr,
-               IEEE80211_ADDR_LEN);
+         apMac.octet[3] | apMac.octet[4] | apMac.octet[5]) == 0) {
+        if (fAPSTAOwner != nullptr) {
+            fAPSTAOwner->copyMacAddress(apMac.octet);
+        } else if (copyPermanentHardwareAddress(apMac.octet)) {
+            apMac.octet[0] ^= 0x02;
+        }
     }
     interface->setInitMacAddress(apMac);
     interface->setProperty(kIOMACAddress, apMac.octet,
