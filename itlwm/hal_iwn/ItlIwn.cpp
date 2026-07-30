@@ -3763,6 +3763,8 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     bzero(&apFirmwareConfig, sizeof(apFirmwareConfig));
     bzero(&apFirmwareRxon, sizeof(apFirmwareRxon));
     bzero(apFirmwareSsid, sizeof(apFirmwareSsid));
+    bzero(apFirmwareCredential, sizeof(apFirmwareCredential));
+    bzero(apFirmwareRsnIE, sizeof(apFirmwareRsnIE));
     bzero(apFirmwareBeacon, sizeof(apFirmwareBeacon));
     bzero(apClientMac, sizeof(apClientMac));
     apClientNodeInstalled = false;
@@ -4483,6 +4485,7 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         reinterpret_cast<const uint8_t *>(request) + frameLength;
     const uint8_t *ssid = NULL;
     const uint8_t *rates = NULL;
+    const uint8_t *rsn = NULL;
     while (cursor + 2 <= end) {
         const size_t elementLength = cursor[1];
         if (cursor + 2 + elementLength > end)
@@ -4491,7 +4494,57 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
             ssid = cursor;
         else if (cursor[0] == IEEE80211_ELEMID_RATES)
             rates = cursor;
+        else if (cursor[0] == IEEE80211_ELEMID_RSN)
+            rsn = cursor;
         cursor += 2 + elementLength;
+    }
+
+    /*
+     * Validate the negotiated RSN suite instead of comparing the whole IE:
+     * clients may append optional RSN capabilities/PMKID fields. For the
+     * first protected AP contract we admit precisely WPA2-Personal with
+     * CCMP group/pairwise and PSK AKM.
+     */
+    bool rsnValid = apFirmwareConfig.rsnIELength == 0;
+    if (apFirmwareConfig.rsnIELength != 0 &&
+        rsn != NULL && rsn[1] >= 18) {
+        const uint8_t *rsnBody = rsn + 2;
+        const uint8_t *rsnEnd = rsnBody + rsn[1];
+        static const uint8_t ccmpSuite[] = { 0x00, 0x0f, 0xac, 0x04 };
+        static const uint8_t pskSuite[] = { 0x00, 0x0f, 0xac, 0x02 };
+        if (LE_READ_2(rsnBody) == 1 &&
+            rsnBody + 2 + sizeof(ccmpSuite) + 2 <= rsnEnd &&
+            memcmp(rsnBody + 2, ccmpSuite, sizeof(ccmpSuite)) == 0) {
+            const uint8_t *pairwise = rsnBody + 2 + sizeof(ccmpSuite);
+            const uint16_t pairwiseCount = LE_READ_2(pairwise);
+            pairwise += 2;
+            if (pairwiseCount != 0 &&
+                pairwiseCount <=
+                    static_cast<uint16_t>((rsnEnd - pairwise) / 4)) {
+                bool hasCCMP = false;
+                for (uint16_t i = 0; i < pairwiseCount; i++) {
+                    if (memcmp(pairwise + i * 4, ccmpSuite,
+                               sizeof(ccmpSuite)) == 0)
+                        hasCCMP = true;
+                }
+                const uint8_t *akm = pairwise + pairwiseCount * 4;
+                if (hasCCMP && akm + 2 <= rsnEnd) {
+                    const uint16_t akmCount = LE_READ_2(akm);
+                    akm += 2;
+                    if (akmCount != 0 &&
+                        akmCount <=
+                            static_cast<uint16_t>((rsnEnd - akm) / 4)) {
+                        for (uint16_t i = 0; i < akmCount; i++) {
+                            if (memcmp(akm + i * 4, pskSuite,
+                                       sizeof(pskSuite)) == 0) {
+                                rsnValid = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     const bool authenticated =
@@ -4504,11 +4557,14 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         ssid[1] == apFirmwareConfig.ssidLength &&
         memcmp(ssid + 2, apFirmwareSsid, ssid[1]) == 0 &&
         rates != NULL && rates[1] != 0 &&
-        rates[1] <= IEEE80211_RATE_MAXSIZE;
+        rates[1] <= IEEE80211_RATE_MAXSIZE &&
+        rsnValid &&
+        (apFirmwareConfig.rsnIELength == 0 ||
+         (capability & IEEE80211_CAPINFO_PRIVACY) != 0);
     if (!valid) {
         XYLog("%s: AP association request rejected from "
               "%02x:%02x:%02x:%02x:%02x:%02x authenticated=%u "
-              "ssid_valid=%u rates_valid=%u\n",
+              "ssid_valid=%u rates_valid=%u rsn_valid=%u privacy=%u\n",
               com.sc_dev.dv_xname,
               request->i_addr2[0], request->i_addr2[1],
               request->i_addr2[2], request->i_addr2[3],
@@ -4518,7 +4574,9 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
                   ssid[1] == apFirmwareConfig.ssidLength &&
                   memcmp(ssid + 2, apFirmwareSsid, ssid[1]) == 0 ? 1U : 0U,
               rates != NULL && rates[1] != 0 &&
-                  rates[1] <= IEEE80211_RATE_MAXSIZE ? 1U : 0U);
+                  rates[1] <= IEEE80211_RATE_MAXSIZE ? 1U : 0U,
+              rsnValid ? 1U : 0U,
+              (capability & IEEE80211_CAPINFO_PRIVACY) != 0 ? 1U : 0U);
         return true;
     }
 
@@ -4529,7 +4587,8 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     uint8_t response[
         sizeof(struct ieee80211_frame) + 6 +
         2 + sizeof(supportedRates) +
-        2 + sizeof(extendedRates)];
+        2 + sizeof(extendedRates) +
+        sizeof(apFirmwareRsnIE)];
     bzero(response, sizeof(response));
     struct ieee80211_frame *wh =
         reinterpret_cast<struct ieee80211_frame *>(response);
@@ -4542,6 +4601,8 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
 
     uint8_t *out = response + sizeof(*wh);
     LE_WRITE_2(out, IEEE80211_CAPINFO_ESS |
+                    (apFirmwareConfig.rsnIELength != 0 ?
+                        IEEE80211_CAPINFO_PRIVACY : 0) |
                     (apFirmwareConfig.channel <= 14 ?
                         IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
     out += 2;
@@ -4557,6 +4618,13 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     *out++ = IEEE80211_ELEMID_XRATES;
     *out++ = sizeof(extendedRates);
     memcpy(out, extendedRates, sizeof(extendedRates));
+    out += sizeof(extendedRates);
+    if (apFirmwareConfig.rsnIELength != 0) {
+        memcpy(out, apFirmwareRsnIE, apFirmwareConfig.rsnIELength);
+        out += apFirmwareConfig.rsnIELength;
+    }
+    const size_t responseLength =
+        static_cast<size_t>(out - response);
 
     int error = 0;
     if (!apClientNodeInstalled) {
@@ -4575,19 +4643,21 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     if (error == 0)
         error = iwn_send_ap_client_link_quality();
     if (error == 0)
-        error = iwn_send_ap_mgmt_frame(response, sizeof(response));
+        error = iwn_send_ap_mgmt_frame(response, responseLength);
     if (error == 0) {
         apClientAssociated = true;
         apClientPowerSave = false;
         apClientAid = aid;
     }
     XYLog("%s: AP association request from "
-          "%02x:%02x:%02x:%02x:%02x:%02x aid=%u response_queue=%d\n",
+          "%02x:%02x:%02x:%02x:%02x:%02x aid=%u rsn=%u "
+          "response_queue=%d\n",
           com.sc_dev.dv_xname,
           request->i_addr2[0], request->i_addr2[1],
           request->i_addr2[2], request->i_addr2[3],
           request->i_addr2[4], request->i_addr2[5],
-          static_cast<unsigned>(aid), error);
+          static_cast<unsigned>(aid),
+          apFirmwareConfig.rsnIELength != 0 ? 1U : 0U, error);
     return true;
 }
 
@@ -5867,6 +5937,10 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
     if (config->ssid == NULL ||
         config->ssidLength == 0 ||
         config->ssidLength > sizeof(apFirmwareSsid) ||
+        config->credentialLength > sizeof(apFirmwareCredential) ||
+        (config->credentialLength != 0 && config->credential == NULL) ||
+        config->rsnIELength > sizeof(apFirmwareRsnIE) ||
+        (config->rsnIELength != 0 && config->rsnIE == NULL) ||
         config->beaconTemplate == NULL ||
         config->beaconTemplateLength == 0 ||
         config->beaconTemplateLength > sizeof(apFirmwareBeacon)) {
@@ -5906,9 +5980,20 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
     bzero(&apFirmwareConfig, sizeof(apFirmwareConfig));
     apFirmwareConfig = *config;
     memcpy(apFirmwareSsid, config->ssid, config->ssidLength);
+    if (config->credentialLength != 0) {
+        memcpy(apFirmwareCredential, config->credential,
+               config->credentialLength);
+    }
+    if (config->rsnIELength != 0) {
+        memcpy(apFirmwareRsnIE, config->rsnIE, config->rsnIELength);
+    }
     memcpy(apFirmwareBeacon, config->beaconTemplate,
            config->beaconTemplateLength);
     apFirmwareConfig.ssid = apFirmwareSsid;
+    apFirmwareConfig.credential =
+        config->credentialLength != 0 ? apFirmwareCredential : NULL;
+    apFirmwareConfig.rsnIE =
+        config->rsnIELength != 0 ? apFirmwareRsnIE : NULL;
     apFirmwareConfig.beaconTemplate = apFirmwareBeacon;
     memcpy(&apFirmwareRxon, &ap_rxon, sizeof(apFirmwareRxon));
 
@@ -5934,10 +6019,12 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
         return kIOReturnError;
     }
     XYLog("%s: AP PAN deactivation queued channel=%u interval=%u "
-          "dtim=%u ssid_len=%zu\n",
+          "dtim=%u ssid_len=%zu auth_upper=0x%x credential_len=%zu "
+          "rsn_len=%zu\n",
           com.sc_dev.dv_xname, config->channel,
           config->beaconInterval, config->dtimPeriod,
-          config->ssidLength);
+          config->ssidLength, config->authUpper,
+          config->credentialLength, config->rsnIELength);
     return kIOReturnSuccess;
 }
 

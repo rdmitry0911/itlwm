@@ -124,6 +124,9 @@ private:
     char bsdNameStorage[IFNAMSIZ];
     uint16_t apChannel;
     uint32_t apChannelFlags;
+    uint32_t apAuthUpper;
+    uint8_t apCredential[0x40];
+    uint32_t apCredentialLength;
 };
 
 #endif /* AirportItlwmAPSTAOwner_hpp */

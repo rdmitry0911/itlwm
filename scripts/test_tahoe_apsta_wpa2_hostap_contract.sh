@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+python3 - "$PROJECT_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+layout = (root / "AirportItlwm/AirportItlwmAPSTAInterface.hpp").read_text()
+owner = (root / "AirportItlwm/AirportItlwmAPSTAOwner.cpp").read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
+hal = (root / "include/HAL/ItlHalService.hpp").read_text()
+probe = (
+    root / "AirportItlwmLabCoreWLANAP/airport_itlwm_lab_corewlan_ap.m"
+).read_text()
+
+required_layout = {
+    "uint32_t authUpper0c;": "HostAP authentication carrier",
+    "uint32_t channelNumber14;": "HostAP channel carrier",
+    "uint32_t credentialLength44;": "HostAP credential length",
+    "uint8_t  credential50[0x40];": "HostAP credential bytes",
+}
+for needle, meaning in required_layout.items():
+    assert needle in layout, f"missing {meaning}"
+
+for offset in ("0x0c", "0x14", "0x44", "0x50"):
+    assert offset in layout, f"missing recovered HostAP offset {offset}"
+
+required_owner = (
+    "kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8",
+    "IEEE80211_ELEMID_RSN, 20",
+    "IEEE80211_CAPINFO_PRIVACY",
+    "channel.channel.channel = in->channelNumber14;",
+    "cfg.credentialLength = apCredentialLength;",
+    "cfg.rsnIELength = rsnIELength;",
+)
+for needle in required_owner:
+    assert needle in owner, f"missing owner WPA2 contract: {needle}"
+
+required_hal = (
+    "uint32_t authUpper;",
+    "const uint8_t *credential;",
+    "const uint8_t *rsnIE;",
+)
+for needle in required_hal:
+    assert needle in hal, f"missing HAL WPA2 carrier: {needle}"
+
+required_iwn = (
+    "IEEE80211_ELEMID_RSN",
+    "static const uint8_t ccmpSuite[]",
+    "static const uint8_t pskSuite[]",
+    "apFirmwareConfig.rsnIELength",
+    "apFirmwareConfig.credential",
+)
+for needle in required_iwn:
+    assert needle in iwn, f"missing IWN RSN admission contract: {needle}"
+
+assert "startHostAPModeWithSSID:securityType:channel:password:error:" in probe
+assert "initWithBytes:argv[3] length:strlen(argv[3])" in probe
+
+print("PASS: Tahoe HostAP WPA2 carrier/channel/RSN contract")
+PY

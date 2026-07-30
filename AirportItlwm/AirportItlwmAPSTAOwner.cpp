@@ -26,7 +26,37 @@ static bool apsta_mac_is_zero(const uint8_t *mac)
     return true;
 }
 
-static size_t apsta_build_open_beacon(
+enum {
+    kAirportItlwmAPSTAAuthUpperOpen = 0,
+    kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8,
+    kAirportItlwmAPSTAWPA2CredentialLengthMin = 8,
+    kAirportItlwmAPSTAWPA2CredentialLengthMax = 63
+};
+
+static size_t apsta_build_wpa2_psk_rsn_ie(
+    uint8_t *output,
+    size_t outputCapacity)
+{
+    /*
+     * RSN v1, group CCMP, one pairwise cipher CCMP, one AKM PSK,
+     * capabilities 0. This is the WPA2-Personal carrier produced by
+     * airportd's private security type 0x80 / HostAP auth_upper 0x8.
+     */
+    static const uint8_t rsn[] = {
+        IEEE80211_ELEMID_RSN, 20,
+        0x01, 0x00,
+        0x00, 0x0f, 0xac, 0x04,
+        0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
+        0x01, 0x00, 0x00, 0x0f, 0xac, 0x02,
+        0x00, 0x00
+    };
+    if (output == nullptr || outputCapacity < sizeof(rsn))
+        return 0;
+    memcpy(output, rsn, sizeof(rsn));
+    return sizeof(rsn);
+}
+
+static size_t apsta_build_beacon(
     uint8_t *output,
     size_t outputCapacity,
     const uint8_t *bssid,
@@ -34,7 +64,9 @@ static size_t apsta_build_open_beacon(
     size_t ssidLength,
     uint16_t channel,
     uint16_t beaconInterval,
-    uint8_t dtimPeriod)
+    uint8_t dtimPeriod,
+    const uint8_t *rsnIE,
+    size_t rsnIELength)
 {
     const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
     const bool is2GHz = channel <= 14;
@@ -51,11 +83,13 @@ static size_t apsta_build_open_beacon(
         2 + sizeof(rates2GHz) +
         3 +
         6 +
+        rsnIELength +
         (is2GHz ? 2 + sizeof(extendedRates2GHz) : 0);
     if (output == nullptr || bssid == nullptr || ssid == nullptr ||
         ssidLength == 0 ||
         ssidLength > kAirportItlwmAPSTAGetSsidMaxLength ||
         channel == 0 || channel > UINT8_MAX ||
+        (rsnIELength != 0 && rsnIE == nullptr) ||
         outputCapacity < required) {
         return 0;
     }
@@ -75,6 +109,7 @@ static size_t apsta_build_open_beacon(
         beaconInterval != 0 ? beaconInterval : 100);
     const uint16_t capability = htole16(
         IEEE80211_CAPINFO_ESS |
+        (rsnIELength != 0 ? IEEE80211_CAPINFO_PRIVACY : 0) |
         (is2GHz ? IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
     memcpy(cursor, &interval, sizeof(interval));
     cursor += sizeof(interval);
@@ -97,6 +132,11 @@ static size_t apsta_build_open_beacon(
     *cursor++ = IEEE80211_ELEMID_DSPARMS;
     *cursor++ = 1;
     *cursor++ = static_cast<uint8_t>(channel);
+
+    if (rsnIELength != 0) {
+        memcpy(cursor, rsnIE, rsnIELength);
+        cursor += rsnIELength;
+    }
 
     *cursor++ = IEEE80211_ELEMID_TIM;
     *cursor++ = 4;
@@ -401,6 +441,9 @@ bool AirportItlwmAPSTAOwner::initWithController(
     bzero(mac, sizeof(mac));
     apChannel = 0;
     apChannelFlags = 0;
+    apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
+    bzero(apCredential, sizeof(apCredential));
+    apCredentialLength = 0;
     bzero(bsdNameStorage, sizeof(bsdNameStorage));
 
     if (!OSObject::init()) {
@@ -473,6 +516,9 @@ bool AirportItlwmAPSTAOwner::initWithController(
 void AirportItlwmAPSTAOwner::free()
 {
     teardown();
+    bzero(apCredential, sizeof(apCredential));
+    apCredentialLength = 0;
+    apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
     owner = nullptr;
     OSObject::free();
@@ -581,13 +627,29 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     cfg.maxStations = state.softapMaxAssoc04;
     cfg.beaconInterval = state.softapBeaconInterval14;
     cfg.dtimPeriod = static_cast<uint8_t>(state.softapDtimPeriod16);
+    cfg.authUpper = apAuthUpper;
     cfg.ssid = state.softapSsid278;
     cfg.ssidLength = state.softapSsidLength274;
+    cfg.credential = apCredentialLength != 0 ? apCredential : nullptr;
+    cfg.credentialLength = apCredentialLength;
+    uint8_t rsnIE[32];
+    size_t rsnIELength = 0;
+    if (apAuthUpper == kAirportItlwmAPSTAAuthUpperWPA2PSK) {
+        rsnIELength = apsta_build_wpa2_psk_rsn_ie(
+            rsnIE, sizeof(rsnIE));
+    } else if (apAuthUpper != kAirportItlwmAPSTAAuthUpperOpen) {
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        state.resetState26c = 0;
+        return kIOReturnUnsupported;
+    }
+    cfg.rsnIE = rsnIELength != 0 ? rsnIE : nullptr;
+    cfg.rsnIELength = rsnIELength;
     uint8_t beaconTemplate[256];
-    cfg.beaconTemplateLength = apsta_build_open_beacon(
+    cfg.beaconTemplateLength = apsta_build_beacon(
         beaconTemplate, sizeof(beaconTemplate), mac,
         cfg.ssid, cfg.ssidLength, cfg.channel,
-        cfg.beaconInterval, cfg.dtimPeriod);
+        cfg.beaconInterval, cfg.dtimPeriod,
+        cfg.rsnIE, cfg.rsnIELength);
     if (cfg.beaconTemplateLength == 0) {
         lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
         state.resetState26c = 0;
@@ -740,10 +802,18 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     const AirportItlwmAPSTAHostApModeNetworkDataLayout *in)
 {
     if (in != nullptr) {
+        XYLog("AP HostAP carrier version=%u flags=0x%x auth_lower=0x%x "
+              "auth_upper=0x%x channel=%u channel_flags=0x%x ssid_len=%u "
+              "credential_len=%u vendor_ie_len=%u\n",
+              in->version00, in->flags04, in->authLower08,
+              in->authUpper0c, in->channelNumber14, in->channelFlags18,
+              in->ssidLength1c,
+              in->credentialLength44, in->vendorIELength2dc);
         if (in->vendorIELength2dc >
                 kAirportItlwmAPSTAHostApModeVendorIELengthMaxAccepted ||
             in->ssidLength1c >
-                kAirportItlwmAPSTAHostApModeSsidLengthMaxAccepted) {
+                kAirportItlwmAPSTAHostApModeSsidLengthMaxAccepted ||
+            in->credentialLength44 > sizeof(apCredential)) {
             return static_cast<IOReturn>(
                 kAirportItlwmAPSTASetHostApModeInvalidArgumentReturn);
         }
@@ -757,9 +827,49 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
         return isApRunning() ? stopLower() : kIOReturnSuccess;
     }
 
+    if (in->authUpper0c != kAirportItlwmAPSTAAuthUpperOpen &&
+        in->authUpper0c != kAirportItlwmAPSTAAuthUpperWPA2PSK) {
+        return kIOReturnUnsupported;
+    }
+    if (in->authUpper0c == kAirportItlwmAPSTAAuthUpperWPA2PSK &&
+        (in->credentialLength44 <
+             kAirportItlwmAPSTAWPA2CredentialLengthMin ||
+         in->credentialLength44 >
+             kAirportItlwmAPSTAWPA2CredentialLengthMax)) {
+        return static_cast<IOReturn>(
+            kAirportItlwmAPSTASetHostApModeInvalidArgumentReturn);
+    }
+    if (in->authUpper0c == kAirportItlwmAPSTAAuthUpperOpen &&
+        in->credentialLength44 != 0) {
+        return static_cast<IOReturn>(
+            kAirportItlwmAPSTASetHostApModeInvalidArgumentReturn);
+    }
+
+    /*
+     * airportd's private HostAP command embeds its CWChannel directly in
+     * apple80211_network_data. It does not issue a separate SET_CHANNEL.
+     * Route that recovered +0x10/+0x14/+0x18 carrier through the same
+     * channel admission used by the public Apple80211 lifecycle.
+     */
+    struct apple80211_channel_data channel;
+    bzero(&channel, sizeof(channel));
+    channel.version = in->channelVersion10;
+    channel.channel.version = in->channelVersion10;
+    channel.channel.channel = in->channelNumber14;
+    channel.channel.flags = in->channelFlags18;
+    const IOReturn channelResult = setChannel(&channel);
+    if (channelResult != kIOReturnSuccess)
+        return channelResult;
+
     state.softapSsidLength274 = in->ssidLength1c;
     bzero(state.softapSsid278, sizeof(state.softapSsid278));
     memcpy(state.softapSsid278, in->ssid20, in->ssidLength1c);
+    apAuthUpper = in->authUpper0c;
+    bzero(apCredential, sizeof(apCredential));
+    apCredentialLength = in->credentialLength44;
+    if (apCredentialLength != 0) {
+        memcpy(apCredential, in->credential50, apCredentialLength);
+    }
     if (isApRunning())
         return kIOReturnSuccess;
     return startLowerIfReady();

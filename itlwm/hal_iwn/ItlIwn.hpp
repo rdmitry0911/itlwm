@@ -463,6 +463,8 @@ public:
     struct ItlHalApConfig apFirmwareConfig;
     struct iwn_rxon apFirmwareRxon;
     uint8_t apFirmwareSsid[IEEE80211_NWID_LEN];
+    uint8_t apFirmwareCredential[0x40];
+    uint8_t apFirmwareRsnIE[64];
     uint8_t apFirmwareBeacon[MCLBYTES];
     uint8_t apClientMac[IEEE80211_ADDR_LEN];
     bool apClientNodeInstalled;

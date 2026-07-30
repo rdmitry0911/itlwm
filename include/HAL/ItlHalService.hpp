@@ -50,8 +50,13 @@ struct ItlHalApConfig {
     uint16_t beaconInterval;
     uint8_t  dtimPeriod;
     uint32_t maxStations;
+    uint32_t authUpper;
     const uint8_t *ssid;
     size_t ssidLength;
+    const uint8_t *credential;
+    size_t credentialLength;
+    const uint8_t *rsnIE;
+    size_t rsnIELength;
     const void *beaconTemplate;
     size_t beaconTemplateLength;
 };

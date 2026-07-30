@@ -1272,12 +1272,20 @@ struct AirportItlwmAPSTAStaDisassocPayloadLayout {
 } __attribute__((packed));
 
 struct AirportItlwmAPSTAHostApModeNetworkDataLayout {
-    uint8_t  reserved0000[0x04];
+    uint32_t version00;
     uint32_t flags04;
-    uint8_t  reserved0008[0x14];
+    uint32_t authLower08;
+    uint32_t authUpper0c;
+    uint32_t channelVersion10;
+    uint32_t channelNumber14;
+    uint32_t channelFlags18;
     uint32_t ssidLength1c;
     uint8_t  ssid20[kAirportItlwmAPSTAGetSsidMaxLength];
-    uint8_t  reserved0040[0x29c];
+    uint32_t credentialVersion40;
+    uint32_t credentialLength44;
+    uint8_t  reserved0048[0x08];
+    uint8_t  credential50[0x40];
+    uint8_t  reserved0090[0x24c];
     uint32_t vendorIELength2dc;
     uint8_t  vendorIEData2e0[1];
 } __attribute__((packed));
@@ -2179,6 +2187,22 @@ static_assert(kAirportItlwmAPSTAHostApModeSsidLengthMaxAccepted ==
 static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, ssid20) ==
               kAirportItlwmAPSTAHostApModeNetworkDataSsidBytesOffset,
               "APSTA HostAP network-data SSID bytes offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, authUpper0c) ==
+              0x0c,
+              "APSTA HostAP upper authentication offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout,
+                       channelVersion10) == 0x10 &&
+              offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout,
+                       channelNumber14) == 0x14 &&
+              offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout,
+                       channelFlags18) == 0x18,
+              "APSTA HostAP channel offsets mismatch");
+static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout,
+                       credentialLength44) == 0x44,
+              "APSTA HostAP credential length offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout,
+                       credential50) == 0x50,
+              "APSTA HostAP credential bytes offset mismatch");
 static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, vendorIELength2dc) ==
               kAirportItlwmAPSTAHostApModeNetworkDataVendorIELengthOffset,
               "APSTA HostAP network-data vendor IE length offset mismatch");
