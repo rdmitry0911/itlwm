@@ -611,6 +611,8 @@ public:
     static IOReturn postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn handlePowerStateChangeGated(
         OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn resumeAPSTAAfterRadioResetGated(
+        OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn publishDeferredPowerAvailabilityGated(
         OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);

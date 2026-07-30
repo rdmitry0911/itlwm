@@ -337,6 +337,8 @@ enum {
     kAirportItlwmAPSTAHostApPowerOffPowerSaveReason = 0x0c,
     kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackState = 3,
     kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackReason = 3,
+    kAirportItlwmAPSTAHostApPowerOnRestoreState = 1,
+    kAirportItlwmAPSTAHostApPowerOnRestoreReason = 2,
     kAirportItlwmAPSTAHostApPowerOffNotifyEventId = 1,
     kAirportItlwmAPSTAHostApPowerOffNotifyPayloadSize = 0,
     kAirportItlwmAPSTAHostApPowerOffNotifyFlag = 1,

@@ -11,6 +11,8 @@ import sys
 root = Path(sys.argv[1])
 layout = (root / "AirportItlwm/AirportItlwmAPSTAInterface.hpp").read_text()
 owner = (root / "AirportItlwm/AirportItlwmAPSTAOwner.cpp").read_text()
+owner_hpp = (root / "AirportItlwm/AirportItlwmAPSTAOwner.hpp").read_text()
+controller = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 probe = (
@@ -78,6 +80,28 @@ assert "initWithBytes:argv[3] length:strlen(argv[3])" in probe
 assert "memcpy(passphrase, apFirmwareCredential," in iwn
 assert "explicit_bzero(passphrase, sizeof(passphrase));" in iwn
 assert "AP HostAP key peer=" not in owner
+
+required_power_lifecycle = (
+    "void AirportItlwmAPSTAOwner::prepareForRadioReset()",
+    "state.softapAssociatedStaCount00 == 0",
+    "kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackState",
+    "owner->setAPSTADatapathEnabled(false);",
+    "radioResetResumePending = true;",
+    "IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()",
+    "kAirportItlwmAPSTAHostApPowerOnRestoreState",
+)
+for needle in required_power_lifecycle:
+    assert needle in owner, f"missing APSTA sleep/wake lifecycle: {needle}"
+
+assert "bool radioResetResumePending;" in owner_hpp
+assert "fAPSTAOwner->prepareForRadioReset();" in controller
+assert "AirportItlwm::resumeAPSTAAfterRadioResetGated(" in controller
+assert "fAPSTAOwner->resumeAfterRadioReset();" in controller
+assert "gate->runAction(resumeAPSTAAfterRadioResetGated);" in controller
+scan_done = controller[controller.index("case IEEE80211_EVT_SCAN_DONE:"):
+                       controller.index("case IEEE80211_EVT_WCL_REASSOC_DONE:")]
+assert "resumeAfterRadioReset()" not in scan_done, \
+       "lower SCAN_DONE callback must not synchronously submit DVM commands"
 
 print("PASS: Tahoe HostAP WPA2 carrier/authenticator/CCMP contract")
 PY

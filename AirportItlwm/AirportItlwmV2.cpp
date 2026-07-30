@@ -9391,6 +9391,15 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             RT_SET(25);
             sRT.scanDoneCount++;
             /*
+             * The IWN firmware reset erased the DVM PAN context while the
+             * reference APSTA power contract retained an associated HostAP
+             * owner in low-power state. Do not replay the retained profile
+             * from this lower scan callback: startAPMode() submits synchronous
+             * firmware commands whose completions need this same lower task
+             * context. The controller watchdog retries the replay through its
+             * command gate after this callback has returned.
+             */
+            /*
              * The first IWN post-reset census is the asynchronous tail of
              * reference powerOn(), not a public user scan.  Retain this edge
              * until IO80211Family calls WCL_CONFIG_BG_PARAMS after consuming
@@ -9456,6 +9465,23 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 #endif
 }
 
+IOReturn AirportItlwm::resumeAPSTAAfterRadioResetGated(
+    OSObject *target, void *, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    if (that == nullptr || that->fAPSTAOwner == nullptr)
+        return kIOReturnNotReady;
+
+    const IOReturn result =
+        that->fAPSTAOwner->resumeAfterRadioReset();
+    if (result != kIOReturnSuccess &&
+        result != kIOReturnBusy &&
+        result != kIOReturnNotReady) {
+        XYLog("APSTA radio-reset resume failed result=0x%x\n", result);
+    }
+    return result;
+}
+
 void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
 {
     // stopWatchdogAndDrain() sets the permanent-stop flag before removing
@@ -9467,6 +9493,18 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
     ItlHalService *hal = fHalService;
     if (hal == nullptr)
         return;
+
+    /*
+     * The lower SCAN_DONE callback cannot synchronously submit a fresh DVM
+     * PAN command sequence without blocking the task that retires firmware
+     * scan completions. The watchdog owns a separate workloop; enter the
+     * controller gate from here and keep retrying while the inherited census
+     * still owns the scan lease. A successful replay clears the pending bit,
+     * making later ticks a cheap no-op.
+     */
+    IOCommandGate *gate = getCommandGate();
+    if (gate != nullptr)
+        (void)gate->runAction(resumeAPSTAAfterRadioResetGated);
 
     struct _ifnet *ifp = &hal->get80211Controller()->ic_ac.ac_if;
     struct ieee80211com *ic = hal->get80211Controller();
@@ -12351,6 +12389,8 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
      * a newer serialized PowerOn may have armed a fresh epoch by then. */
     RT_SET(10);
     sRT.disableCnt++;
+    if (fAPSTAOwner != nullptr)
+        fAPSTAOwner->prepareForRadioReset();
     // A disabled radio is a terminal ownership boundary. Do this before the
     // lower HAL resets scan state, which is not required to emit SCAN_DONE.
     invalidateWclPhysicalScan();

@@ -444,6 +444,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     bzero(apCredential, sizeof(apCredential));
     apCredentialLength = 0;
+    radioResetResumePending = false;
     bzero(bsdNameStorage, sizeof(bsdNameStorage));
 
     if (!OSObject::init()) {
@@ -519,6 +520,7 @@ void AirportItlwmAPSTAOwner::free()
     bzero(apCredential, sizeof(apCredential));
     apCredentialLength = 0;
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
+    radioResetResumePending = false;
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
     owner = nullptr;
     OSObject::free();
@@ -679,6 +681,7 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
 
 IOReturn AirportItlwmAPSTAOwner::stopLower()
 {
+    radioResetResumePending = false;
     if (owner != nullptr && owner->fHalService != nullptr) {
         (void)owner->fHalService->stopAPMode();
     }
@@ -689,6 +692,60 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
         lifecycle = kAirportItlwmAPSTAOwnerTerminal;
     }
     return kIOReturnSuccess;
+}
+
+void AirportItlwmAPSTAOwner::prepareForRadioReset()
+{
+    if (!isApRunning())
+        return;
+
+    /*
+     * AppleBCMWLANCore::powerOff() calls APSTA::hostAPPowerOff().
+     * With no associated station the reference tears HostAP down. With a
+     * live station it leaves the AP owner in power-save state 3, and
+     * powerOn() later restores state 1. DVM cannot retain its PAN context
+     * across iwn_hw_stop(), so preserve the same upper intent while closing
+     * the Skywalk datapath before the lower rings and firmware disappear.
+     * The post-reset census terminal replays the retained profile into a new
+     * PAN context before reopening this datapath.
+     */
+    if (state.softapAssociatedStaCount00 == 0) {
+        setSoftAPPowerSaveState(
+            kAirportItlwmAPSTAHostApPowerOffSetPowerSaveState,
+            kAirportItlwmAPSTAHostApPowerOffPowerSaveReason);
+        state.softapParam0e = 0;
+        (void)stopLower();
+        return;
+    }
+
+    setSoftAPPowerSaveState(
+        kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackState,
+        kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackReason);
+    owner->setAPSTADatapathEnabled(false);
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++)
+        clearStation(&state.softapStaTableB8[i]);
+    state.softapAssociatedStaCount00 = 0;
+    state.resetState26c = 0;
+    state.hostApTransitionState270 = 0;
+    lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+    radioResetResumePending = true;
+}
+
+IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
+{
+    if (!radioResetResumePending)
+        return kIOReturnSuccess;
+
+    const IOReturn result = startLowerIfReady();
+    if (result == kIOReturnSuccess) {
+        radioResetResumePending = false;
+        setSoftAPPowerSaveState(
+            kAirportItlwmAPSTAHostApPowerOnRestoreState,
+            kAirportItlwmAPSTAHostApPowerOnRestoreReason);
+    } else if (result != kIOReturnBusy && result != kIOReturnNotReady) {
+        radioResetResumePending = false;
+    }
+    return result;
 }
 
 void AirportItlwmAPSTAOwner::teardown()

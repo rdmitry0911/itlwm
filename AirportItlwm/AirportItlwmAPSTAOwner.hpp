@@ -49,6 +49,8 @@ public:
 
     IOReturn startLowerIfReady();
     IOReturn stopLower();
+    void prepareForRadioReset();
+    IOReturn resumeAfterRadioReset();
     void teardown();
 
     bool isCreated() const { return lifecycle >= kAirportItlwmAPSTAOwnerCreated &&
@@ -127,6 +129,7 @@ private:
     uint32_t apAuthUpper;
     uint8_t apCredential[0x40];
     uint32_t apCredentialLength;
+    bool radioResetResumePending;
 };
 
 #endif /* AirportItlwmAPSTAOwner_hpp */
