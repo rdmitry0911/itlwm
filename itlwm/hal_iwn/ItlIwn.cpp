@@ -3767,6 +3767,9 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
     size_t frameLength)
 {
     const size_t headerLength = sizeof(struct ieee80211_frame);
+    const size_t firstTransportBufferLength = IWN_TX_FIRST_TB_SIZE;
+    const size_t bodyLength =
+        frameLength > headerLength ? frameLength - headerLength : 0;
     if (frameBytes == NULL || frameLength <= headerLength ||
         frameLength > MCLBYTES ||
         !apFirmwareTransitionActive ||
@@ -3803,16 +3806,8 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         reinterpret_cast<struct iwn_cmd_data *>(cmd->data);
     tx->len = htole16(static_cast<uint16_t>(frameLength));
     /*
-     * DVM gives 2.4 GHz authentication/association/EAPOL frames an
-     * explicit Bluetooth-priority bypass.  The 6235 has advanced 3-wire
-     * coexistence enabled even when its companion USB Bluetooth function is
-     * not passed through to the guest.  Without IGNORE_BT the PAN VO queue
-     * can retain the frame indefinitely waiting for an external grant.
-     */
-    /*
      * DVM bypasses advanced-BT arbitration for Authentication frames, but
-     * not for an Association Response.  Applying IGNORE_BT to every AP
-     * management response changes the reference command contract.
+     * not for Probe or Association Responses.
      */
     const bool ignoreBluetooth =
         (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
@@ -3827,8 +3822,8 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         (ignoreBluetooth ? IWN_TX_BT_DISABLE : 0));
     tx->id = IWN5000_ID_PAN_BROADCAST;
     tx->lifetime = htole32(IWN_LIFETIME_INFINITE);
-    tx->rts_ntries = 60;
-    tx->data_ntries = 15;
+    tx->rts_ntries = insertTimestamp ? 3 : 60;
+    tx->data_ntries = insertTimestamp ? 3 : 15;
     tx->tid = IWN_NONQOS_TID;
     tx->timeout = htole16(2);
     if (apFirmwareConfig.channel <= 14) {
@@ -3851,8 +3846,14 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
     if (remainingAntennas != 0)
         managementAntenna = IWN_LSB(remainingAntennas);
     tx->rflags |= IWN_RFLAG_ANT(managementAntenna);
-    tx->loaddr = htole32(IWN_LOADDR(data->scratch_paddr));
-    tx->hiaddr = IWN_HIADDR(data->scratch_paddr);
+
+    const size_t commandAndHeaderLength =
+        4 + sizeof(*tx) + headerLength;
+    if (commandAndHeaderLength <= firstTransportBufferLength ||
+        bodyLength > IWN_AP_MGMT_PAYLOAD_SIZE ||
+        ring->first_tb == NULL || ring->ap_payload == NULL) {
+        return EMSGSIZE;
+    }
 
     unsigned int maxChunks = 1;
     mbuf_t m = NULL;
@@ -3866,9 +3867,11 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
 
     /*
      * Match DVM's normal TX transport: the 802.11 header is inline with the
-     * firmware command and the remaining frame body is a mapped payload
-     * segment.  Keeping short management frames wholly inline was a useful
-     * DMA diagnostic, but did not change the PAN FIFO stall.
+     * firmware command and the remaining frame body is its own transport
+     * segment.  DVM maps that payload independently from both transport
+     * command buffers.  Keep an equivalent per-slot low-DMA payload area so
+     * the 6235 sees the same topology without depending on Tahoe's
+     * unrestricted mbuf physical placement.
      */
     memcpy(reinterpret_cast<uint8_t *>(tx + 1),
            frameBytes, headerLength);
@@ -3883,9 +3886,12 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         reinterpret_cast<struct ieee80211_frame *>(tx + 1);
     LE_WRITE_2(submittedHeader->i_seq,
         static_cast<uint16_t>(((ring->cur + 1) & 0x0fff) << 4));
+    uint8_t *frameBody =
+        ring->ap_payload + ring->cur * IWN_AP_MGMT_PAYLOAD_SIZE;
+    memcpy(frameBody,
+           static_cast<const uint8_t *>(frameBytes) + headerLength,
+           bodyLength);
     mbuf_adj(m, headerLength);
-    IOPhysicalSegment segments[IWN_MAX_SCATTER - 1];
-    int nsegments = 0;
 
     data->m = m;
     data->ni = NULL;
@@ -3908,54 +3914,32 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
     IEEE80211_ADDR_COPY(data->diag_peer, wh->i_addr1);
 
     /*
-     * Gen1 PCIe transport presents TX commands as a dedicated 20-byte first
-     * TB (command header through the bidirectional scratch pointer), then
-     * the remainder of the command plus the 802.11 header, and only then the
-     * frame body.  The generic itlwm path coalesces the first two TBs, which
-     * works for the BSS queues but leaves the 6235 PAN management queue
-     * admitted without retiring.  Preserve the exact DVM transport shape for
-     * the concurrent AP queue.
+     * Gen1 PCIe transport presents TX commands as a physically dedicated
+     * 20-byte first TB (command header through the bidirectional scratch
+     * pointer), then the remainder of the command plus the 802.11 header,
+     * and only then the frame body.  Linux keeps TB0 in first_tb_bufs rather
+     * than merely splitting one contiguous command allocation.  Preserve
+     * that boundary with the ring's dedicated low-DMA first-TB pool.  TB1
+     * is the command remainder, and TB2 is the independently allocated
+     * management payload, matching the three final DVM transport buffers.
      */
-    const size_t firstTransportBufferLength = 20;
-    const size_t commandAndHeaderLength =
-        4 + sizeof(*tx) + headerLength;
-    if (commandAndHeaderLength <= firstTransportBufferLength) {
-        mbuf_freem(m);
-        data->m = NULL;
-        data->ap_mgmt = false;
-        return EINVAL;
-    }
-    const size_t bodyLength = frameLength - headerLength;
-    if (commandAndHeaderLength + bodyLength <= sizeof(*cmd)) {
-        /*
-         * A/B runtime validation on the 6235 shows that PAN/FIFO5 stops at
-         * TB2 when Tahoe maps the tiny management body above 4 GB.  Keep the
-         * exact three-TB DVM descriptor, but place short Auth/Assoc bodies in
-         * the unused tail of the already-low per-slot command DMA buffer.
-         * Longer management bodies continue through the mapped-payload path
-         * until the AP data-plane layer provides a dedicated low DMA pool.
-         */
-        memcpy(reinterpret_cast<uint8_t *>(cmd) + commandAndHeaderLength,
-               static_cast<const uint8_t *>(frameBytes) + headerLength,
-               bodyLength);
-        segments[0].location =
-            data->cmd_paddr + commandAndHeaderLength;
-        segments[0].length = bodyLength;
-        nsegments = 1;
-    } else {
-        nsegments = data->map->cursor->getPhysicalSegmentsWithCoalesce(
-            m, segments, IWN_MAX_SCATTER - 1);
-        if (nsegments == 0) {
-            mbuf_freem(m);
-            data->m = NULL;
-            data->ap_mgmt = false;
-            return ENOMEM;
-        }
-    }
-    desc->nsegs = 2 + nsegments;
-    desc->segs[0].addr = htole32(IWN_LOADDR(data->cmd_paddr));
+    const bus_addr_t firstTransportBufferAddress =
+        ring->first_tb_dma.paddr +
+        ring->cur * IWN_TX_FIRST_TB_STRIDE;
+    const bus_addr_t firmwareScratchAddress =
+        firstTransportBufferAddress + 4 +
+        offsetof(struct iwn_cmd_data, scratch);
+    tx->loaddr = htole32(IWN_LOADDR(firmwareScratchAddress));
+    tx->hiaddr = IWN_HIADDR(firmwareScratchAddress);
+    memcpy(ring->first_tb +
+               ring->cur * IWN_TX_FIRST_TB_STRIDE,
+           cmd, firstTransportBufferLength);
+
+    desc->nsegs = 3;
+    desc->segs[0].addr =
+        htole32(IWN_LOADDR(firstTransportBufferAddress));
     desc->segs[0].len = htole16(
-        IWN_HIADDR(data->cmd_paddr) |
+        IWN_HIADDR(firstTransportBufferAddress) |
         firstTransportBufferLength << 4);
     const bus_addr_t commandRemainderAddress =
         data->cmd_paddr + firstTransportBufferLength;
@@ -3964,13 +3948,12 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
     desc->segs[1].len = htole16(
         IWN_HIADDR(commandRemainderAddress) |
         (commandAndHeaderLength - firstTransportBufferLength) << 4);
-    for (int index = 0; index < nsegments; index++) {
-        desc->segs[index + 2].addr =
-            htole32(IWN_LOADDR(segments[index].location));
-        desc->segs[index + 2].len =
-            htole16(IWN_HIADDR(segments[index].location) |
-                    segments[index].length << 4);
-    }
+    const bus_addr_t frameBodyAddress =
+        ring->ap_payload_dma.paddr +
+        ring->cur * IWN_AP_MGMT_PAYLOAD_SIZE;
+    desc->segs[2].addr = htole32(IWN_LOADDR(frameBodyAddress));
+    desc->segs[2].len = htole16(
+        IWN_HIADDR(frameBodyAddress) | bodyLength << 4);
 
     com.ops.update_sched(
         &com, ring->qid, ring->cur, tx->id,
@@ -4790,7 +4773,7 @@ int ItlIwn::iwn_send_ap_timing(const struct ItlHalApConfig *config)
         &com, IWN_CMD_WIPAN_TIMING, &command, sizeof(command), 1);
 }
 
-int ItlIwn::iwn_send_ap_edca()
+int ItlIwn::iwn_send_ap_edca(bool accessPointValues)
 {
 #define IWN_AP_EXP2(x) ((1 << (x)) - 1)
     struct iwn_edca_params command;
@@ -4810,9 +4793,17 @@ int ItlIwn::iwn_send_ap_edca()
     static const uint8_t firmwareAcToNet80211[EDCA_NUM_AC] = {
         EDCA_AC_BK, EDCA_AC_BE, EDCA_AC_VI, EDCA_AC_VO
     };
+    static const struct ieee80211_edca_ac_params qapEdca[EDCA_NUM_AC] = {
+        { 4, 10, 7,  0 },
+        { 4,  6, 3,  0 },
+        { 3,  4, 1, 94 },
+        { 2,  3, 1, 47 }
+    };
     for (int firmwareAc = 0; firmwareAc < EDCA_NUM_AC; firmwareAc++) {
         const int aci = firmwareAcToNet80211[firmwareAc];
         const struct ieee80211_edca_ac_params *ac =
+            accessPointValues ?
+            &qapEdca[firmwareAc] :
             &com.sc_ic.ic_edca_ac[aci];
         command.ac[firmwareAc].aifsn = ac->ac_aifsn;
         command.ac[firmwareAc].cwmin =
@@ -5024,7 +5015,7 @@ void ItlIwn::iwn_note_ap_firmware_event(int command, int notification)
     } else if (apFirmwareStage == IWN_AP_STAGE_PAN_PARAMS &&
                command == IWN_CMD_WIPAN_PARAMS) {
         apFirmwareStage = IWN_AP_STAGE_EDCA;
-        error = iwn_send_ap_edca();
+        error = iwn_send_ap_edca(false);
     } else if (apFirmwareStage == IWN_AP_STAGE_EDCA &&
                command == IWN_CMD_WIPAN_EDCA_PARAMS) {
         apFirmwareStage = IWN_AP_STAGE_FIRST_BEACON;
@@ -5068,7 +5059,7 @@ void ItlIwn::iwn_note_ap_firmware_event(int command, int notification)
     } else if (apFirmwareStage == IWN_AP_STAGE_SECOND_BEACON &&
                command == IWN_CMD_TX_BEACON) {
         apFirmwareStage = IWN_AP_STAGE_POST_ASSOC_EDCA;
-        error = iwn_send_ap_edca();
+        error = iwn_send_ap_edca(true);
     } else if (apFirmwareStage == IWN_AP_STAGE_POST_ASSOC_EDCA &&
                command == IWN_CMD_WIPAN_EDCA_PARAMS) {
         apFirmwareStage = IWN_AP_STAGE_THIRD_BEACON;
@@ -6514,6 +6505,8 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
     ring->qid = qid;
     ring->queued = 0;
     ring->cur = 0;
+    ring->first_tb = NULL;
+    ring->ap_payload = NULL;
 
     /* Allocate TX descriptors (256-byte aligned). */
     size = IWN_TX_RING_COUNT * sizeof (struct iwn_tx_desc);
@@ -6532,6 +6525,31 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
         XYLog("%s: could not allocate TX cmd DMA memory\n",
             sc->sc_dev.dv_xname);
         goto fail;
+    }
+
+    /*
+     * Gen1 data transport keeps the bidirectional first 20 command bytes in
+     * a physically separate low-DMA pool.  The conventional itlwm queues
+     * coalesce that prefix with the rest of the command, but PAN q7 needs
+     * the original transport shape.  Allocate the pool for that queue only.
+     */
+    if (qid == IWN_IPAN_MGMT_QUEUE) {
+        size = IWN_TX_RING_COUNT * IWN_TX_FIRST_TB_STRIDE;
+        error = iwn_dma_contig_alloc(sc->sc_dmat, &ring->first_tb_dma,
+            (void **)&ring->first_tb, size, IWN_TX_FIRST_TB_STRIDE);
+        if (error != 0) {
+            XYLog("%s: could not allocate PAN first-TB DMA memory\n",
+                sc->sc_dev.dv_xname);
+            goto fail;
+        }
+        size = IWN_TX_RING_COUNT * IWN_AP_MGMT_PAYLOAD_SIZE;
+        error = iwn_dma_contig_alloc(sc->sc_dmat, &ring->ap_payload_dma,
+            (void **)&ring->ap_payload, size, 64);
+        if (error != 0) {
+            XYLog("%s: could not allocate PAN payload DMA memory\n",
+                sc->sc_dev.dv_xname);
+            goto fail;
+        }
     }
 
     paddr = ring->cmd_dma.paddr;
@@ -6595,6 +6613,10 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
     }
     /* Clear TX descriptors. */
     memset(ring->desc, 0, ring->desc_dma.size);
+    if (ring->first_tb != NULL)
+        memset(ring->first_tb, 0, ring->first_tb_dma.size);
+    if (ring->ap_payload != NULL)
+        memset(ring->ap_payload, 0, ring->ap_payload_dma.size);
 //    bus_dmamap_sync(sc->sc_dmat, ring->desc_dma.map, 0,
 //        ring->desc_dma.size, BUS_DMASYNC_PREWRITE);
     sc->qfullmsk &= ~(1 << ring->qid);
@@ -6610,6 +6632,10 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
 
     iwn_dma_contig_free(&ring->desc_dma);
     iwn_dma_contig_free(&ring->cmd_dma);
+    iwn_dma_contig_free(&ring->first_tb_dma);
+    iwn_dma_contig_free(&ring->ap_payload_dma);
+    ring->first_tb = NULL;
+    ring->ap_payload = NULL;
 
     for (i = 0; i < IWN_TX_RING_COUNT; i++) {
         struct iwn_tx_data *data = &ring->data[i];
@@ -11040,7 +11066,11 @@ iwn_watchdog(struct _ifnet *ifp)
                   static_cast<unsigned long long>(
                       panMgmt->desc_dma.paddr),
                   static_cast<unsigned long long>(panData->cmd_paddr),
-                  static_cast<unsigned long long>(panData->scratch_paddr),
+                  static_cast<unsigned long long>(
+                      panMgmt->first_tb != NULL ?
+                      panMgmt->first_tb_dma.paddr +
+                          panMgmt->read * IWN_TX_FIRST_TB_STRIDE + 12 :
+                      panData->scratch_paddr),
                   static_cast<unsigned>(panDescriptor->nsegs),
                   static_cast<unsigned>(letoh32(
                       panDescriptor->segs[0].addr)),

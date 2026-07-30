@@ -94,7 +94,7 @@ public:
     int iwn_send_ap_broadcast_link_quality(int);
     int iwn_send_ap_sensitivity();
     int iwn_send_ap_timing(const struct ItlHalApConfig *);
-    int iwn_send_ap_edca();
+    int iwn_send_ap_edca(bool accessPointValues);
     int iwn_send_ap_beacon(const struct ItlHalApConfig *);
     int iwn_send_ap_rxon_assoc();
     int iwn_send_ap_mgmt_frame(const void *, size_t);

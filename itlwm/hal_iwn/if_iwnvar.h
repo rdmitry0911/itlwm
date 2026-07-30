@@ -204,10 +204,17 @@ struct iwn_tx_data {
 };
 
 struct iwn_tx_ring {
+#define IWN_TX_FIRST_TB_SIZE           20
+#define IWN_TX_FIRST_TB_STRIDE         64
+#define IWN_AP_MGMT_PAYLOAD_SIZE       512
     struct iwn_dma_info    desc_dma;
     struct iwn_dma_info    cmd_dma;
+    struct iwn_dma_info    first_tb_dma;
+    struct iwn_dma_info    ap_payload_dma;
     struct iwn_tx_desc    *desc;
     struct iwn_tx_cmd    *cmd;
+    uint8_t            *first_tb;
+    uint8_t            *ap_payload;
     struct iwn_tx_data    data[IWN_TX_RING_COUNT];
     int            qid;
     int            queued;
