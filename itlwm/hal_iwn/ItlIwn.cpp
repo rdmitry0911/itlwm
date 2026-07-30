@@ -3964,6 +3964,15 @@ int ItlIwn::iwn_send_ap_4way_msg1()
 
 int ItlIwn::iwn_send_ap_4way_msg3()
 {
+#ifdef IEEE80211_STA_ONLY
+    /*
+     * ieee80211_eapol_key_encrypt() is intentionally omitted from a
+     * station-only net80211 build.  Keep the dormant HostAP entry point
+     * fail-closed without making the ordinary Tahoe/IWN artifact depend on
+     * an AP-only symbol.
+     */
+    return ENOTSUP;
+#else
     uint8_t frame[256];
     bzero(frame, sizeof(frame));
     struct ieee80211_eapol_key *key =
@@ -4037,6 +4046,7 @@ int ItlIwn::iwn_send_ap_4way_msg3()
           iwn_ap_uses_sae() ? "WPA3" : "WPA2",
           error, apReplayCounter);
     return error;
+#endif
 }
 
 void ItlIwn::iwn_begin_ap_4way()

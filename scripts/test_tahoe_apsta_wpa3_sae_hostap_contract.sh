@@ -74,6 +74,23 @@ for needle in (
 ):
     assert needle in iwn, f"missing IWN WPA3/SAE/PMF contract: {needle}"
 
+msg3 = body(
+    iwn,
+    "int ItlIwn::iwn_send_ap_4way_msg3()",
+    "void ItlIwn::iwn_begin_ap_4way()",
+)
+for needle in (
+    "#ifdef IEEE80211_STA_ONLY",
+    "return ENOTSUP;",
+    "ieee80211_eapol_key_encrypt(&com.sc_ic, key, apPtk.kek);",
+    "#endif",
+):
+    assert needle in msg3, \
+        f"missing STA-only/AP-only EAPOL encryption boundary: {needle}"
+assert msg3.index("return ENOTSUP;") < msg3.index(
+    "ieee80211_eapol_key_encrypt(&com.sc_ic, key, apPtk.kek);"
+), "STA-only build must fail closed before the AP-only EAPOL dependency"
+
 sae_rx = body(
     iwn,
     "if (iwn_handle_ap_sae_auth(wh, len))",
