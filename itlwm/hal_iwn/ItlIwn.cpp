@@ -3731,6 +3731,15 @@ enum {
     IWN_AP_RSN_AUTHORIZED
 };
 
+enum {
+    IWN_AP_AUTH_UPPER_WPA3_SAE = 0x1000,
+    IWN_AP_IGTK_KDE_TYPE = 9,
+    IWN_AP_IGTK_KEY_ID = 4,
+    IWN_AP_SAE_COMMIT_TRANSACTION = 1,
+    IWN_AP_SAE_CONFIRM_TRANSACTION = 2,
+    IWN_AP_STATUS_INVALID_PMKID = 53
+};
+
 #ifdef DELAY
 #undef DELAY
 #define DELAY IODelay
@@ -3740,6 +3749,12 @@ bool ItlIwn::attach(IOPCIDevice *device)
 {
     /* iwn_attach() may fail after publishing an event source; detach owns it. */
     fSaeTxGate = NULL;
+    apSae = NULL;
+    apSaePmksaValid = false;
+    bzero(apSaePmksaPmk, sizeof(apSaePmksaPmk));
+    bzero(apSaePmksaPmkid, sizeof(apSaePmksaPmkid));
+    bzero(apSaePmksaSta, sizeof(apSaePmksaSta));
+    bzero(apSaePmksaBssid, sizeof(apSaePmksaBssid));
     bzero(apPsQueue, sizeof(apPsQueue));
     apPsQueueHead = 0;
     apPsQueueTail = 0;
@@ -3757,9 +3772,39 @@ bool ItlIwn::attach(IOPCIDevice *device)
     return true;
 }
 
+bool ItlIwn::iwn_ap_uses_sae() const
+{
+    return apFirmwareConfig.authUpper == IWN_AP_AUTH_UPPER_WPA3_SAE;
+}
+
+void ItlIwn::iwn_reset_ap_sae()
+{
+    ieee80211_sae_ap_destroy(&apSae);
+}
+
+void ItlIwn::iwn_clear_ap_sae_pmksa()
+{
+    explicit_bzero(apSaePmksaPmk, sizeof(apSaePmksaPmk));
+    explicit_bzero(apSaePmksaPmkid, sizeof(apSaePmksaPmkid));
+    bzero(apSaePmksaSta, sizeof(apSaePmksaSta));
+    bzero(apSaePmksaBssid, sizeof(apSaePmksaBssid));
+    apSaePmksaValid = false;
+}
+
+bool ItlIwn::iwn_ap_sae_pmksa_matches(
+    const uint8_t *station, const uint8_t *pmkid) const
+{
+    return apSaePmksaValid && station != NULL && pmkid != NULL &&
+        IEEE80211_ADDR_EQ(apSaePmksaSta, station) &&
+        IEEE80211_ADDR_EQ(apSaePmksaBssid, apFirmwareConfig.bssid) &&
+        timingsafe_bcmp(
+            apSaePmksaPmkid, pmkid, sizeof(apSaePmksaPmkid)) == 0;
+}
+
 void ItlIwn::iwn_reset_ap_runtime_state()
 {
     iwn_purge_ap_ps_queue();
+    iwn_reset_ap_sae();
     apFirmwareTransitionActive = false;
     apFirmwareDeactivationReplySeen = false;
     apFirmwareDeactivationNotificationSeen = false;
@@ -3776,6 +3821,7 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     bzero(apClientMac, sizeof(apClientMac));
     apClientNodeInstalled = false;
     apClientAuthenticated = false;
+    apClientOpenAuthenticated = false;
     apClientAssociated = false;
     apClientAuthorized = false;
     apClientPowerSave = false;
@@ -3785,6 +3831,7 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     explicit_bzero(apPmk, sizeof(apPmk));
     explicit_bzero(apAnonce, sizeof(apAnonce));
     explicit_bzero(apGtk, sizeof(apGtk));
+    explicit_bzero(apIgtk, sizeof(apIgtk));
     explicit_bzero(&apPtk, sizeof(apPtk));
     apReplayCounter = 0;
     apPairwiseTxPn = 0;
@@ -3792,6 +3839,7 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
     apClientRsnIELength = 0;
     apGtkKid = 1;
+    apIgtkKid = IWN_AP_IGTK_KEY_ID;
     apTimSet = false;
 }
 
@@ -3869,27 +3917,48 @@ int ItlIwn::iwn_send_ap_eapol_key(const void *eapol, size_t eapolLength)
 
 int ItlIwn::iwn_send_ap_4way_msg1()
 {
-    uint8_t frame[sizeof(struct ieee80211_eapol_key)];
+    uint8_t frame[
+        sizeof(struct ieee80211_eapol_key) +
+        2 + 4 + IEEE80211_PMKID_LEN];
     bzero(frame, sizeof(frame));
     struct ieee80211_eapol_key *key =
         reinterpret_cast<struct ieee80211_eapol_key *>(frame);
     key->version = EAPOL_VERSION;
     key->type = EAPOL_KEY;
     key->desc = EAPOL_KEY_DESC_IEEE80211;
+    const uint16_t descriptor = iwn_ap_uses_sae() ?
+        EAPOL_KEY_DESC_AKM_DEFINED : EAPOL_KEY_DESC_V2;
     BE_WRITE_2(key->info,
-        EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK | EAPOL_KEY_DESC_V2);
+        EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK | descriptor);
     BE_WRITE_2(key->keylen, 16);
     apReplayCounter++;
     BE_WRITE_8(key->replaycnt, apReplayCounter);
     memcpy(key->nonce, apAnonce, sizeof(key->nonce));
-    BE_WRITE_2(key->paylen, 0);
-    BE_WRITE_2(key->len, sizeof(*key) - 4);
+    uint8_t *cursor = reinterpret_cast<uint8_t *>(key + 1);
+    if (iwn_ap_uses_sae() &&
+        iwn_ap_sae_pmksa_matches(apClientMac, apSaePmksaPmkid)) {
+        *cursor++ = IEEE80211_ELEMID_VENDOR;
+        *cursor++ = 4 + IEEE80211_PMKID_LEN;
+        memcpy(cursor, IEEE80211_OUI, 3);
+        cursor += 3;
+        *cursor++ = IEEE80211_KDE_PMKID;
+        memcpy(cursor, apSaePmksaPmkid, IEEE80211_PMKID_LEN);
+        cursor += IEEE80211_PMKID_LEN;
+    }
+    const size_t keyDataLength =
+        static_cast<size_t>(
+            cursor - reinterpret_cast<uint8_t *>(key + 1));
+    BE_WRITE_2(key->paylen, keyDataLength);
+    BE_WRITE_2(key->len, sizeof(*key) + keyDataLength - 4);
+    const size_t frameLength = sizeof(*key) + keyDataLength;
     apRsnState = IWN_AP_RSN_WAIT_M2;
-    const int error = iwn_send_ap_eapol_key(frame, sizeof(frame));
+    const int error = iwn_send_ap_eapol_key(frame, frameLength);
     if (error != 0)
         apRsnState = IWN_AP_RSN_DISABLED;
-    XYLog("%s: AP WPA2 EAPOL M1 queue=%d replay=%llu\n",
-          com.sc_dev.dv_xname, error, apReplayCounter);
+    XYLog("%s: AP %s EAPOL M1 queue=%d replay=%llu\n",
+          com.sc_dev.dv_xname,
+          iwn_ap_uses_sae() ? "WPA3" : "WPA2",
+          error, apReplayCounter);
     return error;
 }
 
@@ -3902,9 +3971,11 @@ int ItlIwn::iwn_send_ap_4way_msg3()
     key->version = EAPOL_VERSION;
     key->type = EAPOL_KEY;
     key->desc = EAPOL_KEY_DESC_IEEE80211;
+    const uint16_t descriptor = iwn_ap_uses_sae() ?
+        EAPOL_KEY_DESC_AKM_DEFINED : EAPOL_KEY_DESC_V2;
     uint16_t info = EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK |
         EAPOL_KEY_KEYMIC | EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE |
-        EAPOL_KEY_ENCRYPTED | EAPOL_KEY_DESC_V2;
+        EAPOL_KEY_ENCRYPTED | descriptor;
     BE_WRITE_2(key->info, info);
     BE_WRITE_2(key->keylen, 16);
     apReplayCounter++;
@@ -3927,6 +3998,24 @@ int ItlIwn::iwn_send_ap_4way_msg3()
     *cursor++ = 0;
     memcpy(cursor, apGtk, sizeof(apGtk));
     cursor += sizeof(apGtk);
+    if (iwn_ap_uses_sae()) {
+        /*
+         * WPA3 requires PMF.  Carry the IGTK in M3 using the standard
+         * 00:0f:ac:09 KDE: little-endian key id, six-byte initial IPN,
+         * then the BIP-CMAC-128 key.
+         */
+        *cursor++ = IEEE80211_ELEMID_VENDOR;
+        *cursor++ = 4 + 2 + 6 + sizeof(apIgtk);
+        memcpy(cursor, IEEE80211_OUI, 3);
+        cursor += 3;
+        *cursor++ = IWN_AP_IGTK_KDE_TYPE;
+        *cursor++ = apIgtkKid;
+        *cursor++ = 0;
+        bzero(cursor, 6);
+        cursor += 6;
+        memcpy(cursor, apIgtk, sizeof(apIgtk));
+        cursor += sizeof(apIgtk);
+    }
 
     const size_t plainKeyDataLength =
         static_cast<size_t>(cursor - reinterpret_cast<uint8_t *>(key + 1));
@@ -3943,8 +4032,10 @@ int ItlIwn::iwn_send_ap_4way_msg3()
     const int error = iwn_send_ap_eapol_key(frame, eapolLength);
     if (error != 0)
         apRsnState = IWN_AP_RSN_WAIT_M2;
-    XYLog("%s: AP WPA2 EAPOL M3 queue=%d replay=%llu\n",
-          com.sc_dev.dv_xname, error, apReplayCounter);
+    XYLog("%s: AP %s EAPOL M3 queue=%d replay=%llu\n",
+          com.sc_dev.dv_xname,
+          iwn_ap_uses_sae() ? "WPA3" : "WPA2",
+          error, apReplayCounter);
     return error;
 }
 
@@ -3981,19 +4072,22 @@ bool ItlIwn::iwn_handle_ap_eapol_key(const uint8_t *eapol,
     const size_t declaredLength = 4 + BE_READ_2(key->len);
     const uint16_t keyInfo = BE_READ_2(key->info);
     const size_t keyDataLength = BE_READ_2(key->paylen);
+    const uint16_t expectedDescriptor = iwn_ap_uses_sae() ?
+        EAPOL_KEY_DESC_AKM_DEFINED : EAPOL_KEY_DESC_V2;
     if (key->type != EAPOL_KEY ||
         key->desc != EAPOL_KEY_DESC_IEEE80211 ||
         declaredLength != eapolLength ||
         keyDataLength > eapolLength - sizeof(*key) ||
-        (keyInfo & EAPOL_KEY_VERSION_MASK) != EAPOL_KEY_DESC_V2 ||
+        (keyInfo & EAPOL_KEY_VERSION_MASK) != expectedDescriptor ||
         (keyInfo & EAPOL_KEY_PAIRWISE) == 0 ||
         (keyInfo & EAPOL_KEY_KEYMIC) == 0 ||
         (keyInfo & (EAPOL_KEY_KEYACK | EAPOL_KEY_REQUEST |
                     EAPOL_KEY_ERROR)) != 0 ||
         BE_READ_8(key->replaycnt) != apReplayCounter) {
-        XYLog("%s: AP WPA2 EAPOL rejected state=%u info=0x%x "
+        XYLog("%s: AP %s EAPOL rejected state=%u info=0x%x "
               "length=%zu replay=%llu expected=%llu\n",
               com.sc_dev.dv_xname,
+              iwn_ap_uses_sae() ? "WPA3" : "WPA2",
               static_cast<unsigned>(apRsnState),
               static_cast<unsigned>(keyInfo), eapolLength,
               BE_READ_8(key->replaycnt), apReplayCounter);
@@ -4018,21 +4112,25 @@ bool ItlIwn::iwn_handle_ap_eapol_key(const uint8_t *eapol,
         if (rsn == NULL ||
             apClientRsnIELength != static_cast<size_t>(rsn[1]) + 2 ||
             memcmp(rsn, apClientRsnIE, apClientRsnIELength) != 0) {
-            XYLog("%s: AP WPA2 M2 rejected: association RSN mismatch\n",
-                  com.sc_dev.dv_xname);
+            XYLog("%s: AP %s M2 rejected: association RSN mismatch\n",
+                  com.sc_dev.dv_xname,
+                  iwn_ap_uses_sae() ? "WPA3" : "WPA2");
             return true;
         }
 
         struct ieee80211_ptk transientPtk;
         explicit_bzero(&transientPtk, sizeof(transientPtk));
         ieee80211_derive_ptk(
-            IEEE80211_AKM_PSK, apPmk,
+            iwn_ap_uses_sae() ?
+                IEEE80211_AKM_SAE : IEEE80211_AKM_PSK,
+            apPmk,
             apFirmwareConfig.bssid, apClientMac,
             apAnonce, key->nonce, &transientPtk);
         if (ieee80211_eapol_key_check_mic(key, transientPtk.kck) != 0) {
             explicit_bzero(&transientPtk, sizeof(transientPtk));
-            XYLog("%s: AP WPA2 M2 rejected: MIC mismatch\n",
-                  com.sc_dev.dv_xname);
+            XYLog("%s: AP %s M2 rejected: MIC mismatch\n",
+                  com.sc_dev.dv_xname,
+                  iwn_ap_uses_sae() ? "WPA3" : "WPA2");
             return true;
         }
         memcpy(&apPtk, &transientPtk, sizeof(apPtk));
@@ -4042,15 +4140,17 @@ bool ItlIwn::iwn_handle_ap_eapol_key(const uint8_t *eapol,
             iwn_install_ap_ccmp_key(false, apGtkKid, apGtk);
         if (error == 0)
             error = iwn_send_ap_4way_msg3();
-        XYLog("%s: AP WPA2 M2 accepted GTK/M3=%d\n",
-              com.sc_dev.dv_xname, error);
+        XYLog("%s: AP %s M2 accepted GTK/M3=%d\n",
+              com.sc_dev.dv_xname,
+              iwn_ap_uses_sae() ? "WPA3" : "WPA2", error);
         return true;
     }
 
     if (apRsnState == IWN_AP_RSN_WAIT_M4) {
         if (keyDataLength != 0 ||
             ieee80211_eapol_key_check_mic(key, apPtk.kck) != 0) {
-            XYLog("%s: AP WPA2 M4 rejected\n", com.sc_dev.dv_xname);
+            XYLog("%s: AP %s M4 rejected\n", com.sc_dev.dv_xname,
+                  iwn_ap_uses_sae() ? "WPA3" : "WPA2");
             return true;
         }
         const int error =
@@ -4059,8 +4159,9 @@ bool ItlIwn::iwn_handle_ap_eapol_key(const uint8_t *eapol,
             apClientAuthorized = true;
             apRsnState = IWN_AP_RSN_AUTHORIZED;
         }
-        XYLog("%s: AP WPA2 4-way complete PTK=%d authorized=%u\n",
-              com.sc_dev.dv_xname, error,
+        XYLog("%s: AP %s 4-way complete PTK=%d authorized=%u\n",
+              com.sc_dev.dv_xname,
+              iwn_ap_uses_sae() ? "WPA3" : "WPA2", error,
               apClientAuthorized ? 1U : 0U);
         return true;
     }
@@ -4687,6 +4788,200 @@ bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,
     return true;
 }
 
+int ItlIwn::iwn_send_ap_sae_auth(const uint8_t *station,
+    uint16_t transaction, uint16_t status,
+    const void *bodyBytes, size_t bodyLength)
+{
+    const size_t frameLength =
+        sizeof(struct ieee80211_frame) + 6 + bodyLength;
+    if (station == NULL ||
+        (bodyLength != 0 && bodyBytes == NULL) ||
+        frameLength > MCLBYTES)
+        return EINVAL;
+
+    uint8_t *response = static_cast<uint8_t *>(
+        malloc(frameLength, M_DEVBUF, M_NOWAIT | M_ZERO));
+    if (response == NULL)
+        return ENOMEM;
+
+    struct ieee80211_frame *wh =
+        reinterpret_cast<struct ieee80211_frame *>(response);
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_AUTH;
+    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    LE_WRITE_2(wh->i_dur,
+        apFirmwareConfig.channel <= 14 ? 0x013a : 0x003c);
+    IEEE80211_ADDR_COPY(wh->i_addr1, station);
+    IEEE80211_ADDR_COPY(wh->i_addr2, apFirmwareConfig.bssid);
+    IEEE80211_ADDR_COPY(wh->i_addr3, apFirmwareConfig.bssid);
+    uint8_t *auth = response + sizeof(*wh);
+    LE_WRITE_2(auth, IEEE80211_AUTH_ALG_SAE);
+    LE_WRITE_2(auth + 2, transaction);
+    LE_WRITE_2(auth + 4, status);
+    if (bodyLength != 0)
+        memcpy(auth + 6, bodyBytes, bodyLength);
+
+    const int error = iwn_send_ap_mgmt_frame(response, frameLength);
+    explicit_bzero(response, frameLength);
+    ::free(response);
+    return error;
+}
+
+bool ItlIwn::iwn_handle_ap_sae_auth(
+    const struct ieee80211_frame *request, size_t frameLength)
+{
+    const size_t headerLength = sizeof(*request);
+    if (request == NULL ||
+        !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        frameLength < headerLength + 6 ||
+        (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+            IEEE80211_FC0_TYPE_MGT ||
+        (request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) !=
+            IEEE80211_FC0_SUBTYPE_AUTH ||
+        !IEEE80211_ADDR_EQ(request->i_addr1, apFirmwareConfig.bssid) ||
+        !IEEE80211_ADDR_EQ(request->i_addr3, apFirmwareConfig.bssid)) {
+        return false;
+    }
+
+    const uint8_t *auth =
+        reinterpret_cast<const uint8_t *>(request) + headerLength;
+    if (LE_READ_2(auth) != IEEE80211_AUTH_ALG_SAE)
+        return false;
+    if (!iwn_ap_uses_sae()) {
+        (void)iwn_send_ap_sae_auth(
+            request->i_addr2, LE_READ_2(auth + 2),
+            IEEE80211_STATUS_UNSPECIFIED, NULL, 0);
+        return true;
+    }
+
+    const uint16_t transaction = LE_READ_2(auth + 2);
+    const uint16_t status = LE_READ_2(auth + 4);
+    const uint8_t *body = auth + 6;
+    const size_t bodyLength =
+        frameLength - headerLength - 6;
+
+    if (status != IEEE80211_SAE_AP_STATUS_SUCCESS ||
+        (transaction != IWN_AP_SAE_COMMIT_TRANSACTION &&
+         transaction != IWN_AP_SAE_CONFIRM_TRANSACTION)) {
+        (void)iwn_send_ap_sae_auth(
+            request->i_addr2, transaction,
+            IEEE80211_SAE_AP_STATUS_UNSPECIFIED, NULL, 0);
+        return true;
+    }
+
+    if (transaction == IWN_AP_SAE_COMMIT_TRANSACTION) {
+        /*
+         * Infrastructure SAE uses alternating Authentication frames:
+         * the station and AP both use transaction 1 for Commit, and both
+         * use transaction 2 for Confirm.  This is the responder order in
+         * hostapd's handle_auth_sae()/sae_sm_step(), not Open-System's
+         * request/response sequence numbering.
+         */
+        iwn_reset_ap_sae();
+        uint8_t responseBody[
+            IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN];
+        bzero(responseBody, sizeof(responseBody));
+        size_t responseBodyLength = 0;
+        const uint16_t beginStatus = ieee80211_sae_ap_begin_hnp(
+            apFirmwareConfig.bssid, request->i_addr2,
+            apFirmwareCredential, apFirmwareConfig.credentialLength,
+            body, bodyLength, &apSae,
+            responseBody, sizeof(responseBody), &responseBodyLength);
+        if (beginStatus != IEEE80211_SAE_AP_STATUS_SUCCESS ||
+            apSae == NULL) {
+            (void)iwn_send_ap_sae_auth(
+                request->i_addr2, transaction, beginStatus,
+                responseBody, responseBodyLength);
+            explicit_bzero(responseBody, sizeof(responseBody));
+            iwn_reset_ap_sae();
+            return true;
+        }
+
+        const int error = iwn_send_ap_sae_auth(
+            request->i_addr2, IWN_AP_SAE_COMMIT_TRANSACTION,
+            IEEE80211_SAE_AP_STATUS_SUCCESS,
+            responseBody, responseBodyLength);
+        explicit_bzero(responseBody, sizeof(responseBody));
+        if (error != 0) {
+            XYLog("%s: AP SAE Commit failed error=%d\n",
+                  com.sc_dev.dv_xname, error);
+            iwn_reset_ap_sae();
+            return true;
+        }
+
+        if (apTimSet)
+            (void)iwn_update_ap_tim(false);
+        iwn_purge_ap_ps_queue();
+        if (apClientNodeInstalled) {
+            (void)iwn_remove_ap_client_node(apClientMac);
+            apClientNodeInstalled = false;
+        }
+        IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
+        apClientAuthenticated = false;
+        apClientOpenAuthenticated = false;
+        apClientAssociated = false;
+        apClientAuthorized = false;
+        apClientPowerSave = false;
+        apClientAid = 0;
+        apRsnState = IWN_AP_RSN_DISABLED;
+        XYLog("%s: AP SAE Commit accepted peer="
+              "%02x:%02x:%02x:%02x:%02x:%02x group=19\n",
+              com.sc_dev.dv_xname,
+              request->i_addr2[0], request->i_addr2[1],
+              request->i_addr2[2], request->i_addr2[3],
+              request->i_addr2[4], request->i_addr2[5]);
+        return true;
+    }
+
+    uint8_t responseBody[
+        IEEE80211_SAE_ENGINE_CONFIRM_BODY_LEN];
+    bzero(responseBody, sizeof(responseBody));
+    size_t responseBodyLength = 0;
+    uint8_t pmkid[IEEE80211_PMKID_LEN];
+    bzero(pmkid, sizeof(pmkid));
+    explicit_bzero(apPmk, sizeof(apPmk));
+    const uint16_t confirmStatus = ieee80211_sae_ap_confirm(
+        apSae, request->i_addr2, body, bodyLength,
+        responseBody, sizeof(responseBody), &responseBodyLength,
+        apPmk, sizeof(apPmk), pmkid, sizeof(pmkid));
+    if (confirmStatus != IEEE80211_SAE_AP_STATUS_SUCCESS) {
+        (void)iwn_send_ap_sae_auth(
+            request->i_addr2, transaction,
+            confirmStatus, NULL, 0);
+        explicit_bzero(responseBody, sizeof(responseBody));
+        explicit_bzero(apPmk, sizeof(apPmk));
+        explicit_bzero(pmkid, sizeof(pmkid));
+        XYLog("%s: AP SAE Confirm rejected status=%u\n",
+              com.sc_dev.dv_xname,
+              static_cast<unsigned>(confirmStatus));
+        return true;
+    }
+    const int error = iwn_send_ap_sae_auth(
+        request->i_addr2, IWN_AP_SAE_CONFIRM_TRANSACTION,
+        IEEE80211_SAE_AP_STATUS_SUCCESS,
+        responseBody, responseBodyLength);
+    explicit_bzero(responseBody, sizeof(responseBody));
+    if (error == 0) {
+        apClientAuthenticated = true;
+        apClientOpenAuthenticated = false;
+        memcpy(apSaePmksaPmk, apPmk, sizeof(apSaePmksaPmk));
+        memcpy(apSaePmksaPmkid, pmkid, sizeof(apSaePmksaPmkid));
+        IEEE80211_ADDR_COPY(apSaePmksaSta, request->i_addr2);
+        IEEE80211_ADDR_COPY(
+            apSaePmksaBssid, apFirmwareConfig.bssid);
+        apSaePmksaValid = true;
+    } else {
+        explicit_bzero(apPmk, sizeof(apPmk));
+        iwn_reset_ap_sae();
+    }
+    explicit_bzero(pmkid, sizeof(pmkid));
+    XYLog("%s: AP SAE Confirm response=%d authenticated=%u\n",
+          com.sc_dev.dv_xname, error,
+          apClientAuthenticated ? 1U : 0U);
+    return true;
+}
+
 bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
     size_t frameLength)
 {
@@ -4711,6 +5006,15 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         LE_READ_2(auth + 4) != IEEE80211_STATUS_SUCCESS) {
         return false;
     }
+    /*
+     * IEEE 802.11 SAE PMKSA caching deliberately uses Open-System
+     * authentication before the Association Request carries its PMKID.
+     * hostapd admits this authentication even on a pure-SAE BSS, then
+     * either selects the cached PMKSA or returns INVALID_PMKID from
+     * association so the station can fall back to a fresh SAE exchange.
+     */
+    if (iwn_ap_uses_sae())
+        iwn_reset_ap_sae();
 
     /*
      * Authentication starts a fresh per-peer power-save lifetime.  Retire
@@ -4765,6 +5069,7 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
     if (error == 0) {
         IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
         apClientAuthenticated = true;
+        apClientOpenAuthenticated = iwn_ap_uses_sae();
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -4810,6 +5115,8 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     const uint8_t *ssid = NULL;
     const uint8_t *rates = NULL;
     const uint8_t *rsn = NULL;
+    const uint8_t *saePmkidList = NULL;
+    uint16_t saePmkidCount = 0;
     while (cursor + 2 <= end) {
         const size_t elementLength = cursor[1];
         if (cursor + 2 + elementLength > end)
@@ -4825,9 +5132,9 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
 
     /*
      * Validate the negotiated RSN suite instead of comparing the whole IE:
-     * clients may append optional RSN capabilities/PMKID fields. For the
-     * first protected AP contract we admit precisely WPA2-Personal with
-     * CCMP group/pairwise and PSK AKM.
+     * clients may append optional RSN capabilities/PMKID fields. WPA2
+     * admits PSK/CCMP. WPA3 admits SAE/CCMP only when both MFPC and MFPR are
+     * set and BIP-CMAC-128 is the negotiated group-management cipher.
      */
     bool rsnValid = apFirmwareConfig.rsnIELength == 0;
     if (apFirmwareConfig.rsnIELength != 0 &&
@@ -4836,6 +5143,10 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         const uint8_t *rsnEnd = rsnBody + rsn[1];
         static const uint8_t ccmpSuite[] = { 0x00, 0x0f, 0xac, 0x04 };
         static const uint8_t pskSuite[] = { 0x00, 0x0f, 0xac, 0x02 };
+        static const uint8_t saeSuite[] = { 0x00, 0x0f, 0xac, 0x08 };
+        static const uint8_t bipCmac128Suite[] = {
+            0x00, 0x0f, 0xac, 0x06
+        };
         if (LE_READ_2(rsnBody) == 1 &&
             rsnBody + 2 + sizeof(ccmpSuite) + 2 <= rsnEnd &&
             memcmp(rsnBody + 2, ccmpSuite, sizeof(ccmpSuite)) == 0) {
@@ -4858,12 +5169,53 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
                     if (akmCount != 0 &&
                         akmCount <=
                             static_cast<uint16_t>((rsnEnd - akm) / 4)) {
+                        bool hasPSK = false;
+                        bool hasSAE = false;
                         for (uint16_t i = 0; i < akmCount; i++) {
                             if (memcmp(akm + i * 4, pskSuite,
-                                       sizeof(pskSuite)) == 0) {
-                                rsnValid = true;
-                                break;
+                                       sizeof(pskSuite)) == 0)
+                                hasPSK = true;
+                            if (memcmp(akm + i * 4, saeSuite,
+                                       sizeof(saeSuite)) == 0)
+                                hasSAE = true;
+                        }
+
+                        const uint8_t *optional =
+                            akm + akmCount * 4;
+                        uint16_t capabilities = 0;
+                        bool capabilitiesPresent = false;
+                        if (optional + 2 <= rsnEnd) {
+                            capabilities = LE_READ_2(optional);
+                            capabilitiesPresent = true;
+                            optional += 2;
+                        }
+
+                        bool groupManagementValid = false;
+                        if (optional + 2 <= rsnEnd) {
+                            const uint16_t pmkidCount =
+                                LE_READ_2(optional);
+                            optional += 2;
+                            const size_t pmkidBytes =
+                                static_cast<size_t>(pmkidCount) * 16;
+                            if (pmkidBytes <=
+                                static_cast<size_t>(rsnEnd - optional)) {
+                                saePmkidList = optional;
+                                saePmkidCount = pmkidCount;
+                                optional += pmkidBytes;
+                                groupManagementValid =
+                                    optional + 4 <= rsnEnd &&
+                                    memcmp(optional, bipCmac128Suite,
+                                           sizeof(bipCmac128Suite)) == 0;
                             }
+                        }
+
+                        if (iwn_ap_uses_sae()) {
+                            rsnValid = hasSAE &&
+                                capabilitiesPresent &&
+                                (capabilities & 0x00c0) == 0x00c0 &&
+                                groupManagementValid;
+                        } else {
+                            rsnValid = hasPSK;
                         }
                     }
                 }
@@ -4871,9 +5223,28 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         }
     }
 
+    const bool saeAuthenticated =
+        ieee80211_sae_ap_is_accepted(apSae) != 0;
+    bool saePmksaAuthenticated = false;
+    if (iwn_ap_uses_sae() && apClientOpenAuthenticated) {
+        for (uint16_t i = 0; i < saePmkidCount; i++) {
+            if (iwn_ap_sae_pmksa_matches(
+                    request->i_addr2,
+                    saePmkidList + static_cast<size_t>(i) *
+                        IEEE80211_PMKID_LEN)) {
+                saePmksaAuthenticated = true;
+                break;
+            }
+        }
+    }
     const bool authenticated =
         apClientAuthenticated &&
-        IEEE80211_ADDR_EQ(apClientMac, request->i_addr2);
+        IEEE80211_ADDR_EQ(apClientMac, request->i_addr2) &&
+        (!iwn_ap_uses_sae() ||
+         saeAuthenticated || saePmksaAuthenticated);
+    const bool invalidSaePmkid =
+        iwn_ap_uses_sae() && apClientOpenAuthenticated &&
+        !saePmksaAuthenticated;
     const bool valid =
         authenticated &&
         (capability & IEEE80211_CAPINFO_ESS) != 0 &&
@@ -4886,9 +5257,36 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         (apFirmwareConfig.rsnIELength == 0 ||
          (capability & IEEE80211_CAPINFO_PRIVACY) != 0);
     if (!valid) {
+        int rejectError = 0;
+        if (invalidSaePmkid) {
+            uint8_t rejection[sizeof(struct ieee80211_frame) + 6];
+            bzero(rejection, sizeof(rejection));
+            struct ieee80211_frame *response =
+                reinterpret_cast<struct ieee80211_frame *>(rejection);
+            response->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+                IEEE80211_FC0_TYPE_MGT |
+                IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
+            response->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+            IEEE80211_ADDR_COPY(response->i_addr1, request->i_addr2);
+            IEEE80211_ADDR_COPY(
+                response->i_addr2, apFirmwareConfig.bssid);
+            IEEE80211_ADDR_COPY(
+                response->i_addr3, apFirmwareConfig.bssid);
+            uint8_t *rejectBody = rejection + sizeof(*response);
+            LE_WRITE_2(rejectBody, IEEE80211_CAPINFO_ESS |
+                IEEE80211_CAPINFO_PRIVACY |
+                (apFirmwareConfig.channel <= 14 ?
+                    IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
+            LE_WRITE_2(
+                rejectBody + 2, IWN_AP_STATUS_INVALID_PMKID);
+            LE_WRITE_2(rejectBody + 4, 0);
+            rejectError =
+                iwn_send_ap_mgmt_frame(rejection, sizeof(rejection));
+        }
         XYLog("%s: AP association request rejected from "
               "%02x:%02x:%02x:%02x:%02x:%02x authenticated=%u "
-              "ssid_valid=%u rates_valid=%u rsn_valid=%u privacy=%u\n",
+              "ssid_valid=%u rates_valid=%u rsn_valid=%u privacy=%u "
+              "invalid_pmkid=%u response_queue=%d\n",
               com.sc_dev.dv_xname,
               request->i_addr2[0], request->i_addr2[1],
               request->i_addr2[2], request->i_addr2[3],
@@ -4900,9 +5298,13 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
               rates != NULL && rates[1] != 0 &&
                   rates[1] <= IEEE80211_RATE_MAXSIZE ? 1U : 0U,
               rsnValid ? 1U : 0U,
-              (capability & IEEE80211_CAPINFO_PRIVACY) != 0 ? 1U : 0U);
+              (capability & IEEE80211_CAPINFO_PRIVACY) != 0 ? 1U : 0U,
+              invalidSaePmkid ? 1U : 0U, rejectError);
         return true;
     }
+
+    if (saePmksaAuthenticated)
+        memcpy(apPmk, apSaePmksaPmk, sizeof(apPmk));
 
     const uint8_t supportedRates[] = {
         0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
@@ -5067,6 +5469,7 @@ bool ItlIwn::iwn_handle_ap_disconnect(
         iwn_purge_ap_ps_queue();
         apClientNodeInstalled = false;
         apClientAuthenticated = false;
+        apClientOpenAuthenticated = false;
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -5079,6 +5482,7 @@ bool ItlIwn::iwn_handle_ap_disconnect(
         apPairwiseTxPn = 0;
         bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
         explicit_bzero(&apPtk, sizeof(apPtk));
+        iwn_reset_ap_sae();
     }
     XYLog("%s: AP client disconnect subtype=0x%02x remove=%d\n",
           com.sc_dev.dv_xname, static_cast<unsigned>(subtype),
@@ -5445,6 +5849,7 @@ void ItlIwn::free()
 {
 	if (ieee80211_bip_lifetime_drain(&com.sc_ic) != 0)
 		panic("ItlIwn::free BIP lifetime");
+	iwn_clear_ap_sae_pmksa();
 	ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic);
     super::free();
 }
@@ -6432,24 +6837,51 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
     apFirmwareConfig.beaconTemplate = apFirmwareBeacon;
     memcpy(&apFirmwareRxon, &ap_rxon, sizeof(apFirmwareRxon));
 
+    /*
+     * Preserve one SAE PMKSA only across a radio reset that replays the
+     * same BSSID. Explicit HostAP stop clears it; a different profile must
+     * never inherit it merely because the controller object survived.
+     */
+    if (!iwn_ap_uses_sae() ||
+        (apSaePmksaValid &&
+         !IEEE80211_ADDR_EQ(
+             apSaePmksaBssid, apFirmwareConfig.bssid))) {
+        iwn_clear_ap_sae_pmksa();
+    }
+
     if (config->rsnIELength != 0) {
-        char passphrase[65];
-        bzero(passphrase, sizeof(passphrase));
-        memcpy(passphrase, apFirmwareCredential,
-               config->credentialLength);
-        const int deriveError = pbkdf2_sha1(
-            passphrase, apFirmwareSsid, config->ssidLength, 4096,
-            apPmk, sizeof(apPmk));
-        explicit_bzero(passphrase, sizeof(passphrase));
-        if (deriveError != 0) {
+        iwn_reset_ap_sae();
+        explicit_bzero(apPmk, sizeof(apPmk));
+        if (iwn_ap_uses_sae()) {
+#if !ITL_SAE_DRIVER_CRYPTO_AVAILABLE
             iwn_reset_ap_runtime_state();
-            return kIOReturnError;
+            return kIOReturnUnsupported;
+#else
+            XYLog("%s: AP WPA3 SAE authenticator prepared SSID length=%zu\n",
+                  com.sc_dev.dv_xname, config->ssidLength);
+#endif
+        } else {
+            char passphrase[65];
+            bzero(passphrase, sizeof(passphrase));
+            memcpy(passphrase, apFirmwareCredential,
+                   config->credentialLength);
+            const int deriveError = pbkdf2_sha1(
+                passphrase, apFirmwareSsid, config->ssidLength, 4096,
+                apPmk, sizeof(apPmk));
+            explicit_bzero(passphrase, sizeof(passphrase));
+            if (deriveError != 0) {
+                iwn_reset_ap_runtime_state();
+                return kIOReturnError;
+            }
+            XYLog("%s: AP WPA2 authenticator prepared SSID length=%zu\n",
+                  com.sc_dev.dv_xname, config->ssidLength);
         }
         arc4random_buf(apGtk, sizeof(apGtk));
+        if (iwn_ap_uses_sae())
+            arc4random_buf(apIgtk, sizeof(apIgtk));
         apGtkKid = 1;
+        apIgtkKid = IWN_AP_IGTK_KEY_ID;
         apRsnState = IWN_AP_RSN_DISABLED;
-        XYLog("%s: AP WPA2 authenticator prepared SSID length=%zu\n",
-              com.sc_dev.dv_xname, config->ssidLength);
     } else {
         apRsnState = IWN_AP_RSN_AUTHORIZED;
     }
@@ -6494,6 +6926,7 @@ IOReturn ItlIwn::stopAPMode()
           com.sc_dev.dv_xname,
           static_cast<unsigned>(apFirmwareTransitionActive),
           static_cast<unsigned>(apFirmwareStage));
+    iwn_clear_ap_sae_pmksa();
     if (!apFirmwareTransitionActive ||
         apFirmwareStage == IWN_AP_STAGE_IDLE) {
         iwn_reset_ap_runtime_state();
@@ -9798,6 +10231,10 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
      * unlike Broadcom FullMAC, the firmware does not synthesize seq=2.
      */
     if (iwn_handle_ap_probe_req(wh, len)) {
+        mbuf_freem(m);
+        return;
+    }
+    if (iwn_handle_ap_sae_auth(wh, len)) {
         mbuf_freem(m);
         return;
     }

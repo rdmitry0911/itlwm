@@ -40,6 +40,12 @@ extern "C" {
 	 IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN)
 
 struct ieee80211_sae_engine;
+struct ieee80211_sae_ap;
+
+#define IEEE80211_SAE_AP_STATUS_SUCCESS 0u
+#define IEEE80211_SAE_AP_STATUS_UNSPECIFIED 1u
+#define IEEE80211_SAE_AP_STATUS_CHALLENGE_FAIL 15u
+#define IEEE80211_SAE_AP_STATUS_GROUP_UNSUPPORTED 77u
 
 enum ieee80211_sae_engine_peer_result {
 	IEEE80211_SAE_ENGINE_PEER_ABORT = -1,
@@ -107,6 +113,35 @@ ieee80211_sae_engine_handle_peer(struct ieee80211_sae_engine *engine,
 
 int ieee80211_sae_engine_is_active(const struct ieee80211_sae_engine *);
 void ieee80211_sae_engine_destroy(struct ieee80211_sae_engine **);
+
+/*
+ * Driver-resident infrastructure-BSS SAE responder.  The caller owns the
+ * 802.11 management transport, while this opaque object owns all password-
+ * derived state.  A successful Commit returns the AP's transaction-1 body;
+ * a successful Confirm returns the AP's transaction-2 body and the PMK used
+ * by the existing authenticator 4-way handshake.
+ *
+ * The return value is an IEEE 802.11 status code.  A non-success result never
+ * returns a live object.  Group rejection may return the echoed two-byte
+ * group field required in the Authentication response.
+ */
+uint16_t ieee80211_sae_ap_begin_hnp(
+	const uint8_t *ap, const uint8_t *sta,
+	const uint8_t *password, size_t password_len,
+	const uint8_t *peer_commit, size_t peer_commit_len,
+	struct ieee80211_sae_ap **out_ap,
+	uint8_t *response, size_t response_capacity,
+	size_t *response_len);
+uint16_t ieee80211_sae_ap_confirm(
+	struct ieee80211_sae_ap *ap,
+	const uint8_t *sta,
+	const uint8_t *peer_confirm, size_t peer_confirm_len,
+	uint8_t *response, size_t response_capacity,
+	size_t *response_len,
+	uint8_t *pmk, size_t pmk_capacity,
+	uint8_t *pmkid, size_t pmkid_capacity);
+int ieee80211_sae_ap_is_accepted(const struct ieee80211_sae_ap *);
+void ieee80211_sae_ap_destroy(struct ieee80211_sae_ap **);
 
 #else /* ITL_SAE_DRIVER_CRYPTO_AVAILABLE */
 
@@ -183,6 +218,69 @@ ieee80211_sae_engine_destroy(struct ieee80211_sae_engine **engine)
 {
     if (engine != NULL)
         *engine = NULL;
+}
+
+static inline uint16_t
+ieee80211_sae_ap_begin_hnp(
+    const uint8_t *ap, const uint8_t *sta,
+    const uint8_t *password, size_t password_len,
+    const uint8_t *peer_commit, size_t peer_commit_len,
+    struct ieee80211_sae_ap **out_ap,
+    uint8_t *response, size_t response_capacity,
+    size_t *response_len)
+{
+    (void)ap;
+    (void)sta;
+    (void)password;
+    (void)password_len;
+    (void)peer_commit;
+    (void)peer_commit_len;
+    (void)response;
+    (void)response_capacity;
+    if (out_ap != NULL)
+        *out_ap = NULL;
+    if (response_len != NULL)
+        *response_len = 0;
+    return IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+}
+
+static inline uint16_t
+ieee80211_sae_ap_confirm(
+    struct ieee80211_sae_ap *ap,
+    const uint8_t *sta,
+    const uint8_t *peer_confirm, size_t peer_confirm_len,
+    uint8_t *response, size_t response_capacity,
+    size_t *response_len,
+    uint8_t *pmk, size_t pmk_capacity,
+    uint8_t *pmkid, size_t pmkid_capacity)
+{
+    (void)ap;
+    (void)sta;
+    (void)peer_confirm;
+    (void)peer_confirm_len;
+    (void)response;
+    (void)response_capacity;
+    (void)pmk;
+    (void)pmk_capacity;
+    (void)pmkid;
+    (void)pmkid_capacity;
+    if (response_len != NULL)
+        *response_len = 0;
+    return IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+}
+
+static inline int
+ieee80211_sae_ap_is_accepted(const struct ieee80211_sae_ap *ap)
+{
+    (void)ap;
+    return 0;
+}
+
+static inline void
+ieee80211_sae_ap_destroy(struct ieee80211_sae_ap **ap)
+{
+    if (ap != NULL)
+        *ap = NULL;
 }
 
 #endif /* ITL_SAE_DRIVER_CRYPTO_AVAILABLE */

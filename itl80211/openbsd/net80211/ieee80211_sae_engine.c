@@ -52,6 +52,18 @@ struct ieee80211_sae_engine {
 	struct ItlSaeAuthTxRequestV1 in_flight;
 };
 
+enum ieee80211_sae_ap_state {
+	IEEE80211_SAE_AP_COMMITTED = 1,
+	IEEE80211_SAE_AP_ACCEPTED,
+};
+
+struct ieee80211_sae_ap {
+	struct sae_data sae;
+	uint8_t own_addr[kItlSaeAuthTransportV1MacLength];
+	uint8_t sta_addr[kItlSaeAuthTransportV1MacLength];
+	enum ieee80211_sae_ap_state state;
+};
+
 static void
 ieee80211_sae_engine_clear_prepared(struct ieee80211_sae_engine *engine)
 {
@@ -510,4 +522,155 @@ ieee80211_sae_engine_destroy(struct ieee80211_sae_engine **engine)
 	ieee80211_sae_engine_clear_crypto(current);
 	ieee80211_sae_secure_zero(current, sizeof(*current));
 	bin_clear_free(current, sizeof(*current));
+}
+
+void
+ieee80211_sae_ap_destroy(struct ieee80211_sae_ap **ap)
+{
+	struct ieee80211_sae_ap *current;
+
+	if (ap == NULL || *ap == NULL)
+		return;
+	current = *ap;
+	*ap = NULL;
+	sae_clear_data(&current->sae);
+	ieee80211_sae_secure_zero(current, sizeof(*current));
+	bin_clear_free(current, sizeof(*current));
+}
+
+uint16_t
+ieee80211_sae_ap_begin_hnp(
+	const uint8_t *own_addr, const uint8_t *sta_addr,
+	const uint8_t *password, size_t password_len,
+	const uint8_t *peer_commit, size_t peer_commit_len,
+	struct ieee80211_sae_ap **out_ap,
+	uint8_t *response, size_t response_capacity,
+	size_t *response_len)
+{
+	static int allowed_groups[] = { IEEE80211_SAE_ENGINE_GROUP19, 0 };
+	struct ieee80211_sae_ap *ap = NULL;
+	struct wpabuf *commit = NULL;
+	const uint8_t *token = NULL;
+	size_t token_len = 0;
+	int ie_offset = 0;
+	uint16_t status = IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+
+	if (out_ap == NULL || response_len == NULL)
+		return IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+	*out_ap = NULL;
+	*response_len = 0;
+	if (own_addr == NULL || sta_addr == NULL || password == NULL ||
+	    peer_commit == NULL || response == NULL ||
+	    password_len < IEEE80211_SAE_ENGINE_PASSPHRASE_MIN ||
+	    password_len > IEEE80211_SAE_ENGINE_PASSPHRASE_MAX ||
+	    peer_commit_len != IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN ||
+	    response_capacity < IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN)
+		return IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+
+	ap = os_zalloc(sizeof(*ap));
+	if (ap == NULL)
+		return IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+	os_memcpy(ap->own_addr, own_addr, sizeof(ap->own_addr));
+	os_memcpy(ap->sta_addr, sta_addr, sizeof(ap->sta_addr));
+	ap->sae.no_pw_id = 1;
+	ap->sae.akmp = WPA_KEY_MGMT_SAE;
+	ap->sae.state = SAE_NOTHING;
+
+	status = sae_parse_commit(&ap->sae, peer_commit, peer_commit_len,
+	    &token, &token_len, allowed_groups, 0, &ie_offset);
+	if (status == SAE_SILENTLY_DISCARD)
+		status = IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+	if (status != IEEE80211_SAE_AP_STATUS_SUCCESS) {
+		if (status == IEEE80211_SAE_AP_STATUS_GROUP_UNSUPPORTED &&
+		    peer_commit_len >= 2 && response_capacity >= 2) {
+			os_memcpy(response, peer_commit, 2);
+			*response_len = 2;
+		}
+		goto fail;
+	}
+	status = IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+	if (token != NULL || token_len != 0 || ie_offset < 0 ||
+	    (size_t)ie_offset != peer_commit_len ||
+	    ap->sae.group != IEEE80211_SAE_ENGINE_GROUP19 ||
+	    sae_prepare_commit(own_addr, sta_addr, password, password_len,
+		&ap->sae) != 0)
+		goto fail;
+
+	commit = wpabuf_alloc(IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN);
+	if (commit == NULL ||
+	    sae_write_commit(&ap->sae, commit, NULL, NULL, 0) != 0 ||
+	    wpabuf_len(commit) != IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN ||
+	    sae_process_commit(&ap->sae) != 0)
+		goto fail;
+	os_memcpy(response, wpabuf_head(commit), wpabuf_len(commit));
+	*response_len = wpabuf_len(commit);
+	wpabuf_free(commit);
+	ap->sae.state = SAE_COMMITTED;
+	ap->state = IEEE80211_SAE_AP_COMMITTED;
+	*out_ap = ap;
+	return IEEE80211_SAE_AP_STATUS_SUCCESS;
+
+fail:
+	wpabuf_free(commit);
+	ieee80211_sae_ap_destroy(&ap);
+	return status;
+}
+
+uint16_t
+ieee80211_sae_ap_confirm(
+	struct ieee80211_sae_ap *ap,
+	const uint8_t *sta_addr,
+	const uint8_t *peer_confirm, size_t peer_confirm_len,
+	uint8_t *response, size_t response_capacity,
+	size_t *response_len,
+	uint8_t *pmk, size_t pmk_capacity,
+	uint8_t *pmkid, size_t pmkid_capacity)
+{
+	struct wpabuf *confirm = NULL;
+	int ie_offset = 0;
+	uint16_t status = IEEE80211_SAE_AP_STATUS_CHALLENGE_FAIL;
+
+	if (response_len == NULL)
+		return IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+	*response_len = 0;
+	if (ap == NULL || sta_addr == NULL || peer_confirm == NULL ||
+	    response == NULL || pmk == NULL || pmkid == NULL ||
+	    ap->state != IEEE80211_SAE_AP_COMMITTED ||
+	    os_memcmp(ap->sta_addr, sta_addr, sizeof(ap->sta_addr)) != 0 ||
+	    peer_confirm_len != IEEE80211_SAE_ENGINE_CONFIRM_BODY_LEN ||
+	    response_capacity < IEEE80211_SAE_ENGINE_CONFIRM_BODY_LEN ||
+	    pmk_capacity < SAE_PMK_LEN ||
+	    pmkid_capacity < sizeof(ap->sae.pmkid) ||
+	    sae_check_confirm(&ap->sae, peer_confirm, peer_confirm_len,
+		&ie_offset) != 0 ||
+	    ie_offset < 0 || (size_t)ie_offset != peer_confirm_len ||
+	    ap->sae.pmk_len != SAE_PMK_LEN)
+		return status;
+
+	confirm = wpabuf_alloc(IEEE80211_SAE_ENGINE_CONFIRM_BODY_LEN);
+	if (confirm == NULL ||
+	    sae_write_confirm(&ap->sae, confirm) != 0 ||
+	    wpabuf_len(confirm) != IEEE80211_SAE_ENGINE_CONFIRM_BODY_LEN) {
+		status = IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+		goto out;
+	}
+	os_memcpy(response, wpabuf_head(confirm), wpabuf_len(confirm));
+	*response_len = wpabuf_len(confirm);
+	os_memcpy(pmk, ap->sae.pmk, SAE_PMK_LEN);
+	os_memcpy(pmkid, ap->sae.pmkid, sizeof(ap->sae.pmkid));
+	ap->sae.state = SAE_ACCEPTED;
+	ap->sae.send_confirm = 0xffff;
+	ap->state = IEEE80211_SAE_AP_ACCEPTED;
+	status = IEEE80211_SAE_AP_STATUS_SUCCESS;
+
+out:
+	wpabuf_free(confirm);
+	return status;
+}
+
+int
+ieee80211_sae_ap_is_accepted(const struct ieee80211_sae_ap *ap)
+{
+	return ap != NULL && ap->state == IEEE80211_SAE_AP_ACCEPTED &&
+	    ap->sae.state == SAE_ACCEPTED;
 }

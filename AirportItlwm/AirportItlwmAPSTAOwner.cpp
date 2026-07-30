@@ -29,9 +29,14 @@ static bool apsta_mac_is_zero(const uint8_t *mac)
 enum {
     kAirportItlwmAPSTAAuthUpperOpen = 0,
     kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8,
+    kAirportItlwmAPSTAAuthUpperWPA3SAE = 0x1000,
     kAirportItlwmAPSTAWPA2CredentialLengthMin = 8,
     kAirportItlwmAPSTAWPA2CredentialLengthMax = 63
 };
+
+static_assert(kAirportItlwmAPSTAAuthUpperWPA3SAE ==
+                  APPLE80211_AUTHTYPE_WPA3_SAE,
+              "HostAP WPA3 carrier must match the Apple80211 SAE bit");
 
 static size_t apsta_build_wpa2_psk_rsn_ie(
     uint8_t *output,
@@ -49,6 +54,32 @@ static size_t apsta_build_wpa2_psk_rsn_ie(
         0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
         0x01, 0x00, 0x00, 0x0f, 0xac, 0x02,
         0x00, 0x00
+    };
+    if (output == nullptr || outputCapacity < sizeof(rsn))
+        return 0;
+    memcpy(output, rsn, sizeof(rsn));
+    return sizeof(rsn);
+}
+
+static size_t apsta_build_wpa3_sae_rsn_ie(
+    uint8_t *output,
+    size_t outputCapacity)
+{
+    /*
+     * RSN v1, group/pairwise CCMP, SAE AKM, management-frame protection
+     * capable and required, no PMKID, and BIP-CMAC-128 as the group
+     * management cipher.  CoreWLAN maps private HostAP security 0x1000 to
+     * Apple80211 auth_upper WPA3_SAE (0x1000).
+     */
+    static const uint8_t rsn[] = {
+        IEEE80211_ELEMID_RSN, 26,
+        0x01, 0x00,
+        0x00, 0x0f, 0xac, 0x04,
+        0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
+        0x01, 0x00, 0x00, 0x0f, 0xac, 0x08,
+        0xc0, 0x00,
+        0x00, 0x00,
+        0x00, 0x0f, 0xac, 0x06
     };
     if (output == nullptr || outputCapacity < sizeof(rsn))
         return 0;
@@ -639,6 +670,9 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     if (apAuthUpper == kAirportItlwmAPSTAAuthUpperWPA2PSK) {
         rsnIELength = apsta_build_wpa2_psk_rsn_ie(
             rsnIE, sizeof(rsnIE));
+    } else if (apAuthUpper == kAirportItlwmAPSTAAuthUpperWPA3SAE) {
+        rsnIELength = apsta_build_wpa3_sae_rsn_ie(
+            rsnIE, sizeof(rsnIE));
     } else if (apAuthUpper != kAirportItlwmAPSTAAuthUpperOpen) {
         lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
         state.resetState26c = 0;
@@ -885,10 +919,12 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     }
 
     if (in->authUpper0c != kAirportItlwmAPSTAAuthUpperOpen &&
-        in->authUpper0c != kAirportItlwmAPSTAAuthUpperWPA2PSK) {
+        in->authUpper0c != kAirportItlwmAPSTAAuthUpperWPA2PSK &&
+        in->authUpper0c != kAirportItlwmAPSTAAuthUpperWPA3SAE) {
         return kIOReturnUnsupported;
     }
-    if (in->authUpper0c == kAirportItlwmAPSTAAuthUpperWPA2PSK &&
+    if ((in->authUpper0c == kAirportItlwmAPSTAAuthUpperWPA2PSK ||
+         in->authUpper0c == kAirportItlwmAPSTAAuthUpperWPA3SAE) &&
         (in->credentialLength44 <
              kAirportItlwmAPSTAWPA2CredentialLengthMin ||
          in->credentialLength44 >

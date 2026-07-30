@@ -71,6 +71,8 @@
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
+struct ieee80211_sae_ap;
+
 class ItlIwn : public ItlHalService, ItlDriverInfo, ItlDriverController {
     OSDeclareDefaultStructors(ItlIwn)
     
@@ -112,6 +114,14 @@ public:
     int iwn_send_ap_4way_msg3();
     void iwn_begin_ap_4way();
     bool iwn_handle_ap_eapol_key(const uint8_t *, size_t);
+    bool iwn_ap_uses_sae() const;
+    void iwn_reset_ap_sae();
+    void iwn_clear_ap_sae_pmksa();
+    bool iwn_ap_sae_pmksa_matches(
+        const uint8_t *, const uint8_t *) const;
+    int iwn_send_ap_sae_auth(const uint8_t *, uint16_t, uint16_t,
+        const void *, size_t);
+    bool iwn_handle_ap_sae_auth(const struct ieee80211_frame *, size_t);
     int iwn_update_ap_tim(bool);
     int iwn_queue_ap_ps_packet(mbuf_t, bool atFront = false);
     void iwn_purge_ap_ps_queue();
@@ -487,6 +497,7 @@ public:
     uint8_t apPmk[IEEE80211_PMK_LEN];
     uint8_t apAnonce[EAPOL_KEY_NONCE_LEN];
     uint8_t apGtk[16];
+    uint8_t apIgtk[16];
     struct ieee80211_ptk apPtk;
     uint64_t apReplayCounter;
     uint64_t apPairwiseTxPn;
@@ -494,6 +505,14 @@ public:
     uint64_t apPairwiseRxPn[16];
     size_t apClientRsnIELength;
     uint8_t apGtkKid;
+    uint8_t apIgtkKid;
+    struct ieee80211_sae_ap *apSae;
+    uint8_t apSaePmksaPmk[IEEE80211_PMK_LEN];
+    uint8_t apSaePmksaPmkid[IEEE80211_PMKID_LEN];
+    uint8_t apSaePmksaSta[IEEE80211_ADDR_LEN];
+    uint8_t apSaePmksaBssid[IEEE80211_ADDR_LEN];
+    bool apSaePmksaValid;
+    bool apClientOpenAuthenticated;
     enum { IWN_AP_PS_QUEUE_LEN = 16 };
     mbuf_t apPsQueue[IWN_AP_PS_QUEUE_LEN];
     uint8_t apPsQueueHead;
