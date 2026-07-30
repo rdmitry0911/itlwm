@@ -4223,7 +4223,11 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     *out++ = sizeof(extendedRates);
     memcpy(out, extendedRates, sizeof(extendedRates));
 
-    const int error = iwn_send_ap_mgmt_frame(response, sizeof(response));
+    int error = iwn_add_ap_client_node(request->i_addr2);
+    if (error == 0)
+        error = iwn_send_ap_client_link_quality();
+    if (error == 0)
+        error = iwn_send_ap_mgmt_frame(response, sizeof(response));
     if (error == 0) {
         apClientAssociated = true;
         apClientAid = aid;
@@ -4707,6 +4711,54 @@ int ItlIwn::iwn_send_ap_broadcast_link_quality(int ridx)
         linkq.retry[index].rflags =
             IWN_RFLAG_ANT(txant) |
             (IWN_RIDX_IS_CCK(ridx) ? IWN_RFLAG_CCK : 0);
+    }
+    return iwn_cmd(
+        &com, IWN_CMD_LINK_QUALITY, &linkq, sizeof(linkq), 1);
+}
+
+int ItlIwn::iwn_add_ap_client_node(const uint8_t *macAddress)
+{
+    if (macAddress == NULL)
+        return EINVAL;
+
+    /*
+     * DVM assigns the first station associated with a PAN/AP vif to firmware
+     * station id 2.  This command must precede the Association Response:
+     * firmware cannot route ACKed unicast data merely from the host-side AID.
+     * The current response intentionally advertises legacy rates only, so do
+     * not publish synthetic HT capabilities that the peer did not negotiate.
+     */
+    struct iwn_node_info node;
+    bzero(&node, sizeof(node));
+    IEEE80211_ADDR_COPY(node.macaddr, macAddress);
+    node.id = IWN5000_ID_PAN_CLIENT;
+    node.htflags = htole32(IWN_PAN_STATION);
+    return com.ops.add_node(&com, &node, 1);
+}
+
+int ItlIwn::iwn_send_ap_client_link_quality()
+{
+    struct iwn_cmd_link_quality linkq;
+    bzero(&linkq, sizeof(linkq));
+    linkq.id = IWN5000_ID_PAN_CLIENT;
+    const uint8_t txant = IWN_LSB(com.txchainmask);
+    linkq.antmsk_1stream = txant;
+    linkq.antmsk_2stream = IWN_ANT_AB;
+    linkq.ampdu_max = IWN_AMPDU_MAX;
+    linkq.ampdu_threshold = 3;
+    linkq.ampdu_limit = htole16(4000);
+
+    /*
+     * This is the exact initial legacy retry table observed after ADD_NODE
+     * in the live 6235 DVM AP trace: 1 Mbps CCK on antenna A for all sixteen
+     * attempts.  Rate adaptation can replace it once AP HT negotiation is
+     * represented by a real host-side node.
+     */
+    const struct iwn_rate *rate = &iwn_rates[IWN_RATE_1M_INDEX];
+    for (int index = 0; index < IWN_MAX_TX_RETRIES; index++) {
+        linkq.retry[index].plcp = rate->plcp;
+        linkq.retry[index].rflags =
+            IWN_RFLAG_ANT(txant) | IWN_RFLAG_CCK;
     }
     return iwn_cmd(
         &com, IWN_CMD_LINK_QUALITY, &linkq, sizeof(linkq), 1);

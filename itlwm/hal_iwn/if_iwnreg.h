@@ -647,6 +647,7 @@ struct iwn_node_info {
     uint16_t    reserved2;
     uint8_t        id;
 #define IWN_ID_BSS         0
+#define IWN5000_ID_PAN_CLIENT       2
 #define IWN5000_ID_BROADCAST    15
 #define IWN5000_ID_PAN_BROADCAST    14
 #define IWN4965_ID_BROADCAST    31

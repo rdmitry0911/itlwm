@@ -92,6 +92,8 @@ public:
     int iwn_send_ap_stop_pan_params();
     int iwn_add_ap_broadcast_node();
     int iwn_send_ap_broadcast_link_quality(int);
+    int iwn_add_ap_client_node(const uint8_t *);
+    int iwn_send_ap_client_link_quality();
     int iwn_send_ap_sensitivity();
     int iwn_send_ap_timing(const struct ItlHalApConfig *);
     int iwn_send_ap_edca(bool accessPointValues);
