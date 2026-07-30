@@ -595,7 +595,7 @@ struct iwn_softc {
     bool                 sc_sae_engine_task_ready;
     bool                 sc_sae_engine_stopping;
     bool                 sc_sae_engine_detaching;
-    bool                 sc_sae_engine_lab_enabled;
+    bool                 sc_sae_engine_runtime_enabled;
 
     /*
      * A private CIPHER_PWD record is allowed only before this request gains
@@ -630,9 +630,9 @@ struct iwn_softc {
     bool                sc_mfp_pae_detaching;
     bool                sc_mfp_pae_stopping;
     bool                sc_mfp_pae_task_ready;
-    /* Only a separately built lab artifact may advertise this unfinished
-     * radio path; the ordinary production binary keeps it unavailable. */
-    bool                sc_mfp_pae_lab_enabled;
+    /* Product software-PMF admission is latched only when the Tahoe
+     * driver-owned crypto target is present. */
+    bool                sc_mfp_pae_runtime_enabled;
 
     struct iwn_fw_info    fw;
     struct iwn_calib_info    calibcmd[5];

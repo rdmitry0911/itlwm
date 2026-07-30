@@ -142,9 +142,8 @@ for token in (
 ):
     require(proto_h, token, "generic PMF owner API")
 
-# The ordinary and AX211/IWX WCL carrier opts in only for the exact audited
-# PSK PMK route.  A separate IWN-only compile gate may admit exact SAE
-# password carriers, but it
+# The AX211/IWX WCL carrier opts in only for the exact audited PSK PMK route.
+# The IWN product compile gate may admit exact SAE password carriers, but it
 # must neither reuse this PSK PMF assignment nor make IWX a SAE backend.
 # Public/leave/disassociate ingress still clear stale state.
 auth = source["auth"]
@@ -162,14 +161,14 @@ direct_lab = preprocessor_block(hidden, direct_marker,
 shared_direct = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nstartIwnDirectSaeCredential",
                      "shared IWN direct-SAE transaction")
 for token in (
-    "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
     "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
+    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 1",
+    "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
 ):
     require(iwn_gate, token, "IWN-only compile fence")
 for token in (
     '#include "IwnDirectSaeLabGate.hpp"',
-    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS \\",
-    "AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS",
+    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 1",
     "#define AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS 0",
 ):
     require(sky if token.startswith('#include') else iwn_gate, token,

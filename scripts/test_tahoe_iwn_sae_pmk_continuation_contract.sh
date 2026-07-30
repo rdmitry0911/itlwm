@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static contract for the lab-gated direct-SAE PMK bridge.  It proves the
+# Static contract for the product direct-SAE PMK bridge.  It proves the
 # in-kext Confirm -> local PAE -> exact Association Request ownership path;
 # it deliberately does not claim that a physical AP completed 4-way, DHCP,
 # traffic, rekey, or roaming.
@@ -268,13 +268,15 @@ require(retire, "sc->sc_ic.ic_state == IEEE80211_S_ASSOC",
 require(task, "if (assoc_tx_accepted)",
         "accepted descriptor owner retirement")
 
-# The bridge is compiled solely in the explicit laboratory artifact.  A
-# regular build still has a false lab predicate and a fail-closed HAL ingress.
-require(build, "IWN_SOFTWARE_PMF_LAB_BUILD=1", "lab compiler switch")
-lab_gate = body(iwn, "iwn_sae_auth_transport_lab_opted_in",
-                "direct SAE lab gate")
-ordered(lab_gate, "ordinary artifact SAE gate", "#if IWN_SOFTWARE_PMF_LAB_BUILD",
+# The bridge is admitted by the Tahoe driver crypto target.  The laboratory
+# switch remains solely for diagnostic stimulus and trace collection.
+require(build, "IWN_SOFTWARE_PMF_LAB_BUILD=1",
+        "diagnostic compiler switch")
+runtime_gate = body(iwn, "iwn_sae_auth_transport_runtime_opted_in",
+                    "direct SAE runtime gate")
+ordered(runtime_gate, "Tahoe product SAE gate",
+        "#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
         "return true;", "#else", "return false;")
 
-print("PASS: direct SAE PMK is locally claimed, fenced through ASSOC_REQ, and remains lab-gated; on-air WPA3 is not claimed")
+print("PASS: product direct SAE PMK is locally claimed and fenced through ASSOC_REQ")
 PY

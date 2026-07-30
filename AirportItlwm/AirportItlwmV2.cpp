@@ -11962,7 +11962,8 @@ getCARD_CAPABILITIES(OSObject *object,
      * a CIPHER_PWD association carrier.  Publish that one capability only in
      * the build which also owns the complete driver-resident SAE/PMF path.
      */
-    TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
+    if (OSDynamicCast(ItlIwn, fHalService) != nullptr)
+        TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
 #endif
 //
 //    cd->capabilities[2] |= 0x10;

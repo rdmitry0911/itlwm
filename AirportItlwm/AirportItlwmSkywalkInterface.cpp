@@ -7169,7 +7169,7 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
     return setWCL_ASSOCIATEImpl(candidates);
 }
 
-#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
 enum class AirportItlwmIwnDirectSaeCredentialProvenance : uint8_t {
     WclCandidate,
     LabStimulus,
@@ -7216,9 +7216,13 @@ startIwnDirectSaeCredential(
 
     if (out_generation != nullptr)
         *out_generation = 0;
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
     if (out_lab_outcome != nullptr)
         *out_lab_outcome =
             kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedPrecondition;
+#else
+    (void)out_lab_outcome;
+#endif
     explicit_bzero(&credential, sizeof(credential));
     memset(&authType, 0, sizeof(authType));
 
@@ -7243,6 +7247,7 @@ startIwnDirectSaeCredential(
 
     if (request->provenance ==
         AirportItlwmIwnDirectSaeCredentialProvenance::LabStimulus) {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         IOWorkLoop *workloop = instance != nullptr ? instance->getWorkLoop()
                                                      : nullptr;
         /* This path is intentionally entered only from the dedicated event
@@ -7255,6 +7260,10 @@ startIwnDirectSaeCredential(
             result = kIOReturnNotReady;
             goto out;
         }
+#else
+        result = kIOReturnUnsupported;
+        goto out;
+#endif
     }
 
     ic = fHalService->get80211Controller();
@@ -7275,9 +7284,11 @@ startIwnDirectSaeCredential(
                                                   request->ssid,
                                                   request->ssidLength);
     if (generation == 0) {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         if (out_lab_outcome != nullptr)
             *out_lab_outcome =
                 kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedRequestBegin;
+#endif
         result = kIOReturnNotReady;
         goto out;
     }
@@ -7294,6 +7305,7 @@ startIwnDirectSaeCredential(
                 TahoeOwnerRegistry::AssociationOwner{};
         }
     } else {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         if (instance == nullptr ||
             instance->clearIwnDirectSaeLabAssociationOwner() !=
                 kIOReturnSuccess) {
@@ -7303,6 +7315,10 @@ startIwnDirectSaeCredential(
             result = kIOReturnNotReady;
             goto out;
         }
+#else
+        result = kIOReturnUnsupported;
+        goto out;
+#endif
     }
 
     credential.version = kItlSaeWclCredentialV1Version;
@@ -7314,17 +7330,21 @@ startIwnDirectSaeCredential(
     memcpy(credential.ssid, request->ssid, credential.ssid_len);
     memcpy(credential.password, request->password, credential.password_len);
     if (!itl_sae_wcl_credential_is_well_formed(&credential)) {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         if (out_lab_outcome != nullptr)
             *out_lab_outcome =
                 kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedCredentialStage;
+#endif
         goto out;
     }
 
     result = fHalService->stageSaeWclCredential(&credential);
     if (result != kIOReturnSuccess) {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         if (out_lab_outcome != nullptr)
             *out_lab_outcome =
                 kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedCredentialStage;
+#endif
         goto out;
     }
 
@@ -7333,9 +7353,11 @@ startIwnDirectSaeCredential(
     authType.authtype_upper = request->authUpper;
     result = setAUTH_TYPE(&authType);
     if (result != kIOReturnSuccess) {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         if (out_lab_outcome != nullptr)
             *out_lab_outcome =
                 kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedAuthType;
+#endif
         goto out;
     }
     disassocIsVoluntary = false;
@@ -7371,18 +7393,22 @@ startIwnDirectSaeCredential(
     AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic);
     scanResume = ieee80211_sae_wcl_request_resume_scan(ic, generation);
     if (scanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED) {
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         if (out_lab_outcome != nullptr)
             *out_lab_outcome =
                 kAirportItlwmIwnLabDirectSaeStimulusOutcomeRejectedScanResume;
+#endif
         result = scanResume == IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY
             ? kIOReturnNotReady : kIOReturnAborted;
         goto out;
     }
 
     result = kIOReturnSuccess;
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
     if (out_lab_outcome != nullptr)
         *out_lab_outcome =
             kAirportItlwmIwnLabDirectSaeStimulusOutcomeStarted;
+#endif
     if (out_generation != nullptr)
         *out_generation = generation;
 
@@ -7400,6 +7426,7 @@ out:
     return result;
 }
 
+#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
 IOReturn AirportItlwmSkywalkInterface::
 startIwnDirectSaeLabStimulus(
     const struct AirportItlwmIwnLabDirectSaeStimulusRequestV1 *request,
@@ -7451,6 +7478,7 @@ cancelIwnDirectSaeLabStimulus(uint64_t generation)
     fHalService->cancelSaeWclCredential(generation);
 }
 #endif /* AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS */
+#endif /* AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS */
 
 /*
  * Tahoe 25C56 AppleBCMWLANCore::setWCL_ASSOCIATE passes the selected
@@ -7626,10 +7654,8 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         wcl_key_cipher == APPLE80211_CIPHER_PWD &&
         TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential(
             auth_upper);
-    /* The ordinary product still reports this vector as quarantined.  The
-     * separately compiled IWN lab artifact admits only exact SAE credential
-     * carriers below, so do not label that controlled path as a diagnostic
-     * reject. */
+    /* The product IWN path admits only exact SAE credential carriers below,
+     * so do not label that controlled path as a diagnostic reject. */
     if (directSaeWclPassword)
         assocPolicyFlags &= ~kAirportItlwmRegDiagAssocPolicyRejectWpa3;
 #endif

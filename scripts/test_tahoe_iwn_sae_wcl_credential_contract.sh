@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Static contract for the private, lab-gated Tahoe WCL CIPHER_PWD staging
-# slot owned by IWN.  This checks ingress/scrub/lifecycle fencing only; it is
-# not an SAE exchange, selected-BSS consumption, PMK installation, or an
-# on-air WPA3 association claim.
+# Static contract for the private Tahoe product WCL CIPHER_PWD staging slot
+# owned by IWN.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -137,15 +135,18 @@ for token in ("sc_sae_wcl_credential_lock", "sc_sae_wcl_credential_staged",
               "struct ItlSaeWclCredentialV1 sc_sae_wcl_credential"):
     require(iwn_var, token, "IWN one-slot credential ownership")
 
-# Direct WCL password ingress is compiled into the same explicit laboratory
-# artifact as the raw authentication transport.  It must not silently become
-# available in the normal binary and it must not depend on a hardware MFP bit.
-require(build, "IWN_SOFTWARE_PMF_LAB_BUILD=1", "laboratory compiler opt-in")
-lab_gate = body(iwn_cpp, "iwn_sae_wcl_credential_lab_opted_in",
-                "IWN WCL credential laboratory gate")
-ordered(lab_gate, "credential laboratory gate", "#if IWN_SOFTWARE_PMF_LAB_BUILD",
+# Direct WCL password ingress follows the Tahoe driver-crypto target and does
+# not depend on a hardware MFP bit.  The lab build switch is retained only for
+# the separate diagnostic UserClient.
+require(build, "IWN_SOFTWARE_PMF_LAB_BUILD=1",
+        "diagnostic compiler opt-in")
+runtime_gate = body(iwn_cpp, "iwn_sae_wcl_credential_runtime_opted_in",
+                    "IWN WCL credential runtime gate")
+ordered(runtime_gate, "credential runtime gate",
+        "#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
         "return true;", "#else", "return false;")
-forbid(lab_gate, "IEEE80211_C_MFP", "hardware-MFP prerequisite in lab gate")
+forbid(runtime_gate, "IEEE80211_C_MFP",
+       "hardware-MFP prerequisite in runtime gate")
 
 clear = body(iwn_cpp, "iwn_sae_wcl_credential_clear_locked",
              "IWN credential clear leaf")
@@ -224,7 +225,8 @@ for token in ("iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)",
 
 stage = iwn_method("stageSaeWclCredential")
 ordered(stage, "stage input/copy/lifecycle order",
-        "if (credential == NULL)", "iwn_sae_wcl_credential_lab_opted_in()",
+        "if (credential == NULL)",
+        "iwn_sae_wcl_credential_runtime_opted_in()",
         "explicit_bzero(&copy", "memcpy(&copy, credential, sizeof(copy))",
         "itl_sae_wcl_credential_is_well_formed(&copy)",
         "iwn_sae_tx_lifecycle_enter(sc, false)",
@@ -266,7 +268,7 @@ forbid(stage, "sc->sc_sae_wcl_credential = credential",
 
 cancel = iwn_method("cancelSaeWclCredential")
 ordered(cancel, "cancel validation/lifecycle order", "request_generation == 0",
-        "iwn_sae_wcl_credential_lab_opted_in()",
+        "iwn_sae_wcl_credential_runtime_opted_in()",
         "iwn_sae_tx_lifecycle_enter(sc, true)",
         "IOSimpleLockLock(sc->sc_sae_wcl_credential_lock)",
         "iwn_sae_wcl_credential_cancel_through_locked(sc,",
@@ -424,5 +426,5 @@ assert reconnect.stage(10) == "success"
 no_bss_reconnect = StageModel(lab=True, state="run", has_bss=False)
 assert no_bss_reconnect.stage(10) == "not-ready"
 
-print("PASS: IWN lab-gated WCL credential staging has a fixed copy, cancellation high-water, idempotent restage, and stop/detach scrub order")
+print("PASS: product IWN WCL credential staging has a fixed copy, cancellation high-water, idempotent restage, and stop/detach scrub order")
 PY

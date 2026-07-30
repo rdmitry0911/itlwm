@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static contract for the lab-gated IWN SAE Authentication TX transport and
+# Static contract for the product IWN SAE Authentication TX transport and
 # its direct driver-owned Commit/Confirm worker.  It proves the physical
 # TX/RX handshake spine only; PMK-to-RSN continuation is asserted by its
 # own contract, so this is not an on-air WPA3 association claim.
@@ -112,17 +112,18 @@ ordered(controller, "controller stays below direct ticket domain",
         "kItlSaeAuthTransportV1ControllerTicketMax",
         "a->ticket = ++s->fSaeNextTxTicket")
 
-# Direct physical Algorithm-3 admission is an opt-in laboratory feature,
-# never a surprise in the ordinary production IWN artifact.
-require(build, "IWN_SOFTWARE_PMF_LAB_BUILD=1", "lab compiler opt-in")
-lab_gate = body(cpp, "iwn_sae_auth_transport_lab_opted_in",
-                "IWN SAE laboratory gate")
-ordered(lab_gate, "laboratory gate", "#if IWN_SOFTWARE_PMF_LAB_BUILD",
+# Direct physical Algorithm-3 admission follows the Tahoe crypto core; the
+# laboratory compiler switch controls only the diagnostic UserClient.
+require(build, "IWN_SOFTWARE_PMF_LAB_BUILD=1",
+        "diagnostic compiler opt-in")
+runtime_gate = body(cpp, "iwn_sae_auth_transport_runtime_opted_in",
+                    "IWN SAE runtime gate")
+ordered(runtime_gate, "runtime gate", "#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
         "return true;", "#else", "return false;")
 submit = iwn_method("submitSaeAuthFrame")
 for token in (
         "itl_sae_auth_transport_request_is_well_formed",
-        "iwn_sae_auth_transport_lab_opted_in", "kIOReturnUnsupported",
+        "iwn_sae_auth_transport_runtime_opted_in", "kIOReturnUnsupported",
         "iwn_sae_tx_lifecycle_enter(sc, false)", "sc_sae_tx_active",
         "sc_sae_tx_event_count != 0", "gate = fSaeTxGate", "gate->retain",
         "gate->attemptAction(&ItlIwn::iwn_sae_tx_gate_action, &args)",
@@ -228,7 +229,7 @@ ordered(commit, "doorbell cancellation fence", "IOLockLock(sc->sc_sae_tx_lifecyc
 for name in ("iwn4965_tx_done", "iwn5000_tx_done"):
     native = iwn_method(name)
     for token in ("IWN_TX_STATUS_SUCCESS", "IWN_TX_STATUS_DIRECT_DONE",
-                  "that->iwn_tx_done(sc, desc"):
+                  "that->iwn_tx_done("):
         require(native, token, f"{name} common TX_DONE funnel")
     forbid(native, "iwn_sae_tx_report_terminal", f"{name} duplicate SAE terminal")
 common_done = iwn_method("iwn_tx_done")
@@ -460,5 +461,5 @@ model.doorbelled = True
 model.reset()
 assert model.events == [("reset", 12, "EIO")]
 
-print("PASS: IWN lab-gated SAE transport and direct Commit/Confirm worker own native TX/RX without a controller relay")
+print("PASS: product IWN SAE transport and direct Commit/Confirm worker own native TX/RX without a controller relay")
 PY

@@ -31,7 +31,7 @@ static_assert(sizeof(apple80211_colocated_network_scope_id) == 0x30,
               "apple80211_colocated_network_scope_id must match Tahoe WCL ABI");
 
 class AirportItlwm;
-#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
 struct AirportItlwmIwnDirectSaeCredentialRequest;
 #endif
 
@@ -257,7 +257,7 @@ public:
     IOReturn getSUPPORTED_CHANNELSImpl(apple80211_sup_channel_data *);
     IOReturn setWCL_ASSOCIATEImpl(apple80211AssocCandidates *);
     IOReturn setCHANNELImpl(apple80211_channel_data *);
-#if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
     IOReturn startIwnDirectSaeCredential(
         const struct AirportItlwmIwnDirectSaeCredentialRequest *request,
         uint64_t *out_generation,

@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Source-level contract for the lab-gated IWN software-PMF backend.  This is
-# intentionally an owner/lifetime test, not a claim that an on-air WPA3 join
-# has passed: the direct SAE PMK-to-RSN bridge is separately contract-tested,
-# and physical protected-MPDU delivery needs a separately opted-in radio run.
+# Source-level contract for the product IWN software-PMF backend.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -59,8 +56,8 @@ def body(marker: str, label: str) -> str:
     fail(f"unterminated {label}")
 
 
-# All owner state is explicit and the normal production binary cannot turn it
-# on: only a separately built lab artifact reaches the capability publisher.
+# All owner state is explicit and only a Tahoe artifact with the in-kext
+# crypto core can reach the capability publisher.
 for token in (
     "struct iwn_mfp_pae_txn",
     "struct task        mfp_pae_task;",
@@ -71,7 +68,7 @@ for token in (
     "bool                sc_mfp_pae_detaching;",
     "bool                sc_mfp_pae_stopping;",
     "bool                sc_mfp_pae_task_ready;",
-    "bool                sc_mfp_pae_lab_enabled;",
+    "bool                sc_mfp_pae_runtime_enabled;",
 ):
     require(var, token, "IWN PMF owner storage")
 for token in (
@@ -83,16 +80,16 @@ for token in (
 ):
     require(hpp, token, "IWN PMF owner declaration")
 
-require(cpp, "#ifndef IWN_SOFTWARE_PMF_LAB_BUILD", "lab-build default gate")
-require(cpp, "#define IWN_SOFTWARE_PMF_LAB_BUILD 0", "disabled lab-build default")
-lab = body("iwn_mfp_pae_lab_opted_in(void)", "lab opt-in")
-order(lab, "lab-build opt-in", "#if IWN_SOFTWARE_PMF_LAB_BUILD",
+runtime_opt_in = body("iwn_mfp_pae_runtime_opted_in(void)",
+                      "runtime opt-in")
+order(runtime_opt_in, "Tahoe crypto opt-in",
+      "#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
       "return true;", "#else", "return false;")
 runtime = body("iwn_mfp_runtime_enabled(", "runtime capability gate")
-require(runtime, "sc->sc_mfp_pae_lab_enabled", "latched lab gate")
+require(runtime, "sc->sc_mfp_pae_runtime_enabled", "latched runtime gate")
 attach = body("iwn_attach(struct iwn_softc *sc", "IWN attach")
 order(attach, "latch before publication",
-      "sc->sc_mfp_pae_lab_enabled = iwn_mfp_pae_lab_opted_in();",
+      "sc->sc_mfp_pae_runtime_enabled = iwn_mfp_pae_runtime_opted_in();",
       "task_set(&sc->mfp_pae_task", "iwn_publish_mfp_capability(sc);")
 publish = body("iwn_publish_mfp_capability(", "MFP capability publication")
 require(publish, "iwn_mfp_pae_callback_open(sc)", "callback admission open")
@@ -104,7 +101,7 @@ for token in (
     "ic->ic_pae_mfp_txn_finish = ItlIwn::iwn_pae_mfp_txn_finish;",
 ):
     require(hooks, token, "MFP owner callback")
-# Direct SAE is a separate lab-gated owner.  It may publish its own hooks,
+# Direct SAE is a separately owned product path.  It may publish its own hooks,
 # but the PMF publisher must neither depend on nor wire those hooks, and the
 # SAE publisher must not use the PMF capability bit as its admission gate.
 forbid(hooks, "ic_sae_", "SAE cross-wiring in PMF publisher")
@@ -185,5 +182,5 @@ init = body("iwn_init(struct _ifnet *ifp)", "IWN init")
 order(init, "fresh PMF generation before scan", "iwn_mfp_pae_reopen(sc);",
       "ieee80211_begin_scan(ifp);")
 
-print("PASS: IWN software-PMF owner is lab-gated and keeps full CCMP lifetime in software")
+print("PASS: product IWN software-PMF owner keeps the full CCMP lifetime in software")
 PY

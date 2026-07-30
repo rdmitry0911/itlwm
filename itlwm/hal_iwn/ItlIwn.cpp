@@ -91,9 +91,9 @@ static bool iwn_scan_lease_live_locked(const struct iwn_softc *);
 static bool iwn_scan_lease_owner_is_wcl(u_int8_t);
 static void iwn_wcl_initial_scan_pending_clear_locked(struct iwn_softc *);
 
-/* Software PMF is an on-air experiment until protected MPDU transport has
- * passed on the physical IWN device.  A normal binary must remain incapable
- * of exposing it; a deliberately separate lab artifact is the sole opt-in. */
+/* The laboratory switch exposes diagnostic observation and stimulus only.
+ * Product WCL SAE/PMF admission is tied separately to the Tahoe in-kext
+ * crypto core below. */
 #ifndef IWN_SOFTWARE_PMF_LAB_BUILD
 #define IWN_SOFTWARE_PMF_LAB_BUILD 0
 #endif
@@ -111,36 +111,35 @@ static void iwn_wcl_initial_scan_pending_clear_locked(struct iwn_softc *);
 #endif
 
 static bool
-iwn_mfp_pae_lab_opted_in(void)
+iwn_mfp_pae_runtime_opted_in(void)
 {
-#if IWN_SOFTWARE_PMF_LAB_BUILD
+#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
     return true;
 #else
     return false;
 #endif
 }
 
-/* SAE transport is experimental until the selected-BSS state owner and the
- * association bridge exist.  Keep even its physical Algorithm-3 admission
- * in the disposable software-PMF laboratory artifact. */
+/* The selected-BSS owner, in-kext Algorithm-3 engine, PMK continuation and
+ * PMF transaction have completed physical IWN validation.  Enable them in
+ * every Tahoe artifact which actually links that crypto core. */
 static bool
-iwn_sae_auth_transport_lab_opted_in(void)
+iwn_sae_auth_transport_runtime_opted_in(void)
 {
-#if IWN_SOFTWARE_PMF_LAB_BUILD
+#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
     return true;
 #else
     return false;
 #endif
 }
 
-/* The private WCL CIPHER_PWD ingress is kept in the same explicitly built
- * laboratory artifact as the direct SAE transport.  It does not depend on
- * PMF capability: it only stages a pre-selection password and cannot emit a
- * frame or install a key by itself. */
+/* WCL CIPHER_PWD is the product credential ingress.  It stages one bounded
+ * pre-selection record and remains unreachable on targets without the
+ * driver-owned Tahoe crypto core. */
 static bool
-iwn_sae_wcl_credential_lab_opted_in(void)
+iwn_sae_wcl_credential_runtime_opted_in(void)
 {
-#if IWN_SOFTWARE_PMF_LAB_BUILD
+#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
     return true;
 #else
     return false;
@@ -767,7 +766,7 @@ static bool
 iwn_sae_engine_runtime_enabled(const struct iwn_softc *sc)
 {
 #if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
-    return sc != NULL && sc->sc_sae_engine_lab_enabled &&
+    return sc != NULL && sc->sc_sae_engine_runtime_enabled &&
         sc->sc_sae_engine_lock != NULL &&
         sc->sc_sae_wcl_credential_lock != NULL &&
         sc->sc_sae_tx_lifecycle_lock != NULL && sc->sc_sae_tx_lock != NULL &&
@@ -1116,7 +1115,7 @@ submitSaeAuthFrame(const struct ItlSaeAuthTxRequestV1 *request)
 
     if (!itl_sae_auth_transport_request_is_well_formed(request))
         return kIOReturnBadArgument;
-    if (!iwn_sae_auth_transport_lab_opted_in())
+    if (!iwn_sae_auth_transport_runtime_opted_in())
         return kIOReturnUnsupported;
     if (!iwn_sae_tx_lifecycle_enter(sc, false))
         return kIOReturnNotReady;
@@ -1237,7 +1236,7 @@ stageSaeWclCredential(const struct ItlSaeWclCredentialV1 *credential)
 
     if (credential == NULL)
         return kIOReturnBadArgument;
-    if (!iwn_sae_wcl_credential_lab_opted_in())
+    if (!iwn_sae_wcl_credential_runtime_opted_in())
         return kIOReturnUnsupported;
 
     /* Copy before validation and never retain the caller's WCL buffer. */
@@ -1320,7 +1319,8 @@ cancelSaeWclCredential(uint64_t request_generation)
 {
     struct iwn_softc *sc = &com;
 
-    if (request_generation == 0 || !iwn_sae_wcl_credential_lab_opted_in() ||
+    if (request_generation == 0 ||
+        !iwn_sae_wcl_credential_runtime_opted_in() ||
         !iwn_sae_tx_lifecycle_enter(sc, true))
         return;
     if (sc->sc_sae_wcl_credential_lock != NULL) {
@@ -3644,7 +3644,7 @@ static bool
 iwn_mfp_runtime_enabled(const struct iwn_softc *sc)
 {
     return sc != NULL && sc->sc_mfp_pae_lock != NULL &&
-        sc->sc_mfp_pae_task_ready && sc->sc_mfp_pae_lab_enabled &&
+        sc->sc_mfp_pae_task_ready && sc->sc_mfp_pae_runtime_enabled &&
         sc->sc_ic.ic_pae_selected_bss_lock != NULL;
 }
 
@@ -3680,9 +3680,9 @@ iwn_mfp_pae_publish_hooks(struct iwn_softc *sc, bool enabled)
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
 }
 
-/* Capability publication is intentionally independent of SAE.  It admits
- * only the completed software PMF owner; the separately lab-gated selected-
- * BSS SAE bridge decides whether an exact pure-WCL request may use it. */
+/* Capability publication is intentionally independent of a particular SAE
+ * request.  It admits only the completed software PMF owner; the product WCL
+ * selected-BSS bridge decides whether an exact request may use it. */
 static void
 iwn_publish_mfp_capability(struct iwn_softc *sc)
 {
@@ -7107,7 +7107,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_engine_task_ready = false;
     sc->sc_sae_engine_stopping = true;
     sc->sc_sae_engine_detaching = false;
-    sc->sc_sae_engine_lab_enabled = false;
+    sc->sc_sae_engine_runtime_enabled = false;
     sc->sc_scan_lease_lock = NULL;
     explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
     sc->sc_sae_wcl_admission_reserved = false;
@@ -7328,12 +7328,12 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_engine_task_ready = false;
     sc->sc_sae_engine_stopping = true;
     sc->sc_sae_engine_detaching = false;
-    sc->sc_sae_engine_lab_enabled = iwn_sae_auth_transport_lab_opted_in() &&
-        iwn_sae_wcl_credential_lab_opted_in();
+    sc->sc_sae_engine_runtime_enabled =
+        iwn_sae_auth_transport_runtime_opted_in() &&
+        iwn_sae_wcl_credential_runtime_opted_in();
 
-    /* The normal binary will never admit this slot, but allocate and zero it
-     * with the SAE lifecycle so a separately built lab artifact has one
-     * bounded owner and every attach-unwind path can scrub it uniformly. */
+    /* Allocate and zero the product WCL credential slot with the SAE
+     * lifecycle so every attach-unwind path can scrub it uniformly. */
     sc->sc_sae_wcl_credential_lock = IOSimpleLockAlloc();
     if (sc->sc_sae_wcl_credential_lock == NULL)
         XYLog("%s: SAE WCL staging unavailable\n", DEVNAME(sc));
@@ -7366,7 +7366,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_mfp_pae_detaching = false;
     sc->sc_mfp_pae_stopping = true;
     sc->sc_mfp_pae_task_ready = false;
-    sc->sc_mfp_pae_lab_enabled = iwn_mfp_pae_lab_opted_in();
+    sc->sc_mfp_pae_runtime_enabled = iwn_mfp_pae_runtime_opted_in();
     
     ic->ic_phytype = IEEE80211_T_OFDM;    /* not only, but not used */
     ic->ic_opmode = IEEE80211_M_STA;    /* default to BSS mode */

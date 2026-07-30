@@ -992,7 +992,8 @@ getCARD_CAPABILITIES(OSObject *object,
     TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
         cd->capabilities);
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
-    TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
+    if (OSDynamicCast(ItlIwn, fHalService) != nullptr)
+        TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
 #endif
     //cd->capabilities[8] = 0x40;
     //cd->capabilities[8] |= 8;//dfs white list

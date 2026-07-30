@@ -229,14 +229,14 @@ direct_transaction = body(
     "IOReturn AirportItlwmSkywalkInterface::\nstartIwnDirectSaeCredential",
     "common IWN direct-SAE transaction")
 for token in (
-    "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
     "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
+    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 1",
+    "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
     "#define AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS 1",
     "#define AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS 0",
-    "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS",
     "AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS",
 ):
-    require(direct_sae_gate, token, "IWN lab-only compile gate")
+    require(direct_sae_gate, token, "IWN product/diagnostic compile gates")
 require(sky, '#include "IwnDirectSaeLabGate.hpp"',
         "Skywalk direct-SAE lab gate include")
 require(sky, "#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS",

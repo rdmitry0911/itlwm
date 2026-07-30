@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Static contract for the lab-gated exact-SAE WCL ingress.  WCL parsing stays
-# separate from the shared kernel direct-SAE transaction; the latter is also
-# used by the isolated diagnostic UserClient.  This proves neither a completed
-# WPA3 association nor normal CoreWLAN credential delivery.
+# Static contract for the product exact-SAE WCL ingress.  WCL parsing stays
+# separate from the shared kernel direct-SAE transaction; a stricter build
+# gate lets the isolated diagnostic UserClient reuse that lower half.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -74,10 +73,11 @@ def ordered(text, label, *needles):
 
 for token in (
         "#include <HAL/ItlSaeDriverTarget.h>",
-        "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
         "ITL_SAE_DRIVER_CRYPTO_AVAILABLE",
+        "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS 1",
+        "defined(IWN_SOFTWARE_PMF_LAB_BUILD)",
         "#define AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS 1",
-        "#define AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS",
+        "AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS",
 ):
     require(gate, token, "compile-time physical gate")
 require(sky, '#include "IwnDirectSaeLabGate.hpp"', "shared gate inclusion")
@@ -179,7 +179,7 @@ require(common, "request->wclOwner != nullptr", "provenance owner branch")
 ordinary = association[association.find("#endif", association.find(
     "#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS")):]
 require(ordinary, "requiresUnsupportedWpa3Auth(",
-        "ordinary artifact WPA3 reject remains")
+        "non-CIPHER_PWD WPA3 fallback remains fail-closed")
 
-print("PASS: lab-gated WCL CIPHER_PWD parsing reaches one shared direct-SAE transaction while ordinary WPA3 remains fail-closed")
+print("PASS: product WCL CIPHER_PWD reaches the IWN direct-SAE transaction while diagnostic stimulus remains separately gated")
 PY
