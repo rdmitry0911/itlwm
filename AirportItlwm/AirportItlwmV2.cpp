@@ -6787,14 +6787,18 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
 // produced packets to the networking side.
 // Return type is unsigned int to match kernel ABI (see TX callback comment).
 static void
-skywalkRxReleasePreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt)
+skywalkRxReleasePreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt,
+                               bool apsta)
 {
     if (rxPkt == nullptr)
         return;
 
     rxPkt->completeWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0);
-    if (that != nullptr && that->fRxPool != nullptr)
-        that->fRxPool->deallocatePacket(rxPkt);
+    IOSkywalkPacketBufferPool *pool =
+        that == nullptr ? nullptr :
+        (apsta ? that->fAPSTARxPool : that->fRxPool);
+    if (pool != nullptr)
+        pool->deallocatePacket(rxPkt);
 }
 
 static bool
@@ -6811,7 +6815,8 @@ skywalkRxBuildInputTag(packet_info_tag *tag)
 
 static bool
 skywalkRxStagePendingPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt,
-                            const packet_info_tag *tag, UInt32 length)
+                            const packet_info_tag *tag, UInt32 length,
+                            bool apsta)
 {
     if (that == nullptr || that->fRxPendingLock == nullptr ||
         rxPkt == nullptr || tag == nullptr)
@@ -6823,6 +6828,7 @@ skywalkRxStagePendingPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt,
         that->fRxPendingPackets[that->fRxPendingTail] = rxPkt;
         that->fRxPendingTags[that->fRxPendingTail] = *tag;
         that->fRxPendingLengths[that->fRxPendingTail] = length;
+        that->fRxPendingAPSTA[that->fRxPendingTail] = apsta;
         that->fRxPendingTail =
             (that->fRxPendingTail + 1) % kAirportItlwmRxPendingCapacity;
         that->fRxPendingCount++;
@@ -6833,27 +6839,56 @@ skywalkRxStagePendingPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt,
 }
 
 static IOSkywalkPacket *
-skywalkRxPopPendingPacket(AirportItlwm *that, packet_info_tag *tag,
-                          UInt32 *length)
+skywalkRxPopPendingPacket(AirportItlwm *that, bool matchRole,
+                          bool requestedAPSTA, bool *packetAPSTA,
+                          packet_info_tag *tag, UInt32 *length)
 {
     if (that == nullptr || that->fRxPendingLock == nullptr)
         return nullptr;
 
     IOLockLock(that->fRxPendingLock);
     IOSkywalkPacket *rxPkt = nullptr;
-    if (that->fRxPendingCount != 0) {
-        const UInt32 index = that->fRxPendingHead;
-        rxPkt = that->fRxPendingPackets[index];
-        if (tag != nullptr)
-            *tag = that->fRxPendingTags[index];
-        if (length != nullptr)
-            *length = that->fRxPendingLengths[index];
-        that->fRxPendingPackets[index] = nullptr;
-        bzero(&that->fRxPendingTags[index], sizeof(that->fRxPendingTags[index]));
-        that->fRxPendingLengths[index] = 0;
-        that->fRxPendingHead =
-            (that->fRxPendingHead + 1) % kAirportItlwmRxPendingCapacity;
-        that->fRxPendingCount--;
+    const UInt32 count = that->fRxPendingCount;
+    UInt32 read = that->fRxPendingHead;
+    UInt32 write = that->fRxPendingHead;
+    for (UInt32 i = 0; i < count; i++) {
+        IOSkywalkPacket *pkt = that->fRxPendingPackets[read];
+        packet_info_tag savedTag = that->fRxPendingTags[read];
+        UInt32 savedLength = that->fRxPendingLengths[read];
+        bool savedAPSTA = that->fRxPendingAPSTA[read];
+        that->fRxPendingPackets[read] = nullptr;
+        bzero(&that->fRxPendingTags[read],
+              sizeof(that->fRxPendingTags[read]));
+        that->fRxPendingLengths[read] = 0;
+        that->fRxPendingAPSTA[read] = false;
+        read = (read + 1) % kAirportItlwmRxPendingCapacity;
+
+        if (rxPkt == nullptr &&
+            (!matchRole || savedAPSTA == requestedAPSTA)) {
+            rxPkt = pkt;
+            if (packetAPSTA != nullptr)
+                *packetAPSTA = savedAPSTA;
+            if (tag != nullptr)
+                *tag = savedTag;
+            if (length != nullptr)
+                *length = savedLength;
+            continue;
+        }
+
+        that->fRxPendingPackets[write] = pkt;
+        that->fRxPendingTags[write] = savedTag;
+        that->fRxPendingLengths[write] = savedLength;
+        that->fRxPendingAPSTA[write] = savedAPSTA;
+        write = (write + 1) % kAirportItlwmRxPendingCapacity;
+    }
+    that->fRxPendingTail = write;
+    if (rxPkt != nullptr) {
+        that->fRxPendingCount = count - 1;
+        that->fRxPendingPackets[write] = nullptr;
+        bzero(&that->fRxPendingTags[write],
+              sizeof(that->fRxPendingTags[write]));
+        that->fRxPendingLengths[write] = 0;
+        that->fRxPendingAPSTA[write] = false;
     }
     IOLockUnlock(that->fRxPendingLock);
     return rxPkt;
@@ -6875,9 +6910,11 @@ skywalkRxRemovePendingPacket(AirportItlwm *that, IOSkywalkPacket *target)
         IOSkywalkPacket *pkt = that->fRxPendingPackets[read];
         packet_info_tag tag = that->fRxPendingTags[read];
         UInt32 length = that->fRxPendingLengths[read];
+        bool apsta = that->fRxPendingAPSTA[read];
         that->fRxPendingPackets[read] = nullptr;
         bzero(&that->fRxPendingTags[read], sizeof(that->fRxPendingTags[read]));
         that->fRxPendingLengths[read] = 0;
+        that->fRxPendingAPSTA[read] = false;
         read = (read + 1) % kAirportItlwmRxPendingCapacity;
         if (!removed && pkt == target) {
             removed = true;
@@ -6886,6 +6923,7 @@ skywalkRxRemovePendingPacket(AirportItlwm *that, IOSkywalkPacket *target)
         that->fRxPendingPackets[write] = pkt;
         that->fRxPendingTags[write] = tag;
         that->fRxPendingLengths[write] = length;
+        that->fRxPendingAPSTA[write] = apsta;
         write = (write + 1) % kAirportItlwmRxPendingCapacity;
     }
 
@@ -6894,6 +6932,7 @@ skywalkRxRemovePendingPacket(AirportItlwm *that, IOSkywalkPacket *target)
         that->fRxPendingCount = count - 1;
         bzero(&that->fRxPendingTags[write], sizeof(that->fRxPendingTags[write]));
         that->fRxPendingLengths[write] = 0;
+        that->fRxPendingAPSTA[write] = false;
     }
     IOLockUnlock(that->fRxPendingLock);
     return removed;
@@ -6905,9 +6944,10 @@ skywalkRxDrainPendingPackets(AirportItlwm *that)
     if (that == nullptr)
         return;
 
-    while (IOSkywalkPacket *rxPkt = skywalkRxPopPendingPacket(that, nullptr,
-                                                             nullptr))
-        skywalkRxReleasePreparedPacket(that, rxPkt);
+    bool apsta = false;
+    while (IOSkywalkPacket *rxPkt = skywalkRxPopPendingPacket(
+               that, false, false, &apsta, nullptr, nullptr))
+        skywalkRxReleasePreparedPacket(that, rxPkt, apsta);
 }
 
 static unsigned int
@@ -6916,8 +6956,10 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
 {
     sRT.rxCbCnt++;
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    const bool apstaQueue =
+        that != nullptr && queue == that->fAPSTARxQueue;
     IO80211SkywalkInterface *networkInterface =
-        that != nullptr && queue == that->fAPSTARxQueue
+        apstaQueue
             ? that->fAPSTANetIf
             : (that != nullptr ? that->fNetIf : nullptr);
     if (that == nullptr || networkInterface == nullptr || packets == nullptr)
@@ -6928,8 +6970,8 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
     for (UInt32 i = 0; i < count; i++) {
         packet_info_tag tag;
         UInt32 stagedLength = 0;
-        IOSkywalkPacket *pkt = skywalkRxPopPendingPacket(that, &tag,
-                                                        &stagedLength);
+        IOSkywalkPacket *pkt = skywalkRxPopPendingPacket(
+            that, true, apstaQueue, nullptr, &tag, &stagedLength);
         if (pkt == nullptr)
             break;
 
@@ -6939,7 +6981,7 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
         if (base == nullptr || dataLength < sizeof(ether_header) ||
             dataOffset > SKYWALK_BUF_SIZE ||
             dataLength > SKYWALK_BUF_SIZE - dataOffset) {
-            skywalkRxReleasePreparedPacket(that, pkt);
+            skywalkRxReleasePreparedPacket(that, pkt, apstaQueue);
             continue;
         }
 
@@ -6990,9 +7032,10 @@ skywalkTxCompletionAction(OSObject *owner, IOSkywalkTxCompletionQueue *,
 
 #if __IO80211_TARGET >= __MAC_26_0
 static void
-skywalkRxReturnPreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt)
+skywalkRxReturnPreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt,
+                              bool apsta)
 {
-    skywalkRxReleasePreparedPacket(that, rxPkt);
+    skywalkRxReleasePreparedPacket(that, rxPkt, apsta);
 }
 
 // Skywalk RX input handler — called from _if_input() on the Tahoe path.
@@ -7084,7 +7127,7 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     IOReturn prepRet = rxPkt->prepareWithQueue(nullptr,
                                                kIOSkywalkPacketDirectionRx, 0);
     if (prepRet != kIOReturnSuccess) {
-        skywalkRxReturnPreparedPacket(that, rxPkt);
+        skywalkRxReturnPreparedPacket(that, rxPkt, apsta);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, prepRet);
         if (diagEapol)
@@ -7098,7 +7141,7 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     IOSkywalkPacketBuffer *bufs[1] = { NULL };
     UInt32 nBufs = rxPkt->getPacketBuffers(bufs, 1);
     if (nBufs == 0 || !bufs[0]) {
-        skywalkRxReturnPreparedPacket(that, rxPkt);
+        skywalkRxReturnPreparedPacket(that, rxPkt, apsta);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, static_cast<IOReturn>(ENOMEM));
         if (diagEapol)
@@ -7110,7 +7153,7 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 
     void *objAddr = rxPkt->getDataVirtualAddress();
     if (!objAddr || len > SKYWALK_BUF_SIZE) {
-        skywalkRxReturnPreparedPacket(that, rxPkt);
+        skywalkRxReturnPreparedPacket(that, rxPkt, apsta);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, static_cast<IOReturn>(EMSGSIZE));
         if (diagEapol)
@@ -7123,7 +7166,7 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     // Copy the mbuf data into the Skywalk packet buffer
     errno_t copyRet = mbuf_copydata(m, 0, len, objAddr);
     if (copyRet != 0) {
-        skywalkRxReturnPreparedPacket(that, rxPkt);
+        skywalkRxReturnPreparedPacket(that, rxPkt, apsta);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol,
                                       static_cast<IOReturn>(copyRet));
@@ -7135,7 +7178,7 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     }
     IOReturn dataRet = rxPkt->setDataOffsetAndLength(0, static_cast<UInt32>(len));
     if (dataRet != kIOReturnSuccess) {
-        skywalkRxReturnPreparedPacket(that, rxPkt);
+        skywalkRxReturnPreparedPacket(that, rxPkt, apsta);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, dataRet);
         if (diagEapol)
@@ -7148,8 +7191,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     packet_info_tag tag;
     if (!skywalkRxBuildInputTag(&tag) ||
         !skywalkRxStagePendingPacket(that, rxPkt, &tag,
-                                     static_cast<UInt32>(len))) {
-        skywalkRxReturnPreparedPacket(that, rxPkt);
+                                     static_cast<UInt32>(len), apsta)) {
+        skywalkRxReturnPreparedPacket(that, rxPkt, apsta);
         sRT.rxEnqFail++;
         if (sRT.rxEnqFail <= 5)
             XYLog("skywalkRxInput: pending stage failed (drop #%u) "
@@ -7186,7 +7229,7 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
             airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx,
                                       "request-enqueue", diagLength, ret);
         if (skywalkRxRemovePendingPacket(that, rxPkt))
-            skywalkRxReturnPreparedPacket(that, rxPkt);
+            skywalkRxReturnPreparedPacket(that, rxPkt, apsta);
         return EIO;
     }
 
@@ -9430,6 +9473,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     memset(fRxPendingPackets, 0, sizeof(fRxPendingPackets));
     memset(fRxPendingTags, 0, sizeof(fRxPendingTags));
     memset(fRxPendingLengths, 0, sizeof(fRxPendingLengths));
+    memset(fRxPendingAPSTA, 0, sizeof(fRxPendingAPSTA));
     fRxPendingHead = 0;
     fRxPendingTail = 0;
     fRxPendingCount = 0;
@@ -15488,6 +15532,27 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
     XYLog("APSTA materialization: role=7 requested=%s published-prefix=ap unit=1\n",
           create->bsd_name);
     return kIOReturnSuccess;
+}
+
+void AirportItlwm::setAPSTADatapathEnabled(bool enable)
+{
+    AirportItlwmSkywalkInterface *interface =
+        OSDynamicCast(AirportItlwmSkywalkInterface, fAPSTANetIf);
+    if (interface == nullptr)
+        return;
+
+    if (enable)
+        interface->enableDatapath();
+    else
+        interface->disableDatapath();
+
+    XYLog("APSTA datapath %s RX=%u TX=%u TXC=%u\n",
+          enable ? "enabled" : "disabled",
+          fAPSTARxQueue != nullptr && fAPSTARxQueue->isEnabled() ? 1U : 0U,
+          fAPSTATxQueues[0] != nullptr &&
+              fAPSTATxQueues[0]->isEnabled() ? 1U : 0U,
+          fAPSTATxCompQueue != nullptr &&
+              fAPSTATxCompQueue->isEnabled() ? 1U : 0U);
 }
 
 void AirportItlwm::teardownAPSTAInterface()

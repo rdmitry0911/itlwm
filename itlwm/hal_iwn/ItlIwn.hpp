@@ -103,6 +103,7 @@ public:
     bool iwn_handle_ap_probe_req(const struct ieee80211_frame *, size_t);
     bool iwn_handle_ap_open_auth(const struct ieee80211_frame *, size_t);
     bool iwn_handle_ap_assoc_req(const struct ieee80211_frame *, size_t);
+    bool iwn_handle_ap_data(mbuf_t, size_t, struct mbuf_list *);
     void iwn_note_ap_firmware_event(int, int);
     void iwn_continue_ap_after_deactivation();
 

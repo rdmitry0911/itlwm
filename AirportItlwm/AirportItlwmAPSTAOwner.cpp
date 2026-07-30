@@ -599,6 +599,15 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
         lifecycle = kAirportItlwmAPSTAOwnerRunning;
         state.resetState26c = 1;
         state.hostApTransitionState270 = 1;
+        /*
+         * AppleBCMWLAN's recovered setHostApModeInternal success tail
+         * enables the AP interface; APSTAInterface::enable then calls
+         * enableDatapath, which starts TXC/RX and arms the first RX
+         * request. The local role-7 BSD interface is already up when the
+         * HostAP command reaches this owner, so this is the equivalent
+         * successful lower-mode edge.
+         */
+        owner->setAPSTADatapathEnabled(true);
     } else {
         lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
         state.resetState26c = 0;
@@ -611,6 +620,8 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
     if (owner != nullptr && owner->fHalService != nullptr) {
         (void)owner->fHalService->stopAPMode();
     }
+    if (owner != nullptr)
+        owner->setAPSTADatapathEnabled(false);
     resetRuntimeState();
     if (lifecycle != kAirportItlwmAPSTAOwnerFreed) {
         lifecycle = kAirportItlwmAPSTAOwnerTerminal;

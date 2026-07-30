@@ -4242,6 +4242,102 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     return true;
 }
 
+bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
+    struct mbuf_list *frames)
+{
+    if (packet == NULL || frames == NULL ||
+        !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        !apClientAssociated ||
+        frameLength < sizeof(struct ieee80211_frame)) {
+        return false;
+    }
+
+    const struct ieee80211_frame *wh =
+        mtod(packet, const struct ieee80211_frame *);
+    if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+            IEEE80211_FC0_TYPE_DATA ||
+        (wh->i_fc[1] & IEEE80211_FC1_DIR_MASK) !=
+            IEEE80211_FC1_DIR_TODS ||
+        !IEEE80211_ADDR_EQ(wh->i_addr1, apFirmwareConfig.bssid) ||
+        !IEEE80211_ADDR_EQ(wh->i_addr2, apClientMac)) {
+        return false;
+    }
+
+    /*
+     * Frames for the concurrently-live PAN MAC must never enter the primary
+     * STA net80211 state machine.  Null-data frames have no Ethernet payload,
+     * and protected AP data will be admitted here only after the AP key owner
+     * supplies its per-client decrypt context.
+     */
+    if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_NODATA) != 0 ||
+        (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0) {
+        return true;
+    }
+
+    const size_t headerLength = ieee80211_get_hdrlen(wh);
+    if (headerLength < sizeof(struct ieee80211_frame) ||
+        frameLength < headerLength + LLC_SNAPFRAMELEN) {
+        return true;
+    }
+
+    struct llc llc;
+    if (mbuf_copydata(packet, headerLength, sizeof(llc), &llc) != 0 ||
+        llc.llc_dsap != LLC_SNAP_LSAP ||
+        llc.llc_ssap != LLC_SNAP_LSAP ||
+        llc.llc_control != LLC_UI ||
+        llc.llc_snap.org_code[0] != 0 ||
+        llc.llc_snap.org_code[1] != 0 ||
+        llc.llc_snap.org_code[2] != 0) {
+        return true;
+    }
+
+    const size_t payloadLength =
+        frameLength - headerLength - LLC_SNAPFRAMELEN;
+    const size_t ethernetLength = ETHER_HDR_LEN + payloadLength;
+    if (ethernetLength > MCLBYTES)
+        return true;
+
+    unsigned int maxChunks = 1;
+    mbuf_t ethernetPacket = NULL;
+    if (mbuf_allocpacket(MBUF_DONTWAIT, ethernetLength,
+            &maxChunks, &ethernetPacket) != 0 ||
+        ethernetPacket == NULL) {
+        return true;
+    }
+    mbuf_setlen(ethernetPacket, ethernetLength);
+    mbuf_pkthdr_setlen(ethernetPacket, ethernetLength);
+
+    struct ether_header *ethernetHeader =
+        mtod(ethernetPacket, struct ether_header *);
+    IEEE80211_ADDR_COPY(ethernetHeader->ether_dhost, wh->i_addr3);
+    IEEE80211_ADDR_COPY(ethernetHeader->ether_shost, wh->i_addr2);
+    ethernetHeader->ether_type = llc.llc_snap.ether_type;
+    if (payloadLength != 0 &&
+        mbuf_copydata(packet,
+            headerLength + LLC_SNAPFRAMELEN,
+            payloadLength,
+            reinterpret_cast<uint8_t *>(ethernetHeader) +
+                ETHER_HDR_LEN) != 0) {
+        mbuf_freem(ethernetPacket);
+        return true;
+    }
+
+    ml_enqueue(frames, ethernetPacket);
+    static uint32_t apDataRxCount = 0;
+    if (++apDataRxCount <= 16) {
+        XYLog("%s: AP Ethernet RX #%u ether_type=0x%04x "
+              "length=%u client=%02x:%02x:%02x:%02x:%02x:%02x\n",
+              com.sc_dev.dv_xname,
+              static_cast<unsigned>(apDataRxCount),
+              static_cast<unsigned>(ntohs(ethernetHeader->ether_type)),
+              static_cast<unsigned>(ethernetLength),
+              apClientMac[0], apClientMac[1], apClientMac[2],
+              apClientMac[3], apClientMac[4], apClientMac[5]);
+    }
+    return true;
+}
+
 void ItlIwn::
 detach(IOPCIDevice *device)
 {
@@ -8531,6 +8627,10 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         return;
     }
     if (iwn_handle_ap_assoc_req(wh, len)) {
+        mbuf_freem(m);
+        return;
+    }
+    if (iwn_handle_ap_data(m, len, ml)) {
         mbuf_freem(m);
         return;
     }

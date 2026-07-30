@@ -954,6 +954,7 @@ public:
     bool copyPermanentHardwareAddress(uint8_t *address) const;
     IOReturn materializeAPSTAInterface(
         const struct apple80211_virt_if_create_data *create);
+    void setAPSTADatapathEnabled(bool enable);
     void teardownAPSTAInterface();
     IOReturn deleteAPSTAOwnerForBSDName(const uint8_t *bsdName);
     void deleteAPSTAOwner();
@@ -1015,6 +1016,7 @@ public:
     IOSkywalkPacket *fRxPendingPackets[kAirportItlwmRxPendingCapacity];
     packet_info_tag fRxPendingTags[kAirportItlwmRxPendingCapacity];
     UInt32 fRxPendingLengths[kAirportItlwmRxPendingCapacity];
+    bool fRxPendingAPSTA[kAirportItlwmRxPendingCapacity];
     UInt32 fRxPendingHead;
     UInt32 fRxPendingTail;
     UInt32 fRxPendingCount;
