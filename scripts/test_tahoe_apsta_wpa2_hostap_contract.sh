@@ -54,6 +54,20 @@ required_iwn = (
     "static const uint8_t pskSuite[]",
     "apFirmwareConfig.rsnIELength",
     "apFirmwareConfig.credential",
+    "pbkdf2_sha1(",
+    "ieee80211_derive_ptk(",
+    "ieee80211_eapol_key_check_mic(",
+    "ieee80211_eapol_key_encrypt(",
+    "iwn_install_ap_ccmp_key(false, apGtkKid, apGtk)",
+    "iwn_install_ap_ccmp_key(true, 0, apPtk.tk)",
+    "IWN_AP_RSN_WAIT_M2",
+    "IWN_AP_RSN_WAIT_M4",
+    "IWN_AP_RSN_AUTHORIZED",
+    "BE_READ_8(key->replaycnt) != apReplayCounter",
+    "ethernetHeader.ether_type == htons(ETHERTYPE_PAE)",
+    "frame.i_fc[1] |= IEEE80211_FC1_PROTECTED",
+    "(rxFlags & IWN_RX_CIPHER_MASK) != IWN_RX_CIPHER_CCMP",
+    "packetNumber <= apPairwiseRxPn[tid]",
 )
 for needle in required_iwn:
     assert needle in iwn, f"missing IWN RSN admission contract: {needle}"
@@ -61,5 +75,9 @@ for needle in required_iwn:
 assert "startHostAPModeWithSSID:securityType:channel:password:error:" in probe
 assert "initWithBytes:argv[3] length:strlen(argv[3])" in probe
 
-print("PASS: Tahoe HostAP WPA2 carrier/channel/RSN contract")
+assert "memcpy(passphrase, apFirmwareCredential," in iwn
+assert "explicit_bzero(passphrase, sizeof(passphrase));" in iwn
+assert "AP HostAP key peer=" not in owner
+
+print("PASS: Tahoe HostAP WPA2 carrier/authenticator/CCMP contract")
 PY

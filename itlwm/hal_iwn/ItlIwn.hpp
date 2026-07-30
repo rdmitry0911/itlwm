@@ -106,6 +106,12 @@ public:
     int iwn_send_ap_mgmt_frame(const void *, size_t);
     int iwn_send_ap_data_frame(mbuf_t, bool moreData = false,
         bool psDelivery = false);
+    int iwn_install_ap_ccmp_key(bool, uint8_t, const uint8_t *);
+    int iwn_send_ap_eapol_key(const void *, size_t);
+    int iwn_send_ap_4way_msg1();
+    int iwn_send_ap_4way_msg3();
+    void iwn_begin_ap_4way();
+    bool iwn_handle_ap_eapol_key(const uint8_t *, size_t);
     int iwn_update_ap_tim(bool);
     int iwn_queue_ap_ps_packet(mbuf_t, bool atFront = false);
     void iwn_purge_ap_ps_queue();
@@ -116,9 +122,12 @@ public:
     bool iwn_handle_ap_open_auth(const struct ieee80211_frame *, size_t);
     bool iwn_handle_ap_assoc_req(const struct ieee80211_frame *, size_t);
     bool iwn_handle_ap_disconnect(const struct ieee80211_frame *, size_t);
+    void iwn_publish_ap_station_event(const uint8_t *, const uint8_t *,
+        size_t, int);
     bool iwn_handle_ap_ps_poll(
         const struct ieee80211_frame_pspoll *, size_t);
-    bool iwn_handle_ap_data(mbuf_t, size_t, struct mbuf_list *);
+    bool iwn_handle_ap_data(mbuf_t, size_t, struct mbuf_list *,
+        uint32_t, uint8_t);
     void iwn_note_ap_firmware_event(int, int);
     void iwn_continue_ap_after_deactivation();
 
@@ -470,8 +479,21 @@ public:
     bool apClientNodeInstalled;
     bool apClientAuthenticated;
     bool apClientAssociated;
+    bool apClientAuthorized;
     bool apClientPowerSave;
     uint16_t apClientAid;
+    uint8_t apRsnState;
+    uint8_t apClientRsnIE[64];
+    uint8_t apPmk[IEEE80211_PMK_LEN];
+    uint8_t apAnonce[EAPOL_KEY_NONCE_LEN];
+    uint8_t apGtk[16];
+    struct ieee80211_ptk apPtk;
+    uint64_t apReplayCounter;
+    uint64_t apPairwiseTxPn;
+    uint64_t apGroupTxPn;
+    uint64_t apPairwiseRxPn[16];
+    size_t apClientRsnIELength;
+    uint8_t apGtkKid;
     enum { IWN_AP_PS_QUEUE_LEN = 16 };
     mbuf_t apPsQueue[IWN_AP_PS_QUEUE_LEN];
     uint8_t apPsQueueHead;

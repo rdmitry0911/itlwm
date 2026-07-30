@@ -3724,6 +3724,13 @@ enum {
     IWN_AP_STAGE_STOP_PAN_PARAMS
 };
 
+enum {
+    IWN_AP_RSN_DISABLED = 0,
+    IWN_AP_RSN_WAIT_M2,
+    IWN_AP_RSN_WAIT_M4,
+    IWN_AP_RSN_AUTHORIZED
+};
+
 #ifdef DELAY
 #undef DELAY
 #define DELAY IODelay
@@ -3770,8 +3777,21 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apClientNodeInstalled = false;
     apClientAuthenticated = false;
     apClientAssociated = false;
+    apClientAuthorized = false;
     apClientPowerSave = false;
     apClientAid = 0;
+    apRsnState = IWN_AP_RSN_DISABLED;
+    bzero(apClientRsnIE, sizeof(apClientRsnIE));
+    explicit_bzero(apPmk, sizeof(apPmk));
+    explicit_bzero(apAnonce, sizeof(apAnonce));
+    explicit_bzero(apGtk, sizeof(apGtk));
+    explicit_bzero(&apPtk, sizeof(apPtk));
+    apReplayCounter = 0;
+    apPairwiseTxPn = 0;
+    apGroupTxPn = 0;
+    bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
+    apClientRsnIELength = 0;
+    apGtkKid = 1;
     apTimSet = false;
 }
 
@@ -3791,6 +3811,261 @@ void ItlIwn::iwn_purge_ap_ps_queue()
     bzero(apPsQueue, sizeof(apPsQueue));
     apPsQueueHead = 0;
     apPsQueueTail = 0;
+}
+
+int ItlIwn::iwn_install_ap_ccmp_key(bool pairwise, uint8_t keyId,
+    const uint8_t *key)
+{
+    if (key == NULL || !apClientNodeInstalled)
+        return EINVAL;
+
+    struct iwn_node_info node;
+    bzero(&node, sizeof(node));
+    node.control = IWN_NODE_UPDATE;
+    node.id = pairwise ?
+        IWN5000_ID_PAN_CLIENT : IWN5000_ID_PAN_BROADCAST;
+    node.flags = IWN_FLAG_SET_KEY;
+    uint16_t keyFlags =
+        IWN_KFLAG_CCMP | IWN_KFLAG_MAP | IWN_KFLAG_KID(keyId);
+    if (!pairwise)
+        keyFlags |= IWN_KFLAG_GROUP;
+    node.kflags = htole16(keyFlags);
+    node.kid = keyId;
+    memcpy(node.key, key, sizeof(node.key));
+    return com.ops.add_node(&com, &node, 1);
+}
+
+int ItlIwn::iwn_send_ap_eapol_key(const void *eapol, size_t eapolLength)
+{
+    if (eapol == NULL || eapolLength < sizeof(struct ieee80211_eapol_key) ||
+        eapolLength > MCLBYTES - ETHER_HDR_LEN ||
+        !apClientAssociated) {
+        return EINVAL;
+    }
+
+    const size_t ethernetLength = ETHER_HDR_LEN + eapolLength;
+    unsigned int maxChunks = 1;
+    mbuf_t packet = NULL;
+    if (mbuf_allocpacket(MBUF_DONTWAIT, ethernetLength,
+            &maxChunks, &packet) != 0 || packet == NULL) {
+        return ENOMEM;
+    }
+    mbuf_setlen(packet, ethernetLength);
+    mbuf_pkthdr_setlen(packet, ethernetLength);
+    struct ether_header *ethernetHeader =
+        mtod(packet, struct ether_header *);
+    IEEE80211_ADDR_COPY(ethernetHeader->ether_dhost, apClientMac);
+    IEEE80211_ADDR_COPY(ethernetHeader->ether_shost,
+                        apFirmwareConfig.bssid);
+    ethernetHeader->ether_type = htons(ETHERTYPE_PAE);
+    memcpy(reinterpret_cast<uint8_t *>(ethernetHeader) + ETHER_HDR_LEN,
+           eapol, eapolLength);
+
+    const int error = iwn_send_ap_data_frame(packet);
+    if (error != 0)
+        mbuf_freem(packet);
+    return error;
+}
+
+int ItlIwn::iwn_send_ap_4way_msg1()
+{
+    uint8_t frame[sizeof(struct ieee80211_eapol_key)];
+    bzero(frame, sizeof(frame));
+    struct ieee80211_eapol_key *key =
+        reinterpret_cast<struct ieee80211_eapol_key *>(frame);
+    key->version = EAPOL_VERSION;
+    key->type = EAPOL_KEY;
+    key->desc = EAPOL_KEY_DESC_IEEE80211;
+    BE_WRITE_2(key->info,
+        EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK | EAPOL_KEY_DESC_V2);
+    BE_WRITE_2(key->keylen, 16);
+    apReplayCounter++;
+    BE_WRITE_8(key->replaycnt, apReplayCounter);
+    memcpy(key->nonce, apAnonce, sizeof(key->nonce));
+    BE_WRITE_2(key->paylen, 0);
+    BE_WRITE_2(key->len, sizeof(*key) - 4);
+    apRsnState = IWN_AP_RSN_WAIT_M2;
+    const int error = iwn_send_ap_eapol_key(frame, sizeof(frame));
+    if (error != 0)
+        apRsnState = IWN_AP_RSN_DISABLED;
+    XYLog("%s: AP WPA2 EAPOL M1 queue=%d replay=%llu\n",
+          com.sc_dev.dv_xname, error, apReplayCounter);
+    return error;
+}
+
+int ItlIwn::iwn_send_ap_4way_msg3()
+{
+    uint8_t frame[256];
+    bzero(frame, sizeof(frame));
+    struct ieee80211_eapol_key *key =
+        reinterpret_cast<struct ieee80211_eapol_key *>(frame);
+    key->version = EAPOL_VERSION;
+    key->type = EAPOL_KEY;
+    key->desc = EAPOL_KEY_DESC_IEEE80211;
+    uint16_t info = EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK |
+        EAPOL_KEY_KEYMIC | EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE |
+        EAPOL_KEY_ENCRYPTED | EAPOL_KEY_DESC_V2;
+    BE_WRITE_2(key->info, info);
+    BE_WRITE_2(key->keylen, 16);
+    apReplayCounter++;
+    BE_WRITE_8(key->replaycnt, apReplayCounter);
+    memcpy(key->nonce, apAnonce, sizeof(key->nonce));
+
+    uint8_t *cursor = reinterpret_cast<uint8_t *>(key + 1);
+    if (apFirmwareConfig.rsnIELength == 0 ||
+        apFirmwareConfig.rsnIELength > sizeof(apFirmwareRsnIE)) {
+        return EINVAL;
+    }
+    memcpy(cursor, apFirmwareRsnIE, apFirmwareConfig.rsnIELength);
+    cursor += apFirmwareConfig.rsnIELength;
+    *cursor++ = IEEE80211_ELEMID_VENDOR;
+    *cursor++ = 6 + sizeof(apGtk);
+    memcpy(cursor, IEEE80211_OUI, 3);
+    cursor += 3;
+    *cursor++ = IEEE80211_KDE_GTK;
+    *cursor++ = apGtkKid & 3;
+    *cursor++ = 0;
+    memcpy(cursor, apGtk, sizeof(apGtk));
+    cursor += sizeof(apGtk);
+
+    const size_t plainKeyDataLength =
+        static_cast<size_t>(cursor - reinterpret_cast<uint8_t *>(key + 1));
+    BE_WRITE_2(key->paylen, plainKeyDataLength);
+    BE_WRITE_2(key->len, sizeof(*key) + plainKeyDataLength - 4);
+    ieee80211_eapol_key_encrypt(&com.sc_ic, key, apPtk.kek);
+    ieee80211_eapol_key_mic(key, apPtk.kck);
+    const size_t eapolLength =
+        sizeof(*key) + BE_READ_2(key->paylen);
+    if (eapolLength > sizeof(frame))
+        return EMSGSIZE;
+
+    apRsnState = IWN_AP_RSN_WAIT_M4;
+    const int error = iwn_send_ap_eapol_key(frame, eapolLength);
+    if (error != 0)
+        apRsnState = IWN_AP_RSN_WAIT_M2;
+    XYLog("%s: AP WPA2 EAPOL M3 queue=%d replay=%llu\n",
+          com.sc_dev.dv_xname, error, apReplayCounter);
+    return error;
+}
+
+void ItlIwn::iwn_begin_ap_4way()
+{
+    if (apFirmwareConfig.rsnIELength == 0 ||
+        !apClientAssociated || !apClientNodeInstalled)
+        return;
+
+    apClientAuthorized = false;
+    apReplayCounter = 0;
+    apPairwiseTxPn = 0;
+    apPairwiseRxPn[0] = 0;
+    explicit_bzero(&apPtk, sizeof(apPtk));
+    arc4random_buf(apAnonce, sizeof(apAnonce));
+    (void)iwn_send_ap_4way_msg1();
+}
+
+bool ItlIwn::iwn_handle_ap_eapol_key(const uint8_t *eapol,
+    size_t eapolLength)
+{
+    if (eapol == NULL ||
+        eapolLength < sizeof(struct ieee80211_eapol_key) ||
+        eapolLength > 512 ||
+        apFirmwareConfig.rsnIELength == 0 ||
+        !apClientAssociated) {
+        return false;
+    }
+
+    uint8_t frame[512];
+    memcpy(frame, eapol, eapolLength);
+    struct ieee80211_eapol_key *key =
+        reinterpret_cast<struct ieee80211_eapol_key *>(frame);
+    const size_t declaredLength = 4 + BE_READ_2(key->len);
+    const uint16_t keyInfo = BE_READ_2(key->info);
+    const size_t keyDataLength = BE_READ_2(key->paylen);
+    if (key->type != EAPOL_KEY ||
+        key->desc != EAPOL_KEY_DESC_IEEE80211 ||
+        declaredLength != eapolLength ||
+        keyDataLength > eapolLength - sizeof(*key) ||
+        (keyInfo & EAPOL_KEY_VERSION_MASK) != EAPOL_KEY_DESC_V2 ||
+        (keyInfo & EAPOL_KEY_PAIRWISE) == 0 ||
+        (keyInfo & EAPOL_KEY_KEYMIC) == 0 ||
+        (keyInfo & (EAPOL_KEY_KEYACK | EAPOL_KEY_REQUEST |
+                    EAPOL_KEY_ERROR)) != 0 ||
+        BE_READ_8(key->replaycnt) != apReplayCounter) {
+        XYLog("%s: AP WPA2 EAPOL rejected state=%u info=0x%x "
+              "length=%zu replay=%llu expected=%llu\n",
+              com.sc_dev.dv_xname,
+              static_cast<unsigned>(apRsnState),
+              static_cast<unsigned>(keyInfo), eapolLength,
+              BE_READ_8(key->replaycnt), apReplayCounter);
+        return true;
+    }
+
+    if (apRsnState == IWN_AP_RSN_WAIT_M2) {
+        const uint8_t *rsn = NULL;
+        const uint8_t *cursor =
+            reinterpret_cast<const uint8_t *>(key + 1);
+        const uint8_t *end = cursor + keyDataLength;
+        while (cursor + 2 <= end) {
+            const size_t elementLength = cursor[1];
+            if (cursor + 2 + elementLength > end)
+                break;
+            if (cursor[0] == IEEE80211_ELEMID_RSN) {
+                rsn = cursor;
+                break;
+            }
+            cursor += 2 + elementLength;
+        }
+        if (rsn == NULL ||
+            apClientRsnIELength != static_cast<size_t>(rsn[1]) + 2 ||
+            memcmp(rsn, apClientRsnIE, apClientRsnIELength) != 0) {
+            XYLog("%s: AP WPA2 M2 rejected: association RSN mismatch\n",
+                  com.sc_dev.dv_xname);
+            return true;
+        }
+
+        struct ieee80211_ptk transientPtk;
+        explicit_bzero(&transientPtk, sizeof(transientPtk));
+        ieee80211_derive_ptk(
+            IEEE80211_AKM_PSK, apPmk,
+            apFirmwareConfig.bssid, apClientMac,
+            apAnonce, key->nonce, &transientPtk);
+        if (ieee80211_eapol_key_check_mic(key, transientPtk.kck) != 0) {
+            explicit_bzero(&transientPtk, sizeof(transientPtk));
+            XYLog("%s: AP WPA2 M2 rejected: MIC mismatch\n",
+                  com.sc_dev.dv_xname);
+            return true;
+        }
+        memcpy(&apPtk, &transientPtk, sizeof(apPtk));
+        explicit_bzero(&transientPtk, sizeof(transientPtk));
+
+        int error =
+            iwn_install_ap_ccmp_key(false, apGtkKid, apGtk);
+        if (error == 0)
+            error = iwn_send_ap_4way_msg3();
+        XYLog("%s: AP WPA2 M2 accepted GTK/M3=%d\n",
+              com.sc_dev.dv_xname, error);
+        return true;
+    }
+
+    if (apRsnState == IWN_AP_RSN_WAIT_M4) {
+        if (keyDataLength != 0 ||
+            ieee80211_eapol_key_check_mic(key, apPtk.kck) != 0) {
+            XYLog("%s: AP WPA2 M4 rejected\n", com.sc_dev.dv_xname);
+            return true;
+        }
+        const int error =
+            iwn_install_ap_ccmp_key(true, 0, apPtk.tk);
+        if (error == 0) {
+            apClientAuthorized = true;
+            apRsnState = IWN_AP_RSN_AUTHORIZED;
+        }
+        XYLog("%s: AP WPA2 4-way complete PTK=%d authorized=%u\n",
+              com.sc_dev.dv_xname, error,
+              apClientAuthorized ? 1U : 0U);
+        return true;
+    }
+
+    return true;
 }
 
 int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
@@ -4034,6 +4309,18 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     }
     const bool multicast =
         IEEE80211_IS_MULTICAST(ethernetHeader.ether_dhost);
+    const bool eapol =
+        ethernetHeader.ether_type == htons(ETHERTYPE_PAE);
+    const bool protectedFrame =
+        apFirmwareConfig.rsnIELength != 0 && !eapol;
+    if (protectedFrame && !apClientAuthorized)
+        return EACCES;
+    if (protectedFrame &&
+        ethernetLength - ETHER_HDR_LEN >
+            IWN_AP_DATA_PAYLOAD_SIZE -
+                LLC_SNAPFRAMELEN - IEEE80211_CCMP_HDRLEN) {
+        return EMSGSIZE;
+    }
     if (!multicast &&
         !IEEE80211_ADDR_EQ(ethernetHeader.ether_dhost, apClientMac)) {
         if (++apDataTxRejectCount <= 32) {
@@ -4098,8 +4385,11 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     }
 
     const size_t headerLength = sizeof(struct ieee80211_frame);
+    const size_t ccmpHeaderLength =
+        protectedFrame ? IEEE80211_CCMP_HDRLEN : 0;
     const size_t bodyLength =
-        LLC_SNAPFRAMELEN + ethernetLength - ETHER_HDR_LEN;
+        ccmpHeaderLength + LLC_SNAPFRAMELEN +
+        ethernetLength - ETHER_HDR_LEN;
     const size_t frameLength = headerLength + bodyLength;
     const size_t firstTransportBufferLength = IWN_TX_FIRST_TB_SIZE;
     const size_t commandAndHeaderLength =
@@ -4148,6 +4438,8 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     frame.i_fc[0] = IEEE80211_FC0_VERSION_0 |
         IEEE80211_FC0_TYPE_DATA;
     frame.i_fc[1] = IEEE80211_FC1_DIR_FROMDS;
+    if (protectedFrame)
+        frame.i_fc[1] |= IEEE80211_FC1_PROTECTED;
     if (moreData)
         frame.i_fc[1] |= IEEE80211_FC1_MORE_DATA;
     IEEE80211_ADDR_COPY(frame.i_addr1, ethernetHeader.ether_dhost);
@@ -4160,7 +4452,27 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         ring->ap_payload +
         ring->cur * IWN_AP_DATA_PAYLOAD_SIZE;
     bzero(frameBody, bodyLength);
-    struct llc *llc = reinterpret_cast<struct llc *>(frameBody);
+    if (protectedFrame) {
+        uint64_t *packetNumber =
+            multicast ? &apGroupTxPn : &apPairwiseTxPn;
+        (*packetNumber)++;
+        frameBody[0] = *packetNumber;
+        frameBody[1] = *packetNumber >> 8;
+        frameBody[2] = 0;
+        frameBody[3] =
+            (multicast ? apGtkKid : 0) << 6 | IEEE80211_WEP_EXTIV;
+        frameBody[4] = *packetNumber >> 16;
+        frameBody[5] = *packetNumber >> 24;
+        frameBody[6] = *packetNumber >> 32;
+        frameBody[7] = *packetNumber >> 40;
+        tx->security = IWN_CIPHER_CCMP;
+        memcpy(tx->key, multicast ? apGtk : apPtk.tk,
+               sizeof(tx->key));
+    } else {
+        tx->security = 0;
+    }
+    struct llc *llc = reinterpret_cast<struct llc *>(
+        frameBody + ccmpHeaderLength);
     llc->llc_dsap = LLC_SNAP_LSAP;
     llc->llc_ssap = LLC_SNAP_LSAP;
     llc->llc_control = LLC_UI;
@@ -4168,7 +4480,7 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     if (ethernetLength > ETHER_HDR_LEN &&
         mbuf_copydata(ethernetPacket, ETHER_HDR_LEN,
             ethernetLength - ETHER_HDR_LEN,
-            frameBody + LLC_SNAPFRAMELEN) != 0) {
+            frameBody + ccmpHeaderLength + LLC_SNAPFRAMELEN) != 0) {
         bzero(desc, sizeof(*desc));
         bzero(cmd, sizeof(*cmd));
         return EINVAL;
@@ -4221,9 +4533,13 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     desc->segs[2].len = htole16(
         IWN_HIADDR(frameBodyAddress) | bodyLength << 4);
 
+    const uint16_t schedulerLength = static_cast<uint16_t>(
+        frameLength +
+        (protectedFrame && com.hw_type != IWN_HW_REV_TYPE_4965 ?
+            IEEE80211_CCMP_MICLEN : 0));
     com.ops.update_sched(
         &com, ring->qid, ring->cur, tx->id,
-        static_cast<uint16_t>(frameLength));
+        schedulerLength);
     ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
     IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
     if (++ring->queued > IWN_TX_RING_HIMARK)
@@ -4421,8 +4737,11 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         }
         apClientNodeInstalled = false;
         apClientAssociated = false;
+        apClientAuthorized = false;
         apClientPowerSave = false;
         apClientAid = 0;
+        apRsnState = IWN_AP_RSN_DISABLED;
+        explicit_bzero(&apPtk, sizeof(apPtk));
     }
 
     uint8_t response[sizeof(struct ieee80211_frame) + 6];
@@ -4447,8 +4766,13 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
         apClientAuthenticated = true;
         apClientAssociated = false;
+        apClientAuthorized = false;
         apClientPowerSave = false;
         apClientAid = 0;
+        apRsnState = IWN_AP_RSN_DISABLED;
+        apClientRsnIELength = 0;
+        bzero(apClientRsnIE, sizeof(apClientRsnIE));
+        explicit_bzero(&apPtk, sizeof(apPtk));
     }
     XYLog("%s: AP open authentication request from "
           "%02x:%02x:%02x:%02x:%02x:%02x response_queue=%d\n",
@@ -4646,8 +4970,26 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         error = iwn_send_ap_mgmt_frame(response, responseLength);
     if (error == 0) {
         apClientAssociated = true;
+        apClientAuthorized = apFirmwareConfig.rsnIELength == 0;
         apClientPowerSave = false;
         apClientAid = aid;
+        apRsnState = apClientAuthorized ?
+            IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
+        apClientRsnIELength = 0;
+        bzero(apClientRsnIE, sizeof(apClientRsnIE));
+        if (rsn != NULL &&
+            static_cast<size_t>(rsn[1]) + 2 <= sizeof(apClientRsnIE)) {
+            apClientRsnIELength = static_cast<size_t>(rsn[1]) + 2;
+            memcpy(apClientRsnIE, rsn, apClientRsnIELength);
+        }
+        apReplayCounter = 0;
+        apPairwiseTxPn = 0;
+        bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
+        explicit_bzero(&apPtk, sizeof(apPtk));
+        iwn_publish_ap_station_event(
+            request->i_addr2, rsn,
+            rsn != NULL ? static_cast<size_t>(rsn[1]) + 2 : 0,
+            IEEE80211_APSTA_EVENT_ASSOC);
     }
     XYLog("%s: AP association request from "
           "%02x:%02x:%02x:%02x:%02x:%02x aid=%u rsn=%u "
@@ -4659,6 +5001,34 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
           static_cast<unsigned>(aid),
           apFirmwareConfig.rsnIELength != 0 ? 1U : 0U, error);
     return true;
+}
+
+void ItlIwn::iwn_publish_ap_station_event(const uint8_t *station,
+    const uint8_t *ies, size_t iesLength, int event)
+{
+    if (station == NULL)
+        return;
+
+    /*
+     * The custom DVM PAN path owns its firmware station table separately
+     * from the infrastructure net80211 node tree, but the recovered APSTA
+     * event consumer intentionally needs only ni_macaddr and the synchronous
+     * IE slice. Publish a bounded stack witness through the same registered
+     * net80211 bridge used by the generic HostAP path.
+     */
+    struct ieee80211_node witness;
+    bzero(&witness, sizeof(witness));
+    IEEE80211_ADDR_COPY(witness.ni_macaddr, station);
+    if (ies != NULL && iesLength != 0 && iesLength <= UINT16_MAX) {
+        witness.ni_rsnie_tlv = const_cast<uint8_t *>(ies);
+        witness.ni_rsnie_tlv_len = static_cast<uint16_t>(iesLength);
+    }
+    ieee80211_apsta_event_publish(&com.sc_ic, &witness, event);
+    XYLog("%s: AP station event=%d peer="
+          "%02x:%02x:%02x:%02x:%02x:%02x ie_len=%zu\n",
+          com.sc_dev.dv_xname, event,
+          station[0], station[1], station[2],
+          station[3], station[4], station[5], iesLength);
 }
 
 bool ItlIwn::iwn_handle_ap_disconnect(
@@ -4686,6 +5056,8 @@ bool ItlIwn::iwn_handle_ap_disconnect(
 
     const int removeError = iwn_remove_ap_client_node(apClientMac);
     if (removeError == 0) {
+        iwn_publish_ap_station_event(
+            apClientMac, NULL, 0, IEEE80211_APSTA_EVENT_LEAVE);
         if (apTimSet) {
             const int timError = iwn_update_ap_tim(false);
             if (timError != 0)
@@ -4696,8 +5068,17 @@ bool ItlIwn::iwn_handle_ap_disconnect(
         apClientNodeInstalled = false;
         apClientAuthenticated = false;
         apClientAssociated = false;
+        apClientAuthorized = false;
         apClientPowerSave = false;
         apClientAid = 0;
+        apRsnState = apFirmwareConfig.rsnIELength == 0 ?
+            IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
+        apClientRsnIELength = 0;
+        bzero(apClientRsnIE, sizeof(apClientRsnIE));
+        apReplayCounter = 0;
+        apPairwiseTxPn = 0;
+        bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
+        explicit_bzero(&apPtk, sizeof(apPtk));
     }
     XYLog("%s: AP client disconnect subtype=0x%02x remove=%d\n",
           com.sc_dev.dv_xname, static_cast<unsigned>(subtype),
@@ -4762,7 +5143,7 @@ bool ItlIwn::iwn_handle_ap_ps_poll(
 }
 
 bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
-    struct mbuf_list *frames)
+    struct mbuf_list *frames, uint32_t rxFlags, uint8_t descriptorType)
 {
     if (packet == NULL || frames == NULL ||
         !apFirmwareTransitionActive ||
@@ -4805,25 +5186,60 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
             iwn_drain_ap_ps_queue();
     }
 
-    /*
-     * Frames for the concurrently-live PAN MAC must never enter the primary
-     * STA net80211 state machine.  Null-data frames have no Ethernet payload,
-     * and protected AP data will be admitted here only after the AP key owner
-     * supplies its per-client decrypt context.
-     */
-    if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_NODATA) != 0 ||
-        (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0) {
+    /* Frames for this PAN MAC never enter the primary STA node tree. */
+    if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_NODATA) != 0)
         return true;
-    }
 
     const size_t headerLength = ieee80211_get_hdrlen(wh);
-    if (headerLength < sizeof(struct ieee80211_frame) ||
-        frameLength < headerLength + LLC_SNAPFRAMELEN) {
+    if (headerLength < sizeof(struct ieee80211_frame))
         return true;
+
+    const bool protectedFrame =
+        (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
+    size_t payloadOffset = headerLength;
+    size_t payloadEnd = frameLength;
+    if (protectedFrame) {
+        if (apFirmwareConfig.rsnIELength == 0 ||
+            !apClientAuthorized ||
+            frameLength < headerLength + IEEE80211_CCMP_HDRLEN +
+                LLC_SNAPFRAMELEN + IEEE80211_CCMP_MICLEN ||
+            (rxFlags & IWN_RX_CIPHER_MASK) != IWN_RX_CIPHER_CCMP ||
+            (descriptorType == IWN_MPDU_RX_DONE &&
+             (rxFlags & (IWN_RX_MPDU_DEC | IWN_RX_MPDU_MIC_OK)) !=
+                (IWN_RX_MPDU_DEC | IWN_RX_MPDU_MIC_OK)) ||
+            (descriptorType != IWN_MPDU_RX_DONE &&
+             (rxFlags & IWN_RX_DECRYPT_MASK) != IWN_RX_DECRYPT_OK)) {
+            return true;
+        }
+
+        uint8_t ccmp[IEEE80211_CCMP_HDRLEN];
+        if (mbuf_copydata(packet, headerLength, sizeof(ccmp), ccmp) != 0 ||
+            (ccmp[3] & IEEE80211_WEP_EXTIV) == 0 ||
+            ((ccmp[3] >> 6) & 3) != 0) {
+            return true;
+        }
+        const uint64_t packetNumber =
+            static_cast<uint64_t>(ccmp[0]) |
+            static_cast<uint64_t>(ccmp[1]) << 8 |
+            static_cast<uint64_t>(ccmp[4]) << 16 |
+            static_cast<uint64_t>(ccmp[5]) << 24 |
+            static_cast<uint64_t>(ccmp[6]) << 32 |
+            static_cast<uint64_t>(ccmp[7]) << 40;
+        const uint8_t tid = ieee80211_has_qos(wh) ?
+            ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
+        if (packetNumber == 0 ||
+            packetNumber <= apPairwiseRxPn[tid]) {
+            return true;
+        }
+        apPairwiseRxPn[tid] = packetNumber;
+        payloadOffset += IEEE80211_CCMP_HDRLEN;
+        payloadEnd -= IEEE80211_CCMP_MICLEN;
     }
+    if (payloadEnd < payloadOffset + LLC_SNAPFRAMELEN)
+        return true;
 
     struct llc llc;
-    if (mbuf_copydata(packet, headerLength, sizeof(llc), &llc) != 0 ||
+    if (mbuf_copydata(packet, payloadOffset, sizeof(llc), &llc) != 0 ||
         llc.llc_dsap != LLC_SNAP_LSAP ||
         llc.llc_ssap != LLC_SNAP_LSAP ||
         llc.llc_control != LLC_UI ||
@@ -4834,7 +5250,23 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
     }
 
     const size_t payloadLength =
-        frameLength - headerLength - LLC_SNAPFRAMELEN;
+        payloadEnd - payloadOffset - LLC_SNAPFRAMELEN;
+    if (llc.llc_snap.ether_type == htons(ETHERTYPE_PAE)) {
+        if (protectedFrame || payloadLength > 512)
+            return true;
+        uint8_t eapol[512];
+        if (payloadLength >= sizeof(struct ieee80211_eapol_key) &&
+            mbuf_copydata(packet, payloadOffset + LLC_SNAPFRAMELEN,
+                payloadLength, eapol) == 0) {
+            (void)iwn_handle_ap_eapol_key(eapol, payloadLength);
+        }
+        explicit_bzero(eapol, sizeof(eapol));
+        return true;
+    }
+    if (apFirmwareConfig.rsnIELength != 0 &&
+        (!protectedFrame || !apClientAuthorized)) {
+        return true;
+    }
     const size_t ethernetLength = ETHER_HDR_LEN + payloadLength;
     if (ethernetLength > MCLBYTES)
         return true;
@@ -4856,7 +5288,7 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
     ethernetHeader->ether_type = llc.llc_snap.ether_type;
     if (payloadLength != 0 &&
         mbuf_copydata(packet,
-            headerLength + LLC_SNAPFRAMELEN,
+            payloadOffset + LLC_SNAPFRAMELEN,
             payloadLength,
             reinterpret_cast<uint8_t *>(ethernetHeader) +
                 ETHER_HDR_LEN) != 0) {
@@ -5941,6 +6373,9 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
         (config->credentialLength != 0 && config->credential == NULL) ||
         config->rsnIELength > sizeof(apFirmwareRsnIE) ||
         (config->rsnIELength != 0 && config->rsnIE == NULL) ||
+        (config->rsnIELength != 0 &&
+         (config->credentialLength < 8 ||
+          config->credentialLength > 63)) ||
         config->beaconTemplate == NULL ||
         config->beaconTemplateLength == 0 ||
         config->beaconTemplateLength > sizeof(apFirmwareBeacon)) {
@@ -5996,6 +6431,28 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
         config->rsnIELength != 0 ? apFirmwareRsnIE : NULL;
     apFirmwareConfig.beaconTemplate = apFirmwareBeacon;
     memcpy(&apFirmwareRxon, &ap_rxon, sizeof(apFirmwareRxon));
+
+    if (config->rsnIELength != 0) {
+        char passphrase[65];
+        bzero(passphrase, sizeof(passphrase));
+        memcpy(passphrase, apFirmwareCredential,
+               config->credentialLength);
+        const int deriveError = pbkdf2_sha1(
+            passphrase, apFirmwareSsid, config->ssidLength, 4096,
+            apPmk, sizeof(apPmk));
+        explicit_bzero(passphrase, sizeof(passphrase));
+        if (deriveError != 0) {
+            iwn_reset_ap_runtime_state();
+            return kIOReturnError;
+        }
+        arc4random_buf(apGtk, sizeof(apGtk));
+        apGtkKid = 1;
+        apRsnState = IWN_AP_RSN_DISABLED;
+        XYLog("%s: AP WPA2 authenticator prepared SSID length=%zu\n",
+              com.sc_dev.dv_xname, config->ssidLength);
+    } else {
+        apRsnState = IWN_AP_RSN_AUTHORIZED;
+    }
 
     apFirmwareTransitionActive = true;
     apFirmwareDeactivationReplySeen = false;
@@ -9362,7 +9819,7 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         mbuf_freem(m);
         return;
     }
-    if (iwn_handle_ap_data(m, len, ml)) {
+    if (iwn_handle_ap_data(m, len, ml, flags, desc->type)) {
         mbuf_freem(m);
         return;
     }
@@ -10195,6 +10652,12 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     struct iwn_node *wn = (struct iwn_node *)data->ni;
 
     if (data->ap_mgmt || data->ap_data) {
+        const bool beginApFourWay =
+            data->ap_mgmt && !txfail &&
+            data->diag_subtype == IEEE80211_FC0_SUBTYPE_ASSOC_RESP &&
+            that->apFirmwareConfig.rsnIELength != 0 &&
+            that->apClientAssociated &&
+            IEEE80211_ADDR_EQ(data->diag_peer, that->apClientMac);
         if (txfail)
             ifp->netStat->outputErrors++;
         if (txfail)
@@ -10219,6 +10682,8 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         ring->queued--;
         iwn_clear_oactive(sc, ring);
         iwn_refresh_tx_timer(sc);
+        if (beginApFourWay)
+            that->iwn_begin_ap_4way();
         return;
     }
 
