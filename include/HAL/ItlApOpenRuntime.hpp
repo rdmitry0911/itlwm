@@ -2,7 +2,7 @@
  * Copyright (C) 2026 itlwm contributors
  *
  * Host-side, firmware-family-neutral framing for the first usable SoftAP
- * profile: one open-system client.  IWM and IWX deliberately share this
+ * profile: a bounded set of clients.  IWM and IWX deliberately share this
  * parser/builder so their externally visible authentication rules cannot
  * drift, while each backend retains ownership of its firmware station and
  * TX-queue commands.
@@ -41,6 +41,7 @@ struct ItlApOpenRxResult {
     bool powerSaveObserved;
     bool powerSave;
     bool timChanged;
+    size_t clientIndex;
 };
 
 enum ItlApLocalRsnState : uint8_t {
@@ -63,8 +64,10 @@ static constexpr int kItlApOpenMallocType = 2;
 static inline void
 itl_ap_open_rx_result_reset(struct ItlApOpenRxResult *result)
 {
-    if (result != NULL)
+    if (result != NULL) {
         bzero(result, sizeof(*result));
+        result->clientIndex = SIZE_MAX;
+    }
 }
 
 static inline bool
@@ -239,74 +242,77 @@ itl_ap_key_rsc(const struct ItlHalApKey *key)
 
 static inline bool
 itl_ap_power_save_should_buffer(const struct ItlApFirmwareRuntime *runtime,
+                                const struct ItlApFirmwareClientRuntime *client,
                                 mbuf_t ethernetPacket)
 {
-    if (runtime == NULL || ethernetPacket == NULL ||
-        !runtime->clientPowerSave || !runtime->clientAssociated ||
+    if (runtime == NULL || client == NULL || ethernetPacket == NULL ||
+        !client->clientPowerSave || !client->clientAssociated ||
         mbuf_pkthdr_len(ethernetPacket) < ETHER_HDR_LEN)
         return false;
     struct ether_header ethernet;
     if (mbuf_copydata(ethernetPacket, 0, sizeof(ethernet), &ethernet) != 0)
         return false;
     return !IEEE80211_IS_MULTICAST(ethernet.ether_dhost) &&
-        IEEE80211_ADDR_EQ(ethernet.ether_dhost, runtime->clientMac) &&
+        IEEE80211_ADDR_EQ(ethernet.ether_dhost, client->clientMac) &&
         ethernet.ether_type != htons(ETHERTYPE_PAE);
 }
 
 static inline int
-itl_ap_power_save_enqueue(struct ItlApFirmwareRuntime *runtime,
+itl_ap_power_save_enqueue(struct ItlApFirmwareClientRuntime *client,
                           mbuf_t packet)
 {
-    if (runtime == NULL || packet == NULL)
+    if (client == NULL || packet == NULL)
         return EINVAL;
-    if (runtime->powerSaveQueueCount >=
-        ItlApFirmwareRuntime::kPowerSaveQueueLength)
+    if (client->powerSaveQueueCount >=
+        ItlApFirmwareClientRuntime::kPowerSaveQueueLength)
         return ENOBUFS;
-    runtime->powerSaveQueue[runtime->powerSaveQueueTail] = packet;
-    runtime->powerSaveQueueTail = static_cast<uint8_t>(
-        (runtime->powerSaveQueueTail + 1) %
-        ItlApFirmwareRuntime::kPowerSaveQueueLength);
-    runtime->powerSaveQueueCount++;
+    client->powerSaveQueue[client->powerSaveQueueTail] = packet;
+    client->powerSaveQueueTail = static_cast<uint8_t>(
+        (client->powerSaveQueueTail + 1) %
+        ItlApFirmwareClientRuntime::kPowerSaveQueueLength);
+    client->powerSaveQueueCount++;
     return 0;
 }
 
 static inline mbuf_t
-itl_ap_power_save_dequeue(struct ItlApFirmwareRuntime *runtime)
+itl_ap_power_save_dequeue(struct ItlApFirmwareClientRuntime *client)
 {
-    if (runtime == NULL || runtime->powerSaveQueueCount == 0)
+    if (client == NULL || client->powerSaveQueueCount == 0)
         return NULL;
-    mbuf_t packet = runtime->powerSaveQueue[runtime->powerSaveQueueHead];
-    runtime->powerSaveQueue[runtime->powerSaveQueueHead] = NULL;
-    runtime->powerSaveQueueHead = static_cast<uint8_t>(
-        (runtime->powerSaveQueueHead + 1) %
-        ItlApFirmwareRuntime::kPowerSaveQueueLength);
-    runtime->powerSaveQueueCount--;
+    mbuf_t packet = client->powerSaveQueue[client->powerSaveQueueHead];
+    client->powerSaveQueue[client->powerSaveQueueHead] = NULL;
+    client->powerSaveQueueHead = static_cast<uint8_t>(
+        (client->powerSaveQueueHead + 1) %
+        ItlApFirmwareClientRuntime::kPowerSaveQueueLength);
+    client->powerSaveQueueCount--;
     return packet;
 }
 
 static inline void
-itl_ap_power_save_requeue_front(struct ItlApFirmwareRuntime *runtime,
+itl_ap_power_save_requeue_front(struct ItlApFirmwareClientRuntime *client,
                                 mbuf_t packet)
 {
-    if (runtime == NULL || packet == NULL ||
-        runtime->powerSaveQueueCount >=
-            ItlApFirmwareRuntime::kPowerSaveQueueLength)
+    if (client == NULL || packet == NULL ||
+        client->powerSaveQueueCount >=
+            ItlApFirmwareClientRuntime::kPowerSaveQueueLength)
         return;
-    runtime->powerSaveQueueHead = static_cast<uint8_t>(
-        (runtime->powerSaveQueueHead +
-         ItlApFirmwareRuntime::kPowerSaveQueueLength - 1) %
-        ItlApFirmwareRuntime::kPowerSaveQueueLength);
-    runtime->powerSaveQueue[runtime->powerSaveQueueHead] = packet;
-    runtime->powerSaveQueueCount++;
+    client->powerSaveQueueHead = static_cast<uint8_t>(
+        (client->powerSaveQueueHead +
+         ItlApFirmwareClientRuntime::kPowerSaveQueueLength - 1) %
+        ItlApFirmwareClientRuntime::kPowerSaveQueueLength);
+    client->powerSaveQueue[client->powerSaveQueueHead] = packet;
+    client->powerSaveQueueCount++;
 }
 
 static inline int
-itl_ap_power_save_set_tim(struct ItlApFirmwareRuntime *runtime, bool set,
+itl_ap_power_save_set_tim(struct ItlApFirmwareRuntime *runtime,
+                          struct ItlApFirmwareClientRuntime *client, bool set,
                           bool *changed)
 {
     if (changed != NULL)
         *changed = false;
-    if (runtime == NULL || changed == NULL || runtime->clientAid == 0 ||
+    if (runtime == NULL || client == NULL || changed == NULL ||
+        client->clientAid == 0 ||
         runtime->config.beaconTemplateLength <
             sizeof(struct ieee80211_frame) + 12)
         return EINVAL;
@@ -320,7 +326,7 @@ itl_ap_power_save_set_tim(struct ItlApFirmwareRuntime *runtime, bool set,
             if (elementLength < 4)
                 return EINVAL;
             const size_t bitmapOffset = runtime->beacon[offset + 4] & 0xfe;
-            const size_t aidByte = runtime->clientAid >> 3;
+            const size_t aidByte = client->clientAid >> 3;
             const size_t bitmapLength = elementLength - 3;
             if (aidByte < bitmapOffset ||
                 aidByte >= bitmapOffset + bitmapLength)
@@ -329,12 +335,12 @@ itl_ap_power_save_set_tim(struct ItlApFirmwareRuntime *runtime, bool set,
                 aidByte - bitmapOffset;
             const uint8_t previous = *bitmap;
             if (set)
-                *bitmap |= 1U << (runtime->clientAid & 7);
+                *bitmap |= 1U << (client->clientAid & 7);
             else
                 *bitmap &= static_cast<uint8_t>(
-                    ~(1U << (runtime->clientAid & 7)));
-            runtime->timSet = (*bitmap &
-                (1U << (runtime->clientAid & 7))) != 0;
+                    ~(1U << (client->clientAid & 7)));
+            client->timSet = (*bitmap &
+                (1U << (client->clientAid & 7))) != 0;
             *changed = previous != *bitmap;
             return 0;
         }
@@ -457,20 +463,20 @@ itl_ap_open_build_probe_response(const struct ItlApFirmwareRuntime *runtime,
 
 static inline void
 itl_ap_open_begin_client_auth(struct ItlApFirmwareRuntime *runtime,
+                              struct ItlApFirmwareClientRuntime *client,
                               struct ItlApOpenRxResult *result)
 {
-    if (runtime->timSet && result != NULL)
+    if (client->timSet && result != NULL)
         (void)itl_ap_power_save_set_tim(
-            runtime, false, &result->timChanged);
-    runtime->clientAssociationPending = false;
-    runtime->clientAuthenticated = false;
-    runtime->clientAssociated = false;
-    runtime->clientAuthorized = false;
-    runtime->clientAid = 0;
-    runtime->clientAssocIEsLength = 0;
-    itl_ap_firmware_client_crypto_reset(runtime);
-    runtime->clientRsnIELength = 0;
-    explicit_bzero(runtime->clientRsnIE, sizeof(runtime->clientRsnIE));
+            runtime, client, false, &result->timChanged);
+    client->clientAssociationPending = false;
+    client->clientAuthenticated = false;
+    client->clientAssociated = false;
+    client->clientAuthorized = false;
+    client->clientAssocIEsLength = 0;
+    itl_ap_firmware_client_crypto_reset(client);
+    client->clientRsnIELength = 0;
+    explicit_bzero(client->clientRsnIE, sizeof(client->clientRsnIE));
 }
 
 static inline int
@@ -501,6 +507,9 @@ itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
     bzero(saeBody, sizeof(saeBody));
     size_t saeBodyLength = 0;
     bool authenticationComplete = false;
+    bool clientAllocated = false;
+    struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_find_client(runtime, request->i_addr2);
 
     if (algorithm == IEEE80211_AUTH_ALG_SAE &&
         itl_ap_client_uses_local_sae(runtime)) {
@@ -509,61 +518,86 @@ itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
             responseStatus = IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
             responseTransaction = transaction;
         } else if (transaction == 1) {
+            if (client == NULL) {
+                client = itl_ap_firmware_allocate_client(
+                    runtime, request->i_addr2);
+                clientAllocated = client != NULL;
+            }
+            if (client == NULL) {
+                responseStatus = IEEE80211_STATUS_TOOMANY;
+                responseTransaction = 1;
+                goto build_response;
+            }
             result->authenticationReplacesAssociation =
-                runtime->clientAssociated;
+                client->clientAssociated;
             IEEE80211_ADDR_COPY(result->departingStation,
-                                runtime->clientMac);
-            itl_ap_firmware_sae_reset(runtime);
-            itl_ap_open_begin_client_auth(runtime, result);
+                                client->clientMac);
+            itl_ap_firmware_sae_reset(client);
+            itl_ap_open_begin_client_auth(runtime, client, result);
             responseStatus = ieee80211_sae_ap_begin_hnp(
                 runtime->config.bssid, request->i_addr2,
                 runtime->credential, runtime->config.credentialLength,
                 body + 6, frameLength - headerLength - 6,
-                &runtime->sae, saeBody, sizeof(saeBody), &saeBodyLength);
+                &client->sae, saeBody, sizeof(saeBody), &saeBodyLength);
             responseTransaction = 1;
-            IEEE80211_ADDR_COPY(runtime->clientMac, request->i_addr2);
-            if (responseStatus != IEEE80211_SAE_AP_STATUS_SUCCESS)
-                itl_ap_firmware_sae_reset(runtime);
+            if (responseStatus != IEEE80211_SAE_AP_STATUS_SUCCESS) {
+                itl_ap_firmware_sae_reset(client);
+                if (clientAllocated) {
+                    itl_ap_firmware_client_reset(client);
+                    client = NULL;
+                }
+            }
         } else {
             responseTransaction = 2;
-            if (runtime->sae == NULL ||
-                !IEEE80211_ADDR_EQ(runtime->clientMac, request->i_addr2)) {
+            if (client == NULL || client->sae == NULL) {
                 responseStatus = IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
             } else {
                 uint8_t pmkid[IEEE80211_PMKID_LEN];
                 bzero(pmkid, sizeof(pmkid));
                 responseStatus = ieee80211_sae_ap_confirm(
-                    runtime->sae, request->i_addr2,
+                    client->sae, request->i_addr2,
                     body + 6, frameLength - headerLength - 6,
                     saeBody, sizeof(saeBody), &saeBodyLength,
-                    runtime->pmk, sizeof(runtime->pmk),
+                    client->pmk, sizeof(client->pmk),
                     pmkid, sizeof(pmkid));
                 explicit_bzero(pmkid, sizeof(pmkid));
                 authenticationComplete =
                     responseStatus == IEEE80211_SAE_AP_STATUS_SUCCESS;
                 if (!authenticationComplete)
-                    explicit_bzero(runtime->pmk, sizeof(runtime->pmk));
+                    explicit_bzero(client->pmk, sizeof(client->pmk));
             }
         }
     } else if (algorithm == IEEE80211_AUTH_ALG_OPEN &&
                !itl_ap_client_uses_local_sae(runtime) &&
                transaction == IEEE80211_AUTH_OPEN_REQUEST &&
                peerStatus == IEEE80211_STATUS_SUCCESS) {
+        if (client == NULL) {
+            client = itl_ap_firmware_allocate_client(
+                runtime, request->i_addr2);
+            clientAllocated = client != NULL;
+        }
+        if (client == NULL) {
+            responseStatus = IEEE80211_STATUS_TOOMANY;
+            responseTransaction = IEEE80211_AUTH_OPEN_RESPONSE;
+            goto build_response;
+        }
         result->authenticationReplacesAssociation =
-            runtime->clientAssociated;
+            client->clientAssociated;
         IEEE80211_ADDR_COPY(result->departingStation,
-                            runtime->clientMac);
-        itl_ap_open_begin_client_auth(runtime, result);
-        IEEE80211_ADDR_COPY(runtime->clientMac, request->i_addr2);
+                            client->clientMac);
+        itl_ap_open_begin_client_auth(runtime, client, result);
         responseTransaction = IEEE80211_AUTH_OPEN_RESPONSE;
         authenticationComplete = true;
     } else {
         return 0;
     }
 
+build_response:
     const size_t responseLength = headerLength + 6 + saeBodyLength;
     int error = itl_ap_open_alloc_reply(responseLength, &result->reply);
     if (error != 0) {
+        if (clientAllocated)
+            itl_ap_firmware_client_reset(client);
         explicit_bzero(saeBody, sizeof(saeBody));
         return error;
     }
@@ -586,6 +620,7 @@ itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
     result->replyLength = responseLength;
     result->disposition = kItlApOpenRxReply;
     result->authenticationComplete = authenticationComplete;
+    result->clientIndex = itl_ap_firmware_client_index(runtime, client);
     IEEE80211_ADDR_COPY(result->station, request->i_addr2);
     return 0;
 }
@@ -608,6 +643,10 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
         return 0;
 
     result->disposition = kItlApOpenRxConsumed;
+    struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_find_client(runtime, request->i_addr2);
+    if (client == NULL)
+        return 0;
     const uint8_t *body = reinterpret_cast<const uint8_t *>(request) +
         headerLength;
     const uint16_t capability = LE_READ_2(body);
@@ -637,9 +676,8 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
     const bool rsnValid = !secure || (rsn != NULL &&
         (localSae ? itl_ap_wpa3_rsn_ie_supported(rsn, rsnLength) :
                     itl_ap_wpa2_rsn_ie_supported(rsn, rsnLength)));
-    const bool valid = runtime->clientAuthenticated &&
-        IEEE80211_ADDR_EQ(runtime->clientMac, request->i_addr2) &&
-        (!localSae || ieee80211_sae_ap_is_accepted(runtime->sae) != 0) &&
+    const bool valid = client->clientAuthenticated &&
+        (!localSae || ieee80211_sae_ap_is_accepted(client->sae) != 0) &&
         (capability & IEEE80211_CAPINFO_ESS) != 0 &&
         (secure ? (capability & IEEE80211_CAPINFO_PRIVACY) != 0 &&
                   rsnValid
@@ -652,20 +690,22 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
     if (!valid)
         return 0;
 
-    runtime->clientRsnIELength = 0;
-    explicit_bzero(runtime->clientRsnIE, sizeof(runtime->clientRsnIE));
-    if (secure && rsnLength <= sizeof(runtime->clientRsnIE)) {
-        runtime->clientRsnIELength = rsnLength;
-        memcpy(runtime->clientRsnIE, rsn, rsnLength);
+    client->clientRsnIELength = 0;
+    explicit_bzero(client->clientRsnIE, sizeof(client->clientRsnIE));
+    if (secure && rsnLength <= sizeof(client->clientRsnIE)) {
+        client->clientRsnIELength = rsnLength;
+        memcpy(client->clientRsnIE, rsn, rsnLength);
     }
 
     result->disposition = kItlApOpenRxAssociate;
+    result->clientIndex = itl_ap_firmware_client_index(runtime, client);
     IEEE80211_ADDR_COPY(result->station, request->i_addr2);
     return 0;
 }
 
 static inline int
 itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
+                                const struct ItlApFirmwareClientRuntime *client,
                                 struct ItlApOpenRxResult *result)
 {
     static const uint8_t rates2g[] = {
@@ -675,8 +715,8 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
         0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c
     };
     static const uint8_t extendedRates[] = { 0x30, 0x48, 0x60, 0x6c };
-    if (!itl_ap_open_is_running(runtime) || result == NULL ||
-        !runtime->clientStationInstalled || runtime->clientAid == 0)
+    if (!itl_ap_open_is_running(runtime) || client == NULL || result == NULL ||
+        !client->clientStationInstalled || client->clientAid == 0)
         return EINVAL;
 
     const bool is2g = runtime->config.channel <= 14;
@@ -692,7 +732,7 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
     response->i_fc[0] = IEEE80211_FC0_VERSION_0 |
         IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
     response->i_fc[1] = IEEE80211_FC1_DIR_NODS;
-    IEEE80211_ADDR_COPY(response->i_addr1, runtime->clientMac);
+    IEEE80211_ADDR_COPY(response->i_addr1, client->clientMac);
     IEEE80211_ADDR_COPY(response->i_addr2, runtime->config.bssid);
     IEEE80211_ADDR_COPY(response->i_addr3, runtime->config.bssid);
     uint8_t *out = result->reply + sizeof(*response);
@@ -700,7 +740,7 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
         (secure ? IEEE80211_CAPINFO_PRIVACY : 0) |
         (is2g ? IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
     LE_WRITE_2(out + 2, IEEE80211_STATUS_SUCCESS);
-    LE_WRITE_2(out + 4, runtime->clientAid | 0xc000);
+    LE_WRITE_2(out + 4, client->clientAid | 0xc000);
     out += 6;
     *out++ = IEEE80211_ELEMID_RATES;
     *out++ = sizeof(rates2g);
@@ -718,7 +758,8 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
     }
     result->replyLength = static_cast<size_t>(out - result->reply);
     result->disposition = kItlApOpenRxReply;
-    IEEE80211_ADDR_COPY(result->station, runtime->clientMac);
+    result->clientIndex = itl_ap_firmware_client_index(runtime, client);
+    IEEE80211_ADDR_COPY(result->station, client->clientMac);
     return 0;
 }
 
@@ -743,9 +784,11 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
      * ownership before validation so a rejected AP frame can never fall
      * through into the primary STA node tree. */
     result->disposition = kItlApOpenRxConsumed;
-    if (!runtime->clientAssociated ||
-        !IEEE80211_ADDR_EQ(wh->i_addr2, runtime->clientMac))
+    struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_find_client(runtime, wh->i_addr2);
+    if (client == NULL || !client->clientAssociated)
         return 0;
+    result->clientIndex = itl_ap_firmware_client_index(runtime, client);
 
     result->powerSaveObserved = true;
     result->powerSave =
@@ -764,7 +807,7 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
     size_t payloadOffset = headerLength;
     size_t payloadEnd = frameLength;
     if (protectedFrame) {
-        if (!secure || !runtime->clientPairwiseKeyInstalled ||
+        if (!secure || !client->clientPairwiseKeyInstalled ||
             !hardwareDecrypted ||
             frameLength < headerLength + IEEE80211_CCMP_HDRLEN +
                 LLC_SNAPFRAMELEN + IEEE80211_CCMP_MICLEN)
@@ -783,9 +826,9 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
             static_cast<uint64_t>(ccmp[7]) << 40;
         const uint8_t tid = ieee80211_has_qos(wh) ?
             ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
-        if (packetNumber == 0 || packetNumber <= runtime->clientRxPn[tid])
+        if (packetNumber == 0 || packetNumber <= client->clientRxPn[tid])
             return 0;
-        runtime->clientRxPn[tid] = packetNumber;
+        client->clientRxPn[tid] = packetNumber;
         payloadOffset += IEEE80211_CCMP_HDRLEN;
         payloadEnd -= IEEE80211_CCMP_MICLEN;
     }
@@ -798,7 +841,7 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
         llc.llc_snap.org_code[1] != 0 || llc.llc_snap.org_code[2] != 0)
         return 0;
     const bool eapol = llc.llc_snap.ether_type == htons(ETHERTYPE_PAE);
-    if (secure && !eapol && (!protectedFrame || !runtime->clientAuthorized))
+    if (secure && !eapol && (!protectedFrame || !client->clientAuthorized))
         return 0;
     if (!secure && protectedFrame)
         return 0;
@@ -831,11 +874,13 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
 
 static inline int
 itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
+                       const struct ItlApFirmwareClientRuntime *client,
                        mbuf_t ethernetPacket, bool moreData,
                        mbuf_t *wirePacket)
 {
-    if (!itl_ap_open_is_running(runtime) || ethernetPacket == NULL ||
-        wirePacket == NULL || !runtime->clientAssociated)
+    if (!itl_ap_open_is_running(runtime) || client == NULL ||
+        ethernetPacket == NULL || wirePacket == NULL ||
+        !client->clientAssociated)
         return EINVAL;
     const size_t ethernetLength = mbuf_pkthdr_len(ethernetPacket);
     if (ethernetLength < ETHER_HDR_LEN ||
@@ -848,12 +893,12 @@ itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
     const bool multicast = IEEE80211_IS_MULTICAST(ethernet.ether_dhost);
     const bool secure = itl_ap_client_is_secure(runtime);
     const bool eapol = ethernet.ether_type == htons(ETHERTYPE_PAE);
-    if (secure && !eapol && (!runtime->clientAuthorized ||
+    if (secure && !eapol && (!client->clientAuthorized ||
         (multicast ? !runtime->groupKeyInstalled :
-                     !runtime->clientPairwiseKeyInstalled)))
+                     !client->clientPairwiseKeyInstalled)))
         return EACCES;
     if (!multicast &&
-        !IEEE80211_ADDR_EQ(ethernet.ether_dhost, runtime->clientMac))
+        !IEEE80211_ADDR_EQ(ethernet.ether_dhost, client->clientMac))
         return EHOSTUNREACH;
 
     const size_t wireLength = sizeof(struct ieee80211_frame) +
@@ -893,10 +938,11 @@ itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
 
 static inline int
 itl_ap_local_eapol_packet(const struct ItlApFirmwareRuntime *runtime,
+                          const struct ItlApFirmwareClientRuntime *client,
                           const void *eapol, size_t eapolLength,
                           mbuf_t *packet)
 {
-    if (runtime == NULL || eapol == NULL || packet == NULL ||
+    if (runtime == NULL || client == NULL || eapol == NULL || packet == NULL ||
         eapolLength < sizeof(struct ieee80211_eapol_key) ||
         eapolLength > MCLBYTES - ETHER_HDR_LEN)
         return EINVAL;
@@ -909,7 +955,7 @@ itl_ap_local_eapol_packet(const struct ItlApFirmwareRuntime *runtime,
     mbuf_setlen(*packet, packetLength);
     mbuf_pkthdr_setlen(*packet, packetLength);
     struct ether_header *ethernet = mtod(*packet, struct ether_header *);
-    IEEE80211_ADDR_COPY(ethernet->ether_dhost, runtime->clientMac);
+    IEEE80211_ADDR_COPY(ethernet->ether_dhost, client->clientMac);
     IEEE80211_ADDR_COPY(ethernet->ether_shost, runtime->config.bssid);
     ethernet->ether_type = htons(ETHERTYPE_PAE);
     memcpy(reinterpret_cast<uint8_t *>(ethernet) + ETHER_HDR_LEN,
@@ -919,13 +965,14 @@ itl_ap_local_eapol_packet(const struct ItlApFirmwareRuntime *runtime,
 
 static inline int
 itl_ap_local_sae_build_m1(struct ItlApFirmwareRuntime *runtime,
+                          struct ItlApFirmwareClientRuntime *client,
                           uint8_t *frame, size_t frameCapacity,
                           size_t *frameLength)
 {
-    if (!itl_ap_client_uses_local_sae(runtime) || frame == NULL ||
+    if (!itl_ap_client_uses_local_sae(runtime) || client == NULL || frame == NULL ||
         frameLength == NULL || frameCapacity < sizeof(struct ieee80211_eapol_key) ||
-        !runtime->clientAssociated ||
-        ieee80211_sae_ap_is_accepted(runtime->sae) == 0)
+        !client->clientAssociated ||
+        ieee80211_sae_ap_is_accepted(client->sae) == 0)
         return EINVAL;
     bzero(frame, frameCapacity);
     struct ieee80211_eapol_key *key =
@@ -936,38 +983,39 @@ itl_ap_local_sae_build_m1(struct ItlApFirmwareRuntime *runtime,
     BE_WRITE_2(key->info, EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK |
         EAPOL_KEY_DESC_AKM_DEFINED);
     BE_WRITE_2(key->keylen, 16);
-    runtime->replayCounter = 1;
-    BE_WRITE_8(key->replaycnt, runtime->replayCounter);
-    arc4random_buf(runtime->anonce, sizeof(runtime->anonce));
-    memcpy(key->nonce, runtime->anonce, sizeof(key->nonce));
+    client->replayCounter = 1;
+    BE_WRITE_8(key->replaycnt, client->replayCounter);
+    arc4random_buf(client->anonce, sizeof(client->anonce));
+    memcpy(key->nonce, client->anonce, sizeof(key->nonce));
     BE_WRITE_2(key->paylen, 0);
     BE_WRITE_2(key->len, sizeof(*key) - 4);
-    runtime->localRsnState = kItlApLocalRsnWaitM2;
+    client->localRsnState = kItlApLocalRsnWaitM2;
     *frameLength = sizeof(*key);
     return 0;
 }
 
 static inline void
-itl_ap_local_sae_note_m1_result(struct ItlApFirmwareRuntime *runtime,
+itl_ap_local_sae_note_m1_result(struct ItlApFirmwareClientRuntime *client,
                                 bool sent)
 {
-    if (runtime != NULL && !sent) {
-        runtime->localRsnState = kItlApLocalRsnDisabled;
-        runtime->replayCounter = 0;
-        explicit_bzero(runtime->anonce, sizeof(runtime->anonce));
+    if (client != NULL && !sent) {
+        client->localRsnState = kItlApLocalRsnDisabled;
+        client->replayCounter = 0;
+        explicit_bzero(client->anonce, sizeof(client->anonce));
     }
 }
 
 static inline int
 itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
+                              struct ItlApFirmwareClientRuntime *client,
                               const uint8_t *eapol, size_t eapolLength,
                               enum ItlApLocalEapolAction *action)
 {
     if (action != NULL)
         *action = kItlApLocalEapolConsumed;
-    if (!itl_ap_client_uses_local_sae(runtime) || action == NULL ||
+    if (!itl_ap_client_uses_local_sae(runtime) || client == NULL || action == NULL ||
         eapol == NULL || eapolLength < sizeof(struct ieee80211_eapol_key) ||
-        eapolLength > 512 || !runtime->clientAssociated)
+        eapolLength > 512 || !client->clientAssociated)
         return EINVAL;
 
     uint8_t frame[512];
@@ -989,8 +1037,8 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
         return EACCES;
     }
 
-    if (runtime->localRsnState == kItlApLocalRsnWaitM2) {
-        if (BE_READ_8(key->replaycnt) != runtime->replayCounter) {
+    if (client->localRsnState == kItlApLocalRsnWaitM2) {
+        if (BE_READ_8(key->replaycnt) != client->replayCounter) {
             explicit_bzero(frame, sizeof(frame));
             return EACCES;
         }
@@ -1007,18 +1055,18 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
             }
             cursor += 2 + elementLength;
         }
-        if (rsn == NULL || runtime->clientRsnIELength !=
+        if (rsn == NULL || client->clientRsnIELength !=
                 static_cast<size_t>(rsn[1]) + 2 ||
-            memcmp(rsn, runtime->clientRsnIE,
-                   runtime->clientRsnIELength) != 0) {
+            memcmp(rsn, client->clientRsnIE,
+                   client->clientRsnIELength) != 0) {
             explicit_bzero(frame, sizeof(frame));
             return EACCES;
         }
         struct ieee80211_ptk transientPtk;
         explicit_bzero(&transientPtk, sizeof(transientPtk));
-        ieee80211_derive_ptk(IEEE80211_AKM_SAE, runtime->pmk,
-            runtime->config.bssid, runtime->clientMac,
-            runtime->anonce, key->nonce, &transientPtk);
+        ieee80211_derive_ptk(IEEE80211_AKM_SAE, client->pmk,
+            runtime->config.bssid, client->clientMac,
+            client->anonce, key->nonce, &transientPtk);
         const int micError =
             ieee80211_eapol_key_check_mic(key, transientPtk.kck);
         if (micError != 0) {
@@ -1026,26 +1074,26 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
             explicit_bzero(frame, sizeof(frame));
             return EACCES;
         }
-        memcpy(&runtime->ptk, &transientPtk, sizeof(runtime->ptk));
+        memcpy(&client->ptk, &transientPtk, sizeof(client->ptk));
         explicit_bzero(&transientPtk, sizeof(transientPtk));
         explicit_bzero(frame, sizeof(frame));
         *action = kItlApLocalEapolSendM3;
         return 0;
     }
 
-    if (runtime->localRsnState == kItlApLocalRsnWaitM4) {
+    if (client->localRsnState == kItlApLocalRsnWaitM4) {
         const uint64_t replay = BE_READ_8(key->replaycnt);
-        if (replay == runtime->replayCounter && keyDataLength == 0) {
+        if (replay == client->replayCounter && keyDataLength == 0) {
             const int micError =
-                ieee80211_eapol_key_check_mic(key, runtime->ptk.kck);
+                ieee80211_eapol_key_check_mic(key, client->ptk.kck);
             explicit_bzero(frame, sizeof(frame));
             if (micError != 0)
                 return EACCES;
             *action = kItlApLocalEapolInstallPairwise;
             return 0;
         }
-        if (runtime->replayCounter == 0 ||
-            replay != runtime->replayCounter - 1 || keyDataLength == 0) {
+        if (client->replayCounter == 0 ||
+            replay != client->replayCounter - 1 || keyDataLength == 0) {
             explicit_bzero(frame, sizeof(frame));
             return EACCES;
         }
@@ -1063,11 +1111,11 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
             cursor += 2 + elementLength;
         }
         const int micError = rsn != NULL &&
-            runtime->clientRsnIELength ==
+            client->clientRsnIELength ==
                 static_cast<size_t>(rsn[1]) + 2 &&
-            memcmp(rsn, runtime->clientRsnIE,
-                   runtime->clientRsnIELength) == 0 ?
-            ieee80211_eapol_key_check_mic(key, runtime->ptk.kck) : EACCES;
+            memcmp(rsn, client->clientRsnIE,
+                   client->clientRsnIELength) == 0 ?
+            ieee80211_eapol_key_check_mic(key, client->ptk.kck) : EACCES;
         explicit_bzero(frame, sizeof(frame));
         if (micError != 0)
             return EACCES;
@@ -1081,24 +1129,26 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
 static inline int
 itl_ap_local_sae_build_m3(struct ieee80211com *ic,
                           struct ItlApFirmwareRuntime *runtime,
+                          struct ItlApFirmwareClientRuntime *client,
                           uint8_t *frame, size_t frameCapacity,
                           size_t *frameLength)
 {
 #ifdef IEEE80211_STA_ONLY
     (void)ic;
     (void)runtime;
+    (void)client;
     (void)frame;
     (void)frameCapacity;
     (void)frameLength;
     return ENOTSUP;
 #else
-    if (ic == NULL || !itl_ap_client_uses_local_sae(runtime) ||
+    if (ic == NULL || !itl_ap_client_uses_local_sae(runtime) || client == NULL ||
         frame == NULL || frameLength == NULL || frameCapacity < 256 ||
-        (runtime->localRsnState != kItlApLocalRsnWaitM2 &&
-         runtime->localRsnState != kItlApLocalRsnWaitM4) ||
-        runtime->clientRsnIELength == 0)
+        (client->localRsnState != kItlApLocalRsnWaitM2 &&
+         client->localRsnState != kItlApLocalRsnWaitM4) ||
+        client->clientRsnIELength == 0)
         return EINVAL;
-    const bool retry = runtime->localRsnState == kItlApLocalRsnWaitM4;
+    const bool retry = client->localRsnState == kItlApLocalRsnWaitM4;
     bzero(frame, frameCapacity);
     struct ieee80211_eapol_key *key =
         reinterpret_cast<struct ieee80211_eapol_key *>(frame);
@@ -1110,9 +1160,9 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
         EAPOL_KEY_ENCRYPTED | EAPOL_KEY_DESC_AKM_DEFINED);
     BE_WRITE_2(key->keylen, 16);
     if (!retry)
-        runtime->replayCounter++;
-    BE_WRITE_8(key->replaycnt, runtime->replayCounter);
-    memcpy(key->nonce, runtime->anonce, sizeof(key->nonce));
+        client->replayCounter++;
+    BE_WRITE_8(key->replaycnt, client->replayCounter);
+    memcpy(key->nonce, client->anonce, sizeof(key->nonce));
     uint8_t *cursor = reinterpret_cast<uint8_t *>(key + 1);
     memcpy(cursor, runtime->rsnIE, runtime->config.rsnIELength);
     cursor += runtime->config.rsnIELength;
@@ -1140,42 +1190,42 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
         cursor - reinterpret_cast<uint8_t *>(key + 1));
     if (sizeof(*key) + plainLength + 16 > frameCapacity) {
         if (!retry)
-            runtime->replayCounter--;
+            client->replayCounter--;
         explicit_bzero(frame, frameCapacity);
         return EMSGSIZE;
     }
     BE_WRITE_2(key->paylen, plainLength);
     BE_WRITE_2(key->len, sizeof(*key) + plainLength - 4);
-    ieee80211_eapol_key_encrypt(ic, key, runtime->ptk.kek);
-    ieee80211_eapol_key_mic(key, runtime->ptk.kck);
+    ieee80211_eapol_key_encrypt(ic, key, client->ptk.kek);
+    ieee80211_eapol_key_mic(key, client->ptk.kck);
     *frameLength = sizeof(*key) + BE_READ_2(key->paylen);
     return 0;
 #endif
 }
 
 static inline void
-itl_ap_local_sae_note_m3_result(struct ItlApFirmwareRuntime *runtime,
+itl_ap_local_sae_note_m3_result(struct ItlApFirmwareClientRuntime *client,
                                 bool sent, bool retry)
 {
-    if (runtime == NULL)
+    if (client == NULL)
         return;
     if (sent) {
-        runtime->localRsnState = kItlApLocalRsnWaitM4;
-    } else if (!retry && runtime->replayCounter != 0) {
-        runtime->replayCounter--;
+        client->localRsnState = kItlApLocalRsnWaitM4;
+    } else if (!retry && client->replayCounter != 0) {
+        client->replayCounter--;
     }
 }
 
 static inline void
-itl_ap_local_sae_complete_4way(struct ItlApFirmwareRuntime *runtime,
+itl_ap_local_sae_complete_4way(struct ItlApFirmwareClientRuntime *client,
                                bool installed)
 {
-    if (runtime == NULL)
+    if (client == NULL)
         return;
-    runtime->localRsnState = installed ? kItlApLocalRsnAuthorized :
+    client->localRsnState = installed ? kItlApLocalRsnAuthorized :
                                          kItlApLocalRsnDisabled;
     if (!installed)
-        explicit_bzero(&runtime->ptk, sizeof(runtime->ptk));
+        explicit_bzero(&client->ptk, sizeof(client->ptk));
 }
 
 static inline int
@@ -1198,12 +1248,15 @@ itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
             mtod(packet, const struct ieee80211_frame_pspoll *);
         if (IEEE80211_ADDR_EQ(poll->i_bssid, runtime->config.bssid)) {
             result->disposition = kItlApOpenRxConsumed;
-            if (runtime->clientAssociated &&
-                IEEE80211_ADDR_EQ(poll->i_ta, runtime->clientMac) &&
-                (LE_READ_2(poll->i_aid) & 0x3fff) == runtime->clientAid) {
+            struct ItlApFirmwareClientRuntime *client =
+                itl_ap_firmware_find_client(runtime, poll->i_ta);
+            if (client != NULL && client->clientAssociated &&
+                (LE_READ_2(poll->i_aid) & 0x3fff) == client->clientAid) {
                 result->disposition = kItlApOpenRxPsPoll;
                 result->powerSaveObserved = true;
                 result->powerSave = true;
+                result->clientIndex =
+                    itl_ap_firmware_client_index(runtime, client);
                 IEEE80211_ADDR_COPY(result->station, poll->i_ta);
             }
             return 0;
@@ -1234,16 +1287,20 @@ itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
              IEEE80211_FC0_SUBTYPE_DEAUTH ||
          (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
              IEEE80211_FC0_SUBTYPE_DISASSOC) &&
-        IEEE80211_ADDR_EQ(wh->i_addr1, runtime->config.bssid) &&
-        IEEE80211_ADDR_EQ(wh->i_addr2, runtime->clientMac)) {
+        IEEE80211_ADDR_EQ(wh->i_addr1, runtime->config.bssid)) {
+        struct ItlApFirmwareClientRuntime *client =
+            itl_ap_firmware_find_client(runtime, wh->i_addr2);
+        if (client == NULL)
+            return 0;
         if (itl_ap_client_uses_local_sae(runtime) &&
-            runtime->clientAuthorized &&
+            client->clientAuthorized &&
             (((wh->i_fc[1] & IEEE80211_FC1_PROTECTED) == 0) ||
              !hardwareDecrypted)) {
             result->disposition = kItlApOpenRxConsumed;
             return 0;
         }
         result->disposition = kItlApOpenRxDisconnect;
+        result->clientIndex = itl_ap_firmware_client_index(runtime, client);
         IEEE80211_ADDR_COPY(result->station, wh->i_addr2);
     }
     return 0;

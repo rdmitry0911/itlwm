@@ -21,8 +21,8 @@ for needle, label in (
     ("struct ieee80211_sae_ap *sae", "owned SAE object"),
     ("uint8_t pmk[IEEE80211_PMK_LEN]", "driver-owned PMK"),
     ("struct ieee80211_ptk ptk", "shared PTK"),
-    ("ieee80211_sae_ap_destroy(&runtime->sae)", "SAE lifetime teardown"),
-    ("explicit_bzero(runtime->pmk", "PMK scrub"),
+    ("ieee80211_sae_ap_destroy(&client->sae)", "per-client SAE lifetime teardown"),
+    ("explicit_bzero(client->pmk", "per-client PMK scrub"),
 ):
     require(runtime, needle, label)
 
@@ -42,8 +42,8 @@ for needle, label in (
     ("*cursor++ = 9", "M3 IGTK KDE"),
     ("kItlApLocalEapolInstallPairwise", "M4 install edge"),
     ("kItlApLocalEapolResendM3", "lost-M3 duplicate-M2 recovery"),
-    ("replay != runtime->replayCounter - 1", "duplicate-M2 replay fence"),
-    ("runtime->clientAuthorized", "controlled-port gate"),
+    ("replay != client->replayCounter - 1", "per-client duplicate-M2 replay fence"),
+    ("client->clientAuthorized", "per-client controlled-port gate"),
     ("!hardwareDecrypted", "PMF protected disconnect gate"),
 ):
     require(framing, needle, label)
@@ -56,7 +56,7 @@ for backend, name, prefix in ((iwm, "IWM", "IWM"), (iwx, "IWX", "IWX")):
         ("kItlHalApKeyPairwise", "PTK installation"),
         ("kItlHalApStationAuthorize", "port authorization"),
         (f"{prefix}_STA_KEY_MFP", "firmware MFP key flag"),
-        ("itl_ap_firmware_sae_reset", "disconnect SAE scrub"),
+        ("itl_ap_firmware_client_reset(client)", "disconnect SAE scrub"),
         ("kItlApLocalEapolResendM3", "M3 retransmission action"),
     ):
         require(backend, needle, f"{name} {label}")

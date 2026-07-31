@@ -25,7 +25,7 @@ for needle, label in (
     ("mbuf_t powerSaveQueue", "driver-owned sleeping-client packets"),
     ("bool clientPowerSave", "client PM state"),
     ("bool timSet", "TIM state"),
-    ("itl_ap_firmware_power_save_purge(runtime)", "disconnect/sleep purge"),
+    ("itl_ap_firmware_power_save_purge(client)", "disconnect/sleep purge"),
     ("mbuf_freem(packet)", "queued packet release"),
 ):
     require(state, needle, label)
@@ -37,7 +37,7 @@ for needle, label in (
     ("itl_ap_power_save_requeue_front", "failed delivery rollback"),
     ("bitmapOffset = runtime->beacon[offset + 4] & 0xfe",
      "partial virtual bitmap offset"),
-    ("aidByte = runtime->clientAid >> 3", "AID bitmap selection"),
+    ("aidByte = client->clientAid >> 3", "per-client AID bitmap selection"),
     ("IEEE80211_FC1_PWR_MGT", "station PM-bit observation"),
     ("kItlApOpenRxPowerState", "null-data PM edge"),
     ("IEEE80211_FC0_SUBTYPE_PS_POLL", "PS-Poll classification"),
@@ -52,9 +52,9 @@ for family, front, back, prefix in (
 ):
     for needle, label in (
         ("itl_ap_power_save_should_buffer", "sleeping unicast buffer"),
-        ("itl_ap_power_save_set_tim(&apRuntime, true", "TIM arm"),
+        ("itl_ap_power_save_set_tim(&apRuntime, client, true", "TIM arm"),
         ("queueWasEmpty", "failed first-TIM enqueue rollback"),
-        ("itl_ap_power_save_dequeue(&apRuntime)", "ownership rollback"),
+        ("itl_ap_power_save_dequeue(client)", "ownership rollback"),
     ):
         require(front, needle, f"{family} {label}")
     for needle, label in (

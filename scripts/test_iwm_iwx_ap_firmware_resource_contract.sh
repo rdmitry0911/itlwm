@@ -54,8 +54,10 @@ require(runtime, "runtime->broadcastQueueId = UINT16_MAX;",
         "invalid broadcast queue reset")
 require(runtime, "runtime->multicastQueueId = UINT16_MAX;",
         "invalid multicast queue reset")
-require(runtime, "runtime->clientQueueId = UINT16_MAX;",
-        "invalid client queue reset")
+require(runtime, "runtime->clients[index].queueId = UINT16_MAX;",
+        "invalid per-client queue reset")
+require(runtime, "ItlApFirmwareClientRuntime clients[kItlApFirmwareMaxClients]",
+        "bounded client resource table")
 
 iwm_hal_start = body(iwm_hal, "startAPMode(const struct ItlHalApConfig *config)")
 require(iwm_hal_start, "itl_ap_client_config_supported(config)",
@@ -160,6 +162,8 @@ if "iwx_alloc_tx_ring" in iwx_remove:
     raise SystemExit("FAIL: dynamic IWX AP queue must not become a static ring")
 
 iwx_stop = body(iwx_hal, "iwx_stop_ap_mode(struct iwx_softc *sc,")
+require(iwx_stop, "for (size_t index = 0; index < kItlApFirmwareMaxClients; index++)",
+        "IWX all-client teardown")
 require_order(iwx_stop, [
     "iwx_ap_update_quotas(sc, runtime, false)",
     "runtime->broadcastStaId,",

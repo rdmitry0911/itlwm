@@ -60,14 +60,14 @@ for family, source, lower_stop in (
         f"{family} stale pre-sleep state must remain fail-closed"
 
 crypto_reset = body(runtime,
-    "itl_ap_firmware_client_crypto_reset(struct ItlApFirmwareRuntime *runtime)")
+    "itl_ap_firmware_client_crypto_reset(")
 for forbidden in ("groupKeyInstalled = true", "clientAuthorized = true"):
     assert forbidden not in crypto_reset
 for required in (
     "clientAuthorized = false",
     "clientPairwiseKeyInstalled = false",
-    "explicit_bzero(runtime->clientPairwiseKey",
-    "explicit_bzero(runtime->clientRxPn",
+    "explicit_bzero(client->clientPairwiseKey",
+    "explicit_bzero(client->clientRxPn",
 ):
     assert required in crypto_reset, \
         f"radio reset must close client security state: {required}"

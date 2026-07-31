@@ -189,9 +189,11 @@ iwm_alloc_tx_ring(iwm_softc *sc, struct iwm_tx_ring *ring, int qid)
     
     /*
      * Queues 10:17 back the existing STA aggregation map.  SoftAP uses the
-     * next DQA data queue so its client traffic does not collide with it.
+     * next four DQA data queues so client traffic cannot collide with it.
      */
-    if (qid > IWM_LAST_AGG_TX_QUEUE && qid != IWM_DQA_AP_CLIENT_QUEUE)
+    if (qid > IWM_LAST_AGG_TX_QUEUE &&
+        (qid < IWM_DQA_AP_CLIENT_QUEUE ||
+         qid >= IWM_DQA_AP_CLIENT_QUEUE + IWM_DQA_AP_CLIENT_QUEUE_COUNT))
         return 0;
     
     /* Allocate TX descriptors (256-byte aligned). */

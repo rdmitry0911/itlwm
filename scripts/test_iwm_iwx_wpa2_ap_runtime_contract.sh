@@ -49,8 +49,8 @@ for needle, label in (
      "pre-authorization EAPOL TX"),
     ("llc.llc_snap.ether_type == htons(ETHERTYPE_PAE)",
      "pre-authorization EAPOL RX"),
-    ("!runtime->clientAuthorized", "controlled-port data gate"),
-    ("runtime->clientRxPn[tid]", "per-TID replay fence"),
+    ("!client->clientAuthorized", "per-client controlled-port data gate"),
+    ("client->clientRxPn[tid]", "per-client per-TID replay fence"),
     ("result->disposition = kItlApOpenRxConsumed;",
      "closed-port AP-role ownership"),
 ):
@@ -83,19 +83,20 @@ for family, source in (("IWM", iwm_hal), ("IWX", iwx)):
         ("key->keyLength != 16", "16-byte CCMP key shape"),
         ("key->keyIndex > 3", "data key index bound"),
         ("key->flags == kItlHalApKeyPairwise", "PTK/GTK split"),
-        ("const uint8_t keyOffset = pairwise ? 2 : 3;",
-         "STA/AP coexistence key slots"),
+        ("2 + itl_ap_firmware_client_index(&apRuntime, client)",
+         "per-client STA/AP coexistence key slots"),
+        ("2 + kItlApFirmwareMaxClients", "dedicated group key slot"),
         ("clientPairwiseKeyInstalled = true", "PTK commit-after-firmware"),
         ("groupKeyInstalled = true", "GTK commit-after-firmware"),
     ):
         require(set_key, needle, f"{family} {label}")
     station = body(source,
         "sendAPStationCommand(const struct ItlHalApStationCommand *command)")
-    require(station, "!apRuntime.clientPairwiseKeyInstalled",
+    require(station, "!client->clientPairwiseKeyInstalled",
             f"{family} authorize-after-PTK")
     require(station, "!apRuntime.groupKeyInstalled",
             f"{family} authorize-after-GTK")
-    require(station, "apRuntime.clientAuthorized = true;",
+    require(station, "client->clientAuthorized = true;",
             f"{family} controlled-port open")
 
 iwm_key = body(iwm,
@@ -113,7 +114,7 @@ for needle, label in (
     ("IWM_TX_CMD_SEC_CCM", "CCMP TX descriptor"),
     ("IEEE80211_CCMP_HDRLEN", "driver IV space"),
     ("apRuntime.groupKey", "inline AP GTK"),
-    ("apRuntime.clientPairwiseKey", "inline AP PTK"),
+    ("client->clientPairwiseKey", "inline per-client AP PTK"),
 ):
     require(iwm_raw, needle, f"IWM {label}")
 require(iwm_rx, "apHardwareDecrypted", "IWM verified CCMP RX handoff")

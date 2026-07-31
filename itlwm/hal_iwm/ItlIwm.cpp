@@ -201,26 +201,35 @@ stopAPMode()
 IOReturn ItlIwm::
 transmitAPData(mbuf_t packet)
 {
-    if (itl_ap_power_save_should_buffer(&apRuntime, packet)) {
-        const bool queueWasEmpty = apRuntime.powerSaveQueueCount == 0;
+    struct ether_header ethernet;
+    if (packet == NULL || mbuf_pkthdr_len(packet) < sizeof(ethernet) ||
+        mbuf_copydata(packet, 0, sizeof(ethernet), &ethernet) != 0)
+        return kIOReturnBadArgument;
+    struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_find_tx_client(&apRuntime, ethernet.ether_dhost);
+    if (client == NULL)
+        return kIOReturnNotReady;
+    if (itl_ap_power_save_should_buffer(&apRuntime, client, packet)) {
+        const bool queueWasEmpty = client->powerSaveQueueCount == 0;
         const int queueError =
-            itl_ap_power_save_enqueue(&apRuntime, packet);
+            itl_ap_power_save_enqueue(client, packet);
         if (queueError != 0)
             return queueError == ENOBUFS ? kIOReturnNoResources :
                                            kIOReturnBadArgument;
         bool changed = false;
         int timError =
-            itl_ap_power_save_set_tim(&apRuntime, true, &changed);
+            itl_ap_power_save_set_tim(&apRuntime, client, true, &changed);
         if (timError == 0 && changed)
             timError = iwm_ap_send_beacon_template(&com, &apRuntime);
         if (timError != 0 && changed) {
             bool ignored = false;
-            (void)itl_ap_power_save_set_tim(&apRuntime, false, &ignored);
+            (void)itl_ap_power_save_set_tim(
+                &apRuntime, client, false, &ignored);
             XYLog("%s: IWM AP power-save TIM arm failed\n",
                   DEVNAME(&com));
         }
         if (timError != 0 && queueWasEmpty) {
-            (void)itl_ap_power_save_dequeue(&apRuntime);
+            (void)itl_ap_power_save_dequeue(client);
             return timError == ENOBUFS ? kIOReturnNoResources :
                                          kIOReturnError;
         }
@@ -228,7 +237,7 @@ transmitAPData(mbuf_t packet)
     }
     mbuf_t wirePacket = NULL;
     int error = itl_ap_open_encap_data(
-        &apRuntime, packet, false, &wirePacket);
+        &apRuntime, client, packet, false, &wirePacket);
     if (error != 0)
         return error == ENOBUFS ? kIOReturnNoResources : kIOReturnNotReady;
     const struct ieee80211_frame *wh =
@@ -236,8 +245,8 @@ transmitAPData(mbuf_t packet)
     const bool multicast = IEEE80211_IS_MULTICAST(wh->i_addr1);
     error = iwm_ap_send_raw_frame(&com, wirePacket,
         static_cast<uint8_t>(multicast ? apRuntime.multicastQueueId :
-                                        apRuntime.clientQueueId),
-        multicast ? apRuntime.multicastStaId : apRuntime.firstClientStaId);
+                                        client->queueId),
+        multicast ? apRuntime.multicastStaId : client->staId);
     if (error != 0) {
         mbuf_freem(wirePacket);
         return error == ENOBUFS ? kIOReturnNoResources : kIOReturnError;
@@ -260,14 +269,22 @@ setAPKey(const struct ItlHalApKey *key)
         return kIOReturnBadArgument;
 
     const bool pairwise = key->flags == kItlHalApKeyPairwise;
-    if (pairwise && (!apRuntime.clientAssociated ||
-        !apRuntime.clientStationInstalled || key->station == NULL ||
-        !IEEE80211_ADDR_EQ(key->station, apRuntime.clientMac)))
+    struct ItlApFirmwareClientRuntime *client = pairwise ?
+        itl_ap_firmware_find_client(&apRuntime, key->station) : NULL;
+    if (pairwise && (client == NULL || !client->clientAssociated ||
+        !client->clientStationInstalled))
         return kIOReturnNotReady;
+    if (!pairwise && apRuntime.groupKeyInstalled &&
+        apRuntime.groupKeyId == key->keyIndex &&
+        timingsafe_bcmp(apRuntime.groupKey, key->keyData,
+                        sizeof(apRuntime.groupKey)) == 0)
+        return kIOReturnSuccess;
 
-    const uint8_t staId = pairwise ? apRuntime.firstClientStaId :
+    const uint8_t staId = pairwise ? client->staId :
                                      apRuntime.multicastStaId;
-    const uint8_t keyOffset = pairwise ? 2 : 3;
+    const uint8_t keyOffset = pairwise ? static_cast<uint8_t>(
+        2 + itl_ap_firmware_client_index(&apRuntime, client)) :
+        static_cast<uint8_t>(2 + kItlApFirmwareMaxClients);
     int error = 0;
     /* Legacy IWM TX commands carry the AP GTK inline.  Linux iwlwifi keeps
      * that AP group key out of ADD_STA_KEY; only the PTK is needed for RX. */
@@ -280,12 +297,12 @@ setAPKey(const struct ItlHalApKey *key)
 
     const uint64_t receiveSequence = itl_ap_key_rsc(key);
     if (pairwise) {
-        memcpy(apRuntime.clientPairwiseKey, key->keyData,
-               sizeof(apRuntime.clientPairwiseKey));
-        apRuntime.clientPairwiseTxPn = 0;
-        for (size_t tid = 0; tid < nitems(apRuntime.clientRxPn); tid++)
-            apRuntime.clientRxPn[tid] = receiveSequence;
-        apRuntime.clientPairwiseKeyInstalled = true;
+        memcpy(client->clientPairwiseKey, key->keyData,
+               sizeof(client->clientPairwiseKey));
+        client->clientPairwiseTxPn = 0;
+        for (size_t tid = 0; tid < nitems(client->clientRxPn); tid++)
+            client->clientRxPn[tid] = receiveSequence;
+        client->clientPairwiseKeyInstalled = true;
     } else {
         memcpy(apRuntime.groupKey, key->keyData,
                sizeof(apRuntime.groupKey));
@@ -297,47 +314,54 @@ setAPKey(const struct ItlHalApKey *key)
 }
 
 IOReturn ItlIwm::
+setAPMaxStations(uint32_t maxStations)
+{
+    if (!itl_ap_open_is_running(&apRuntime))
+        return kIOReturnNotReady;
+    return itl_ap_firmware_set_client_limit(
+        &apRuntime, maxStations) == 0 ? kIOReturnSuccess :
+                                       kIOReturnBadArgument;
+}
+
+IOReturn ItlIwm::
 sendAPStationCommand(const struct ItlHalApStationCommand *command)
 {
     if (!itl_ap_open_is_running(&apRuntime))
         return kIOReturnNotReady;
     if (command == NULL)
         return kIOReturnBadArgument;
+    struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_find_client(&apRuntime, command->station);
+    if (client == NULL)
+        return kIOReturnNotReady;
     if (command->command == kItlHalApStationDisassociate) {
-        if (apRuntime.timSet) {
+        if (client->timSet) {
             bool changed = false;
             if (itl_ap_power_save_set_tim(
-                    &apRuntime, false, &changed) == 0 && changed)
+                    &apRuntime, client, false, &changed) == 0 && changed)
                 (void)iwm_ap_send_beacon_template(&com, &apRuntime);
         }
-        apRuntime.clientAssociationPending = false;
-        apRuntime.clientAuthenticated = false;
-        apRuntime.clientAssociated = false;
-        apRuntime.clientAid = 0;
-        apRuntime.clientAssocIEsLength = 0;
-        itl_ap_firmware_client_crypto_reset(&apRuntime);
-        apRuntime.clientRsnIELength = 0;
-        explicit_bzero(apRuntime.clientRsnIE,
-                       sizeof(apRuntime.clientRsnIE));
-        itl_ap_firmware_sae_reset(&apRuntime);
-        return iwm_ap_remove_client_sta(&com, &apRuntime) == 0 ?
-            kIOReturnSuccess : kIOReturnError;
+        client->clientAssociationPending = false;
+        client->clientAuthenticated = false;
+        client->clientAssociated = false;
+        const int error = iwm_ap_remove_client_sta(
+            &com, &apRuntime, client);
+        itl_ap_firmware_client_reset(client);
+        return error == 0 ? kIOReturnSuccess : kIOReturnError;
     }
-    if (command->station == NULL ||
-        !IEEE80211_ADDR_EQ(command->station, apRuntime.clientMac) ||
-        !apRuntime.clientAssociated)
+    if (!client->clientAssociated)
         return kIOReturnNotReady;
     if (command->command == kItlHalApStationUnauthorize) {
-        apRuntime.clientAuthorized = false;
+        client->clientAuthorized = false;
         return kIOReturnSuccess;
     }
     if (command->command != kItlHalApStationAuthorize)
         return kIOReturnUnsupported;
     if (itl_ap_client_is_secure(&apRuntime) &&
-        (!apRuntime.clientPairwiseKeyInstalled ||
+        (!client->clientPairwiseKeyInstalled ||
          !apRuntime.groupKeyInstalled))
         return kIOReturnNotReady;
-    apRuntime.clientAuthorized = true;
+    client->clientAuthorized = true;
 #if __IO80211_TARGET >= __MAC_26_0
     airportItlwmRequestAPTxDequeue(getController());
 #endif
@@ -348,18 +372,28 @@ uint32_t ItlIwm::
 getAPTxFreeSpace() const
 {
     if (!itl_ap_open_is_running(&apRuntime) ||
-        !apRuntime.clientStationInstalled ||
-        apRuntime.clientQueueId >= IWM_MAX_QUEUES ||
         apRuntime.multicastQueueId >= IWM_MAX_QUEUES)
         return 0;
-    const struct iwm_tx_ring *client = &com.txq[apRuntime.clientQueueId];
     const struct iwm_tx_ring *multicast = &com.txq[apRuntime.multicastQueueId];
     const uint32_t usable = IWM_TX_RING_COUNT - 1;
-    const uint32_t clientFree = client->queued < usable ?
-        usable - client->queued : 0;
     const uint32_t multicastFree = multicast->queued < usable ?
         usable - multicast->queued : 0;
-    return MIN(clientFree, multicastFree);
+    uint32_t freeSpace = multicastFree;
+    bool found = false;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        const struct ItlApFirmwareClientRuntime *client =
+            &apRuntime.clients[index];
+        if (!client->inUse || !client->clientStationInstalled)
+            continue;
+        if (client->queueId >= IWM_MAX_QUEUES)
+            return 0;
+        found = true;
+        const struct iwm_tx_ring *ring = &com.txq[client->queueId];
+        const uint32_t clientFree = ring->queued < usable ?
+            usable - ring->queued : 0;
+        freeSpace = MIN(freeSpace, clientFree);
+    }
+    return found ? freeSpace : 0;
 }
 
 extern "C" bool

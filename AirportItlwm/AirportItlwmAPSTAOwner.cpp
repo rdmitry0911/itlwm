@@ -1218,6 +1218,10 @@ IOReturn AirportItlwmAPSTAOwner::setMaxAssoc(uint32_t value)
     state.softapMaxAssoc04 = value;
 
     if (owner != nullptr && owner->fHalService != nullptr) {
+        /* Apple changes maxassoc only after the AP-up gate.  Keep the live
+         * firmware-neutral admission table in step with that control-plane
+         * update instead of retaining startAPMode()'s initial value forever. */
+        (void)owner->fHalService->setAPMaxStations(payload);
         struct ieee80211com *ic = owner->fHalService->get80211Controller();
         if (ic != nullptr) {
             ic->ic_max_aid = static_cast<uint16_t>(payload);

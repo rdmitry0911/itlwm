@@ -207,6 +207,7 @@ public:
     IOReturn stopAPMode() override;
     IOReturn transmitAPData(mbuf_t packet) override;
     IOReturn setAPKey(const struct ItlHalApKey *key) override;
+    IOReturn setAPMaxStations(uint32_t maxStations) override;
     IOReturn sendAPStationCommand(
         const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
@@ -542,13 +543,14 @@ public:
     int    iwx_ap_add_internal_sta(struct iwx_softc *,
                                    const struct ItlApFirmwareRuntime *,
                                    uint8_t, uint8_t, const uint8_t *,
-                                   uint16_t *, uint8_t);
+                                   uint16_t, uint16_t *, uint8_t);
     int    iwx_ap_remove_internal_sta(struct iwx_softc *, uint8_t, uint16_t);
     int    iwx_ap_add_client_sta(struct iwx_softc *,
                                  struct ItlApFirmwareRuntime *,
-                                 const uint8_t *);
+                                 struct ItlApFirmwareClientRuntime *);
     int    iwx_ap_remove_client_sta(struct iwx_softc *,
-                                    struct ItlApFirmwareRuntime *);
+                                    struct ItlApFirmwareRuntime *,
+                                    struct ItlApFirmwareClientRuntime *);
     int    iwx_ap_set_ccmp_key(struct iwx_softc *, uint8_t, bool,
                                uint8_t, uint8_t, const void *, size_t,
                                const void *, size_t);

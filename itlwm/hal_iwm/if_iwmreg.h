@@ -1912,8 +1912,9 @@ struct iwm_agn_scd_bc_tbl {
 #define IWM_MAX_TID_COUNT      8
 #define IWM_FIRST_AGG_TX_QUEUE IWM_DQA_MIN_DATA_QUEUE
 #define IWM_LAST_AGG_TX_QUEUE  (IWM_FIRST_AGG_TX_QUEUE + IWM_MAX_TID_COUNT - 1)
-/* Keep one DQA data queue disjoint from the STA aggregation map for SoftAP. */
+/* Keep four DQA data queues disjoint from the STA aggregation map for SoftAP. */
 #define IWM_DQA_AP_CLIENT_QUEUE (IWM_LAST_AGG_TX_QUEUE + 1)
+#define IWM_DQA_AP_CLIENT_QUEUE_COUNT 4
 
 /* legacy non-DQA queues; the legacy command queue uses a different number! */
 #define IWM_OFFCHANNEL_QUEUE    8

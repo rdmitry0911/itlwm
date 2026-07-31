@@ -1985,10 +1985,13 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
     const bool protectedFrame =
         (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
     const bool multicast = IEEE80211_IS_MULTICAST(wh->i_addr1);
+    struct ItlApFirmwareClientRuntime *client = multicast ? NULL :
+        itl_ap_firmware_find_client(&apRuntime, wh->i_addr1);
     if (protectedFrame && (type != IEEE80211_FC0_TYPE_DATA ||
         frameLength > UINT16_MAX - IEEE80211_CCMP_HDRLEN ||
         (multicast ? !apRuntime.groupKeyInstalled :
-                     !apRuntime.clientPairwiseKeyInstalled)))
+                     client == NULL ||
+                     !client->clientPairwiseKeyInstalled)))
         return EACCES;
     const size_t firmwareLength = frameLength +
         (protectedFrame ? IEEE80211_CCMP_HDRLEN : 0);
@@ -2047,7 +2050,7 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
 
     if (protectedFrame) {
         uint64_t *packetNumber = multicast ? &apRuntime.groupTxPn :
-                                             &apRuntime.clientPairwiseTxPn;
+                                             &client->clientPairwiseTxPn;
         if (*packetNumber >= 0xffffffffffffULL)
             return EOVERFLOW;
         ++*packetNumber;
@@ -2067,8 +2070,8 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
         iv[7] = *packetNumber >> 40;
         tx->sec_ctl = IWM_TX_CMD_SEC_CCM;
         memcpy(tx->key, multicast ? apRuntime.groupKey :
-                                    apRuntime.clientPairwiseKey,
-               sizeof(apRuntime.clientPairwiseKey));
+                                    client->clientPairwiseKey,
+               sizeof(client->clientPairwiseKey));
     } else {
         mbuf_adj(m, headerLength);
         tx->sec_ctl = 0;
@@ -2488,7 +2491,8 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
                         const struct ItlApFirmwareRuntime *runtime,
                         uint8_t staId,
                         uint8_t stationType, const uint8_t *address,
-                        uint8_t queueId, int fifo, uint8_t tid)
+                        uint16_t assocId, uint8_t queueId, int fifo,
+                        uint8_t tid)
 {
     if (!isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT) ||
         !isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
@@ -2513,7 +2517,7 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
                                          IWM_STA_FLG_MIMO_EN_MSK |
                                          IWM_STA_FLG_RTS_MIMO_PROT);
     if (stationType == IWM_STA_LINK)
-        command.assoc_id = htole16(runtime->clientAid);
+        command.assoc_id = htole16(assocId);
     command.tfd_queue_msk = htole32(1U << queueId);
     uint32_t status = IWM_ADD_STA_SUCCESS;
     error = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA, sizeof(command),
@@ -2529,43 +2533,51 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
 int ItlIwm::
 iwm_ap_add_client_sta(struct iwm_softc *sc,
                       struct ItlApFirmwareRuntime *runtime,
-                      const uint8_t *station)
+                      struct ItlApFirmwareClientRuntime *client)
 {
-    if (runtime == NULL || station == NULL || runtime->clientStationInstalled)
+    if (runtime == NULL || client == NULL ||
+        client->clientStationInstalled)
         return EINVAL;
     /* Queues 10..17 remain reserved for the existing STA aggregation map. */
-    const uint8_t queueId = IWM_DQA_AP_CLIENT_QUEUE;
+    const size_t clientIndex =
+        itl_ap_firmware_client_index(runtime, client);
+    if (clientIndex == SIZE_MAX)
+        return EINVAL;
+    const uint8_t queueId = static_cast<uint8_t>(
+        IWM_DQA_AP_CLIENT_QUEUE + clientIndex);
     if (queueId >= IWM_MAX_QUEUES)
         return ENOSPC;
     const int error = iwm_ap_add_internal_sta(sc, runtime,
-        runtime->firstClientStaId, IWM_STA_LINK, station, queueId,
-        IWM_TX_FIFO_BE, IWM_TID_NON_QOS);
+        client->staId, IWM_STA_LINK, client->clientMac,
+        client->clientAid, queueId, IWM_TX_FIFO_BE, IWM_TID_NON_QOS);
     if (error != 0)
         return error;
-    runtime->clientQueueId = queueId;
-    runtime->clientStationInstalled = true;
-    IEEE80211_ADDR_COPY(runtime->clientStationMac, station);
+    client->queueId = queueId;
+    client->clientStationInstalled = true;
+    IEEE80211_ADDR_COPY(client->clientStationMac, client->clientMac);
     return 0;
 }
 
 int ItlIwm::
 iwm_ap_remove_client_sta(struct iwm_softc *sc,
-                         struct ItlApFirmwareRuntime *runtime)
+                         struct ItlApFirmwareRuntime *runtime,
+                         struct ItlApFirmwareClientRuntime *client)
 {
-    if (runtime == NULL || !runtime->clientStationInstalled)
+    if (runtime == NULL || client == NULL ||
+        !client->clientStationInstalled)
         return 0;
     const int disableError = iwm_disable_txq(sc,
-        static_cast<uint8_t>(runtime->clientQueueId), IWM_TID_NON_QOS, 0);
+        static_cast<uint8_t>(client->queueId), IWM_TID_NON_QOS, 0);
     struct iwm_rm_sta_cmd command;
     memset(&command, 0, sizeof(command));
-    command.sta_id = runtime->firstClientStaId;
+    command.sta_id = client->staId;
     const int removeError = iwm_send_cmd_pdu(sc, IWM_REMOVE_STA, 0,
                                               sizeof(command), &command);
-    runtime->clientStationInstalled = false;
-    runtime->clientQueueId = UINT16_MAX;
-    itl_ap_firmware_client_crypto_reset(runtime);
-    explicit_bzero(runtime->clientStationMac,
-                   sizeof(runtime->clientStationMac));
+    client->clientStationInstalled = false;
+    client->queueId = UINT16_MAX;
+    itl_ap_firmware_client_crypto_reset(client);
+    explicit_bzero(client->clientStationMac,
+                   sizeof(client->clientStationMac));
     return disableError != 0 ? disableError : removeError;
 }
 
@@ -2576,7 +2588,7 @@ iwm_ap_set_ccmp_key(struct iwm_softc *sc, uint8_t staId, bool pairwise,
                     const void *rscBytes, size_t rscLength)
 {
     if (keyBytes == NULL || keyLength != 16 || keyId > 3 ||
-        keyOffset >= IWM_STA_KEY_MAX_DATA_KEY_NUM)
+        keyOffset >= IWM_STA_KEY_MAX_NUM)
         return EINVAL;
 
     union {
@@ -2640,11 +2652,12 @@ iwm_ap_reply_to_mbuf(const struct ItlApOpenRxResult *result, mbuf_t *packet)
 static int
 iwm_ap_send_local_eapol(ItlIwm *that,
                         const struct ItlApFirmwareRuntime *runtime,
+                        const struct ItlApFirmwareClientRuntime *client,
                         const void *eapol, size_t eapolLength)
 {
     mbuf_t packet = NULL;
     int error = itl_ap_local_eapol_packet(
-        runtime, eapol, eapolLength, &packet);
+        runtime, client, eapol, eapolLength, &packet);
     if (error != 0)
         return error;
     const IOReturn result = that->transmitAPData(packet);
@@ -2657,15 +2670,18 @@ iwm_ap_send_local_eapol(ItlIwm *that,
 
 static int
 iwm_ap_update_power_save_tim(ItlIwm *that, struct iwm_softc *sc,
-                             struct ItlApFirmwareRuntime *runtime, bool set)
+                             struct ItlApFirmwareRuntime *runtime,
+                             struct ItlApFirmwareClientRuntime *client,
+                             bool set)
 {
     bool changed = false;
-    int error = itl_ap_power_save_set_tim(runtime, set, &changed);
+    int error = itl_ap_power_save_set_tim(runtime, client, set, &changed);
     if (error == 0 && changed)
         error = that->iwm_ap_send_beacon_template(sc, runtime);
     if (error != 0 && changed) {
         bool ignored = false;
-        (void)itl_ap_power_save_set_tim(runtime, !set, &ignored);
+        (void)itl_ap_power_save_set_tim(
+            runtime, client, !set, &ignored);
     }
     return error;
 }
@@ -2673,14 +2689,16 @@ iwm_ap_update_power_save_tim(ItlIwm *that, struct iwm_softc *sc,
 static int
 iwm_ap_modify_client_power_state(ItlIwm *that, struct iwm_softc *sc,
                                  struct ItlApFirmwareRuntime *runtime,
+                                 struct ItlApFirmwareClientRuntime *client,
                                  bool awake, bool moreData)
 {
-    if (runtime == NULL || !runtime->clientStationInstalled)
+    if (runtime == NULL || client == NULL ||
+        !client->clientStationInstalled)
         return EINVAL;
     struct iwm_add_sta_cmd command;
     memset(&command, 0, sizeof(command));
     command.add_modify = IWM_STA_MODE_MODIFY;
-    command.sta_id = runtime->firstClientStaId;
+    command.sta_id = client->staId;
     command.mac_id_n_color = htole32(IWM_FW_CMD_ID_AND_COLOR(
         runtime->macId, runtime->macColor));
     if (awake) {
@@ -2705,26 +2723,26 @@ iwm_ap_modify_client_power_state(ItlIwm *that, struct iwm_softc *sc,
 static int
 iwm_ap_deliver_power_save_packet(ItlIwm *that, struct iwm_softc *sc,
                                  struct ItlApFirmwareRuntime *runtime,
+                                 struct ItlApFirmwareClientRuntime *client,
                                  bool psPoll)
 {
-    mbuf_t packet = itl_ap_power_save_dequeue(runtime);
+    mbuf_t packet = itl_ap_power_save_dequeue(client);
     if (packet == NULL)
         return 0;
     mbuf_t wirePacket = NULL;
-    const bool moreData = runtime->powerSaveQueueCount != 0;
+    const bool moreData = client->powerSaveQueueCount != 0;
     int error = psPoll ? iwm_ap_modify_client_power_state(
-        that, sc, runtime, false, moreData) : 0;
+        that, sc, runtime, client, false, moreData) : 0;
     if (error == 0)
         error = itl_ap_open_encap_data(
-            runtime, packet, moreData, &wirePacket);
+            runtime, client, packet, moreData, &wirePacket);
     if (error == 0)
         error = that->iwm_ap_send_raw_frame(sc, wirePacket,
-            static_cast<uint8_t>(runtime->clientQueueId),
-            runtime->firstClientStaId);
+            static_cast<uint8_t>(client->queueId), client->staId);
     if (error != 0) {
         if (wirePacket != NULL)
             mbuf_freem(wirePacket);
-        itl_ap_power_save_requeue_front(runtime, packet);
+        itl_ap_power_save_requeue_front(client, packet);
         return error;
     }
     mbuf_freem(packet);
@@ -2733,17 +2751,18 @@ iwm_ap_deliver_power_save_packet(ItlIwm *that, struct iwm_softc *sc,
 
 static void
 iwm_ap_publish_station(struct iwm_softc *sc,
-                       const struct ItlApFirmwareRuntime *runtime, int event,
+                       const struct ItlApFirmwareClientRuntime *client,
+                       int event,
                        const uint8_t *station = NULL)
 {
     struct ieee80211_node witness;
     bzero(&witness, sizeof(witness));
     IEEE80211_ADDR_COPY(witness.ni_macaddr,
-                        station != NULL ? station : runtime->clientMac);
-    if (runtime->clientAssocIEsLength != 0) {
-        witness.ni_rsnie_tlv = const_cast<uint8_t *>(runtime->clientAssocIEs);
+                        station != NULL ? station : client->clientMac);
+    if (client->clientAssocIEsLength != 0) {
+        witness.ni_rsnie_tlv = const_cast<uint8_t *>(client->clientAssocIEs);
         witness.ni_rsnie_tlv_len =
-            static_cast<uint16_t>(runtime->clientAssocIEsLength);
+            static_cast<uint16_t>(client->clientAssocIEsLength);
     }
     ieee80211_apsta_event_publish(&sc->sc_ic, &witness, event);
 }
@@ -2754,71 +2773,77 @@ iwm_ap_client_task(void *arg)
     struct iwm_softc *sc = static_cast<struct iwm_softc *>(arg);
     ItlIwm *that = container_of(sc, ItlIwm, com);
     struct ItlApFirmwareRuntime *runtime = &that->apRuntime;
-    struct ItlApOpenRxResult result;
-    itl_ap_open_rx_result_reset(&result);
-
-    if (!runtime->clientAssociationPending)
-        return;
-    runtime->clientAssociationPending = false;
-    if (!itl_ap_open_is_running(runtime) ||
-        !runtime->clientAuthenticated)
+    if (!itl_ap_open_is_running(runtime))
         return;
 
-    int error = 0;
-    runtime->clientAid = 1;
-    if (runtime->clientStationInstalled &&
-        !IEEE80211_ADDR_EQ(runtime->clientStationMac,
-                           runtime->clientMac))
-        error = that->iwm_ap_remove_client_sta(sc, runtime);
-    if (error == 0 && !runtime->clientStationInstalled)
-        error = that->iwm_ap_add_client_sta(sc, runtime,
-                                            runtime->clientMac);
-    if (error == 0) {
-        error = itl_ap_open_build_assoc_success(runtime, &result);
-    }
+    const size_t limit = itl_ap_firmware_client_limit(runtime);
+    for (size_t index = 0; index < limit; index++) {
+        struct ItlApFirmwareClientRuntime *client =
+            &runtime->clients[index];
+        if (!client->inUse || !client->clientAssociationPending)
+            continue;
+        client->clientAssociationPending = false;
+        if (!client->clientAuthenticated)
+            continue;
 
-    mbuf_t response = NULL;
-    if (error == 0)
-        error = iwm_ap_reply_to_mbuf(&result, &response);
-    if (error == 0)
-        error = that->iwm_ap_send_raw_frame(sc, response,
-            static_cast<uint8_t>(runtime->broadcastQueueId),
-            runtime->broadcastStaId);
-    if (error != 0 && response != NULL)
-        mbuf_freem(response);
+        struct ItlApOpenRxResult result;
+        itl_ap_open_rx_result_reset(&result);
+        int error = 0;
+        if (client->clientStationInstalled &&
+            !IEEE80211_ADDR_EQ(client->clientStationMac,
+                               client->clientMac))
+            error = that->iwm_ap_remove_client_sta(sc, runtime, client);
+        if (error == 0 && !client->clientStationInstalled)
+            error = that->iwm_ap_add_client_sta(sc, runtime, client);
+        if (error == 0)
+            error = itl_ap_open_build_assoc_success(
+                runtime, client, &result);
 
-    if (error == 0 && itl_ap_open_is_running(runtime) &&
-        runtime->clientAuthenticated) {
-        runtime->clientAssociated = true;
-        runtime->clientAuthorized = !itl_ap_client_is_secure(runtime);
-        iwm_ap_publish_station(sc, runtime, IEEE80211_APSTA_EVENT_ASSOC);
-        if (itl_ap_client_uses_local_sae(runtime)) {
-            uint8_t m1[sizeof(struct ieee80211_eapol_key)];
-            size_t m1Length = 0;
-            error = itl_ap_local_sae_build_m1(
-                runtime, m1, sizeof(m1), &m1Length);
-            if (error == 0)
-                error = iwm_ap_send_local_eapol(
-                    that, runtime, m1, m1Length);
-            itl_ap_local_sae_note_m1_result(runtime, error == 0);
-            explicit_bzero(m1, sizeof(m1));
-            XYLog("%s: IWM AP WPA3 SAE M1 queue=%d replay=%llu\n",
-                  DEVNAME(sc), error, runtime->replayCounter);
-        }
+        mbuf_t response = NULL;
+        if (error == 0)
+            error = iwm_ap_reply_to_mbuf(&result, &response);
+        if (error == 0)
+            error = that->iwm_ap_send_raw_frame(sc, response,
+                static_cast<uint8_t>(runtime->broadcastQueueId),
+                runtime->broadcastStaId);
+        if (error != 0 && response != NULL)
+            mbuf_freem(response);
+
+        if (error == 0 && itl_ap_open_is_running(runtime) &&
+            client->clientAuthenticated) {
+            client->clientAssociated = true;
+            client->clientAuthorized = !itl_ap_client_is_secure(runtime);
+            iwm_ap_publish_station(
+                sc, client, IEEE80211_APSTA_EVENT_ASSOC);
+            if (itl_ap_client_uses_local_sae(runtime)) {
+                uint8_t m1[sizeof(struct ieee80211_eapol_key)];
+                size_t m1Length = 0;
+                error = itl_ap_local_sae_build_m1(
+                    runtime, client, m1, sizeof(m1), &m1Length);
+                if (error == 0)
+                    error = iwm_ap_send_local_eapol(
+                        that, runtime, client, m1, m1Length);
+                itl_ap_local_sae_note_m1_result(client, error == 0);
+                explicit_bzero(m1, sizeof(m1));
+                XYLog("%s: IWM AP WPA3 SAE M1 queue=%d replay=%llu\n",
+                      DEVNAME(sc), error, client->replayCounter);
+            }
 #if __IO80211_TARGET >= __MAC_26_0
-        airportItlwmRequestAPTxDequeue(that->getController());
+            airportItlwmRequestAPTxDequeue(that->getController());
 #endif
-    } else {
-        runtime->clientAssociated = false;
-        runtime->clientAuthorized = false;
-        runtime->clientAid = 0;
-        if (runtime->clientStationInstalled)
-            (void)that->iwm_ap_remove_client_sta(sc, runtime);
-        if (error != 0)
-            XYLog("%s: IWM open AP association task error=%d\n",
-                  DEVNAME(sc), error);
+        } else {
+            client->clientAssociated = false;
+            client->clientAuthorized = false;
+            if (client->clientStationInstalled)
+                (void)that->iwm_ap_remove_client_sta(
+                    sc, runtime, client);
+            if (error != 0)
+                XYLog("%s: IWM open AP association task error=%d\n",
+                      DEVNAME(sc), error);
+            itl_ap_firmware_client_reset(client);
+        }
+        itl_ap_open_release_result(&result);
     }
-    itl_ap_open_release_result(&result);
 }
 
 bool ItlIwm::
@@ -2832,21 +2857,26 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
         return false;
 
     int error = classifyError;
+    struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_client_at(&apRuntime, result.clientIndex);
     if (error == 0 && result.powerSaveObserved) {
-        const bool wasPowerSave = apRuntime.clientPowerSave;
+        if (client == NULL)
+            error = EINVAL;
+        const bool wasPowerSave = client != NULL &&
+            client->clientPowerSave;
         if (wasPowerSave && !result.powerSave)
             error = iwm_ap_modify_client_power_state(
-                this, sc, &apRuntime, true, false);
+                this, sc, &apRuntime, client, true, false);
         if (error == 0)
-            apRuntime.clientPowerSave = result.powerSave;
+            client->clientPowerSave = result.powerSave;
         if (error == 0 && wasPowerSave &&
-            !apRuntime.clientPowerSave) {
-            while (apRuntime.powerSaveQueueCount != 0 && error == 0)
+            !client->clientPowerSave) {
+            while (client->powerSaveQueueCount != 0 && error == 0)
                 error = iwm_ap_deliver_power_save_packet(
-                    this, sc, &apRuntime, false);
+                    this, sc, &apRuntime, client, false);
             const int timError = iwm_ap_update_power_save_tim(
-                this, sc, &apRuntime,
-                apRuntime.powerSaveQueueCount != 0);
+                this, sc, &apRuntime, client,
+                client->powerSaveQueueCount != 0);
             if (error == 0)
                 error = timError;
         }
@@ -2856,8 +2886,8 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
             reinterpret_cast<const struct ieee80211_frame *>(result.reply);
         const uint8_t subtype = reply->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
         if (subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
-            if (result.authenticationReplacesAssociation)
-                iwm_ap_publish_station(sc, &apRuntime,
+            if (client != NULL && result.authenticationReplacesAssociation)
+                iwm_ap_publish_station(sc, client,
                     IEEE80211_APSTA_EVENT_LEAVE,
                     result.departingStation);
         }
@@ -2877,29 +2907,33 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
                 error = timError;
         }
         if (error == 0 && subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
-            IEEE80211_ADDR_COPY(apRuntime.clientMac, result.station);
-            apRuntime.clientAuthenticated = result.authenticationComplete;
+            if (client != NULL)
+                client->clientAuthenticated = result.authenticationComplete;
         }
     } else if (error == 0 &&
                result.disposition == kItlApOpenRxAssociate) {
+        if (client == NULL)
+            error = EINVAL;
         const size_t ieOffset = sizeof(struct ieee80211_frame) + 4;
-        apRuntime.clientAssocIEsLength = frameLength > ieOffset ?
+        if (client != NULL)
+            client->clientAssocIEsLength = frameLength > ieOffset ?
             MIN(frameLength - ieOffset,
-                sizeof(apRuntime.clientAssocIEs)) : 0;
-        if (apRuntime.clientAssocIEsLength != 0)
+                sizeof(client->clientAssocIEs)) : 0;
+        if (error == 0 && client->clientAssocIEsLength != 0)
             error = mbuf_copydata(packet, ieOffset,
-                apRuntime.clientAssocIEsLength,
-                apRuntime.clientAssocIEs);
+                client->clientAssocIEsLength,
+                client->clientAssocIEs);
         if (error == 0) {
-            apRuntime.clientAssociationPending = true;
+            client->clientAssociationPending = true;
             iwm_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
         }
     } else if (error == 0 &&
                result.disposition == kItlApOpenRxPsPoll) {
         error = iwm_ap_deliver_power_save_packet(
-            this, sc, &apRuntime, true);
+            this, sc, &apRuntime, client, true);
         const int timError = iwm_ap_update_power_save_tim(
-            this, sc, &apRuntime, apRuntime.powerSaveQueueCount != 0);
+            this, sc, &apRuntime, client,
+            client != NULL && client->powerSaveQueueCount != 0);
         if (error == 0)
             error = timError;
     } else if (error == 0 && result.disposition == kItlApOpenRxData) {
@@ -2922,7 +2956,7 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
                 } else {
                     enum ItlApLocalEapolAction action;
                     error = itl_ap_local_sae_handle_eapol(
-                        &apRuntime, eapol, eapolLength, &action);
+                        &apRuntime, client, eapol, eapolLength, &action);
                     if (error == 0 &&
                         (action == kItlApLocalEapolSendM3 ||
                          action == kItlApLocalEapolResendM3)) {
@@ -2945,41 +2979,41 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
                             uint8_t m3[256];
                             size_t m3Length = 0;
                             error = itl_ap_local_sae_build_m3(
-                                &sc->sc_ic, &apRuntime,
+                                &sc->sc_ic, &apRuntime, client,
                                 m3, sizeof(m3), &m3Length);
                             if (error == 0)
                                 error = iwm_ap_send_local_eapol(
-                                    this, &apRuntime, m3, m3Length);
+                                    this, &apRuntime, client, m3, m3Length);
                             itl_ap_local_sae_note_m3_result(
-                                &apRuntime, error == 0, retry);
+                                client, error == 0, retry);
                             explicit_bzero(m3, sizeof(m3));
                             XYLog("%s: IWM AP WPA3 M2 %s M3=%d "
                                   "replay=%llu\n", DEVNAME(sc),
                                   retry ? "retransmitted" : "accepted",
-                                  error, apRuntime.replayCounter);
+                                  error, client->replayCounter);
                         }
                     } else if (error == 0 &&
                                action == kItlApLocalEapolInstallPairwise) {
                         struct ItlHalApKey ptk = {
-                            .station = apRuntime.clientMac,
+                            .station = client->clientMac,
                             .flags = kItlHalApKeyPairwise,
                             .keyIndex = 0,
                             .cipher = kItlHalApCipherAesCcm,
-                            .keyData = apRuntime.ptk.tk,
-                            .keyLength = sizeof(apRuntime.clientPairwiseKey),
+                            .keyData = client->ptk.tk,
+                            .keyLength = sizeof(client->clientPairwiseKey),
                             .rsc = NULL,
                             .rscLength = 0,
                         };
                         struct ItlHalApStationCommand authorize = {
                             .command = kItlHalApStationAuthorize,
-                            .station = apRuntime.clientMac,
+                            .station = client->clientMac,
                         };
                         const bool installed =
                             setAPKey(&ptk) == kIOReturnSuccess &&
                             sendAPStationCommand(&authorize) ==
                                 kIOReturnSuccess;
                         itl_ap_local_sae_complete_4way(
-                            &apRuntime, installed);
+                            client, installed);
                         if (!installed)
                             error = EIO;
                         XYLog("%s: IWM AP WPA3 4-way complete "
@@ -2997,25 +3031,16 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
         }
     } else if (error == 0 &&
                result.disposition == kItlApOpenRxDisconnect) {
-        if (apRuntime.timSet)
+        if (client != NULL && client->timSet)
             (void)iwm_ap_update_power_save_tim(
-                this, sc, &apRuntime, false);
-        if (apRuntime.clientStationInstalled) {
-            if (apRuntime.clientAssociated)
-                iwm_ap_publish_station(sc, &apRuntime,
+                this, sc, &apRuntime, client, false);
+        if (client != NULL && client->clientStationInstalled) {
+            if (client->clientAssociated)
+                iwm_ap_publish_station(sc, client,
                                        IEEE80211_APSTA_EVENT_LEAVE);
+            (void)iwm_ap_remove_client_sta(sc, &apRuntime, client);
         }
-        apRuntime.clientAssociationPending = false;
-        apRuntime.clientAuthenticated = false;
-        apRuntime.clientAssociated = false;
-        apRuntime.clientAuthorized = false;
-        apRuntime.clientAid = 0;
-        apRuntime.clientAssocIEsLength = 0;
-        itl_ap_firmware_client_crypto_reset(&apRuntime);
-        apRuntime.clientRsnIELength = 0;
-        explicit_bzero(apRuntime.clientRsnIE,
-                       sizeof(apRuntime.clientRsnIE));
-        itl_ap_firmware_sae_reset(&apRuntime);
+        itl_ap_firmware_client_reset(client);
     }
     if (error != 0)
         XYLog("%s: IWM open AP RX action=%u error=%d\n", DEVNAME(sc),
@@ -3135,13 +3160,14 @@ iwm_start_ap_resources(struct iwm_softc *sc,
     static const uint8_t multicastAddress[IEEE80211_ADDR_LEN] =
         { 0x03, 0, 0, 0, 0, 0 };
     error = iwm_ap_add_internal_sta(sc, runtime, runtime->multicastStaId,
-        IWM_STA_MULTICAST, multicastAddress, runtime->multicastQueueId,
+        IWM_STA_MULTICAST, multicastAddress, 0,
+        runtime->multicastQueueId,
         IWM_TX_FIFO_MCAST, IWM_TID_NON_QOS);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceMulticastStation;
     error = iwm_ap_add_internal_sta(sc, runtime, runtime->broadcastStaId,
-        IWM_STA_GENERAL_PURPOSE, etherbroadcastaddr,
+        IWM_STA_GENERAL_PURPOSE, etherbroadcastaddr, 0,
         runtime->broadcastQueueId, IWM_TX_FIFO_VO, IWM_MAX_TID_COUNT);
     if (error != 0)
         goto unwind;
@@ -3170,8 +3196,15 @@ iwm_stop_ap_resources(struct iwm_softc *sc,
     if (sc->sc_nswq != NULL)
         taskq_barrier(sc->sc_nswq);
     int firstError = 0;
-    if (runtime->clientStationInstalled)
-        firstError = iwm_ap_remove_client_sta(sc, runtime);
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct ItlApFirmwareClientRuntime *client =
+            &runtime->clients[index];
+        if (!client->clientStationInstalled)
+            continue;
+        const int error = iwm_ap_remove_client_sta(sc, runtime, client);
+        if (firstError == 0)
+            firstError = error;
+    }
     if (previousStage >= kItlApFirmwareResourceRunning) {
         const int error = iwm_ap_update_quotas(sc, runtime, false);
         if (firstError == 0)

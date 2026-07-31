@@ -226,6 +226,10 @@ public:
         (void)key;
         return kIOReturnUnsupported;
     }
+    virtual IOReturn setAPMaxStations(uint32_t maxStations) {
+        (void)maxStations;
+        return kIOReturnUnsupported;
+    }
     virtual IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) {
         (void)csa;
         return kIOReturnUnsupported;

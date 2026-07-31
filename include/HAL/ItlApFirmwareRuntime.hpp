@@ -24,6 +24,50 @@ enum ItlApFirmwareResourceStage : uint8_t {
     kItlApFirmwareResourceStopping,
 };
 
+enum { kItlApFirmwareMaxClients = 4 };
+
+struct ItlApFirmwareClientRuntime {
+    uint8_t staId;
+    uint16_t queueId;
+    uint16_t clientAid;
+    uint8_t clientMac[IEEE80211_ADDR_LEN];
+    uint8_t clientStationMac[IEEE80211_ADDR_LEN];
+    uint8_t clientAssocIEs[512];
+    size_t clientAssocIEsLength;
+    bool clientAssociationPending;
+    bool clientAuthenticated;
+    bool clientAssociated;
+    bool clientAuthorized;
+    bool clientStationInstalled;
+    bool clientPairwiseKeyInstalled;
+    uint8_t clientPairwiseKey[16];
+    uint64_t clientPairwiseTxPn;
+    uint64_t clientRxPn[16];
+
+    /*
+     * WPA3 cannot use Tahoe's WPA2 key callback as its authenticator:
+     * driver-resident SAE is the sole owner of the PMK.  Keep the common
+     * SAE/4-way state next to the firmware-neutral client lifetime so IWM
+     * and IWX cannot acquire different security semantics.
+     */
+    struct ieee80211_sae_ap *sae;
+    uint8_t localRsnState;
+    uint8_t pmk[IEEE80211_PMK_LEN];
+    uint8_t anonce[EAPOL_KEY_NONCE_LEN];
+    struct ieee80211_ptk ptk;
+    uint64_t replayCounter;
+    uint8_t clientRsnIE[64];
+    size_t clientRsnIELength;
+    enum { kPowerSaveQueueLength = 16 };
+    mbuf_t powerSaveQueue[kPowerSaveQueueLength];
+    uint8_t powerSaveQueueHead;
+    uint8_t powerSaveQueueTail;
+    uint8_t powerSaveQueueCount;
+    bool clientPowerSave;
+    bool timSet;
+    bool inUse;
+};
+
 struct ItlApFirmwareRuntime {
     struct ItlHalApConfig config;
     uint8_t ssid[IEEE80211_NWID_LEN];
@@ -40,52 +84,16 @@ struct ItlApFirmwareRuntime {
     uint8_t firstClientStaId;
     uint16_t broadcastQueueId;
     uint16_t multicastQueueId;
-    uint16_t clientQueueId;
-    uint16_t clientAid;
-    uint8_t clientMac[IEEE80211_ADDR_LEN];
-    uint8_t clientStationMac[IEEE80211_ADDR_LEN];
-    uint8_t clientAssocIEs[512];
-    size_t clientAssocIEsLength;
-    bool clientAssociationPending;
-    bool clientAuthenticated;
-    bool clientAssociated;
-    bool clientAuthorized;
-    bool clientStationInstalled;
-    bool clientPairwiseKeyInstalled;
     bool groupKeyInstalled;
-    uint8_t clientPairwiseKey[16];
     uint8_t groupKey[16];
     uint8_t groupKeyId;
-    uint64_t clientPairwiseTxPn;
     uint64_t groupTxPn;
-    uint64_t clientRxPn[16];
-
-    /*
-     * WPA3 cannot use Tahoe's WPA2 key callback as its authenticator:
-     * driver-resident SAE is the sole owner of the PMK.  Keep the common
-     * SAE/4-way state next to the firmware-neutral client lifetime so IWM
-     * and IWX cannot acquire different security semantics.
-     */
     uint32_t localAuthMagic;
-    struct ieee80211_sae_ap *sae;
-    uint8_t localRsnState;
-    uint8_t pmk[IEEE80211_PMK_LEN];
-    uint8_t anonce[EAPOL_KEY_NONCE_LEN];
     uint8_t gtk[16];
     uint8_t igtk[16];
-    struct ieee80211_ptk ptk;
-    uint64_t replayCounter;
-    uint8_t clientRsnIE[64];
-    size_t clientRsnIELength;
     uint8_t gtkKeyId;
     uint8_t igtkKeyId;
-    enum { kPowerSaveQueueLength = 16 };
-    mbuf_t powerSaveQueue[kPowerSaveQueueLength];
-    uint8_t powerSaveQueueHead;
-    uint8_t powerSaveQueueTail;
-    uint8_t powerSaveQueueCount;
-    bool clientPowerSave;
-    bool timSet;
+    struct ItlApFirmwareClientRuntime clients[kItlApFirmwareMaxClients];
     bool samePhyAsPrimary;
     bool replayAfterWake;
 };
@@ -93,55 +101,65 @@ struct ItlApFirmwareRuntime {
 static constexpr uint32_t kItlApLocalAuthMagic = 0x41505333U;
 
 static inline void
-itl_ap_firmware_power_save_purge(struct ItlApFirmwareRuntime *runtime)
+itl_ap_firmware_power_save_purge(struct ItlApFirmwareClientRuntime *client)
 {
-    if (runtime == NULL)
+    if (client == NULL)
         return;
-    while (runtime->powerSaveQueueCount != 0) {
+    while (client->powerSaveQueueCount != 0) {
         mbuf_t packet =
-            runtime->powerSaveQueue[runtime->powerSaveQueueHead];
-        runtime->powerSaveQueue[runtime->powerSaveQueueHead] = NULL;
-        runtime->powerSaveQueueHead = static_cast<uint8_t>(
-            (runtime->powerSaveQueueHead + 1) %
-            ItlApFirmwareRuntime::kPowerSaveQueueLength);
-        runtime->powerSaveQueueCount--;
+            client->powerSaveQueue[client->powerSaveQueueHead];
+        client->powerSaveQueue[client->powerSaveQueueHead] = NULL;
+        client->powerSaveQueueHead = static_cast<uint8_t>(
+            (client->powerSaveQueueHead + 1) %
+            ItlApFirmwareClientRuntime::kPowerSaveQueueLength);
+        client->powerSaveQueueCount--;
         if (packet != NULL)
             mbuf_freem(packet);
     }
-    runtime->powerSaveQueueHead = 0;
-    runtime->powerSaveQueueTail = 0;
-    runtime->clientPowerSave = false;
-    runtime->timSet = false;
+    client->powerSaveQueueHead = 0;
+    client->powerSaveQueueTail = 0;
+    client->clientPowerSave = false;
+    client->timSet = false;
 }
 
 static inline void
-itl_ap_firmware_sae_reset(struct ItlApFirmwareRuntime *runtime)
+itl_ap_firmware_sae_reset(struct ItlApFirmwareClientRuntime *client)
 {
-    if (runtime == NULL)
+    if (client == NULL)
         return;
-    if (runtime->localAuthMagic == kItlApLocalAuthMagic)
-        ieee80211_sae_ap_destroy(&runtime->sae);
-    else
-        runtime->sae = NULL;
-    explicit_bzero(runtime->pmk, sizeof(runtime->pmk));
+    ieee80211_sae_ap_destroy(&client->sae);
+    explicit_bzero(client->pmk, sizeof(client->pmk));
 }
 
 static inline void
-itl_ap_firmware_client_crypto_reset(struct ItlApFirmwareRuntime *runtime)
+itl_ap_firmware_client_crypto_reset(
+    struct ItlApFirmwareClientRuntime *client)
 {
-    if (runtime == NULL)
+    if (client == NULL)
         return;
-    runtime->clientAuthorized = false;
-    runtime->clientPairwiseKeyInstalled = false;
-    runtime->clientPairwiseTxPn = 0;
-    explicit_bzero(runtime->clientPairwiseKey,
-                   sizeof(runtime->clientPairwiseKey));
-    explicit_bzero(runtime->clientRxPn, sizeof(runtime->clientRxPn));
-    itl_ap_firmware_power_save_purge(runtime);
-    runtime->localRsnState = 0;
-    runtime->replayCounter = 0;
-    explicit_bzero(runtime->anonce, sizeof(runtime->anonce));
-    explicit_bzero(&runtime->ptk, sizeof(runtime->ptk));
+    client->clientAuthorized = false;
+    client->clientPairwiseKeyInstalled = false;
+    client->clientPairwiseTxPn = 0;
+    explicit_bzero(client->clientPairwiseKey,
+                   sizeof(client->clientPairwiseKey));
+    explicit_bzero(client->clientRxPn, sizeof(client->clientRxPn));
+    itl_ap_firmware_power_save_purge(client);
+    client->localRsnState = 0;
+    client->replayCounter = 0;
+    explicit_bzero(client->anonce, sizeof(client->anonce));
+    explicit_bzero(&client->ptk, sizeof(client->ptk));
+}
+
+static inline void
+itl_ap_firmware_client_reset(struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL)
+        return;
+    itl_ap_firmware_sae_reset(client);
+    itl_ap_firmware_power_save_purge(client);
+    explicit_bzero(client, sizeof(*client));
+    client->staId = UINT8_MAX;
+    client->queueId = UINT16_MAX;
 }
 
 static inline void
@@ -149,16 +167,149 @@ itl_ap_firmware_runtime_reset(struct ItlApFirmwareRuntime *runtime)
 {
     if (runtime == NULL)
         return;
-    if (runtime->localAuthMagic == kItlApLocalAuthMagic)
-        itl_ap_firmware_sae_reset(runtime);
-    if (runtime->localAuthMagic == kItlApLocalAuthMagic)
-        itl_ap_firmware_power_save_purge(runtime);
+    if (runtime->localAuthMagic == kItlApLocalAuthMagic) {
+        for (size_t index = 0; index < kItlApFirmwareMaxClients; index++)
+            itl_ap_firmware_client_reset(&runtime->clients[index]);
+    }
     explicit_bzero(runtime, sizeof(*runtime));
     runtime->localAuthMagic = kItlApLocalAuthMagic;
     runtime->stage = kItlApFirmwareResourceIdle;
     runtime->broadcastQueueId = UINT16_MAX;
     runtime->multicastQueueId = UINT16_MAX;
-    runtime->clientQueueId = UINT16_MAX;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        runtime->clients[index].staId = UINT8_MAX;
+        runtime->clients[index].queueId = UINT16_MAX;
+    }
+}
+
+static inline size_t
+itl_ap_firmware_client_limit(const struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || runtime->config.maxStations == 0)
+        return 0;
+    return MIN(static_cast<size_t>(runtime->config.maxStations),
+               static_cast<size_t>(kItlApFirmwareMaxClients));
+}
+
+static inline int
+itl_ap_firmware_set_client_limit(struct ItlApFirmwareRuntime *runtime,
+                                 uint32_t maxStations)
+{
+    if (runtime == NULL || maxStations == 0)
+        return EINVAL;
+    uint32_t effective = MIN(
+        maxStations, static_cast<uint32_t>(kItlApFirmwareMaxClients));
+    /* A live maxassoc reduction must never orphan an existing station in a
+     * now-unsearchable slot.  Apple supplies current+requested to firmware,
+     * but slot churn can leave a live client above that numeric count. */
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        if (runtime->clients[index].inUse)
+            effective = MAX(effective, static_cast<uint32_t>(index + 1));
+    }
+    runtime->config.maxStations = effective;
+    return 0;
+}
+
+static inline struct ItlApFirmwareClientRuntime *
+itl_ap_firmware_find_client(struct ItlApFirmwareRuntime *runtime,
+                            const uint8_t *station)
+{
+    if (runtime == NULL || station == NULL)
+        return NULL;
+    const size_t limit = itl_ap_firmware_client_limit(runtime);
+    for (size_t index = 0; index < limit; index++) {
+        struct ItlApFirmwareClientRuntime *client =
+            &runtime->clients[index];
+        if (client->inUse &&
+            IEEE80211_ADDR_EQ(client->clientMac, station))
+            return client;
+    }
+    return NULL;
+}
+
+static inline struct ItlApFirmwareClientRuntime *
+itl_ap_firmware_allocate_client(struct ItlApFirmwareRuntime *runtime,
+                                const uint8_t *station)
+{
+    struct ItlApFirmwareClientRuntime *existing =
+        itl_ap_firmware_find_client(runtime, station);
+    if (existing != NULL)
+        return existing;
+    if (runtime == NULL || station == NULL)
+        return NULL;
+    const size_t limit = itl_ap_firmware_client_limit(runtime);
+    for (size_t index = 0; index < limit; index++) {
+        struct ItlApFirmwareClientRuntime *client =
+            &runtime->clients[index];
+        if (client->inUse)
+            continue;
+        itl_ap_firmware_client_reset(client);
+        client->inUse = true;
+        client->staId = static_cast<uint8_t>(
+            runtime->firstClientStaId + index);
+        client->clientAid = static_cast<uint16_t>(index + 1);
+        IEEE80211_ADDR_COPY(client->clientMac, station);
+        return client;
+    }
+    /* Authentication state has no firmware resource yet.  Reclaim one such
+     * incomplete slot so a stream of abandoned Auth/SAE commits cannot lock
+     * every association slot indefinitely. */
+    for (size_t index = 0; index < limit; index++) {
+        struct ItlApFirmwareClientRuntime *client =
+            &runtime->clients[index];
+        if (client->clientAssociated || client->clientStationInstalled)
+            continue;
+        itl_ap_firmware_client_reset(client);
+        client->inUse = true;
+        client->staId = static_cast<uint8_t>(
+            runtime->firstClientStaId + index);
+        client->clientAid = static_cast<uint16_t>(index + 1);
+        IEEE80211_ADDR_COPY(client->clientMac, station);
+        return client;
+    }
+    return NULL;
+}
+
+static inline size_t
+itl_ap_firmware_client_index(const struct ItlApFirmwareRuntime *runtime,
+                             const struct ItlApFirmwareClientRuntime *client)
+{
+    if (runtime == NULL || client == NULL ||
+        client < &runtime->clients[0] ||
+        client >= &runtime->clients[kItlApFirmwareMaxClients])
+        return SIZE_MAX;
+    return static_cast<size_t>(client - &runtime->clients[0]);
+}
+
+static inline struct ItlApFirmwareClientRuntime *
+itl_ap_firmware_client_at(struct ItlApFirmwareRuntime *runtime, size_t index)
+{
+    if (runtime == NULL || index >= itl_ap_firmware_client_limit(runtime) ||
+        !runtime->clients[index].inUse)
+        return NULL;
+    return &runtime->clients[index];
+}
+
+static inline struct ItlApFirmwareClientRuntime *
+itl_ap_firmware_find_tx_client(struct ItlApFirmwareRuntime *runtime,
+                               const uint8_t *destination)
+{
+    if (runtime == NULL || destination == NULL)
+        return NULL;
+    if (!IEEE80211_IS_MULTICAST(destination)) {
+        struct ItlApFirmwareClientRuntime *client =
+            itl_ap_firmware_find_client(runtime, destination);
+        return client != NULL && client->clientAssociated ? client : NULL;
+    }
+    const size_t limit = itl_ap_firmware_client_limit(runtime);
+    for (size_t index = 0; index < limit; index++) {
+        if (runtime->clients[index].inUse &&
+            runtime->clients[index].clientAssociated &&
+            (runtime->config.rsnIELength == 0 ||
+             runtime->clients[index].clientAuthorized))
+            return &runtime->clients[index];
+    }
+    return NULL;
 }
 
 static inline int
@@ -175,6 +326,7 @@ itl_ap_firmware_runtime_snapshot(struct ItlApFirmwareRuntime *runtime,
         config->beaconTemplate == NULL || config->beaconTemplateLength == 0 ||
         config->beaconTemplateLength > sizeof(runtime->beacon) ||
         config->channel == 0 || config->channel > IEEE80211_CHAN_MAX ||
+        config->maxStations == 0 ||
         config->beaconInterval == 0 || config->dtimPeriod == 0 ||
         IEEE80211_IS_MULTICAST(config->bssid) ||
         IEEE80211_ADDR_EQ(config->bssid, etheranyaddr))
@@ -182,6 +334,9 @@ itl_ap_firmware_runtime_snapshot(struct ItlApFirmwareRuntime *runtime,
 
     itl_ap_firmware_runtime_reset(runtime);
     runtime->config = *config;
+    runtime->config.maxStations = MIN(
+        config->maxStations,
+        static_cast<uint32_t>(kItlApFirmwareMaxClients));
     memcpy(runtime->ssid, config->ssid, config->ssidLength);
     if (config->credentialLength != 0)
         memcpy(runtime->credential, config->credential,

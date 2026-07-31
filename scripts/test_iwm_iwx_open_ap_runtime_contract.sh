@@ -55,7 +55,7 @@ for needle, label in (
     require(shared, needle, label)
 
 for field in (
-    "clientQueueId", "clientAid", "clientMac", "clientStationMac",
+    "queueId", "clientAid", "clientMac", "clientStationMac",
     "clientAssociationPending", "clientAuthenticated", "clientAssociated",
     "clientAuthorized", "clientStationInstalled",
 ):
@@ -74,7 +74,10 @@ for family, hal, lower, task_sig, rx_sig, add_name in (
     require(hal, "getAPTxFreeSpace() const", f"{family} AP free space")
     require(lower, "ap_frame = true", f"{family} raw AP TX ownership")
     task = body(lower, task_sig)
-    require(task, "runtime->clientAid = 1", f"{family} firmware client AID")
+    require(task, "ItlApFirmwareClientRuntime *client",
+            f"{family} per-client firmware state")
+    require(task, "for (size_t index = 0; index < limit; index++)",
+            f"{family} bounded client task table")
     require(task, add_name, f"{family} deferred firmware station add")
     require(task, "itl_ap_open_build_assoc_success", f"{family} deferred assoc reply")
     rx = body(lower, rx_sig)
@@ -87,16 +90,19 @@ for family, hal, lower, task_sig, rx_sig, add_name in (
     require(lower, "airportItlwmRequestAPTxDequeue", f"{family} completion dequeue")
 
 require(body(iwm_mac, "iwm_ap_add_internal_sta(struct iwm_softc *sc,"),
-        "command.assoc_id = htole16(runtime->clientAid)",
+        "command.assoc_id = htole16(assocId)",
         "IWM ADD_STA AID")
 require(iwm_reg, "IWM_DQA_AP_CLIENT_QUEUE", "IWM dedicated AP client queue")
+require(iwm_reg, "IWM_DQA_AP_CLIENT_QUEUE_COUNT 4",
+        "IWM four dedicated AP client queues")
 require(body(iwm_tx, "iwm_alloc_tx_ring(iwm_softc *sc,"),
-        "qid != IWM_DQA_AP_CLIENT_QUEUE", "IWM AP client DMA ring allocation")
+        "qid >= IWM_DQA_AP_CLIENT_QUEUE + IWM_DQA_AP_CLIENT_QUEUE_COUNT",
+        "IWM AP client DMA ring allocation")
 require(body(iwm_mac, "iwm_ap_add_client_sta(struct iwm_softc *sc,"),
-        "const uint8_t queueId = IWM_DQA_AP_CLIENT_QUEUE",
+        "IWM_DQA_AP_CLIENT_QUEUE + clientIndex",
         "IWM AP client queue selection")
 require(body(iwx, "iwx_ap_add_internal_sta(struct iwx_softc *sc,"),
-        "command.assoc_id = htole16(runtime->clientAid)",
+        "command.assoc_id = htole16(assocId)",
         "IWX ADD_STA AID")
 
 require(iwm_rx, "iwm_ap_handle_rx(sc, m, mbuf_pkthdr_len(m),",
