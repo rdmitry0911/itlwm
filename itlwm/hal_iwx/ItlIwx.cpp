@@ -1421,6 +1421,10 @@ sendAPStationCommand(const struct ItlHalApStationCommand *command)
         apRuntime.clientAid = 0;
         apRuntime.clientAssocIEsLength = 0;
         itl_ap_firmware_client_crypto_reset(&apRuntime);
+        apRuntime.clientRsnIELength = 0;
+        explicit_bzero(apRuntime.clientRsnIE,
+                       sizeof(apRuntime.clientRsnIE));
+        itl_ap_firmware_sae_reset(&apRuntime);
         return iwx_ap_remove_client_sta(&com, &apRuntime) == 0 ?
             kIOReturnSuccess : kIOReturnError;
     }
@@ -10756,6 +10760,8 @@ iwx_ap_set_ccmp_key(struct iwx_softc *sc, uint8_t staId, bool pairwise,
          IWX_STA_KEY_FLG_KEYID_MSK);
     if (!pairwise)
         keyFlags |= IWX_STA_KEY_MULTICAST;
+    else if (itl_ap_client_uses_local_sae(&apRuntime))
+        keyFlags |= IWX_STA_KEY_MFP;
     command.common.key_flags = htole16(keyFlags);
     memcpy(command.common.key, keyBytes, keyLength);
     if (rscBytes != NULL && rscLength >= 6) {
@@ -10794,13 +10800,33 @@ iwx_ap_reply_to_mbuf(const struct ItlApOpenRxResult *result, mbuf_t *packet)
     return 0;
 }
 
+static int
+iwx_ap_send_local_eapol(ItlIwx *that,
+                        const struct ItlApFirmwareRuntime *runtime,
+                        const void *eapol, size_t eapolLength)
+{
+    mbuf_t packet = NULL;
+    int error = itl_ap_local_eapol_packet(
+        runtime, eapol, eapolLength, &packet);
+    if (error != 0)
+        return error;
+    const IOReturn result = that->transmitAPData(packet);
+    if (result != kIOReturnSuccess) {
+        mbuf_freem(packet);
+        return EIO;
+    }
+    return 0;
+}
+
 static void
 iwx_ap_publish_station(struct iwx_softc *sc,
-                       const struct ItlApFirmwareRuntime *runtime, int event)
+                       const struct ItlApFirmwareRuntime *runtime, int event,
+                       const uint8_t *station = NULL)
 {
     struct ieee80211_node witness;
     bzero(&witness, sizeof(witness));
-    IEEE80211_ADDR_COPY(witness.ni_macaddr, runtime->clientMac);
+    IEEE80211_ADDR_COPY(witness.ni_macaddr,
+                        station != NULL ? station : runtime->clientMac);
     if (runtime->clientAssocIEsLength != 0) {
         witness.ni_rsnie_tlv = const_cast<uint8_t *>(runtime->clientAssocIEs);
         witness.ni_rsnie_tlv_len =
@@ -10852,6 +10878,19 @@ iwx_ap_client_task(void *arg)
         runtime->clientAssociated = true;
         runtime->clientAuthorized = !itl_ap_client_is_secure(runtime);
         iwx_ap_publish_station(sc, runtime, IEEE80211_APSTA_EVENT_ASSOC);
+        if (itl_ap_client_uses_local_sae(runtime)) {
+            uint8_t m1[sizeof(struct ieee80211_eapol_key)];
+            size_t m1Length = 0;
+            error = itl_ap_local_sae_build_m1(
+                runtime, m1, sizeof(m1), &m1Length);
+            if (error == 0)
+                error = iwx_ap_send_local_eapol(
+                    that, runtime, m1, m1Length);
+            itl_ap_local_sae_note_m1_result(runtime, error == 0);
+            explicit_bzero(m1, sizeof(m1));
+            XYLog("%s: IWX AP WPA3 SAE M1 queue=%d replay=%llu\n",
+                  DEVNAME(sc), error, runtime->replayCounter);
+        }
 #if __IO80211_TARGET >= __MAC_26_0
         airportItlwmRequestAPTxDequeue(that->getController());
 #endif
@@ -10896,16 +10935,10 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
             reinterpret_cast<const struct ieee80211_frame *>(result.reply);
         const uint8_t subtype = reply->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
         if (subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
-            if (apRuntime.clientAssociated)
+            if (result.authenticationReplacesAssociation)
                 iwx_ap_publish_station(sc, &apRuntime,
-                                       IEEE80211_APSTA_EVENT_LEAVE);
-            apRuntime.clientAssociationPending = false;
-            apRuntime.clientAuthenticated = false;
-            apRuntime.clientAssociated = false;
-            apRuntime.clientAuthorized = false;
-            apRuntime.clientAid = 0;
-            apRuntime.clientAssocIEsLength = 0;
-            itl_ap_firmware_client_crypto_reset(&apRuntime);
+                    IEEE80211_APSTA_EVENT_LEAVE,
+                    result.departingStation);
         }
         mbuf_t response = NULL;
         if (error == 0)
@@ -10917,7 +10950,7 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
             mbuf_freem(response);
         if (error == 0 && subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
             IEEE80211_ADDR_COPY(apRuntime.clientMac, result.station);
-            apRuntime.clientAuthenticated = true;
+            apRuntime.clientAuthenticated = result.authenticationComplete;
         }
     } else if (error == 0 &&
                result.disposition == kItlApOpenRxAssociate) {
@@ -10934,7 +10967,89 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
             iwx_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
         }
     } else if (error == 0 && result.disposition == kItlApOpenRxData) {
-        if (apFrames != NULL && result.ethernetPacket != NULL) {
+        bool localEapol = false;
+        if (itl_ap_client_uses_local_sae(&apRuntime) &&
+            result.ethernetPacket != NULL &&
+            mbuf_pkthdr_len(result.ethernetPacket) >= ETHER_HDR_LEN) {
+            struct ether_header ethernet;
+            if (mbuf_copydata(result.ethernetPacket, 0,
+                    sizeof(ethernet), &ethernet) == 0 &&
+                ethernet.ether_type == htons(ETHERTYPE_PAE)) {
+                localEapol = true;
+                const size_t eapolLength =
+                    mbuf_pkthdr_len(result.ethernetPacket) - ETHER_HDR_LEN;
+                uint8_t eapol[512];
+                if (eapolLength > sizeof(eapol) ||
+                    mbuf_copydata(result.ethernetPacket, ETHER_HDR_LEN,
+                        eapolLength, eapol) != 0) {
+                    error = EINVAL;
+                } else {
+                    enum ItlApLocalEapolAction action;
+                    error = itl_ap_local_sae_handle_eapol(
+                        &apRuntime, eapol, eapolLength, &action);
+                    if (error == 0 && action == kItlApLocalEapolSendM3) {
+                        struct ItlHalApKey gtk = {
+                            .station = NULL,
+                            .flags = kItlHalApKeyGroup,
+                            .keyIndex = apRuntime.gtkKeyId,
+                            .cipher = kItlHalApCipherAesCcm,
+                            .keyData = apRuntime.gtk,
+                            .keyLength = sizeof(apRuntime.gtk),
+                            .rsc = NULL,
+                            .rscLength = 0,
+                        };
+                        if (setAPKey(&gtk) != kIOReturnSuccess) {
+                            error = EIO;
+                        } else {
+                            uint8_t m3[256];
+                            size_t m3Length = 0;
+                            error = itl_ap_local_sae_build_m3(
+                                &sc->sc_ic, &apRuntime,
+                                m3, sizeof(m3), &m3Length);
+                            if (error == 0)
+                                error = iwx_ap_send_local_eapol(
+                                    this, &apRuntime, m3, m3Length);
+                            itl_ap_local_sae_note_m3_result(
+                                &apRuntime, error == 0);
+                            explicit_bzero(m3, sizeof(m3));
+                            XYLog("%s: IWX AP WPA3 M2 accepted M3=%d "
+                                  "replay=%llu\n", DEVNAME(sc), error,
+                                  apRuntime.replayCounter);
+                        }
+                    } else if (error == 0 &&
+                               action == kItlApLocalEapolInstallPairwise) {
+                        struct ItlHalApKey ptk = {
+                            .station = apRuntime.clientMac,
+                            .flags = kItlHalApKeyPairwise,
+                            .keyIndex = 0,
+                            .cipher = kItlHalApCipherAesCcm,
+                            .keyData = apRuntime.ptk.tk,
+                            .keyLength = sizeof(apRuntime.clientPairwiseKey),
+                            .rsc = NULL,
+                            .rscLength = 0,
+                        };
+                        struct ItlHalApStationCommand authorize = {
+                            .command = kItlHalApStationAuthorize,
+                            .station = apRuntime.clientMac,
+                        };
+                        const bool installed =
+                            setAPKey(&ptk) == kIOReturnSuccess &&
+                            sendAPStationCommand(&authorize) ==
+                                kIOReturnSuccess;
+                        itl_ap_local_sae_complete_4way(
+                            &apRuntime, installed);
+                        if (!installed)
+                            error = EIO;
+                        XYLog("%s: IWX AP WPA3 4-way complete "
+                              "authorized=%u\n", DEVNAME(sc),
+                              installed ? 1U : 0U);
+                    }
+                    explicit_bzero(eapol, sizeof(eapol));
+                }
+            }
+        }
+        if (!localEapol && apFrames != NULL &&
+            result.ethernetPacket != NULL) {
             ml_enqueue(apFrames, result.ethernetPacket);
             result.ethernetPacket = NULL;
         }
@@ -10952,6 +11067,10 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
         apRuntime.clientAid = 0;
         apRuntime.clientAssocIEsLength = 0;
         itl_ap_firmware_client_crypto_reset(&apRuntime);
+        apRuntime.clientRsnIELength = 0;
+        explicit_bzero(apRuntime.clientRsnIE,
+                       sizeof(apRuntime.clientRsnIE));
+        itl_ap_firmware_sae_reset(&apRuntime);
     }
     if (error != 0)
         XYLog("%s: IWX open AP RX action=%u error=%d\n", DEVNAME(sc),

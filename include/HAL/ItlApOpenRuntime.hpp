@@ -16,6 +16,7 @@
 #include <net/ethernet.h>
 #include <net/if_llc.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_crypto.h>
 
 enum ItlApOpenRxDisposition : uint8_t {
     kItlApOpenRxNotOurs = 0,
@@ -32,6 +33,22 @@ struct ItlApOpenRxResult {
     uint8_t *reply;
     size_t replyLength;
     mbuf_t ethernetPacket;
+    bool authenticationComplete;
+    bool authenticationReplacesAssociation;
+    uint8_t departingStation[IEEE80211_ADDR_LEN];
+};
+
+enum ItlApLocalRsnState : uint8_t {
+    kItlApLocalRsnDisabled = 0,
+    kItlApLocalRsnWaitM2,
+    kItlApLocalRsnWaitM4,
+    kItlApLocalRsnAuthorized,
+};
+
+enum ItlApLocalEapolAction : uint8_t {
+    kItlApLocalEapolConsumed = 0,
+    kItlApLocalEapolSendM3,
+    kItlApLocalEapolInstallPairwise,
 };
 
 /* OpenBSD's M_DEVBUF compatibility tag is private to the IWM headers. */
@@ -104,17 +121,100 @@ itl_ap_wpa2_config_supported(const struct ItlHalApConfig *config)
 }
 
 static inline bool
+itl_ap_wpa3_rsn_ie_supported(const uint8_t *rsnIE, size_t rsnIELength)
+{
+    if (rsnIE == NULL || rsnIELength < 26 || rsnIELength > 64 ||
+        rsnIE[0] != IEEE80211_ELEMID_RSN ||
+        static_cast<size_t>(rsnIE[1]) + 2 != rsnIELength)
+        return false;
+
+    static const uint8_t ccmpSuite[] = { 0x00, 0x0f, 0xac, 0x04 };
+    static const uint8_t saeSuite[] = { 0x00, 0x0f, 0xac, 0x08 };
+    static const uint8_t bipCmac128Suite[] = { 0x00, 0x0f, 0xac, 0x06 };
+    const uint8_t *cursor = rsnIE + 2;
+    const uint8_t *end = rsnIE + rsnIELength;
+    if (cursor + 2 + sizeof(ccmpSuite) + 2 > end ||
+        LE_READ_2(cursor) != 1 ||
+        memcmp(cursor + 2, ccmpSuite, sizeof(ccmpSuite)) != 0)
+        return false;
+    cursor += 2 + sizeof(ccmpSuite);
+    const uint16_t pairwiseCount = LE_READ_2(cursor);
+    cursor += 2;
+    if (pairwiseCount == 0 ||
+        pairwiseCount > static_cast<uint16_t>((end - cursor) / 4))
+        return false;
+    bool hasCCMP = false;
+    for (uint16_t i = 0; i < pairwiseCount; i++) {
+        if (memcmp(cursor + i * 4, ccmpSuite, sizeof(ccmpSuite)) == 0)
+            hasCCMP = true;
+    }
+    cursor += pairwiseCount * 4;
+    if (!hasCCMP || cursor + 2 > end)
+        return false;
+    const uint16_t akmCount = LE_READ_2(cursor);
+    cursor += 2;
+    if (akmCount == 0 ||
+        akmCount > static_cast<uint16_t>((end - cursor) / 4))
+        return false;
+    bool hasSAE = false;
+    for (uint16_t i = 0; i < akmCount; i++) {
+        if (memcmp(cursor + i * 4, saeSuite, sizeof(saeSuite)) == 0)
+            hasSAE = true;
+    }
+    cursor += akmCount * 4;
+    if (!hasSAE || cursor + 2 > end ||
+        (LE_READ_2(cursor) & 0x00c0) != 0x00c0)
+        return false;
+    cursor += 2;
+    if (cursor + 2 > end)
+        return false;
+    const uint16_t pmkidCount = LE_READ_2(cursor);
+    cursor += 2;
+    const size_t pmkidBytes = static_cast<size_t>(pmkidCount) *
+        IEEE80211_PMKID_LEN;
+    if (pmkidBytes > static_cast<size_t>(end - cursor))
+        return false;
+    cursor += pmkidBytes;
+    return cursor + sizeof(bipCmac128Suite) <= end &&
+        memcmp(cursor, bipCmac128Suite, sizeof(bipCmac128Suite)) == 0;
+}
+
+static inline bool
+itl_ap_wpa3_config_supported(const struct ItlHalApConfig *config)
+{
+#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE && !defined(IEEE80211_STA_ONLY)
+    return config != NULL && config->authUpper == 0x1000 &&
+        config->credential != NULL && config->credentialLength >= 8 &&
+        config->credentialLength <= 63 &&
+        itl_ap_wpa3_rsn_ie_supported(config->rsnIE,
+                                      config->rsnIELength);
+#else
+    (void)config;
+    return false;
+#endif
+}
+
+static inline bool
 itl_ap_client_config_supported(const struct ItlHalApConfig *config)
 {
     return itl_ap_open_config_supported(config) ||
-        itl_ap_wpa2_config_supported(config);
+        itl_ap_wpa2_config_supported(config) ||
+        itl_ap_wpa3_config_supported(config);
 }
 
 static inline bool
 itl_ap_client_is_secure(const struct ItlApFirmwareRuntime *runtime)
 {
     return runtime != NULL &&
-        itl_ap_wpa2_config_supported(&runtime->config);
+        (itl_ap_wpa2_config_supported(&runtime->config) ||
+         itl_ap_wpa3_config_supported(&runtime->config));
+}
+
+static inline bool
+itl_ap_client_uses_local_sae(const struct ItlApFirmwareRuntime *runtime)
+{
+    return runtime != NULL &&
+        itl_ap_wpa3_config_supported(&runtime->config);
 }
 
 static inline uint64_t
@@ -243,8 +343,22 @@ itl_ap_open_build_probe_response(const struct ItlApFirmwareRuntime *runtime,
     return 0;
 }
 
+static inline void
+itl_ap_open_begin_client_auth(struct ItlApFirmwareRuntime *runtime)
+{
+    runtime->clientAssociationPending = false;
+    runtime->clientAuthenticated = false;
+    runtime->clientAssociated = false;
+    runtime->clientAuthorized = false;
+    runtime->clientAid = 0;
+    runtime->clientAssocIEsLength = 0;
+    itl_ap_firmware_client_crypto_reset(runtime);
+    runtime->clientRsnIELength = 0;
+    explicit_bzero(runtime->clientRsnIE, sizeof(runtime->clientRsnIE));
+}
+
 static inline int
-itl_ap_open_build_auth_response(const struct ItlApFirmwareRuntime *runtime,
+itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
                                 const struct ieee80211_frame *request,
                                 size_t frameLength,
                                 struct ItlApOpenRxResult *result)
@@ -262,15 +376,81 @@ itl_ap_open_build_auth_response(const struct ItlApFirmwareRuntime *runtime,
     result->disposition = kItlApOpenRxConsumed;
     const uint8_t *body = reinterpret_cast<const uint8_t *>(request) +
         headerLength;
-    if (LE_READ_2(body) != IEEE80211_AUTH_ALG_OPEN ||
-        LE_READ_2(body + 2) != IEEE80211_AUTH_OPEN_REQUEST ||
-        LE_READ_2(body + 4) != IEEE80211_STATUS_SUCCESS)
-        return 0;
+    const uint16_t algorithm = LE_READ_2(body);
+    const uint16_t transaction = LE_READ_2(body + 2);
+    const uint16_t peerStatus = LE_READ_2(body + 4);
+    uint16_t responseStatus = IEEE80211_STATUS_SUCCESS;
+    uint16_t responseTransaction = IEEE80211_AUTH_OPEN_RESPONSE;
+    uint8_t saeBody[IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN];
+    bzero(saeBody, sizeof(saeBody));
+    size_t saeBodyLength = 0;
+    bool authenticationComplete = false;
 
-    const size_t responseLength = headerLength + 6;
+    if (algorithm == IEEE80211_AUTH_ALG_SAE &&
+        itl_ap_client_uses_local_sae(runtime)) {
+        if (peerStatus != IEEE80211_SAE_AP_STATUS_SUCCESS ||
+            (transaction != 1 && transaction != 2)) {
+            responseStatus = IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+            responseTransaction = transaction;
+        } else if (transaction == 1) {
+            result->authenticationReplacesAssociation =
+                runtime->clientAssociated;
+            IEEE80211_ADDR_COPY(result->departingStation,
+                                runtime->clientMac);
+            itl_ap_firmware_sae_reset(runtime);
+            itl_ap_open_begin_client_auth(runtime);
+            responseStatus = ieee80211_sae_ap_begin_hnp(
+                runtime->config.bssid, request->i_addr2,
+                runtime->credential, runtime->config.credentialLength,
+                body + 6, frameLength - headerLength - 6,
+                &runtime->sae, saeBody, sizeof(saeBody), &saeBodyLength);
+            responseTransaction = 1;
+            IEEE80211_ADDR_COPY(runtime->clientMac, request->i_addr2);
+            if (responseStatus != IEEE80211_SAE_AP_STATUS_SUCCESS)
+                itl_ap_firmware_sae_reset(runtime);
+        } else {
+            responseTransaction = 2;
+            if (runtime->sae == NULL ||
+                !IEEE80211_ADDR_EQ(runtime->clientMac, request->i_addr2)) {
+                responseStatus = IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
+            } else {
+                uint8_t pmkid[IEEE80211_PMKID_LEN];
+                bzero(pmkid, sizeof(pmkid));
+                responseStatus = ieee80211_sae_ap_confirm(
+                    runtime->sae, request->i_addr2,
+                    body + 6, frameLength - headerLength - 6,
+                    saeBody, sizeof(saeBody), &saeBodyLength,
+                    runtime->pmk, sizeof(runtime->pmk),
+                    pmkid, sizeof(pmkid));
+                explicit_bzero(pmkid, sizeof(pmkid));
+                authenticationComplete =
+                    responseStatus == IEEE80211_SAE_AP_STATUS_SUCCESS;
+                if (!authenticationComplete)
+                    explicit_bzero(runtime->pmk, sizeof(runtime->pmk));
+            }
+        }
+    } else if (algorithm == IEEE80211_AUTH_ALG_OPEN &&
+               !itl_ap_client_uses_local_sae(runtime) &&
+               transaction == IEEE80211_AUTH_OPEN_REQUEST &&
+               peerStatus == IEEE80211_STATUS_SUCCESS) {
+        result->authenticationReplacesAssociation =
+            runtime->clientAssociated;
+        IEEE80211_ADDR_COPY(result->departingStation,
+                            runtime->clientMac);
+        itl_ap_open_begin_client_auth(runtime);
+        IEEE80211_ADDR_COPY(runtime->clientMac, request->i_addr2);
+        responseTransaction = IEEE80211_AUTH_OPEN_RESPONSE;
+        authenticationComplete = true;
+    } else {
+        return 0;
+    }
+
+    const size_t responseLength = headerLength + 6 + saeBodyLength;
     int error = itl_ap_open_alloc_reply(responseLength, &result->reply);
-    if (error != 0)
+    if (error != 0) {
+        explicit_bzero(saeBody, sizeof(saeBody));
         return error;
+    }
     struct ieee80211_frame *response =
         reinterpret_cast<struct ieee80211_frame *>(result->reply);
     response->i_fc[0] = IEEE80211_FC0_VERSION_0 |
@@ -281,17 +461,21 @@ itl_ap_open_build_auth_response(const struct ItlApFirmwareRuntime *runtime,
     IEEE80211_ADDR_COPY(response->i_addr2, runtime->config.bssid);
     IEEE80211_ADDR_COPY(response->i_addr3, runtime->config.bssid);
     uint8_t *out = result->reply + headerLength;
-    LE_WRITE_2(out, IEEE80211_AUTH_ALG_OPEN);
-    LE_WRITE_2(out + 2, IEEE80211_AUTH_OPEN_RESPONSE);
-    LE_WRITE_2(out + 4, IEEE80211_STATUS_SUCCESS);
+    LE_WRITE_2(out, algorithm);
+    LE_WRITE_2(out + 2, responseTransaction);
+    LE_WRITE_2(out + 4, responseStatus);
+    if (saeBodyLength != 0)
+        memcpy(out + 6, saeBody, saeBodyLength);
+    explicit_bzero(saeBody, sizeof(saeBody));
     result->replyLength = responseLength;
     result->disposition = kItlApOpenRxReply;
+    result->authenticationComplete = authenticationComplete;
     IEEE80211_ADDR_COPY(result->station, request->i_addr2);
     return 0;
 }
 
 static inline int
-itl_ap_open_parse_assoc(const struct ItlApFirmwareRuntime *runtime,
+itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
                         const struct ieee80211_frame *request,
                         size_t frameLength,
                         struct ItlApOpenRxResult *result)
@@ -331,12 +515,18 @@ itl_ap_open_parse_assoc(const struct ItlApFirmwareRuntime *runtime,
     }
 
     const bool secure = itl_ap_client_is_secure(runtime);
+    const bool localSae = itl_ap_client_uses_local_sae(runtime);
+    const size_t rsnLength = rsn != NULL ?
+        static_cast<size_t>(rsn[1]) + 2 : 0;
+    const bool rsnValid = !secure || (rsn != NULL &&
+        (localSae ? itl_ap_wpa3_rsn_ie_supported(rsn, rsnLength) :
+                    itl_ap_wpa2_rsn_ie_supported(rsn, rsnLength)));
     const bool valid = runtime->clientAuthenticated &&
         IEEE80211_ADDR_EQ(runtime->clientMac, request->i_addr2) &&
+        (!localSae || ieee80211_sae_ap_is_accepted(runtime->sae) != 0) &&
         (capability & IEEE80211_CAPINFO_ESS) != 0 &&
         (secure ? (capability & IEEE80211_CAPINFO_PRIVACY) != 0 &&
-                  rsn != NULL && itl_ap_wpa2_rsn_ie_supported(
-                      rsn, static_cast<size_t>(rsn[1]) + 2)
+                  rsnValid
                 : (capability & IEEE80211_CAPINFO_PRIVACY) == 0 &&
                   rsn == NULL) &&
         ssid != NULL && ssid[1] == runtime->config.ssidLength &&
@@ -345,6 +535,13 @@ itl_ap_open_parse_assoc(const struct ItlApFirmwareRuntime *runtime,
         rates[1] <= IEEE80211_RATE_MAXSIZE;
     if (!valid)
         return 0;
+
+    runtime->clientRsnIELength = 0;
+    explicit_bzero(runtime->clientRsnIE, sizeof(runtime->clientRsnIE));
+    if (secure && rsnLength <= sizeof(runtime->clientRsnIE)) {
+        runtime->clientRsnIELength = rsnLength;
+        memcpy(runtime->clientRsnIE, rsn, rsnLength);
+    }
 
     result->disposition = kItlApOpenRxAssociate;
     IEEE80211_ADDR_COPY(result->station, request->i_addr2);
@@ -573,6 +770,254 @@ itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
 }
 
 static inline int
+itl_ap_local_eapol_packet(const struct ItlApFirmwareRuntime *runtime,
+                          const void *eapol, size_t eapolLength,
+                          mbuf_t *packet)
+{
+    if (runtime == NULL || eapol == NULL || packet == NULL ||
+        eapolLength < sizeof(struct ieee80211_eapol_key) ||
+        eapolLength > MCLBYTES - ETHER_HDR_LEN)
+        return EINVAL;
+    const size_t packetLength = ETHER_HDR_LEN + eapolLength;
+    unsigned int maxChunks = 1;
+    *packet = NULL;
+    if (mbuf_allocpacket(MBUF_DONTWAIT, packetLength, &maxChunks, packet) != 0 ||
+        *packet == NULL)
+        return ENOMEM;
+    mbuf_setlen(*packet, packetLength);
+    mbuf_pkthdr_setlen(*packet, packetLength);
+    struct ether_header *ethernet = mtod(*packet, struct ether_header *);
+    IEEE80211_ADDR_COPY(ethernet->ether_dhost, runtime->clientMac);
+    IEEE80211_ADDR_COPY(ethernet->ether_shost, runtime->config.bssid);
+    ethernet->ether_type = htons(ETHERTYPE_PAE);
+    memcpy(reinterpret_cast<uint8_t *>(ethernet) + ETHER_HDR_LEN,
+           eapol, eapolLength);
+    return 0;
+}
+
+static inline int
+itl_ap_local_sae_build_m1(struct ItlApFirmwareRuntime *runtime,
+                          uint8_t *frame, size_t frameCapacity,
+                          size_t *frameLength)
+{
+    if (!itl_ap_client_uses_local_sae(runtime) || frame == NULL ||
+        frameLength == NULL || frameCapacity < sizeof(struct ieee80211_eapol_key) ||
+        !runtime->clientAssociated ||
+        ieee80211_sae_ap_is_accepted(runtime->sae) == 0)
+        return EINVAL;
+    bzero(frame, frameCapacity);
+    struct ieee80211_eapol_key *key =
+        reinterpret_cast<struct ieee80211_eapol_key *>(frame);
+    key->version = EAPOL_VERSION;
+    key->type = EAPOL_KEY;
+    key->desc = EAPOL_KEY_DESC_IEEE80211;
+    BE_WRITE_2(key->info, EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK |
+        EAPOL_KEY_DESC_AKM_DEFINED);
+    BE_WRITE_2(key->keylen, 16);
+    runtime->replayCounter = 1;
+    BE_WRITE_8(key->replaycnt, runtime->replayCounter);
+    arc4random_buf(runtime->anonce, sizeof(runtime->anonce));
+    memcpy(key->nonce, runtime->anonce, sizeof(key->nonce));
+    BE_WRITE_2(key->paylen, 0);
+    BE_WRITE_2(key->len, sizeof(*key) - 4);
+    runtime->localRsnState = kItlApLocalRsnWaitM2;
+    *frameLength = sizeof(*key);
+    return 0;
+}
+
+static inline void
+itl_ap_local_sae_note_m1_result(struct ItlApFirmwareRuntime *runtime,
+                                bool sent)
+{
+    if (runtime != NULL && !sent) {
+        runtime->localRsnState = kItlApLocalRsnDisabled;
+        runtime->replayCounter = 0;
+        explicit_bzero(runtime->anonce, sizeof(runtime->anonce));
+    }
+}
+
+static inline int
+itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
+                              const uint8_t *eapol, size_t eapolLength,
+                              enum ItlApLocalEapolAction *action)
+{
+    if (action != NULL)
+        *action = kItlApLocalEapolConsumed;
+    if (!itl_ap_client_uses_local_sae(runtime) || action == NULL ||
+        eapol == NULL || eapolLength < sizeof(struct ieee80211_eapol_key) ||
+        eapolLength > 512 || !runtime->clientAssociated)
+        return EINVAL;
+
+    uint8_t frame[512];
+    memcpy(frame, eapol, eapolLength);
+    struct ieee80211_eapol_key *key =
+        reinterpret_cast<struct ieee80211_eapol_key *>(frame);
+    const size_t declaredLength = 4 + BE_READ_2(key->len);
+    const uint16_t keyInfo = BE_READ_2(key->info);
+    const size_t keyDataLength = BE_READ_2(key->paylen);
+    if (key->type != EAPOL_KEY || key->desc != EAPOL_KEY_DESC_IEEE80211 ||
+        declaredLength != eapolLength ||
+        keyDataLength > eapolLength - sizeof(*key) ||
+        (keyInfo & EAPOL_KEY_VERSION_MASK) != EAPOL_KEY_DESC_AKM_DEFINED ||
+        (keyInfo & EAPOL_KEY_PAIRWISE) == 0 ||
+        (keyInfo & EAPOL_KEY_KEYMIC) == 0 ||
+        (keyInfo & (EAPOL_KEY_KEYACK | EAPOL_KEY_REQUEST |
+                    EAPOL_KEY_ERROR)) != 0 ||
+        BE_READ_8(key->replaycnt) != runtime->replayCounter) {
+        explicit_bzero(frame, sizeof(frame));
+        return EACCES;
+    }
+
+    if (runtime->localRsnState == kItlApLocalRsnWaitM2) {
+        const uint8_t *rsn = NULL;
+        const uint8_t *cursor = reinterpret_cast<const uint8_t *>(key + 1);
+        const uint8_t *end = cursor + keyDataLength;
+        while (cursor + 2 <= end) {
+            const size_t elementLength = cursor[1];
+            if (cursor + 2 + elementLength > end)
+                break;
+            if (cursor[0] == IEEE80211_ELEMID_RSN) {
+                rsn = cursor;
+                break;
+            }
+            cursor += 2 + elementLength;
+        }
+        if (rsn == NULL || runtime->clientRsnIELength !=
+                static_cast<size_t>(rsn[1]) + 2 ||
+            memcmp(rsn, runtime->clientRsnIE,
+                   runtime->clientRsnIELength) != 0) {
+            explicit_bzero(frame, sizeof(frame));
+            return EACCES;
+        }
+        struct ieee80211_ptk transientPtk;
+        explicit_bzero(&transientPtk, sizeof(transientPtk));
+        ieee80211_derive_ptk(IEEE80211_AKM_SAE, runtime->pmk,
+            runtime->config.bssid, runtime->clientMac,
+            runtime->anonce, key->nonce, &transientPtk);
+        const int micError =
+            ieee80211_eapol_key_check_mic(key, transientPtk.kck);
+        if (micError != 0) {
+            explicit_bzero(&transientPtk, sizeof(transientPtk));
+            explicit_bzero(frame, sizeof(frame));
+            return EACCES;
+        }
+        memcpy(&runtime->ptk, &transientPtk, sizeof(runtime->ptk));
+        explicit_bzero(&transientPtk, sizeof(transientPtk));
+        explicit_bzero(frame, sizeof(frame));
+        *action = kItlApLocalEapolSendM3;
+        return 0;
+    }
+
+    if (runtime->localRsnState == kItlApLocalRsnWaitM4) {
+        const int micError = keyDataLength == 0 ?
+            ieee80211_eapol_key_check_mic(key, runtime->ptk.kck) : EACCES;
+        explicit_bzero(frame, sizeof(frame));
+        if (micError != 0)
+            return EACCES;
+        *action = kItlApLocalEapolInstallPairwise;
+        return 0;
+    }
+    explicit_bzero(frame, sizeof(frame));
+    return EALREADY;
+}
+
+static inline int
+itl_ap_local_sae_build_m3(struct ieee80211com *ic,
+                          struct ItlApFirmwareRuntime *runtime,
+                          uint8_t *frame, size_t frameCapacity,
+                          size_t *frameLength)
+{
+#ifdef IEEE80211_STA_ONLY
+    (void)ic;
+    (void)runtime;
+    (void)frame;
+    (void)frameCapacity;
+    (void)frameLength;
+    return ENOTSUP;
+#else
+    if (ic == NULL || !itl_ap_client_uses_local_sae(runtime) ||
+        frame == NULL || frameLength == NULL || frameCapacity < 256 ||
+        runtime->localRsnState != kItlApLocalRsnWaitM2 ||
+        runtime->clientRsnIELength == 0)
+        return EINVAL;
+    bzero(frame, frameCapacity);
+    struct ieee80211_eapol_key *key =
+        reinterpret_cast<struct ieee80211_eapol_key *>(frame);
+    key->version = EAPOL_VERSION;
+    key->type = EAPOL_KEY;
+    key->desc = EAPOL_KEY_DESC_IEEE80211;
+    BE_WRITE_2(key->info, EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK |
+        EAPOL_KEY_KEYMIC | EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE |
+        EAPOL_KEY_ENCRYPTED | EAPOL_KEY_DESC_AKM_DEFINED);
+    BE_WRITE_2(key->keylen, 16);
+    runtime->replayCounter++;
+    BE_WRITE_8(key->replaycnt, runtime->replayCounter);
+    memcpy(key->nonce, runtime->anonce, sizeof(key->nonce));
+    uint8_t *cursor = reinterpret_cast<uint8_t *>(key + 1);
+    memcpy(cursor, runtime->rsnIE, runtime->config.rsnIELength);
+    cursor += runtime->config.rsnIELength;
+    *cursor++ = IEEE80211_ELEMID_VENDOR;
+    *cursor++ = 6 + sizeof(runtime->gtk);
+    memcpy(cursor, IEEE80211_OUI, 3);
+    cursor += 3;
+    *cursor++ = IEEE80211_KDE_GTK;
+    *cursor++ = runtime->gtkKeyId & 3;
+    *cursor++ = 0;
+    memcpy(cursor, runtime->gtk, sizeof(runtime->gtk));
+    cursor += sizeof(runtime->gtk);
+    *cursor++ = IEEE80211_ELEMID_VENDOR;
+    *cursor++ = 4 + 2 + 6 + sizeof(runtime->igtk);
+    memcpy(cursor, IEEE80211_OUI, 3);
+    cursor += 3;
+    *cursor++ = 9;
+    *cursor++ = runtime->igtkKeyId;
+    *cursor++ = 0;
+    bzero(cursor, 6);
+    cursor += 6;
+    memcpy(cursor, runtime->igtk, sizeof(runtime->igtk));
+    cursor += sizeof(runtime->igtk);
+    const size_t plainLength = static_cast<size_t>(
+        cursor - reinterpret_cast<uint8_t *>(key + 1));
+    if (sizeof(*key) + plainLength + 16 > frameCapacity) {
+        runtime->replayCounter--;
+        explicit_bzero(frame, frameCapacity);
+        return EMSGSIZE;
+    }
+    BE_WRITE_2(key->paylen, plainLength);
+    BE_WRITE_2(key->len, sizeof(*key) + plainLength - 4);
+    ieee80211_eapol_key_encrypt(ic, key, runtime->ptk.kek);
+    ieee80211_eapol_key_mic(key, runtime->ptk.kck);
+    *frameLength = sizeof(*key) + BE_READ_2(key->paylen);
+    return 0;
+#endif
+}
+
+static inline void
+itl_ap_local_sae_note_m3_result(struct ItlApFirmwareRuntime *runtime,
+                                bool sent)
+{
+    if (runtime == NULL)
+        return;
+    if (sent) {
+        runtime->localRsnState = kItlApLocalRsnWaitM4;
+    } else if (runtime->replayCounter != 0) {
+        runtime->replayCounter--;
+    }
+}
+
+static inline void
+itl_ap_local_sae_complete_4way(struct ItlApFirmwareRuntime *runtime,
+                               bool installed)
+{
+    if (runtime == NULL)
+        return;
+    runtime->localRsnState = installed ? kItlApLocalRsnAuthorized :
+                                         kItlApLocalRsnDisabled;
+    if (!installed)
+        explicit_bzero(&runtime->ptk, sizeof(runtime->ptk));
+}
+
+static inline int
 itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
                         mbuf_t packet, size_t frameLength,
                         bool hardwareDecrypted,
@@ -607,6 +1052,13 @@ itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
              IEEE80211_FC0_SUBTYPE_DISASSOC) &&
         IEEE80211_ADDR_EQ(wh->i_addr1, runtime->config.bssid) &&
         IEEE80211_ADDR_EQ(wh->i_addr2, runtime->clientMac)) {
+        if (itl_ap_client_uses_local_sae(runtime) &&
+            runtime->clientAuthorized &&
+            (((wh->i_fc[1] & IEEE80211_FC1_PROTECTED) == 0) ||
+             !hardwareDecrypted)) {
+            result->disposition = kItlApOpenRxConsumed;
+            return 0;
+        }
         result->disposition = kItlApOpenRxDisconnect;
         IEEE80211_ADDR_COPY(result->station, wh->i_addr2);
     }

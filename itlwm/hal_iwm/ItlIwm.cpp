@@ -284,6 +284,10 @@ sendAPStationCommand(const struct ItlHalApStationCommand *command)
         apRuntime.clientAid = 0;
         apRuntime.clientAssocIEsLength = 0;
         itl_ap_firmware_client_crypto_reset(&apRuntime);
+        apRuntime.clientRsnIELength = 0;
+        explicit_bzero(apRuntime.clientRsnIE,
+                       sizeof(apRuntime.clientRsnIE));
+        itl_ap_firmware_sae_reset(&apRuntime);
         return iwm_ap_remove_client_sta(&com, &apRuntime) == 0 ?
             kIOReturnSuccess : kIOReturnError;
     }

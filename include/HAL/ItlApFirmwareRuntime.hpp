@@ -11,6 +11,7 @@
 #define ItlApFirmwareRuntime_hpp
 
 #include <HAL/ItlHalService.hpp>
+#include <net80211/ieee80211_sae_engine.h>
 
 enum ItlApFirmwareResourceStage : uint8_t {
     kItlApFirmwareResourceIdle = 0,
@@ -58,9 +59,43 @@ struct ItlApFirmwareRuntime {
     uint64_t clientPairwiseTxPn;
     uint64_t groupTxPn;
     uint64_t clientRxPn[16];
+
+    /*
+     * WPA3 cannot use Tahoe's WPA2 key callback as its authenticator:
+     * driver-resident SAE is the sole owner of the PMK.  Keep the common
+     * SAE/4-way state next to the firmware-neutral client lifetime so IWM
+     * and IWX cannot acquire different security semantics.
+     */
+    uint32_t localAuthMagic;
+    struct ieee80211_sae_ap *sae;
+    uint8_t localRsnState;
+    uint8_t pmk[IEEE80211_PMK_LEN];
+    uint8_t anonce[EAPOL_KEY_NONCE_LEN];
+    uint8_t gtk[16];
+    uint8_t igtk[16];
+    struct ieee80211_ptk ptk;
+    uint64_t replayCounter;
+    uint8_t clientRsnIE[64];
+    size_t clientRsnIELength;
+    uint8_t gtkKeyId;
+    uint8_t igtkKeyId;
     bool samePhyAsPrimary;
     bool replayAfterWake;
 };
+
+static constexpr uint32_t kItlApLocalAuthMagic = 0x41505333U;
+
+static inline void
+itl_ap_firmware_sae_reset(struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL)
+        return;
+    if (runtime->localAuthMagic == kItlApLocalAuthMagic)
+        ieee80211_sae_ap_destroy(&runtime->sae);
+    else
+        runtime->sae = NULL;
+    explicit_bzero(runtime->pmk, sizeof(runtime->pmk));
+}
 
 static inline void
 itl_ap_firmware_client_crypto_reset(struct ItlApFirmwareRuntime *runtime)
@@ -73,6 +108,10 @@ itl_ap_firmware_client_crypto_reset(struct ItlApFirmwareRuntime *runtime)
     explicit_bzero(runtime->clientPairwiseKey,
                    sizeof(runtime->clientPairwiseKey));
     explicit_bzero(runtime->clientRxPn, sizeof(runtime->clientRxPn));
+    runtime->localRsnState = 0;
+    runtime->replayCounter = 0;
+    explicit_bzero(runtime->anonce, sizeof(runtime->anonce));
+    explicit_bzero(&runtime->ptk, sizeof(runtime->ptk));
 }
 
 static inline void
@@ -80,7 +119,10 @@ itl_ap_firmware_runtime_reset(struct ItlApFirmwareRuntime *runtime)
 {
     if (runtime == NULL)
         return;
+    if (runtime->localAuthMagic == kItlApLocalAuthMagic)
+        itl_ap_firmware_sae_reset(runtime);
     explicit_bzero(runtime, sizeof(*runtime));
+    runtime->localAuthMagic = kItlApLocalAuthMagic;
     runtime->stage = kItlApFirmwareResourceIdle;
     runtime->broadcastQueueId = UINT16_MAX;
     runtime->multicastQueueId = UINT16_MAX;
@@ -123,6 +165,12 @@ itl_ap_firmware_runtime_snapshot(struct ItlApFirmwareRuntime *runtime,
     runtime->config.rsnIE = config->rsnIELength != 0 ?
         runtime->rsnIE : NULL;
     runtime->config.beaconTemplate = runtime->beacon;
+    if (config->authUpper == 0x1000) {
+        arc4random_buf(runtime->gtk, sizeof(runtime->gtk));
+        arc4random_buf(runtime->igtk, sizeof(runtime->igtk));
+        runtime->gtkKeyId = 1;
+        runtime->igtkKeyId = 4;
+    }
     return 0;
 }
 
