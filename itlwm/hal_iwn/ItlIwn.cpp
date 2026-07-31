@@ -3994,6 +3994,7 @@ enum {
     IWN_AP_STAGE_THIRD_BEACON,
     IWN_AP_STAGE_FINAL_RXON_ASSOC,
     IWN_AP_STAGE_FINAL_POWER,
+    IWN_AP_STAGE_FINAL_PAN_PARAMS,
     IWN_AP_STAGE_RUNNING,
     IWN_AP_STAGE_STOP_RXON,
     IWN_AP_STAGE_STOP_PAN_PARAMS
@@ -4098,6 +4099,8 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apFirmwareUnassociatedReplySeen = false;
     apFirmwareUnassociatedNotificationSeen = false;
     apStaPanPriorityActive = false;
+    apStaBssAssociated = false;
+    iwn_set_ap_primary_tx_quiesced(false, false);
     apFirmwareStage = IWN_AP_STAGE_IDLE;
     bzero(&apFirmwareConfig, sizeof(apFirmwareConfig));
     bzero(&apFirmwareRxon, sizeof(apFirmwareRxon));
@@ -4149,6 +4152,41 @@ void ItlIwn::iwn_set_ap_scan_transition_blocked(bool blocked)
     IOSimpleLockLock(sc->sc_scan_lease_lock);
     sc->sc_ap_transition_scan_blocked = blocked;
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+}
+
+void ItlIwn::iwn_set_ap_primary_tx_quiesced(
+    bool quiesced, bool resumeOutput)
+{
+    struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+
+    apPrimaryTxQuiesced = quiesced;
+    if (quiesced) {
+        ifq_set_oactive(&ifp->if_snd);
+        return;
+    }
+
+    if (ifq_is_oactive(&ifp->if_snd))
+        ifq_clr_oactive(&ifp->if_snd);
+    if (resumeOutput &&
+        (ifp->if_flags & (IFF_UP | IFF_RUNNING)) ==
+            (IFF_UP | IFF_RUNNING) &&
+        ifp->if_start != NULL) {
+        (*ifp->if_start)(ifp);
+    }
+}
+
+bool ItlIwn::iwn_ap_primary_tx_pending() const
+{
+    for (int qid = 0; qid < com.ntxqs; qid++) {
+        /*
+         * Host commands must remain live while the AP transition is
+         * serialized.  Every data/mgmt queue, including an old PAN queue,
+         * must reach its native TX_DONE/reset boundary first.
+         */
+        if (qid != com.command_queue && com.txq[qid].queued != 0)
+            return true;
+    }
+    return false;
 }
 
 IOReturn ItlIwn::iwn_quiesce_scan_for_ap_transition()
@@ -6575,8 +6613,11 @@ int ItlIwn::iwn_send_ap_pan_params(const struct ItlHalApConfig *config)
      * easy-to-miss scan transition.  The primary BSS context must own nearly
      * the whole three-DTIM admission window while it scans or authenticates;
      * a 20 TU slot cannot contain one normal active/passive dwell.  Outside
-     * that temporary BSS-priority interval, the active PAN AP owns the
-     * admission window exactly as DVM's active, unassociated AP vif does.
+     * that temporary BSS-priority interval, an unassociated PAN AP owns the
+     * admission window.  Once both contexts are associated, DVM stops using
+     * either transition bias and splits one beacon interval evenly.  Keeping
+     * the 20/280 transition split after RUN can starve a different-channel
+     * primary STA until both its q0 data and PAN q5 management traffic stall.
      */
     const uint16_t minimumSlotWidth = 20;
     const uint32_t admissionWindow =
@@ -6591,6 +6632,11 @@ int ItlIwn::iwn_send_ap_pan_params(const struct ItlHalApConfig *config)
     if (apStaPanPriorityActive) {
         bssSlotWidth = admissionRemainder;
         panSlotWidth = minimumSlotWidth;
+    } else if (apStaBssAssociated &&
+               (apFirmwareStage == IWN_AP_STAGE_FINAL_PAN_PARAMS ||
+                apFirmwareStage == IWN_AP_STAGE_RUNNING)) {
+        bssSlotWidth = beaconInterval / 2;
+        panSlotWidth = beaconInterval - bssSlotWidth;
     } else {
         bssSlotWidth = minimumSlotWidth;
         panSlotWidth = admissionRemainder;
@@ -7367,8 +7413,27 @@ void ItlIwn::iwn_note_ap_firmware_event(
         error = iwn_set_pslevel(&com, 0, 0, 1);
     } else if (apFirmwareStage == IWN_AP_STAGE_FINAL_POWER &&
                command == IWN_CMD_SET_POWER_MODE) {
+        if (apStaBssAssociated) {
+            /*
+             * iwlagn_commit_rxon() recomputes PAN parameters after the
+             * associated RXON.  Preserve that completion boundary here:
+             * ordinary TX remains fenced until firmware has accepted the
+             * steady two-associated-context 50/50 schedule.
+             */
+            apFirmwareStage = IWN_AP_STAGE_FINAL_PAN_PARAMS;
+            error = iwn_send_ap_pan_params(&apFirmwareConfig);
+        } else {
+            apFirmwareStage = IWN_AP_STAGE_RUNNING;
+            iwn_set_ap_scan_transition_blocked(false);
+            iwn_set_ap_primary_tx_quiesced(false, true);
+            XYLog("%s: AP PAN context running after DVM RXON/beacon/EDCA "
+                  "transition\n", com.sc_dev.dv_xname);
+        }
+    } else if (apFirmwareStage == IWN_AP_STAGE_FINAL_PAN_PARAMS &&
+               command == IWN_CMD_WIPAN_PARAMS) {
         apFirmwareStage = IWN_AP_STAGE_RUNNING;
         iwn_set_ap_scan_transition_blocked(false);
+        iwn_set_ap_primary_tx_quiesced(false, true);
         XYLog("%s: AP PAN context running after DVM RXON/beacon/EDCA "
               "transition\n", com.sc_dev.dv_xname);
     }
@@ -7422,6 +7487,19 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
         iwn_quiesce_scan_for_ap_transition();
     if (scanResult != kIOReturnSuccess)
         return scanResult;
+    apStaBssAssociated =
+        com.sc_ic.ic_state == IEEE80211_S_RUN;
+    /*
+     * mac80211 stops its software queues and waits for every non-command
+     * DVM TX queue to drain before reconfiguring a second RXON context.
+     * Tahoe otherwise lets the newly reassociated primary STA enqueue q0
+     * traffic while retained PAN replay is changing scheduler ownership;
+     * 6x35 can then strand both q0 and q5 across wake.  Keep HCMD q9 live,
+     * but fence all ordinary output until the final PAN power reply.
+     */
+    iwn_set_ap_primary_tx_quiesced(true, false);
+    if (iwn_ap_primary_tx_pending())
+        return kIOReturnNotReady;
     /*
      * DVM exposes APSTA as two firmware contexts: the existing net80211 STA
      * remains the BSS context while this role-7 interface owns PAN.  Do not
@@ -8878,6 +8956,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
     ring->qid = qid;
     ring->queued = 0;
     ring->cur = 0;
+    ring->read = 0;
     ring->first_tb = NULL;
     ring->ap_payload = NULL;
 
@@ -9000,6 +9079,7 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
     sc->qfullmsk &= ~(1 << ring->qid);
     ring->queued = 0;
     ring->cur = 0;
+    ring->read = 0;
 }
 
 void ItlIwn::
@@ -11701,9 +11781,12 @@ iwn_clear_oactive(struct iwn_softc *sc, struct iwn_tx_ring *ring)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = &ic->ic_if;
+    ItlIwn *that = container_of(sc, ItlIwn, com);
 
     if (ring->queued < IWN_TX_RING_LOMARK) {
         sc->qfullmsk &= ~(1 << ring->qid);
+        if (that->apPrimaryTxQuiesced)
+            return;
         if (sc->qfullmsk == 0 && ifq_is_oactive(&ifp->if_snd)) {
             ifq_clr_oactive(&ifp->if_snd);
             (*ifp->if_start)(ifp);
@@ -16103,6 +16186,7 @@ iwn_auth(struct iwn_softc *sc, int arg)
      * Give the station context the same admission window before changing
      * RXON, so AUTH/ASSOC management exchange can coexist with HostAP.
      */
+    apStaBssAssociated = false;
     error = iwn_set_ap_sta_pan_priority(true);
     if (error != 0) {
         XYLog("%s: could not prioritize STA PAN slot for auth\n",
@@ -16346,6 +16430,7 @@ iwn_run(struct iwn_softc *sc)
      * scan/auth priority and return the active HostAP PAN context to its
      * normal DVM admission window.
      */
+    apStaBssAssociated = true;
     error = iwn_set_ap_sta_pan_priority(false);
     if (error != 0) {
         XYLog("%s: could not restore HostAP PAN slots after STA auth\n",

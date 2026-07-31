@@ -91,6 +91,8 @@ public:
     IOReturn transmitAPData(mbuf_t packet) override;
     void iwn_reset_ap_runtime_state();
     void iwn_set_ap_scan_transition_blocked(bool);
+    void iwn_set_ap_primary_tx_quiesced(bool, bool);
+    bool iwn_ap_primary_tx_pending() const;
     IOReturn iwn_quiesce_scan_for_ap_transition();
     int iwn_build_ap_rxon(struct iwn_rxon *, const struct ItlHalApConfig *);
     int iwn_send_ap_pan_params(const struct ItlHalApConfig *);
@@ -489,6 +491,8 @@ public:
     bool apFirmwareUnassociatedReplySeen;
     bool apFirmwareUnassociatedNotificationSeen;
     bool apStaPanPriorityActive;
+    bool apStaBssAssociated;
+    bool apPrimaryTxQuiesced;
     uint8_t apFirmwareStage;
     struct ItlHalApConfig apFirmwareConfig;
     struct iwn_rxon apFirmwareRxon;
