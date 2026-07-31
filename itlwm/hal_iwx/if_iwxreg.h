@@ -1078,6 +1078,7 @@ enum iwx_fw_ini_allocation_id {
 #define IWX_UREG_CHICK_MSIX_ENABLE        (1 << 25)
 
 #define IWX_HPM_DEBUG            0xa03440
+#define IWX_DEVICE_SYSTEM_TIME_REG   0xa0206c
 #define IWX_PERSISTENCE_BIT        (1 << 12)
 #define IWX_PREG_WFPM_ACCESS        (1 << 12)
 
@@ -3218,6 +3219,30 @@ struct iwx_session_prot_cmd {
     uint32_t repetition_count;
     uint32_t interval;
 } __packed; /* SESSION_PROTECTION_CMD_API_S_VER_1 */
+
+/* Bit flags for BEACON_TEMPLATE_CMD API version 11 and later. */
+#define IWX_MAC_BEACON_CCK       (1 << 5)
+#define IWX_MAC_BEACON_ANT_A     (1 << 6)
+#define IWX_MAC_BEACON_ANT_B     (1 << 7)
+#define IWX_MAC_BEACON_FILS      (1 << 8)
+
+/*
+ * Modern beacon-template command used by the API-68 iwx firmware set.
+ * Versions 11 and 12 share this wire layout.  template_id identifies the
+ * owning MAC context; offsets are byte offsets from the first 802.11 byte.
+ */
+struct iwx_mac_beacon_cmd {
+    uint16_t byte_cnt;
+    uint16_t flags;
+    uint32_t short_ssid;
+    uint32_t reserved;
+    uint32_t template_id;
+    uint32_t tim_idx;
+    uint32_t tim_size;
+    uint32_t ecsa_offset;
+    uint32_t csa_offset;
+    uint8_t frame[0];
+} __packed; /* BEACON_TEMPLATE_CMD_API_S_VER_11/12 */
 
 /**
  * struct iwx_session_prot_notif - session protection started / ended

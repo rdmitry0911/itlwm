@@ -138,6 +138,7 @@
 #include <IOKit/IOFilterInterruptEventSource.h>
 
 #include <HAL/ItlHalService.hpp>
+#include <HAL/ItlApFirmwareRuntime.hpp>
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
@@ -351,6 +352,8 @@ public:
     int    iwx_enable_txq(struct iwx_softc *, int, int, int, int);
     int     iwx_tvqm_alloc_txq(struct iwx_softc *, int, int);
     int     iwx_tvqm_enable_txq(struct iwx_softc *, int, int, uint32_t);
+    int     iwx_tvqm_enable_txq_for_sta(struct iwx_softc *, uint8_t,
+                                        int, int, uint32_t);
     void    iwx_post_alive(struct iwx_softc *);
     int iwx_send_time_event_cmd(struct iwx_softc *sc,
                             const struct iwx_time_event_cmd *cmd);
@@ -521,11 +524,25 @@ public:
             uint32_t bi_tu, uint32_t dtim_period, uint32_t mcast_qid,
             uint32_t beacon_template_id, uint32_t ctwin,
             uint32_t opp_ps_enabled);
-    int    iwx_mac_ctxt_cmd_ap_send(struct iwx_softc *,
-            const struct ItlHalApConfig *, uint32_t action);
+    struct ieee80211_channel *iwx_ap_find_channel(struct iwx_softc *,
+                                                   uint16_t);
+    int    iwx_ap_send_beacon_template(struct iwx_softc *,
+                                       const struct ItlApFirmwareRuntime *);
+    int    iwx_ap_mac_ctxt_cmd(struct iwx_softc *,
+                               const struct ItlApFirmwareRuntime *, uint32_t);
+    int    iwx_ap_binding_cmd(struct iwx_softc *,
+                              const struct ItlApFirmwareRuntime *, bool);
+    int    iwx_ap_add_internal_sta(struct iwx_softc *,
+                                   const struct ItlApFirmwareRuntime *,
+                                   uint8_t, uint8_t, const uint8_t *,
+                                   uint16_t *, uint8_t);
+    int    iwx_ap_remove_internal_sta(struct iwx_softc *, uint8_t, uint16_t);
+    int    iwx_ap_update_quotas(struct iwx_softc *,
+                                const struct ItlApFirmwareRuntime *, bool);
     int    iwx_start_ap_mode(struct iwx_softc *,
-            const struct ItlHalApConfig *);
-    int    iwx_stop_ap_mode(struct iwx_softc *);
+                             struct ItlApFirmwareRuntime *);
+    int    iwx_stop_ap_mode(struct iwx_softc *,
+                            struct ItlApFirmwareRuntime *);
     int    iwx_mac_ctxt_cmd(struct iwx_softc *, struct iwx_node *, uint32_t, int);
     int    iwx_clear_statistics(struct iwx_softc *);
     int    iwx_update_quotas(struct iwx_softc *, struct iwx_node *, int);
@@ -666,6 +683,7 @@ public:
     IOCommandGate *fSaeTxGate;
     struct pci_attach_args pci;
     struct iwx_softc com;
+    struct ItlApFirmwareRuntime apRuntime;
     IOSimpleLock *wclScanLock;
     ItlIwxWclScanPhase wclScanPhase;
     uint64_t wclScanUpperGeneration;

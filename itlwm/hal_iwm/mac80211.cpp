@@ -2113,6 +2113,392 @@ iwm_mac_ctxt_cmd_fill_sta(struct iwm_softc *sc, struct iwm_node *in,
     sta->assoc_beacon_arrive_time = htole32(ni->ni_rstamp);
 }
 
+struct ieee80211_channel *ItlIwm::
+iwm_ap_find_channel(struct iwm_softc *sc, uint16_t channel)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+
+    for (int i = 1; i <= IEEE80211_CHAN_MAX; i++) {
+        struct ieee80211_channel *candidate = &ic->ic_channels[i];
+        if (candidate->ic_freq != 0 &&
+            ieee80211_chan2ieee(ic, candidate) == channel)
+            return candidate;
+    }
+    return NULL;
+}
+
+int ItlIwm::
+iwm_ap_send_beacon_template(struct iwm_softc *sc,
+                            const struct ItlApFirmwareRuntime *runtime)
+{
+    const struct ItlHalApConfig *config = &runtime->config;
+    const size_t commandLength = sizeof(struct iwm_mac_beacon_cmd) +
+        config->beaconTemplateLength;
+    struct iwm_mac_beacon_cmd *command =
+        (struct iwm_mac_beacon_cmd *)malloc(commandLength, 0, 0);
+    if (command == NULL)
+        return ENOMEM;
+    memset(command, 0, commandLength);
+
+    command->tx.len = htole16((uint16_t)config->beaconTemplateLength);
+    command->tx.sta_id = runtime->broadcastStaId;
+    command->tx.life_time = htole32(IWM_TX_CMD_LIFE_TIME_INFINITE);
+    command->tx.tx_flags = htole32(IWM_TX_CMD_FLG_SEQ_CTL |
+                                    IWM_TX_CMD_FLG_TSF);
+    uint32_t rate = (1U << sc->sc_mgmt_last_antenna_idx) <<
+        IWM_RATE_MCS_ANT_POS;
+    if (config->channel <= 14) {
+        rate |= iwl_mvm_mac80211_idx_to_hwrate(IWL_FIRST_CCK_RATE) |
+            RATE_MCS_CCK_MSK;
+    } else {
+        rate |= iwl_mvm_mac80211_idx_to_hwrate(IWL_FIRST_OFDM_RATE);
+    }
+    command->tx.rate_n_flags = htole32(rate);
+    command->template_id = htole32(runtime->macId);
+
+    const uint8_t *beacon = (const uint8_t *)config->beaconTemplate;
+    size_t offset = sizeof(struct ieee80211_frame) + 12;
+    while (offset + 2 <= config->beaconTemplateLength) {
+        const size_t elementLength = (size_t)beacon[offset + 1] + 2;
+        if (offset + elementLength > config->beaconTemplateLength)
+            break;
+        if (beacon[offset] == IEEE80211_ELEMID_TIM) {
+            command->tim_idx = htole32((uint32_t)offset);
+            command->tim_size = htole32(beacon[offset + 1]);
+            break;
+        }
+        offset += elementLength;
+    }
+    memcpy(command->frame, beacon, config->beaconTemplateLength);
+    const int error = iwm_send_cmd_pdu(sc, IWM_BEACON_TEMPLATE_CMD, 0,
+                                       commandLength, command);
+    explicit_bzero(command, commandLength);
+    ::free(command);
+    return error;
+}
+
+int ItlIwm::
+iwm_ap_mac_ctxt_cmd(struct iwm_softc *sc,
+                    const struct ItlApFirmwareRuntime *runtime,
+                    uint32_t action)
+{
+#define IWM_AP_EXP2(_x) ((1 << (_x)) - 1)
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwm_mac_ctx_cmd command;
+    memset(&command, 0, sizeof(command));
+
+    command.id_and_color = htole32(IWM_FW_CMD_ID_AND_COLOR(
+        runtime->macId, runtime->macColor));
+    command.action = htole32(action);
+    if (action == IWM_FW_CTXT_ACTION_REMOVE)
+        return iwm_send_cmd_pdu(sc, IWM_MAC_CONTEXT_CMD, 0,
+                                sizeof(command), &command);
+    command.mac_type = htole32(IWM_FW_MAC_TYPE_GO);
+    command.tsf_id = htole32(runtime->samePhyAsPrimary ?
+                              IWM_TSF_ID_A : IWM_TSF_ID_B);
+    IEEE80211_ADDR_COPY(command.node_addr, runtime->config.bssid);
+    IEEE80211_ADDR_COPY(command.bssid_addr, runtime->config.bssid);
+    command.cck_rates = htole32(runtime->config.channel <= 14 ? 0x0f : 0);
+    command.ofdm_rates = htole32(0xff);
+    command.cck_short_preamble = htole32(IWM_MAC_FLG_SHORT_PREAMBLE);
+    command.short_slot = htole32(IWM_MAC_FLG_SHORT_SLOT);
+    command.filter_flags = htole32(IWM_MAC_FILTER_ACCEPT_GRP |
+                                    IWM_MAC_FILTER_IN_PROBE_REQUEST);
+
+    for (int i = 0; i < EDCA_NUM_AC; i++) {
+        struct ieee80211_edca_ac_params *ac = &ic->ic_edca_ac[i];
+        const uint8_t ucodeAc = iwm_mvm_mac80211_ac_to_ucode_ac(
+            (enum ieee80211_edca_ac)i);
+        command.ac[ucodeAc].cw_min = htole16(IWM_AP_EXP2(ac->ac_ecwmin));
+        command.ac[ucodeAc].cw_max = htole16(IWM_AP_EXP2(ac->ac_ecwmax));
+        command.ac[ucodeAc].aifsn = ac->ac_aifsn;
+        command.ac[ucodeAc].fifos_mask = 1 << iwm_ac_to_tx_fifo[i];
+        command.ac[ucodeAc].edca_txop = htole16(ac->ac_txoplimit * 32);
+    }
+    /* Linux iwlwifi makes the AP multicast FIFO inherit VO EDCA. */
+    command.ac[IWM_TX_FIFO_VO].fifos_mask |= 1 << IWM_TX_FIFO_MCAST;
+    command.qos_flags = htole32(IWM_MAC_QOS_FLG_UPDATE_EDCA);
+
+    const uint32_t interval = runtime->config.beaconInterval;
+    const uint32_t dtimInterval = interval * runtime->config.dtimPeriod;
+    if (!iwm_nic_lock(sc))
+        return EBUSY;
+    uint32_t beaconTime = iwm_read_prph(sc, IWM_DEVICE_SYSTEM_TIME_REG);
+    iwm_nic_unlock(sc);
+    if (runtime->samePhyAsPrimary)
+        beaconTime += interval * IEEE80211_DUR_TU / 2;
+    command.ap.beacon_time = htole32(beaconTime);
+    command.ap.beacon_tsf = 0;
+    command.ap.bi = htole32(interval);
+    command.ap.bi_reciprocal = htole32(iwm_reciprocal(interval));
+    command.ap.dtim_interval = htole32(dtimInterval);
+    command.ap.dtim_reciprocal = htole32(iwm_reciprocal(dtimInterval));
+    if (!isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
+        command.ap.mcast_qid = htole32(IWM_DQA_GCAST_QUEUE);
+    command.ap.beacon_template = htole32(runtime->macId);
+
+    const int error = iwm_send_cmd_pdu(sc, IWM_MAC_CONTEXT_CMD, 0,
+                                       sizeof(command), &command);
+#undef IWM_AP_EXP2
+    return error;
+}
+
+int ItlIwm::
+iwm_ap_binding_cmd(struct iwm_softc *sc,
+                   const struct ItlApFirmwareRuntime *runtime, bool add)
+{
+    struct iwm_binding_cmd command;
+    struct iwm_phy_ctxt *phy = &sc->sc_phyctxt[runtime->phyId];
+    memset(&command, 0, sizeof(command));
+
+    command.id_and_color = htole32(IWM_FW_CMD_ID_AND_COLOR(
+        phy->id, phy->color));
+    command.phy = command.id_and_color;
+    command.action = htole32(runtime->samePhyAsPrimary ?
+        IWM_FW_CTXT_ACTION_MODIFY :
+        (add ? IWM_FW_CTXT_ACTION_ADD : IWM_FW_CTXT_ACTION_REMOVE));
+    for (int i = 0; i < IWM_MAX_MACS_IN_BINDING; i++)
+        command.macs[i] = htole32(IWM_FW_CTXT_INVALID);
+
+    int slot = 0;
+    if (runtime->samePhyAsPrimary) {
+        struct ieee80211_node *bss = sc->sc_ic.ic_bss;
+        if (bss == NULL)
+            return EINVAL;
+        struct iwm_node *primary = (struct iwm_node *)bss;
+        command.macs[slot++] = htole32(IWM_FW_CMD_ID_AND_COLOR(
+            primary->in_id, primary->in_color));
+    }
+    if (add)
+        command.macs[slot] = htole32(IWM_FW_CMD_ID_AND_COLOR(
+            runtime->macId, runtime->macColor));
+
+    if (IEEE80211_IS_CHAN_2GHZ(phy->channel) ||
+        !isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_CDB_SUPPORT))
+        command.lmac_id = htole32(IWM_LMAC_24G_INDEX);
+    else
+        command.lmac_id = htole32(IWM_LMAC_5G_INDEX);
+    const size_t length = isset(sc->sc_enabled_capa,
+        IWM_UCODE_TLV_CAPA_BINDING_CDB_SUPPORT) ?
+        sizeof(command) : sizeof(struct iwm_binding_cmd_v1);
+    uint32_t status = 0;
+    int error = iwm_send_cmd_pdu_status(sc, IWM_BINDING_CONTEXT_CMD,
+                                        length, &command, &status);
+    if (error == 0 && status != 0)
+        error = EIO;
+    return error;
+}
+
+int ItlIwm::
+iwm_ap_add_internal_sta(struct iwm_softc *sc,
+                        const struct ItlApFirmwareRuntime *runtime,
+                        uint8_t staId,
+                        uint8_t stationType, const uint8_t *address,
+                        uint8_t queueId, int fifo)
+{
+    if (!isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT) ||
+        !isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
+        return EOPNOTSUPP;
+
+    if (!iwm_nic_lock(sc))
+        return EBUSY;
+    int error = iwm_enable_txq(sc, staId, queueId, fifo, 0,
+        stationType == IWM_STA_MULTICAST ? 0 : IWM_MAX_TID_COUNT, 0);
+    iwm_nic_unlock(sc);
+    if (error != 0)
+        return error;
+
+    struct iwm_add_sta_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.sta_id = staId;
+    command.station_type = stationType;
+    command.mac_id_n_color = htole32(IWM_FW_CMD_ID_AND_COLOR(
+        runtime->macId, runtime->macColor));
+    IEEE80211_ADDR_COPY(command.addr, address);
+    command.tid_disable_tx = htole16(0xffff);
+    command.tfd_queue_msk = htole32(1U << queueId);
+    uint32_t status = IWM_ADD_STA_SUCCESS;
+    error = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA, sizeof(command),
+                                    &command, &status);
+    if (error == 0 &&
+        (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
+        error = EIO;
+    if (error != 0)
+        (void)iwm_disable_txq(sc, queueId,
+            stationType == IWM_STA_MULTICAST ? 0 : IWM_MAX_TID_COUNT, 0);
+    return error;
+}
+
+int ItlIwm::
+iwm_ap_remove_internal_sta(struct iwm_softc *sc, uint8_t staId,
+                           uint8_t queueId)
+{
+    const uint8_t tid = queueId == IWM_DQA_GCAST_QUEUE ?
+        0 : IWM_MAX_TID_COUNT;
+    int firstError = iwm_disable_txq(sc, queueId, tid, 0);
+    struct iwm_rm_sta_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.sta_id = staId;
+    const int removeError = iwm_send_cmd_pdu(sc, IWM_REMOVE_STA, 0,
+                                              sizeof(command), &command);
+    if (firstError == 0)
+        firstError = removeError;
+    return firstError;
+}
+
+int ItlIwm::
+iwm_ap_update_quotas(struct iwm_softc *sc,
+                     const struct ItlApFirmwareRuntime *runtime, bool running)
+{
+    if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DYNAMIC_QUOTA))
+        return 0;
+
+    struct iwm_time_quota_cmd command;
+    memset(&command, 0, sizeof(command));
+    for (int i = 0; i < IWM_MAX_BINDINGS; i++)
+        command.quotas[i].id_and_color = htole32(IWM_FW_CTXT_INVALID);
+
+    const bool primaryRunning =
+        (sc->sc_flags & IWM_FLAG_BINDING_ACTIVE) != 0 &&
+        sc->sc_ic.ic_state == IEEE80211_S_RUN &&
+        sc->sc_ic.ic_bss != NULL;
+    if (!running && !primaryRunning)
+        return iwm_send_cmd_pdu(sc, IWM_TIME_QUOTA_CMD, 0,
+                                sizeof(command), &command);
+
+    if (primaryRunning && running && !runtime->samePhyAsPrimary) {
+        struct iwm_node *primary = (struct iwm_node *)sc->sc_ic.ic_bss;
+        command.quotas[0].id_and_color = htole32(IWM_FW_CMD_ID_AND_COLOR(
+            primary->in_phyctxt->id, primary->in_phyctxt->color));
+        command.quotas[0].quota = htole32(IWM_MAX_QUOTA / 2);
+        command.quotas[1].id_and_color = htole32(IWM_FW_CMD_ID_AND_COLOR(
+            runtime->phyId, sc->sc_phyctxt[runtime->phyId].color));
+        command.quotas[1].quota = htole32(IWM_MAX_QUOTA / 2);
+    } else {
+        const uint8_t phyId = running ? runtime->phyId : 0;
+        struct iwm_phy_ctxt *phy = &sc->sc_phyctxt[phyId];
+        command.quotas[0].id_and_color = htole32(
+            IWM_FW_CMD_ID_AND_COLOR(phy->id, phy->color));
+        command.quotas[0].quota = htole32(IWM_MAX_QUOTA);
+    }
+    return iwm_send_cmd_pdu(sc, IWM_TIME_QUOTA_CMD, 0,
+                            sizeof(command), &command);
+}
+
+int ItlIwm::
+iwm_start_ap_resources(struct iwm_softc *sc,
+                       struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || runtime->stage != kItlApFirmwareResourceIdle)
+        return EBUSY;
+    if ((sc->sc_flags & (IWM_FLAG_SHUTDOWN | IWM_FLAG_HW_ERR |
+                         IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) != 0)
+        return EBUSY;
+    struct ieee80211_channel *channel = iwm_ap_find_channel(
+        sc, runtime->config.channel);
+    if (channel == NULL)
+        return EINVAL;
+
+    runtime->macId = 1;
+    runtime->macColor = 0;
+    runtime->broadcastStaId = 2;
+    runtime->multicastStaId = 3;
+    runtime->firstClientStaId = 4;
+    runtime->broadcastQueueId = IWM_DQA_AP_PROBE_RESP_QUEUE;
+    runtime->multicastQueueId = IWM_DQA_GCAST_QUEUE;
+    struct iwm_node *primary = (struct iwm_node *)sc->sc_ic.ic_bss;
+    runtime->samePhyAsPrimary =
+        (sc->sc_flags & IWM_FLAG_BINDING_ACTIVE) != 0 &&
+        primary != NULL && primary->in_phyctxt != NULL &&
+        ieee80211_chan2ieee(&sc->sc_ic, primary->in_phyctxt->channel) ==
+            runtime->config.channel;
+    runtime->phyId = runtime->samePhyAsPrimary ?
+        primary->in_phyctxt->id : 1;
+
+    int error = 0;
+    if (!runtime->samePhyAsPrimary) {
+        error = iwm_phy_ctxt_update(sc, &sc->sc_phyctxt[runtime->phyId],
+                                    channel, 1, 1, 0);
+        if (error != 0)
+            return error;
+    }
+    error = iwm_ap_send_beacon_template(sc, runtime);
+    if (error != 0)
+        return error;
+    runtime->stage = kItlApFirmwareResourceBeacon;
+
+    error = iwm_ap_mac_ctxt_cmd(sc, runtime, IWM_FW_CTXT_ACTION_ADD);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceMac;
+    error = iwm_ap_binding_cmd(sc, runtime, true);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceBinding;
+
+    static const uint8_t multicastAddress[IEEE80211_ADDR_LEN] =
+        { 0x03, 0, 0, 0, 0, 0 };
+    error = iwm_ap_add_internal_sta(sc, runtime, runtime->multicastStaId,
+        IWM_STA_MULTICAST, multicastAddress, runtime->multicastQueueId,
+        IWM_TX_FIFO_MCAST);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceMulticastStation;
+    error = iwm_ap_add_internal_sta(sc, runtime, runtime->broadcastStaId,
+        IWM_STA_GENERAL_PURPOSE, etherbroadcastaddr,
+        runtime->broadcastQueueId, IWM_TX_FIFO_VO);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceBroadcastStation;
+    error = iwm_ap_update_quotas(sc, runtime, true);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceRunning;
+    return 0;
+
+unwind:
+    (void)iwm_stop_ap_resources(sc, runtime);
+    return error;
+}
+
+int ItlIwm::
+iwm_stop_ap_resources(struct iwm_softc *sc,
+                      struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || runtime->stage == kItlApFirmwareResourceIdle)
+        return 0;
+    const uint8_t previousStage = runtime->stage;
+    runtime->stage = kItlApFirmwareResourceStopping;
+    int firstError = 0;
+    if (previousStage >= kItlApFirmwareResourceRunning)
+        firstError = iwm_ap_update_quotas(sc, runtime, false);
+    if (previousStage >= kItlApFirmwareResourceBroadcastStation) {
+        const int error = iwm_ap_remove_internal_sta(sc,
+            runtime->broadcastStaId, runtime->broadcastQueueId);
+        if (firstError == 0)
+            firstError = error;
+    }
+    if (previousStage >= kItlApFirmwareResourceMulticastStation) {
+        const int error = iwm_ap_remove_internal_sta(sc,
+            runtime->multicastStaId, runtime->multicastQueueId);
+        if (firstError == 0)
+            firstError = error;
+    }
+    if (previousStage >= kItlApFirmwareResourceBinding) {
+        const int error = iwm_ap_binding_cmd(sc, runtime, false);
+        if (firstError == 0)
+            firstError = error;
+    }
+    if (previousStage >= kItlApFirmwareResourceMac) {
+        const int error = iwm_ap_mac_ctxt_cmd(
+            sc, runtime, IWM_FW_CTXT_ACTION_REMOVE);
+        if (firstError == 0)
+            firstError = error;
+    }
+    itl_ap_firmware_runtime_reset(runtime);
+    return firstError;
+}
+
 int ItlIwm::
 iwm_mac_ctxt_cmd(struct iwm_softc *sc, struct iwm_node *in, uint32_t action,
                  int assoc)

@@ -40,6 +40,7 @@ detach(IOPCIDevice *device)
 bool ItlIwm::
 attach(IOPCIDevice *device)
 {
+    itl_ap_firmware_runtime_reset(&apRuntime);
     wclScanLock = IOSimpleLockAlloc();
     if (wclScanLock == NULL)
         return false;
@@ -128,6 +129,50 @@ disable(IONetworkInterface *netif)
     ifp->if_flags &= ~IFF_UP;
     iwm_activate(&com, DVACT_QUIESCE);
     return kIOReturnSuccess;
+}
+
+bool ItlIwm::
+supportsAPMode() const
+{
+    /*
+     * IWM firmware has the GO MAC context and station APIs, but the public
+     * capability remains closed until the complete beacon/binding/station and
+     * host association/data lifetime below it is admitted.  Returning true at
+     * the profile-snapshot layer would make Tahoe report a running AP that
+     * cannot yet accept a client.
+     */
+    return false;
+}
+
+IOReturn ItlIwm::
+startAPMode(const struct ItlHalApConfig *config)
+{
+    if (!supportsAPMode())
+        return kIOReturnUnsupported;
+    if (apRuntime.stage != kItlApFirmwareResourceIdle)
+        return kIOReturnBusy;
+    int error = itl_ap_firmware_runtime_snapshot(&apRuntime, config);
+    if (error != 0)
+        return kIOReturnBadArgument;
+    error = iwm_start_ap_resources(&com, &apRuntime);
+    if (error != 0) {
+        itl_ap_firmware_runtime_reset(&apRuntime);
+        if (error == EOPNOTSUPP)
+            return kIOReturnUnsupported;
+        if (error == EINVAL)
+            return kIOReturnBadArgument;
+        return error == EBUSY ? kIOReturnBusy : kIOReturnError;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwm::
+stopAPMode()
+{
+    if (apRuntime.stage == kItlApFirmwareResourceIdle)
+        return kIOReturnSuccess;
+    return iwm_stop_ap_resources(&com, &apRuntime) == 0 ?
+        kIOReturnSuccess : kIOReturnError;
 }
 
 struct ieee80211com *ItlIwm::

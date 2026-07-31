@@ -30,6 +30,7 @@
 #include <IOKit/IOFilterInterruptEventSource.h>
 
 #include <HAL/ItlHalService.hpp>
+#include <HAL/ItlApFirmwareRuntime.hpp>
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
@@ -66,6 +67,10 @@ public:
     IOReturn enable(IONetworkInterface *netif) override;
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
+
+    bool supportsAPMode() const override;
+    IOReturn startAPMode(const struct ItlHalApConfig *config) override;
+    IOReturn stopAPMode() override;
 
     IOReturn beginWclBackgroundScan(
         uint64_t generation,
@@ -384,6 +389,25 @@ public:
                                     struct iwm_mac_ctx_cmd *, uint32_t);
     void    iwm_mac_ctxt_cmd_fill_sta(struct iwm_softc *, struct iwm_node *,
                                       struct iwm_mac_data_sta *, int);
+    struct ieee80211_channel *iwm_ap_find_channel(struct iwm_softc *,
+                                                   uint16_t);
+    int    iwm_ap_send_beacon_template(struct iwm_softc *,
+                                       const struct ItlApFirmwareRuntime *);
+    int    iwm_ap_mac_ctxt_cmd(struct iwm_softc *,
+                               const struct ItlApFirmwareRuntime *, uint32_t);
+    int    iwm_ap_binding_cmd(struct iwm_softc *,
+                              const struct ItlApFirmwareRuntime *, bool);
+    int    iwm_ap_add_internal_sta(struct iwm_softc *,
+                                   const struct ItlApFirmwareRuntime *,
+                                   uint8_t, uint8_t, const uint8_t *,
+                                   uint8_t, int);
+    int    iwm_ap_remove_internal_sta(struct iwm_softc *, uint8_t, uint8_t);
+    int    iwm_ap_update_quotas(struct iwm_softc *,
+                                const struct ItlApFirmwareRuntime *, bool);
+    int    iwm_start_ap_resources(struct iwm_softc *,
+                                  struct ItlApFirmwareRuntime *);
+    int    iwm_stop_ap_resources(struct iwm_softc *,
+                                 struct ItlApFirmwareRuntime *);
     int    iwm_mac_ctxt_cmd(struct iwm_softc *, struct iwm_node *, uint32_t, int);
     int    iwm_update_quotas(struct iwm_softc *, struct iwm_node *, int);
     void    iwm_add_task(struct iwm_softc *, struct taskq *, struct task *);
@@ -471,6 +495,7 @@ public:
     IOPCIDevice *pciNub;
     struct pci_attach_args pci;
     struct iwm_softc com;
+    struct ItlApFirmwareRuntime apRuntime;
     IOSimpleLock *wclScanLock;
     ItlIwmWclScanPhase wclScanPhase;
     uint64_t wclScanUpperGeneration;

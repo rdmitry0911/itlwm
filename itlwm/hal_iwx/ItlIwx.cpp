@@ -478,6 +478,7 @@ out:
 
 bool ItlIwx::attach(IOPCIDevice *device)
 {
+    itl_ap_firmware_runtime_reset(&apRuntime);
     /* iwx_attach() may fail partway through; detach() owns this pointer. */
     fSaeTxGate = NULL;
     wclScanLock = IOSimpleLockAlloc();
@@ -1281,13 +1282,26 @@ supportsAPMode() const
 IOReturn ItlIwx::
 startAPMode(const struct ItlHalApConfig *config)
 {
-    int err = iwx_start_ap_mode(&com, config);
-    if (err == EOPNOTSUPP)
+    if (!supportsAPMode())
         return kIOReturnUnsupported;
-    if (err == EINVAL)
-        return kIOReturnBadArgument;
+    if (apRuntime.stage != kItlApFirmwareResourceIdle)
+        return kIOReturnBusy;
+    int err = itl_ap_firmware_runtime_snapshot(&apRuntime, config);
     if (err != 0)
+        return kIOReturnBadArgument;
+    err = iwx_start_ap_mode(&com, &apRuntime);
+    if (err == EOPNOTSUPP) {
+        itl_ap_firmware_runtime_reset(&apRuntime);
+        return kIOReturnUnsupported;
+    }
+    if (err == EINVAL) {
+        itl_ap_firmware_runtime_reset(&apRuntime);
+        return kIOReturnBadArgument;
+    }
+    if (err != 0) {
+        itl_ap_firmware_runtime_reset(&apRuntime);
         return kIOReturnError;
+    }
     return kIOReturnSuccess;
 }
 
@@ -1300,11 +1314,12 @@ startAPMode(const struct ItlHalApConfig *config)
 IOReturn ItlIwx::
 stopAPMode()
 {
-    int err = iwx_stop_ap_mode(&com);
+    int err = iwx_stop_ap_mode(&com, &apRuntime);
     if (err == EOPNOTSUPP)
         return kIOReturnUnsupported;
     if (err != 0)
         return kIOReturnError;
+    itl_ap_firmware_runtime_reset(&apRuntime);
     return kIOReturnSuccess;
 }
 
@@ -4221,6 +4236,13 @@ iwx_tvqm_alloc_txq(struct iwx_softc *sc, int tid, int ssn)
 int ItlIwx::
 iwx_tvqm_enable_txq(struct iwx_softc *sc, int tid, int ssn, uint32_t size)
 {
+    return iwx_tvqm_enable_txq_for_sta(sc, IWX_STATION_ID, tid, ssn, size);
+}
+
+int ItlIwx::
+iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t staId, int tid,
+                            int ssn, uint32_t size)
+{
     int err = -1;
     int i = 0;
     bus_addr_t paddr;
@@ -4229,7 +4251,7 @@ iwx_tvqm_enable_txq(struct iwx_softc *sc, int tid, int ssn, uint32_t size)
     size_t resp_len;
     struct iwx_tx_queue_cfg_cmd cmd = {
         .flags = htole16(IWX_TX_QUEUE_CFG_ENABLE_QUEUE),
-        .sta_id = IWX_STATION_ID,
+        .sta_id = staId,
         .tid = (uint8_t)tid,
     };
     struct iwx_rx_packet *pkt;
@@ -4297,8 +4319,10 @@ iwx_tvqm_enable_txq(struct iwx_softc *sc, int tid, int ssn, uint32_t size)
     hcmd.len[0] = sizeof(cmd);
 
     err = iwx_send_cmd(sc, &hcmd);
-    if (err)
-        return err;
+    if (err) {
+        err = -err;
+        goto fail;
+    }
 
     pkt = hcmd.resp_pkt;
     if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
@@ -4327,8 +4351,11 @@ iwx_tvqm_enable_txq(struct iwx_softc *sc, int tid, int ssn, uint32_t size)
     iwx_reset_tx_ring(sc, &sc->txq[fwqid]);
     iwx_free_tx_ring(sc, &sc->txq[fwqid]);
     memcpy(&sc->txq[fwqid], ring, sizeof(*ring));
+    memset(ring, 0, sizeof(*ring));
+    iwx_free_resp(sc, &hcmd);
     return fwqid;
 fail:
+    iwx_free_resp(sc, &hcmd);
     iwx_reset_tx_ring(sc, ring);
     iwx_free_tx_ring(sc, ring);
     return err;
@@ -10109,93 +10136,389 @@ iwx_mac_ctxt_cmd_fill_go(struct iwx_softc *sc, struct iwx_mac_data_go *go,
     go->opp_ps_enabled = htole32(opp_ps_enabled);
 }
 
-/*
- * Build and send an AP/GO MAC-context command. Issues
- * IWX_MAC_CONTEXT_CMD with mac_type = IWX_FW_MAC_TYPE_GO so the
- * firmware treats the context as a SoftAP. Per-arm fields come from
- * the caller-supplied `config`. The command is fail-closed at the
- * iwx_softc_supports_ap_go() gate: when the gate returns false the
- * function returns EOPNOTSUPP without touching the firmware.
- *
- * Caller-owned: `config` for ADD/MODIFY actions; the REMOVE action
- * tolerates a NULL `config`.
- */
-int ItlIwx::
-iwx_mac_ctxt_cmd_ap_send(struct iwx_softc *sc,
-                         const struct ItlHalApConfig *config,
-                         uint32_t action)
+struct ieee80211_channel *ItlIwx::
+iwx_ap_find_channel(struct iwx_softc *sc, uint16_t channel)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    struct iwx_mac_ctx_cmd cmd;
-    uint32_t bi_tu;
-    uint32_t dtim_period;
-    uint32_t mcast_qid = 0;
-    uint32_t beacon_template_id = 0;
-    uint32_t beacon_time = 0;
 
-    if (!iwx_softc_supports_ap_go(sc))
-        return EOPNOTSUPP;
-
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(0, 0));
-    cmd.action = htole32(action);
-    cmd.mac_type = htole32(IWX_FW_MAC_TYPE_GO);
-    cmd.tsf_id = htole32(IWX_TSF_ID_A);
-
-    if (action == IWX_FW_CTXT_ACTION_REMOVE) {
-        return iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0,
-                                sizeof(cmd), &cmd);
+    for (int i = 1; i <= IEEE80211_CHAN_MAX; i++) {
+        struct ieee80211_channel *candidate = &ic->ic_channels[i];
+        if (candidate->ic_freq != 0 &&
+            ieee80211_chan2ieee(ic, candidate) == channel)
+            return candidate;
     }
-
-    if (config == NULL)
-        return EINVAL;
-
-    IEEE80211_ADDR_COPY(cmd.node_addr, ic->ic_myaddr);
-    IEEE80211_ADDR_COPY(cmd.bssid_addr, config->bssid);
-    bi_tu = config->beaconInterval;
-    dtim_period = config->dtimPeriod ? config->dtimPeriod : 1;
-    cmd.filter_flags = htole32(IWX_MAC_FILTER_ACCEPT_GRP |
-                               IWX_MAC_FILTER_IN_PROBE_REQUEST);
-
-    iwx_mac_ctxt_cmd_fill_ap(sc, &cmd.ap, beacon_time, bi_tu, dtim_period,
-                             mcast_qid, beacon_template_id);
-
-    return iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0, sizeof(cmd), &cmd);
+    return NULL;
 }
 
 /*
- * Bring AP mode up. Issues IWX_FW_CTXT_ACTION_ADD via
- * iwx_mac_ctxt_cmd_ap_send when the firmware capability gate admits
- * AP/GO operation; otherwise returns EOPNOTSUPP. The fail-closed gate
- * is the iwx_softc_supports_ap_go() helper, which composes the
- * per-family classification, the IWX_UCODE_TLV_FLAGS_GO_UAPSD flag,
- * and the IWX_UCODE_TLV_CAPA_BEACON_STORING capability.
+ * API-68 firmware advertises BEACON_TEMPLATE_CMD v11 or v12.  Both use the
+ * compact modern carrier rather than the v6 IWM carrier with an embedded TX
+ * command.  Keep the version check explicit so a future incompatible command
+ * cannot consume a layout inferred from a different firmware generation.
  */
 int ItlIwx::
-iwx_start_ap_mode(struct iwx_softc *sc, const struct ItlHalApConfig *config)
+iwx_ap_send_beacon_template(struct iwx_softc *sc,
+                            const struct ItlApFirmwareRuntime *runtime)
 {
-    if (!iwx_softc_supports_ap_go(sc))
+    const uint8_t commandVersion = iwx_lookup_cmd_ver(
+        sc, IWX_LONG_GROUP, IWX_BEACON_TEMPLATE_CMD);
+    if (commandVersion != 11 && commandVersion != 12)
         return EOPNOTSUPP;
-    if (config == NULL)
-        return EINVAL;
-    return iwx_mac_ctxt_cmd_ap_send(sc, config, IWX_FW_CTXT_ACTION_ADD);
+
+    const struct ItlHalApConfig *config = &runtime->config;
+    const size_t commandLength = sizeof(struct iwx_mac_beacon_cmd) +
+        config->beaconTemplateLength;
+    struct iwx_mac_beacon_cmd *command =
+        (struct iwx_mac_beacon_cmd *)malloc(commandLength, 0, 0);
+    if (command == NULL)
+        return ENOMEM;
+    memset(command, 0, commandLength);
+
+    command->byte_cnt = htole16((uint16_t)config->beaconTemplateLength);
+    command->flags = htole16(config->channel <= 14 ?
+                              IWX_MAC_BEACON_CCK : 0);
+    command->template_id = htole32(runtime->macId);
+
+    const uint8_t *beacon = (const uint8_t *)config->beaconTemplate;
+    size_t offset = sizeof(struct ieee80211_frame) + 12;
+    while (offset + 2 <= config->beaconTemplateLength) {
+        const size_t elementLength = (size_t)beacon[offset + 1] + 2;
+        if (offset + elementLength > config->beaconTemplateLength)
+            break;
+        if (beacon[offset] == IEEE80211_ELEMID_TIM) {
+            command->tim_idx = htole32((uint32_t)offset);
+            command->tim_size = htole32(beacon[offset + 1]);
+        } else if (beacon[offset] == 37) {
+            command->csa_offset = htole32((uint32_t)offset);
+        } else if (beacon[offset] == 60) {
+            command->ecsa_offset = htole32((uint32_t)offset);
+        }
+        offset += elementLength;
+    }
+    memcpy(command->frame, beacon, config->beaconTemplateLength);
+    const int error = iwx_send_cmd_pdu(sc, IWX_BEACON_TEMPLATE_CMD, 0,
+                                       commandLength, command);
+    explicit_bzero(command, commandLength);
+    ::free(command);
+    return error;
 }
 
-/*
- * Tear AP mode down. Issues IWX_FW_CTXT_ACTION_REMOVE via
- * iwx_mac_ctxt_cmd_ap_send when the firmware capability gate admits
- * AP/GO operation. Returns 0 (idempotent success) when the gate
- * rejects the operation: tearing down a context that the firmware
- * never accepted is a no-op rather than an error so re-entrant
- * stop calls from the host APSTA owner do not propagate spurious
- * failures.
- */
 int ItlIwx::
-iwx_stop_ap_mode(struct iwx_softc *sc)
+iwx_ap_mac_ctxt_cmd(struct iwx_softc *sc,
+                    const struct ItlApFirmwareRuntime *runtime,
+                    uint32_t action)
 {
-    if (!iwx_softc_supports_ap_go(sc))
+#define IWX_AP_EXP2(_x) ((1 << (_x)) - 1)
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwx_mac_ctx_cmd command;
+    memset(&command, 0, sizeof(command));
+
+    command.id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(
+        runtime->macId, runtime->macColor));
+    command.action = htole32(action);
+    if (action == IWX_FW_CTXT_ACTION_REMOVE)
+        return iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0,
+                                sizeof(command), &command);
+
+    command.mac_type = htole32(IWX_FW_MAC_TYPE_GO);
+    command.tsf_id = htole32(runtime->samePhyAsPrimary ?
+                              IWX_TSF_ID_A : IWX_TSF_ID_B);
+    IEEE80211_ADDR_COPY(command.node_addr, runtime->config.bssid);
+    IEEE80211_ADDR_COPY(command.bssid_addr, runtime->config.bssid);
+    command.cck_rates = htole32(runtime->config.channel <= 14 ? 0x0f : 0);
+    command.ofdm_rates = htole32(0xff);
+    command.cck_short_preamble = htole32(IWX_MAC_FLG_SHORT_PREAMBLE);
+    command.short_slot = htole32(IWX_MAC_FLG_SHORT_SLOT);
+    command.filter_flags = htole32(IWX_MAC_FILTER_ACCEPT_GRP |
+                                    IWX_MAC_FILTER_IN_PROBE_REQUEST);
+
+    for (int i = 0; i < EDCA_NUM_AC; i++) {
+        struct ieee80211_edca_ac_params *ac = &ic->ic_edca_ac[i];
+        const uint8_t ucodeAc = iwx_mvm_mac80211_ac_to_ucode_ac(
+            (enum ieee80211_edca_ac)i);
+        command.ac[ucodeAc].cw_min = htole16(IWX_AP_EXP2(ac->ac_ecwmin));
+        command.ac[ucodeAc].cw_max = htole16(IWX_AP_EXP2(ac->ac_ecwmax));
+        command.ac[ucodeAc].aifsn = ac->ac_aifsn;
+        command.ac[ucodeAc].fifos_mask = 1 << iwx_ac_to_tx_fifo[i];
+        command.ac[ucodeAc].edca_txop = htole16(ac->ac_txoplimit * 32);
+    }
+    command.ac[IWX_AC_VO].fifos_mask |= 1 << IWX_TX_FIFO_MCAST;
+    command.qos_flags = htole32(IWX_MAC_QOS_FLG_UPDATE_EDCA);
+
+    uint32_t beaconTime;
+    if (!iwx_nic_lock(sc))
+        return EBUSY;
+    beaconTime = iwx_read_prph(sc, IWX_DEVICE_SYSTEM_TIME_REG);
+    iwx_nic_unlock(sc);
+    const uint32_t interval = runtime->config.beaconInterval;
+    if (runtime->samePhyAsPrimary)
+        beaconTime += interval * IEEE80211_DUR_TU / 2;
+    iwx_mac_ctxt_cmd_fill_ap(sc, &command.ap, beaconTime, interval,
+        runtime->config.dtimPeriod, 0, runtime->macId);
+
+    const int error = iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0,
+                                       sizeof(command), &command);
+#undef IWX_AP_EXP2
+    return error;
+}
+
+int ItlIwx::
+iwx_ap_binding_cmd(struct iwx_softc *sc,
+                   const struct ItlApFirmwareRuntime *runtime, bool add)
+{
+    struct iwx_binding_cmd command;
+    struct iwx_phy_ctxt *phy = &sc->sc_phyctxt[runtime->phyId];
+    memset(&command, 0, sizeof(command));
+
+    command.id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(
+        phy->id, phy->color));
+    command.phy = command.id_and_color;
+    command.action = htole32(runtime->samePhyAsPrimary ?
+        IWX_FW_CTXT_ACTION_MODIFY :
+        (add ? IWX_FW_CTXT_ACTION_ADD : IWX_FW_CTXT_ACTION_REMOVE));
+    for (int i = 0; i < IWX_MAX_MACS_IN_BINDING; i++)
+        command.macs[i] = htole32(IWX_FW_CTXT_INVALID);
+
+    int slot = 0;
+    if (runtime->samePhyAsPrimary) {
+        struct ieee80211_node *bss = sc->sc_ic.ic_bss;
+        if (bss == NULL)
+            return EINVAL;
+        struct iwx_node *primary = (struct iwx_node *)bss;
+        command.macs[slot++] = htole32(IWX_FW_CMD_ID_AND_COLOR(
+            primary->in_id, primary->in_color));
+    }
+    if (add)
+        command.macs[slot] = htole32(IWX_FW_CMD_ID_AND_COLOR(
+            runtime->macId, runtime->macColor));
+    command.lmac_id = htole32(iwx_lmac_id(sc, phy->channel));
+
+    uint32_t status = 0;
+    int error = iwx_send_cmd_pdu_status(sc, IWX_BINDING_CONTEXT_CMD,
+                                        sizeof(command), &command, &status);
+    if (error == 0 && status != 0)
+        error = EIO;
+    return error;
+}
+
+int ItlIwx::
+iwx_ap_add_internal_sta(struct iwx_softc *sc,
+                        const struct ItlApFirmwareRuntime *runtime,
+                        uint8_t staId, uint8_t stationType,
+                        const uint8_t *address, uint16_t *queueId, uint8_t tid)
+{
+    if (queueId == NULL)
+        return EINVAL;
+    const uint8_t commandVersion = iwx_lookup_cmd_ver(
+        sc, IWX_LONG_GROUP, IWX_ADD_STA);
+    if (commandVersion < 12 || commandVersion == IWX_FW_CMD_VER_UNKNOWN)
+        return EOPNOTSUPP;
+
+    struct iwx_add_sta_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.sta_id = staId;
+    command.station_type = stationType;
+    command.mac_id_n_color = htole32(IWX_FW_CMD_ID_AND_COLOR(
+        runtime->macId, runtime->macColor));
+    IEEE80211_ADDR_COPY(command.addr, address);
+    command.tid_disable_tx = htole16(0xffff);
+
+    uint32_t status = IWX_ADD_STA_SUCCESS;
+    int error = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA, sizeof(command),
+                                        &command, &status);
+    if (error == 0 &&
+        (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
+        error = EIO;
+    if (error != 0)
+        return error;
+
+    const int assignedQueue = iwx_tvqm_enable_txq_for_sta(
+        sc, staId, tid, 0, IWX_DEFAULT_QUEUE_SIZE);
+    if (assignedQueue < 0) {
+        error = -assignedQueue;
+        struct iwx_rm_sta_cmd removeCommand;
+        memset(&removeCommand, 0, sizeof(removeCommand));
+        removeCommand.sta_id = staId;
+        (void)iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0,
+                               sizeof(removeCommand), &removeCommand);
+    } else {
+        *queueId = (uint16_t)assignedQueue;
+    }
+    return error;
+}
+
+int ItlIwx::
+iwx_ap_remove_internal_sta(struct iwx_softc *sc, uint8_t staId,
+                           uint16_t queueId)
+{
+    struct iwx_rm_sta_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.sta_id = staId;
+    int error = iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0,
+                                 sizeof(command), &command);
+    if (error != 0)
+        return error;
+    if (queueId < nitems(sc->txq)) {
+        iwx_reset_tx_ring(sc, &sc->txq[queueId]);
+        iwx_free_tx_ring(sc, &sc->txq[queueId]);
+        const int allocateError = iwx_alloc_tx_ring(
+            sc, &sc->txq[queueId], queueId);
+        error = allocateError;
+    } else {
+        error = EINVAL;
+    }
+    return error;
+}
+
+int ItlIwx::
+iwx_ap_update_quotas(struct iwx_softc *sc,
+                     const struct ItlApFirmwareRuntime *runtime, bool running)
+{
+    if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_DYNAMIC_QUOTA))
         return 0;
-    return iwx_mac_ctxt_cmd_ap_send(sc, NULL, IWX_FW_CTXT_ACTION_REMOVE);
+
+    struct iwx_time_quota_cmd command;
+    memset(&command, 0, sizeof(command));
+    for (int i = 0; i < IWX_MAX_BINDINGS; i++)
+        command.quotas[i].id_and_color = htole32(IWX_FW_CTXT_INVALID);
+
+    const bool primaryRunning =
+        (sc->sc_flags & IWX_FLAG_BINDING_ACTIVE) != 0 &&
+        sc->sc_ic.ic_state == IEEE80211_S_RUN &&
+        sc->sc_ic.ic_bss != NULL;
+    if (!running && !primaryRunning)
+        return iwx_send_cmd_pdu(sc, IWX_TIME_QUOTA_CMD, 0,
+                                sizeof(command), &command);
+
+    if (primaryRunning && running && !runtime->samePhyAsPrimary) {
+        struct iwx_node *primary = (struct iwx_node *)sc->sc_ic.ic_bss;
+        command.quotas[0].id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(
+            primary->in_phyctxt->id, primary->in_phyctxt->color));
+        command.quotas[0].quota = htole32(IWX_MAX_QUOTA / 2);
+        command.quotas[1].id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(
+            runtime->phyId, sc->sc_phyctxt[runtime->phyId].color));
+        command.quotas[1].quota = htole32(IWX_MAX_QUOTA / 2);
+    } else {
+        const uint8_t phyId = running ? runtime->phyId : 0;
+        struct iwx_phy_ctxt *phy = &sc->sc_phyctxt[phyId];
+        command.quotas[0].id_and_color = htole32(
+            IWX_FW_CMD_ID_AND_COLOR(phy->id, phy->color));
+        command.quotas[0].quota = htole32(IWX_MAX_QUOTA);
+    }
+    return iwx_send_cmd_pdu(sc, IWX_TIME_QUOTA_CMD, 0,
+                            sizeof(command), &command);
+}
+
+int ItlIwx::
+iwx_start_ap_mode(struct iwx_softc *sc,
+                  struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || runtime->stage != kItlApFirmwareResourceIdle)
+        return EBUSY;
+    if ((sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR |
+                         IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) != 0)
+        return EBUSY;
+    struct ieee80211_channel *channel = iwx_ap_find_channel(
+        sc, runtime->config.channel);
+    if (channel == NULL)
+        return EINVAL;
+
+    runtime->macId = 1;
+    runtime->macColor = 0;
+    runtime->broadcastStaId = 2;
+    runtime->multicastStaId = 3;
+    runtime->firstClientStaId = 4;
+    struct iwx_node *primary = (struct iwx_node *)sc->sc_ic.ic_bss;
+    runtime->samePhyAsPrimary =
+        (sc->sc_flags & IWX_FLAG_BINDING_ACTIVE) != 0 &&
+        primary != NULL && primary->in_phyctxt != NULL &&
+        ieee80211_chan2ieee(&sc->sc_ic, primary->in_phyctxt->channel) ==
+            runtime->config.channel;
+    runtime->phyId = runtime->samePhyAsPrimary ?
+        primary->in_phyctxt->id : 1;
+
+    int error = 0;
+    if (!runtime->samePhyAsPrimary) {
+        error = iwx_phy_ctxt_update(sc, &sc->sc_phyctxt[runtime->phyId],
+                                    channel, 1, 1, 0);
+        if (error != 0)
+            return error;
+    }
+    error = iwx_ap_send_beacon_template(sc, runtime);
+    if (error != 0)
+        return error;
+    runtime->stage = kItlApFirmwareResourceBeacon;
+
+    error = iwx_ap_mac_ctxt_cmd(sc, runtime, IWX_FW_CTXT_ACTION_ADD);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceMac;
+    error = iwx_ap_binding_cmd(sc, runtime, true);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceBinding;
+
+    static const uint8_t multicastAddress[IEEE80211_ADDR_LEN] =
+        { 0x03, 0, 0, 0, 0, 0 };
+    error = iwx_ap_add_internal_sta(sc, runtime,
+        runtime->multicastStaId, IWX_STA_MULTICAST, multicastAddress,
+        &runtime->multicastQueueId, 0);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceMulticastStation;
+    error = iwx_ap_add_internal_sta(sc, runtime,
+        runtime->broadcastStaId, IWX_STA_GENERAL_PURPOSE,
+        etherbroadcastaddr, &runtime->broadcastQueueId, IWX_MGMT_TID);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceBroadcastStation;
+    error = iwx_ap_update_quotas(sc, runtime, true);
+    if (error != 0)
+        goto unwind;
+    runtime->stage = kItlApFirmwareResourceRunning;
+    return 0;
+
+unwind:
+    (void)iwx_stop_ap_mode(sc, runtime);
+    return error;
+}
+
+int ItlIwx::
+iwx_stop_ap_mode(struct iwx_softc *sc,
+                 struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || runtime->stage == kItlApFirmwareResourceIdle)
+        return 0;
+    const uint8_t previousStage = runtime->stage;
+    runtime->stage = kItlApFirmwareResourceStopping;
+    int firstError = 0;
+    if (previousStage >= kItlApFirmwareResourceRunning)
+        firstError = iwx_ap_update_quotas(sc, runtime, false);
+    if (previousStage >= kItlApFirmwareResourceBroadcastStation) {
+        const int error = iwx_ap_remove_internal_sta(sc,
+            runtime->broadcastStaId, runtime->broadcastQueueId);
+        if (firstError == 0)
+            firstError = error;
+    }
+    if (previousStage >= kItlApFirmwareResourceMulticastStation) {
+        const int error = iwx_ap_remove_internal_sta(sc,
+            runtime->multicastStaId, runtime->multicastQueueId);
+        if (firstError == 0)
+            firstError = error;
+    }
+    if (previousStage >= kItlApFirmwareResourceBinding) {
+        const int error = iwx_ap_binding_cmd(sc, runtime, false);
+        if (firstError == 0)
+            firstError = error;
+    }
+    if (previousStage >= kItlApFirmwareResourceMac) {
+        const int error = iwx_ap_mac_ctxt_cmd(
+            sc, runtime, IWX_FW_CTXT_ACTION_REMOVE);
+        if (firstError == 0)
+            firstError = error;
+    }
+    itl_ap_firmware_runtime_reset(runtime);
+    return firstError;
 }
 
 int ItlIwx::
