@@ -68,8 +68,8 @@ for family, hal, lower, task_sig, rx_sig, add_name in (
      "iwx_ap_handle_rx(struct iwx_softc *sc,", "iwx_ap_add_client_sta"),
 ):
     start = body(hal, "startAPMode(const struct ItlHalApConfig *config)")
-    require(start, "itl_ap_open_config_supported(config)",
-            f"{family} open-only start")
+    require(start, "itl_ap_client_config_supported(config)",
+            f"{family} open/WPA2 start")
     require(hal, "transmitAPData(mbuf_t packet)", f"{family} AP TX entry")
     require(hal, "getAPTxFreeSpace() const", f"{family} AP free space")
     require(lower, "ap_frame = true", f"{family} raw AP TX ownership")
@@ -99,7 +99,7 @@ require(body(iwx, "iwx_ap_add_internal_sta(struct iwx_softc *sc,"),
         "command.assoc_id = htole16(runtime->clientAid)",
         "IWX ADD_STA AID")
 
-require(iwm_rx, "iwm_ap_handle_rx(sc, m, mbuf_pkthdr_len(m), apMl)",
+require(iwm_rx, "iwm_ap_handle_rx(sc, m, mbuf_pkthdr_len(m),",
         "IWM RX role classifier")
 require(iwm_mac, "if_input_ap(&sc->sc_ic.ic_if, &apMl);", "IWM AP RX drain")
 iwm_completion = body(iwm_mac,
@@ -109,7 +109,7 @@ if not (iwm_completion.find("if (txd->ap_frame)") <
     raise SystemExit("FAIL: IWM AP DQA completion is behind STA agg-QID reject")
 require(iwm_completion, "IWM_AGG_SSN_TO_TXQ_IDX(ssn)",
         "IWM AP completion reclaim")
-require(iwx, "iwx_ap_handle_rx(sc, m, mbuf_pkthdr_len(m), apMl)",
+require(iwx, "iwx_ap_handle_rx(sc, m, mbuf_pkthdr_len(m),",
         "IWX RX role classifier")
 require(iwx, "if_input_ap(&sc->sc_ic.ic_if, &apMl);", "IWX AP RX drain")
 
@@ -129,5 +129,5 @@ iwx_reset = body(iwx, "iwx_reset_tx_ring(struct iwx_softc *sc,")
 require(iwx_reset, "sizeof(sc->qfullmsk) * NBBY",
         "bounded IWX dynamic-QID reset")
 
-print("PASS: paired IWM/IWX open AP runtime contract")
+print("PASS: paired IWM/IWX open-compatible AP runtime contract")
 PY

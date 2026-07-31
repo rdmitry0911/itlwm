@@ -63,12 +63,25 @@ struct ItlHalApConfig {
 
 struct ItlHalApKey {
     const uint8_t *station;
+    uint16_t flags;
     uint8_t keyIndex;
     uint8_t cipher;
     const void *keyData;
     size_t keyLength;
     const void *rsc;
     size_t rscLength;
+};
+
+enum ItlHalApKeyContract : uint16_t {
+    kItlHalApKeyGroup = 0,
+    kItlHalApKeyPairwise = 4,
+    kItlHalApCipherAesCcm = 5,
+};
+
+enum ItlHalApStationCommandSelector : uint32_t {
+    kItlHalApStationAuthorize = 0x79,
+    kItlHalApStationUnauthorize = 0x7a,
+    kItlHalApStationDisassociate = 0xc9,
 };
 
 struct ItlHalApCSA {

@@ -1982,6 +1982,16 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
     memcpy(&frameControl, wh->i_fc, sizeof(frameControl));
     if (type != IEEE80211_FC0_TYPE_MGT && type != IEEE80211_FC0_TYPE_DATA)
         return EINVAL;
+    const bool protectedFrame =
+        (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
+    const bool multicast = IEEE80211_IS_MULTICAST(wh->i_addr1);
+    if (protectedFrame && (type != IEEE80211_FC0_TYPE_DATA ||
+        frameLength > UINT16_MAX - IEEE80211_CCMP_HDRLEN ||
+        (multicast ? !apRuntime.groupKeyInstalled :
+                     !apRuntime.clientPairwiseKeyInstalled)))
+        return EACCES;
+    const size_t firmwareLength = frameLength +
+        (protectedFrame ? IEEE80211_CCMP_HDRLEN : 0);
     const size_t headerLength = ieee80211_get_hdrlen(wh);
     if (headerLength < sizeof(*wh) || headerLength > frameLength)
         return EINVAL;
@@ -2000,7 +2010,7 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
 
     struct iwm_tx_cmd *tx =
         reinterpret_cast<struct iwm_tx_cmd *>(deviceCommand->data);
-    tx->len = htole16((uint16_t)frameLength);
+    tx->len = htole16((uint16_t)firmwareLength);
     tx->sta_id = staId;
     tx->tid_tspec = type == IEEE80211_FC0_TYPE_DATA ?
         IWM_TID_NON_QOS : IWM_MAX_TID_COUNT;
@@ -2035,7 +2045,34 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
         tx->offload_assist |= htole16(IWM_TX_CMD_OFFLD_PAD);
     }
 
-    mbuf_adj(m, headerLength);
+    if (protectedFrame) {
+        uint64_t *packetNumber = multicast ? &apRuntime.groupTxPn :
+                                             &apRuntime.clientPairwiseTxPn;
+        if (*packetNumber >= 0xffffffffffffULL)
+            return EOVERFLOW;
+        ++*packetNumber;
+        /* The header already lives in the TX command.  Reuse its final eight
+         * bytes as Linux's PUT_IV_SPACE carrier instead of allocating a
+         * second mbuf for every protected AP frame. */
+        mbuf_adj(m, headerLength - IEEE80211_CCMP_HDRLEN);
+        uint8_t *iv = mtod(m, uint8_t *);
+        iv[0] = *packetNumber;
+        iv[1] = *packetNumber >> 8;
+        iv[2] = 0;
+        iv[3] = (multicast ? apRuntime.groupKeyId : 0) << 6 |
+            IEEE80211_WEP_EXTIV;
+        iv[4] = *packetNumber >> 16;
+        iv[5] = *packetNumber >> 24;
+        iv[6] = *packetNumber >> 32;
+        iv[7] = *packetNumber >> 40;
+        tx->sec_ctl = IWM_TX_CMD_SEC_CCM;
+        memcpy(tx->key, multicast ? apRuntime.groupKey :
+                                    apRuntime.clientPairwiseKey,
+               sizeof(apRuntime.clientPairwiseKey));
+    } else {
+        mbuf_adj(m, headerLength);
+        tx->sec_ctl = 0;
+    }
     IOPhysicalSegment segments[IWM_NUM_OF_TBS - 2];
     const int segmentCount = data->map->cursor->getPhysicalSegmentsWithCoalesce(
         m, segments, IWM_NUM_OF_TBS - 2);
@@ -2047,7 +2084,7 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
     data->ap_frame = true;
     data->txmcs = 0;
     data->txrate = 0;
-    data->totlen = (int)frameLength;
+    data->totlen = (int)firmwareLength;
     data->fc = frameControl;
     data->sta_id = staId;
     memset(&data->info, 0, sizeof(data->info));
@@ -2067,7 +2104,7 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
     }
 
     iwm_update_sched(sc, ring->qid, ring->cur, staId,
-                     static_cast<uint16_t>(frameLength));
+                     static_cast<uint16_t>(firmwareLength));
     ring->cur = (ring->cur + 1) % IWM_TX_RING_COUNT;
     IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
     ring->queued++;
@@ -2526,9 +2563,59 @@ iwm_ap_remove_client_sta(struct iwm_softc *sc,
                                               sizeof(command), &command);
     runtime->clientStationInstalled = false;
     runtime->clientQueueId = UINT16_MAX;
+    itl_ap_firmware_client_crypto_reset(runtime);
     explicit_bzero(runtime->clientStationMac,
                    sizeof(runtime->clientStationMac));
     return disableError != 0 ? disableError : removeError;
+}
+
+int ItlIwm::
+iwm_ap_set_ccmp_key(struct iwm_softc *sc, uint8_t staId, bool pairwise,
+                    uint8_t keyOffset, uint8_t keyId,
+                    const void *keyBytes, size_t keyLength,
+                    const void *rscBytes, size_t rscLength)
+{
+    if (keyBytes == NULL || keyLength != 16 || keyId > 3 ||
+        keyOffset >= IWM_STA_KEY_MAX_DATA_KEY_NUM)
+        return EINVAL;
+
+    union {
+        struct iwm_add_sta_key_cmd_v1 v1;
+        struct iwm_add_sta_key_cmd v2;
+    } command;
+    memset(&command, 0, sizeof(command));
+    struct iwm_add_sta_key_common *common = &command.v2.common;
+    common->sta_id = staId;
+    common->key_offset = keyOffset;
+    uint16_t keyFlags = IWM_STA_KEY_FLG_CCM |
+        IWM_STA_KEY_FLG_WEP_KEY_MAP |
+        ((keyId << IWM_STA_KEY_FLG_KEYID_POS) &
+         IWM_STA_KEY_FLG_KEYID_MSK);
+    if (!pairwise)
+        keyFlags |= IWM_STA_KEY_MULTICAST;
+    common->key_flags = htole16(keyFlags);
+    memcpy(common->key, keyBytes, keyLength);
+    if (rscBytes != NULL && rscLength >= 6) {
+        const uint8_t *rsc = static_cast<const uint8_t *>(rscBytes);
+        common->rx_secur_seq_cnt[0] = rsc[0];
+        common->rx_secur_seq_cnt[1] = rsc[1];
+        common->rx_secur_seq_cnt[4] = rsc[2];
+        common->rx_secur_seq_cnt[5] = rsc[3];
+        common->rx_secur_seq_cnt[6] = rsc[4];
+        common->rx_secur_seq_cnt[7] = rsc[5];
+    }
+    const bool version2 = isset(sc->sc_ucode_api,
+        IWM_UCODE_TLV_API_TKIP_MIC_KEYS);
+    const size_t commandLength = version2 ? sizeof(command.v2) :
+                                            sizeof(command.v1);
+    uint32_t status = IWM_ADD_STA_SUCCESS;
+    int error = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA_KEY,
+        commandLength, &command, &status);
+    explicit_bzero(&command, sizeof(command));
+    if (error == 0 &&
+        (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
+        error = EIO;
+    return error;
 }
 
 static int
@@ -2605,7 +2692,7 @@ iwm_ap_client_task(void *arg)
     if (error == 0 && itl_ap_open_is_running(runtime) &&
         runtime->clientAuthenticated) {
         runtime->clientAssociated = true;
-        runtime->clientAuthorized = true;
+        runtime->clientAuthorized = !itl_ap_client_is_secure(runtime);
         iwm_ap_publish_station(sc, runtime, IEEE80211_APSTA_EVENT_ASSOC);
 #if __IO80211_TARGET >= __MAC_26_0
         airportItlwmRequestAPTxDequeue(that->getController());
@@ -2625,11 +2712,11 @@ iwm_ap_client_task(void *arg)
 
 bool ItlIwm::
 iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
-                 struct mbuf_list *apFrames)
+                 bool hardwareDecrypted, struct mbuf_list *apFrames)
 {
     struct ItlApOpenRxResult result;
     const int classifyError = itl_ap_open_classify_rx(
-        &apRuntime, packet, frameLength, &result);
+        &apRuntime, packet, frameLength, hardwareDecrypted, &result);
     if (result.disposition == kItlApOpenRxNotOurs)
         return false;
 
@@ -2648,6 +2735,7 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
             apRuntime.clientAuthorized = false;
             apRuntime.clientAid = 0;
             apRuntime.clientAssocIEsLength = 0;
+            itl_ap_firmware_client_crypto_reset(&apRuntime);
         }
         mbuf_t response = NULL;
         if (error == 0)
@@ -2694,6 +2782,7 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
         apRuntime.clientAuthorized = false;
         apRuntime.clientAid = 0;
         apRuntime.clientAssocIEsLength = 0;
+        itl_ap_firmware_client_crypto_reset(&apRuntime);
     }
     if (error != 0)
         XYLog("%s: IWM open AP RX action=%u error=%d\n", DEVNAME(sc),

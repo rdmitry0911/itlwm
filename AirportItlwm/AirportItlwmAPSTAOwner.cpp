@@ -1039,6 +1039,7 @@ IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
     ItlHalApKey halKey;
     bzero(&halKey, sizeof(halKey));
     halKey.station = key->key_ea.octet;
+    halKey.flags = key->key_flags;
     halKey.keyIndex = static_cast<uint8_t>(key->key_index);
     halKey.cipher = static_cast<uint8_t>(key->key_cipher_type);
     halKey.keyData = key->key;

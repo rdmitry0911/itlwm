@@ -1291,7 +1291,7 @@ startAPMode(const struct ItlHalApConfig *config)
 {
     if (!supportsAPMode())
         return kIOReturnUnsupported;
-    if (!itl_ap_open_config_supported(config))
+    if (!itl_ap_client_config_supported(config))
         return kIOReturnUnsupported;
     if (apRuntime.stage != kItlApFirmwareResourceIdle)
         return kIOReturnBusy;
@@ -1349,6 +1349,89 @@ transmitAPData(mbuf_t packet)
         return error == ENOBUFS ? kIOReturnNoResources : kIOReturnError;
     }
     mbuf_freem(packet);
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwx::
+setAPKey(const struct ItlHalApKey *key)
+{
+    if (!itl_ap_open_is_running(&apRuntime))
+        return kIOReturnNotReady;
+    if (!itl_ap_client_is_secure(&apRuntime))
+        return kIOReturnUnsupported;
+    if (key == NULL || key->keyData == NULL || key->keyLength != 16 ||
+        key->cipher != kItlHalApCipherAesCcm || key->keyIndex > 3 ||
+        (key->flags != kItlHalApKeyPairwise &&
+         key->flags != kItlHalApKeyGroup))
+        return kIOReturnBadArgument;
+
+    const bool pairwise = key->flags == kItlHalApKeyPairwise;
+    if (pairwise && (!apRuntime.clientAssociated ||
+        !apRuntime.clientStationInstalled || key->station == NULL ||
+        !IEEE80211_ADDR_EQ(key->station, apRuntime.clientMac)))
+        return kIOReturnNotReady;
+    const uint8_t staId = pairwise ? apRuntime.firstClientStaId :
+                                     apRuntime.multicastStaId;
+    const uint8_t keyOffset = pairwise ? 2 : 3;
+    const int error = iwx_ap_set_ccmp_key(&com, staId, pairwise,
+        keyOffset, key->keyIndex, key->keyData, key->keyLength,
+        key->rsc, key->rscLength);
+    if (error != 0)
+        return kIOReturnError;
+
+    const uint64_t receiveSequence = itl_ap_key_rsc(key);
+    if (pairwise) {
+        memcpy(apRuntime.clientPairwiseKey, key->keyData,
+               sizeof(apRuntime.clientPairwiseKey));
+        apRuntime.clientPairwiseTxPn = 0;
+        for (size_t tid = 0; tid < nitems(apRuntime.clientRxPn); tid++)
+            apRuntime.clientRxPn[tid] = receiveSequence;
+        apRuntime.clientPairwiseKeyInstalled = true;
+    } else {
+        memcpy(apRuntime.groupKey, key->keyData,
+               sizeof(apRuntime.groupKey));
+        apRuntime.groupKeyId = key->keyIndex;
+        apRuntime.groupTxPn = 0;
+        apRuntime.groupKeyInstalled = true;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwx::
+sendAPStationCommand(const struct ItlHalApStationCommand *command)
+{
+    if (!itl_ap_open_is_running(&apRuntime))
+        return kIOReturnNotReady;
+    if (command == NULL)
+        return kIOReturnBadArgument;
+    if (command->command == kItlHalApStationDisassociate) {
+        apRuntime.clientAssociationPending = false;
+        apRuntime.clientAuthenticated = false;
+        apRuntime.clientAssociated = false;
+        apRuntime.clientAid = 0;
+        apRuntime.clientAssocIEsLength = 0;
+        itl_ap_firmware_client_crypto_reset(&apRuntime);
+        return iwx_ap_remove_client_sta(&com, &apRuntime) == 0 ?
+            kIOReturnSuccess : kIOReturnError;
+    }
+    if (command->station == NULL ||
+        !IEEE80211_ADDR_EQ(command->station, apRuntime.clientMac) ||
+        !apRuntime.clientAssociated)
+        return kIOReturnNotReady;
+    if (command->command == kItlHalApStationUnauthorize) {
+        apRuntime.clientAuthorized = false;
+        return kIOReturnSuccess;
+    }
+    if (command->command != kItlHalApStationAuthorize)
+        return kIOReturnUnsupported;
+    if (itl_ap_client_is_secure(&apRuntime) &&
+        (!apRuntime.clientPairwiseKeyInstalled ||
+         !apRuntime.groupKeyInstalled))
+        return kIOReturnNotReady;
+    apRuntime.clientAuthorized = true;
+#if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmRequestAPTxDequeue(getController());
+#endif
     return kIOReturnSuccess;
 }
 
@@ -6646,7 +6729,16 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
             qwh->i_qos[0] &= htole16(~IEEE80211_QOS_AMSDU);
         }    
     }
-    if (iwx_ap_handle_rx(sc, m, mbuf_pkthdr_len(m), apMl))
+    const uint32_t apRxStatus = le32toh(desc->status);
+    const bool apHardwareDecrypted =
+        (apRxStatus & IWX_RX_MPDU_RES_STATUS_SEC_ENC_MSK) ==
+            IWX_RX_MPDU_RES_STATUS_SEC_CCM_ENC &&
+        (apRxStatus & (IWX_RX_MPDU_RES_STATUS_DEC_DONE |
+                       IWX_RX_MPDU_RES_STATUS_MIC_OK)) ==
+            (IWX_RX_MPDU_RES_STATUS_DEC_DONE |
+             IWX_RX_MPDU_RES_STATUS_MIC_OK);
+    if (iwx_ap_handle_rx(sc, m, mbuf_pkthdr_len(m),
+                         apHardwareDecrypted, apMl))
         return;
     
     /*
@@ -8694,6 +8786,13 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
     IEEE80211_ADDR_COPY(peer, wh->i_addr1);
     if (type != IEEE80211_FC0_TYPE_MGT && type != IEEE80211_FC0_TYPE_DATA)
         return EINVAL;
+    const bool protectedFrame =
+        (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
+    const bool multicast = IEEE80211_IS_MULTICAST(wh->i_addr1);
+    if (protectedFrame && (type != IEEE80211_FC0_TYPE_DATA ||
+        (multicast ? !apRuntime.groupKeyInstalled :
+                     !apRuntime.clientPairwiseKeyInstalled)))
+        return EACCES;
     const size_t headerLength = ieee80211_get_hdrlen(wh);
     if (headerLength < sizeof(*wh) || headerLength > frameLength)
         return EINVAL;
@@ -8731,7 +8830,7 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
         rateFlags |= IWX_RATE_MCS_CCK_MSK_V1;
     }
     const uint32_t commandFlags = IWX_TX_FLAGS_CMD_RATE |
-        IWX_TX_FLAGS_ENCRYPT_DIS;
+        (protectedFrame ? 0 : IWX_TX_FLAGS_ENCRYPT_DIS);
     uint16_t commandSize;
     uint16_t offloadAssist = 0;
     if (headerLength % 4)
@@ -8793,6 +8892,12 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
     iwx_tx_update_byte_tbl(sc, ring, index,
                            static_cast<uint16_t>(frameLength),
                            transportBuffers);
+    if (protectedFrame) {
+        uint64_t *packetNumber = multicast ? &apRuntime.groupTxPn :
+                                             &apRuntime.clientPairwiseTxPn;
+        if (*packetNumber < 0xffffffffffffULL)
+            ++*packetNumber;
+    }
     ring->cur = (ring->cur + 1) % ring->ring_count;
     IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
     ring->queued++;
@@ -10615,8 +10720,50 @@ iwx_ap_remove_client_sta(struct iwx_softc *sc,
         runtime->firstClientStaId, runtime->clientQueueId);
     runtime->clientStationInstalled = false;
     runtime->clientQueueId = UINT16_MAX;
+    itl_ap_firmware_client_crypto_reset(runtime);
     explicit_bzero(runtime->clientStationMac,
                    sizeof(runtime->clientStationMac));
+    return error;
+}
+
+int ItlIwx::
+iwx_ap_set_ccmp_key(struct iwx_softc *sc, uint8_t staId, bool pairwise,
+                    uint8_t keyOffset, uint8_t keyId,
+                    const void *keyBytes, size_t keyLength,
+                    const void *rscBytes, size_t rscLength)
+{
+    if (keyBytes == NULL || keyLength != 16 || keyId > 3 ||
+        keyOffset >= IWX_STA_KEY_MAX_DATA_KEY_NUM ||
+        !isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_TKIP_MIC_KEYS))
+        return EINVAL;
+    struct iwx_add_sta_key_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.common.sta_id = staId;
+    command.common.key_offset = keyOffset;
+    uint16_t keyFlags = IWX_STA_KEY_FLG_CCM |
+        IWX_STA_KEY_FLG_WEP_KEY_MAP |
+        ((keyId << IWX_STA_KEY_FLG_KEYID_POS) &
+         IWX_STA_KEY_FLG_KEYID_MSK);
+    if (!pairwise)
+        keyFlags |= IWX_STA_KEY_MULTICAST;
+    command.common.key_flags = htole16(keyFlags);
+    memcpy(command.common.key, keyBytes, keyLength);
+    if (rscBytes != NULL && rscLength >= 6) {
+        const uint8_t *rsc = static_cast<const uint8_t *>(rscBytes);
+        command.common.rx_secur_seq_cnt[0] = rsc[0];
+        command.common.rx_secur_seq_cnt[1] = rsc[1];
+        command.common.rx_secur_seq_cnt[4] = rsc[2];
+        command.common.rx_secur_seq_cnt[5] = rsc[3];
+        command.common.rx_secur_seq_cnt[6] = rsc[4];
+        command.common.rx_secur_seq_cnt[7] = rsc[5];
+    }
+    uint32_t status = IWX_ADD_STA_SUCCESS;
+    int error = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA_KEY,
+        sizeof(command), &command, &status);
+    explicit_bzero(&command, sizeof(command));
+    if (error == 0 &&
+        (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
+        error = EIO;
     return error;
 }
 
@@ -10693,7 +10840,7 @@ iwx_ap_client_task(void *arg)
     if (error == 0 && itl_ap_open_is_running(runtime) &&
         runtime->clientAuthenticated) {
         runtime->clientAssociated = true;
-        runtime->clientAuthorized = true;
+        runtime->clientAuthorized = !itl_ap_client_is_secure(runtime);
         iwx_ap_publish_station(sc, runtime, IEEE80211_APSTA_EVENT_ASSOC);
 #if __IO80211_TARGET >= __MAC_26_0
         airportItlwmRequestAPTxDequeue(that->getController());
@@ -10725,11 +10872,11 @@ iwx_ap_client_task_dispatch(void *arg)
 
 bool ItlIwx::
 iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
-                 struct mbuf_list *apFrames)
+                 bool hardwareDecrypted, struct mbuf_list *apFrames)
 {
     struct ItlApOpenRxResult result;
     const int classifyError = itl_ap_open_classify_rx(
-        &apRuntime, packet, frameLength, &result);
+        &apRuntime, packet, frameLength, hardwareDecrypted, &result);
     if (result.disposition == kItlApOpenRxNotOurs)
         return false;
 
@@ -10748,6 +10895,7 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
             apRuntime.clientAuthorized = false;
             apRuntime.clientAid = 0;
             apRuntime.clientAssocIEsLength = 0;
+            itl_ap_firmware_client_crypto_reset(&apRuntime);
         }
         mbuf_t response = NULL;
         if (error == 0)
@@ -10793,6 +10941,7 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
         apRuntime.clientAuthorized = false;
         apRuntime.clientAid = 0;
         apRuntime.clientAssocIEsLength = 0;
+        itl_ap_firmware_client_crypto_reset(&apRuntime);
     }
     if (error != 0)
         XYLog("%s: IWX open AP RX action=%u error=%d\n", DEVNAME(sc),

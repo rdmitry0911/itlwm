@@ -935,7 +935,16 @@ iwm_rx_mpdu_mq(struct iwm_softc *sc, mbuf_t m, void *pktdata,
             iwm_flip_address(qwh->i_addr3);
         }
     }
-    if (iwm_ap_handle_rx(sc, m, mbuf_pkthdr_len(m), apMl))
+    const uint32_t apRxStatus = le16toh(desc->status);
+    const bool apHardwareDecrypted =
+        (apRxStatus & IWM_RX_MPDU_RES_STATUS_SEC_ENC_MSK) ==
+            IWM_RX_MPDU_RES_STATUS_SEC_CCM_ENC &&
+        (apRxStatus & (IWM_RX_MPDU_RES_STATUS_DEC_DONE |
+                       IWM_RX_MPDU_RES_STATUS_MIC_OK)) ==
+            (IWM_RX_MPDU_RES_STATUS_DEC_DONE |
+             IWM_RX_MPDU_RES_STATUS_MIC_OK);
+    if (iwm_ap_handle_rx(sc, m, mbuf_pkthdr_len(m),
+                         apHardwareDecrypted, apMl))
         return;
     
     /*

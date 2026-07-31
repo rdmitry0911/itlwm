@@ -58,8 +58,8 @@ require(runtime, "runtime->clientQueueId = UINT16_MAX;",
         "invalid client queue reset")
 
 iwm_hal_start = body(iwm_hal, "startAPMode(const struct ItlHalApConfig *config)")
-require(iwm_hal_start, "itl_ap_open_config_supported(config)",
-        "IWM open-only admission")
+require(iwm_hal_start, "itl_ap_client_config_supported(config)",
+        "IWM open/WPA2 admission")
 require(iwm_hal_start, "iwm_start_ap_resources(&com, &apRuntime)",
         "IWM HAL resource start")
 require(body(iwm_hal, "stopAPMode()"),

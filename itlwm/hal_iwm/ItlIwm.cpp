@@ -14,6 +14,11 @@
 
 #include "ItlIwm.hpp"
 
+#if __IO80211_TARGET >= __MAC_26_0
+extern "C" void airportItlwmRequestAPTxDequeue(
+    IOEthernetController *controller);
+#endif
+
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwm, ItlHalService)
 
@@ -155,7 +160,7 @@ startAPMode(const struct ItlHalApConfig *config)
 {
     if (!supportsAPMode())
         return kIOReturnUnsupported;
-    if (!itl_ap_open_config_supported(config))
+    if (!itl_ap_client_config_supported(config))
         return kIOReturnUnsupported;
     if (apRuntime.stage != kItlApFirmwareResourceIdle)
         return kIOReturnBusy;
@@ -202,6 +207,94 @@ transmitAPData(mbuf_t packet)
         return error == ENOBUFS ? kIOReturnNoResources : kIOReturnError;
     }
     mbuf_freem(packet);
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwm::
+setAPKey(const struct ItlHalApKey *key)
+{
+    if (!itl_ap_open_is_running(&apRuntime))
+        return kIOReturnNotReady;
+    if (!itl_ap_client_is_secure(&apRuntime))
+        return kIOReturnUnsupported;
+    if (key == NULL || key->keyData == NULL || key->keyLength != 16 ||
+        key->cipher != kItlHalApCipherAesCcm || key->keyIndex > 3 ||
+        (key->flags != kItlHalApKeyPairwise &&
+         key->flags != kItlHalApKeyGroup))
+        return kIOReturnBadArgument;
+
+    const bool pairwise = key->flags == kItlHalApKeyPairwise;
+    if (pairwise && (!apRuntime.clientAssociated ||
+        !apRuntime.clientStationInstalled || key->station == NULL ||
+        !IEEE80211_ADDR_EQ(key->station, apRuntime.clientMac)))
+        return kIOReturnNotReady;
+
+    const uint8_t staId = pairwise ? apRuntime.firstClientStaId :
+                                     apRuntime.multicastStaId;
+    const uint8_t keyOffset = pairwise ? 2 : 3;
+    int error = 0;
+    /* Legacy IWM TX commands carry the AP GTK inline.  Linux iwlwifi keeps
+     * that AP group key out of ADD_STA_KEY; only the PTK is needed for RX. */
+    if (pairwise)
+        error = iwm_ap_set_ccmp_key(&com, staId, true, keyOffset,
+            key->keyIndex, key->keyData, key->keyLength,
+            key->rsc, key->rscLength);
+    if (error != 0)
+        return kIOReturnError;
+
+    const uint64_t receiveSequence = itl_ap_key_rsc(key);
+    if (pairwise) {
+        memcpy(apRuntime.clientPairwiseKey, key->keyData,
+               sizeof(apRuntime.clientPairwiseKey));
+        apRuntime.clientPairwiseTxPn = 0;
+        for (size_t tid = 0; tid < nitems(apRuntime.clientRxPn); tid++)
+            apRuntime.clientRxPn[tid] = receiveSequence;
+        apRuntime.clientPairwiseKeyInstalled = true;
+    } else {
+        memcpy(apRuntime.groupKey, key->keyData,
+               sizeof(apRuntime.groupKey));
+        apRuntime.groupKeyId = key->keyIndex;
+        apRuntime.groupTxPn = 0;
+        apRuntime.groupKeyInstalled = true;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwm::
+sendAPStationCommand(const struct ItlHalApStationCommand *command)
+{
+    if (!itl_ap_open_is_running(&apRuntime))
+        return kIOReturnNotReady;
+    if (command == NULL)
+        return kIOReturnBadArgument;
+    if (command->command == kItlHalApStationDisassociate) {
+        apRuntime.clientAssociationPending = false;
+        apRuntime.clientAuthenticated = false;
+        apRuntime.clientAssociated = false;
+        apRuntime.clientAid = 0;
+        apRuntime.clientAssocIEsLength = 0;
+        itl_ap_firmware_client_crypto_reset(&apRuntime);
+        return iwm_ap_remove_client_sta(&com, &apRuntime) == 0 ?
+            kIOReturnSuccess : kIOReturnError;
+    }
+    if (command->station == NULL ||
+        !IEEE80211_ADDR_EQ(command->station, apRuntime.clientMac) ||
+        !apRuntime.clientAssociated)
+        return kIOReturnNotReady;
+    if (command->command == kItlHalApStationUnauthorize) {
+        apRuntime.clientAuthorized = false;
+        return kIOReturnSuccess;
+    }
+    if (command->command != kItlHalApStationAuthorize)
+        return kIOReturnUnsupported;
+    if (itl_ap_client_is_secure(&apRuntime) &&
+        (!apRuntime.clientPairwiseKeyInstalled ||
+         !apRuntime.groupKeyInstalled))
+        return kIOReturnNotReady;
+    apRuntime.clientAuthorized = true;
+#if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmRequestAPTxDequeue(getController());
+#endif
     return kIOReturnSuccess;
 }
 

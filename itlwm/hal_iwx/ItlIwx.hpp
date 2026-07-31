@@ -206,6 +206,9 @@ public:
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
     IOReturn transmitAPData(mbuf_t packet) override;
+    IOReturn setAPKey(const struct ItlHalApKey *key) override;
+    IOReturn sendAPStationCommand(
+        const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
 
     /* One-ticket, real firmware TX path for the controller SAE relay. */
@@ -546,8 +549,11 @@ public:
                                  const uint8_t *);
     int    iwx_ap_remove_client_sta(struct iwx_softc *,
                                     struct ItlApFirmwareRuntime *);
+    int    iwx_ap_set_ccmp_key(struct iwx_softc *, uint8_t, bool,
+                               uint8_t, uint8_t, const void *, size_t,
+                               const void *, size_t);
     int    iwx_ap_send_raw_frame(struct iwx_softc *, mbuf_t, uint16_t);
-    bool   iwx_ap_handle_rx(struct iwx_softc *, mbuf_t, size_t,
+    bool   iwx_ap_handle_rx(struct iwx_softc *, mbuf_t, size_t, bool,
                             struct mbuf_list *);
     static void iwx_ap_client_task(void *);
     static void iwx_ap_client_task_dispatch(void *);

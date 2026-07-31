@@ -73,6 +73,9 @@ public:
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
     IOReturn transmitAPData(mbuf_t packet) override;
+    IOReturn setAPKey(const struct ItlHalApKey *key) override;
+    IOReturn sendAPStationCommand(
+        const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
 
     IOReturn beginWclBackgroundScan(
@@ -411,9 +414,12 @@ public:
                                  const uint8_t *);
     int    iwm_ap_remove_client_sta(struct iwm_softc *,
                                     struct ItlApFirmwareRuntime *);
+    int    iwm_ap_set_ccmp_key(struct iwm_softc *, uint8_t, bool,
+                               uint8_t, uint8_t, const void *, size_t,
+                               const void *, size_t);
     int    iwm_ap_send_raw_frame(struct iwm_softc *, mbuf_t, uint8_t,
                                  uint8_t);
-    bool   iwm_ap_handle_rx(struct iwm_softc *, mbuf_t, size_t,
+    bool   iwm_ap_handle_rx(struct iwm_softc *, mbuf_t, size_t, bool,
                             struct mbuf_list *);
     static void iwm_ap_client_task(void *);
     int    iwm_ap_update_quotas(struct iwm_softc *,

@@ -50,9 +50,30 @@ struct ItlApFirmwareRuntime {
     bool clientAssociated;
     bool clientAuthorized;
     bool clientStationInstalled;
+    bool clientPairwiseKeyInstalled;
+    bool groupKeyInstalled;
+    uint8_t clientPairwiseKey[16];
+    uint8_t groupKey[16];
+    uint8_t groupKeyId;
+    uint64_t clientPairwiseTxPn;
+    uint64_t groupTxPn;
+    uint64_t clientRxPn[16];
     bool samePhyAsPrimary;
     bool replayAfterWake;
 };
+
+static inline void
+itl_ap_firmware_client_crypto_reset(struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL)
+        return;
+    runtime->clientAuthorized = false;
+    runtime->clientPairwiseKeyInstalled = false;
+    runtime->clientPairwiseTxPn = 0;
+    explicit_bzero(runtime->clientPairwiseKey,
+                   sizeof(runtime->clientPairwiseKey));
+    explicit_bzero(runtime->clientRxPn, sizeof(runtime->clientRxPn));
+}
 
 static inline void
 itl_ap_firmware_runtime_reset(struct ItlApFirmwareRuntime *runtime)
