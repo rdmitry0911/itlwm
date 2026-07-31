@@ -4089,6 +4089,7 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apFirmwarePostDeactivateQueued = false;
     apFirmwareUnassociatedReplySeen = false;
     apFirmwareUnassociatedNotificationSeen = false;
+    apStaPanPriorityActive = false;
     apFirmwareStage = IWN_AP_STAGE_IDLE;
     bzero(&apFirmwareConfig, sizeof(apFirmwareConfig));
     bzero(&apFirmwareRxon, sizeof(apFirmwareRxon));
@@ -6471,39 +6472,63 @@ int ItlIwn::iwn_send_ap_pan_params(const struct ItlHalApConfig *config)
     if (config == NULL)
         return EINVAL;
 
-    const uint16_t beaconInterval =
+    uint16_t beaconInterval =
         config->beaconInterval != 0 ? config->beaconInterval : 100;
+    const uint16_t bssBeaconInterval =
+        com.sc_ic.ic_bss != NULL ? com.sc_ic.ic_bss->ni_intval : 0;
+    if (bssBeaconInterval > beaconInterval)
+        beaconInterval = bssBeaconInterval;
+    const uint16_t dtimPeriod =
+        config->dtimPeriod != 0 ? config->dtimPeriod : 1;
     /*
-     * Keep both materialized firmware contexts schedulable while the idle
-     * framework BSS coexists with role-7.  A narrow BSS slot is required for
-     * the guest's inbound management RX path; PAN gets the remainder of the
-     * three-beacon admission window.
-     */
-    /*
-     * IWL_MIN_SLOT_TIME is 20 TU in DVM.  A live 6235 APSTA trace confirms
-     * that an active, unassociated PAN AP receives a 20 TU BSS slot and the
-     * remainder of the three-DTIM window (20/580 for DTIM 2, hence 20/280
-     * for the DTIM 1 Tahoe lab AP).  The earlier 10 TU approximation let FH
-     * fill PAN FIFO5 but could leave its management frames unselected.
+     * Match iwlwifi DVM's two-context scheduler, including its otherwise
+     * easy-to-miss scan transition.  The primary BSS context must own nearly
+     * the whole three-DTIM admission window while it scans or authenticates;
+     * a 20 TU slot cannot contain one normal active/passive dwell.  Outside
+     * that temporary BSS-priority interval, the active PAN AP owns the
+     * admission window exactly as DVM's active, unassociated AP vif does.
      */
     const uint16_t minimumSlotWidth = 20;
     const uint32_t admissionWindow =
-        static_cast<uint32_t>(beaconInterval) * 3;
-    const uint16_t panSlotWidth = static_cast<uint16_t>(
+        static_cast<uint32_t>(dtimPeriod) * beaconInterval * 3;
+    const uint16_t admissionRemainder = static_cast<uint16_t>(
         admissionWindow > 0xffffU + minimumSlotWidth ?
             0xffffU :
             (admissionWindow > minimumSlotWidth ?
                 admissionWindow - minimumSlotWidth : minimumSlotWidth));
+    uint16_t bssSlotWidth;
+    uint16_t panSlotWidth;
+    if (apStaPanPriorityActive) {
+        bssSlotWidth = admissionRemainder;
+        panSlotWidth = minimumSlotWidth;
+    } else {
+        bssSlotWidth = minimumSlotWidth;
+        panSlotWidth = admissionRemainder;
+    }
     struct iwn_cmd_wipan_params command;
     bzero(&command, sizeof(command));
     command.flags = htole16(IWN_WIPAN_PARAMS_SLOTTED_MODE);
     command.nslots = 2;
     command.slots[0].type = 0;
-    command.slots[0].width = htole16(minimumSlotWidth);
+    command.slots[0].width = htole16(bssSlotWidth);
     command.slots[1].type = 1;
     command.slots[1].width = htole16(panSlotWidth);
     return iwn_cmd(
         &com, IWN_CMD_WIPAN_PARAMS, &command, sizeof(command), 1);
+}
+
+int ItlIwn::iwn_set_ap_sta_pan_priority(bool active)
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return 0;
+
+    const bool previous = apStaPanPriorityActive;
+    apStaPanPriorityActive = active;
+    const int error = iwn_send_ap_pan_params(&apFirmwareConfig);
+    if (error != 0)
+        apStaPanPriorityActive = previous;
+    return error;
 }
 
 int ItlIwn::iwn_send_ap_stop_pan_params()
@@ -11986,6 +12011,18 @@ iwn_notif_intr(struct iwn_softc *sc)
              * generic/WCL terminal by clearing flags underneath a successor. */
             if (!iwn_scan_lease_claim_terminal(sc, &terminal))
                 break;
+            /*
+             * DVM clears STATUS_SCAN_HW before post-scan PAN programming.
+             * Keep the scan-priority schedule across the 2.4 -> 5 GHz
+             * continuation above, then restore it only for this exact final
+             * physical terminal.
+             */
+            if (iwn_set_ap_sta_pan_priority(false) != 0) {
+                XYLog("%s: could not restore APSTA PAN parameters after "
+                      "scan\n", sc->sc_dev.dv_xname);
+                sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
+                (void)task_add(systq, &sc->init_task);
+            }
             initial_handoff =
                 iwn_wcl_initial_scan_claim_generic_terminal(sc, &terminal);
             /* This is the lower owner's exact terminal claim, before
@@ -15343,6 +15380,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     bool wcl_background_5ghz_unassociated_dwell = false;
     bool wcl_background_5ghz_directed_dwell = false;
     bool foreground_5ghz_directed_dwell = false;
+    bool ap_sta_pan_priority_changed = false;
 
     if (out_command_attempted != NULL)
         *out_command_attempted = false;
@@ -15622,6 +15660,26 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     buflen = (uint8_t *)chan - buf;
     hdr->len = htole16(buflen);
 
+    /*
+     * Linux DVM sets STATUS_SCAN_HW and programs WIPAN_PARAMS immediately
+     * before REPLY_SCAN_CMD.  Preserve that command order here: with the AP
+     * context active, the old 20 TU BSS slot is shorter than one channel
+     * dwell and firmware aborts or never completes the physical scan.
+     */
+    if (apFirmwareTransitionActive &&
+        apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        !apStaPanPriorityActive) {
+        error = iwn_set_ap_sta_pan_priority(true);
+        if (error != 0) {
+            AirportItlwmPostPltiTraceRecord(
+                ic, kAirportItlwmPostPltiTraceEventIwnScanCommandRejected);
+            explicit_bzero(buf, IWN_SCAN_MAXSZ);
+            ::free(buf);
+            return error;
+        }
+        ap_sta_pan_priority_changed = true;
+    }
+
     /* All buffer allocation and command construction is now complete.  The
      * direct normal foreground path still needs net80211's preparation, but
      * doing it here avoids a reset for a merely failed malloc/build above.
@@ -15636,6 +15694,8 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
             abort_requested) {
             AirportItlwmPostPltiTraceRecord(
                 ic, kAirportItlwmPostPltiTraceEventIwnScanCommandRejected);
+            if (ap_sta_pan_priority_changed)
+                (void)iwn_set_ap_sta_pan_priority(false);
             explicit_bzero(buf, IWN_SCAN_MAXSZ);
             ::free(buf);
             return ECANCELED;
@@ -15678,6 +15738,8 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     } else {
         AirportItlwmPostPltiTraceRecord(
             ic, kAirportItlwmPostPltiTraceEventIwnScanCommandRejected);
+        if (ap_sta_pan_priority_changed)
+            (void)iwn_set_ap_sta_pan_priority(false);
     }
     ::free(buf);
     return error;
@@ -15808,6 +15870,18 @@ iwn_auth(struct iwn_softc *sc, int arg)
     int bss_switch =
         (!IEEE80211_ADDR_EQ(sc->bss_node_addr, etheranyaddr) &&
         !IEEE80211_ADDR_EQ(sc->bss_node_addr, ni->ni_macaddr));
+
+    /*
+     * Authentication is the other DVM "active but unassociated" BSS case.
+     * Give the station context the same admission window before changing
+     * RXON, so AUTH/ASSOC management exchange can coexist with HostAP.
+     */
+    error = iwn_set_ap_sta_pan_priority(true);
+    if (error != 0) {
+        XYLog("%s: could not prioritize STA PAN slot for auth\n",
+              sc->sc_dev.dv_xname);
+        return error;
+    }
 
     /* Update adapter configuration. */
     IEEE80211_ADDR_COPY(sc->rxon.bssid, ni->ni_bssid);
@@ -16039,6 +16113,18 @@ iwn_run(struct iwn_softc *sc)
     timeout_add_msec(&sc->calib_to, 500);
 
     ieee80211_ra_node_init(ic, &wn->rn, &wn->ni);
+
+    /*
+     * RXON now carries the negotiated AID/BSS filter.  Leave temporary
+     * scan/auth priority and return the active HostAP PAN context to its
+     * normal DVM admission window.
+     */
+    error = iwn_set_ap_sta_pan_priority(false);
+    if (error != 0) {
+        XYLog("%s: could not restore HostAP PAN slots after STA auth\n",
+              sc->sc_dev.dv_xname);
+        return error;
+    }
 
     /* Link LED always on while associated. */
     iwn_set_led(sc, IWN_LED_LINK, 0, 1);
