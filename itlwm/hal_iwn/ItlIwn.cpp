@@ -7515,8 +7515,19 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
         iwn_quiesce_scan_for_ap_transition();
     if (scanResult != kIOReturnSuccess)
         return scanResult;
+    /*
+     * A public HostAP start commonly lands while airportd has net80211 in
+     * the transient SCAN state.  The associated BSS RXON remains live during
+     * that scan, so ic_state alone would misclassify it as unassociated and
+     * leave the scheduler at the PAN-admission 20/280 split.  DVM keys this
+     * decision from the BSS context's association state; retain the same
+     * truth from the firmware carrier (ASSOC filter plus a negotiated AID).
+     */
+    const bool bssRxonAssociated =
+        (le32toh(com.rxon.filter) & IWN_FILTER_BSS) != 0 &&
+        IEEE80211_AID(le16toh(com.rxon.associd)) != 0;
     apStaBssAssociated =
-        com.sc_ic.ic_state == IEEE80211_S_RUN;
+        com.sc_ic.ic_state == IEEE80211_S_RUN || bssRxonAssociated;
     /*
      * mac80211 stops its software queues and waits for every non-command
      * DVM TX queue to drain before reconfiguring a second RXON context.
