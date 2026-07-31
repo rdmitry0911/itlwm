@@ -15734,7 +15734,8 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
         if (fAPSTAOwner != nullptr) {
             fAPSTAOwner->copyMacAddress(apMac.octet);
         } else if (copyPermanentHardwareAddress(apMac.octet)) {
-            apMac.octet[0] ^= 0x02;
+            apMac.octet[0] =
+                static_cast<uint8_t>((apMac.octet[0] | 0x02U) ^ 0x04U);
         }
     }
     if (!interface->initWithController(
@@ -15751,6 +15752,15 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
     }
     fAPSTAInterfaceProviderAttached = true;
 
+    /*
+     * Apple APSTA owns a separate controller ingress adapter before its
+     * VirtualInterface start/register sequence.  The local Intel port
+     * represents that ingress owner through IO80211Controller's interface
+     * inventory: without this attach, unicast and ARP can traverse the role
+     * queue but IPv4 broadcast (including DHCP Discover) never reaches the
+     * APSTA BSD client.  The AP registration still carries its distinct
+     * role MAC below, so this does not reuse the primary ifnet identity.
+     */
     if (!attachInterface(interface, this)) {
         teardownAPSTAInterface();
         return kIOReturnError;
@@ -15758,11 +15768,11 @@ IOReturn AirportItlwm::materializeAPSTAInterface(
     fAPSTAInterfaceAttached = true;
 
     /*
-     * AppleBCMWLANIO80211APSTAInterface::start(core, registrationInfo)
-     * enters its IO80211VirtualInterface::start parent before it registers
-     * the role-7 queue inventory with Skywalk.  Starting after
-     * registerEthernetInterface leaves the dynamic BSD client racing a
-     * not-yet-started provider and the ap1 flowswitch attach returns EBUSY.
+     * The recovered Apple APSTA init path pairs
+     * IO80211VirtualInterface::init(core, ...) with IOService::attach(core),
+     * then its start(core, registrationInfo) enters the VirtualInterface
+     * parent before queue registration.  Keep that ordering after the local
+     * ingress-owner attach above.
      */
     if (!interface->start(this)) {
         teardownAPSTAInterface();

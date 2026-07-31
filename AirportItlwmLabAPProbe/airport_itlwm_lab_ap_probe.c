@@ -18,6 +18,10 @@
 #define APPLE80211_VIF_SOFT_AP 7
 #define APPLE80211_MAX_SSID_LEN 32
 #define APPLE80211_MAX_RADIO 4
+#define APPLE80211_AUTHTYPE_OPEN 0
+#define APPLE80211_AUTHTYPE_WPA2_PSK 0x8
+#define APPLE80211_AUTHTYPE_WPA3_SAE 0x1000
+#define APPLE80211_CHANNEL_2GHZ_20MHZ 0x8a
 #define KIORETURN_BUSY ((int32_t)0xe00002d5)
 #define KIORETURN_NOT_READY ((int32_t)0xe00002d8)
 
@@ -55,12 +59,20 @@ struct apple80211_power_data {
 };
 
 struct airport_itlwm_host_ap_mode {
-    uint8_t reserved0000[0x04];
+    uint32_t version00;
     uint32_t flags04;
-    uint8_t reserved0008[0x14];
+    uint32_t auth_lower08;
+    uint32_t auth_upper0c;
+    uint32_t channel_version10;
+    uint32_t channel_number14;
+    uint32_t channel_flags18;
     uint32_t ssid_length1c;
     uint8_t ssid20[APPLE80211_MAX_SSID_LEN];
-    uint8_t reserved0040[0x29c];
+    uint32_t reserved40;
+    uint32_t credential_length44;
+    uint8_t reserved48[0x08];
+    uint8_t credential50[0x40];
+    uint8_t reserved0090[0x24c];
     uint32_t vendor_ie_length2dc;
     uint8_t vendor_ie_data2e0[1];
 } __attribute__((packed));
@@ -121,12 +133,28 @@ main(int argc, char **argv)
         argc > 3 ? strtoul(argv[3], NULL, 10) : 153;
     const unsigned long hold_seconds =
         argc > 4 ? strtoul(argv[4], NULL, 10) : 0;
+    const char *security = argc > 5 ? argv[5] : "open";
+    const char *password = argc > 6 ? argv[6] : "";
     const int stop_only = strcmp(ssid, "--stop-only") == 0;
+    const int create_only = strcmp(ssid, "--create-only") == 0;
     const size_t ssid_length = strlen(ssid);
-    if ((!stop_only &&
+    const size_t password_length = strlen(password);
+    uint32_t auth_upper = APPLE80211_AUTHTYPE_OPEN;
+    if (strcmp(security, "wpa2") == 0)
+        auth_upper = APPLE80211_AUTHTYPE_WPA2_PSK;
+    else if (strcmp(security, "wpa3") == 0)
+        auth_upper = APPLE80211_AUTHTYPE_WPA3_SAE;
+    else if (strcmp(security, "open") != 0) {
+        fprintf(stderr, "invalid security mode\n");
+        return 2;
+    }
+    if ((!stop_only && !create_only &&
          (ssid_length == 0 || ssid_length > APPLE80211_MAX_SSID_LEN)) ||
-        requested_channel == 0 || requested_channel > UINT32_MAX) {
-        fprintf(stderr, "invalid SSID or channel\n");
+        requested_channel == 0 || requested_channel > UINT32_MAX ||
+        (auth_upper == APPLE80211_AUTHTYPE_OPEN && password_length != 0) ||
+        (auth_upper != APPLE80211_AUTHTYPE_OPEN &&
+         (password_length < 8 || password_length > 63))) {
+        fprintf(stderr, "invalid SSID, channel, or credential\n");
         return 2;
     }
 
@@ -146,6 +174,10 @@ main(int argc, char **argv)
                        &create, sizeof(create)) != 0) {
         close(fd);
         return 1;
+    }
+    if (create_only) {
+        close(fd);
+        return 0;
     }
 
     /*
@@ -223,9 +255,22 @@ main(int argc, char **argv)
     }
 
     memset(&host_ap, 0, sizeof(host_ap));
-    host_ap.flags04 = 1;
+    /*
+     * Reproduce the recovered CoreWLAN/airportd network-data carrier.  The
+     * separate CHANNEL selector above is part of the public lifecycle, while
+     * HOST_AP_MODE also embeds the selected CWChannel at +0x10/+0x14/+0x18.
+     */
+    host_ap.version00 = APPLE80211_VERSION;
+    host_ap.flags04 = 2;
+    host_ap.auth_lower08 = auth_upper == APPLE80211_AUTHTYPE_OPEN ? 0 : 1;
+    host_ap.auth_upper0c = auth_upper;
+    host_ap.channel_version10 = APPLE80211_VERSION;
+    host_ap.channel_number14 = (uint32_t)requested_channel;
+    host_ap.channel_flags18 = APPLE80211_CHANNEL_2GHZ_20MHZ;
     host_ap.ssid_length1c = (uint32_t)ssid_length;
     memcpy(host_ap.ssid20, ssid, ssid_length);
+    host_ap.credential_length44 = (uint32_t)password_length;
+    memcpy(host_ap.credential50, password, password_length);
     int host_ap_result = -1;
     /*
      * A cold Tahoe boot can schedule an initial active scan followed by one

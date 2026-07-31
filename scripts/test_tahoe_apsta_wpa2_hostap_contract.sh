@@ -13,10 +13,18 @@ layout = (root / "AirportItlwm/AirportItlwmAPSTAInterface.hpp").read_text()
 owner = (root / "AirportItlwm/AirportItlwmAPSTAOwner.cpp").read_text()
 owner_hpp = (root / "AirportItlwm/AirportItlwmAPSTAOwner.hpp").read_text()
 controller = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
+controller_hpp = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
+legacy_ioctl = (root / "AirportItlwm/AirportSTAIOCTL.cpp").read_text()
+skywalk_ioctl = (
+    root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+).read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 probe = (
     root / "AirportItlwmLabCoreWLANAP/airport_itlwm_lab_corewlan_ap.m"
+).read_text()
+raw_probe = (
+    root / "AirportItlwmLabAPProbe/airport_itlwm_lab_ap_probe.c"
 ).read_text()
 
 required_layout = {
@@ -76,6 +84,17 @@ for needle in required_iwn:
 
 assert "startHostAPModeWithSSID:securityType:channel:password:error:" in probe
 assert "initWithBytes:argv[3] length:strlen(argv[3])" in probe
+for needle in (
+    "uint32_t channel_version10;",
+    "uint32_t channel_number14;",
+    "uint32_t channel_flags18;",
+    "uint32_t credential_length44;",
+    "uint8_t credential50[0x40];",
+    "host_ap.channel_number14 = (uint32_t)requested_channel;",
+    "host_ap.auth_upper0c = auth_upper;",
+):
+    assert needle in raw_probe, \
+        f"missing recovered raw HostAP carrier field: {needle}"
 
 assert "memcpy(passphrase, apFirmwareCredential," in iwn
 assert "explicit_bzero(passphrase, sizeof(passphrase));" in iwn
@@ -104,6 +123,38 @@ scan_done = controller[controller.index("case IEEE80211_EVT_SCAN_DONE:"):
                        controller.index("case IEEE80211_EVT_WCL_REASSOC_DONE:")]
 assert "resumeAfterRadioReset()" not in scan_done, \
        "lower SCAN_DONE callback must not synchronously submit DVM commands"
+
+materialize_body = controller[
+    controller.index("IOReturn AirportItlwm::materializeAPSTAInterface("):
+    controller.index("void AirportItlwm::setAPSTADatapathEnabled(")
+]
+assert "interface->attach(this)" in materialize_body
+assert "attachInterface(interface, this)" in materialize_body, \
+    "role-7 APSTA must retain the local controller ingress owner"
+assert "apMac.octet[0] | 0x02U" in materialize_body
+assert "^ 0x04U" in materialize_body
+legacy_role7 = legacy_ioctl[
+    legacy_ioctl.index("case APPLE80211_VIF_SOFT_AP: {"):
+    legacy_ioctl.index("default:", legacy_ioctl.index(
+        "case APPLE80211_VIF_SOFT_AP: {"))
+]
+skywalk_role7 = skywalk_ioctl[
+    skywalk_ioctl.index("case 7: {"):
+    skywalk_ioctl.index("default:", skywalk_ioctl.index("case 7: {"))
+]
+assert "materializeAPSTAInterface(data)" in legacy_role7
+assert "instance->materializeAPSTAInterface(data)" in skywalk_role7
+assert "deferAPSTAInterfaceMaterialization" not in controller
+assert "fAPSTAMaterializationTimer" not in controller_hpp
+
+owner_init = owner[
+    owner.index("bool AirportItlwmAPSTAOwner::initWithController("):
+    owner.index("void AirportItlwmAPSTAOwner::free()")
+]
+assert "mac[0] | 0x02U" in owner_init
+assert "^ 0x04U" in owner_init
+assert "getProperty(kIOMACAddress)" not in owner_init
+assert "ic_myaddr" not in owner_init
 
 print("PASS: Tahoe HostAP WPA2 carrier/authenticator/CCMP contract")
 PY

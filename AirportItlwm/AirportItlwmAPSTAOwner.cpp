@@ -496,36 +496,19 @@ bool AirportItlwmAPSTAOwner::initWithController(
     if (apsta_mac_is_zero(mac) &&
         controller->copyPermanentHardwareAddress(mac)) {
         /*
-         * Reference APSTA publication owns an address distinct from the
-         * infrastructure role.  Derive a local address from the physical
-         * identity for a zero-MAC laboratory carrier, then avoid colliding
-         * with a privacy address that macOS may already have assigned to STA.
+         * Reference passes the role MAC from VIRTUAL_IF_CREATE unchanged into
+         * APSTA init and later copies it into RegistrationInfo+0x108.  The
+         * public carrier normally supplies that distinct address.  Preserve
+         * it above; only the zero-carrier compatibility path derives one.
+         *
+         * The primary Skywalk ifnet keeps the permanent address as its
+         * immutable six-byte unique-id even after macOS installs a private
+         * link address.  Merely setting the local bit is insufficient when
+         * the permanent address is already local (as it is in the VM).  Flip
+         * an additional unicast-safe bit unconditionally so late APSTA
+         * publication cannot reuse the primary registration identity.
          */
-        mac[0] |= 0x02;
-        uint8_t infrastructureMac[IEEE80211_ADDR_LEN] = {};
-        bool haveInfrastructureMac = false;
-        if (controller->fNetIf != nullptr) {
-            OSData *property = OSDynamicCast(
-                OSData, controller->fNetIf->getProperty(kIOMACAddress));
-            if (property != nullptr &&
-                property->getLength() >= IEEE80211_ADDR_LEN) {
-                memcpy(infrastructureMac, property->getBytesNoCopy(),
-                       IEEE80211_ADDR_LEN);
-                haveInfrastructureMac = true;
-            }
-        }
-        if (!haveInfrastructureMac && controller->fHalService != nullptr) {
-            struct ieee80211com *ic =
-                controller->fHalService->get80211Controller();
-            if (ic != nullptr) {
-                memcpy(infrastructureMac, ic->ic_myaddr,
-                       IEEE80211_ADDR_LEN);
-                haveInfrastructureMac = true;
-            }
-        }
-        if (haveInfrastructureMac &&
-            IEEE80211_ADDR_EQ(mac, infrastructureMac))
-            mac[0] ^= 0x04;
+        mac[0] = static_cast<uint8_t>((mac[0] | 0x02U) ^ 0x04U);
     }
     if (create->bsd_name[0] != 0) {
         strlcpy(bsdNameStorage, reinterpret_cast<const char *>(create->bsd_name), sizeof(bsdNameStorage));
