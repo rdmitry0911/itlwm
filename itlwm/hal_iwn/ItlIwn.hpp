@@ -89,6 +89,7 @@ public:
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
     IOReturn transmitAPData(mbuf_t packet) override;
+    uint32_t getAPTxFreeSpace() const;
     void iwn_reset_ap_runtime_state();
     void iwn_set_ap_scan_transition_blocked(bool);
     void iwn_set_ap_primary_tx_quiesced(bool, bool);

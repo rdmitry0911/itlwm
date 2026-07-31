@@ -376,7 +376,7 @@ public:
      */
     virtual bool reserveSaeWclCredentialAdmission() { return false; }
     virtual void releaseSaeWclCredentialAdmission() {}
-    
+
 protected:
     
     /* Completion paths may test their predicate before sleeping under this mutex. */
@@ -404,5 +404,14 @@ private:
     lck_attr_t *inner_attr;
     lck_mtx_t *inner_lock;
 };
+
+/*
+ * Tahoe APSTA needs the aggregate free space of IWN's shared PAN TX ring.
+ * Keep this as an out-of-class bridge instead of extending ItlHalService's
+ * virtual ABI: the HAL base is also consumed during the driver's early attach
+ * path, where changing its vtable is not a safe runtime experiment.
+ */
+extern "C" uint32_t airportItlwmQueryAPTxFreeSpace(
+    ItlHalService *service);
 
 #endif /* ItlHalService_hpp */

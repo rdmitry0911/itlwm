@@ -58,6 +58,11 @@
 #include <kern/clock.h>
 #include <sys/pcireg.h>
 
+#if __IO80211_TARGET >= __MAC_26_0
+extern "C" void airportItlwmRequestAPTxDequeue(
+    IOEthernetController *controller);
+#endif
+
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwn, ItlHalService)
 
@@ -5170,6 +5175,29 @@ IOReturn ItlIwn::transmitAPData(mbuf_t packet)
               workLoop, workLoop->inGate() ? 1U : 0U);
     }
     return result;
+}
+
+uint32_t ItlIwn::getAPTxFreeSpace() const
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        com.command_queue != IWN_IPAN_CMD_QUEUE ||
+        IWN_IPAN_BE_QUEUE >= com.ntxqs) {
+        return 0;
+    }
+
+    const struct iwn_tx_ring *ring = &com.txq[IWN_IPAN_BE_QUEUE];
+    /* Keep one descriptor empty so producer and consumer indices cannot
+     * alias.  All four AP Skywalk ACs share this single PAN BE ring. */
+    const uint32_t usable = IWN_TX_RING_COUNT - 1;
+    return ring->queued < usable ? usable - ring->queued : 0;
+}
+
+extern "C" uint32_t
+airportItlwmQueryAPTxFreeSpace(ItlHalService *service)
+{
+    ItlIwn *that = OSDynamicCast(ItlIwn, service);
+    return that != NULL ? that->getAPTxFreeSpace() : 0;
 }
 
 bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,
@@ -11783,10 +11811,17 @@ iwn_clear_oactive(struct iwn_softc *sc, struct iwn_tx_ring *ring)
     struct _ifnet *ifp = &ic->ic_if;
     ItlIwn *that = container_of(sc, ItlIwn, com);
 
+    const bool apQueueWasFull =
+        ring->qid == IWN_IPAN_BE_QUEUE &&
+        (sc->qfullmsk & (1 << ring->qid)) != 0;
     if (ring->queued < IWN_TX_RING_LOMARK) {
         sc->qfullmsk &= ~(1 << ring->qid);
         if (that->apPrimaryTxQuiesced)
             return;
+#if __IO80211_TARGET >= __MAC_26_0
+        if (apQueueWasFull)
+            airportItlwmRequestAPTxDequeue(that->getController());
+#endif
         if (sc->qfullmsk == 0 && ifq_is_oactive(&ifp->if_snd)) {
             ifq_clr_oactive(&ifp->if_snd);
             (*ifp->if_start)(ifp);

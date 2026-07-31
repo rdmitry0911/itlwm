@@ -6612,6 +6612,34 @@ skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt,
     return staged;
 }
 
+static bool
+skywalkTxUnstageLastCompletionPacket(AirportItlwm *that,
+                                     IOSkywalkPacket *pkt, bool apsta)
+{
+    if (that == nullptr || that->fTxCompletionPendingLock == nullptr ||
+        pkt == nullptr)
+        return false;
+
+    IOLockLock(that->fTxCompletionPendingLock);
+    bool unstaged = false;
+    if (that->fTxCompletionPendingCount != 0) {
+        const UInt32 tail =
+            (that->fTxCompletionPendingTail +
+             kAirportItlwmTxCompletionPendingCapacity - 1) %
+            kAirportItlwmTxCompletionPendingCapacity;
+        if (that->fTxCompletionPendingPackets[tail] == pkt &&
+            that->fTxCompletionPendingAPSTA[tail] == apsta) {
+            that->fTxCompletionPendingPackets[tail] = nullptr;
+            that->fTxCompletionPendingAPSTA[tail] = false;
+            that->fTxCompletionPendingTail = tail;
+            that->fTxCompletionPendingCount--;
+            unstaged = true;
+        }
+    }
+    IOLockUnlock(that->fTxCompletionPendingLock);
+    return unstaged;
+}
+
 static IOSkywalkPacket *
 skywalkTxPopCompletionPacket(AirportItlwm *that, bool matchRole,
                              bool requestedAPSTA, bool *packetAPSTA)
@@ -6723,7 +6751,12 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
     UInt32 delivered = 0;
     UInt32 deliveredBytes = 0;
     UInt32 stagedCompletions = 0;
-    for (UInt32 i = 0; i < count; i++) {
+    const UInt32 apFreeSpace =
+        apstaQueue && that->fHalService != nullptr
+            ? airportItlwmQueryAPTxFreeSpace(that->fHalService) : count;
+    const UInt32 dequeueLimit =
+        apFreeSpace < count ? apFreeSpace : count;
+    for (UInt32 i = 0; i < dequeueLimit; i++) {
         IOSkywalkPacket *pkt = packets[i];
         if (!pkt) {
             consumed++;
@@ -6810,6 +6843,23 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
         if (txEapol)
             airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathTx, "output",
                                       dataLen, outRet);
+        if (apstaQueue && outRet == kIOReturnNoResources) {
+            /*
+             * Apple limits dequeuePackets() by getRingFreeSpace() and
+             * re-enqueues the unaccepted tail.  A completion was reserved
+             * above, so roll back exactly that last reservation and report
+             * this packet as not consumed.  Skywalk retains it until the PAN
+             * ring's low-water completion requests another dequeue.
+             */
+            if (skywalkTxUnstageLastCompletionPacket(
+                    that, pkt, true)) {
+                stagedCompletions--;
+                consumed--;
+            } else {
+                sRT.txPktDrop++;
+            }
+            break;
+        }
         if (outRet == kIOReturnOutputSuccess) {
             delivered++;
             deliveredBytes += dataLen;
@@ -6833,6 +6883,26 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
                   ret, that->fTxCompletionPendingCount);
     }
     return consumed;
+}
+
+void AirportItlwm::requestAPTxDequeue()
+{
+    if (!isHostApRunning())
+        return;
+    for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
+        if (fAPSTATxQueues[i] != nullptr &&
+            fAPSTATxQueues[i]->isEnabled()) {
+            (void)fAPSTATxQueues[i]->requestDequeue(nullptr, 0);
+        }
+    }
+}
+
+extern "C" void
+airportItlwmRequestAPTxDequeue(IOEthernetController *controller)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, controller);
+    if (that != nullptr)
+        that->requestAPTxDequeue();
 }
 
 /*
