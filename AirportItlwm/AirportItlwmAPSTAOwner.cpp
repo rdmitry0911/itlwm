@@ -31,7 +31,14 @@ enum {
     kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8,
     kAirportItlwmAPSTAAuthUpperWPA3SAE = 0x1000,
     kAirportItlwmAPSTAWPA2CredentialLengthMin = 8,
-    kAirportItlwmAPSTAWPA2CredentialLengthMax = 63
+    kAirportItlwmAPSTAWPA2CredentialLengthMax = 63,
+    /*
+     * The controller watchdog retries once per second.  A retained AP must
+     * normally follow the primary BSS RXON replay, but an AP-only machine
+     * must not remain unavailable forever if the pre-sleep STA cannot
+     * reassociate.
+     */
+    kAirportItlwmAPSTARadioResetPrimaryStaWaitTicks = 30
 };
 
 static_assert(kAirportItlwmAPSTAAuthUpperWPA3SAE ==
@@ -476,6 +483,8 @@ bool AirportItlwmAPSTAOwner::initWithController(
     bzero(apCredential, sizeof(apCredential));
     apCredentialLength = 0;
     radioResetResumePending = false;
+    radioResetWaitForPrimaryStaRun = false;
+    radioResetResumeWaitTicks = 0;
     bzero(bsdNameStorage, sizeof(bsdNameStorage));
 
     if (!OSObject::init()) {
@@ -535,6 +544,8 @@ void AirportItlwmAPSTAOwner::free()
     apCredentialLength = 0;
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     radioResetResumePending = false;
+    radioResetWaitForPrimaryStaRun = false;
+    radioResetResumeWaitTicks = 0;
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
     owner = nullptr;
     OSObject::free();
@@ -699,6 +710,8 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
 IOReturn AirportItlwmAPSTAOwner::stopLower()
 {
     radioResetResumePending = false;
+    radioResetWaitForPrimaryStaRun = false;
+    radioResetResumeWaitTicks = 0;
     if (owner != nullptr && owner->fHalService != nullptr) {
         (void)owner->fHalService->stopAPMode();
     }
@@ -738,6 +751,27 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
     setSoftAPPowerSaveState(
         kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackState,
         kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackReason);
+    struct ieee80211com *ic =
+        owner != nullptr && owner->fHalService != nullptr
+            ? owner->fHalService->get80211Controller() : nullptr;
+    /*
+     * Apple retains both FullMAC contexts through hostAPPowerOff().  DVM
+     * loses both in iwn_hw_stop(), and its later primary IWN_CMD_RXON
+     * invalidates PAN station/data state if PAN is replayed first.  Remember
+     * whether the primary STA was live before sleep so wake can restore the
+     * BSS RXON first and only then reconstruct the retained PAN owner.
+     */
+    /*
+     * The PM stack may already have moved net80211 out of RUN by the time
+     * disableAdapterCore() reaches this callback.  resumeAfterRadioReset()
+     * also samples the primary state from the one-second runtime watchdog,
+     * so retain that last pre-transition RUN observation across this late
+     * callback instead of replacing it with a transient INIT/SCAN state.
+     */
+    radioResetWaitForPrimaryStaRun =
+        radioResetWaitForPrimaryStaRun ||
+        (ic != nullptr && ic->ic_state == IEEE80211_S_RUN);
+    radioResetResumeWaitTicks = 0;
     owner->setAPSTADatapathEnabled(false);
     for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++)
         clearStation(&state.softapStaTableB8[i]);
@@ -750,12 +784,45 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
 
 IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
 {
-    if (!radioResetResumePending)
+    if (!radioResetResumePending) {
+        /*
+         * Keep a near-boundary snapshot while the AP is running.  macOS can
+         * lower the primary net80211 state before prepareForRadioReset(), but
+         * the watchdog observes the ordinary steady RUN state every second.
+         * The late sleep callback ORs its own sample with this one.
+         */
+        struct ieee80211com *ic =
+            owner != nullptr && owner->fHalService != nullptr
+                ? owner->fHalService->get80211Controller() : nullptr;
+        radioResetWaitForPrimaryStaRun =
+            isApRunning() && ic != nullptr &&
+            ic->ic_state == IEEE80211_S_RUN;
+        radioResetResumeWaitTicks = 0;
         return kIOReturnSuccess;
+    }
+
+    if (radioResetWaitForPrimaryStaRun) {
+        struct ieee80211com *ic =
+            owner != nullptr && owner->fHalService != nullptr
+                ? owner->fHalService->get80211Controller() : nullptr;
+        if (ic == nullptr)
+            return kIOReturnNotReady;
+        if (ic->ic_state != IEEE80211_S_RUN &&
+            radioResetResumeWaitTicks <
+                kAirportItlwmAPSTARadioResetPrimaryStaWaitTicks) {
+            radioResetResumeWaitTicks++;
+            return kIOReturnNotReady;
+        }
+        XYLog("APSTA radio-reset primary STA boundary state=%u wait_ticks=%u\n",
+              static_cast<unsigned>(ic->ic_state),
+              static_cast<unsigned>(radioResetResumeWaitTicks));
+        radioResetWaitForPrimaryStaRun = false;
+    }
 
     const IOReturn result = startLowerIfReady();
     if (result == kIOReturnSuccess) {
         radioResetResumePending = false;
+        radioResetResumeWaitTicks = 0;
         setSoftAPPowerSaveState(
             kAirportItlwmAPSTAHostApPowerOnRestoreState,
             kAirportItlwmAPSTAHostApPowerOnRestoreReason);
@@ -764,6 +831,8 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
                result != kIOReturnTimeout &&
                result != kIOReturnAborted) {
         radioResetResumePending = false;
+        radioResetWaitForPrimaryStaRun = false;
+        radioResetResumeWaitTicks = 0;
     }
     return result;
 }

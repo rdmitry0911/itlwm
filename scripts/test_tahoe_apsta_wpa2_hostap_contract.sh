@@ -76,7 +76,9 @@ required_iwn = (
     "BE_READ_8(key->replaycnt) != apReplayCounter",
     "ethernetHeader.ether_type == htons(ETHERTYPE_PAE)",
     "frame.i_fc[1] |= IEEE80211_FC1_PROTECTED",
-    "(rxFlags & IWN_RX_CIPHER_MASK) != IWN_RX_CIPHER_CCMP",
+    "const bool hardwareDecrypted =",
+    "(rxFlags & IWN_RX_CIPHER_MASK) == IWN_RX_CIPHER_CCMP",
+    "ieee80211_ccmp_decrypt(",
     "packetNumber <= apPairwiseRxPn[tid]",
 )
 for needle in required_iwn:

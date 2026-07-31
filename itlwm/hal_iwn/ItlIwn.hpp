@@ -103,6 +103,7 @@ public:
     int iwn_wake_ap_client_node();
     int iwn_allow_ap_client_sleep_tx();
     int iwn_send_ap_client_link_quality();
+    int iwn_send_ap_assoc_success();
     int iwn_send_ap_sensitivity();
     int iwn_send_ap_timing(const struct ItlHalApConfig *);
     int iwn_send_ap_edca(bool accessPointValues);
@@ -141,7 +142,7 @@ public:
         const struct ieee80211_frame_pspoll *, size_t);
     bool iwn_handle_ap_data(mbuf_t, size_t, struct mbuf_list *,
         uint32_t, uint8_t);
-    void iwn_note_ap_firmware_event(int, int);
+    void iwn_note_ap_firmware_event(int, int, int);
     void iwn_continue_ap_after_deactivation();
 
     /* One-ticket, real IWN management-TX path for the SAE relay. */
@@ -497,6 +498,7 @@ public:
     uint8_t apFirmwareBeacon[MCLBYTES];
     uint8_t apClientMac[IEEE80211_ADDR_LEN];
     bool apClientNodeInstalled;
+    uint8_t apClientMaterializationStage;
     bool apClientAuthenticated;
     bool apClientAssociated;
     bool apClientAuthorized;
@@ -509,6 +511,8 @@ public:
     uint8_t apGtk[16];
     uint8_t apIgtk[16];
     struct ieee80211_ptk apPtk;
+    struct ieee80211_key apPairwiseSoftwareKey;
+    bool apSoftwareCcmpRxObserved;
     uint64_t apReplayCounter;
     uint64_t apPairwiseTxPn;
     uint64_t apGroupTxPn;

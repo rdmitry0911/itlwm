@@ -4007,6 +4007,13 @@ enum {
 };
 
 enum {
+    IWN_AP_CLIENT_MATERIALIZATION_IDLE = 0,
+    IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE,
+    IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE,
+    IWN_AP_CLIENT_MATERIALIZATION_LINK_QUALITY
+};
+
+enum {
     IWN_AP_AUTH_UPPER_WPA3_SAE = 0x1000,
     IWN_AP_IGTK_KDE_TYPE = 9,
     IWN_AP_IGTK_KEY_ID = 4,
@@ -4038,6 +4045,7 @@ bool ItlIwn::attach(IOPCIDevice *device)
     apPsQueueCount = 0;
     apPsQueueReady = true;
     apTimSet = false;
+    bzero(&apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
     iwn_reset_ap_runtime_state();
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
@@ -4099,6 +4107,8 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     bzero(apFirmwareBeacon, sizeof(apFirmwareBeacon));
     bzero(apClientMac, sizeof(apClientMac));
     apClientNodeInstalled = false;
+    apClientMaterializationStage =
+        IWN_AP_CLIENT_MATERIALIZATION_IDLE;
     apClientAuthenticated = false;
     apClientOpenAuthenticated = false;
     apClientAssociated = false;
@@ -4112,6 +4122,12 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     explicit_bzero(apGtk, sizeof(apGtk));
     explicit_bzero(apIgtk, sizeof(apIgtk));
     explicit_bzero(&apPtk, sizeof(apPtk));
+    if (apPairwiseSoftwareKey.k_priv != NULL)
+        ieee80211_ccmp_delete_key(
+            &com.sc_ic, &apPairwiseSoftwareKey);
+    explicit_bzero(
+        &apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
+    apSoftwareCcmpRxObserved = false;
     apReplayCounter = 0;
     apPairwiseTxPn = 0;
     apGroupTxPn = 0;
@@ -4242,6 +4258,17 @@ int ItlIwn::iwn_install_ap_ccmp_key(bool pairwise, uint8_t keyId,
 
     struct iwn_node_info node;
     bzero(&node, sizeof(node));
+    /*
+     * DVM's iwlagn_send_sta_key() starts from the complete descriptor saved
+     * when the station was added, then overlays MODIFY/SET_KEY.  Preserve
+     * the same station identity and PAN role here.  A sparse descriptor can
+     * receive ADD_STA_SUCCESS while cold 6x35 firmware uploads the key but
+     * does not link it into the PAN station's RX key map.
+     */
+    if (pairwise)
+        IEEE80211_ADDR_COPY(node.macaddr, apClientMac);
+    else
+        IEEE80211_ADDR_COPY(node.macaddr, etherbroadcastaddr);
     node.control = IWN_NODE_UPDATE;
     node.id = pairwise ?
         IWN5000_ID_PAN_CLIENT : IWN5000_ID_PAN_BROADCAST;
@@ -4253,6 +4280,7 @@ int ItlIwn::iwn_install_ap_ccmp_key(bool pairwise, uint8_t keyId,
     node.kflags = htole16(keyFlags);
     node.kid = keyId;
     memcpy(node.key, key, sizeof(node.key));
+    node.htflags = htole32(IWN_PAN_STATION);
     return com.ops.add_node(&com, &node, 1);
 }
 
@@ -4431,7 +4459,13 @@ void ItlIwn::iwn_begin_ap_4way()
     apClientAuthorized = false;
     apReplayCounter = 0;
     apPairwiseTxPn = 0;
-    apPairwiseRxPn[0] = 0;
+    bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
+    if (apPairwiseSoftwareKey.k_priv != NULL)
+        ieee80211_ccmp_delete_key(
+            &com.sc_ic, &apPairwiseSoftwareKey);
+    explicit_bzero(
+        &apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
+    apSoftwareCcmpRxObserved = false;
     explicit_bzero(&apPtk, sizeof(apPtk));
     arc4random_buf(apAnonce, sizeof(apAnonce));
     (void)iwn_send_ap_4way_msg1();
@@ -4536,11 +4570,33 @@ bool ItlIwn::iwn_handle_ap_eapol_key(const uint8_t *eapol,
                   iwn_ap_uses_sae() ? "WPA3" : "WPA2");
             return true;
         }
-        const int error =
-            iwn_install_ap_ccmp_key(true, 0, apPtk.tk);
+        if (apPairwiseSoftwareKey.k_priv != NULL)
+            ieee80211_ccmp_delete_key(
+                &com.sc_ic, &apPairwiseSoftwareKey);
+        explicit_bzero(
+            &apPairwiseSoftwareKey,
+            sizeof(apPairwiseSoftwareKey));
+        apPairwiseSoftwareKey.k_id = 0;
+        apPairwiseSoftwareKey.k_cipher = IEEE80211_CIPHER_CCMP;
+        apPairwiseSoftwareKey.k_flags = IEEE80211_KEY_SWCRYPTO;
+        apPairwiseSoftwareKey.k_len =
+            ieee80211_cipher_keylen(IEEE80211_CIPHER_CCMP);
+        memcpy(apPairwiseSoftwareKey.k_key, apPtk.tk,
+               apPairwiseSoftwareKey.k_len);
+        int error = ieee80211_ccmp_set_key(
+            &com.sc_ic, &apPairwiseSoftwareKey);
+        if (error == 0)
+            error = iwn_install_ap_ccmp_key(true, 0, apPtk.tk);
         if (error == 0) {
             apClientAuthorized = true;
             apRsnState = IWN_AP_RSN_AUTHORIZED;
+        } else {
+            if (apPairwiseSoftwareKey.k_priv != NULL)
+                ieee80211_ccmp_delete_key(
+                    &com.sc_ic, &apPairwiseSoftwareKey);
+            explicit_bzero(
+                &apPairwiseSoftwareKey,
+                sizeof(apPairwiseSoftwareKey));
         }
         XYLog("%s: AP %s 4-way complete PTK=%d authorized=%u\n",
               com.sc_dev.dv_xname,
@@ -5300,6 +5356,8 @@ bool ItlIwn::iwn_handle_ap_sae_auth(
             (void)iwn_remove_ap_client_node(apClientMac);
             apClientNodeInstalled = false;
         }
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
         IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
         apClientAuthenticated = false;
         apClientOpenAuthenticated = false;
@@ -5423,6 +5481,8 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
             return true;
         }
         apClientNodeInstalled = false;
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -5689,54 +5749,30 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     if (saePmksaAuthenticated)
         memcpy(apPmk, apSaePmksaPmk, sizeof(apPmk));
 
-    const uint8_t supportedRates[] = {
-        0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
-    };
-    const uint8_t extendedRates[] = { 0x30, 0x48, 0x60, 0x6c };
-    uint8_t response[
-        sizeof(struct ieee80211_frame) + 6 +
-        2 + sizeof(supportedRates) +
-        2 + sizeof(extendedRates) +
-        sizeof(apFirmwareRsnIE)];
-    bzero(response, sizeof(response));
-    struct ieee80211_frame *wh =
-        reinterpret_cast<struct ieee80211_frame *>(response);
-    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
-        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
-    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS;
-    IEEE80211_ADDR_COPY(wh->i_addr1, request->i_addr2);
-    IEEE80211_ADDR_COPY(wh->i_addr2, apFirmwareConfig.bssid);
-    IEEE80211_ADDR_COPY(wh->i_addr3, apFirmwareConfig.bssid);
-
-    uint8_t *out = response + sizeof(*wh);
-    LE_WRITE_2(out, IEEE80211_CAPINFO_ESS |
-                    (apFirmwareConfig.rsnIELength != 0 ?
-                        IEEE80211_CAPINFO_PRIVACY : 0) |
-                    (apFirmwareConfig.channel <= 14 ?
-                        IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
-    out += 2;
-    LE_WRITE_2(out, IEEE80211_STATUS_SUCCESS);
-    out += 2;
     const uint16_t aid = 1;
-    LE_WRITE_2(out, aid | 0xc000);
-    out += 2;
-    *out++ = IEEE80211_ELEMID_RATES;
-    *out++ = sizeof(supportedRates);
-    memcpy(out, supportedRates, sizeof(supportedRates));
-    out += sizeof(supportedRates);
-    *out++ = IEEE80211_ELEMID_XRATES;
-    *out++ = sizeof(extendedRates);
-    memcpy(out, extendedRates, sizeof(extendedRates));
-    out += sizeof(extendedRates);
-    if (apFirmwareConfig.rsnIELength != 0) {
-        memcpy(out, apFirmwareRsnIE, apFirmwareConfig.rsnIELength);
-        out += apFirmwareConfig.rsnIELength;
+    if (apClientMaterializationStage !=
+        IWN_AP_CLIENT_MATERIALIZATION_IDLE) {
+        /*
+         * A station may retransmit Association Request while ADD_STA is
+         * still in flight.  Firmware cannot accept a second add for the
+         * same id; the pending success response will satisfy this retry.
+         */
+        return true;
     }
-    const size_t responseLength =
-        static_cast<size_t>(out - response);
 
-    int error = 0;
+    apClientAid = aid;
+    apClientRsnIELength = 0;
+    bzero(apClientRsnIE, sizeof(apClientRsnIE));
+    if (rsn != NULL &&
+        static_cast<size_t>(rsn[1]) + 2 <= sizeof(apClientRsnIE)) {
+        apClientRsnIELength = static_cast<size_t>(rsn[1]) + 2;
+        memcpy(apClientRsnIE, rsn, apClientRsnIELength);
+    }
+
+    int error;
     if (!apClientNodeInstalled) {
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE;
         error = iwn_add_ap_client_node(request->i_addr2);
         if (error == 0)
             apClientNodeInstalled = true;
@@ -5747,44 +5783,27 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
          * violation; DVM removes the entry on disassociation, while a
          * reassociation that arrives without that edge updates it in place.
          */
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE;
         error = iwn_wake_ap_client_node();
     }
-    if (error == 0)
-        error = iwn_send_ap_client_link_quality();
-    if (error == 0)
-        error = iwn_send_ap_mgmt_frame(response, responseLength);
-    if (error == 0) {
-        apClientAssociated = true;
-        apClientAuthorized = apFirmwareConfig.rsnIELength == 0;
-        apClientPowerSave = false;
-        apClientAid = aid;
-        apRsnState = apClientAuthorized ?
-            IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
-        apClientRsnIELength = 0;
-        bzero(apClientRsnIE, sizeof(apClientRsnIE));
-        if (rsn != NULL &&
-            static_cast<size_t>(rsn[1]) + 2 <= sizeof(apClientRsnIE)) {
-            apClientRsnIELength = static_cast<size_t>(rsn[1]) + 2;
-            memcpy(apClientRsnIE, rsn, apClientRsnIELength);
-        }
-        apReplayCounter = 0;
-        apPairwiseTxPn = 0;
-        bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
-        explicit_bzero(&apPtk, sizeof(apPtk));
-        iwn_publish_ap_station_event(
-            request->i_addr2, rsn,
-            rsn != NULL ? static_cast<size_t>(rsn[1]) + 2 : 0,
-            IEEE80211_APSTA_EVENT_ASSOC);
+    if (error != 0) {
+        if (apClientMaterializationStage ==
+            IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE)
+            apClientNodeInstalled = false;
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
     }
     XYLog("%s: AP association request from "
           "%02x:%02x:%02x:%02x:%02x:%02x aid=%u rsn=%u "
-          "response_queue=%d\n",
+          "materialization=%u queue=%d\n",
           com.sc_dev.dv_xname,
           request->i_addr2[0], request->i_addr2[1],
           request->i_addr2[2], request->i_addr2[3],
           request->i_addr2[4], request->i_addr2[5],
           static_cast<unsigned>(aid),
-          apFirmwareConfig.rsnIELength != 0 ? 1U : 0U, error);
+          apFirmwareConfig.rsnIELength != 0 ? 1U : 0U,
+          static_cast<unsigned>(apClientMaterializationStage), error);
     return true;
 }
 
@@ -5851,6 +5870,8 @@ bool ItlIwn::iwn_handle_ap_disconnect(
         }
         iwn_purge_ap_ps_queue();
         apClientNodeInstalled = false;
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
         apClientAuthenticated = false;
         apClientOpenAuthenticated = false;
         apClientAssociated = false;
@@ -5864,6 +5885,13 @@ bool ItlIwn::iwn_handle_ap_disconnect(
         apReplayCounter = 0;
         apPairwiseTxPn = 0;
         bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
+        if (apPairwiseSoftwareKey.k_priv != NULL)
+            ieee80211_ccmp_delete_key(
+                &com.sc_ic, &apPairwiseSoftwareKey);
+        explicit_bzero(
+            &apPairwiseSoftwareKey,
+            sizeof(apPairwiseSoftwareKey));
+        apSoftwareCcmpRxObserved = false;
         explicit_bzero(&apPtk, sizeof(apPtk));
         iwn_reset_ap_sae();
     }
@@ -5977,7 +6005,7 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
     if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_NODATA) != 0)
         return true;
 
-    const size_t headerLength = ieee80211_get_hdrlen(wh);
+    size_t headerLength = ieee80211_get_hdrlen(wh);
     if (headerLength < sizeof(struct ieee80211_frame))
         return true;
 
@@ -5989,38 +6017,95 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
         if (apFirmwareConfig.rsnIELength == 0 ||
             !apClientAuthorized ||
             frameLength < headerLength + IEEE80211_CCMP_HDRLEN +
-                LLC_SNAPFRAMELEN + IEEE80211_CCMP_MICLEN ||
-            (rxFlags & IWN_RX_CIPHER_MASK) != IWN_RX_CIPHER_CCMP ||
-            (descriptorType == IWN_MPDU_RX_DONE &&
-             (rxFlags & (IWN_RX_MPDU_DEC | IWN_RX_MPDU_MIC_OK)) !=
-                (IWN_RX_MPDU_DEC | IWN_RX_MPDU_MIC_OK)) ||
-            (descriptorType != IWN_MPDU_RX_DONE &&
-             (rxFlags & IWN_RX_DECRYPT_MASK) != IWN_RX_DECRYPT_OK)) {
+                LLC_SNAPFRAMELEN + IEEE80211_CCMP_MICLEN) {
             return true;
         }
 
-        uint8_t ccmp[IEEE80211_CCMP_HDRLEN];
-        if (mbuf_copydata(packet, headerLength, sizeof(ccmp), ccmp) != 0 ||
-            (ccmp[3] & IEEE80211_WEP_EXTIV) == 0 ||
-            ((ccmp[3] >> 6) & 3) != 0) {
-            return true;
+        const bool hardwareDecrypted =
+            (rxFlags & IWN_RX_CIPHER_MASK) == IWN_RX_CIPHER_CCMP &&
+            (descriptorType == IWN_MPDU_RX_DONE ?
+                (rxFlags & (IWN_RX_MPDU_DEC | IWN_RX_MPDU_MIC_OK)) ==
+                    (IWN_RX_MPDU_DEC | IWN_RX_MPDU_MIC_OK) :
+                (rxFlags & IWN_RX_DECRYPT_MASK) ==
+                    IWN_RX_DECRYPT_OK);
+        if (!hardwareDecrypted) {
+            /*
+             * Cold 6x35 PAN startup can acknowledge SET_KEY yet report an
+             * encrypted MPDU with no cipher/DEC/MIC result.  The bytes are
+             * intact, so keep the normal hardware fast path and use the
+             * net80211 CCMP implementation only for this explicit firmware
+             * miss.  Its MIC and per-TID RSC checks remain fail-closed.
+             */
+            if (apPairwiseSoftwareKey.k_priv == NULL ||
+                apPairwiseSoftwareKey.k_cipher !=
+                    IEEE80211_CIPHER_CCMP ||
+                (apPairwiseSoftwareKey.k_flags &
+                    IEEE80211_KEY_SWCRYPTO) == 0) {
+                return true;
+            }
+            mbuf_t encryptedCopy = NULL;
+            if (mbuf_dup(packet, MBUF_DONTWAIT,
+                    &encryptedCopy) != 0 ||
+                encryptedCopy == NULL) {
+                return true;
+            }
+            mbuf_t plain = ieee80211_ccmp_decrypt(
+                &com.sc_ic, encryptedCopy,
+                &apPairwiseSoftwareKey);
+            if (plain == NULL)
+                return true;
+            const size_t plainLength = mbuf_pkthdr_len(plain);
+            if (plainLength > frameLength ||
+                plainLength <
+                    sizeof(struct ieee80211_frame) +
+                    LLC_SNAPFRAMELEN ||
+                mbuf_copydata(plain, 0, plainLength,
+                    mbuf_data(packet)) != 0) {
+                mbuf_freem(plain);
+                return true;
+            }
+            mbuf_freem(plain);
+            frameLength = plainLength;
+            mbuf_setlen(packet, frameLength);
+            mbuf_pkthdr_setlen(packet, frameLength);
+            wh = mtod(packet, const struct ieee80211_frame *);
+            headerLength = ieee80211_get_hdrlen(wh);
+            if (headerLength < sizeof(struct ieee80211_frame) ||
+                frameLength < headerLength + LLC_SNAPFRAMELEN) {
+                return true;
+            }
+            payloadOffset = headerLength;
+            payloadEnd = frameLength;
+            if (!apSoftwareCcmpRxObserved) {
+                apSoftwareCcmpRxObserved = true;
+                XYLog("%s: AP protected RX software CCMP "
+                      "fallback active\n", com.sc_dev.dv_xname);
+            }
+        } else {
+            uint8_t ccmp[IEEE80211_CCMP_HDRLEN];
+            if (mbuf_copydata(packet, headerLength,
+                    sizeof(ccmp), ccmp) != 0 ||
+                (ccmp[3] & IEEE80211_WEP_EXTIV) == 0 ||
+                ((ccmp[3] >> 6) & 3) != 0) {
+                return true;
+            }
+            const uint64_t packetNumber =
+                static_cast<uint64_t>(ccmp[0]) |
+                static_cast<uint64_t>(ccmp[1]) << 8 |
+                static_cast<uint64_t>(ccmp[4]) << 16 |
+                static_cast<uint64_t>(ccmp[5]) << 24 |
+                static_cast<uint64_t>(ccmp[6]) << 32 |
+                static_cast<uint64_t>(ccmp[7]) << 40;
+            const uint8_t tid = ieee80211_has_qos(wh) ?
+                ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
+            if (packetNumber == 0 ||
+                packetNumber <= apPairwiseRxPn[tid]) {
+                return true;
+            }
+            apPairwiseRxPn[tid] = packetNumber;
+            payloadOffset += IEEE80211_CCMP_HDRLEN;
+            payloadEnd -= IEEE80211_CCMP_MICLEN;
         }
-        const uint64_t packetNumber =
-            static_cast<uint64_t>(ccmp[0]) |
-            static_cast<uint64_t>(ccmp[1]) << 8 |
-            static_cast<uint64_t>(ccmp[4]) << 16 |
-            static_cast<uint64_t>(ccmp[5]) << 24 |
-            static_cast<uint64_t>(ccmp[6]) << 32 |
-            static_cast<uint64_t>(ccmp[7]) << 40;
-        const uint8_t tid = ieee80211_has_qos(wh) ?
-            ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
-        if (packetNumber == 0 ||
-            packetNumber <= apPairwiseRxPn[tid]) {
-            return true;
-        }
-        apPairwiseRxPn[tid] = packetNumber;
-        payloadOffset += IEEE80211_CCMP_HDRLEN;
-        payloadEnd -= IEEE80211_CCMP_MICLEN;
     }
     if (payloadEnd < payloadOffset + LLC_SNAPFRAMELEN)
         return true;
@@ -6230,6 +6315,11 @@ releaseAll()
 
 void ItlIwn::free()
 {
+	if (apPairwiseSoftwareKey.k_priv != NULL)
+		ieee80211_ccmp_delete_key(
+		    &com.sc_ic, &apPairwiseSoftwareKey);
+	explicit_bzero(
+	    &apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
 	if (ieee80211_bip_lifetime_drain(&com.sc_ic) != 0)
 		panic("ItlIwn::free BIP lifetime");
 	iwn_clear_ap_sae_pmksa();
@@ -6682,6 +6772,76 @@ int ItlIwn::iwn_send_ap_client_link_quality()
         &com, IWN_CMD_LINK_QUALITY, &linkq, sizeof(linkq), 1);
 }
 
+int ItlIwn::iwn_send_ap_assoc_success()
+{
+    if (!apClientNodeInstalled ||
+        apClientMaterializationStage !=
+            IWN_AP_CLIENT_MATERIALIZATION_LINK_QUALITY)
+        return EINVAL;
+
+    const uint8_t supportedRates[] = {
+        0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
+    };
+    const uint8_t extendedRates[] = { 0x30, 0x48, 0x60, 0x6c };
+    uint8_t response[
+        sizeof(struct ieee80211_frame) + 6 +
+        2 + sizeof(supportedRates) +
+        2 + sizeof(extendedRates) +
+        sizeof(apFirmwareRsnIE)];
+    bzero(response, sizeof(response));
+    struct ieee80211_frame *wh =
+        reinterpret_cast<struct ieee80211_frame *>(response);
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
+    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    IEEE80211_ADDR_COPY(wh->i_addr1, apClientMac);
+    IEEE80211_ADDR_COPY(wh->i_addr2, apFirmwareConfig.bssid);
+    IEEE80211_ADDR_COPY(wh->i_addr3, apFirmwareConfig.bssid);
+
+    uint8_t *out = response + sizeof(*wh);
+    LE_WRITE_2(out, IEEE80211_CAPINFO_ESS |
+                    (apFirmwareConfig.rsnIELength != 0 ?
+                        IEEE80211_CAPINFO_PRIVACY : 0) |
+                    (apFirmwareConfig.channel <= 14 ?
+                        IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
+    out += 2;
+    LE_WRITE_2(out, IEEE80211_STATUS_SUCCESS);
+    out += 2;
+    LE_WRITE_2(out, apClientAid | 0xc000);
+    out += 2;
+    *out++ = IEEE80211_ELEMID_RATES;
+    *out++ = sizeof(supportedRates);
+    memcpy(out, supportedRates, sizeof(supportedRates));
+    out += sizeof(supportedRates);
+    *out++ = IEEE80211_ELEMID_XRATES;
+    *out++ = sizeof(extendedRates);
+    memcpy(out, extendedRates, sizeof(extendedRates));
+    out += sizeof(extendedRates);
+    if (apFirmwareConfig.rsnIELength != 0) {
+        memcpy(out, apFirmwareRsnIE, apFirmwareConfig.rsnIELength);
+        out += apFirmwareConfig.rsnIELength;
+    }
+
+    const int error = iwn_send_ap_mgmt_frame(
+        response, static_cast<size_t>(out - response));
+    if (error != 0)
+        return error;
+
+    apClientAssociated = true;
+    apClientAuthorized = apFirmwareConfig.rsnIELength == 0;
+    apClientPowerSave = false;
+    apRsnState = apClientAuthorized ?
+        IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
+    apReplayCounter = 0;
+    apPairwiseTxPn = 0;
+    bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
+    explicit_bzero(&apPtk, sizeof(apPtk));
+    iwn_publish_ap_station_event(
+        apClientMac, apClientRsnIELength != 0 ? apClientRsnIE : NULL,
+        apClientRsnIELength, IEEE80211_APSTA_EVENT_ASSOC);
+    return 0;
+}
+
 int ItlIwn::iwn_send_ap_sensitivity()
 {
     /*
@@ -7022,7 +7182,8 @@ void ItlIwn::iwn_continue_ap_after_deactivation()
           com.sc_dev.dv_xname, apFirmwareConfig.channel);
 }
 
-void ItlIwn::iwn_note_ap_firmware_event(int command, int notification)
+void ItlIwn::iwn_note_ap_firmware_event(
+    int command, int notification, int addNodeStatus)
 {
     if (!apFirmwareTransitionActive)
         return;
@@ -7058,6 +7219,55 @@ void ItlIwn::iwn_note_ap_firmware_event(int command, int notification)
 
     const int ridx = apFirmwareConfig.channel <= 14 ?
         IWN_RIDX_CCK : IWN_RIDX_OFDM;
+
+    /*
+     * Linux DVM does not expose Association Response until ADD_STA has
+     * completed successfully and the initial link-quality command has
+     * completed.  That order is functional, not cosmetic: accepting the
+     * client's 4-way handshake while firmware station id 2 is still being
+     * materialized can make a later SET_KEY reply succeed without linking
+     * the CCMP key into the PAN RX station map on a cold 6x35 start.
+     */
+    if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        (apClientMaterializationStage ==
+             IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE ||
+         apClientMaterializationStage ==
+             IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE) &&
+        command == IWN_CMD_ADD_NODE) {
+        if (addNodeStatus != 1) {
+            if (apClientMaterializationStage ==
+                IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE)
+                apClientNodeInstalled = false;
+            apClientMaterializationStage =
+                IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+            XYLog("%s: AP client station materialization rejected "
+                  "status=0x%02x\n", com.sc_dev.dv_xname,
+                  static_cast<unsigned>(addNodeStatus & 0xff));
+            return;
+        }
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_LINK_QUALITY;
+        error = iwn_send_ap_client_link_quality();
+        if (error != 0) {
+            apClientMaterializationStage =
+                IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+            XYLog("%s: AP client link-quality queue failed error=%d\n",
+                  com.sc_dev.dv_xname, error);
+        }
+        return;
+    }
+    if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        apClientMaterializationStage ==
+            IWN_AP_CLIENT_MATERIALIZATION_LINK_QUALITY &&
+        command == IWN_CMD_LINK_QUALITY) {
+        error = iwn_send_ap_assoc_success();
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+        if (error != 0)
+            XYLog("%s: AP association response queue failed error=%d\n",
+                  com.sc_dev.dv_xname, error);
+        return;
+    }
 
     if (apFirmwareStage == IWN_AP_STAGE_INITIAL_RXON) {
         if (command == IWN_CMD_WIPAN_RXON)
@@ -11731,6 +11941,7 @@ iwn_notif_intr(struct iwn_softc *sc)
                 commandData->m != NULL ?
                 mtod(commandData->m, const struct iwn_tx_cmd *) :
                 &commandRing->cmd[desc->idx];
+            int completedAddNodeStatus = -1;
             if (apFirmwareTransitionActive &&
                 completedCommand->code == IWN_CMD_ADD_NODE) {
                 const uint32_t replyLength =
@@ -11738,18 +11949,31 @@ iwn_notif_intr(struct iwn_softc *sc)
                 const uint8_t addNodeStatus =
                     replyLength != 0 ?
                     *(reinterpret_cast<const uint8_t *>(desc + 1)) : 0xff;
-                XYLog("%s: AP PAN broadcast ADD_NODE reply "
-                      "status=0x%02x len=%u\n",
-                      sc->sc_dev.dv_xname,
-                      static_cast<unsigned>(addNodeStatus),
-                      static_cast<unsigned>(replyLength));
+                completedAddNodeStatus = addNodeStatus;
+                const struct iwn_node_info *completedNode =
+                    reinterpret_cast<const struct iwn_node_info *>(
+                        completedCommand->data);
+                if (apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+                    apClientMaterializationStage !=
+                        IWN_AP_CLIENT_MATERIALIZATION_IDLE ||
+                    (completedNode->flags & IWN_FLAG_SET_KEY) != 0) {
+                    XYLog("%s: AP ADD_NODE reply id=%u flags=0x%02x "
+                          "status=0x%02x len=%u\n",
+                          sc->sc_dev.dv_xname,
+                          static_cast<unsigned>(completedNode->id),
+                          static_cast<unsigned>(completedNode->flags),
+                          static_cast<unsigned>(addNodeStatus),
+                          static_cast<unsigned>(replyLength));
+                }
             }
             if (apFirmwareTransitionActive)
-                iwn_note_ap_firmware_event(completedCommand->code, -1);
+                iwn_note_ap_firmware_event(
+                    completedCommand->code, -1,
+                    completedAddNodeStatus);
         }
         if (apFirmwareTransitionActive &&
             desc->type == IWN_WIPAN_DEACTIVATION_COMPLETE) {
-            iwn_note_ap_firmware_event(-1, desc->type);
+            iwn_note_ap_firmware_event(-1, desc->type, -1);
         }
 
         if (sc->auth_seq1_tx_pending) {

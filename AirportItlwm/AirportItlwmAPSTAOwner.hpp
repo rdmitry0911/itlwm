@@ -130,6 +130,8 @@ private:
     uint8_t apCredential[0x40];
     uint32_t apCredentialLength;
     bool radioResetResumePending;
+    bool radioResetWaitForPrimaryStaRun;
+    uint16_t radioResetResumeWaitTicks;
 };
 
 #endif /* AirportItlwmAPSTAOwner_hpp */
