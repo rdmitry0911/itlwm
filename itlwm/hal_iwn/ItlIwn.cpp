@@ -10520,7 +10520,8 @@ iwn_rx_phy(struct iwn_softc *sc, struct iwn_rx_desc *desc,
  */
 void ItlIwn::
 iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
-    struct iwn_rx_data *data, struct mbuf_list *ml)
+    struct iwn_rx_data *data, struct mbuf_list *ml,
+    struct mbuf_list *apMl)
 {
     struct iwn_ops *ops = &sc->ops;
     struct ieee80211com *ic = &sc->sc_ic;
@@ -10710,7 +10711,7 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         mbuf_freem(m);
         return;
     }
-    if (iwn_handle_ap_data(m, len, ml, flags, desc->type)) {
+    if (iwn_handle_ap_data(m, len, apMl, flags, desc->type)) {
         mbuf_freem(m);
         return;
     }
@@ -11701,6 +11702,7 @@ void ItlIwn::
 iwn_notif_intr(struct iwn_softc *sc)
 {
     struct mbuf_list ml = MBUF_LIST_INITIALIZER();
+    struct mbuf_list apMl = MBUF_LIST_INITIALIZER();
     struct iwn_ops *ops = &sc->ops;
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = &ic->ic_if;
@@ -11779,7 +11781,7 @@ iwn_notif_intr(struct iwn_softc *sc)
         case IWN_RX_DONE:        /* 4965AGN only. */
         case IWN_MPDU_RX_DONE:
             /* An 802.11 frame has been received. */
-            iwn_rx_done(sc, desc, data, &ml);
+            iwn_rx_done(sc, desc, data, &ml, &apMl);
             break;
         case IWN_RX_COMPRESSED_BA:
             /* A Compressed BlockAck has been received. */
@@ -12115,6 +12117,7 @@ iwn_notif_intr(struct iwn_softc *sc)
         sc->rxq.cur = (sc->rxq.cur + 1) % IWN_RX_RING_COUNT;
     }
     if_input(&sc->sc_ic.ic_if, &ml);
+    if_input_ap(&sc->sc_ic.ic_if, &apMl);
 
     /* Tell the firmware what we have processed. */
     hw = (hw == 0) ? IWN_RX_RING_COUNT - 1 : hw - 1;

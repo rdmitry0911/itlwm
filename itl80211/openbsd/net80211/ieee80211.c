@@ -315,6 +315,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     memset(ic->ic_bss_blacklist_event_body, 0,
            sizeof(ic->ic_bss_blacklist_event_body));
     ifp->if_skywalk_rx = NULL;
+    ifp->if_skywalk_rx_ap = NULL;
     ifq_init(&ifp->if_snd, ifp, 2048);
     memcpy(((struct arpcom *)ifp)->ac_enaddr, ic->ic_myaddr,
            ETHER_ADDR_LEN);

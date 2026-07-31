@@ -165,6 +165,10 @@ struct _ifnet {                /* and the entries */
     // data into an IOSkywalkPacket, enqueues to the RX completion queue,
     // and frees the mbuf.
     int (*if_skywalk_rx)(struct _ifnet *, mbuf_t);
+    // APSTA owns a distinct Skywalk RX pool/completion queue.  Keep a
+    // separate ingress callback so a concurrently-running HostAP cannot
+    // redirect primary-STA frames merely because the AP role is active.
+    int (*if_skywalk_rx_ap)(struct _ifnet *, mbuf_t);
     int if_link_state;
     void *if_softc;
 //    struct    refcnt if_refcnt;

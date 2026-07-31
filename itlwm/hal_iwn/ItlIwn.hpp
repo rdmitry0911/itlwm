@@ -260,7 +260,8 @@ public:
     void        iwn_rx_phy(struct iwn_softc *, struct iwn_rx_desc *,
                 struct iwn_rx_data *);
     void        iwn_rx_done(struct iwn_softc *, struct iwn_rx_desc *,
-                struct iwn_rx_data *, struct mbuf_list *);
+                struct iwn_rx_data *, struct mbuf_list *,
+                struct mbuf_list *);
     void        iwn_ra_choose(struct iwn_softc *, struct ieee80211_node *);
     void        iwn_ampdu_rate_control(struct iwn_softc *, struct ieee80211_node *,
                 struct iwn_tx_ring *, uint16_t, uint16_t);

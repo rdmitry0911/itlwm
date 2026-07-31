@@ -440,6 +440,7 @@ fail:
 }
 
 int if_input(struct _ifnet *ifq, struct mbuf_list *ml);
+int if_input_ap(struct _ifnet *ifq, struct mbuf_list *ml);
 
 static inline int if_enqueue(struct _ifnet *ifq, mbuf_t m)
 {

@@ -7307,7 +7307,7 @@ skywalkRxReturnPreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt,
 // Converts an mbuf into a prepared IOSkywalkPacket, stages it in the local
 // RX producer queue, and rings IOSkywalkRxCompletionQueue::requestEnqueue().
 static int
-skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
+skywalkRxInputForRole(struct _ifnet *ifp, mbuf_t m, bool apsta)
 {
     if (ifp == nullptr) {
         if (m != nullptr)
@@ -7322,9 +7322,13 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
             mbuf_freem(m);
         return ENXIO;
     }
-    const bool apsta =
-        that->isHostApRunning() &&
-        that->fAPSTARxPool != nullptr && that->fAPSTARxQueue != nullptr;
+    if (apsta &&
+        (!that->isHostApRunning() ||
+         that->fAPSTARxPool == nullptr || that->fAPSTARxQueue == nullptr)) {
+        if (m != nullptr)
+            mbuf_freem(m);
+        return ENXIO;
+    }
     IOSkywalkPacketBufferPool *rxPool =
         apsta ? that->fAPSTARxPool : that->fRxPool;
     IOSkywalkRxCompletionQueue *rxQueue =
@@ -7506,6 +7510,18 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
                                   diagLength, kIOReturnSuccess);
 
     return 0;
+}
+
+static int
+skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
+{
+    return skywalkRxInputForRole(ifp, m, false);
+}
+
+static int
+skywalkRxInputAPSTA(struct _ifnet *ifp, mbuf_t m)
+{
+    return skywalkRxInputForRole(ifp, m, true);
 }
 #endif /* __IO80211_TARGET >= __MAC_26_0 */
 
@@ -7912,8 +7928,10 @@ void AirportItlwm::stopHalAndDrainClaimed()
 #if __IO80211_TARGET >= __MAC_26_0
     if (fHalService != nullptr) {
         struct ieee80211com *ic = fHalService->get80211Controller();
-        if (ic != nullptr)
+        if (ic != nullptr) {
             ic->ic_ac.ac_if.if_skywalk_rx = NULL;
+            ic->ic_ac.ac_if.if_skywalk_rx_ap = NULL;
+        }
     }
 #endif
 
@@ -10781,6 +10799,7 @@ bool AirportItlwm::start(IOService *provider)
     {
         struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
         ifp->if_skywalk_rx = skywalkRxInput;
+        ifp->if_skywalk_rx_ap = skywalkRxInputAPSTA;
     }
 #endif
 

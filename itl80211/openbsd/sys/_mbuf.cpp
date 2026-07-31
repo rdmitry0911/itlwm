@@ -37,27 +37,31 @@ static IOReturn _if_input(OSObject *target, void *arg0, void *arg1, void *arg2, 
     bool isEmpty = true;
     struct _ifnet *ifq = (struct _ifnet *)arg0;
     struct mbuf_list *ml = (struct mbuf_list *)arg1;
+    const bool apsta = (uintptr_t)arg2 != 0;
+    int (*skywalkRx)(struct _ifnet *, mbuf_t) =
+        apsta ? ifq->if_skywalk_rx_ap : ifq->if_skywalk_rx;
 
     // Save next pointer before calling the handler, since the handler
     // may free the mbuf (Skywalk path) or take ownership (legacy path).
     for (m = MBUF_LIST_FIRST(ml); m != NULL; m = next) {
         next = MBUF_LIST_NEXT(m);
         isEmpty = false;
-        if (ifq->if_skywalk_rx) {
+        if (skywalkRx) {
             // Skywalk path (macOS 26.x+): copy mbuf into IOSkywalkPacket,
             // enqueue to RX completion queue, free the mbuf.
-            ifq->if_skywalk_rx(ifq, m);
-        } else if (ifq->iface != NULL) {
+            skywalkRx(ifq, m);
+        } else if (!apsta && ifq->iface != NULL) {
             ifq->iface->inputPacket(m, 0, IONetworkInterface::kInputOptionQueuePacket);
         } else {
-            panic("%s ifq->iface == NULL and if_skywalk_rx == NULL!!!\n", __FUNCTION__);
-            break;
+            // APSTA has no legacy IONetworkInterface fallback: its Tahoe
+            // interface is backed by the role-specific Skywalk queue.
+            mbuf_freem(m);
         }
         if (ifq->netStat != NULL) {
             ifq->netStat->inputPackets++;
         }
     }
-    if (!isEmpty && ifq->iface && !ifq->if_skywalk_rx) {
+    if (!isEmpty && !apsta && ifq->iface && !skywalkRx) {
         ifq->iface->flushInputQueue();
     }
     return kIOReturnSuccess;
@@ -68,3 +72,8 @@ int if_input(struct _ifnet *ifq, struct mbuf_list *ml)
     return _fCommandGate->runAction((IOCommandGate::Action)_if_input, ifq, ml);
 }
 
+int if_input_ap(struct _ifnet *ifq, struct mbuf_list *ml)
+{
+    return _fCommandGate->runAction((IOCommandGate::Action)_if_input, ifq, ml,
+                                    reinterpret_cast<void *>(1));
+}
