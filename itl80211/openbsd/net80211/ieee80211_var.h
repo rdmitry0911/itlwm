@@ -517,6 +517,7 @@ struct ieee80211_wnm_bss_transition {
 	u_int8_t		source_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t		target_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t		ssid[IEEE80211_NWID_LEN];
+	u_int64_t		tx_fence_generation;
 	u_int8_t		ssid_len;
 	u_int8_t		dialog_token;
 	u_int8_t		target_channel;
@@ -524,6 +525,9 @@ struct ieee80211_wnm_bss_transition {
 	u_int8_t		candidate_confirmed;
 	u_int8_t		fresh_scan_pending;
 	u_int8_t		scan_retry_count;
+	u_int8_t		scan_starting;
+	u_int8_t		tx_fence_submitted;
+	u_int8_t		tx_fence_completed;
 };
 
 /*
@@ -688,6 +692,7 @@ struct ieee80211com {
 				    struct ieee80211_node *, u_int8_t);
 	void			(*ic_updateprot)(struct ieee80211com *);
 	int			(*ic_bgscan_start)(struct ieee80211com *);
+	int			(*ic_bgscan_abort)(struct ieee80211com *);
     /*
      * A backend may consume a state transition before the generic macro
      * advances association epoch.  It is used only to defer a SCAN request
@@ -757,6 +762,18 @@ struct ieee80211com {
      */
     void            (*ic_sae_wcl_request_revoke)(struct ieee80211com *,
                             u_int64_t);
+    /*
+     * IWN may retain one bounded SAE password for the currently validated
+     * ESS, mirroring the reference firmware's driver-resident roam owner.
+     * The port-valid callback promotes or retires that private record
+     * without exposing it to net80211.  The WNM callback may consume only a
+     * freshly confirmed BTM target; a zero result preserves the ordinary
+     * WCL reconnect fallback.
+     */
+    void            (*ic_sae_roam_port_valid)(struct ieee80211com *,
+                            const struct ieee80211_node *);
+    int             (*ic_sae_wnm_roam_start)(struct ieee80211com *,
+                            const struct ieee80211_node *);
     /*
      * Host-owned WCL reassociation owner state (see contract notes near
      * IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT). active is set
@@ -846,6 +863,7 @@ struct ieee80211com {
 	struct ieee80211_public_initial_bssid_pin ic_public_initial_bssid_pin;
 	/* Protected 802.11v target hint, consumed by one replacement join. */
 	struct ieee80211_wnm_bss_transition ic_wnm_bss_transition;
+	u_int64_t		ic_wnm_bss_transition_next_tx_fence;
 	/* Direct-WCL SAE request identity and monotonic nonzero generation.  The
 	 * fixed record is public control-plane state only; credentials remain in
 	 * the driver's separately scrubbed private staging slot. */

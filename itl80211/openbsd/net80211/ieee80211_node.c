@@ -1222,8 +1222,9 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
 
 /* Implements ni->ni_unref_cb() for a confirmed 802.11v target.  The source
  * BTM response and disassociation have both left the hardware queue before
- * this callback tears down the old BSS and lets WCL restage SAE credentials
- * for the retained target identity. */
+ * this callback tears down the old BSS.  A driver-resident SAE owner gets
+ * first refusal on the freshly confirmed target; without one, the ordinary
+ * WCL credential-restage fallback remains unchanged. */
 void
 ieee80211_node_wnm_reconnect(struct ieee80211com *ic,
     struct ieee80211_node *ni)
@@ -1233,8 +1234,11 @@ ieee80211_node_wnm_reconnect(struct ieee80211com *ic,
     ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
     ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
                       IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+    if (ic->ic_sae_wnm_roam_start != NULL &&
+        (*ic->ic_sae_wnm_roam_start)(ic, ni) != 0)
+        return;
     ieee80211_new_state(ic, IEEE80211_S_SCAN,
-                        IEEE80211_FC0_SUBTYPE_DEAUTH);
+                        IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD);
 }
 
 void
@@ -1627,6 +1631,7 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
         struct ieee80211_node_switch_bss_arg *arg;
         u_int8_t wnm_dialog_token = 0;
         u_int8_t wnm_target_bssid[IEEE80211_ADDR_LEN];
+        struct ieee80211_node *wnm_source;
 
         explicit_bzero(wnm_target_bssid, sizeof(wnm_target_bssid));
         if (ieee80211_wnm_bss_transition_active(ic,
@@ -1643,32 +1648,49 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
                 return;
             }
 
+            u_int64_t wnm_tx_fence_generation = 0;
+
             /* Accept while the protected source association and its IGTK/PTK
-             * are still live, then serialize source leave behind both
-             * management transmissions. */
-            if (ieee80211_send_bss_transition_response(
-                ic, ic->ic_bss, wnm_dialog_token,
-                IEEE80211_WNM_BSS_TM_ACCEPT, wnm_target_bssid) != 0) {
+             * are still live, then serialize source leave behind completion
+             * of these two exact management descriptors.  ic_bss itself owns
+             * a permanent node reference, so a global zero-ref callback is
+             * not a valid TX fence. */
+            wnm_source = ic->ic_bss;
+            if (!ieee80211_wnm_bss_transition_tx_fence_arm(ic,
+                    wnm_source, wnm_dialog_token, wnm_target_bssid,
+                    &wnm_tx_fence_generation)) {
                 ieee80211_wnm_bss_transition_clear(ic);
                 ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
                                   IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
                 return;
             }
-            ieee80211_stop_ampdu_tx(ic, ic->ic_bss,
+            /* Management frames bypass this data gate; arm it before either
+             * enqueue so a very short TX terminal cannot race the caller. */
+            ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
+            if (ieee80211_send_bss_transition_response(
+                ic, wnm_source, wnm_dialog_token,
+                IEEE80211_WNM_BSS_TM_ACCEPT, wnm_target_bssid) != 0) {
+                ieee80211_wnm_bss_transition_tx_fence_cancel(ic,
+                    wnm_tx_fence_generation);
+                ieee80211_wnm_bss_transition_clear(ic);
+                ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
+                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+                return;
+            }
+            ieee80211_stop_ampdu_tx(ic, wnm_source,
                                     IEEE80211_FC0_SUBTYPE_DEAUTH);
-            if (IEEE80211_SEND_MGMT(ic, ic->ic_bss,
+            if (IEEE80211_SEND_MGMT(ic, wnm_source,
                     IEEE80211_FC0_SUBTYPE_DEAUTH,
                     IEEE80211_REASON_BSS_TRANSITION_DISASSOC) != 0) {
+                ieee80211_wnm_bss_transition_tx_fence_cancel(ic,
+                    wnm_tx_fence_generation);
                 ieee80211_wnm_bss_transition_clear(ic);
+                ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
                 ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
                                   IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
                 return;
             }
-            (void)ieee80211_pae_assoc_epoch_begin(ic);
-            ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
-            ic->ic_bss->ni_unref_arg = NULL;
-            ic->ic_bss->ni_unref_arg_size = 0;
-            ic->ic_bss->ni_unref_cb = ieee80211_node_wnm_reconnect;
             explicit_bzero(wnm_target_bssid,
                            sizeof(wnm_target_bssid));
             return;

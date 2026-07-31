@@ -3980,8 +3980,19 @@ ieee80211_recv_wnm_bss_transition_req(struct ieee80211com *ic, mbuf_t m,
 		return;
 	if (scan_error == EBUSY &&
 	    (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 &&
-	    ieee80211_wnm_bss_transition_defer_fresh_scan(ic))
+	    ieee80211_wnm_bss_transition_defer_fresh_scan(ic)) {
+		/*
+		 * A user-roam channel is latency-sensitive.  Tahoe's reference
+		 * WCL scan manager moves an in-progress census through
+		 * ABORT_CURRENT before servicing the replacement request.  Ask
+		 * the lower physical owner to do the same; fresh_scan_pending
+		 * fences every competing retry until its terminal retires.
+		 */
+		if (ic->ic_bgscan_abort != NULL &&
+		    ic->ic_bgscan_abort(ic) == 0)
+			timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 1);
 		return;
+	}
 	ieee80211_wnm_bss_transition_clear(ic);
 
 reject:

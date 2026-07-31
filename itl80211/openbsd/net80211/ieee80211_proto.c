@@ -852,6 +852,8 @@ ieee80211_pae_mfp_txn_complete(struct ieee80211com *ic, u_int64_t id,
 		    snapshot.assoc_epoch)) {
 			ieee80211_public_initial_bssid_pin_port_valid(ic,
 			    snapshot.ni);
+			if (ic->ic_sae_roam_port_valid != NULL)
+				(*ic->ic_sae_roam_port_valid)(ic, snapshot.ni);
 			AirportItlwmPostPltiTraceCompleteEpisode(ic);
 			ieee80211_set_link_state(ic, LINK_STATE_UP);
 			if (ic->ic_event_handler != NULL)
@@ -1184,6 +1186,84 @@ ieee80211_wnm_bss_transition_active(struct ieee80211com *ic,
 }
 
 int
+ieee80211_wnm_bss_transition_scan_start(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	int started = 0;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 &&
+	    transition->candidate_confirmed == 0 &&
+	    transition->scan_starting == 0) {
+		transition->scan_starting = 1;
+		started = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return started;
+}
+
+void
+ieee80211_wnm_bss_transition_scan_end(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ic->ic_wnm_bss_transition.scan_starting = 0;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+int
+ieee80211_wnm_bss_transition_scan_owns_admission(
+    struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_wnm_bss_transition *transition;
+	int owns = 0;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	owns = transition->active != 0 && transition->scan_starting != 0;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return owns;
+}
+
+int
+ieee80211_wnm_bss_transition_target_channel(struct ieee80211com *ic,
+    u_int8_t *target_channel)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_wnm_bss_transition *transition;
+	int exact = 0;
+
+	if (target_channel != NULL)
+		*target_channel = 0;
+	if (ic == NULL || target_channel == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 && transition->scan_starting != 0 &&
+	    transition->target_channel != 0) {
+		*target_channel = transition->target_channel;
+		exact = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return exact;
+}
+
+int
 ieee80211_wnm_bss_transition_confirm_candidate(
     struct ieee80211com *ic, const struct ieee80211_node *ni,
     u_int8_t *dialog_token, u_int8_t target_bssid[IEEE80211_ADDR_LEN])
@@ -1216,6 +1296,231 @@ ieee80211_wnm_bss_transition_confirm_candidate(
 	}
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	return confirmed;
+}
+
+int
+ieee80211_wnm_bss_transition_tx_fence_arm(struct ieee80211com *ic,
+    const struct ieee80211_node *ni, u_int8_t dialog_token,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN],
+    u_int64_t *generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	u_int64_t next;
+	int armed = 0;
+
+	if (generation != NULL)
+		*generation = 0;
+	if (ic == NULL || ni == NULL || target_bssid == NULL ||
+	    generation == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss == ni &&
+	    transition->active != 0 &&
+	    transition->candidate_confirmed != 0 &&
+	    transition->tx_fence_generation == 0 &&
+	    transition->dialog_token == dialog_token &&
+	    IEEE80211_ADDR_EQ(transition->source_bssid, ni->ni_bssid) &&
+	    IEEE80211_ADDR_EQ(transition->target_bssid, target_bssid)) {
+		next = ++ic->ic_wnm_bss_transition_next_tx_fence;
+		if (next == 0)
+			next = ++ic->ic_wnm_bss_transition_next_tx_fence;
+		transition->tx_fence_generation = next;
+		transition->tx_fence_submitted = 0;
+		transition->tx_fence_completed = 0;
+		*generation = next;
+		armed = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return armed;
+}
+
+void
+ieee80211_wnm_bss_transition_tx_fence_cancel(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+
+	if (ic == NULL || generation == 0 ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->tx_fence_generation == generation) {
+		transition->tx_fence_generation = 0;
+		transition->tx_fence_submitted = 0;
+		transition->tx_fence_completed = 0;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+int
+ieee80211_wnm_bss_transition_tx_fence_classify(
+    struct ieee80211com *ic, const struct ieee80211_node *ni,
+    const struct ieee80211_frame *wh, size_t frame_len,
+    u_int64_t *generation, u_int8_t *kind)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	const struct ieee80211_wnm_bss_transition *transition;
+	const u_int8_t *body;
+	u_int8_t subtype;
+	u_int8_t matched_kind = 0;
+
+	if (generation != NULL)
+		*generation = 0;
+	if (kind != NULL)
+		*kind = 0;
+	if (ic == NULL || ni == NULL || wh == NULL ||
+	    generation == NULL || kind == NULL ||
+	    frame_len < sizeof(*wh) ||
+	    (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
+	    IEEE80211_FC0_TYPE_MGT ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	body = (const u_int8_t *)&wh[1];
+	subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active == 0 ||
+	    transition->candidate_confirmed == 0 ||
+	    transition->tx_fence_generation == 0 ||
+	    ic->ic_state != IEEE80211_S_RUN || ic->ic_bss != ni ||
+	    !IEEE80211_ADDR_EQ(transition->source_bssid, ni->ni_bssid) ||
+	    !IEEE80211_ADDR_EQ(wh->i_addr1, transition->source_bssid))
+		goto out;
+
+	if (subtype == IEEE80211_FC0_SUBTYPE_ACTION &&
+	    frame_len >= sizeof(*wh) + 5 + IEEE80211_ADDR_LEN &&
+	    body[0] == IEEE80211_CATEG_WNM &&
+	    body[1] == IEEE80211_ACTION_WNM_BSS_TRANS_RESP &&
+	    body[2] == transition->dialog_token &&
+	    body[3] == IEEE80211_WNM_BSS_TM_ACCEPT &&
+	    IEEE80211_ADDR_EQ(body + 5, transition->target_bssid)) {
+		matched_kind = IEEE80211_WNM_TX_FENCE_RESPONSE;
+	} else if (subtype == IEEE80211_FC0_SUBTYPE_DEAUTH &&
+	    frame_len >= sizeof(*wh) + 2 &&
+	    LE_READ_2(body) == IEEE80211_REASON_BSS_TRANSITION_DISASSOC) {
+		matched_kind = IEEE80211_WNM_TX_FENCE_DEAUTH;
+	}
+	if (matched_kind != 0 &&
+	    (transition->tx_fence_submitted & matched_kind) == 0) {
+		*generation = transition->tx_fence_generation;
+		*kind = matched_kind;
+	}
+out:
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return matched_kind != 0 && *generation != 0;
+}
+
+int
+ieee80211_wnm_bss_transition_tx_fence_submit(struct ieee80211com *ic,
+    u_int64_t generation, u_int8_t kind)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	int submitted = 0;
+
+	if (ic == NULL || generation == 0 ||
+	    (kind != IEEE80211_WNM_TX_FENCE_RESPONSE &&
+	    kind != IEEE80211_WNM_TX_FENCE_DEAUTH) ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 &&
+	    transition->candidate_confirmed != 0 &&
+	    transition->tx_fence_generation == generation &&
+	    (transition->tx_fence_submitted & kind) == 0) {
+		transition->tx_fence_submitted |= kind;
+		submitted = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return submitted;
+}
+
+void
+ieee80211_wnm_bss_transition_tx_fence_submit_failed(
+    struct ieee80211com *ic, struct ieee80211_node *ni,
+    u_int64_t generation, u_int8_t kind)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	int terminal = 0;
+
+	if (ic == NULL || ni == NULL || generation == 0 ||
+	    (kind != IEEE80211_WNM_TX_FENCE_RESPONSE &&
+	    kind != IEEE80211_WNM_TX_FENCE_DEAUTH) ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 &&
+	    transition->candidate_confirmed != 0 &&
+	    transition->tx_fence_generation == generation &&
+	    ic->ic_state == IEEE80211_S_RUN && ic->ic_bss == ni &&
+	    IEEE80211_ADDR_EQ(transition->source_bssid, ni->ni_bssid)) {
+		/*
+		 * A descriptor rejected before its doorbell is nevertheless
+		 * terminal for source-leave ordering.  Publish both bits under the
+		 * leaf, then use the ordinary completion path so the other exact
+		 * descriptor remains the sole outstanding fence.
+		 */
+		transition->tx_fence_submitted |= kind;
+		terminal = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (terminal)
+		ieee80211_wnm_bss_transition_tx_fence_complete(ic, ni,
+		    generation, kind);
+}
+
+void
+ieee80211_wnm_bss_transition_tx_fence_complete(struct ieee80211com *ic,
+    struct ieee80211_node *ni, u_int64_t generation, u_int8_t kind)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_wnm_bss_transition *transition;
+	const u_int8_t expected = IEEE80211_WNM_TX_FENCE_RESPONSE |
+	    IEEE80211_WNM_TX_FENCE_DEAUTH;
+	int reconnect = 0;
+
+	if (ic == NULL || ni == NULL || generation == 0 ||
+	    (kind != IEEE80211_WNM_TX_FENCE_RESPONSE &&
+	    kind != IEEE80211_WNM_TX_FENCE_DEAUTH) ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active != 0 &&
+	    transition->candidate_confirmed != 0 &&
+	    transition->tx_fence_generation == generation &&
+	    (transition->tx_fence_submitted & kind) != 0 &&
+	    (transition->tx_fence_completed & kind) == 0 &&
+	    ic->ic_state == IEEE80211_S_RUN && ic->ic_bss == ni &&
+	    IEEE80211_ADDR_EQ(transition->source_bssid, ni->ni_bssid)) {
+		transition->tx_fence_completed |= kind;
+		if ((transition->tx_fence_submitted & expected) == expected &&
+		    (transition->tx_fence_completed & expected) == expected) {
+			transition->tx_fence_generation = 0;
+			transition->tx_fence_submitted = 0;
+			transition->tx_fence_completed = 0;
+			reconnect = 1;
+		}
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+
+	if (reconnect)
+		ieee80211_node_wnm_reconnect(ic, ni);
 }
 
 int
@@ -2638,6 +2943,53 @@ ieee80211_sae_wcl_request_scan_started(struct ieee80211com *ic,
 	}
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	return started;
+}
+
+/*
+ * The protected BTM background scan has already admitted and retained one
+ * exact target in the node cache.  Promote a newly staged WCL SAE request to
+ * the same selection-owned phase as a fresh directed scan, but only while
+ * both public identities and the complete pure-SAE policy still agree under
+ * the selected-BSS leaf.  node_join_bss() performs the independent cached
+ * node/policy match and the normal SCAN_ISSUED -> BOUND handoff afterwards.
+ */
+int
+ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
+    struct ieee80211com *ic, u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request *request;
+	const struct ieee80211_wnm_bss_transition *transition;
+	int admitted = 0;
+
+	if (ic == NULL || generation == 0 ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	request = &ic->ic_sae_wcl_request;
+	transition = &ic->ic_wnm_bss_transition;
+	if (ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    request->generation == generation &&
+	    request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING &&
+	    request->association_epoch == 0 &&
+	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request) &&
+	    transition->active != 0 &&
+	    transition->candidate_confirmed != 0 &&
+	    transition->fresh_scan_pending == 0 &&
+	    transition->scan_starting == 0 &&
+	    IEEE80211_ADDR_EQ(request->bssid, transition->target_bssid) &&
+	    request->ssid_len == transition->ssid_len &&
+	    memcmp(request->ssid, transition->ssid, request->ssid_len) == 0) {
+		request->phase = IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED;
+		admitted = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return admitted;
 }
 
 /*
@@ -4915,10 +5267,13 @@ justcleanup:
 				ieee80211_set_link_state(ic, LINK_STATE_UP);
 				ni->ni_assoc_fail = 0;
 				if (ic->ic_opmode == IEEE80211_M_STA &&
-				    (ic->ic_flags & IEEE80211_F_RSNON) == 0 &&
-				    ic->ic_event_handler != NULL)
-					(*ic->ic_event_handler)(
-					    ic, IEEE80211_EVT_STA_OPEN_RUN_DONE, NULL);
+				    (ic->ic_flags & IEEE80211_F_RSNON) == 0) {
+					if (ic->ic_sae_roam_port_valid != NULL)
+						(*ic->ic_sae_roam_port_valid)(ic, ni);
+					if (ic->ic_event_handler != NULL)
+						(*ic->ic_event_handler)(
+						    ic, IEEE80211_EVT_STA_OPEN_RUN_DONE, NULL);
+				}
 			}
             ni->ni_fails = 0;
             ni = ieee80211_find_node(ic, ni->ni_macaddr);

@@ -127,9 +127,12 @@ require(hal_hpp, "virtual void purgeSaeWclCredentialStage() {}",
         "HAL overflow scrub ABI")
 for token in ("stageSaeWclCredential(", "cancelSaeWclCredential(",
               "purgeSaeWclCredentialStage()", "iwn_sae_wcl_stop_begin",
-              "iwn_sae_wcl_detach_begin"):
+              "iwn_sae_wcl_detach_begin", "iwn_sae_roam_port_valid",
+              "iwn_sae_wnm_roam_start"):
     require(iwn_hpp, token, "IWN credential declaration")
 for token in ("sc_sae_wcl_credential_lock", "sc_sae_wcl_credential_staged",
+              "sc_sae_wcl_credential_pending",
+              "sc_sae_wcl_credential_active",
               "sc_sae_wcl_credential_cancel_valid",
               "sc_sae_wcl_credential_cancel_through_generation",
               "struct ItlSaeWclCredentialV1 sc_sae_wcl_credential"):
@@ -151,7 +154,18 @@ forbid(runtime_gate, "IEEE80211_C_MFP",
 clear = body(iwn_cpp, "iwn_sae_wcl_credential_clear_locked",
              "IWN credential clear leaf")
 ordered(clear, "credential scrub before publication", "explicit_bzero(&sc->sc_sae_wcl_credential",
-        "sc->sc_sae_wcl_credential_staged = false;")
+        "sc->sc_sae_wcl_credential_staged = false;",
+        "sc->sc_sae_wcl_credential_pending = false;",
+        "sc->sc_sae_wcl_credential_active = false;")
+take = body(iwn_cpp, "iwn_sae_wcl_credential_take_bound",
+            "selected-BSS credential take")
+ordered(take, "single-slot staged-to-pending transition",
+        "*credential = sc->sc_sae_wcl_credential;",
+        "sc->sc_sae_wcl_credential_staged = false;",
+        "sc->sc_sae_wcl_credential_pending = true;",
+        "sc->sc_sae_wcl_credential_active = false;")
+forbid(take, "iwn_sae_wcl_credential_clear_locked(sc)",
+       "premature selected-BSS password scrub")
 
 # A retry can repeat the identical canonical record, but comparison must not
 # disclose where two credential records differ.  Cancellation is a monotonic
@@ -220,7 +234,8 @@ for token in ("iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)",
               "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
               "!sc->sc_sae_engine_owner.active",
               "sc->sc_sae_engine == NULL",
-              "!sc->sc_sae_wcl_credential_staged"):
+              "!sc->sc_sae_wcl_credential_staged",
+              "!sc->sc_sae_wcl_credential_pending"):
     require(admission, token, "secret-free credential admission fence")
 
 stage = iwn_method("stageSaeWclCredential")
@@ -236,7 +251,12 @@ require(stage, "iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)",
         "STA scan/reconnect stage admission")
 ordered(stage, "cancellation-before-stage fence",
         "iwn_sae_wcl_credential_cancelled_locked(sc,\n                copy.request_generation)",
-        "rc = kIOReturnAborted;", "!sc->sc_sae_wcl_credential_staged",
+        "rc = kIOReturnAborted;", "sc->sc_sae_wcl_credential_pending",
+        "rc = kIOReturnNotReady;", "sc->sc_sae_wcl_credential_active",
+        "copy.request_generation >",
+        "sc->sc_sae_wcl_credential.request_generation",
+        "iwn_sae_wcl_credential_clear_locked(sc)",
+        "!sc->sc_sae_wcl_credential_staged",
         "sc->sc_sae_wcl_credential = copy;",
         "sc->sc_sae_wcl_credential_staged = true;")
 ordered(stage, "idempotent fixed-record restage", "else if (sc->sc_sae_wcl_credential.request_generation ==",
@@ -253,8 +273,8 @@ ordered(stage, "newer-generation atomic replacement", "copy.request_generation >
         "!iwn_sae_wcl_credential_cancelled_locked(sc,",
         "copy.request_generation)", "sc->sc_sae_wcl_credential = copy;",
         "sc->sc_sae_wcl_credential_staged = true;", "rc = kIOReturnSuccess;")
-if stage.count("sc->sc_sae_wcl_credential = copy;") != 2:
-    fail("staging lacks exactly the initial and newer-generation replacement writes")
+if stage.count("sc->sc_sae_wcl_credential = copy;") != 3:
+    fail("staging lacks exactly active replacement, initial stage, and staged-generation replacement writes")
 ordered(stage, "stage release and local scrub", "IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock)",
         "IOLockUnlock(sc->sc_sae_tx_lifecycle_lock)",
         "iwn_sae_tx_lifecycle_leave(sc)", "out:", "explicit_bzero(&copy",
@@ -280,7 +300,7 @@ for token in ("credential->", "memcpy(", "submitSaeAuthFrame", "iwn_tx(",
 purge = iwn_method("purgeSaeWclCredentialStage")
 ordered(purge, "overflow scrub order", "iwn_sae_tx_lifecycle_enter(sc, true)",
         "IOSimpleLockLock(sc->sc_sae_wcl_credential_lock)",
-        "iwn_sae_wcl_credential_clear_locked(sc)",
+        "iwn_sae_wcl_credential_clear_transient_locked(sc)",
         "IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock)",
         "iwn_sae_tx_lifecycle_leave(sc)")
 for token in ("sc_sae_wcl_credential_cancel_through_generation", "request_generation"):
@@ -292,9 +312,13 @@ ordered(stop, "stop closes then scrubs credential", "iwn_sae_tx_lifecycle_close(
         "sc->sc_sae_wcl_admission_reserved = false;",
         "IOSimpleLockUnlock(sc->sc_scan_lease_lock)",
         "IOSimpleLockLock(sc->sc_sae_wcl_credential_lock)",
-        "sc->sc_sae_wcl_credential_staged", "generation = sc->sc_sae_wcl_credential.request_generation",
+        "sc->sc_sae_wcl_credential_staged",
+        "sc->sc_sae_wcl_credential_pending",
+        "generation = sc->sc_sae_wcl_credential.request_generation",
         "if (generation != 0)", "iwn_sae_wcl_credential_cancel_through_locked(sc, generation)",
-        "iwn_sae_wcl_credential_clear_locked(sc)")
+        "iwn_sae_wcl_credential_clear_transient_locked(sc)")
+forbid(stop, "sc->sc_sae_wcl_credential_active = false",
+       "active ESS credential scrub at sleep/reset boundary")
 detach_begin = iwn_method("iwn_sae_wcl_detach_begin")
 ordered(detach_begin, "detach closes then final-scrubs credential",
         "iwn_sae_tx_lifecycle_close(sc, true)",
@@ -305,11 +329,39 @@ ordered(detach_begin, "detach closes then final-scrubs credential",
         "iwn_sae_wcl_credential_clear_locked(sc)",
         "IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock)")
 
+engine_retire = body(iwn_cpp, "iwn_sae_engine_worker_retire",
+                     "SAE engine retirement")
+ordered(engine_retire, "successful SAE transport preserves pending credential",
+        "transport_cancel = cancel;",
+        "if (!request_scan)",
+        "transport_cancel.request_generation = 0;",
+        "iwn_sae_engine_cancel_owned(sc, &transport_cancel);",
+        "if (request_scan && cancel.active)",
+        "iwn_sae_wcl_credential_retire_pending_generation(sc,")
+
+promote = iwn_method("iwn_sae_roam_port_valid")
+ordered(promote, "port-valid pending-to-active promotion",
+        "iwn_sae_engine_callback_enter(sc)",
+        "ni->ni_port_valid != 0",
+        "ic->ic_rsnakms == IEEE80211_AKM_SAE",
+        "IOSimpleLockLock(sc->sc_sae_wcl_credential_lock)",
+        "sc->sc_sae_wcl_credential_pending",
+        "exact_sae_ess",
+        "identity_matches",
+        "sc->sc_sae_wcl_credential_pending = false;",
+        "sc->sc_sae_wcl_credential_active = true;",
+        "IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock)",
+        "iwn_sae_engine_callback_leave(sc)")
+for token in ("credential.password", "ether_sprintf", "password_len"):
+    forbid(promote, token, "credential-bearing promotion log/egress")
+
 attach = iwn_method("iwn_attach")
 ordered(attach, "one-slot setup",
         "sc->sc_sae_wcl_admission_reserved = false;",
         "sc->sc_sae_wcl_credential_lock = IOSimpleLockAlloc()",
         "sc->sc_sae_wcl_credential_staged = false;",
+        "sc->sc_sae_wcl_credential_pending = false;",
+        "sc->sc_sae_wcl_credential_active = false;",
         "sc->sc_sae_wcl_credential_cancel_valid = false;",
         "sc->sc_sae_wcl_credential_cancel_through_generation = 0;",
         "explicit_bzero(&sc->sc_sae_wcl_credential")

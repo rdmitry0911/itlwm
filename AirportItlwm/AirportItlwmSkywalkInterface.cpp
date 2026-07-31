@@ -7175,6 +7175,10 @@ enum class AirportItlwmIwnDirectSaeCredentialProvenance : uint8_t {
     LabStimulus,
 };
 
+static bool
+tahoeJoinCachedWclCandidate(struct ieee80211com *,
+                            const uint8_t[IEEE80211_ADDR_LEN], bool);
+
 /* WCL parses this public-only metadata before calling the common direct SAE
  * transaction.  A lab stimulus supplies no such owner and can therefore not
  * impersonate JoinAdapter/WCL completion provenance. */
@@ -7199,6 +7203,7 @@ struct AirportItlwmIwnDirectSaeCredentialRequest {
     uint32_t authLower;
     uint32_t authUpper;
     const AirportItlwmIwnDirectSaeWclAssociationOwner *wclOwner;
+    bool confirmedWnmCandidate;
 };
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -7391,7 +7396,25 @@ startIwnDirectSaeCredential(
      * stage and before the raw scan handoff, which may synchronously enter
      * the IWN Commit path. */
     AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic);
-    scanResume = ieee80211_sae_wcl_request_resume_scan(ic, generation);
+    if (request->confirmedWnmCandidate) {
+        const bool admitted =
+            ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
+                ic, generation) != 0;
+        const bool joined = admitted && instance != nullptr &&
+            tahoeJoinCachedWclCandidate(
+                ic, request->bssid,
+                instance->associationScanOwnersIdle());
+        if (joined &&
+            ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss))
+            scanResume = IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED;
+        else
+            scanResume = admitted
+                ? IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY
+                : IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED;
+    } else {
+        scanResume =
+            ieee80211_sae_wcl_request_resume_scan(ic, generation);
+    }
     if (scanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED) {
 #if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         if (out_lab_outcome != nullptr)
@@ -7739,6 +7762,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         directRequest.authLower = auth_lower;
         directRequest.authUpper = auth_upper;
         directRequest.wclOwner = &owner;
+        directRequest.confirmedWnmCandidate = wnm_retarget;
         saeResult = startIwnDirectSaeCredential(&directRequest, nullptr,
                                                 nullptr);
         if (saeResult == kIOReturnSuccess && wnm_retarget)

@@ -168,13 +168,16 @@ ieee80211_begin_wnm_bgscan(struct _ifnet *ifp)
         ic->ic_mgt_timer != 0 || (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
         ic->ic_bgscan_start == NULL)
         return EBUSY;
-    if ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
-        (ic->ic_bss == NULL || !ic->ic_bss->ni_port_valid))
-        return EBUSY;
+	if ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+	    (ic->ic_bss == NULL || !ic->ic_bss->ni_port_valid))
+		return EBUSY;
 
-    error = ic->ic_bgscan_start(ic);
-    if (error != 0)
-        return error;
+	if (!ieee80211_wnm_bss_transition_scan_start(ic))
+		return EBUSY;
+	error = ic->ic_bgscan_start(ic);
+	ieee80211_wnm_bss_transition_scan_end(ic);
+	if (error != 0)
+		return error;
 
     /* Keep only the live ic_bss; every target must be observed afresh. */
     ieee80211_free_allnodes(ic, 0);

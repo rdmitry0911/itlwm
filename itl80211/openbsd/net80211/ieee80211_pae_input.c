@@ -1003,8 +1003,11 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             if (deferlink == 0) {
                 int was_port_valid = ni->ni_port_valid;
                 ni->ni_port_valid = 1;
-				if (!was_port_valid)
-					ieee80211_public_initial_bssid_pin_port_valid(ic, ni);
+                if (!was_port_valid)
+                    ieee80211_public_initial_bssid_pin_port_valid(ic, ni);
+                if (!was_port_valid &&
+                    ic->ic_sae_roam_port_valid != NULL)
+                    (*ic->ic_sae_roam_port_valid)(ic, ni);
                 if (!was_port_valid) {
                     AirportItlwmPostPltiTraceCompleteEpisode(ic);
                 }

@@ -362,6 +362,7 @@ public:
                 void (*)(struct iwn_softc *, void *), void *);
     void        iwn_scan_abort(struct iwn_softc *);
     static int        iwn_bgscan(struct ieee80211com *);
+    static int        iwn_wnm_bgscan_abort(struct ieee80211com *);
     void       iwn_rxon_configure_ht40(struct ieee80211com *,
                                         struct ieee80211_node *);
     int        iwn_rxon_ht40_enabled(struct iwn_softc *);
@@ -391,9 +392,13 @@ public:
     static int iwn_sae_auth_owned(struct ieee80211com *,
                 const struct ieee80211_node *);
     static int iwn_sae_engine_peer_event(struct ieee80211com *,
-                const struct ItlSaeAuthPeerEventV1 *);
+        const struct ItlSaeAuthPeerEventV1 *);
     static void iwn_sae_wcl_request_revoke(struct ieee80211com *,
-                u_int64_t);
+        u_int64_t);
+    static void iwn_sae_roam_port_valid(struct ieee80211com *,
+        const struct ieee80211_node *);
+    static int iwn_sae_wnm_roam_start(struct ieee80211com *,
+        const struct ieee80211_node *);
     static void iwn_sae_engine_task(void *);
     void       iwn_sae_engine_stop_begin(struct iwn_softc *);
     void       iwn_sae_engine_reopen(struct iwn_softc *);

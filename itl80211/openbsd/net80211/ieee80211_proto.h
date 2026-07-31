@@ -100,6 +100,13 @@ struct ItlSaePmkContinuationIdentityV1;
  * its fenced abort/replay path, preserves the just-armed initial-BSSID
  * provenance, and restores the historic -1 argument before lower callbacks. */
 #define IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE (-3)
+/* A protected BTM scan has already confirmed its exact target before the
+ * source deauthentication leaves the hardware queue.  The IWN backend uses
+ * this one marker to enter S_SCAN and retire the source BSS without issuing
+ * a second, generic physical scan.  The next WCL carrier may consume only
+ * that still-confirmed target through the separate leaf-lock admission
+ * below; no generic backend callback may observe this private value. */
+#define IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD (-4)
 /*
  * The four direct-SAE hook fields are published and withdrawn under the
  * selected-BSS leaf.  Readers must take one coherent value snapshot before
@@ -211,9 +218,43 @@ extern	int ieee80211_wnm_bss_transition_candidate_disposition(
 	    struct ieee80211com *, const struct ieee80211_node *);
 extern	int ieee80211_wnm_bss_transition_active(
 	    struct ieee80211com *, u_int8_t *);
+extern	int ieee80211_wnm_bss_transition_scan_start(
+	    struct ieee80211com *);
+extern	void ieee80211_wnm_bss_transition_scan_end(
+	    struct ieee80211com *);
+extern	int ieee80211_wnm_bss_transition_scan_owns_admission(
+	    struct ieee80211com *);
+/* Copies the exact non-zero Neighbor Report channel only while the protected
+ * BTM caller is synchronously admitting its own physical scan. */
+extern	int ieee80211_wnm_bss_transition_target_channel(
+	    struct ieee80211com *, u_int8_t *);
 extern	int ieee80211_wnm_bss_transition_confirm_candidate(
 	    struct ieee80211com *, const struct ieee80211_node *, u_int8_t *,
 	    u_int8_t[IEEE80211_ADDR_LEN]);
+/*
+ * A protected accepted BTM leave owns two exact management descriptors.
+ * This explicit fence is independent of the current-BSS lifetime reference:
+ * completion of the response and deauthentication, not a global node
+ * refcount reaching zero, releases the driver-resident reconnect.
+ */
+#define IEEE80211_WNM_TX_FENCE_RESPONSE	0x01
+#define IEEE80211_WNM_TX_FENCE_DEAUTH	0x02
+extern	int ieee80211_wnm_bss_transition_tx_fence_arm(
+	    struct ieee80211com *, const struct ieee80211_node *, u_int8_t,
+	    const u_int8_t[IEEE80211_ADDR_LEN], u_int64_t *);
+extern	void ieee80211_wnm_bss_transition_tx_fence_cancel(
+	    struct ieee80211com *, u_int64_t);
+extern	int ieee80211_wnm_bss_transition_tx_fence_classify(
+	    struct ieee80211com *, const struct ieee80211_node *,
+	    const struct ieee80211_frame *, size_t, u_int64_t *, u_int8_t *);
+extern	int ieee80211_wnm_bss_transition_tx_fence_submit(
+	    struct ieee80211com *, u_int64_t, u_int8_t);
+extern	void ieee80211_wnm_bss_transition_tx_fence_submit_failed(
+	    struct ieee80211com *, struct ieee80211_node *, u_int64_t,
+	    u_int8_t);
+extern	void ieee80211_wnm_bss_transition_tx_fence_complete(
+	    struct ieee80211com *, struct ieee80211_node *, u_int64_t,
+	    u_int8_t);
 extern	int ieee80211_wnm_bss_transition_copy_retarget(
 	    struct ieee80211com *, const u_int8_t *, u_int8_t,
 	    u_int8_t[IEEE80211_ADDR_LEN]);
@@ -272,6 +313,11 @@ extern	int ieee80211_sae_wcl_request_scan_starting(struct ieee80211com *,
 	    u_int64_t *);
 extern	int ieee80211_sae_wcl_request_scan_started(struct ieee80211com *,
 	    u_int64_t);
+/* Promote one exact PENDING direct-SAE request without another physical scan
+ * only while the protected WNM record still confirms the same SSID+BSSID.
+ * This carries no credential or node and is false for every ordinary join. */
+extern	int ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
+	    struct ieee80211com *, u_int64_t);
 /* During the one direct pure-SAE scan handoff the historical ESS list must
  * not overwrite the already-published RSN/SAE policy before BSS selection.
  * HOLD is the pre-publication/PENDING-or-STARTING half: end_scan() must
@@ -363,7 +409,8 @@ extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 #define IEEE80211_NEWSTATE_BACKEND_ARG(_nstate, _arg) \
 	(((_nstate) == IEEE80211_S_SCAN && \
 	  ((_arg) == IEEE80211_NEWSTATE_ARG_SCAN_HOP || \
-	   (_arg) == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE)) ? -1 : (_arg))
+	   (_arg) == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE || \
+	   (_arg) == IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD)) ? -1 : (_arg))
 #define    ieee80211_new_state(_ic, _nstate, _arg) \
 do {    \
 if ((_ic)->ic_newstate_preflight == NULL || \

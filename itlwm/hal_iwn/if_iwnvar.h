@@ -202,6 +202,14 @@ struct iwn_tx_data {
     uint8_t  diag_subtype;
     uint16_t diag_auth_seq;
     uint8_t  diag_peer[6];
+
+    /*
+     * Public, descriptor-local ownership for an accepted 802.11v leave.
+     * The net80211 generation rejects stale completions; no node lifetime,
+     * credential, or raw management body is retained here.
+     */
+    uint64_t wnm_tx_fence_generation;
+    uint8_t  wnm_tx_fence_kind;
 };
 
 struct iwn_tx_ring {
@@ -389,6 +397,10 @@ struct iwn_scan_lease {
     u_int32_t       backend_generation;
     u_int8_t        owner;
     u_int8_t        phase;
+    /* Non-zero only when this exact physical command was admitted under a
+     * protected BTM Neighbor Report.  A request arriving after reservation
+     * cannot retag or truncate the already-owned scan. */
+    u_int8_t        wnm_target_channel;
     bool            command_submitted;
     bool            abort_requested;
     /* An upper lifecycle may withdraw its completion ticket while the radio
@@ -609,6 +621,8 @@ struct iwn_softc {
      */
     IOSimpleLock       *sc_sae_wcl_credential_lock;
     bool                sc_sae_wcl_credential_staged;
+    bool                sc_sae_wcl_credential_pending;
+    bool                sc_sae_wcl_credential_active;
     bool                sc_sae_wcl_credential_cancel_valid;
     uint64_t            sc_sae_wcl_credential_cancel_through_generation;
     struct ItlSaeWclCredentialV1 sc_sae_wcl_credential;
