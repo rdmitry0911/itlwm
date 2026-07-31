@@ -2655,6 +2655,82 @@ iwm_ap_send_local_eapol(ItlIwm *that,
     return 0;
 }
 
+static int
+iwm_ap_update_power_save_tim(ItlIwm *that, struct iwm_softc *sc,
+                             struct ItlApFirmwareRuntime *runtime, bool set)
+{
+    bool changed = false;
+    int error = itl_ap_power_save_set_tim(runtime, set, &changed);
+    if (error == 0 && changed)
+        error = that->iwm_ap_send_beacon_template(sc, runtime);
+    if (error != 0 && changed) {
+        bool ignored = false;
+        (void)itl_ap_power_save_set_tim(runtime, !set, &ignored);
+    }
+    return error;
+}
+
+static int
+iwm_ap_modify_client_power_state(ItlIwm *that, struct iwm_softc *sc,
+                                 struct ItlApFirmwareRuntime *runtime,
+                                 bool awake, bool moreData)
+{
+    if (runtime == NULL || !runtime->clientStationInstalled)
+        return EINVAL;
+    struct iwm_add_sta_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.add_modify = IWM_STA_MODE_MODIFY;
+    command.sta_id = runtime->firstClientStaId;
+    command.mac_id_n_color = htole32(IWM_FW_CMD_ID_AND_COLOR(
+        runtime->macId, runtime->macColor));
+    if (awake) {
+        /* Linux iwlwifi clears STA_FLG_PS on STA_NOTIFY_AWAKE. */
+        command.station_flags_msk = htole32(IWM_STA_FLG_PS);
+    } else {
+        /* Permit exactly the one frame released by this PS-Poll. */
+        command.modify_mask = IWM_STA_MODIFY_SLEEPING_STA_TX_COUNT;
+        command.sleep_tx_count = htole16(1);
+        command.sleep_state_flags = IWM_STA_SLEEP_STATE_PS_POLL |
+            (moreData ? IWM_STA_SLEEP_STATE_MOREDATA : 0);
+    }
+    uint32_t status = IWM_ADD_STA_SUCCESS;
+    int error = that->iwm_send_cmd_pdu_status(
+        sc, IWM_ADD_STA, sizeof(command), &command, &status);
+    if (error == 0 &&
+        (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
+        error = EIO;
+    return error;
+}
+
+static int
+iwm_ap_deliver_power_save_packet(ItlIwm *that, struct iwm_softc *sc,
+                                 struct ItlApFirmwareRuntime *runtime,
+                                 bool psPoll)
+{
+    mbuf_t packet = itl_ap_power_save_dequeue(runtime);
+    if (packet == NULL)
+        return 0;
+    mbuf_t wirePacket = NULL;
+    const bool moreData = runtime->powerSaveQueueCount != 0;
+    int error = psPoll ? iwm_ap_modify_client_power_state(
+        that, sc, runtime, false, moreData) : 0;
+    if (error == 0)
+        error = itl_ap_open_encap_data(
+            runtime, packet, moreData, &wirePacket);
+    if (error == 0)
+        error = that->iwm_ap_send_raw_frame(sc, wirePacket,
+            static_cast<uint8_t>(runtime->clientQueueId),
+            runtime->firstClientStaId);
+    if (error != 0) {
+        if (wirePacket != NULL)
+            mbuf_freem(wirePacket);
+        itl_ap_power_save_requeue_front(runtime, packet);
+        return error;
+    }
+    mbuf_freem(packet);
+    return 0;
+}
+
 static void
 iwm_ap_publish_station(struct iwm_softc *sc,
                        const struct ItlApFirmwareRuntime *runtime, int event,
@@ -2756,6 +2832,25 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
         return false;
 
     int error = classifyError;
+    if (error == 0 && result.powerSaveObserved) {
+        const bool wasPowerSave = apRuntime.clientPowerSave;
+        if (wasPowerSave && !result.powerSave)
+            error = iwm_ap_modify_client_power_state(
+                this, sc, &apRuntime, true, false);
+        if (error == 0)
+            apRuntime.clientPowerSave = result.powerSave;
+        if (error == 0 && wasPowerSave &&
+            !apRuntime.clientPowerSave) {
+            while (apRuntime.powerSaveQueueCount != 0 && error == 0)
+                error = iwm_ap_deliver_power_save_packet(
+                    this, sc, &apRuntime, false);
+            const int timError = iwm_ap_update_power_save_tim(
+                this, sc, &apRuntime,
+                apRuntime.powerSaveQueueCount != 0);
+            if (error == 0)
+                error = timError;
+        }
+    }
     if (error == 0 && result.disposition == kItlApOpenRxReply) {
         const struct ieee80211_frame *reply =
             reinterpret_cast<const struct ieee80211_frame *>(result.reply);
@@ -2775,6 +2870,12 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
                 apRuntime.broadcastStaId);
         if (error != 0 && response != NULL)
             mbuf_freem(response);
+        if (result.timChanged) {
+            const int timError =
+                iwm_ap_send_beacon_template(sc, &apRuntime);
+            if (error == 0)
+                error = timError;
+        }
         if (error == 0 && subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
             IEEE80211_ADDR_COPY(apRuntime.clientMac, result.station);
             apRuntime.clientAuthenticated = result.authenticationComplete;
@@ -2793,6 +2894,14 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
             apRuntime.clientAssociationPending = true;
             iwm_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
         }
+    } else if (error == 0 &&
+               result.disposition == kItlApOpenRxPsPoll) {
+        error = iwm_ap_deliver_power_save_packet(
+            this, sc, &apRuntime, true);
+        const int timError = iwm_ap_update_power_save_tim(
+            this, sc, &apRuntime, apRuntime.powerSaveQueueCount != 0);
+        if (error == 0)
+            error = timError;
     } else if (error == 0 && result.disposition == kItlApOpenRxData) {
         bool localEapol = false;
         if (itl_ap_client_uses_local_sae(&apRuntime) &&
@@ -2888,6 +2997,9 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
         }
     } else if (error == 0 &&
                result.disposition == kItlApOpenRxDisconnect) {
+        if (apRuntime.timSet)
+            (void)iwm_ap_update_power_save_tim(
+                this, sc, &apRuntime, false);
         if (apRuntime.clientStationInstalled) {
             if (apRuntime.clientAssociated)
                 iwm_ap_publish_station(sc, &apRuntime,

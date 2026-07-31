@@ -79,11 +79,40 @@ struct ItlApFirmwareRuntime {
     size_t clientRsnIELength;
     uint8_t gtkKeyId;
     uint8_t igtkKeyId;
+    enum { kPowerSaveQueueLength = 16 };
+    mbuf_t powerSaveQueue[kPowerSaveQueueLength];
+    uint8_t powerSaveQueueHead;
+    uint8_t powerSaveQueueTail;
+    uint8_t powerSaveQueueCount;
+    bool clientPowerSave;
+    bool timSet;
     bool samePhyAsPrimary;
     bool replayAfterWake;
 };
 
 static constexpr uint32_t kItlApLocalAuthMagic = 0x41505333U;
+
+static inline void
+itl_ap_firmware_power_save_purge(struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL)
+        return;
+    while (runtime->powerSaveQueueCount != 0) {
+        mbuf_t packet =
+            runtime->powerSaveQueue[runtime->powerSaveQueueHead];
+        runtime->powerSaveQueue[runtime->powerSaveQueueHead] = NULL;
+        runtime->powerSaveQueueHead = static_cast<uint8_t>(
+            (runtime->powerSaveQueueHead + 1) %
+            ItlApFirmwareRuntime::kPowerSaveQueueLength);
+        runtime->powerSaveQueueCount--;
+        if (packet != NULL)
+            mbuf_freem(packet);
+    }
+    runtime->powerSaveQueueHead = 0;
+    runtime->powerSaveQueueTail = 0;
+    runtime->clientPowerSave = false;
+    runtime->timSet = false;
+}
 
 static inline void
 itl_ap_firmware_sae_reset(struct ItlApFirmwareRuntime *runtime)
@@ -108,6 +137,7 @@ itl_ap_firmware_client_crypto_reset(struct ItlApFirmwareRuntime *runtime)
     explicit_bzero(runtime->clientPairwiseKey,
                    sizeof(runtime->clientPairwiseKey));
     explicit_bzero(runtime->clientRxPn, sizeof(runtime->clientRxPn));
+    itl_ap_firmware_power_save_purge(runtime);
     runtime->localRsnState = 0;
     runtime->replayCounter = 0;
     explicit_bzero(runtime->anonce, sizeof(runtime->anonce));
@@ -121,6 +151,8 @@ itl_ap_firmware_runtime_reset(struct ItlApFirmwareRuntime *runtime)
         return;
     if (runtime->localAuthMagic == kItlApLocalAuthMagic)
         itl_ap_firmware_sae_reset(runtime);
+    if (runtime->localAuthMagic == kItlApLocalAuthMagic)
+        itl_ap_firmware_power_save_purge(runtime);
     explicit_bzero(runtime, sizeof(*runtime));
     runtime->localAuthMagic = kItlApLocalAuthMagic;
     runtime->stage = kItlApFirmwareResourceIdle;

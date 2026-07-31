@@ -24,6 +24,8 @@ enum ItlApOpenRxDisposition : uint8_t {
     kItlApOpenRxReply,
     kItlApOpenRxAssociate,
     kItlApOpenRxData,
+    kItlApOpenRxPowerState,
+    kItlApOpenRxPsPoll,
     kItlApOpenRxDisconnect,
 };
 
@@ -36,6 +38,9 @@ struct ItlApOpenRxResult {
     bool authenticationComplete;
     bool authenticationReplacesAssociation;
     uint8_t departingStation[IEEE80211_ADDR_LEN];
+    bool powerSaveObserved;
+    bool powerSave;
+    bool timChanged;
 };
 
 enum ItlApLocalRsnState : uint8_t {
@@ -233,6 +238,112 @@ itl_ap_key_rsc(const struct ItlHalApKey *key)
 }
 
 static inline bool
+itl_ap_power_save_should_buffer(const struct ItlApFirmwareRuntime *runtime,
+                                mbuf_t ethernetPacket)
+{
+    if (runtime == NULL || ethernetPacket == NULL ||
+        !runtime->clientPowerSave || !runtime->clientAssociated ||
+        mbuf_pkthdr_len(ethernetPacket) < ETHER_HDR_LEN)
+        return false;
+    struct ether_header ethernet;
+    if (mbuf_copydata(ethernetPacket, 0, sizeof(ethernet), &ethernet) != 0)
+        return false;
+    return !IEEE80211_IS_MULTICAST(ethernet.ether_dhost) &&
+        IEEE80211_ADDR_EQ(ethernet.ether_dhost, runtime->clientMac) &&
+        ethernet.ether_type != htons(ETHERTYPE_PAE);
+}
+
+static inline int
+itl_ap_power_save_enqueue(struct ItlApFirmwareRuntime *runtime,
+                          mbuf_t packet)
+{
+    if (runtime == NULL || packet == NULL)
+        return EINVAL;
+    if (runtime->powerSaveQueueCount >=
+        ItlApFirmwareRuntime::kPowerSaveQueueLength)
+        return ENOBUFS;
+    runtime->powerSaveQueue[runtime->powerSaveQueueTail] = packet;
+    runtime->powerSaveQueueTail = static_cast<uint8_t>(
+        (runtime->powerSaveQueueTail + 1) %
+        ItlApFirmwareRuntime::kPowerSaveQueueLength);
+    runtime->powerSaveQueueCount++;
+    return 0;
+}
+
+static inline mbuf_t
+itl_ap_power_save_dequeue(struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || runtime->powerSaveQueueCount == 0)
+        return NULL;
+    mbuf_t packet = runtime->powerSaveQueue[runtime->powerSaveQueueHead];
+    runtime->powerSaveQueue[runtime->powerSaveQueueHead] = NULL;
+    runtime->powerSaveQueueHead = static_cast<uint8_t>(
+        (runtime->powerSaveQueueHead + 1) %
+        ItlApFirmwareRuntime::kPowerSaveQueueLength);
+    runtime->powerSaveQueueCount--;
+    return packet;
+}
+
+static inline void
+itl_ap_power_save_requeue_front(struct ItlApFirmwareRuntime *runtime,
+                                mbuf_t packet)
+{
+    if (runtime == NULL || packet == NULL ||
+        runtime->powerSaveQueueCount >=
+            ItlApFirmwareRuntime::kPowerSaveQueueLength)
+        return;
+    runtime->powerSaveQueueHead = static_cast<uint8_t>(
+        (runtime->powerSaveQueueHead +
+         ItlApFirmwareRuntime::kPowerSaveQueueLength - 1) %
+        ItlApFirmwareRuntime::kPowerSaveQueueLength);
+    runtime->powerSaveQueue[runtime->powerSaveQueueHead] = packet;
+    runtime->powerSaveQueueCount++;
+}
+
+static inline int
+itl_ap_power_save_set_tim(struct ItlApFirmwareRuntime *runtime, bool set,
+                          bool *changed)
+{
+    if (changed != NULL)
+        *changed = false;
+    if (runtime == NULL || changed == NULL || runtime->clientAid == 0 ||
+        runtime->config.beaconTemplateLength <
+            sizeof(struct ieee80211_frame) + 12)
+        return EINVAL;
+    size_t offset = sizeof(struct ieee80211_frame) + 12;
+    while (offset + 2 <= runtime->config.beaconTemplateLength) {
+        const size_t elementLength = runtime->beacon[offset + 1];
+        if (offset + 2 + elementLength >
+            runtime->config.beaconTemplateLength)
+            return EINVAL;
+        if (runtime->beacon[offset] == IEEE80211_ELEMID_TIM) {
+            if (elementLength < 4)
+                return EINVAL;
+            const size_t bitmapOffset = runtime->beacon[offset + 4] & 0xfe;
+            const size_t aidByte = runtime->clientAid >> 3;
+            const size_t bitmapLength = elementLength - 3;
+            if (aidByte < bitmapOffset ||
+                aidByte >= bitmapOffset + bitmapLength)
+                return ENOTSUP;
+            uint8_t *bitmap = runtime->beacon + offset + 5 +
+                aidByte - bitmapOffset;
+            const uint8_t previous = *bitmap;
+            if (set)
+                *bitmap |= 1U << (runtime->clientAid & 7);
+            else
+                *bitmap &= static_cast<uint8_t>(
+                    ~(1U << (runtime->clientAid & 7)));
+            runtime->timSet = (*bitmap &
+                (1U << (runtime->clientAid & 7))) != 0;
+            *changed = previous != *bitmap;
+            return 0;
+        }
+        offset += 2 + elementLength;
+    }
+    return ENOENT;
+}
+
+static inline bool
 itl_ap_open_is_running(const struct ItlApFirmwareRuntime *runtime)
 {
     return runtime != NULL &&
@@ -345,8 +456,12 @@ itl_ap_open_build_probe_response(const struct ItlApFirmwareRuntime *runtime,
 }
 
 static inline void
-itl_ap_open_begin_client_auth(struct ItlApFirmwareRuntime *runtime)
+itl_ap_open_begin_client_auth(struct ItlApFirmwareRuntime *runtime,
+                              struct ItlApOpenRxResult *result)
 {
+    if (runtime->timSet && result != NULL)
+        (void)itl_ap_power_save_set_tim(
+            runtime, false, &result->timChanged);
     runtime->clientAssociationPending = false;
     runtime->clientAuthenticated = false;
     runtime->clientAssociated = false;
@@ -399,7 +514,7 @@ itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
             IEEE80211_ADDR_COPY(result->departingStation,
                                 runtime->clientMac);
             itl_ap_firmware_sae_reset(runtime);
-            itl_ap_open_begin_client_auth(runtime);
+            itl_ap_open_begin_client_auth(runtime, result);
             responseStatus = ieee80211_sae_ap_begin_hnp(
                 runtime->config.bssid, request->i_addr2,
                 runtime->credential, runtime->config.credentialLength,
@@ -438,7 +553,7 @@ itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
             runtime->clientAssociated;
         IEEE80211_ADDR_COPY(result->departingStation,
                             runtime->clientMac);
-        itl_ap_open_begin_client_auth(runtime);
+        itl_ap_open_begin_client_auth(runtime, result);
         IEEE80211_ADDR_COPY(runtime->clientMac, request->i_addr2);
         responseTransaction = IEEE80211_AUTH_OPEN_RESPONSE;
         authenticationComplete = true;
@@ -632,9 +747,13 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
         !IEEE80211_ADDR_EQ(wh->i_addr2, runtime->clientMac))
         return 0;
 
-    result->disposition = kItlApOpenRxConsumed;
-    if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_NODATA) != 0)
+    result->powerSaveObserved = true;
+    result->powerSave =
+        (wh->i_fc[1] & IEEE80211_FC1_PWR_MGT) != 0;
+    if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_NODATA) != 0) {
+        result->disposition = kItlApOpenRxPowerState;
         return 0;
+    }
     const size_t headerLength = ieee80211_get_hdrlen(wh);
     if (headerLength < sizeof(*wh) ||
         frameLength < headerLength + LLC_SNAPFRAMELEN)
@@ -712,7 +831,8 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
 
 static inline int
 itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
-                       mbuf_t ethernetPacket, mbuf_t *wirePacket)
+                       mbuf_t ethernetPacket, bool moreData,
+                       mbuf_t *wirePacket)
 {
     if (!itl_ap_open_is_running(runtime) || ethernetPacket == NULL ||
         wirePacket == NULL || !runtime->clientAssociated)
@@ -751,7 +871,8 @@ itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
         reinterpret_cast<struct ieee80211_frame *>(bytes);
     wh->i_fc[0] = IEEE80211_FC0_VERSION_0 | IEEE80211_FC0_TYPE_DATA;
     wh->i_fc[1] = IEEE80211_FC1_DIR_FROMDS |
-        (secure && !eapol ? IEEE80211_FC1_PROTECTED : 0);
+        (secure && !eapol ? IEEE80211_FC1_PROTECTED : 0) |
+        (moreData ? IEEE80211_FC1_MORE_DATA : 0);
     IEEE80211_ADDR_COPY(wh->i_addr1, ethernet.ether_dhost);
     IEEE80211_ADDR_COPY(wh->i_addr2, runtime->config.bssid);
     IEEE80211_ADDR_COPY(wh->i_addr3, ethernet.ether_shost);
@@ -1065,7 +1186,30 @@ itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
 {
     itl_ap_open_rx_result_reset(result);
     if (!itl_ap_open_is_running(runtime) || packet == NULL ||
-        frameLength < sizeof(struct ieee80211_frame))
+        frameLength < 2)
+        return 0;
+    const uint8_t *frameControl = mtod(packet, const uint8_t *);
+    if ((frameControl[0] & IEEE80211_FC0_TYPE_MASK) ==
+            IEEE80211_FC0_TYPE_CTL &&
+        (frameControl[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_PS_POLL &&
+        frameLength >= sizeof(struct ieee80211_frame_pspoll)) {
+        const struct ieee80211_frame_pspoll *poll =
+            mtod(packet, const struct ieee80211_frame_pspoll *);
+        if (IEEE80211_ADDR_EQ(poll->i_bssid, runtime->config.bssid)) {
+            result->disposition = kItlApOpenRxConsumed;
+            if (runtime->clientAssociated &&
+                IEEE80211_ADDR_EQ(poll->i_ta, runtime->clientMac) &&
+                (LE_READ_2(poll->i_aid) & 0x3fff) == runtime->clientAid) {
+                result->disposition = kItlApOpenRxPsPoll;
+                result->powerSaveObserved = true;
+                result->powerSave = true;
+                IEEE80211_ADDR_COPY(result->station, poll->i_ta);
+            }
+            return 0;
+        }
+    }
+    if (frameLength < sizeof(struct ieee80211_frame))
         return 0;
     const struct ieee80211_frame *wh =
         mtod(packet, const struct ieee80211_frame *);

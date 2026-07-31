@@ -201,8 +201,34 @@ stopAPMode()
 IOReturn ItlIwm::
 transmitAPData(mbuf_t packet)
 {
+    if (itl_ap_power_save_should_buffer(&apRuntime, packet)) {
+        const bool queueWasEmpty = apRuntime.powerSaveQueueCount == 0;
+        const int queueError =
+            itl_ap_power_save_enqueue(&apRuntime, packet);
+        if (queueError != 0)
+            return queueError == ENOBUFS ? kIOReturnNoResources :
+                                           kIOReturnBadArgument;
+        bool changed = false;
+        int timError =
+            itl_ap_power_save_set_tim(&apRuntime, true, &changed);
+        if (timError == 0 && changed)
+            timError = iwm_ap_send_beacon_template(&com, &apRuntime);
+        if (timError != 0 && changed) {
+            bool ignored = false;
+            (void)itl_ap_power_save_set_tim(&apRuntime, false, &ignored);
+            XYLog("%s: IWM AP power-save TIM arm failed\n",
+                  DEVNAME(&com));
+        }
+        if (timError != 0 && queueWasEmpty) {
+            (void)itl_ap_power_save_dequeue(&apRuntime);
+            return timError == ENOBUFS ? kIOReturnNoResources :
+                                         kIOReturnError;
+        }
+        return kIOReturnSuccess;
+    }
     mbuf_t wirePacket = NULL;
-    int error = itl_ap_open_encap_data(&apRuntime, packet, &wirePacket);
+    int error = itl_ap_open_encap_data(
+        &apRuntime, packet, false, &wirePacket);
     if (error != 0)
         return error == ENOBUFS ? kIOReturnNoResources : kIOReturnNotReady;
     const struct ieee80211_frame *wh =
@@ -278,6 +304,12 @@ sendAPStationCommand(const struct ItlHalApStationCommand *command)
     if (command == NULL)
         return kIOReturnBadArgument;
     if (command->command == kItlHalApStationDisassociate) {
+        if (apRuntime.timSet) {
+            bool changed = false;
+            if (itl_ap_power_save_set_tim(
+                    &apRuntime, false, &changed) == 0 && changed)
+                (void)iwm_ap_send_beacon_template(&com, &apRuntime);
+        }
         apRuntime.clientAssociationPending = false;
         apRuntime.clientAuthenticated = false;
         apRuntime.clientAssociated = false;
