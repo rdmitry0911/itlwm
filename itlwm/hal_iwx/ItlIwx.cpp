@@ -6876,8 +6876,8 @@ iwx_rx_bmiss(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
     missed = le32toh(mbn->consec_missed_beacons_since_last_rx);
     if (missed > ic->ic_bmissthres && ic->ic_mgt_timer == 0) {
         if (ic->ic_if.if_flags & IFF_DEBUG) {
-            XYLog("%s: receiving no beacons from %s; checking if "
-                  "this AP is still responding to probe requests\n",
+            XYLog("%s: receiving no beacons from %s; leaving the "
+                  "lost BSS\n",
                   DEVNAME(sc), ether_sprintf(ic->ic_bss->ni_macaddr));
             /* Dump driver status (TX and RX rings) while we're here. */
             XYLog("%s driver queue status:\n", __FUNCTION__);
@@ -6900,13 +6900,16 @@ iwx_rx_bmiss(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
                   ieee80211_state_name[sc->sc_ic.ic_state]);
         }
         /*
-         * Rather than go directly to scan state, try to send a
-         * directed probe request first. If that fails then the
-         * state machine will drop us into scanning after timing
-         * out waiting for a probe response.
+         * Match Tahoe's firmware "Net Beacons Lost" edge: publish the
+         * independent WCL reason while RUN still owns this BSS, then
+         * leave immediately.  The historical directed probe adds a
+         * management-watchdog delay after firmware has already crossed
+         * its consecutive-missed-beacon threshold.
          */
-        IEEE80211_SEND_MGMT(ic, ic->ic_bss,
-                            IEEE80211_FC0_SUBTYPE_PROBE_REQ, 0);
+        if (ic->ic_event_handler != NULL)
+            (*ic->ic_event_handler)(
+                ic, IEEE80211_EVT_STA_BEACON_LOSS, NULL);
+        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
     }
     
 }
