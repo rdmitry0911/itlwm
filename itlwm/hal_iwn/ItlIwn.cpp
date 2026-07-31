@@ -91,6 +91,11 @@ static void iwn_scan_lease_retire_after_hardware_stop(struct iwn_softc *);
 static bool iwn_scan_lease_live_locked(const struct iwn_softc *);
 static bool iwn_scan_lease_owner_is_wcl(u_int8_t);
 static void iwn_wcl_initial_scan_pending_clear_locked(struct iwn_softc *);
+static bool iwn_scan_lease_mark_abort(
+    struct iwn_softc *, enum iwn_scan_lease_owner, u_int64_t,
+    u_int64_t *, bool *);
+static void iwn_scan_lease_abort_submission_failed(
+    struct iwn_softc *, u_int64_t);
 
 /* The laboratory switch exposes diagnostic observation and stimulus only.
  * Product WCL SAE/PMF admission is tied separately to the Tahoe in-kext
@@ -4018,6 +4023,8 @@ enum {
 bool ItlIwn::attach(IOPCIDevice *device)
 {
     /* iwn_attach() may fail after publishing an event source; detach owns it. */
+    com.sc_scan_lease_lock = NULL;
+    com.sc_ap_transition_scan_blocked = false;
     fSaeTxGate = NULL;
     apSae = NULL;
     apSaePmksaValid = false;
@@ -4073,6 +4080,7 @@ bool ItlIwn::iwn_ap_sae_pmksa_matches(
 
 void ItlIwn::iwn_reset_ap_runtime_state()
 {
+    iwn_set_ap_scan_transition_blocked(false);
     iwn_purge_ap_ps_queue();
     iwn_reset_ap_sae();
     apFirmwareTransitionActive = false;
@@ -4111,6 +4119,100 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apGtkKid = 1;
     apIgtkKid = IWN_AP_IGTK_KEY_ID;
     apTimSet = false;
+}
+
+void ItlIwn::iwn_set_ap_scan_transition_blocked(bool blocked)
+{
+    struct iwn_softc *sc = &com;
+
+    if (sc->sc_scan_lease_lock == NULL) {
+        sc->sc_ap_transition_scan_blocked = blocked;
+        return;
+    }
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    sc->sc_ap_transition_scan_blocked = blocked;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+}
+
+IOReturn ItlIwn::iwn_quiesce_scan_for_ap_transition()
+{
+    struct iwn_softc *sc = &com;
+    u_int64_t serial = 0;
+    bool submitAbort = false;
+    bool scanOwned = false;
+
+    if (sc->sc_scan_lease_lock == NULL)
+        return kIOReturnNotReady;
+
+    /*
+     * AppleBCMWLAN's recovered HostAP preamble disables BG-scan private-MAC
+     * programming before issuing the AP firmware commands and does not
+     * reject HostAP merely because a scan is active. DVM has a stricter
+     * hardware boundary: WIPAN_RXON must not cross an active SCAN command.
+     * Make HostAP the next radio owner, abort the exact current lease, and
+     * wait for its native STOP_SCAN terminal instead of returning Busy to
+     * CoreWLAN or inventing a timer retry.
+     */
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    sc->sc_ap_transition_scan_blocked = true;
+    scanOwned = iwn_scan_lease_live_locked(sc);
+    const bool scanning =
+        scanOwned || (sc->sc_flags & IWN_FLAG_SCANNING) != 0;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    if (!scanning)
+        return kIOReturnSuccess;
+
+    if (!scanOwned ||
+        !iwn_scan_lease_mark_abort(sc, IWN_SCAN_LEASE_NONE, 0,
+                                   &serial, &submitAbort)) {
+        iwn_set_ap_scan_transition_blocked(false);
+        XYLog("%s: AP transition cannot claim active scan owner\n",
+              sc->sc_dev.dv_xname);
+        return kIOReturnBusy;
+    }
+    if (submitAbort &&
+        iwn_cmd(sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1) != 0) {
+        iwn_scan_lease_abort_submission_failed(sc, serial);
+        iwn_set_ap_scan_transition_blocked(false);
+        XYLog("%s: AP transition scan abort submission failed\n",
+              sc->sc_dev.dv_xname);
+        return kIOReturnError;
+    }
+
+    IOCommandGate *gate = getMainCommandGate();
+    IOWorkLoop *workLoop = getMainWorkLoop();
+    if (gate == NULL || workLoop == NULL || !workLoop->inGate()) {
+        iwn_set_ap_scan_transition_blocked(false);
+        return kIOReturnNotReady;
+    }
+
+    AbsoluteTime deadline;
+    clock_interval_to_deadline(
+        2, kSecondScale, reinterpret_cast<uint64_t *>(&deadline));
+    IOReturn sleepResult = THREAD_AWAKENED;
+    while ((sc->sc_flags & IWN_FLAG_SCANNING) != 0) {
+        if (sleepResult == THREAD_TIMED_OUT)
+            break;
+        sleepResult = gate->commandSleep(
+            &sc->sc_ap_transition_scan_blocked,
+            deadline, THREAD_ABORTSAFE);
+        if (sleepResult != THREAD_AWAKENED &&
+            sleepResult != THREAD_TIMED_OUT)
+            break;
+    }
+    const bool scanStopped =
+        (sc->sc_flags & IWN_FLAG_SCANNING) == 0;
+
+    if (!scanStopped) {
+        iwn_set_ap_scan_transition_blocked(false);
+        XYLog("%s: AP transition scan terminal wait result=%d\n",
+              sc->sc_dev.dv_xname, sleepResult);
+        return sleepResult == THREAD_TIMED_OUT ?
+            kIOReturnTimeout : kIOReturnAborted;
+    }
+    XYLog("%s: AP transition owns radio after scan terminal\n",
+          sc->sc_dev.dv_xname);
+    return kIOReturnSuccess;
 }
 
 void ItlIwn::iwn_purge_ap_ps_queue()
@@ -7031,6 +7133,7 @@ void ItlIwn::iwn_note_ap_firmware_event(int command, int notification)
     } else if (apFirmwareStage == IWN_AP_STAGE_FINAL_POWER &&
                command == IWN_CMD_SET_POWER_MODE) {
         apFirmwareStage = IWN_AP_STAGE_RUNNING;
+        iwn_set_ap_scan_transition_blocked(false);
         XYLog("%s: AP PAN context running after DVM RXON/beacon/EDCA "
               "transition\n", com.sc_dev.dv_xname);
     }
@@ -7080,11 +7183,10 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
         (IFF_UP | IFF_RUNNING)) {
         return kIOReturnNotReady;
     }
-    if ((com.sc_flags & IWN_FLAG_SCANNING) != 0) {
-        XYLog("%s: AP transition deferred while scan is active\n",
-              com.sc_dev.dv_xname);
-        return kIOReturnBusy;
-    }
+    const IOReturn scanResult =
+        iwn_quiesce_scan_for_ap_transition();
+    if (scanResult != kIOReturnSuccess)
+        return scanResult;
     /*
      * DVM exposes APSTA as two firmware contexts: the existing net80211 STA
      * remains the BSS context while this role-7 interface owns PAN.  Do not
@@ -7182,7 +7284,7 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
     error = iwn_cmd(&com, IWN_CMD_WIPAN_RXON,
                     &deactivateRxon, com.rxonsz, 1);
     if (error != 0) {
-        apFirmwareTransitionActive = false;
+        iwn_reset_ap_runtime_state();
         XYLog("%s: AP PAN deactivation queue failed error=%d\n",
               com.sc_dev.dv_xname, error);
         return kIOReturnError;
@@ -7206,6 +7308,10 @@ IOReturn ItlIwn::stopAPMode()
           com.sc_dev.dv_xname,
           static_cast<unsigned>(apFirmwareTransitionActive),
           static_cast<unsigned>(apFirmwareStage));
+    const IOReturn scanResult =
+        iwn_quiesce_scan_for_ap_transition();
+    if (scanResult != kIOReturnSuccess)
+        return scanResult;
     iwn_clear_ap_sae_pmksa();
     if (!apFirmwareTransitionActive ||
         apFirmwareStage == IWN_AP_STAGE_IDLE) {
@@ -7234,6 +7340,7 @@ IOReturn ItlIwn::stopAPMode()
                               &deactivateRxon, com.rxonsz, 1);
     if (error != 0) {
         apFirmwareStage = IWN_AP_STAGE_RUNNING;
+        iwn_set_ap_scan_transition_blocked(false);
         return kIOReturnError;
     }
     return kIOReturnSuccess;
@@ -7380,6 +7487,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_engine_runtime_enabled = false;
     sc->sc_scan_lease_lock = NULL;
     explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
+    sc->sc_ap_transition_scan_blocked = false;
     sc->sc_sae_wcl_admission_reserved = false;
     sc->sc_scan_lease_next_serial = 0;
     sc->sc_scan_lease_replay_task_ready = false;
@@ -7537,6 +7645,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     }
     explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
     sc->sc_scan_lease.phase = IWN_SCAN_LEASE_IDLE;
+    sc->sc_ap_transition_scan_blocked = false;
     sc->sc_sae_wcl_admission_reserved = false;
     sc->sc_scan_lease_next_serial = 0;
     __atomic_store_n(&sc->sc_scan_lease_replay_task_admission_state,
@@ -9289,6 +9398,7 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
             required_initial_handoff_serial;
     if (iwn_scan_lease_live_locked(sc) ||
         (sc->sc_flags & IWN_FLAG_SCANNING) != 0 ||
+        sc->sc_ap_transition_scan_blocked ||
         (sc->sc_sae_wcl_admission_reserved && !direct_sae_scan) ||
         (required_initial_handoff_serial != 0 && !exact_initial_pending) ||
         (initial_pending && !exact_initial_pending)) {
@@ -11894,7 +12004,18 @@ iwn_notif_intr(struct iwn_softc *sc)
             if (terminal.wcl && !terminal.wcl_foreground)
                 __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once,
                                  1, __ATOMIC_RELEASE);
+            /*
+             * HostAP may be sleeping for this exact physical terminal while
+             * it owns the controller gate. Wake it before end_scan() enters
+             * the upper event callback, which may need that same gate.
+             */
             sc->sc_flags &= ~(IWN_FLAG_SCANNING | IWN_FLAG_BGSCAN);
+            IOCommandGate *gate = getMainCommandGate();
+            if (gate != NULL) {
+                gate->commandWakeup(
+                    &sc->sc_ap_transition_scan_blocked,
+                    /*oneThread=*/false);
+            }
             if (initial_handoff)
                 ieee80211_end_scan_controlled(ifp,
                     IEEE80211_SCAN_COMPLETION_WCL_HANDOFF);

@@ -90,6 +90,8 @@ public:
     IOReturn stopAPMode() override;
     IOReturn transmitAPData(mbuf_t packet) override;
     void iwn_reset_ap_runtime_state();
+    void iwn_set_ap_scan_transition_blocked(bool);
+    IOReturn iwn_quiesce_scan_for_ap_transition();
     int iwn_build_ap_rxon(struct iwn_rxon *, const struct ItlHalApConfig *);
     int iwn_send_ap_pan_params(const struct ItlHalApConfig *);
     int iwn_send_ap_stop_pan_params();
