@@ -15430,7 +15430,7 @@ iwn_get_active_dwell_time(struct iwn_softc *sc,
 }
 
 /*
- * Limit the total dwell time to 85% of the beacon interval.
+ * Limit the total dwell time to the live firmware contexts' beacon budget.
  *
  * Returns the dwell time in milliseconds.
  */
@@ -15445,12 +15445,44 @@ iwn_limit_dwell(struct iwn_softc *sc, uint16_t dwell_time)
     if (ni != NULL)
         bintval = ni->ni_intval;
 
+    const bool apContextRunning =
+        apFirmwareTransitionActive &&
+        apFirmwareStage == IWN_AP_STAGE_RUNNING;
+    if (apContextRunning) {
+        uint16_t limits[2];
+        unsigned activeContexts = 0;
+
+        /*
+         * Match DVM's iwl_limit_dwell().  CP has a live TBTT timer even
+         * before a station joins it, so an operational PAN/AP context is a
+         * dwell constraint in its own right.  The BSS context adds a second
+         * constraint only while its actual RXON carrier is associated; the
+         * net80211 state may already be SCAN during a foreground reconnect.
+         */
+        if ((le32toh(sc->rxon.filter) & IWN_FILTER_BSS) != 0 &&
+            IEEE80211_AID(le16toh(sc->rxon.associd)) != 0) {
+            limits[activeContexts++] = bintval > 0 ?
+                static_cast<uint16_t>(bintval) : IWN_PASSIVE_DWELL_BASE;
+        }
+        limits[activeContexts++] = apFirmwareConfig.beaconInterval != 0 ?
+            apFirmwareConfig.beaconInterval : IWN_PASSIVE_DWELL_BASE;
+
+        for (unsigned index = 0; index < activeContexts; index++) {
+            const int available =
+                (static_cast<int>(limits[index]) * 98) / 100 -
+                IWN_CHANNEL_TUNE_TIME * 2;
+            if (available > 0) {
+                const uint16_t limit = static_cast<uint16_t>(
+                    available / static_cast<int>(activeContexts));
+                dwell_time = MIN(dwell_time, limit);
+            }
+        }
+        return dwell_time;
+    }
+
     /*
-     * If it's non-zero, we should calculate the minimum of
-     * it and the DWELL_BASE.
-     *
-     * XXX Yes, the math should take into account that bintval
-     * is 1.024mS, not 1mS..
+     * Preserve the established single-context OpenBSD policy when HostAP is
+     * not active.  XXX bintval is TU (1.024ms), not exactly milliseconds.
      */
     if (ic->ic_state == IEEE80211_S_RUN && bintval > 0)
         return (MIN(IWN_PASSIVE_DWELL_BASE, ((bintval * 85) / 100)));
@@ -15763,14 +15795,24 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     hdr->quiet_time = htole16(10);        /* timeout in milliseconds */
     hdr->quiet_threshold = htole16(1);    /* min # of packets */
 
-    if (bgscan) {
+    const bool apContextRunning =
+        apFirmwareTransitionActive &&
+        apFirmwareStage == IWN_AP_STAGE_RUNNING;
+    if (bgscan || apContextRunning) {
         int bintval;
 
-        /* Set maximum off-channel time. */
+        /*
+         * DVM applies associated-scan home/away scheduling whenever any
+         * RXON context is associated.  PAN/AP therefore keeps this policy
+         * even when the primary STA is doing a foreground reconnect scan.
+         */
         hdr->max_out = htole32(200 * 1024);
 
         /* Configure scan pauses which service on-channel traffic. */
-        bintval = ic->ic_bss->ni_intval ? ic->ic_bss->ni_intval : 100;
+        bintval = apContextRunning &&
+            apFirmwareConfig.beaconInterval != 0 ?
+            apFirmwareConfig.beaconInterval :
+            (ic->ic_bss->ni_intval ? ic->ic_bss->ni_intval : 100);
         hdr->pause_scan = htole32(((100 / bintval) << 22) |
             ((100 % bintval) * 1024));
     }
@@ -15981,6 +16023,11 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
             dwell_passive > dwell_active)
             dwell_active = MAX(dwell_active,
                 MIN((uint16_t)40, (uint16_t)(dwell_passive - 1)));
+
+        /* The public-scan discovery extensions above must not override the
+         * active PAN context's TBTT budget. */
+        if (apContextRunning)
+            dwell_passive = iwn_limit_dwell(sc, dwell_passive);
 
         /* Make sure they're valid */
         if (dwell_passive <= dwell_active)
