@@ -75,7 +75,54 @@ struct ItlHalApConfig {
     size_t rsnIELength;
     const void *beaconTemplate;
     size_t beaconTemplateLength;
+    uint16_t htCapabilities;
+    uint8_t htAmpduParams;
+    uint8_t htMcsSet[16];
 };
+
+enum ItlHalApHtContract : size_t {
+    kItlHalApHtCapabilityIELength = 28,
+    kItlHalApHtOperationIELength = 24,
+};
+
+static inline bool
+itl_hal_ap_ht_enabled(const struct ItlHalApConfig *config)
+{
+    return config != nullptr && config->htMcsSet[0] != 0;
+}
+
+static inline size_t
+itl_hal_ap_build_ht_capability_ie(uint8_t *output, size_t outputCapacity,
+                                  const struct ItlHalApConfig *config)
+{
+    if (output == nullptr || !itl_hal_ap_ht_enabled(config) ||
+        outputCapacity < kItlHalApHtCapabilityIELength)
+        return 0;
+    bzero(output, kItlHalApHtCapabilityIELength);
+    output[0] = IEEE80211_ELEMID_HTCAPS;
+    output[1] = 26;
+    output[2] = static_cast<uint8_t>(config->htCapabilities);
+    output[3] = static_cast<uint8_t>(config->htCapabilities >> 8);
+    output[4] = config->htAmpduParams;
+    memcpy(output + 5, config->htMcsSet, sizeof(config->htMcsSet));
+    return kItlHalApHtCapabilityIELength;
+}
+
+static inline size_t
+itl_hal_ap_build_ht_operation_ie(uint8_t *output, size_t outputCapacity,
+                                 const struct ItlHalApConfig *config)
+{
+    if (output == nullptr || !itl_hal_ap_ht_enabled(config) ||
+        config->channel == 0 || config->channel > UINT8_MAX ||
+        outputCapacity < kItlHalApHtOperationIELength)
+        return 0;
+    bzero(output, kItlHalApHtOperationIELength);
+    output[0] = IEEE80211_ELEMID_HTOP;
+    output[1] = 22;
+    output[2] = static_cast<uint8_t>(config->channel);
+    /* HT20: no secondary channel and no 20/40 coexistence state. */
+    return kItlHalApHtOperationIELength;
+}
 
 struct ItlHalApKey {
     const uint8_t *station;

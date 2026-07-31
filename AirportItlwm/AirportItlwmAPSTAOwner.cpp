@@ -104,7 +104,8 @@ static size_t apsta_build_beacon(
     uint16_t beaconInterval,
     uint8_t dtimPeriod,
     const uint8_t *rsnIE,
-    size_t rsnIELength)
+    size_t rsnIELength,
+    const struct ItlHalApConfig *config)
 {
     const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
     const bool is2GHz = channel <= 14;
@@ -115,6 +116,7 @@ static size_t apsta_build_beacon(
         0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c
     };
     const uint8_t extendedRates2GHz[] = { 0x30, 0x48, 0x60, 0x6c };
+    const bool ht20 = itl_hal_ap_ht_enabled(config);
     const size_t required =
         fixedLength +
         2 + ssidLength +
@@ -123,11 +125,14 @@ static size_t apsta_build_beacon(
         6 +
         rsnIELength +
         sizeof(kItlHalApWmmParameterIE) +
+        (ht20 ? kItlHalApHtCapabilityIELength +
+                kItlHalApHtOperationIELength : 0) +
         (is2GHz ? 2 + sizeof(extendedRates2GHz) : 0);
     if (output == nullptr || bssid == nullptr || ssid == nullptr ||
         ssidLength == 0 ||
         ssidLength > kAirportItlwmAPSTAGetSsidMaxLength ||
         channel == 0 || channel > UINT8_MAX ||
+        config == nullptr ||
         (rsnIELength != 0 && rsnIE == nullptr) ||
         outputCapacity < required) {
         return 0;
@@ -172,15 +177,6 @@ static size_t apsta_build_beacon(
     *cursor++ = 1;
     *cursor++ = static_cast<uint8_t>(channel);
 
-    if (rsnIELength != 0) {
-        memcpy(cursor, rsnIE, rsnIELength);
-        cursor += rsnIELength;
-    }
-
-    memcpy(cursor, kItlHalApWmmParameterIE,
-           sizeof(kItlHalApWmmParameterIE));
-    cursor += sizeof(kItlHalApWmmParameterIE);
-
     *cursor++ = IEEE80211_ELEMID_TIM;
     *cursor++ = 4;
     *cursor++ = 0;
@@ -194,6 +190,19 @@ static size_t apsta_build_beacon(
         memcpy(cursor, extendedRates2GHz, sizeof(extendedRates2GHz));
         cursor += sizeof(extendedRates2GHz);
     }
+    if (rsnIELength != 0) {
+        memcpy(cursor, rsnIE, rsnIELength);
+        cursor += rsnIELength;
+    }
+    if (ht20) {
+        cursor += itl_hal_ap_build_ht_capability_ie(
+            cursor, static_cast<size_t>(output + required - cursor), config);
+        cursor += itl_hal_ap_build_ht_operation_ie(
+            cursor, static_cast<size_t>(output + required - cursor), config);
+    }
+    memcpy(cursor, kItlHalApWmmParameterIE,
+           sizeof(kItlHalApWmmParameterIE));
+    cursor += sizeof(kItlHalApWmmParameterIE);
     return static_cast<size_t>(cursor - output);
 }
 
@@ -679,12 +688,28 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     }
     cfg.rsnIE = rsnIELength != 0 ? rsnIE : nullptr;
     cfg.rsnIELength = rsnIELength;
+    struct ieee80211com *ic = owner->fHalService->get80211Controller();
+    if (ic != nullptr && ic->ic_sup_mcs[0] != 0) {
+        /* Begin with HT20 only. Width-dependent rates and coexistence are a
+         * separate layer; SGI20 and the physical stream count remain the
+         * capabilities of the actual IWM/IWX device. */
+        cfg.htCapabilities = static_cast<uint16_t>(ic->ic_htcaps &
+            (IEEE80211_HTCAP_SMPS_MASK | IEEE80211_HTCAP_SGI20));
+        cfg.htAmpduParams = ic->ic_ampdu_params;
+        memcpy(cfg.htMcsSet, ic->ic_sup_mcs,
+               MIN(sizeof(ic->ic_sup_mcs), sizeof(cfg.htMcsSet)));
+        const uint16_t maxRxRate =
+            ic->ic_max_rxrate & IEEE80211_MCS_RX_RATE_HIGH;
+        cfg.htMcsSet[10] = static_cast<uint8_t>(maxRxRate);
+        cfg.htMcsSet[11] = static_cast<uint8_t>(maxRxRate >> 8);
+        cfg.htMcsSet[12] = ic->ic_tx_mcs_set;
+    }
     uint8_t beaconTemplate[256];
     cfg.beaconTemplateLength = apsta_build_beacon(
         beaconTemplate, sizeof(beaconTemplate), mac,
         cfg.ssid, cfg.ssidLength, cfg.channel,
         cfg.beaconInterval, cfg.dtimPeriod,
-        cfg.rsnIE, cfg.rsnIELength);
+        cfg.rsnIE, cfg.rsnIELength, &cfg);
     if (cfg.beaconTemplateLength == 0) {
         lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
         state.resetState26c = 0;

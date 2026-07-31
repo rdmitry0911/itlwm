@@ -2501,7 +2501,8 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
                         uint8_t staId,
                         uint8_t stationType, const uint8_t *address,
                         uint16_t assocId, uint8_t queueId, int fifo,
-                        uint8_t tid)
+                        uint8_t tid,
+                        const struct ItlApFirmwareClientRuntime *client)
 {
     if (!isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT) ||
         !isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
@@ -2525,6 +2526,24 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
     command.station_flags_msk = htole32(IWM_STA_FLG_FAT_EN_MSK |
                                          IWM_STA_FLG_MIMO_EN_MSK |
                                          IWM_STA_FLG_RTS_MIMO_PROT);
+    if (client != NULL && client->clientHt) {
+        const uint32_t maxAggregate = MIN(
+            static_cast<uint32_t>(client->clientHtAmpduParams &
+                                  IEEE80211_AMPDU_PARAM_LE), 3U);
+        const uint32_t density =
+            (client->clientHtAmpduParams & IEEE80211_AMPDU_PARAM_SS) >> 2;
+        command.station_flags_msk |= htole32(
+            IWM_STA_FLG_MAX_AGG_SIZE_MSK |
+            IWM_STA_FLG_AGG_MPDU_DENS_MSK);
+        command.station_flags |= htole32(
+            IWM_STA_FLG_FAT_EN_20MHZ |
+            (client->clientHtNss > 1 ? IWM_STA_FLG_MIMO_EN_MIMO2 :
+                                      IWM_STA_FLG_MIMO_EN_SISO) |
+            (maxAggregate << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT));
+        if (density >= 4)
+            command.station_flags |= htole32(
+                density << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT);
+    }
     if (stationType == IWM_STA_LINK)
         command.assoc_id = htole16(assocId);
     command.tfd_queue_msk = htole32(1U << queueId);
@@ -2559,12 +2578,14 @@ iwm_ap_add_client_sta(struct iwm_softc *sc,
     const int error = iwm_ap_add_internal_sta(sc, runtime,
         client->staId, IWM_STA_LINK, client->clientMac,
         client->clientAid, queueId, IWM_TX_FIFO_BE,
-        client->clientQos ? 0 : IWM_TID_NON_QOS);
+        client->clientQos ? 0 : IWM_TID_NON_QOS, client);
     if (error != 0)
         return error;
     client->queueId = queueId;
     client->clientStationInstalled = true;
     client->clientStationQos = client->clientQos;
+    client->clientStationHt = client->clientHt;
+    client->clientStationHtNss = client->clientHtNss;
     IEEE80211_ADDR_COPY(client->clientStationMac, client->clientMac);
     return 0;
 }
@@ -2577,8 +2598,24 @@ iwm_ap_configure_client_rates(
         client->clientLegacyRateMask == 0)
         return EINVAL;
 
-    uint8_t rateIndexes[12];
+    /* High bit marks an HT MCS; legacy entries retain their mac80211
+     * rate-table index. Keep both families in one descending fallback list
+     * so an HT client can still reach a mandatory legacy rate. */
+    uint8_t rateIndexes[28];
     size_t rateCount = 0;
+    const uint8_t antennaMask = iwm_fw_valid_tx_ant(sc);
+    const bool dualStream =
+        (antennaMask & static_cast<uint8_t>(antennaMask - 1)) != 0;
+    if (client->clientHt) {
+        for (int mcs = 15; mcs >= 0; mcs--) {
+            const size_t stream = static_cast<size_t>(mcs / 8);
+            const uint8_t bit = static_cast<uint8_t>(1U << (mcs & 7));
+            if ((stream == 0 || dualStream) &&
+                (client->clientHtMcs[stream] & bit) != 0)
+                rateIndexes[rateCount++] =
+                    static_cast<uint8_t>(0x80U | mcs);
+        }
+    }
     for (int index = 11; index >= 0; index--) {
         if ((client->clientLegacyRateMask & (1U << index)) != 0)
             rateIndexes[rateCount++] = static_cast<uint8_t>(index);
@@ -2589,7 +2626,6 @@ iwm_ap_configure_client_rates(
     struct iwm_lq_cmd command;
     memset(&command, 0, sizeof(command));
     command.sta_id = client->staId;
-    uint8_t antennaMask = iwm_fw_valid_tx_ant(sc);
     uint8_t antenna = IWM_ANT_A;
     while ((antennaMask & antenna) == 0 && antenna < IWM_ANT_C)
         antenna <<= 1;
@@ -2604,11 +2640,25 @@ iwm_ap_configure_client_rates(
     for (size_t retry = 0; retry < IWM_LQ_MAX_RETRY_NUM; retry++) {
         const size_t ordinal = retry * rateCount / IWM_LQ_MAX_RETRY_NUM;
         const uint8_t rateIndex = rateIndexes[ordinal];
-        uint32_t rate = (static_cast<uint32_t>(antenna) <<
-                         IWM_RATE_MCS_ANT_POS) |
-            iwl_mvm_mac80211_idx_to_hwrate(rateIndex);
-        if (rateIndex <= IWL_LAST_CCK_RATE)
-            rate |= RATE_MCS_CCK_MSK;
+        const bool ht = (rateIndex & 0x80U) != 0;
+        const uint8_t index = static_cast<uint8_t>(rateIndex & 0x7fU);
+        const bool mimo = ht && index >= 8;
+        if (!mimo && command.mimo_delim == IWM_LQ_MAX_RETRY_NUM)
+            command.mimo_delim = static_cast<uint8_t>(retry);
+        uint32_t rate;
+        if (ht) {
+            rate = (static_cast<uint32_t>(mimo ? antennaMask : antenna) <<
+                    IWM_RATE_MCS_ANT_POS) |
+                RATE_MCS_HT_MSK | index | RATE_MCS_RTS_REQUIRED_MSK;
+            if ((client->clientHtCapabilities & IEEE80211_HTCAP_SGI20) != 0)
+                rate |= RATE_MCS_SGI_MSK;
+        } else {
+            rate = (static_cast<uint32_t>(antenna) <<
+                    IWM_RATE_MCS_ANT_POS) |
+                iwl_mvm_mac80211_idx_to_hwrate(index);
+            if (index <= IWL_LAST_CCK_RATE)
+                rate |= RATE_MCS_CCK_MSK;
+        }
         command.rs_table[retry] = htole32(rate);
     }
     const int error = iwm_send_cmd_pdu(
@@ -2636,6 +2686,8 @@ iwm_ap_remove_client_sta(struct iwm_softc *sc,
                                               sizeof(command), &command);
     client->clientStationInstalled = false;
     client->clientStationQos = false;
+    client->clientStationHt = false;
+    client->clientStationHtNss = 0;
     client->rateControlConfigured = false;
     client->queueId = UINT16_MAX;
     itl_ap_firmware_client_crypto_reset(client);
@@ -2858,6 +2910,10 @@ iwm_ap_client_task(void *arg)
             (!IEEE80211_ADDR_EQ(client->clientStationMac,
                                 client->clientMac) ||
              client->clientStationQos != client->clientQos))
+            error = that->iwm_ap_remove_client_sta(sc, runtime, client);
+        if (error == 0 && client->clientStationInstalled &&
+            (client->clientStationHt != client->clientHt ||
+             client->clientStationHtNss != client->clientHtNss))
             error = that->iwm_ap_remove_client_sta(sc, runtime, client);
         if (error == 0 && !client->clientStationInstalled)
             error = that->iwm_ap_add_client_sta(sc, runtime, client);
@@ -3232,13 +3288,13 @@ iwm_start_ap_resources(struct iwm_softc *sc,
     error = iwm_ap_add_internal_sta(sc, runtime, runtime->multicastStaId,
         IWM_STA_MULTICAST, multicastAddress, 0,
         runtime->multicastQueueId,
-        IWM_TX_FIFO_MCAST, IWM_TID_NON_QOS);
+        IWM_TX_FIFO_MCAST, IWM_TID_NON_QOS, NULL);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceMulticastStation;
     error = iwm_ap_add_internal_sta(sc, runtime, runtime->broadcastStaId,
         IWM_STA_GENERAL_PURPOSE, etherbroadcastaddr, 0,
-        runtime->broadcastQueueId, IWM_TX_FIFO_VO, IWM_MAX_TID_COUNT);
+        runtime->broadcastQueueId, IWM_TX_FIFO_VO, IWM_MAX_TID_COUNT, NULL);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceBroadcastStation;

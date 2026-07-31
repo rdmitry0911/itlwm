@@ -10708,7 +10708,8 @@ iwx_ap_add_internal_sta(struct iwx_softc *sc,
                         const struct ItlApFirmwareRuntime *runtime,
                         uint8_t staId, uint8_t stationType,
                         const uint8_t *address, uint16_t assocId,
-                        uint16_t *queueId, uint8_t tid)
+                        uint16_t *queueId, uint8_t tid,
+                        const struct ItlApFirmwareClientRuntime *client)
 {
     if (queueId == NULL)
         return EINVAL;
@@ -10728,6 +10729,24 @@ iwx_ap_add_internal_sta(struct iwx_softc *sc,
     command.station_flags_msk = htole32(IWX_STA_FLG_FAT_EN_MSK |
                                          IWX_STA_FLG_MIMO_EN_MSK |
                                          IWX_STA_FLG_RTS_MIMO_PROT);
+    if (client != NULL && client->clientHt) {
+        const uint32_t maxAggregate = MIN(
+            static_cast<uint32_t>(client->clientHtAmpduParams &
+                                  IEEE80211_AMPDU_PARAM_LE), 3U);
+        const uint32_t density =
+            (client->clientHtAmpduParams & IEEE80211_AMPDU_PARAM_SS) >> 2;
+        command.station_flags_msk |= htole32(
+            IWX_STA_FLG_MAX_AGG_SIZE_MSK |
+            IWX_STA_FLG_AGG_MPDU_DENS_MSK);
+        command.station_flags |= htole32(
+            IWX_STA_FLG_FAT_EN_20MHZ |
+            (client->clientHtNss > 1 ? IWX_STA_FLG_MIMO_EN_MIMO2 :
+                                      IWX_STA_FLG_MIMO_EN_SISO) |
+            (maxAggregate << IWX_STA_FLG_MAX_AGG_SIZE_SHIFT));
+        if (density >= 4)
+            command.station_flags |= htole32(
+                density << IWX_STA_FLG_AGG_MPDU_DENS_SHIFT);
+    }
     if (stationType == IWX_STA_LINK)
         command.assoc_id = htole16(assocId);
 
@@ -10793,11 +10812,13 @@ iwx_ap_add_client_sta(struct iwx_softc *sc,
     int error = iwx_ap_add_internal_sta(sc, runtime,
         client->staId, IWX_STA_LINK, client->clientMac,
         client->clientAid, &client->queueId,
-        client->clientQos ? 0 : IWX_TID_NON_QOS);
+        client->clientQos ? 0 : IWX_TID_NON_QOS, client);
     if (error != 0)
         return error;
     client->clientStationInstalled = true;
     client->clientStationQos = client->clientQos;
+    client->clientStationHt = client->clientHt;
+    client->clientStationHtNss = client->clientHtNss;
     IEEE80211_ADDR_COPY(client->clientStationMac, client->clientMac);
     return 0;
 }
@@ -10814,7 +10835,8 @@ iwx_ap_configure_client_rates(
     memset(&command, 0, sizeof(command));
     command.sta_id = client->staId;
     command.max_ch_width = IWX_RATE_MCS_CHAN_WIDTH_20;
-    command.mode = IWX_TLC_MNG_MODE_NON_HT;
+    command.mode = client->clientHt ? IWX_TLC_MNG_MODE_HT :
+                                      IWX_TLC_MNG_MODE_NON_HT;
     const uint8_t antennaMask = iwx_fw_valid_tx_ant(sc);
     if (antennaMask & IWX_ANT_A)
         command.chains |= IWX_TLC_MNG_CHAIN_A_MSK;
@@ -10823,6 +10845,16 @@ iwx_ap_configure_client_rates(
     if (command.chains == 0)
         return EINVAL;
     command.non_ht_rates = htole16(client->clientLegacyRateMask);
+    if (client->clientHt) {
+        command.ht_rates[IWX_TLC_NSS_1][IWX_TLC_MCS_PER_BW_80] =
+            htole16(client->clientHtMcs[0]);
+        if (client->clientHtNss > 1)
+            command.ht_rates[IWX_TLC_NSS_2][IWX_TLC_MCS_PER_BW_80] =
+                htole16(client->clientHtMcs[1]);
+        if ((client->clientHtCapabilities & IEEE80211_HTCAP_SGI20) != 0)
+            command.sgi_ch_width_supp =
+                1U << IWX_TLC_MNG_CH_WIDTH_20MHZ;
+    }
 
     const uint32_t commandId = iwx_cmd_id(
         IWX_TLC_MNG_CONFIG_CMD, IWX_DATA_PATH_GROUP, 0);
@@ -10841,6 +10873,11 @@ iwx_ap_configure_client_rates(
         commandV3.mode = command.mode;
         commandV3.chains = command.chains;
         commandV3.non_ht_rates = command.non_ht_rates;
+        commandV3.ht_rates[0][0] = command.ht_rates[0][0];
+        commandV3.ht_rates[0][1] = command.ht_rates[0][1];
+        commandV3.ht_rates[1][0] = command.ht_rates[1][0];
+        commandV3.ht_rates[1][1] = command.ht_rates[1][1];
+        commandV3.sgi_ch_width_supp = command.sgi_ch_width_supp;
         uint16_t commandSize = sizeof(commandV3);
         if (commandVersion == IWX_FW_CMD_VER_UNKNOWN || commandVersion < 3)
             commandSize -= 4;
@@ -10867,6 +10904,8 @@ iwx_ap_remove_client_sta(struct iwx_softc *sc,
         client->staId, client->queueId);
     client->clientStationInstalled = false;
     client->clientStationQos = false;
+    client->clientStationHt = false;
+    client->clientStationHtNss = 0;
     client->rateControlConfigured = false;
     client->queueId = UINT16_MAX;
     itl_ap_firmware_client_crypto_reset(client);
@@ -11081,6 +11120,10 @@ iwx_ap_client_task(void *arg)
             (!IEEE80211_ADDR_EQ(client->clientStationMac,
                                 client->clientMac) ||
              client->clientStationQos != client->clientQos))
+            error = that->iwx_ap_remove_client_sta(sc, runtime, client);
+        if (error == 0 && client->clientStationInstalled &&
+            (client->clientStationHt != client->clientHt ||
+             client->clientStationHtNss != client->clientHtNss))
             error = that->iwx_ap_remove_client_sta(sc, runtime, client);
         if (error == 0 && !client->clientStationInstalled)
             error = that->iwx_ap_add_client_sta(sc, runtime, client);
@@ -11462,14 +11505,14 @@ iwx_start_ap_mode(struct iwx_softc *sc,
         { 0x03, 0, 0, 0, 0, 0 };
     error = iwx_ap_add_internal_sta(sc, runtime,
         runtime->multicastStaId, IWX_STA_MULTICAST, multicastAddress,
-        0, &runtime->multicastQueueId, 0);
+        0, &runtime->multicastQueueId, 0, NULL);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceMulticastStation;
     error = iwx_ap_add_internal_sta(sc, runtime,
         runtime->broadcastStaId, IWX_STA_GENERAL_PURPOSE,
         etherbroadcastaddr, 0,
-        &runtime->broadcastQueueId, IWX_MGMT_TID);
+        &runtime->broadcastQueueId, IWX_MGMT_TID, NULL);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceBroadcastStation;

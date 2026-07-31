@@ -408,7 +408,8 @@ public:
     int    iwm_ap_add_internal_sta(struct iwm_softc *,
                                    const struct ItlApFirmwareRuntime *,
                                    uint8_t, uint8_t, const uint8_t *,
-                                   uint16_t, uint8_t, int, uint8_t);
+                                   uint16_t, uint8_t, int, uint8_t,
+                                   const struct ItlApFirmwareClientRuntime *);
     int    iwm_ap_remove_internal_sta(struct iwm_softc *, uint8_t, uint8_t);
     int    iwm_ap_add_client_sta(struct iwm_softc *,
                                  struct ItlApFirmwareRuntime *,

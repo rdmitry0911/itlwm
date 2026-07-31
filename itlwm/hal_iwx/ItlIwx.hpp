@@ -543,7 +543,8 @@ public:
     int    iwx_ap_add_internal_sta(struct iwx_softc *,
                                    const struct ItlApFirmwareRuntime *,
                                    uint8_t, uint8_t, const uint8_t *,
-                                   uint16_t, uint16_t *, uint8_t);
+                                   uint16_t, uint16_t *, uint8_t,
+                                   const struct ItlApFirmwareClientRuntime *);
     int    iwx_ap_remove_internal_sta(struct iwx_softc *, uint8_t, uint16_t);
     int    iwx_ap_add_client_sta(struct iwx_softc *,
                                  struct ItlApFirmwareRuntime *,

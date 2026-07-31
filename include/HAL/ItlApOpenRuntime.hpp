@@ -687,6 +687,7 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
     const uint8_t *rates = NULL;
     const uint8_t *extendedRates = NULL;
     const uint8_t *rsn = NULL;
+    const uint8_t *htCapabilities = NULL;
     bool qos = false;
     while (cursor + 2 <= end) {
         const size_t elementLength = cursor[1];
@@ -700,6 +701,9 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
             extendedRates = cursor;
         else if (cursor[0] == IEEE80211_ELEMID_RSN)
             rsn = cursor;
+        else if (cursor[0] == IEEE80211_ELEMID_HTCAPS &&
+                 elementLength == 26)
+            htCapabilities = cursor;
         else if (cursor[0] == IEEE80211_ELEMID_QOS_CAP &&
                  elementLength >= 1)
             qos = true;
@@ -727,6 +731,14 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
             extendedRates + 2, extendedRates[1]);
     if (runtime->config.channel > 14)
         legacyRateMask &= 0x0ff0;
+    uint8_t htMcs[2] = { 0, 0 };
+    bool ht = qos && itl_hal_ap_ht_enabled(&runtime->config) &&
+        htCapabilities != NULL;
+    if (ht) {
+        htMcs[0] = htCapabilities[5] & runtime->config.htMcsSet[0];
+        htMcs[1] = htCapabilities[6] & runtime->config.htMcsSet[1];
+        ht = htMcs[0] != 0;
+    }
     const bool valid = client->clientAuthenticated &&
         (!localSae || ieee80211_sae_ap_is_accepted(client->sae) != 0) &&
         (capability & IEEE80211_CAPINFO_ESS) != 0 &&
@@ -749,6 +761,12 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
     }
     client->clientLegacyRateMask = legacyRateMask;
     client->clientQos = qos;
+    client->clientHt = ht;
+    client->clientHtNss = ht ? (htMcs[1] != 0 ? 2 : 1) : 0;
+    client->clientHtCapabilities = ht ?
+        LE_READ_2(htCapabilities + 2) & runtime->config.htCapabilities : 0;
+    client->clientHtAmpduParams = ht ? htCapabilities[4] : 0;
+    memcpy(client->clientHtMcs, htMcs, sizeof(client->clientHtMcs));
 
     result->disposition = kItlApOpenRxAssociate;
     result->reassociation = reassociation;
@@ -777,9 +795,12 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
 
     const bool is2g = runtime->config.channel <= 14;
     const bool secure = itl_ap_client_is_secure(runtime);
+    const size_t htLength = client->clientHt ?
+        kItlHalApHtCapabilityIELength + kItlHalApHtOperationIELength : 0;
     const size_t responseLength = sizeof(struct ieee80211_frame) + 6 +
         2 + sizeof(rates2g) + (is2g ? 2 + sizeof(extendedRates) : 0) +
         (secure ? runtime->config.rsnIELength : 0) +
+        htLength +
         (client->clientQos ? sizeof(kItlHalApWmmParameterIE) : 0);
     int error = itl_ap_open_alloc_reply(responseLength, &result->reply);
     if (error != 0)
@@ -814,6 +835,14 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
     if (secure) {
         memcpy(out, runtime->rsnIE, runtime->config.rsnIELength);
         out += runtime->config.rsnIELength;
+    }
+    if (client->clientHt) {
+        out += itl_hal_ap_build_ht_capability_ie(
+            out, static_cast<size_t>(result->reply + responseLength - out),
+            &runtime->config);
+        out += itl_hal_ap_build_ht_operation_ie(
+            out, static_cast<size_t>(result->reply + responseLength - out),
+            &runtime->config);
     }
     if (client->clientQos) {
         memcpy(out, kItlHalApWmmParameterIE,
