@@ -124,6 +124,11 @@
 #include <sys/pcireg.h>
 #include <net80211/ieee80211_priv.h>
 
+#if __IO80211_TARGET >= __MAC_26_0
+extern "C" void airportItlwmRequestAPTxDequeue(
+    IOEthernetController *controller);
+#endif
+
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwx, ItlHalService)
 
@@ -553,6 +558,8 @@ detach(IOPCIDevice *device)
             iwx_del_task(sc, sc->sc_nswq, &sc->sae_tx_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
         iwx_del_task(sc, systq, &sc->init_task);
         iwx_del_task(sc, systq, &sc->ba_task);
         iwx_del_task(sc, systq, &sc->mac_ctxt_task);
@@ -1284,6 +1291,8 @@ startAPMode(const struct ItlHalApConfig *config)
 {
     if (!supportsAPMode())
         return kIOReturnUnsupported;
+    if (!itl_ap_open_config_supported(config))
+        return kIOReturnUnsupported;
     if (apRuntime.stage != kItlApFirmwareResourceIdle)
         return kIOReturnBusy;
     int err = itl_ap_firmware_runtime_snapshot(&apRuntime, config);
@@ -1321,6 +1330,57 @@ stopAPMode()
         return kIOReturnError;
     itl_ap_firmware_runtime_reset(&apRuntime);
     return kIOReturnSuccess;
+}
+
+IOReturn ItlIwx::
+transmitAPData(mbuf_t packet)
+{
+    mbuf_t wirePacket = NULL;
+    int error = itl_ap_open_encap_data(&apRuntime, packet, &wirePacket);
+    if (error != 0)
+        return error == ENOBUFS ? kIOReturnNoResources : kIOReturnNotReady;
+    const struct ieee80211_frame *wh =
+        mtod(wirePacket, const struct ieee80211_frame *);
+    const bool multicast = IEEE80211_IS_MULTICAST(wh->i_addr1);
+    error = iwx_ap_send_raw_frame(&com, wirePacket,
+        multicast ? apRuntime.multicastQueueId : apRuntime.clientQueueId);
+    if (error != 0) {
+        mbuf_freem(wirePacket);
+        return error == ENOBUFS ? kIOReturnNoResources : kIOReturnError;
+    }
+    mbuf_freem(packet);
+    return kIOReturnSuccess;
+}
+
+uint32_t ItlIwx::
+getAPTxFreeSpace() const
+{
+    if (!itl_ap_open_is_running(&apRuntime) ||
+        !apRuntime.clientStationInstalled ||
+        apRuntime.clientQueueId >= nitems(com.txq) ||
+        apRuntime.multicastQueueId >= nitems(com.txq))
+        return 0;
+    const struct iwx_tx_ring *client = &com.txq[apRuntime.clientQueueId];
+    const struct iwx_tx_ring *multicast = &com.txq[apRuntime.multicastQueueId];
+    if (client->ring_count == 0 || multicast->ring_count == 0)
+        return 0;
+    const uint32_t clientUsable = client->ring_count - 1;
+    const uint32_t multicastUsable = multicast->ring_count - 1;
+    const uint32_t clientFree = client->queued < clientUsable ?
+        clientUsable - client->queued : 0;
+    const uint32_t multicastFree = multicast->queued < multicastUsable ?
+        multicastUsable - multicast->queued : 0;
+    return MIN(clientFree, multicastFree);
+}
+
+extern "C" bool
+airportItlwmQueryIwxAPTxFreeSpace(ItlHalService *service, uint32_t *freeSpace)
+{
+    ItlIwx *that = OSDynamicCast(ItlIwx, service);
+    if (that == NULL || freeSpace == NULL)
+        return false;
+    *freeSpace = that->getAPTxFreeSpace();
+    return true;
 }
 
 #define MUL_NO_OVERFLOW    (1UL << (sizeof(size_t) * 4))
@@ -3516,7 +3576,9 @@ iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     memset(ring->desc, 0, ring->desc_dma.size);
     //    bus_dmamap_sync(sc->sc_dmat, ring->desc_dma.map, 0,
     //        ring->desc_dma.size, BUS_DMASYNC_PREWRITE);
-    sc->qfullmsk &= ~(1 << ring->qid);
+    if (ring->qid >= 0 &&
+        ring->qid < (int)(sizeof(sc->qfullmsk) * NBBY))
+        sc->qfullmsk &= ~(1U << ring->qid);
     ring->queued = 0;
     ring->cur = 0;
     ring->tail = 0;
@@ -6469,7 +6531,8 @@ drop:
 
 void ItlIwx::
 iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
-               size_t maxlen, struct mbuf_list *ml)
+               size_t maxlen, struct mbuf_list *ml,
+               struct mbuf_list *apMl)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_rxinfo rxi;
@@ -6583,6 +6646,8 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
             qwh->i_qos[0] &= htole16(~IEEE80211_QOS_AMSDU);
         }    
     }
+    if (iwx_ap_handle_rx(sc, m, mbuf_pkthdr_len(m), apMl))
+        return;
     
     /*
      * Verify decryption before duplicate detection. The latter uses
@@ -6742,9 +6807,13 @@ iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd)
     mbuf_freem(txd->m);
     txd->m = NULL;
     
-    KASSERT(txd->in, "txd->in");
-    ieee80211_release_node(ic, &txd->in->in_ni);
-    txd->in = NULL;
+    if (txd->in != NULL) {
+        ieee80211_release_node(ic, &txd->in->in_ni);
+        txd->in = NULL;
+    } else {
+        KASSERT(txd->ap_frame, "txd->in || txd->ap_frame");
+    }
+    txd->ap_frame = false;
 }
 
 void ItlIwx::
@@ -6878,9 +6947,17 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
         ssn = le32toh(ssn) & 0xfff;
         idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count);
         txd = &ring->data[idx];
+        const bool wasApFrame = txd->ap_frame;
         iwx_rx_tx_cmd_single(sc, pkt, txd);
         iwx_ampdu_txq_advance(sc, ring, idx);
-        iwx_clear_oactive(sc, ring);
+        if (wasApFrame) {
+#if __IO80211_TARGET >= __MAC_26_0
+            ItlIwx *that = container_of(sc, ItlIwx, com);
+            airportItlwmRequestAPTxDequeue(that->getController());
+#endif
+        } else {
+            iwx_clear_oactive(sc, ring);
+        }
     }
 }
 
@@ -8400,7 +8477,7 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
     cmd = &ring->cmd[idx];
     cmd->hdr.cmd = IWX_TX_CMD;
     cmd->hdr.group_id = 0;
-    cmd->hdr.qid = ring->qid;
+    cmd->hdr.qid = ring->qid & 0x1f;
     cmd->hdr.idx = idx;
     
     rinfo = iwx_tx_fill_cmd(sc, in, wh, &flags, &rate_n_flags);
@@ -8496,6 +8573,7 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
     }
     data->m = m;
     data->in = in;
+    data->ap_frame = false;
     data->type = type;
     /*
      * Store the SAE completion identity only after the payload mapping has
@@ -8597,6 +8675,128 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
         sc->qfullmsk |= 1 << ring->qid;
     }
     
+    return 0;
+}
+
+int ItlIwx::
+iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
+{
+    if (m == NULL || apRuntime.stage != kItlApFirmwareResourceRunning ||
+        queueId == IWX_DQA_CMD_QUEUE || queueId >= nitems(sc->txq))
+        return EINVAL;
+    const size_t frameLength = mbuf_pkthdr_len(m);
+    if (frameLength < sizeof(struct ieee80211_frame) || frameLength > UINT16_MAX)
+        return EMSGSIZE;
+    struct ieee80211_frame *wh = mtod(m, struct ieee80211_frame *);
+    const uint8_t type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
+    const uint8_t subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    uint8_t peer[IEEE80211_ADDR_LEN];
+    IEEE80211_ADDR_COPY(peer, wh->i_addr1);
+    if (type != IEEE80211_FC0_TYPE_MGT && type != IEEE80211_FC0_TYPE_DATA)
+        return EINVAL;
+    const size_t headerLength = ieee80211_get_hdrlen(wh);
+    if (headerLength < sizeof(*wh) || headerLength > frameLength)
+        return EINVAL;
+
+    struct iwx_tx_ring *ring = &sc->txq[queueId];
+    if (ring->ring_count == 0 || ring->queued >= ring->ring_count - 1)
+        return ENOBUFS;
+    const int index = ring->cur & (ring->ring_count - 1);
+    struct iwx_tfh_tfd *descriptor = &ring->desc[index];
+    struct iwx_tx_data *data = &ring->data[index];
+    struct iwx_device_cmd *deviceCommand = &ring->cmd[index];
+    memset(descriptor, 0, sizeof(*descriptor));
+    memset(deviceCommand, 0, sizeof(*deviceCommand));
+    deviceCommand->hdr.cmd = IWX_TX_CMD;
+    deviceCommand->hdr.group_id = 0;
+    deviceCommand->hdr.qid = ring->qid & 0x1f;
+    deviceCommand->hdr.idx = index;
+
+    uint32_t rateFlags =
+        (1U << sc->sc_mgmt_last_antenna_idx) << IWX_RATE_MCS_ANT_POS;
+    const int rateIndex = apRuntime.config.channel <= 14 ?
+        IWX_FIRST_CCK_RATE : IWX_FIRST_OFDM_RATE;
+    uint8_t hardwareRate = iwx_rates[rateIndex].plcp;
+    const uint8_t commandVersion = iwx_lookup_cmd_ver(
+        sc, IWX_LONG_GROUP, IWX_TX_CMD);
+    if (commandVersion > 8 && commandVersion != IWX_FW_CMD_VER_UNKNOWN) {
+        if (IWX_RIDX_IS_CCK(rateIndex)) {
+            rateFlags |= IWX_RATE_MCS_CCK_MSK;
+            hardwareRate = rateIndex;
+        } else {
+            rateFlags |= IWX_RATE_MCS_LEGACY_OFDM_MSK;
+            hardwareRate = iwx_rate2idx(iwx_rates[rateIndex].rate);
+        }
+    } else if (IWX_RIDX_IS_CCK(rateIndex)) {
+        rateFlags |= IWX_RATE_MCS_CCK_MSK_V1;
+    }
+    const uint32_t commandFlags = IWX_TX_FLAGS_CMD_RATE |
+        IWX_TX_FLAGS_ENCRYPT_DIS;
+    uint16_t commandSize;
+    uint16_t offloadAssist = 0;
+    if (headerLength % 4)
+        offloadAssist |= IWX_TX_CMD_OFFLD_PAD;
+    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
+        struct iwx_tx_cmd_gen3 *tx =
+            reinterpret_cast<struct iwx_tx_cmd_gen3 *>(deviceCommand->data);
+        commandSize = sizeof(*tx);
+        memset(tx, 0, commandSize);
+        tx->len = htole16((uint16_t)frameLength);
+        tx->flags = htole16((uint16_t)commandFlags);
+        tx->offload_assist = htole32(offloadAssist);
+        tx->rate_n_flags = htole32(rateFlags | hardwareRate);
+        memcpy(reinterpret_cast<uint8_t *>(tx) + sizeof(*tx), wh,
+               headerLength);
+    } else {
+        struct iwx_tx_cmd_gen2 *tx =
+            reinterpret_cast<struct iwx_tx_cmd_gen2 *>(deviceCommand->data);
+        commandSize = sizeof(*tx);
+        memset(tx, 0, commandSize);
+        tx->len = htole16((uint16_t)frameLength);
+        tx->flags = htole32(commandFlags);
+        tx->offload_assist = htole16(offloadAssist);
+        tx->rate_n_flags = htole32(rateFlags | hardwareRate);
+        memcpy(reinterpret_cast<uint8_t *>(tx) + sizeof(*tx), wh,
+               headerLength);
+    }
+
+    mbuf_adj(m, headerLength);
+    IOPhysicalSegment segments[IWX_TFH_NUM_TBS - 2];
+    const int segmentCount = data->map->cursor->getPhysicalSegmentsWithCoalesce(
+        m, segments, IWX_TFH_NUM_TBS - 2);
+    if (segmentCount == 0)
+        return ENOMEM;
+    data->m = m;
+    data->in = NULL;
+    data->ap_frame = true;
+    data->type = type;
+    data->diag_subtype = type == IEEE80211_FC0_TYPE_MGT ? subtype : 0xff;
+    data->diag_auth_seq = 0xffff;
+    IEEE80211_ADDR_COPY(data->diag_peer, peer);
+    iwx_sae_tx_data_clear(data);
+
+    const uint16_t transportBuffers = 2 + segmentCount;
+    descriptor->num_tbs = htole16(transportBuffers);
+    descriptor->tbs[0].tb_len = htole16(IWX_FIRST_TB_SIZE);
+    uint64_t address = htole64(data->cmd_paddr);
+    memcpy(&descriptor->tbs[0].addr, &address, sizeof(address));
+    descriptor->tbs[1].tb_len = htole16(_ALIGN(
+        sizeof(struct iwx_cmd_header) + commandSize + headerLength -
+        IWX_FIRST_TB_SIZE, 4));
+    address = htole64(data->cmd_paddr + IWX_FIRST_TB_SIZE);
+    memcpy(&descriptor->tbs[1].addr, &address, sizeof(address));
+    for (int i = 0; i < segmentCount; i++) {
+        descriptor->tbs[i + 2].tb_len = htole16(segments[i].length);
+        address = htole64(segments[i].location);
+        memcpy(&descriptor->tbs[i + 2].addr, &address, sizeof(address));
+    }
+    iwx_tx_update_byte_tbl(sc, ring, index,
+                           static_cast<uint16_t>(frameLength),
+                           transportBuffers);
+    ring->cur = (ring->cur + 1) % ring->ring_count;
+    IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
+    ring->queued++;
+    sc->sc_tx_timer = 15;
     return 0;
 }
 
@@ -10164,6 +10364,11 @@ iwx_ap_send_beacon_template(struct iwx_softc *sc,
         sc, IWX_LONG_GROUP, IWX_BEACON_TEMPLATE_CMD);
     if (commandVersion != 11 && commandVersion != 12)
         return EOPNOTSUPP;
+    const uint8_t txCommandVersion = iwx_lookup_cmd_ver(
+        sc, IWX_LONG_GROUP, IWX_TX_CMD);
+    if (txCommandVersion == IWX_FW_CMD_VER_UNKNOWN ||
+        txCommandVersion <= 8)
+        return EOPNOTSUPP;
 
     const struct ItlHalApConfig *config = &runtime->config;
     const size_t commandLength = sizeof(struct iwx_mac_beacon_cmd) +
@@ -10175,8 +10380,12 @@ iwx_ap_send_beacon_template(struct iwx_softc *sc,
     memset(command, 0, commandLength);
 
     command->byte_cnt = htole16((uint16_t)config->beaconTemplateLength);
-    command->flags = htole16(config->channel <= 14 ?
-                              IWX_MAC_BEACON_CCK : 0);
+    const uint16_t rateIndex = config->channel <= 14 ?
+        IWX_FIRST_CCK_RATE : IWX_FIRST_OFDM_RATE;
+    const uint16_t firmwareRate = rateIndex >= IWX_FIRST_OFDM_RATE ?
+        rateIndex - IWX_FIRST_OFDM_RATE : rateIndex;
+    command->flags = htole16(firmwareRate |
+        (config->channel <= 14 ? IWX_MAC_BEACON_CCK : 0));
     command->template_id = htole32(runtime->macId);
 
     const uint8_t *beacon = (const uint8_t *)config->beaconTemplate;
@@ -10322,6 +10531,11 @@ iwx_ap_add_internal_sta(struct iwx_softc *sc,
         runtime->macId, runtime->macColor));
     IEEE80211_ADDR_COPY(command.addr, address);
     command.tid_disable_tx = htole16(0xffff);
+    command.station_flags_msk = htole32(IWX_STA_FLG_FAT_EN_MSK |
+                                         IWX_STA_FLG_MIMO_EN_MSK |
+                                         IWX_STA_FLG_RTS_MIMO_PROT);
+    if (stationType == IWX_STA_LINK)
+        command.assoc_id = htole16(runtime->clientAid);
 
     uint32_t status = IWX_ADD_STA_SUCCESS;
     int error = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA, sizeof(command),
@@ -10351,23 +10565,241 @@ int ItlIwx::
 iwx_ap_remove_internal_sta(struct iwx_softc *sc, uint8_t staId,
                            uint16_t queueId)
 {
+    if (queueId >= nitems(sc->txq) || queueId == IWX_DQA_CMD_QUEUE)
+        return EINVAL;
+
+    /*
+     * SCD_QUEUE_CFG v2 assigns a dynamic queue but has no remove operation.
+     * Linux iwlwifi therefore tears the transport queue down before
+     * REMOVE_STA.  Reclaim the local DMA carrier in that same order; leaving
+     * it live until after station removal lets firmware complete into storage
+     * whose station owner has already disappeared.
+     */
+    struct iwx_tx_ring *ring = &sc->txq[queueId];
+    iwx_reset_tx_ring(sc, ring);
+    iwx_free_tx_ring(sc, ring);
+    memset(ring, 0, sizeof(*ring));
+    ring->qid = IWX_INVALID_QUEUE;
+
     struct iwx_rm_sta_cmd command;
     memset(&command, 0, sizeof(command));
     command.sta_id = staId;
-    int error = iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0,
-                                 sizeof(command), &command);
+    return iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0,
+                            sizeof(command), &command);
+}
+
+int ItlIwx::
+iwx_ap_add_client_sta(struct iwx_softc *sc,
+                      struct ItlApFirmwareRuntime *runtime,
+                      const uint8_t *station)
+{
+    if (runtime == NULL || station == NULL || runtime->clientStationInstalled)
+        return EINVAL;
+    int error = iwx_ap_add_internal_sta(sc, runtime,
+        runtime->firstClientStaId, IWX_STA_LINK, station,
+        &runtime->clientQueueId, IWX_TID_NON_QOS);
     if (error != 0)
         return error;
-    if (queueId < nitems(sc->txq)) {
-        iwx_reset_tx_ring(sc, &sc->txq[queueId]);
-        iwx_free_tx_ring(sc, &sc->txq[queueId]);
-        const int allocateError = iwx_alloc_tx_ring(
-            sc, &sc->txq[queueId], queueId);
-        error = allocateError;
-    } else {
-        error = EINVAL;
-    }
+    runtime->clientStationInstalled = true;
+    IEEE80211_ADDR_COPY(runtime->clientStationMac, station);
+    return 0;
+}
+
+int ItlIwx::
+iwx_ap_remove_client_sta(struct iwx_softc *sc,
+                         struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || !runtime->clientStationInstalled)
+        return 0;
+    const int error = iwx_ap_remove_internal_sta(sc,
+        runtime->firstClientStaId, runtime->clientQueueId);
+    runtime->clientStationInstalled = false;
+    runtime->clientQueueId = UINT16_MAX;
+    explicit_bzero(runtime->clientStationMac,
+                   sizeof(runtime->clientStationMac));
     return error;
+}
+
+static int
+iwx_ap_reply_to_mbuf(const struct ItlApOpenRxResult *result, mbuf_t *packet)
+{
+    if (result == NULL || packet == NULL || result->reply == NULL ||
+        result->replyLength == 0)
+        return EINVAL;
+    unsigned int maxChunks = 1;
+    *packet = NULL;
+    if (mbuf_allocpacket(MBUF_DONTWAIT, result->replyLength, &maxChunks,
+            packet) != 0 || *packet == NULL)
+        return ENOMEM;
+    mbuf_setlen(*packet, result->replyLength);
+    mbuf_pkthdr_setlen(*packet, result->replyLength);
+    memcpy(mbuf_data(*packet), result->reply, result->replyLength);
+    return 0;
+}
+
+static void
+iwx_ap_publish_station(struct iwx_softc *sc,
+                       const struct ItlApFirmwareRuntime *runtime, int event)
+{
+    struct ieee80211_node witness;
+    bzero(&witness, sizeof(witness));
+    IEEE80211_ADDR_COPY(witness.ni_macaddr, runtime->clientMac);
+    if (runtime->clientAssocIEsLength != 0) {
+        witness.ni_rsnie_tlv = const_cast<uint8_t *>(runtime->clientAssocIEs);
+        witness.ni_rsnie_tlv_len =
+            static_cast<uint16_t>(runtime->clientAssocIEsLength);
+    }
+    ieee80211_apsta_event_publish(&sc->sc_ic, &witness, event);
+}
+
+void ItlIwx::
+iwx_ap_client_task(void *arg)
+{
+    struct iwx_softc *sc = static_cast<struct iwx_softc *>(arg);
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    struct ItlApFirmwareRuntime *runtime = &that->apRuntime;
+    struct ItlApOpenRxResult result;
+    itl_ap_open_rx_result_reset(&result);
+
+    if (!runtime->clientAssociationPending)
+        return;
+    runtime->clientAssociationPending = false;
+    if (!itl_ap_open_is_running(runtime) ||
+        !runtime->clientAuthenticated)
+        return;
+
+    int error = 0;
+    runtime->clientAid = 1;
+    if (runtime->clientStationInstalled &&
+        !IEEE80211_ADDR_EQ(runtime->clientStationMac,
+                           runtime->clientMac))
+        error = that->iwx_ap_remove_client_sta(sc, runtime);
+    if (error == 0 && !runtime->clientStationInstalled)
+        error = that->iwx_ap_add_client_sta(sc, runtime,
+                                            runtime->clientMac);
+    if (error == 0) {
+        error = itl_ap_open_build_assoc_success(runtime, &result);
+    }
+
+    mbuf_t response = NULL;
+    if (error == 0)
+        error = iwx_ap_reply_to_mbuf(&result, &response);
+    if (error == 0)
+        error = that->iwx_ap_send_raw_frame(sc, response,
+                                             runtime->broadcastQueueId);
+    if (error != 0 && response != NULL)
+        mbuf_freem(response);
+
+    if (error == 0 && itl_ap_open_is_running(runtime) &&
+        runtime->clientAuthenticated) {
+        runtime->clientAssociated = true;
+        runtime->clientAuthorized = true;
+        iwx_ap_publish_station(sc, runtime, IEEE80211_APSTA_EVENT_ASSOC);
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmRequestAPTxDequeue(that->getController());
+#endif
+    } else {
+        runtime->clientAssociated = false;
+        runtime->clientAuthorized = false;
+        runtime->clientAid = 0;
+        if (runtime->clientStationInstalled)
+            (void)that->iwx_ap_remove_client_sta(sc, runtime);
+        if (error != 0)
+            XYLog("%s: IWX open AP association task error=%d\n",
+                  DEVNAME(sc), error);
+    }
+    itl_ap_open_release_result(&result);
+}
+
+void ItlIwx::
+iwx_ap_client_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = static_cast<struct iwx_softc *>(arg);
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_ap_client_task(arg);
+    that->iwx_task_gate_leave(sc);
+}
+
+bool ItlIwx::
+iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
+                 struct mbuf_list *apFrames)
+{
+    struct ItlApOpenRxResult result;
+    const int classifyError = itl_ap_open_classify_rx(
+        &apRuntime, packet, frameLength, &result);
+    if (result.disposition == kItlApOpenRxNotOurs)
+        return false;
+
+    int error = classifyError;
+    if (error == 0 && result.disposition == kItlApOpenRxReply) {
+        const struct ieee80211_frame *reply =
+            reinterpret_cast<const struct ieee80211_frame *>(result.reply);
+        const uint8_t subtype = reply->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+        if (subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+            if (apRuntime.clientAssociated)
+                iwx_ap_publish_station(sc, &apRuntime,
+                                       IEEE80211_APSTA_EVENT_LEAVE);
+            apRuntime.clientAssociationPending = false;
+            apRuntime.clientAuthenticated = false;
+            apRuntime.clientAssociated = false;
+            apRuntime.clientAuthorized = false;
+            apRuntime.clientAid = 0;
+            apRuntime.clientAssocIEsLength = 0;
+        }
+        mbuf_t response = NULL;
+        if (error == 0)
+            error = iwx_ap_reply_to_mbuf(&result, &response);
+        if (error == 0)
+            error = iwx_ap_send_raw_frame(sc, response,
+                                           apRuntime.broadcastQueueId);
+        if (error != 0 && response != NULL)
+            mbuf_freem(response);
+        if (error == 0 && subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+            IEEE80211_ADDR_COPY(apRuntime.clientMac, result.station);
+            apRuntime.clientAuthenticated = true;
+        }
+    } else if (error == 0 &&
+               result.disposition == kItlApOpenRxAssociate) {
+        const size_t ieOffset = sizeof(struct ieee80211_frame) + 4;
+        apRuntime.clientAssocIEsLength = frameLength > ieOffset ?
+            MIN(frameLength - ieOffset,
+                sizeof(apRuntime.clientAssocIEs)) : 0;
+        if (apRuntime.clientAssocIEsLength != 0)
+            error = mbuf_copydata(packet, ieOffset,
+                apRuntime.clientAssocIEsLength,
+                apRuntime.clientAssocIEs);
+        if (error == 0) {
+            apRuntime.clientAssociationPending = true;
+            iwx_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
+        }
+    } else if (error == 0 && result.disposition == kItlApOpenRxData) {
+        if (apFrames != NULL && result.ethernetPacket != NULL) {
+            ml_enqueue(apFrames, result.ethernetPacket);
+            result.ethernetPacket = NULL;
+        }
+    } else if (error == 0 &&
+               result.disposition == kItlApOpenRxDisconnect) {
+        if (apRuntime.clientStationInstalled) {
+            if (apRuntime.clientAssociated)
+                iwx_ap_publish_station(sc, &apRuntime,
+                                       IEEE80211_APSTA_EVENT_LEAVE);
+        }
+        apRuntime.clientAssociationPending = false;
+        apRuntime.clientAuthenticated = false;
+        apRuntime.clientAssociated = false;
+        apRuntime.clientAuthorized = false;
+        apRuntime.clientAid = 0;
+        apRuntime.clientAssocIEsLength = 0;
+    }
+    if (error != 0)
+        XYLog("%s: IWX open AP RX action=%u error=%d\n", DEVNAME(sc),
+              (unsigned)result.disposition, error);
+    itl_ap_open_release_result(&result);
+    mbuf_freem(packet);
+    return true;
 }
 
 int ItlIwx::
@@ -10444,15 +10876,31 @@ iwx_start_ap_mode(struct iwx_softc *sc,
         if (error != 0)
             return error;
     }
-    error = iwx_ap_send_beacon_template(sc, runtime);
-    if (error != 0)
-        return error;
-    runtime->stage = kItlApFirmwareResourceBeacon;
-
-    error = iwx_ap_mac_ctxt_cmd(sc, runtime, IWX_FW_CTXT_ACTION_ADD);
-    if (error != 0)
-        goto unwind;
-    runtime->stage = kItlApFirmwareResourceMac;
+    /*
+     * Linux iwlwifi's start_ap contract is family ordered: on 22000 the
+     * legacy beacon resource precedes MAC creation, while AX210+ makes the
+     * beacon resource belong to an already-created MAC.
+     */
+    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
+        error = iwx_ap_mac_ctxt_cmd(sc, runtime,
+                                    IWX_FW_CTXT_ACTION_ADD);
+        if (error != 0)
+            return error;
+        runtime->stage = kItlApFirmwareResourceMac;
+        error = iwx_ap_send_beacon_template(sc, runtime);
+        if (error != 0)
+            goto unwind;
+    } else {
+        error = iwx_ap_send_beacon_template(sc, runtime);
+        if (error != 0)
+            return error;
+        runtime->stage = kItlApFirmwareResourceBeacon;
+        error = iwx_ap_mac_ctxt_cmd(sc, runtime,
+                                    IWX_FW_CTXT_ACTION_ADD);
+        if (error != 0)
+            goto unwind;
+        runtime->stage = kItlApFirmwareResourceMac;
+    }
     error = iwx_ap_binding_cmd(sc, runtime, true);
     if (error != 0)
         goto unwind;
@@ -10491,9 +10939,18 @@ iwx_stop_ap_mode(struct iwx_softc *sc,
         return 0;
     const uint8_t previousStage = runtime->stage;
     runtime->stage = kItlApFirmwareResourceStopping;
+    if (sc->sc_nswq != NULL)
+        iwx_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
+    if (sc->sc_nswq != NULL)
+        taskq_barrier(sc->sc_nswq);
     int firstError = 0;
-    if (previousStage >= kItlApFirmwareResourceRunning)
-        firstError = iwx_ap_update_quotas(sc, runtime, false);
+    if (runtime->clientStationInstalled)
+        firstError = iwx_ap_remove_client_sta(sc, runtime);
+    if (previousStage >= kItlApFirmwareResourceRunning) {
+        const int error = iwx_ap_update_quotas(sc, runtime, false);
+        if (firstError == 0)
+            firstError = error;
+    }
     if (previousStage >= kItlApFirmwareResourceBroadcastStation) {
         const int error = iwx_ap_remove_internal_sta(sc,
             runtime->broadcastStaId, runtime->broadcastQueueId);
@@ -13504,6 +13961,8 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
             iwx_del_task(sc, sc->sc_nswq, &sc->sae_tx_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
         iwx_del_task(sc, systq, &sc->ba_task);
         iwx_del_task(sc, systq, &sc->mac_ctxt_task);
         iwx_del_task(sc, systq, &sc->chan_ctxt_task);
@@ -13993,7 +14452,8 @@ struct iwl_pnvm_init_complete_ntfy {
 } __packed; /* PNVM_INIT_COMPLETE_NTFY_S_VER_1 */
 
 void ItlIwx::
-iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
+iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data,
+           struct mbuf_list *ml, struct mbuf_list *apMl)
 {
     struct _ifnet *ifp = IC2IFP(&sc->sc_ic);
     ItlIwx *that = container_of(sc, ItlIwx, com);
@@ -14068,7 +14528,7 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                     /* No need to copy last frame in buffer. */
                     if (offset > 0)
                         mbuf_adj(m0, offset);
-                    iwx_rx_mpdu_mq(sc, m0, pkt->data, maxlen, ml);
+                    iwx_rx_mpdu_mq(sc, m0, pkt->data, maxlen, ml, apMl);
                     m0 = NULL; /* stack owns m0 now; abort loop */
                 } else {
                     /*
@@ -14084,7 +14544,7 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                         break;
                     }
                     mbuf_adj(m, offset);
-                    iwx_rx_mpdu_mq(sc, m, pkt->data, maxlen, ml);
+                    iwx_rx_mpdu_mq(sc, m, pkt->data, maxlen, ml, apMl);
                 }
                 break;
             }
@@ -14420,6 +14880,7 @@ void ItlIwx::
 iwx_notif_intr(struct iwx_softc *sc)
 {
     struct mbuf_list ml = MBUF_LIST_INITIALIZER();
+    struct mbuf_list apMl = MBUF_LIST_INITIALIZER();
     uint16_t hw;
     
     //    bus_dmamap_sync(sc->sc_dmat, sc->rxq.stat_dma.map,
@@ -14432,10 +14893,11 @@ iwx_notif_intr(struct iwx_softc *sc)
     hw &= (IWX_RX_MQ_RING_COUNT - 1);
     while (sc->rxq.cur != hw) {
         struct iwx_rx_data *data = &sc->rxq.data[sc->rxq.cur];
-        iwx_rx_pkt(sc, data, &ml);
+        iwx_rx_pkt(sc, data, &ml, &apMl);
         sc->rxq.cur = (sc->rxq.cur + 1) % IWX_RX_MQ_RING_COUNT;
     }
     if_input(&sc->sc_ic.ic_if, &ml);
+    if_input_ap(&sc->sc_ic.ic_if, &apMl);
     
     /*
      * Tell the firmware what we have processed.
@@ -17220,6 +17682,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     memset(&sc->security_rx_task, 0, sizeof(sc->security_rx_task));
     memset(&sc->sae_tx_task, 0, sizeof(sc->sae_tx_task));
     memset(&sc->mfp_pae_task, 0, sizeof(sc->mfp_pae_task));
+    memset(&sc->ap_client_task, 0, sizeof(sc->ap_client_task));
     memset(&sc->ba_task, 0, sizeof(sc->ba_task));
     memset(&sc->mac_ctxt_task, 0, sizeof(sc->mac_ctxt_task));
     memset(&sc->chan_ctxt_task, 0, sizeof(sc->chan_ctxt_task));
@@ -17617,6 +18080,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
              "iwx_sae_tx_task");
     task_set(&sc->mfp_pae_task, iwx_mfp_pae_task_dispatch, sc,
              "iwx_mfp_pae_task");
+    task_set(&sc->ap_client_task, iwx_ap_client_task_dispatch, sc,
+             "iwx_ap_client_task");
     task_set(&sc->ba_task, iwx_ba_task_dispatch, sc, "iwx_ba_task");
     task_set(&sc->mac_ctxt_task, iwx_mac_ctxt_task_dispatch, sc,
              "iwx_mac_ctxt_task");

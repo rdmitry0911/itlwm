@@ -139,6 +139,7 @@
 
 #include <HAL/ItlHalService.hpp>
 #include <HAL/ItlApFirmwareRuntime.hpp>
+#include <HAL/ItlApOpenRuntime.hpp>
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
@@ -204,6 +205,8 @@ public:
      */
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
+    IOReturn transmitAPData(mbuf_t packet) override;
+    uint32_t getAPTxFreeSpace() const;
 
     /* One-ticket, real firmware TX path for the controller SAE relay. */
     IOReturn submitSaeAuthFrame(
@@ -421,7 +424,8 @@ public:
     void    iwx_rx_frame(struct iwx_softc *, mbuf_t, int, uint32_t, int, int,
            uint32_t, struct ieee80211_rxinfo *, struct mbuf_list *);
     void iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
-                        size_t maxlen, struct mbuf_list *ml);
+                        size_t maxlen, struct mbuf_list *ml,
+                        struct mbuf_list *apMl);
     void    iwx_rx_tx_cmd_single(struct iwx_softc *, struct iwx_rx_packet *,
             struct iwx_tx_data *);
     void iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd);
@@ -537,6 +541,16 @@ public:
                                    uint8_t, uint8_t, const uint8_t *,
                                    uint16_t *, uint8_t);
     int    iwx_ap_remove_internal_sta(struct iwx_softc *, uint8_t, uint16_t);
+    int    iwx_ap_add_client_sta(struct iwx_softc *,
+                                 struct ItlApFirmwareRuntime *,
+                                 const uint8_t *);
+    int    iwx_ap_remove_client_sta(struct iwx_softc *,
+                                    struct ItlApFirmwareRuntime *);
+    int    iwx_ap_send_raw_frame(struct iwx_softc *, mbuf_t, uint16_t);
+    bool   iwx_ap_handle_rx(struct iwx_softc *, mbuf_t, size_t,
+                            struct mbuf_list *);
+    static void iwx_ap_client_task(void *);
+    static void iwx_ap_client_task_dispatch(void *);
     int    iwx_ap_update_quotas(struct iwx_softc *,
                                 const struct ItlApFirmwareRuntime *, bool);
     int    iwx_start_ap_mode(struct iwx_softc *,
@@ -646,7 +660,7 @@ public:
             struct ieee80211_rxinfo *, struct mbuf_list *);
     int    iwx_rx_pkt_valid(struct iwx_rx_packet *);
     void    iwx_rx_pkt(struct iwx_softc *, struct iwx_rx_data *,
-            struct mbuf_list *);
+            struct mbuf_list *, struct mbuf_list *);
     void    iwx_notif_intr(struct iwx_softc *);
     static int    iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count);
     static int    iwx_intr_msix(OSObject *object, IOInterruptEventSource* sender, int count);

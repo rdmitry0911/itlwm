@@ -134,20 +134,28 @@ disable(IONetworkInterface *netif)
 bool ItlIwm::
 supportsAPMode() const
 {
-    /*
-     * IWM firmware has the GO MAC context and station APIs, but the public
-     * capability remains closed until the complete beacon/binding/station and
-     * host association/data lifetime below it is admitted.  Returning true at
-     * the profile-snapshot layer would make Tahoe report a running AP that
-     * cannot yet accept a client.
-     */
+#if !defined(IEEE80211_OPT_OUT_STA_ONLY)
     return false;
+#else
+    /*
+     * This implementation uses DQA queues, typed GO/link stations, and the
+     * MQ-RX descriptor path.  Admit only firmware that advertised all three;
+     * 7k/legacy queue and legacy RX families remain fail-closed.
+     */
+    return (com.sc_device_family == IWM_DEVICE_FAMILY_8000 ||
+            com.sc_device_family == IWM_DEVICE_FAMILY_9000) &&
+        isset(com.sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT) &&
+        isset(com.sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE) &&
+        com.sc_mqrx_supported;
+#endif
 }
 
 IOReturn ItlIwm::
 startAPMode(const struct ItlHalApConfig *config)
 {
     if (!supportsAPMode())
+        return kIOReturnUnsupported;
+    if (!itl_ap_open_config_supported(config))
         return kIOReturnUnsupported;
     if (apRuntime.stage != kItlApFirmwareResourceIdle)
         return kIOReturnBusy;
@@ -173,6 +181,56 @@ stopAPMode()
         return kIOReturnSuccess;
     return iwm_stop_ap_resources(&com, &apRuntime) == 0 ?
         kIOReturnSuccess : kIOReturnError;
+}
+
+IOReturn ItlIwm::
+transmitAPData(mbuf_t packet)
+{
+    mbuf_t wirePacket = NULL;
+    int error = itl_ap_open_encap_data(&apRuntime, packet, &wirePacket);
+    if (error != 0)
+        return error == ENOBUFS ? kIOReturnNoResources : kIOReturnNotReady;
+    const struct ieee80211_frame *wh =
+        mtod(wirePacket, const struct ieee80211_frame *);
+    const bool multicast = IEEE80211_IS_MULTICAST(wh->i_addr1);
+    error = iwm_ap_send_raw_frame(&com, wirePacket,
+        static_cast<uint8_t>(multicast ? apRuntime.multicastQueueId :
+                                        apRuntime.clientQueueId),
+        multicast ? apRuntime.multicastStaId : apRuntime.firstClientStaId);
+    if (error != 0) {
+        mbuf_freem(wirePacket);
+        return error == ENOBUFS ? kIOReturnNoResources : kIOReturnError;
+    }
+    mbuf_freem(packet);
+    return kIOReturnSuccess;
+}
+
+uint32_t ItlIwm::
+getAPTxFreeSpace() const
+{
+    if (!itl_ap_open_is_running(&apRuntime) ||
+        !apRuntime.clientStationInstalled ||
+        apRuntime.clientQueueId >= IWM_MAX_QUEUES ||
+        apRuntime.multicastQueueId >= IWM_MAX_QUEUES)
+        return 0;
+    const struct iwm_tx_ring *client = &com.txq[apRuntime.clientQueueId];
+    const struct iwm_tx_ring *multicast = &com.txq[apRuntime.multicastQueueId];
+    const uint32_t usable = IWM_TX_RING_COUNT - 1;
+    const uint32_t clientFree = client->queued < usable ?
+        usable - client->queued : 0;
+    const uint32_t multicastFree = multicast->queued < usable ?
+        usable - multicast->queued : 0;
+    return MIN(clientFree, multicastFree);
+}
+
+extern "C" bool
+airportItlwmQueryIwmAPTxFreeSpace(ItlHalService *service, uint32_t *freeSpace)
+{
+    ItlIwm *that = OSDynamicCast(ItlIwm, service);
+    if (that == NULL || freeSpace == NULL)
+        return false;
+    *freeSpace = that->getAPTxFreeSpace();
+    return true;
 }
 
 struct ieee80211com *ItlIwm::

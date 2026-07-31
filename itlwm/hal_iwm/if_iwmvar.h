@@ -290,6 +290,8 @@ struct iwm_tx_data {
     uint16_t fc;
     /* Firmware station-table owner used for the scheduler byte-count slot. */
     uint8_t sta_id;
+    /* Raw SoftAP frame: no net80211 node reference or STA TX-status owner. */
+    bool ap_frame;
     
     struct ieee80211_tx_info info;
 };
@@ -523,6 +525,8 @@ struct iwm_softc {
 
 	/* Task for firmware BlockAck setup/teardown and its arguments. */
 	struct task		ba_task;
+	/* Process-context AP client materialization; never wait for q0 in RX. */
+	struct task		ap_client_task;
 	struct iwm_ba_task_data    ba_rx;
     struct iwm_ba_task_data    ba_tx;
 

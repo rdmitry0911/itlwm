@@ -396,6 +396,8 @@ struct iwx_tx_data {
     uint8_t  diag_subtype;
     uint16_t diag_auth_seq;
     uint8_t  diag_peer[6];
+    /* Raw SoftAP frame: queue ownership replaces a net80211 node reference. */
+    bool     ap_frame;
     /*
      * Controller-owned SAE identity. Unlike diag_*, this is not telemetry:
      * the exact ticket is copied before the header trim and is consumed once
@@ -822,6 +824,8 @@ struct iwx_softc {
 	struct task security_rx_task;
 	struct task sae_tx_task;
 	struct task mfp_pae_task;
+	/* Process-context AP client materialization; never wait for q0 in RX. */
+	struct task ap_client_task;
 	enum ieee80211_state	ns_nstate;
 	int			ns_arg;
 

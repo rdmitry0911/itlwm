@@ -21,7 +21,7 @@
 #include "if_iwxvar.h"
 
 /*
- * iwx firmware AP/GO capability classification (fail-closed).
+ * iwx firmware AP/GO capability classification.
  *
  * The Apple AP/APSTA owner contract requires a capability gate before
  * any AP/GO firmware command may be issued by the lower backend. The
@@ -33,20 +33,10 @@
  * context bring-up reuses `IWX_MAC_CONTEXT_CMD` (already implemented
  * locally for STA mode) with the `IWX_FW_MAC_TYPE_GO` MAC type.
  *
- * The local iwx command-interface header `if_iwxreg.h` does not
- * declare AP/SoftAP capability TLV constants. The local port also
- * lacks a per-NIC family configuration table that classifies AP/GO
- * support per firmware image. While both are absent, no specific
- * firmware image in the local `itlwm/firmware/` tree can be proven
- * to support AP/GO MAC contexts; the per-family classification here
- * is therefore deliberately fail-closed.
- *
- * Returning `false` for every device family is the truthful state of
- * the driver, not a fallback. Promoting any per-family entry from
- * `false` to `true` requires a TLV-driven runtime check, the
- * AP-mode arm of `iwx_mac_ctxt_cmd_common`, and HostAP enablement
- * under a scoped opt-out of `IEEE80211_STA_ONLY` — none of which
- * are implemented in this driver.
+ * The local backend now owns the complete open-AP command subset.  Admit it
+ * only in the Tahoe HostAP opt-out build and only when the loaded firmware
+ * advertises the exact queue/station APIs used by that implementation.  This
+ * is deliberately narrower than Linux's general AP family support.
  */
 
 #ifdef __cplusplus
@@ -58,18 +48,15 @@ extern "C" {
  * loaded for the given `device_family` is known to support AP/GO MAC
  * contexts and the AP/GO firmware command set.
  *
- * The function returns `false` for every recognized device family
- * because no per-family entry has been promoted to `true`. The
- * `default` arm also returns `false` so unknown future device
- * families fail closed.
+ * Both local iwx families use the modern TVQM command transport. Unknown
+ * future families remain closed until their command carriers are audited.
  */
 static inline bool iwx_firmware_family_supports_ap_go(int device_family)
 {
     switch (device_family) {
     case IWX_DEVICE_FAMILY_22000:
-        return false;
     case IWX_DEVICE_FAMILY_AX210:
-        return false;
+        return true;
     default:
         return false;
     }
@@ -82,45 +69,51 @@ static inline bool iwx_firmware_family_supports_ap_go(int device_family)
  * gates each successive check below the previous one and returns `true`
  * only if every gate passes.
  *
- * Gate 1 — per-family classification. Calls
- *   iwx_firmware_family_supports_ap_go(sc->sc_device_family).
- *   The classification returns `false` for every recognised family
- *   today, so this gate alone keeps the function fail-closed.
- *
- * Gate 2 — IWX_UCODE_TLV_FLAGS_GO_UAPSD (bit 30 of `sc_capaflags`).
- *   The only locally-named AP/GO firmware-capability flag in
- *   `itlwm/hal_iwx/if_iwxreg.h`. Every iwlwifi-*-68.ucode image in
- *   the current `itlwm/firmware/` tree advertises this flag, so a
- *   per-image firmware-side veto on this gate would be unusual but
- *   the gate is still required to keep AP/GO claims contingent on
- *   firmware evidence rather than family alone.
- *
- * Gate 3 — IWX_UCODE_TLV_CAPA_BEACON_STORING (bit 72 of
- *   `sc_enabled_capa`). The only locally-named AP/GO-relevant CAPA
- *   bit. None of the iwlwifi-*-68.ucode images in the current local
- *   firmware inventory advertise this capability, so this gate
- *   forces a `false` answer across the entire current iwx fleet
- *   even if Gate 1 is later promoted to `true` for some family.
- *
- * Macros named above (`IWX_UCODE_TLV_FLAGS_GO_UAPSD`,
- * `IWX_UCODE_TLV_CAPA_BEACON_STORING`, and the `isset()` BSD bitmap
- * accessor) are declared in `itlwm/hal_iwx/if_iwxreg.h` and the
- * BSD-style `<sys/param.h>` chain. Consumers must include
- * `itlwm/hal_iwx/ItlIwx.hpp` (which already pulls `if_iwxreg.h`)
- * before this helper so the macros are in scope when the inline body
- * is expanded.
+ * BEACON_STORING and GO_UAPSD are optional features, not base AP admission
+ * bits. Linux iwlwifi does not require either for start_ap; requiring them
+ * here would incorrectly hide working AP support. The load-bearing gates are
+ * DQA, typed stations, ADD_STA v12+, and the v11/v12 beacon carrier actually
+ * emitted by this backend.
  */
+static inline uint8_t
+iwx_ap_go_command_version(const struct iwx_softc *sc, uint8_t group,
+                          uint8_t command)
+{
+    for (int i = 0; i < sc->n_cmd_versions; i++) {
+        const struct iwx_fw_cmd_version *entry = &sc->cmd_versions[i];
+        if (entry->group == group && entry->cmd == command)
+            return entry->cmd_ver;
+    }
+    return IWX_FW_CMD_VER_UNKNOWN;
+}
+
 static inline bool iwx_softc_supports_ap_go(const struct iwx_softc *sc)
 {
+#if !defined(IEEE80211_OPT_OUT_STA_ONLY)
+    (void)sc;
+    return false;
+#else
     if (sc == NULL)
         return false;
     if (!iwx_firmware_family_supports_ap_go(sc->sc_device_family))
         return false;
-    if ((sc->sc_capaflags & IWX_UCODE_TLV_FLAGS_GO_UAPSD) == 0)
+    if (!isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_DQA_SUPPORT) ||
+        !isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_STA_TYPE))
         return false;
-    if (!isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_BEACON_STORING))
+    const uint8_t addStationVersion = iwx_ap_go_command_version(
+        sc, IWX_LONG_GROUP, IWX_ADD_STA);
+    if (addStationVersion == IWX_FW_CMD_VER_UNKNOWN ||
+        addStationVersion < 12)
         return false;
-    return true;
+    const uint8_t txCommandVersion = iwx_ap_go_command_version(
+        sc, IWX_LONG_GROUP, IWX_TX_CMD);
+    if (txCommandVersion == IWX_FW_CMD_VER_UNKNOWN ||
+        txCommandVersion <= 8)
+        return false;
+    const uint8_t beaconVersion = iwx_ap_go_command_version(
+        sc, IWX_LONG_GROUP, IWX_BEACON_TEMPLATE_CMD);
+    return beaconVersion == 11 || beaconVersion == 12;
+#endif
 }
 
 #ifdef __cplusplus

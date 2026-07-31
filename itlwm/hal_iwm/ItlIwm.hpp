@@ -31,6 +31,7 @@
 
 #include <HAL/ItlHalService.hpp>
 #include <HAL/ItlApFirmwareRuntime.hpp>
+#include <HAL/ItlApOpenRuntime.hpp>
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
@@ -71,6 +72,8 @@ public:
     bool supportsAPMode() const override;
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
+    IOReturn transmitAPData(mbuf_t packet) override;
+    uint32_t getAPTxFreeSpace() const;
 
     IOReturn beginWclBackgroundScan(
         uint64_t generation,
@@ -319,7 +322,8 @@ public:
                           struct iwm_rx_data *);
     void    iwm_ampdu_rate_control(struct iwm_softc *, struct ieee80211_node *, struct iwm_tx_ring *, uint16_t, uint16_t, struct ieee80211_tx_info *, int, uint32_t);
     void iwm_rx_mpdu_mq(struct iwm_softc *sc, mbuf_t m, void *pktdata,
-                   size_t maxlen, struct mbuf_list *ml);
+                   size_t maxlen, struct mbuf_list *ml,
+                   struct mbuf_list *apMl);
     void    iwm_rx_bmiss(struct iwm_softc *, struct iwm_rx_packet *,
                          struct iwm_rx_data *);
     int    iwm_binding_cmd(struct iwm_softc *, struct iwm_node *, uint32_t);
@@ -400,8 +404,18 @@ public:
     int    iwm_ap_add_internal_sta(struct iwm_softc *,
                                    const struct ItlApFirmwareRuntime *,
                                    uint8_t, uint8_t, const uint8_t *,
-                                   uint8_t, int);
+                                   uint8_t, int, uint8_t);
     int    iwm_ap_remove_internal_sta(struct iwm_softc *, uint8_t, uint8_t);
+    int    iwm_ap_add_client_sta(struct iwm_softc *,
+                                 struct ItlApFirmwareRuntime *,
+                                 const uint8_t *);
+    int    iwm_ap_remove_client_sta(struct iwm_softc *,
+                                    struct ItlApFirmwareRuntime *);
+    int    iwm_ap_send_raw_frame(struct iwm_softc *, mbuf_t, uint8_t,
+                                 uint8_t);
+    bool   iwm_ap_handle_rx(struct iwm_softc *, mbuf_t, size_t,
+                            struct mbuf_list *);
+    static void iwm_ap_client_task(void *);
     int    iwm_ap_update_quotas(struct iwm_softc *,
                                 const struct ItlApFirmwareRuntime *, bool);
     int    iwm_start_ap_resources(struct iwm_softc *,
@@ -476,7 +490,7 @@ public:
                struct ieee80211_rxinfo *, struct mbuf_list *);
     int    iwm_rx_pkt_valid(struct iwm_rx_packet *);
     void    iwm_rx_pkt(struct iwm_softc *, struct iwm_rx_data *,
-                       struct mbuf_list *);
+                       struct mbuf_list *, struct mbuf_list *);
     void    iwm_notif_intr(struct iwm_softc *);
     static int    iwm_intr(OSObject *object, IOInterruptEventSource* sender, int count);
     static int    iwm_intr_msix(OSObject *object, IOInterruptEventSource* sender, int count);

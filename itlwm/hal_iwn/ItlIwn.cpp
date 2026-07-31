@@ -62,6 +62,10 @@
 extern "C" void airportItlwmRequestAPTxDequeue(
     IOEthernetController *controller);
 #endif
+extern "C" bool airportItlwmQueryIwmAPTxFreeSpace(
+    ItlHalService *, uint32_t *);
+extern "C" bool airportItlwmQueryIwxAPTxFreeSpace(
+    ItlHalService *, uint32_t *);
 
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwn, ItlHalService)
@@ -5197,7 +5201,13 @@ extern "C" uint32_t
 airportItlwmQueryAPTxFreeSpace(ItlHalService *service)
 {
     ItlIwn *that = OSDynamicCast(ItlIwn, service);
-    return that != NULL ? that->getAPTxFreeSpace() : 0;
+    if (that != NULL)
+        return that->getAPTxFreeSpace();
+    uint32_t freeSpace = 0;
+    if (airportItlwmQueryIwmAPTxFreeSpace(service, &freeSpace))
+        return freeSpace;
+    return airportItlwmQueryIwxAPTxFreeSpace(service, &freeSpace) ?
+        freeSpace : 0;
 }
 
 bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,

@@ -822,7 +822,8 @@ drop:
 
 void ItlIwm::
 iwm_rx_mpdu_mq(struct iwm_softc *sc, mbuf_t m, void *pktdata,
-               size_t maxlen, struct mbuf_list *ml)
+               size_t maxlen, struct mbuf_list *ml,
+               struct mbuf_list *apMl)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_rxinfo rxi;
@@ -934,6 +935,8 @@ iwm_rx_mpdu_mq(struct iwm_softc *sc, mbuf_t m, void *pktdata,
             iwm_flip_address(qwh->i_addr3);
         }
     }
+    if (iwm_ap_handle_rx(sc, m, mbuf_pkthdr_len(m), apMl))
+        return;
     
     /*
      * Verify decryption before duplicate detection. The latter uses
@@ -995,7 +998,8 @@ _var_ = (t)((_pkt_)+1);                    \
 } while (/*CONSTCOND*/0)
 
 void ItlIwm::
-iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data, struct mbuf_list *ml)
+iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data,
+           struct mbuf_list *ml, struct mbuf_list *apMl)
 {
     struct _ifnet *ifp = IC2IFP(&sc->sc_ic);
     struct iwm_rx_packet *pkt, *nextpkt;
@@ -1049,7 +1053,7 @@ iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data, struct mbuf_list *ml)
                         mbuf_adj(m0, offset);
                     if (sc->sc_mqrx_supported)
                         iwm_rx_mpdu_mq(sc, m0, pkt->data,
-                                       maxlen, ml);
+                                       maxlen, ml, apMl);
                     else
                         iwm_rx_mpdu(sc, m0, pkt->data,
                                     maxlen, ml);
@@ -1071,7 +1075,7 @@ iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data, struct mbuf_list *ml)
                     mbuf_adj(m, offset);
                     if (sc->sc_mqrx_supported)
                         iwm_rx_mpdu_mq(sc, m, pkt->data,
-                                       maxlen, ml);
+                                       maxlen, ml, apMl);
                     else
                         iwm_rx_mpdu(sc, m, pkt->data,
                                     maxlen, ml);

@@ -126,6 +126,11 @@
 #include <net80211/ieee80211_priv.h>
 #include "rs.h"
 
+#if __IO80211_TARGET >= __MAC_26_0
+extern "C" void airportItlwmRequestAPTxDequeue(
+    IOEthernetController *controller);
+#endif
+
 #ifdef IWM_DEBUG
 int iwm_debug = 1;
 #endif
@@ -1308,6 +1313,25 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
         if (txd->m != NULL) {
             skb_freed++;
 
+            if (txd->ap_frame) {
+                const bool failed =
+                    (status & IWM_TX_STATUS_MSK) != IWM_TX_STATUS_SUCCESS &&
+                    (status & IWM_TX_STATUS_MSK) != IWM_TX_STATUS_DIRECT_DONE;
+                if (failed)
+                    XYLog("%s: IWM AP TX failed qid=%d status=0x%x\n",
+                          DEVNAME(sc), qid,
+                          (unsigned)(status & IWM_TX_STATUS_MSK));
+                iwm_reset_sched(sc, ring->qid, ring->tail, txd->sta_id);
+                iwm_txd_done(sc, txd);
+                ring->queued--;
+#if __IO80211_TARGET >= __MAC_26_0
+                ItlIwm *that = container_of(sc, ItlIwm, com);
+                airportItlwmRequestAPTxDequeue(that->getController());
+#endif
+                ring->tail = (ring->tail + 1) % IWM_TX_RING_COUNT;
+                continue;
+            }
+
             memset(&info->status, 0, sizeof(info->status));
             info->flags &= ~(IEEE80211_TX_STAT_ACK | IEEE80211_TX_STAT_TX_FILTERED);
 
@@ -1412,14 +1436,18 @@ iwm_txd_done(struct iwm_softc *sc, struct iwm_tx_data *txd)
         txd->m = NULL;
     }
     
-    KASSERT(txd->in, "txd->in");
-    ieee80211_release_node(ic, &txd->in->in_ni);
-    txd->in = NULL;
+    if (txd->in != NULL) {
+        ieee80211_release_node(ic, &txd->in->in_ni);
+        txd->in = NULL;
+    } else {
+        KASSERT(txd->ap_frame, "txd->in || txd->ap_frame");
+    }
     txd->totlen = 0;
     txd->txmcs = 0;
     txd->txrate = 0;
     txd->fc = 0;
     txd->sta_id = 0;
+    txd->ap_frame = false;
     memset(&txd->info, 0, sizeof(struct ieee80211_tx_info));
 }
 
@@ -1468,6 +1496,21 @@ iwm_rx_tx_cmd(struct iwm_softc *sc, struct iwm_rx_packet *pkt,
     /* Sanity checks. */
     if (sizeof(*tx_resp) > len)
         return;
+    if (qid < 0 || qid >= IWM_MAX_QUEUES)
+        return;
+    ring = &sc->txq[qid];
+    txd = &ring->data[idx];
+    if (txd->ap_frame) {
+        if (tx_resp->frame_count != 1 ||
+            sizeof(*tx_resp) + sizeof(ssn) +
+                sizeof(struct iwm_agg_tx_status) > len)
+            return;
+        sc->sc_tx_timer[qid] = 0;
+        ssn = iwm_get_scd_ssn(tx_resp);
+        iwm_rx_tx_cmd_single(sc, tx_resp, qid,
+                             IWM_AGG_SSN_TO_TXQ_IDX(ssn));
+        return;
+    }
     if (qid < IWM_FIRST_AGG_TX_QUEUE && tx_resp->frame_count > 1)
         return;
     if (qid > IWM_LAST_AGG_TX_QUEUE)
@@ -1477,9 +1520,6 @@ iwm_rx_tx_cmd(struct iwm_softc *sc, struct iwm_rx_packet *pkt,
         return;
     
     sc->sc_tx_timer[qid] = 0;
-    
-    ring = &sc->txq[qid];
-    txd = &ring->data[idx];
     
     if (tx_resp->frame_count > 1) {
         int tid = cmd_hdr->qid - IWM_FIRST_AGG_TX_QUEUE;
@@ -1853,6 +1893,7 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     }
     data->m = m;
     data->in = in;
+    data->ap_frame = false;
     data->txmcs = ni->ni_txmcs;
     data->txrate = ni->ni_txrate;
     data->totlen = totlen;
@@ -1915,6 +1956,122 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     if (ic->ic_if.if_flags & IFF_UP)
         sc->sc_tx_timer[ring->qid] = 15;
     
+    return 0;
+}
+
+/*
+ * Submit a raw frame owned by the secondary GO MAC.  The queue's firmware
+ * station binding is authoritative; no primary-STA net80211 node may leak
+ * into this descriptor lifetime.
+ */
+int ItlIwm::
+iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
+                      uint8_t staId)
+{
+    if (m == NULL || apRuntime.stage != kItlApFirmwareResourceRunning ||
+        queueId >= IWM_MAX_QUEUES)
+        return EINVAL;
+    const size_t frameLength = mbuf_pkthdr_len(m);
+    if (frameLength < sizeof(struct ieee80211_frame) || frameLength > UINT16_MAX)
+        return EMSGSIZE;
+
+    struct ieee80211_frame *wh = mtod(m, struct ieee80211_frame *);
+    const uint8_t type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
+    const uint8_t subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    uint16_t frameControl;
+    memcpy(&frameControl, wh->i_fc, sizeof(frameControl));
+    if (type != IEEE80211_FC0_TYPE_MGT && type != IEEE80211_FC0_TYPE_DATA)
+        return EINVAL;
+    const size_t headerLength = ieee80211_get_hdrlen(wh);
+    if (headerLength < sizeof(*wh) || headerLength > frameLength)
+        return EINVAL;
+
+    struct iwm_tx_ring *ring = &sc->txq[queueId];
+    if (ring->queued >= IWM_TX_RING_COUNT - 1)
+        return ENOBUFS;
+    struct iwm_tfd *descriptor = &ring->desc[ring->cur];
+    struct iwm_tx_data *data = &ring->data[ring->cur];
+    struct iwm_device_cmd *deviceCommand = &ring->cmd[ring->cur];
+    memset(descriptor, 0, sizeof(*descriptor));
+    memset(deviceCommand, 0, sizeof(*deviceCommand));
+    deviceCommand->hdr.code = IWM_TX_CMD;
+    deviceCommand->hdr.qid = ring->qid;
+    deviceCommand->hdr.idx = ring->cur;
+
+    struct iwm_tx_cmd *tx =
+        reinterpret_cast<struct iwm_tx_cmd *>(deviceCommand->data);
+    tx->len = htole16((uint16_t)frameLength);
+    tx->sta_id = staId;
+    tx->tid_tspec = type == IEEE80211_FC0_TYPE_DATA ?
+        IWM_TID_NON_QOS : IWM_MAX_TID_COUNT;
+    tx->life_time = htole32(IWM_TX_CMD_LIFE_TIME_INFINITE);
+    tx->rts_retry_limit = IWM_RTS_DFAULT_RETRY_LIMIT;
+    tx->data_retry_limit = IWM_MGMT_DFAULT_RETRY_LIMIT;
+    tx->pm_frame_timeout = htole16(type == IEEE80211_FC0_TYPE_MGT ? 2 : 0);
+    uint32_t txFlags = IWM_TX_CMD_FLG_SEQ_CTL;
+    if (!IEEE80211_IS_MULTICAST(wh->i_addr1))
+        txFlags |= IWM_TX_CMD_FLG_ACK;
+    if (subtype == IEEE80211_FC0_SUBTYPE_PROBE_RESP)
+        txFlags |= IWM_TX_CMD_FLG_TSF;
+    tx->tx_flags = htole32(txFlags);
+    uint32_t rate = (1U << sc->sc_mgmt_last_antenna_idx) <<
+        IWM_RATE_MCS_ANT_POS;
+    if (apRuntime.config.channel <= 14)
+        rate |= iwl_mvm_mac80211_idx_to_hwrate(IWL_FIRST_CCK_RATE) |
+            RATE_MCS_CCK_MSK;
+    else
+        rate |= iwl_mvm_mac80211_idx_to_hwrate(IWL_FIRST_OFDM_RATE);
+    tx->rate_n_flags = htole32(rate);
+    tx->dram_lsb_ptr = htole32(data->scratch_paddr);
+    tx->dram_msb_ptr = iwm_get_dma_hi_addr(data->scratch_paddr);
+    memcpy(reinterpret_cast<uint8_t *>(tx) + sizeof(*tx), wh, headerLength);
+
+    const uint16_t firstTbLength = TB0_SIZE;
+    const uint16_t commandLength = sizeof(struct iwm_tx_cmd) +
+        sizeof(struct iwm_cmd_header) + headerLength - firstTbLength;
+    const uint16_t secondTbLength = _ALIGN(commandLength, 4);
+    if (secondTbLength != commandLength) {
+        tx->tx_flags |= htole32(IWM_TX_CMD_FLG_MH_PAD);
+        tx->offload_assist |= htole16(IWM_TX_CMD_OFFLD_PAD);
+    }
+
+    mbuf_adj(m, headerLength);
+    IOPhysicalSegment segments[IWM_NUM_OF_TBS - 2];
+    const int segmentCount = data->map->cursor->getPhysicalSegmentsWithCoalesce(
+        m, segments, IWM_NUM_OF_TBS - 2);
+    if (segmentCount == 0)
+        return ENOMEM;
+
+    data->m = m;
+    data->in = NULL;
+    data->ap_frame = true;
+    data->txmcs = 0;
+    data->txrate = 0;
+    data->totlen = (int)frameLength;
+    data->fc = frameControl;
+    data->sta_id = staId;
+    memset(&data->info, 0, sizeof(data->info));
+
+    descriptor->num_tbs = 2 + segmentCount;
+    descriptor->tbs[0].lo = htole32(data->cmd_paddr);
+    descriptor->tbs[0].hi_n_len = htole16(
+        iwm_get_dma_hi_addr(data->cmd_paddr) | firstTbLength << 4);
+    descriptor->tbs[1].lo = htole32(data->cmd_paddr + firstTbLength);
+    descriptor->tbs[1].hi_n_len = htole16(
+        iwm_get_dma_hi_addr(data->cmd_paddr) | secondTbLength << 4);
+    for (int i = 0; i < segmentCount; i++) {
+        descriptor->tbs[i + 2].lo = htole32(segments[i].location);
+        descriptor->tbs[i + 2].hi_n_len = htole16(
+            iwm_get_dma_hi_addr(segments[i].location) |
+            segments[i].length << 4);
+    }
+
+    iwm_update_sched(sc, ring->qid, ring->cur, staId,
+                     static_cast<uint16_t>(frameLength));
+    ring->cur = (ring->cur + 1) % IWM_TX_RING_COUNT;
+    IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    ring->queued++;
+    sc->sc_tx_timer[ring->qid] = 15;
     return 0;
 }
 
@@ -2294,7 +2451,7 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
                         const struct ItlApFirmwareRuntime *runtime,
                         uint8_t staId,
                         uint8_t stationType, const uint8_t *address,
-                        uint8_t queueId, int fifo)
+                        uint8_t queueId, int fifo, uint8_t tid)
 {
     if (!isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT) ||
         !isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
@@ -2302,8 +2459,7 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
 
     if (!iwm_nic_lock(sc))
         return EBUSY;
-    int error = iwm_enable_txq(sc, staId, queueId, fifo, 0,
-        stationType == IWM_STA_MULTICAST ? 0 : IWM_MAX_TID_COUNT, 0);
+    int error = iwm_enable_txq(sc, staId, queueId, fifo, 0, tid, 0);
     iwm_nic_unlock(sc);
     if (error != 0)
         return error;
@@ -2316,6 +2472,11 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
         runtime->macId, runtime->macColor));
     IEEE80211_ADDR_COPY(command.addr, address);
     command.tid_disable_tx = htole16(0xffff);
+    command.station_flags_msk = htole32(IWM_STA_FLG_FAT_EN_MSK |
+                                         IWM_STA_FLG_MIMO_EN_MSK |
+                                         IWM_STA_FLG_RTS_MIMO_PROT);
+    if (stationType == IWM_STA_LINK)
+        command.assoc_id = htole16(runtime->clientAid);
     command.tfd_queue_msk = htole32(1U << queueId);
     uint32_t status = IWM_ADD_STA_SUCCESS;
     error = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA, sizeof(command),
@@ -2324,9 +2485,222 @@ iwm_ap_add_internal_sta(struct iwm_softc *sc,
         (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
         error = EIO;
     if (error != 0)
-        (void)iwm_disable_txq(sc, queueId,
-            stationType == IWM_STA_MULTICAST ? 0 : IWM_MAX_TID_COUNT, 0);
+        (void)iwm_disable_txq(sc, queueId, tid, 0);
     return error;
+}
+
+int ItlIwm::
+iwm_ap_add_client_sta(struct iwm_softc *sc,
+                      struct ItlApFirmwareRuntime *runtime,
+                      const uint8_t *station)
+{
+    if (runtime == NULL || station == NULL || runtime->clientStationInstalled)
+        return EINVAL;
+    /* Queues 10..17 remain reserved for the existing STA aggregation map. */
+    const uint8_t queueId = IWM_DQA_AP_CLIENT_QUEUE;
+    if (queueId >= IWM_MAX_QUEUES)
+        return ENOSPC;
+    const int error = iwm_ap_add_internal_sta(sc, runtime,
+        runtime->firstClientStaId, IWM_STA_LINK, station, queueId,
+        IWM_TX_FIFO_BE, IWM_TID_NON_QOS);
+    if (error != 0)
+        return error;
+    runtime->clientQueueId = queueId;
+    runtime->clientStationInstalled = true;
+    IEEE80211_ADDR_COPY(runtime->clientStationMac, station);
+    return 0;
+}
+
+int ItlIwm::
+iwm_ap_remove_client_sta(struct iwm_softc *sc,
+                         struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || !runtime->clientStationInstalled)
+        return 0;
+    const int disableError = iwm_disable_txq(sc,
+        static_cast<uint8_t>(runtime->clientQueueId), IWM_TID_NON_QOS, 0);
+    struct iwm_rm_sta_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.sta_id = runtime->firstClientStaId;
+    const int removeError = iwm_send_cmd_pdu(sc, IWM_REMOVE_STA, 0,
+                                              sizeof(command), &command);
+    runtime->clientStationInstalled = false;
+    runtime->clientQueueId = UINT16_MAX;
+    explicit_bzero(runtime->clientStationMac,
+                   sizeof(runtime->clientStationMac));
+    return disableError != 0 ? disableError : removeError;
+}
+
+static int
+iwm_ap_reply_to_mbuf(const struct ItlApOpenRxResult *result, mbuf_t *packet)
+{
+    if (result == NULL || packet == NULL || result->reply == NULL ||
+        result->replyLength == 0)
+        return EINVAL;
+    unsigned int maxChunks = 1;
+    *packet = NULL;
+    if (mbuf_allocpacket(MBUF_DONTWAIT, result->replyLength, &maxChunks,
+            packet) != 0 || *packet == NULL)
+        return ENOMEM;
+    mbuf_setlen(*packet, result->replyLength);
+    mbuf_pkthdr_setlen(*packet, result->replyLength);
+    memcpy(mbuf_data(*packet), result->reply, result->replyLength);
+    return 0;
+}
+
+static void
+iwm_ap_publish_station(struct iwm_softc *sc,
+                       const struct ItlApFirmwareRuntime *runtime, int event)
+{
+    struct ieee80211_node witness;
+    bzero(&witness, sizeof(witness));
+    IEEE80211_ADDR_COPY(witness.ni_macaddr, runtime->clientMac);
+    if (runtime->clientAssocIEsLength != 0) {
+        witness.ni_rsnie_tlv = const_cast<uint8_t *>(runtime->clientAssocIEs);
+        witness.ni_rsnie_tlv_len =
+            static_cast<uint16_t>(runtime->clientAssocIEsLength);
+    }
+    ieee80211_apsta_event_publish(&sc->sc_ic, &witness, event);
+}
+
+void ItlIwm::
+iwm_ap_client_task(void *arg)
+{
+    struct iwm_softc *sc = static_cast<struct iwm_softc *>(arg);
+    ItlIwm *that = container_of(sc, ItlIwm, com);
+    struct ItlApFirmwareRuntime *runtime = &that->apRuntime;
+    struct ItlApOpenRxResult result;
+    itl_ap_open_rx_result_reset(&result);
+
+    if (!runtime->clientAssociationPending)
+        return;
+    runtime->clientAssociationPending = false;
+    if (!itl_ap_open_is_running(runtime) ||
+        !runtime->clientAuthenticated)
+        return;
+
+    int error = 0;
+    runtime->clientAid = 1;
+    if (runtime->clientStationInstalled &&
+        !IEEE80211_ADDR_EQ(runtime->clientStationMac,
+                           runtime->clientMac))
+        error = that->iwm_ap_remove_client_sta(sc, runtime);
+    if (error == 0 && !runtime->clientStationInstalled)
+        error = that->iwm_ap_add_client_sta(sc, runtime,
+                                            runtime->clientMac);
+    if (error == 0) {
+        error = itl_ap_open_build_assoc_success(runtime, &result);
+    }
+
+    mbuf_t response = NULL;
+    if (error == 0)
+        error = iwm_ap_reply_to_mbuf(&result, &response);
+    if (error == 0)
+        error = that->iwm_ap_send_raw_frame(sc, response,
+            static_cast<uint8_t>(runtime->broadcastQueueId),
+            runtime->broadcastStaId);
+    if (error != 0 && response != NULL)
+        mbuf_freem(response);
+
+    if (error == 0 && itl_ap_open_is_running(runtime) &&
+        runtime->clientAuthenticated) {
+        runtime->clientAssociated = true;
+        runtime->clientAuthorized = true;
+        iwm_ap_publish_station(sc, runtime, IEEE80211_APSTA_EVENT_ASSOC);
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmRequestAPTxDequeue(that->getController());
+#endif
+    } else {
+        runtime->clientAssociated = false;
+        runtime->clientAuthorized = false;
+        runtime->clientAid = 0;
+        if (runtime->clientStationInstalled)
+            (void)that->iwm_ap_remove_client_sta(sc, runtime);
+        if (error != 0)
+            XYLog("%s: IWM open AP association task error=%d\n",
+                  DEVNAME(sc), error);
+    }
+    itl_ap_open_release_result(&result);
+}
+
+bool ItlIwm::
+iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
+                 struct mbuf_list *apFrames)
+{
+    struct ItlApOpenRxResult result;
+    const int classifyError = itl_ap_open_classify_rx(
+        &apRuntime, packet, frameLength, &result);
+    if (result.disposition == kItlApOpenRxNotOurs)
+        return false;
+
+    int error = classifyError;
+    if (error == 0 && result.disposition == kItlApOpenRxReply) {
+        const struct ieee80211_frame *reply =
+            reinterpret_cast<const struct ieee80211_frame *>(result.reply);
+        const uint8_t subtype = reply->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+        if (subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+            if (apRuntime.clientAssociated)
+                iwm_ap_publish_station(sc, &apRuntime,
+                                       IEEE80211_APSTA_EVENT_LEAVE);
+            apRuntime.clientAssociationPending = false;
+            apRuntime.clientAuthenticated = false;
+            apRuntime.clientAssociated = false;
+            apRuntime.clientAuthorized = false;
+            apRuntime.clientAid = 0;
+            apRuntime.clientAssocIEsLength = 0;
+        }
+        mbuf_t response = NULL;
+        if (error == 0)
+            error = iwm_ap_reply_to_mbuf(&result, &response);
+        if (error == 0)
+            error = iwm_ap_send_raw_frame(sc, response,
+                static_cast<uint8_t>(apRuntime.broadcastQueueId),
+                apRuntime.broadcastStaId);
+        if (error != 0 && response != NULL)
+            mbuf_freem(response);
+        if (error == 0 && subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+            IEEE80211_ADDR_COPY(apRuntime.clientMac, result.station);
+            apRuntime.clientAuthenticated = true;
+        }
+    } else if (error == 0 &&
+               result.disposition == kItlApOpenRxAssociate) {
+        const size_t ieOffset = sizeof(struct ieee80211_frame) + 4;
+        apRuntime.clientAssocIEsLength = frameLength > ieOffset ?
+            MIN(frameLength - ieOffset,
+                sizeof(apRuntime.clientAssocIEs)) : 0;
+        if (apRuntime.clientAssocIEsLength != 0)
+            error = mbuf_copydata(packet, ieOffset,
+                apRuntime.clientAssocIEsLength,
+                apRuntime.clientAssocIEs);
+        if (error == 0) {
+            apRuntime.clientAssociationPending = true;
+            iwm_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
+        }
+    } else if (error == 0 && result.disposition == kItlApOpenRxData) {
+        if (apFrames != NULL && result.ethernetPacket != NULL) {
+            ml_enqueue(apFrames, result.ethernetPacket);
+            result.ethernetPacket = NULL;
+        }
+    } else if (error == 0 &&
+               result.disposition == kItlApOpenRxDisconnect) {
+        if (apRuntime.clientStationInstalled) {
+            if (apRuntime.clientAssociated)
+                iwm_ap_publish_station(sc, &apRuntime,
+                                       IEEE80211_APSTA_EVENT_LEAVE);
+        }
+        apRuntime.clientAssociationPending = false;
+        apRuntime.clientAuthenticated = false;
+        apRuntime.clientAssociated = false;
+        apRuntime.clientAuthorized = false;
+        apRuntime.clientAid = 0;
+        apRuntime.clientAssocIEsLength = 0;
+    }
+    if (error != 0)
+        XYLog("%s: IWM open AP RX action=%u error=%d\n", DEVNAME(sc),
+              (unsigned)result.disposition, error);
+    itl_ap_open_release_result(&result);
+    mbuf_freem(packet);
+    return true;
 }
 
 int ItlIwm::
@@ -2440,13 +2814,13 @@ iwm_start_ap_resources(struct iwm_softc *sc,
         { 0x03, 0, 0, 0, 0, 0 };
     error = iwm_ap_add_internal_sta(sc, runtime, runtime->multicastStaId,
         IWM_STA_MULTICAST, multicastAddress, runtime->multicastQueueId,
-        IWM_TX_FIFO_MCAST);
+        IWM_TX_FIFO_MCAST, IWM_TID_NON_QOS);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceMulticastStation;
     error = iwm_ap_add_internal_sta(sc, runtime, runtime->broadcastStaId,
         IWM_STA_GENERAL_PURPOSE, etherbroadcastaddr,
-        runtime->broadcastQueueId, IWM_TX_FIFO_VO);
+        runtime->broadcastQueueId, IWM_TX_FIFO_VO, IWM_MAX_TID_COUNT);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceBroadcastStation;
@@ -2469,9 +2843,18 @@ iwm_stop_ap_resources(struct iwm_softc *sc,
         return 0;
     const uint8_t previousStage = runtime->stage;
     runtime->stage = kItlApFirmwareResourceStopping;
+    if (sc->sc_nswq != NULL)
+        iwm_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
+    if (sc->sc_nswq != NULL)
+        taskq_barrier(sc->sc_nswq);
     int firstError = 0;
-    if (previousStage >= kItlApFirmwareResourceRunning)
-        firstError = iwm_ap_update_quotas(sc, runtime, false);
+    if (runtime->clientStationInstalled)
+        firstError = iwm_ap_remove_client_sta(sc, runtime);
+    if (previousStage >= kItlApFirmwareResourceRunning) {
+        const int error = iwm_ap_update_quotas(sc, runtime, false);
+        if (firstError == 0)
+            firstError = error;
+    }
     if (previousStage >= kItlApFirmwareResourceBroadcastStation) {
         const int error = iwm_ap_remove_internal_sta(sc,
             runtime->broadcastStaId, runtime->broadcastQueueId);
@@ -4136,6 +4519,7 @@ iwm_stop(struct _ifnet *ifp)
     /* Cancel scheduled tasks and let any stale tasks finish up. */
     task_del(systq, &sc->init_task);
     iwm_del_task(sc, sc->sc_nswq, &sc->newstate_task);
+    iwm_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
     iwm_del_task(sc, systq, &sc->ba_task);
     iwm_del_task(sc, systq, &sc->mac_ctxt_task);
     iwm_del_task(sc, systq, &sc->chan_ctxt_task);
@@ -4538,6 +4922,7 @@ void ItlIwm::
 iwm_notif_intr(struct iwm_softc *sc)
 {
     struct mbuf_list ml = MBUF_LIST_INITIALIZER();
+    struct mbuf_list apMl = MBUF_LIST_INITIALIZER();
     uint32_t wreg;
     uint16_t hw;
     int count;
@@ -4557,10 +4942,11 @@ iwm_notif_intr(struct iwm_softc *sc)
     hw &= (count - 1);
     while (sc->rxq.cur != hw) {
         struct iwm_rx_data *data = &sc->rxq.data[sc->rxq.cur];
-        iwm_rx_pkt(sc, data, &ml);
+        iwm_rx_pkt(sc, data, &ml, &apMl);
         ADVANCE_RXQ(sc);
     }
     if_input(&sc->sc_ic.ic_if, &ml);
+    if_input_ap(&sc->sc_ic.ic_if, &apMl);
     /*
      * Tell the firmware what we have processed.
      * Seems like the hardware gets upset unless we align the write by 8??
@@ -5353,6 +5739,8 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     task_set(&sc->init_task, iwm_init_task, sc, "init_task");
     task_set(&sc->newstate_task, iwm_newstate_task, sc, "newstate_task");
     task_set(&sc->ba_task, iwm_ba_task, sc, "ba_task");
+    task_set(&sc->ap_client_task, iwm_ap_client_task, sc,
+             "iwm_ap_client_task");
     task_set(&sc->mac_ctxt_task, iwm_mac_ctxt_task, sc, "mac_ctxt_task");
     task_set(&sc->chan_ctxt_task, iwm_chan_ctxt_task, sc, "chan_ctxt_task");
     

@@ -39,6 +39,17 @@ struct ItlApFirmwareRuntime {
     uint8_t firstClientStaId;
     uint16_t broadcastQueueId;
     uint16_t multicastQueueId;
+    uint16_t clientQueueId;
+    uint16_t clientAid;
+    uint8_t clientMac[IEEE80211_ADDR_LEN];
+    uint8_t clientStationMac[IEEE80211_ADDR_LEN];
+    uint8_t clientAssocIEs[512];
+    size_t clientAssocIEsLength;
+    bool clientAssociationPending;
+    bool clientAuthenticated;
+    bool clientAssociated;
+    bool clientAuthorized;
+    bool clientStationInstalled;
     bool samePhyAsPrimary;
     bool replayAfterWake;
 };
@@ -52,6 +63,7 @@ itl_ap_firmware_runtime_reset(struct ItlApFirmwareRuntime *runtime)
     runtime->stage = kItlApFirmwareResourceIdle;
     runtime->broadcastQueueId = UINT16_MAX;
     runtime->multicastQueueId = UINT16_MAX;
+    runtime->clientQueueId = UINT16_MAX;
 }
 
 static inline int
