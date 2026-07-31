@@ -32,6 +32,22 @@
 #include <net80211/ieee80211_var.h>
 
 /*
+ * Canonical WMM Parameter element for the AP's 11g/11a/11n contention
+ * profile.  Keep the on-air carrier shared by the upper beacon owner and
+ * the lower association-response builder so IWM and IWX cannot advertise
+ * different EDCA parameters.  The records are ordered BE, BK, VI, VO and
+ * match ieee80211_edca_table[] / ieee80211_add_wme_param().
+ */
+static constexpr uint8_t kItlHalApWmmParameterIE[] = {
+    IEEE80211_ELEMID_VENDOR, 24,
+    0x00, 0x50, 0xf2, 0x02, 0x01, 0x01, 0x00, 0x00,
+    0x03, 0xa4, 0x00, 0x00,
+    0x27, 0xa4, 0x00, 0x00,
+    0x42, 0x43, 0x5e, 0x00,
+    0x62, 0x32, 0x2f, 0x00,
+};
+
+/*
  * AP/GO HAL parameter shapes.
  *
  * These structs are the canonical local representation of the

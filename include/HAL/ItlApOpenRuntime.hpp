@@ -687,6 +687,7 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
     const uint8_t *rates = NULL;
     const uint8_t *extendedRates = NULL;
     const uint8_t *rsn = NULL;
+    bool qos = false;
     while (cursor + 2 <= end) {
         const size_t elementLength = cursor[1];
         if (cursor + 2 + elementLength > end)
@@ -699,6 +700,16 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
             extendedRates = cursor;
         else if (cursor[0] == IEEE80211_ELEMID_RSN)
             rsn = cursor;
+        else if (cursor[0] == IEEE80211_ELEMID_QOS_CAP &&
+                 elementLength >= 1)
+            qos = true;
+        else if (cursor[0] == IEEE80211_ELEMID_VENDOR &&
+                 elementLength == 7 &&
+                 memcmp(cursor + 2, MICROSOFT_OUI, 3) == 0 &&
+                 cursor[5] == WME_OUI_TYPE &&
+                 cursor[6] == WME_INFO_OUI_SUBTYPE &&
+                 cursor[7] == WME_VERSION)
+            qos = true;
         cursor += 2 + elementLength;
     }
 
@@ -737,6 +748,7 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
         memcpy(client->clientRsnIE, rsn, rsnLength);
     }
     client->clientLegacyRateMask = legacyRateMask;
+    client->clientQos = qos;
 
     result->disposition = kItlApOpenRxAssociate;
     result->reassociation = reassociation;
@@ -767,7 +779,8 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
     const bool secure = itl_ap_client_is_secure(runtime);
     const size_t responseLength = sizeof(struct ieee80211_frame) + 6 +
         2 + sizeof(rates2g) + (is2g ? 2 + sizeof(extendedRates) : 0) +
-        (secure ? runtime->config.rsnIELength : 0);
+        (secure ? runtime->config.rsnIELength : 0) +
+        (client->clientQos ? sizeof(kItlHalApWmmParameterIE) : 0);
     int error = itl_ap_open_alloc_reply(responseLength, &result->reply);
     if (error != 0)
         return error;
@@ -801,6 +814,11 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
     if (secure) {
         memcpy(out, runtime->rsnIE, runtime->config.rsnIELength);
         out += runtime->config.rsnIELength;
+    }
+    if (client->clientQos) {
+        memcpy(out, kItlHalApWmmParameterIE,
+               sizeof(kItlHalApWmmParameterIE));
+        out += sizeof(kItlHalApWmmParameterIE);
     }
     result->replyLength = static_cast<size_t>(out - result->reply);
     result->disposition = kItlApOpenRxReply;
@@ -930,9 +948,12 @@ itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
         !client->clientAssociated)
         return EINVAL;
     const size_t ethernetLength = mbuf_pkthdr_len(ethernetPacket);
+    const size_t headerLength = client->clientQos ?
+        sizeof(struct ieee80211_qosframe) :
+        sizeof(struct ieee80211_frame);
     if (ethernetLength < ETHER_HDR_LEN ||
         ethernetLength - ETHER_HDR_LEN >
-            MCLBYTES - sizeof(struct ieee80211_frame) - LLC_SNAPFRAMELEN)
+            MCLBYTES - headerLength - LLC_SNAPFRAMELEN)
         return EMSGSIZE;
     struct ether_header ethernet;
     if (mbuf_copydata(ethernetPacket, 0, sizeof(ethernet), &ethernet) != 0)
@@ -948,7 +969,7 @@ itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
         !IEEE80211_ADDR_EQ(ethernet.ether_dhost, client->clientMac))
         return EHOSTUNREACH;
 
-    const size_t wireLength = sizeof(struct ieee80211_frame) +
+    const size_t wireLength = headerLength +
         LLC_SNAPFRAMELEN + ethernetLength - ETHER_HDR_LEN;
     unsigned int maxChunks = 1;
     *wirePacket = NULL;
@@ -961,21 +982,27 @@ itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
     bzero(bytes, wireLength);
     struct ieee80211_frame *wh =
         reinterpret_cast<struct ieee80211_frame *>(bytes);
-    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 | IEEE80211_FC0_TYPE_DATA;
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 | IEEE80211_FC0_TYPE_DATA |
+        (client->clientQos ? IEEE80211_FC0_SUBTYPE_QOS : 0);
     wh->i_fc[1] = IEEE80211_FC1_DIR_FROMDS |
         (secure && !eapol ? IEEE80211_FC1_PROTECTED : 0) |
         (moreData ? IEEE80211_FC1_MORE_DATA : 0);
     IEEE80211_ADDR_COPY(wh->i_addr1, ethernet.ether_dhost);
     IEEE80211_ADDR_COPY(wh->i_addr2, runtime->config.bssid);
     IEEE80211_ADDR_COPY(wh->i_addr3, ethernet.ether_shost);
-    struct llc *llc = reinterpret_cast<struct llc *>(bytes + sizeof(*wh));
+    if (client->clientQos) {
+        struct ieee80211_qosframe *qos =
+            reinterpret_cast<struct ieee80211_qosframe *>(bytes);
+        LE_WRITE_2(qos->i_qos, 0); /* Best Effort, TID 0, normal ACK. */
+    }
+    struct llc *llc = reinterpret_cast<struct llc *>(bytes + headerLength);
     llc->llc_dsap = LLC_SNAP_LSAP;
     llc->llc_ssap = LLC_SNAP_LSAP;
     llc->llc_control = LLC_UI;
     llc->llc_snap.ether_type = ethernet.ether_type;
     if (ethernetLength > ETHER_HDR_LEN && mbuf_copydata(ethernetPacket,
             ETHER_HDR_LEN, ethernetLength - ETHER_HDR_LEN,
-            bytes + sizeof(*wh) + LLC_SNAPFRAMELEN) != 0) {
+            bytes + headerLength + LLC_SNAPFRAMELEN) != 0) {
         mbuf_freem(*wirePacket);
         *wirePacket = NULL;
         return EINVAL;

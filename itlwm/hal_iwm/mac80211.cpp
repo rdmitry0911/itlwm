@@ -2018,7 +2018,9 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
     tx->len = htole16((uint16_t)firmwareLength);
     tx->sta_id = staId;
     tx->tid_tspec = type == IEEE80211_FC0_TYPE_DATA ?
-        IWM_TID_NON_QOS : IWM_MAX_TID_COUNT;
+        (ieee80211_has_qos(wh) ?
+            ieee80211_get_qos(wh) & IEEE80211_QOS_TID :
+            IWM_TID_NON_QOS) : IWM_MAX_TID_COUNT;
     tx->life_time = htole32(IWM_TX_CMD_LIFE_TIME_INFINITE);
     tx->rts_retry_limit = IWM_RTS_DFAULT_RETRY_LIMIT;
     tx->data_retry_limit = firmwareRate ? IWM_DEFAULT_TX_RETRY :
@@ -2556,11 +2558,13 @@ iwm_ap_add_client_sta(struct iwm_softc *sc,
         return ENOSPC;
     const int error = iwm_ap_add_internal_sta(sc, runtime,
         client->staId, IWM_STA_LINK, client->clientMac,
-        client->clientAid, queueId, IWM_TX_FIFO_BE, IWM_TID_NON_QOS);
+        client->clientAid, queueId, IWM_TX_FIFO_BE,
+        client->clientQos ? 0 : IWM_TID_NON_QOS);
     if (error != 0)
         return error;
     client->queueId = queueId;
     client->clientStationInstalled = true;
+    client->clientStationQos = client->clientQos;
     IEEE80211_ADDR_COPY(client->clientStationMac, client->clientMac);
     return 0;
 }
@@ -2623,13 +2627,15 @@ iwm_ap_remove_client_sta(struct iwm_softc *sc,
         !client->clientStationInstalled)
         return 0;
     const int disableError = iwm_disable_txq(sc,
-        static_cast<uint8_t>(client->queueId), IWM_TID_NON_QOS, 0);
+        static_cast<uint8_t>(client->queueId),
+        client->clientStationQos ? 0 : IWM_TID_NON_QOS, 0);
     struct iwm_rm_sta_cmd command;
     memset(&command, 0, sizeof(command));
     command.sta_id = client->staId;
     const int removeError = iwm_send_cmd_pdu(sc, IWM_REMOVE_STA, 0,
                                               sizeof(command), &command);
     client->clientStationInstalled = false;
+    client->clientStationQos = false;
     client->rateControlConfigured = false;
     client->queueId = UINT16_MAX;
     itl_ap_firmware_client_crypto_reset(client);
@@ -2849,8 +2855,9 @@ iwm_ap_client_task(void *arg)
         itl_ap_open_rx_result_reset(&result);
         int error = 0;
         if (client->clientStationInstalled &&
-            !IEEE80211_ADDR_EQ(client->clientStationMac,
-                               client->clientMac))
+            (!IEEE80211_ADDR_EQ(client->clientStationMac,
+                                client->clientMac) ||
+             client->clientStationQos != client->clientQos))
             error = that->iwm_ap_remove_client_sta(sc, runtime, client);
         if (error == 0 && !client->clientStationInstalled)
             error = that->iwm_ap_add_client_sta(sc, runtime, client);

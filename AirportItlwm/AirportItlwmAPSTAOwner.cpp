@@ -122,6 +122,7 @@ static size_t apsta_build_beacon(
         3 +
         6 +
         rsnIELength +
+        sizeof(kItlHalApWmmParameterIE) +
         (is2GHz ? 2 + sizeof(extendedRates2GHz) : 0);
     if (output == nullptr || bssid == nullptr || ssid == nullptr ||
         ssidLength == 0 ||
@@ -175,6 +176,10 @@ static size_t apsta_build_beacon(
         memcpy(cursor, rsnIE, rsnIELength);
         cursor += rsnIELength;
     }
+
+    memcpy(cursor, kItlHalApWmmParameterIE,
+           sizeof(kItlHalApWmmParameterIE));
+    cursor += sizeof(kItlHalApWmmParameterIE);
 
     *cursor++ = IEEE80211_ELEMID_TIM;
     *cursor++ = 4;

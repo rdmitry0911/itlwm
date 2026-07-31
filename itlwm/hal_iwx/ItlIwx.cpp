@@ -10792,10 +10792,12 @@ iwx_ap_add_client_sta(struct iwx_softc *sc,
         return EINVAL;
     int error = iwx_ap_add_internal_sta(sc, runtime,
         client->staId, IWX_STA_LINK, client->clientMac,
-        client->clientAid, &client->queueId, IWX_TID_NON_QOS);
+        client->clientAid, &client->queueId,
+        client->clientQos ? 0 : IWX_TID_NON_QOS);
     if (error != 0)
         return error;
     client->clientStationInstalled = true;
+    client->clientStationQos = client->clientQos;
     IEEE80211_ADDR_COPY(client->clientStationMac, client->clientMac);
     return 0;
 }
@@ -10864,6 +10866,7 @@ iwx_ap_remove_client_sta(struct iwx_softc *sc,
     const int error = iwx_ap_remove_internal_sta(sc,
         client->staId, client->queueId);
     client->clientStationInstalled = false;
+    client->clientStationQos = false;
     client->rateControlConfigured = false;
     client->queueId = UINT16_MAX;
     itl_ap_firmware_client_crypto_reset(client);
@@ -11075,8 +11078,9 @@ iwx_ap_client_task(void *arg)
         itl_ap_open_rx_result_reset(&result);
         int error = 0;
         if (client->clientStationInstalled &&
-            !IEEE80211_ADDR_EQ(client->clientStationMac,
-                               client->clientMac))
+            (!IEEE80211_ADDR_EQ(client->clientStationMac,
+                                client->clientMac) ||
+             client->clientStationQos != client->clientQos))
             error = that->iwx_ap_remove_client_sta(sc, runtime, client);
         if (error == 0 && !client->clientStationInstalled)
             error = that->iwx_ap_add_client_sta(sc, runtime, client);
