@@ -288,6 +288,8 @@ struct iwm_tx_data {
     int txrate;
     int totlen;
     uint16_t fc;
+    /* Firmware station-table owner used for the scheduler byte-count slot. */
+    uint8_t sta_id;
     
     struct ieee80211_tx_info info;
 };

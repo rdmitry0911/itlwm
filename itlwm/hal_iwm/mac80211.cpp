@@ -1072,7 +1072,7 @@ iwm_ampdu_txq_advance(struct iwm_softc *sc, struct iwm_tx_ring *ring, int idx)
             if (ring->qid < IWM_FIRST_AGG_TX_QUEUE)
                 DPRINTF(("%s: missed Tx completion: tail=%d "
                          "idx=%d\n", __func__, ring->tail, idx));
-            iwm_reset_sched(sc, ring->qid, ring->tail, IWM_STATION_ID);
+            iwm_reset_sched(sc, ring->qid, ring->tail, txd->sta_id);
             iwm_txd_done(sc, txd);
             ring->queued--;
         }
@@ -1391,7 +1391,7 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
 
             ieee80211_tx_status(sc, info, tid, txd->fc, ssn);
 
-            iwm_reset_sched(sc, ring->qid, ring->tail, IWM_STATION_ID);
+            iwm_reset_sched(sc, ring->qid, ring->tail, txd->sta_id);
             iwm_txd_done(sc, txd);
             ring->queued--;
         }
@@ -1419,6 +1419,7 @@ iwm_txd_done(struct iwm_softc *sc, struct iwm_tx_data *txd)
     txd->txmcs = 0;
     txd->txrate = 0;
     txd->fc = 0;
+    txd->sta_id = 0;
     memset(&txd->info, 0, sizeof(struct ieee80211_tx_info));
 }
 
@@ -1856,6 +1857,7 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     data->txrate = ni->ni_txrate;
     data->totlen = totlen;
     memcpy(&data->fc, &wh->i_fc[0], sizeof(uint16_t));
+    data->sta_id = tx->sta_id;
     data->info.band = IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ? NL80211_BAND_2GHZ : NL80211_BAND_5GHZ;
     
     /* Fill TX descriptor. */
@@ -1945,7 +1947,7 @@ iwm_update_sched(struct iwm_softc *sc, int qid, int cur, uint8_t sta_id, uint16_
     }
 
     len = howmany(len, 4);
-    bc_ent = htole16(len | (IWM_STATION_ID << 12));
+    bc_ent = htole16(len | (sta_id << 12));
     scd_bc_tbl[qid].tfd_offset[cur] = bc_ent;
     if (cur < IWM_TFD_QUEUE_SIZE_BC_DUP) {
         scd_bc_tbl[qid].tfd_offset[IWM_TFD_QUEUE_SIZE_MAX + cur] = bc_ent;
