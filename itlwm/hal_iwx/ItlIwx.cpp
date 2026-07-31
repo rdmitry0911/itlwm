@@ -10987,7 +10987,11 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
                     enum ItlApLocalEapolAction action;
                     error = itl_ap_local_sae_handle_eapol(
                         &apRuntime, eapol, eapolLength, &action);
-                    if (error == 0 && action == kItlApLocalEapolSendM3) {
+                    if (error == 0 &&
+                        (action == kItlApLocalEapolSendM3 ||
+                         action == kItlApLocalEapolResendM3)) {
+                        const bool retry =
+                            action == kItlApLocalEapolResendM3;
                         struct ItlHalApKey gtk = {
                             .station = NULL,
                             .flags = kItlHalApKeyGroup,
@@ -10998,7 +11002,8 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
                             .rsc = NULL,
                             .rscLength = 0,
                         };
-                        if (setAPKey(&gtk) != kIOReturnSuccess) {
+                        if (!retry &&
+                            setAPKey(&gtk) != kIOReturnSuccess) {
                             error = EIO;
                         } else {
                             uint8_t m3[256];
@@ -11010,11 +11015,12 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
                                 error = iwx_ap_send_local_eapol(
                                     this, &apRuntime, m3, m3Length);
                             itl_ap_local_sae_note_m3_result(
-                                &apRuntime, error == 0);
+                                &apRuntime, error == 0, retry);
                             explicit_bzero(m3, sizeof(m3));
-                            XYLog("%s: IWX AP WPA3 M2 accepted M3=%d "
-                                  "replay=%llu\n", DEVNAME(sc), error,
-                                  apRuntime.replayCounter);
+                            XYLog("%s: IWX AP WPA3 M2 %s M3=%d "
+                                  "replay=%llu\n", DEVNAME(sc),
+                                  retry ? "retransmitted" : "accepted",
+                                  error, apRuntime.replayCounter);
                         }
                     } else if (error == 0 &&
                                action == kItlApLocalEapolInstallPairwise) {

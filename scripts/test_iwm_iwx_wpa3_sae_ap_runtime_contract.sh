@@ -11,6 +11,7 @@ runtime = (root / "include/HAL/ItlApFirmwareRuntime.hpp").read_text()
 framing = (root / "include/HAL/ItlApOpenRuntime.hpp").read_text()
 iwm = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
+engine = (root / "itl80211/openbsd/net80211/ieee80211_sae_engine.c").read_text()
 
 def require(text, needle, label):
     if needle not in text:
@@ -40,6 +41,8 @@ for needle, label in (
     ("IEEE80211_KDE_GTK", "M3 GTK KDE"),
     ("*cursor++ = 9", "M3 IGTK KDE"),
     ("kItlApLocalEapolInstallPairwise", "M4 install edge"),
+    ("kItlApLocalEapolResendM3", "lost-M3 duplicate-M2 recovery"),
+    ("replay != runtime->replayCounter - 1", "duplicate-M2 replay fence"),
     ("runtime->clientAuthorized", "controlled-port gate"),
     ("!hardwareDecrypted", "PMF protected disconnect gate"),
 ):
@@ -54,11 +57,20 @@ for backend, name, prefix in ((iwm, "IWM", "IWM"), (iwx, "IWX", "IWX")):
         ("kItlHalApStationAuthorize", "port authorization"),
         (f"{prefix}_STA_KEY_MFP", "firmware MFP key flag"),
         ("itl_ap_firmware_sae_reset", "disconnect SAE scrub"),
+        ("kItlApLocalEapolResendM3", "M3 retransmission action"),
     ):
         require(backend, needle, f"{name} {label}")
 
 if "itl_ap_wpa3_config_supported(config);" not in framing:
     raise SystemExit("WPA3 was not admitted through the shared AP profile gate")
+
+for needle, label in (
+    ("accepted_peer_confirm", "accepted peer Confirm cache"),
+    ("accepted_response", "exact SAE transaction-2 response cache"),
+    ("ap->state == IEEE80211_SAE_AP_ACCEPTED", "Confirm retry state"),
+    ("timingsafe_bcmp(ap->accepted_peer_confirm", "Confirm retry identity"),
+):
+    require(engine, needle, label)
 
 print("PASS: paired IWM/IWX driver-resident WPA3 SAE/4-way/PMF contract")
 PY

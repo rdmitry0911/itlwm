@@ -63,6 +63,8 @@ struct ieee80211_sae_ap {
 	uint8_t own_addr[kItlSaeAuthTransportV1MacLength];
 	uint8_t sta_addr[kItlSaeAuthTransportV1MacLength];
 	enum ieee80211_sae_ap_state state;
+	uint8_t accepted_peer_confirm[IEEE80211_SAE_ENGINE_CONFIRM_BODY_LEN];
+	uint8_t accepted_response[IEEE80211_SAE_ENGINE_CONFIRM_BODY_LEN];
 };
 
 static void
@@ -706,6 +708,29 @@ ieee80211_sae_ap_confirm(
 	if (response_len == NULL)
 		return IEEE80211_SAE_AP_STATUS_UNSPECIFIED;
 	*response_len = 0;
+	/* A lost transaction-2 response makes a station retransmit the exact
+	 * Confirm.  SAE has already advanced to ACCEPTED, so running
+	 * sae_check_confirm()/sae_write_confirm() again would reject a valid
+	 * retry and manufacture a new send-confirm counter.  Replay the exact
+	 * accepted response and PMK continuation only for the same peer/body. */
+	if (ap != NULL && ap->state == IEEE80211_SAE_AP_ACCEPTED) {
+		if (sta_addr == NULL || peer_confirm == NULL || response == NULL ||
+		    pmk == NULL || pmkid == NULL ||
+		    os_memcmp(ap->sta_addr, sta_addr, sizeof(ap->sta_addr)) != 0 ||
+		    peer_confirm_len != sizeof(ap->accepted_peer_confirm) ||
+		    response_capacity < sizeof(ap->accepted_response) ||
+		    pmk_capacity < SAE_PMK_LEN ||
+		    pmkid_capacity < sizeof(ap->sae.pmkid) ||
+		    timingsafe_bcmp(ap->accepted_peer_confirm, peer_confirm,
+		        sizeof(ap->accepted_peer_confirm)) != 0)
+			return status;
+		os_memcpy(response, ap->accepted_response,
+		    sizeof(ap->accepted_response));
+		*response_len = sizeof(ap->accepted_response);
+		os_memcpy(pmk, ap->sae.pmk, SAE_PMK_LEN);
+		os_memcpy(pmkid, ap->sae.pmkid, sizeof(ap->sae.pmkid));
+		return IEEE80211_SAE_AP_STATUS_SUCCESS;
+	}
 	if (ap == NULL || sta_addr == NULL || peer_confirm == NULL ||
 	    response == NULL || pmk == NULL || pmkid == NULL ||
 	    ap->state != IEEE80211_SAE_AP_COMMITTED ||
@@ -731,6 +756,10 @@ ieee80211_sae_ap_confirm(
 	*response_len = wpabuf_len(confirm);
 	os_memcpy(pmk, ap->sae.pmk, SAE_PMK_LEN);
 	os_memcpy(pmkid, ap->sae.pmkid, sizeof(ap->sae.pmkid));
+	os_memcpy(ap->accepted_peer_confirm, peer_confirm,
+	    sizeof(ap->accepted_peer_confirm));
+	os_memcpy(ap->accepted_response, response,
+	    sizeof(ap->accepted_response));
 	ap->sae.state = SAE_ACCEPTED;
 	ap->sae.send_confirm = 0xffff;
 	ap->state = IEEE80211_SAE_AP_ACCEPTED;

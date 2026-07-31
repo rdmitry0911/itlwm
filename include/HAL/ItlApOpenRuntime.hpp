@@ -48,6 +48,7 @@ enum ItlApLocalRsnState : uint8_t {
 enum ItlApLocalEapolAction : uint8_t {
     kItlApLocalEapolConsumed = 0,
     kItlApLocalEapolSendM3,
+    kItlApLocalEapolResendM3,
     kItlApLocalEapolInstallPairwise,
 };
 
@@ -862,13 +863,16 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
         (keyInfo & EAPOL_KEY_PAIRWISE) == 0 ||
         (keyInfo & EAPOL_KEY_KEYMIC) == 0 ||
         (keyInfo & (EAPOL_KEY_KEYACK | EAPOL_KEY_REQUEST |
-                    EAPOL_KEY_ERROR)) != 0 ||
-        BE_READ_8(key->replaycnt) != runtime->replayCounter) {
+                    EAPOL_KEY_ERROR)) != 0) {
         explicit_bzero(frame, sizeof(frame));
         return EACCES;
     }
 
     if (runtime->localRsnState == kItlApLocalRsnWaitM2) {
+        if (BE_READ_8(key->replaycnt) != runtime->replayCounter) {
+            explicit_bzero(frame, sizeof(frame));
+            return EACCES;
+        }
         const uint8_t *rsn = NULL;
         const uint8_t *cursor = reinterpret_cast<const uint8_t *>(key + 1);
         const uint8_t *end = cursor + keyDataLength;
@@ -909,12 +913,44 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
     }
 
     if (runtime->localRsnState == kItlApLocalRsnWaitM4) {
-        const int micError = keyDataLength == 0 ?
+        const uint64_t replay = BE_READ_8(key->replaycnt);
+        if (replay == runtime->replayCounter && keyDataLength == 0) {
+            const int micError =
+                ieee80211_eapol_key_check_mic(key, runtime->ptk.kck);
+            explicit_bzero(frame, sizeof(frame));
+            if (micError != 0)
+                return EACCES;
+            *action = kItlApLocalEapolInstallPairwise;
+            return 0;
+        }
+        if (runtime->replayCounter == 0 ||
+            replay != runtime->replayCounter - 1 || keyDataLength == 0) {
+            explicit_bzero(frame, sizeof(frame));
+            return EACCES;
+        }
+        const uint8_t *rsn = NULL;
+        const uint8_t *cursor = reinterpret_cast<const uint8_t *>(key + 1);
+        const uint8_t *end = cursor + keyDataLength;
+        while (cursor + 2 <= end) {
+            const size_t elementLength = cursor[1];
+            if (cursor + 2 + elementLength > end)
+                break;
+            if (cursor[0] == IEEE80211_ELEMID_RSN) {
+                rsn = cursor;
+                break;
+            }
+            cursor += 2 + elementLength;
+        }
+        const int micError = rsn != NULL &&
+            runtime->clientRsnIELength ==
+                static_cast<size_t>(rsn[1]) + 2 &&
+            memcmp(rsn, runtime->clientRsnIE,
+                   runtime->clientRsnIELength) == 0 ?
             ieee80211_eapol_key_check_mic(key, runtime->ptk.kck) : EACCES;
         explicit_bzero(frame, sizeof(frame));
         if (micError != 0)
             return EACCES;
-        *action = kItlApLocalEapolInstallPairwise;
+        *action = kItlApLocalEapolResendM3;
         return 0;
     }
     explicit_bzero(frame, sizeof(frame));
@@ -937,9 +973,11 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
 #else
     if (ic == NULL || !itl_ap_client_uses_local_sae(runtime) ||
         frame == NULL || frameLength == NULL || frameCapacity < 256 ||
-        runtime->localRsnState != kItlApLocalRsnWaitM2 ||
+        (runtime->localRsnState != kItlApLocalRsnWaitM2 &&
+         runtime->localRsnState != kItlApLocalRsnWaitM4) ||
         runtime->clientRsnIELength == 0)
         return EINVAL;
+    const bool retry = runtime->localRsnState == kItlApLocalRsnWaitM4;
     bzero(frame, frameCapacity);
     struct ieee80211_eapol_key *key =
         reinterpret_cast<struct ieee80211_eapol_key *>(frame);
@@ -950,7 +988,8 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
         EAPOL_KEY_KEYMIC | EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE |
         EAPOL_KEY_ENCRYPTED | EAPOL_KEY_DESC_AKM_DEFINED);
     BE_WRITE_2(key->keylen, 16);
-    runtime->replayCounter++;
+    if (!retry)
+        runtime->replayCounter++;
     BE_WRITE_8(key->replaycnt, runtime->replayCounter);
     memcpy(key->nonce, runtime->anonce, sizeof(key->nonce));
     uint8_t *cursor = reinterpret_cast<uint8_t *>(key + 1);
@@ -979,7 +1018,8 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
     const size_t plainLength = static_cast<size_t>(
         cursor - reinterpret_cast<uint8_t *>(key + 1));
     if (sizeof(*key) + plainLength + 16 > frameCapacity) {
-        runtime->replayCounter--;
+        if (!retry)
+            runtime->replayCounter--;
         explicit_bzero(frame, frameCapacity);
         return EMSGSIZE;
     }
@@ -994,13 +1034,13 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
 
 static inline void
 itl_ap_local_sae_note_m3_result(struct ItlApFirmwareRuntime *runtime,
-                                bool sent)
+                                bool sent, bool retry)
 {
     if (runtime == NULL)
         return;
     if (sent) {
         runtime->localRsnState = kItlApLocalRsnWaitM4;
-    } else if (runtime->replayCounter != 0) {
+    } else if (!retry && runtime->replayCounter != 0) {
         runtime->replayCounter--;
     }
 }
