@@ -753,6 +753,16 @@ IOReturn ItlIwx::enable(IONetworkInterface *netif)
 IOReturn ItlIwx::disable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    /* Close dynamic GO queues/stations while firmware still answers.  The
+     * APSTA owner retains only the user profile and re-arms a fresh context
+     * after wake; client authorization and pairwise keys are intentionally
+     * not replayed across the radio-reset security boundary. */
+    if (apRuntime.stage != kItlApFirmwareResourceIdle) {
+        const int apError = iwx_stop_ap_mode(&com, &apRuntime);
+        if (apError != 0)
+            XYLog("%s: IWX AP radio-reset teardown error=%d\n",
+                  DEVNAME(&com), apError);
+    }
     if (!(ifp->if_flags & IFF_UP)) {
         XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;

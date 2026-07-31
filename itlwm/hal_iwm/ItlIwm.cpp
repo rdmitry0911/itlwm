@@ -127,6 +127,16 @@ IOReturn ItlIwm::
 disable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    /* APSTAOwner has already closed the role-7 datapath but deliberately
+     * retains its profile across sleep.  Retire the firmware GO resources
+     * before the generic iwm_stop() destroys their rings; wake will rebuild
+     * them from that upper snapshot after the primary STA boundary. */
+    if (apRuntime.stage != kItlApFirmwareResourceIdle) {
+        const int apError = iwm_stop_ap_resources(&com, &apRuntime);
+        if (apError != 0)
+            XYLog("%s: IWM AP radio-reset teardown error=%d\n",
+                  DEVNAME(&com), apError);
+    }
     if (!(ifp->if_flags & IFF_UP)) {
         XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
