@@ -52,6 +52,7 @@
 #include <net80211/ieee80211_crypto.h>
 #include <net80211/ieee80211_proto.h>
 #include <net80211/ieee80211_sae_engine.h>
+#include <net80211/ieee80211_sae_policy.h>
 
 #include <sys/_task.h>
 #include <kern/clock.h>
@@ -2735,10 +2736,13 @@ iwn_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
     selected.request_generation = bound.generation;
     selected.association_epoch = bound.association_epoch;
     selected.sae_group = IEEE80211_SAE_ENGINE_GROUP19;
-    selected.sae_method = IEEE80211_SAE_ENGINE_HNP_METHOD;
-    /* The current scan census intentionally exposes only the bounded HnP
-     * decision, not raw RSNXE bytes; zero is the sole modeled capability. */
-    selected.rsnxe_capabilities = 0;
+    selected.sae_method =
+        (bound.sae_scan_flags & IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR) != 0 ?
+        IEEE80211_SAE_ENGINE_H2E_METHOD :
+        IEEE80211_SAE_ENGINE_HNP_METHOD;
+    selected.rsnxe_capabilities =
+        (bound.sae_scan_flags & IEEE80211_SAE_SCAN_RSNXE_H2E) != 0 ?
+        kItlSaeAuthTransportRsnxeH2e : 0;
     selected.ssid_len = bound.ssid_len;
     selected.credential_source = 1u; /* private WCL CIPHER_PWD slot */
     IEEE80211_ADDR_COPY(selected.bssid, bound.bssid);
@@ -2937,10 +2941,10 @@ iwn_sae_engine_start(struct iwn_softc *sc)
         goto out;
     if (!iwn_sae_engine_selected_matches_bound(&selected, &bound))
         goto out;
-    if (ieee80211_sae_engine_begin_hnp(&selected, &activated,
+    if (ieee80211_sae_engine_begin(&selected, &activated,
         credential.password, credential.password_len, &engine) != 0)
         goto out;
-    /* begin_hnp consumes its password synchronously; no secret remains in
+    /* begin consumes its password synchronously; no secret remains in
      * this driver after the immediately following scrub. */
     explicit_bzero(&credential, sizeof(credential));
 
@@ -3231,7 +3235,9 @@ iwn_sae_engine_task(void *arg)
                 if (peer.phase == kItlSaeAuthTransportPhaseCommit &&
                     peer.wire_transaction ==
                         kItlSaeAuthTransportPeerWireTransactionCommit &&
-                    peer.auth_status == IEEE80211_STATUS_SUCCESS)
+                    (peer.auth_status == IEEE80211_STATUS_SUCCESS ||
+                     peer.auth_status ==
+                        kItlSaeAuthTransportStatusSaeHashToElement))
                     IWN_DIRECT_SAE_TRACE(&sc->sc_ic,
                         kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted);
                 submit_result = iwn_sae_engine_submit_prepared(sc);

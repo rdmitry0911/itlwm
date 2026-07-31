@@ -694,6 +694,7 @@ ordered(iwn_direct_sae_task,
         "peer.phase == kItlSaeAuthTransportPhaseCommit",
         "kItlSaeAuthTransportPeerWireTransactionCommit",
         "peer.auth_status == IEEE80211_STATUS_SUCCESS",
+        "kItlSaeAuthTransportStatusSaeHashToElement",
         "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted",
         "iwn_sae_engine_submit_prepared(sc)")
 

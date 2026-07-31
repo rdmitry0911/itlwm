@@ -252,7 +252,7 @@ for marker in (
 peer_admit = body(proto_c, "int\nieee80211_sae_peer_rx_admit",
                   "peer-RX admission publish")
 for token in ("ic_pae_selected_bss_lock", "expected_epoch",
-              "relay_generation", "ieee80211_sae_admission_group19_hnp",
+              "relay_generation", "ieee80211_sae_admission_group19",
               "ic->ic_pae_selected_bss.bssid", "ic->ic_bss->ni_bssid",
               "ic->ic_myaddr", "ic_sae_peer_rx_admission.active = 1",
               "IOSimpleLockLockDisableInterrupt",

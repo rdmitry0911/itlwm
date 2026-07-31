@@ -1,5 +1,5 @@
 /*
- * Driver-owned SAE group-19/HnP session core.
+ * Driver-owned SAE group-19 HnP/H2E session core.
  *
  * This component contains the password-derived SAE state.  It neither knows
  * about a UserClient nor sends a frame itself: its caller must use the real
@@ -25,6 +25,7 @@ extern "C" {
 
 #define IEEE80211_SAE_ENGINE_GROUP19 19u
 #define IEEE80211_SAE_ENGINE_HNP_METHOD 1u
+#define IEEE80211_SAE_ENGINE_H2E_METHOD 2u
 #define IEEE80211_SAE_ENGINE_PASSPHRASE_MIN 8u
 #define IEEE80211_SAE_ENGINE_PASSPHRASE_MAX 63u
 #define IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN 98u
@@ -38,6 +39,8 @@ extern "C" {
 #define IEEE80211_SAE_ENGINE_ANTI_CLOGGING_TOKEN_MAX \
 	(kItlSaeAuthTransportV1MaxBodyLength - \
 	 IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN)
+/* H2E's one-octet Extension IE length also accounts for its subtype. */
+#define IEEE80211_SAE_ENGINE_H2E_ANTI_CLOGGING_TOKEN_MAX 254u
 
 struct ieee80211_sae_engine;
 struct ieee80211_sae_ap;
@@ -62,13 +65,20 @@ enum ieee80211_sae_engine_peer_result {
 #if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
 
 /*
- * Begin one exact selected-BSS, active-S_AUTH group-19/HnP session.
+ * Begin one exact selected-BSS, active-S_AUTH group-19 HnP/H2E session.
  *
  * selected and activated are both driver-originated public values.  The
  * password is consumed while this call prepares the first Commit and is
  * never retained by this API after it returns.  The caller must scrub its
  * own lease buffer immediately after this call.
  */
+int ieee80211_sae_engine_begin(
+	const struct ItlSaeSelectedJoinEventV1 *selected,
+	const struct ItlSaeAuthActivatedEventV1 *activated,
+	const uint8_t *password, size_t password_len,
+	struct ieee80211_sae_engine **out_engine);
+
+/* Compatibility entry point for callers which require the HnP subset. */
 int ieee80211_sae_engine_begin_hnp(
 	const struct ItlSaeSelectedJoinEventV1 *selected,
 	const struct ItlSaeAuthActivatedEventV1 *activated,
@@ -151,6 +161,22 @@ void ieee80211_sae_ap_destroy(struct ieee80211_sae_ap **);
  * link-clean even if a lifecycle-only helper is compiled there.  Public HAL
  * entry points reject SAE before they can reach this boundary.
  */
+static inline int
+ieee80211_sae_engine_begin(
+    const struct ItlSaeSelectedJoinEventV1 *selected,
+    const struct ItlSaeAuthActivatedEventV1 *activated,
+    const uint8_t *password, size_t password_len,
+    struct ieee80211_sae_engine **out_engine)
+{
+    (void)selected;
+    (void)activated;
+    (void)password;
+    (void)password_len;
+    if (out_engine != NULL)
+        *out_engine = NULL;
+    return -1;
+}
+
 static inline int
 ieee80211_sae_engine_begin_hnp(
     const struct ItlSaeSelectedJoinEventV1 *selected,

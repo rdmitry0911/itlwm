@@ -35,6 +35,11 @@
  */
 #define kItlSaeAuthTransportPhaseCommit 1u
 #define kItlSaeAuthTransportPhaseConfirm 2u
+#define kItlSaeAuthTransportMethodHnp 1u
+#define kItlSaeAuthTransportMethodH2e 2u
+#define kItlSaeAuthTransportRsnxeH2e 0x00000001u
+#define kItlSaeAuthTransportStatusSuccess 0u
+#define kItlSaeAuthTransportStatusSaeHashToElement 126u
 #define kItlSaeAuthTransportStaWireTransactionCommit 1u
 #define kItlSaeAuthTransportStaWireTransactionConfirm 2u
 #define kItlSaeAuthTransportPeerWireTransactionCommit 1u
@@ -309,6 +314,15 @@ itl_sae_auth_transport_mac_is_unicast_nonzero(const uint8_t mac[
 }
 
 static inline bool
+itl_sae_auth_transport_status_is_well_formed(uint16_t phase,
+    uint16_t status)
+{
+    return status == kItlSaeAuthTransportStatusSuccess ||
+        (phase == kItlSaeAuthTransportPhaseCommit &&
+         status == kItlSaeAuthTransportStatusSaeHashToElement);
+}
+
+static inline bool
 itl_sae_auth_transport_request_is_well_formed(
     const struct ItlSaeAuthTxRequestV1 *request)
 {
@@ -323,7 +337,8 @@ itl_sae_auth_transport_request_is_well_formed(
         request->wire_transaction !=
             itl_sae_auth_transport_sta_wire_transaction_for_phase(
                 request->phase) ||
-        request->auth_status != 0 ||
+        !itl_sae_auth_transport_status_is_well_formed(request->phase,
+            request->auth_status) ||
         request->body_len == 0 ||
         request->body_len > kItlSaeAuthTransportV1MaxBodyLength ||
         !itl_sae_auth_transport_mac_is_unicast_nonzero(request->bssid) ||
@@ -350,7 +365,8 @@ itl_sae_auth_transport_event_is_well_formed(
         event->wire_transaction !=
             itl_sae_auth_transport_sta_wire_transaction_for_phase(
                 event->phase) ||
-        event->auth_status != 0 ||
+        !itl_sae_auth_transport_status_is_well_formed(event->phase,
+            event->auth_status) ||
         !itl_sae_auth_transport_mac_is_unicast_nonzero(event->bssid) ||
         !itl_sae_auth_transport_mac_is_unicast_nonzero(event->sta) ||
         !itl_sae_auth_transport_bytes_all_zero(event->reserved,
@@ -396,7 +412,13 @@ itl_sae_selected_join_event_is_well_formed(
         event->size == sizeof(*event) &&
         event->request_generation != 0 &&
         event->association_epoch != 0 &&
-        event->sae_group == 19u && event->sae_method == 1u &&
+        event->sae_group == 19u &&
+        (event->sae_method == kItlSaeAuthTransportMethodHnp ||
+         event->sae_method == kItlSaeAuthTransportMethodH2e) &&
+        (event->rsnxe_capabilities & ~kItlSaeAuthTransportRsnxeH2e) == 0 &&
+        (event->sae_method != kItlSaeAuthTransportMethodH2e ||
+         (event->rsnxe_capabilities &
+          kItlSaeAuthTransportRsnxeH2e) != 0) &&
         event->ssid_len != 0 && event->ssid_len <= sizeof(event->ssid) &&
 		(event->credential_source == 0u || event->credential_source == 1u) &&
         itl_sae_auth_transport_bytes_all_zero(event->reserved0,

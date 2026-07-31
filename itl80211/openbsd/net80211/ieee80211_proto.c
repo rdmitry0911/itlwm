@@ -2101,7 +2101,7 @@ ieee80211_sae_peer_rx_admit(struct ieee80211com *ic, u_int64_t expected_epoch,
 	    IEEE80211_ADDR_EQ(ic->ic_pae_selected_bss.bssid, bssid) &&
 	    IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, bssid) &&
 	    IEEE80211_ADDR_EQ(ic->ic_myaddr, sta) &&
-	    ieee80211_sae_admission_group19_hnp(&ic->ic_pae_selected_bss,
+	    ieee80211_sae_admission_group19(&ic->ic_pae_selected_bss,
 		&profile)) {
 		ic->ic_sae_peer_rx_admission.association_epoch = expected_epoch;
 		ic->ic_sae_peer_rx_admission.relay_generation = relay_generation;
@@ -3222,16 +3222,17 @@ ieee80211_sae_wcl_request_copyout_bound_current(struct ieee80211com *ic,
 /*
  * Direct WCL keeps the controller-facing peer-RX admission pure-SAE-only.
  * A transition BSS reaches this companion predicate only after an exact WCL
- * request bound it to the selected BSS.  It preserves the current HnP-only
- * aperture: transition adds the exact SAE|PSK census fact, not H2E, SAE-PK,
- * password identifiers, or any other unmodeled scan capability.
+ * request bound it to the selected BSS.  Method selection remains bounded:
+ * an exact H2E-only selector chooses H2E; every other admitted personal
+ * profile chooses HnP.  SAE-PK, password identifiers, and unmodeled scan
+ * capabilities remain excluded.
  *
  * Caller holds ic_pae_selected_bss_lock.  selected is the live fixed-byte
  * record and out is a stack-owned value; neither may retain a node, IE, or
  * credential.
  */
 static int
-ieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked(
+ieee80211_sae_wcl_peer_rx_admission_group19_locked(
     const struct ieee80211_pae_selected_bss *selected,
     struct ieee80211_sae_admission *out)
 {
@@ -3243,7 +3244,7 @@ ieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked(
 		return 0;
 	if (selected->strict_pure_sae_profile ==
 	    IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE)
-		return ieee80211_sae_admission_group19_hnp(selected, out);
+		return ieee80211_sae_admission_group19(selected, out);
 	if (selected->strict_pure_sae_profile !=
 	    IEEE80211_SAE_SELECTED_BSS_PROFILE_TRANSITION)
 		return 0;
@@ -3251,12 +3252,20 @@ ieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked(
 	flags = selected->sae_scan_flags;
 	if ((flags & IEEE80211_SAE_SCAN_CENSUS_COMPLETE) == 0 ||
 	    !ieee80211_sae_scan_transition_akm_census_is_supported(flags) ||
-	    (flags & ~(IEEE80211_SAE_ADMISSION_GROUP19_HNP_ALLOWED_FLAGS |
+	    (flags & ~(IEEE80211_SAE_ADMISSION_GROUP19_ALLOWED_FLAGS |
 	    IEEE80211_SAE_SCAN_TRANSITION_AKM_MASK)) != 0)
+		return 0;
+	if ((flags & IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR) != 0 &&
+	    ((flags & IEEE80211_SAE_SCAN_RSNXE_PRESENT) == 0 ||
+	     (flags & IEEE80211_SAE_SCAN_RSNXE_H2E) == 0))
 		return 0;
 
 	out->group = IEEE80211_SAE_ADMISSION_GROUP_19;
-	out->method = IEEE80211_SAE_ADMISSION_METHOD_HNP;
+	out->method = (flags & IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR) != 0 ?
+	    IEEE80211_SAE_ADMISSION_METHOD_H2E :
+	    IEEE80211_SAE_ADMISSION_METHOD_HNP;
+	if ((flags & IEEE80211_SAE_SCAN_RSNXE_H2E) != 0)
+		out->rsnxe_capabilities |= IEEE80211_SAE_ADMISSION_RSNXE_H2E;
 	return 1;
 }
 
@@ -3313,7 +3322,7 @@ ieee80211_sae_wcl_peer_rx_admit(struct ieee80211com *ic,
 	    selected->strict_pure_sae_profile == bound->sae_profile &&
 	    ieee80211_sae_wcl_request_matches_current_locked(ic, request,
 	    ic->ic_bss, epoch) &&
-	    ieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked(selected,
+	    ieee80211_sae_wcl_peer_rx_admission_group19_locked(selected,
 	    &profile)) {
 		ic->ic_sae_peer_rx_admission.association_epoch = epoch;
 		ic->ic_sae_peer_rx_admission.relay_generation = relay_generation;

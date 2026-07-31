@@ -485,21 +485,26 @@ for forbidden in ("password", "pmk", "pwe", "struct ieee80211_node *",
         fail(f"bound request copy-out must remain value-only: {forbidden}")
 
 wcl_peer_profile = body(
-    proto_c, "static int\nieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked",
-    "direct-WCL group-19/HnP profile gate")
+    proto_c, "static int\nieee80211_sae_wcl_peer_rx_admission_group19_locked",
+    "direct-WCL group-19 profile gate")
 for token in (
     "IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE",
-    "ieee80211_sae_admission_group19_hnp(selected, out)",
+    "ieee80211_sae_admission_group19(selected, out)",
     "IEEE80211_SAE_SELECTED_BSS_PROFILE_TRANSITION",
     "IEEE80211_SAE_SCAN_CENSUS_COMPLETE",
     "ieee80211_sae_scan_transition_akm_census_is_supported",
     "IEEE80211_SAE_SCAN_TRANSITION_AKM_MASK",
-    "IEEE80211_SAE_ADMISSION_GROUP19_HNP_ALLOWED_FLAGS",
+    "IEEE80211_SAE_ADMISSION_GROUP19_ALLOWED_FLAGS",
     "IEEE80211_SAE_ADMISSION_GROUP_19",
     "IEEE80211_SAE_ADMISSION_METHOD_HNP",
+    "IEEE80211_SAE_ADMISSION_METHOD_H2E",
+    "IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR",
+    "IEEE80211_SAE_SCAN_RSNXE_PRESENT",
+    "IEEE80211_SAE_SCAN_RSNXE_H2E",
+    "IEEE80211_SAE_ADMISSION_RSNXE_H2E",
 ):
-    require(wcl_peer_profile, token, "direct-WCL group-19/HnP profile gate")
-for forbidden in ("H2E_ONLY_SELECTOR", "password", "pmk", "pwe",
+    require(wcl_peer_profile, token, "direct-WCL group-19 profile gate")
+for forbidden in ("password", "pmk", "pwe",
                   "struct ieee80211_node *", "ieee80211_new_state"):
     if forbidden.lower() in wcl_peer_profile.lower():
         fail(f"direct-WCL profile gate must remain bounded: {forbidden}")
@@ -519,7 +524,7 @@ for token in (
     "IEEE80211_SAE_WCL_REQUEST_BOUND",
     "ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic)",
     "ieee80211_sae_wcl_request_matches_current_locked",
-    "ieee80211_sae_wcl_peer_rx_admission_group19_hnp_locked",
+    "ieee80211_sae_wcl_peer_rx_admission_group19_locked",
     "ieee80211_sae_peer_rx_admission_clear_locked(ic)",
     "ic_sae_peer_rx_admission.active = 1",
     "IOSimpleLockLockDisableInterrupt",
@@ -535,7 +540,7 @@ for forbidden in ("ic_event_handler", "ieee80211_new_state", "ic_psk",
 controller_peer_admit = body(proto_c, "int\nieee80211_sae_peer_rx_admit",
                              "controller peer-RX admission")
 for token in (
-    "ieee80211_sae_admission_group19_hnp(&ic->ic_pae_selected_bss",
+    "ieee80211_sae_admission_group19(&ic->ic_pae_selected_bss",
     "ic_sae_peer_rx_admission.active = 1",
 ):
     require(controller_peer_admit, token,

@@ -49,7 +49,8 @@
 #define IEEE80211_SAE_SCAN_STRICT_PROFILE_ALLOWED_MASK \
 	(IEEE80211_SAE_SCAN_CENSUS_COMPLETE | \
 	 IEEE80211_SAE_SCAN_RSNXE_PRESENT | IEEE80211_SAE_SCAN_RSNXE_H2E | \
-	 IEEE80211_SAE_SCAN_EXTCAP_PRESENT)
+	 IEEE80211_SAE_SCAN_EXTCAP_PRESENT | \
+	 IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR)
 
 /* This fact is meaningful only to an explicit local WCL SAE request. */
 #define IEEE80211_SAE_SCAN_TRANSITION_PROFILE_ALLOWED_MASK \
@@ -154,6 +155,14 @@ ieee80211_sae_scan_extcap_flags(const uint8_t *payload, size_t payload_len)
 
 /* Read the wire rate octets before ieee80211_setup_rates() sorts/mutates them. */
 static inline int
+ieee80211_sae_scan_rate_is_h2e_only_selector(uint8_t rate)
+{
+	return (rate & IEEE80211_SAE_RATE_BASIC) != 0 &&
+	    (rate & IEEE80211_SAE_RATE_VALUE_MASK) ==
+	    IEEE80211_SAE_H2E_ONLY_SELECTOR;
+}
+
+static inline int
 ieee80211_sae_scan_has_h2e_only_selector(const uint8_t *rates,
     size_t rates_len)
 {
@@ -162,9 +171,7 @@ ieee80211_sae_scan_has_h2e_only_selector(const uint8_t *rates,
 	if (rates == NULL)
 		return 0;
 	for (index = 0; index < rates_len; index++) {
-		if ((rates[index] & IEEE80211_SAE_RATE_BASIC) != 0 &&
-		    (rates[index] & IEEE80211_SAE_RATE_VALUE_MASK) ==
-		    IEEE80211_SAE_H2E_ONLY_SELECTOR)
+		if (ieee80211_sae_scan_rate_is_h2e_only_selector(rates[index]))
 			return 1;
 	}
 	return 0;
@@ -291,9 +298,10 @@ ieee80211_sae_scan_transition_akm_census_is_supported(uint32_t scan_flags)
 
 /*
  * Strict normal-SAE profile fact, not an association authorization.  Password
- * Identifier, SAE-PK, H2E-only, malformed/unknown, duplicate-suite, and any
- * later unmodeled scan fact all fail closed.  A plain RSNXE H2E bit remains
- * observable but is not selected by this predicate.
+ * Identifier, SAE-PK, malformed/unknown, duplicate-suite, and any later
+ * unmodeled scan fact all fail closed.  A consistent H2E-only selector remains
+ * an exact pure-SAE profile; the later admission owner must bind it to the H2E
+ * method rather than silently falling back to HnP.
  */
 static inline int
 ieee80211_sae_scan_profile_is_strict(int rsn_only, int exact_sae,

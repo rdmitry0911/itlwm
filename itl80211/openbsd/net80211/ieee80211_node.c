@@ -3132,6 +3132,7 @@ ieee80211_setup_rates(struct ieee80211com *ic, struct ieee80211_node *ni,
                       const u_int8_t *rates, const u_int8_t *xrates, int flags)
 {
     struct ieee80211_rateset *rs = &ni->ni_rates;
+    u_int8_t i, write, filtered_count;
     
     memset(rs, 0, sizeof(*rs));
     rs->rs_nrates = rates[1];
@@ -3152,6 +3153,27 @@ ieee80211_setup_rates(struct ieee80211com *ic, struct ieee80211_node *ni,
         memcpy(rs->rs_rates + rs->rs_nrates, xrates+2, nxrates);
         rs->rs_nrates += nxrates;
     }
+
+    /*
+     * SAE H2E-only is encoded in a Supported Rates element with the basic
+     * bit set, but IEEE 802.11 defines it as a BSS membership selector,
+     * not as a legacy data rate.  The raw beacon parser has already
+     * preserved that requirement in ni_sae_scan_flags.  Keeping 0xfb in
+     * ni_rates makes Tahoe publish an impossible 61.5 Mbps basic rate and
+     * causes CoreWLAN to discard the otherwise valid H2E BSS; it would also
+     * feed the selector into later legacy-rate negotiation.
+     */
+    for (i = 0, write = 0; i < rs->rs_nrates; i++) {
+        if (ieee80211_sae_scan_rate_is_h2e_only_selector(
+            rs->rs_rates[i]))
+            continue;
+        rs->rs_rates[write++] = rs->rs_rates[i];
+    }
+    filtered_count = write;
+    while (write < rs->rs_nrates)
+        rs->rs_rates[write++] = 0;
+    rs->rs_nrates = filtered_count;
+
     return ieee80211_fix_rate(ic, ni, flags);
 }
 

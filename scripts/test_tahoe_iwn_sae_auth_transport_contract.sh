@@ -19,6 +19,7 @@ hpp = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
 cpp = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 var = (root / "itlwm/hal_iwn/if_iwnvar.h").read_text()
 transport = (root / "include/HAL/ItlSaeAuthTransportV1.h").read_text()
+engine_c = (root / "itl80211/openbsd/net80211/ieee80211_sae_engine.c").read_text()
 controller = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 build = (root / "scripts/build_tahoe.sh").read_text()
 
@@ -322,7 +323,7 @@ start = body(cpp, "iwn_sae_engine_start", "direct SAE engine start")
 ordered(start, "direct credential-to-engine path",
         "ieee80211_sae_wcl_request_copyout_bound_current",
         "iwn_sae_wcl_credential_take_bound",
-        "ieee80211_sae_engine_begin_hnp",
+        "ieee80211_sae_engine_begin",
         "explicit_bzero(&credential, sizeof(credential))",
         "iwn_sae_engine_submit_prepared(sc)")
 submit_prepared = body(cpp, "iwn_sae_engine_submit_prepared",
@@ -351,6 +352,46 @@ for token in (
     require(engine_task, token, "direct SAE Commit/Confirm worker")
 require(engine_task, "iwn_sae_engine_worker_retire(sc, true);",
         "fail-closed direct SAE retirement")
+for token in (
+        "peer.auth_status == IEEE80211_STATUS_SUCCESS",
+        "kItlSaeAuthTransportStatusSaeHashToElement",
+        "kAirportItlwmPostPltiTraceEventIwnDirectSaePeerCommitAccepted"):
+    require(engine_task, token, "HnP/H2E peer-Commit trace boundary")
+
+# H2E uses status 126 for both directions of transaction 1.  A duplicate
+# peer Commit after our Confirm must be dropped just like the HnP status-zero
+# form.  Anti-clogging challenges use group || Extension(token); the opaque
+# token alone is handed to sae_write_commit(), which emits exactly one
+# container in the retry.
+commit_status = body(engine_c, "ieee80211_sae_engine_commit_status",
+                     "SAE method-specific Commit status")
+for token in ("IEEE80211_SAE_ENGINE_H2E_METHOD",
+              "WLAN_STATUS_SAE_HASH_TO_ELEMENT",
+              "WLAN_STATUS_SUCCESS"):
+    require(commit_status, token, "SAE method-specific Commit status")
+anti_clogging = body(engine_c,
+                     "ieee80211_sae_engine_handle_anti_clogging",
+                     "SAE anti-clogging parser")
+ordered(anti_clogging, "H2E anti-clogging token-container unwrap",
+        "engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD",
+        "token[0] != WLAN_EID_EXTENSION",
+        "token[2] != WLAN_EID_EXT_ANTI_CLOGGING_TOKEN",
+        "(size_t)token[1] + 2 != token_len",
+        "token_len = token[1] - 1",
+        "token += 3",
+        "ieee80211_sae_engine_build_commit(engine, token, token_len)")
+handle_commit = body(engine_c, "ieee80211_sae_engine_handle_commit",
+                     "SAE peer Commit parser")
+require(handle_commit,
+        "event->auth_status != ieee80211_sae_engine_commit_status(engine)",
+        "HnP/H2E peer Commit status admission")
+handle_peer = body(engine_c, "ieee80211_sae_engine_handle_peer",
+                   "SAE peer state dispatcher")
+ordered(handle_peer, "method-specific duplicate peer Commit drop",
+        "engine->state == IEEE80211_SAE_ENGINE_CONFIRM_SENT",
+        "kItlSaeAuthTransportPeerWireTransactionCommit",
+        "event->auth_status == ieee80211_sae_engine_commit_status(engine)",
+        "IEEE80211_SAE_ENGINE_PEER_DROP")
 tx_task = iwn_method("iwn_sae_tx_task")
 ordered(tx_task, "native terminal direct routing",
         "iwn_sae_engine_callback_enter(sc)",

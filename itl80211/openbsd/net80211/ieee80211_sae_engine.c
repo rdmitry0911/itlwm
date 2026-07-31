@@ -1,5 +1,5 @@
 /*
- * Driver-owned SAE group-19/HnP session core.
+ * Driver-owned SAE group-19 HnP/H2E session core.
  *
  * The implementation intentionally has no controller, userland credential
  * store, socket, log, or firmware dependency.  It has one caller serialization
@@ -44,6 +44,7 @@ struct ieee80211_sae_engine {
 	uint8_t ssid[sizeof(((struct ItlSaeSelectedJoinEventV1 *)0)->ssid)];
 	uint8_t bssid[kItlSaeAuthTransportV1MacLength];
 	uint8_t sta[kItlSaeAuthTransportV1MacLength];
+	uint16_t method;
 	enum ieee80211_sae_engine_state state;
 	uint8_t anti_clogging_retries;
 	uint16_t prepared_phase;
@@ -120,7 +121,8 @@ ieee80211_sae_engine_selected_matches_active(
 		if (selected->ssid[index] != 0)
 			return 0;
 	return selected->sae_group == IEEE80211_SAE_ENGINE_GROUP19 &&
-	    selected->sae_method == IEEE80211_SAE_ENGINE_HNP_METHOD;
+	    (selected->sae_method == IEEE80211_SAE_ENGINE_HNP_METHOD ||
+	     selected->sae_method == IEEE80211_SAE_ENGINE_H2E_METHOD);
 }
 
 static int
@@ -156,7 +158,12 @@ ieee80211_sae_engine_build_commit(struct ieee80211_sae_engine *engine,
 	if (engine == NULL || (token == NULL && token_len != 0))
 		return -1;
 	if (token_len != 0) {
-		if (token_len > IEEE80211_SAE_ENGINE_ANTI_CLOGGING_TOKEN_MAX)
+		/* H2E carries the token inside one Extension element.  Its
+		 * one-octet IE length includes the extension subtype. */
+		if (token_len > IEEE80211_SAE_ENGINE_ANTI_CLOGGING_TOKEN_MAX ||
+		    (engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD &&
+		     token_len >
+			IEEE80211_SAE_ENGINE_H2E_ANTI_CLOGGING_TOKEN_MAX))
 			return -1;
 		token_buffer = wpabuf_alloc_copy(token, token_len);
 		if (token_buffer == NULL)
@@ -168,6 +175,9 @@ ieee80211_sae_engine_build_commit(struct ieee80211_sae_engine *engine,
 		0)
 		goto out;
 	expected_length = IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN + token_len;
+	if (engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD &&
+	    token_len != 0)
+		expected_length += 3; /* Extension IE header and token subtype. */
 	rc = ieee80211_sae_engine_set_prepared(engine,
 	    kItlSaeAuthTransportPhaseCommit, serialized, expected_length);
 out:
@@ -196,13 +206,15 @@ ieee80211_sae_engine_build_confirm(struct ieee80211_sae_engine *engine)
 }
 
 int
-ieee80211_sae_engine_begin_hnp(
+ieee80211_sae_engine_begin(
 	const struct ItlSaeSelectedJoinEventV1 *selected,
 	const struct ItlSaeAuthActivatedEventV1 *activated,
 	const uint8_t *password, size_t password_len,
 	struct ieee80211_sae_engine **out_engine)
 {
 	struct ieee80211_sae_engine *engine;
+	struct sae_pt *pt = NULL;
+	static const int groups[] = { IEEE80211_SAE_ENGINE_GROUP19, 0 };
 
 	if (out_engine == NULL)
 		return -1;
@@ -222,23 +234,54 @@ ieee80211_sae_engine_begin_hnp(
 	os_memcpy(engine->ssid, selected->ssid, sizeof(engine->ssid));
 	os_memcpy(engine->bssid, selected->bssid, sizeof(engine->bssid));
 	os_memcpy(engine->sta, selected->sta, sizeof(engine->sta));
+	engine->method = selected->sae_method;
 	engine->sae.no_pw_id = 1;
 	if (sae_set_group(&engine->sae, IEEE80211_SAE_ENGINE_GROUP19) != 0)
 		goto fail;
 	engine->sae.no_pw_id = 1;
 	engine->sae.akmp = WPA_KEY_MGMT_SAE;
-	if (sae_prepare_commit(engine->sta, engine->bssid, password, password_len,
-	    &engine->sae) != 0 ||
-	    engine->sae.group != IEEE80211_SAE_ENGINE_GROUP19 ||
-	    engine->sae.h2e != 0 ||
+	if (engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD) {
+		pt = sae_derive_pt(groups, engine->ssid, engine->ssid_len,
+		    password, password_len, NULL, 0);
+		if (pt == NULL ||
+		    sae_prepare_commit_pt(&engine->sae, pt, engine->sta,
+			engine->bssid, NULL, NULL) != 0)
+			goto fail;
+		sae_deinit_pt(pt);
+		pt = NULL;
+	} else if (sae_prepare_commit(engine->sta, engine->bssid, password,
+	    password_len, &engine->sae) != 0) {
+		goto fail;
+	}
+	if (engine->sae.group != IEEE80211_SAE_ENGINE_GROUP19 ||
+	    (engine->sae.h2e != 0) !=
+		(engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD) ||
 	    ieee80211_sae_engine_build_commit(engine, NULL, 0) != 0)
 		goto fail;
 	engine->state = IEEE80211_SAE_ENGINE_COMMIT_PREPARED;
 	*out_engine = engine;
 	return 0;
 fail:
+	sae_deinit_pt(pt);
 	ieee80211_sae_engine_destroy(&engine);
 	return -1;
+}
+
+int
+ieee80211_sae_engine_begin_hnp(
+	const struct ItlSaeSelectedJoinEventV1 *selected,
+	const struct ItlSaeAuthActivatedEventV1 *activated,
+	const uint8_t *password, size_t password_len,
+	struct ieee80211_sae_engine **out_engine)
+{
+	if (selected == NULL ||
+	    selected->sae_method != IEEE80211_SAE_ENGINE_HNP_METHOD) {
+		if (out_engine != NULL)
+			*out_engine = NULL;
+		return -1;
+	}
+	return ieee80211_sae_engine_begin(selected, activated, password,
+	    password_len, out_engine);
 }
 
 int
@@ -258,6 +301,10 @@ ieee80211_sae_engine_prepare_tx(struct ieee80211_sae_engine *engine,
 	out->relay_generation = engine->relay_generation;
 	out->ticket = ticket;
 	out->phase = engine->prepared_phase;
+	out->auth_status =
+	    out->phase == kItlSaeAuthTransportPhaseCommit &&
+	    engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD ?
+	    WLAN_STATUS_SAE_HASH_TO_ELEMENT : WLAN_STATUS_SUCCESS;
 	out->wire_transaction =
 	    itl_sae_auth_transport_sta_wire_transaction_for_phase(out->phase);
 	out->body_len = engine->prepared_body_len;
@@ -345,23 +392,48 @@ ieee80211_sae_engine_event_matches(
 	    memcmp(event->sta, engine->sta, sizeof(engine->sta)) == 0;
 }
 
+static uint16_t
+ieee80211_sae_engine_commit_status(
+	const struct ieee80211_sae_engine *engine)
+{
+	return engine != NULL &&
+	    engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD ?
+	    WLAN_STATUS_SAE_HASH_TO_ELEMENT : WLAN_STATUS_SUCCESS;
+}
+
 static int
 ieee80211_sae_engine_handle_anti_clogging(
 	struct ieee80211_sae_engine *engine,
 	const struct ItlSaeAuthPeerEventV1 *event)
 {
 	const uint8_t *token;
+	size_t token_len;
 
 	if (engine == NULL || event == NULL ||
 	    engine->anti_clogging_retries != 0 ||
 	    event->body_len <= 2 ||
-	    event->body_len > 2 + IEEE80211_SAE_ENGINE_ANTI_CLOGGING_TOKEN_MAX ||
 	    event->body[0] != (IEEE80211_SAE_ENGINE_GROUP19 & 0xffu) ||
 	    event->body[1] != (IEEE80211_SAE_ENGINE_GROUP19 >> 8))
 		return -1;
 	token = event->body + 2;
-	if (ieee80211_sae_engine_build_commit(engine, token,
-	    event->body_len - 2) != 0)
+	token_len = event->body_len - 2;
+	if (engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD) {
+		/* hostap/wpa_supplicant and IEEE 802.11 encode an H2E token
+		 * request as group || Extension(anti-clogging-token).  Feed
+		 * sae_write_commit() only the opaque token: it emits exactly
+		 * one container in the retry Commit. */
+		if (token_len < 4 || token[0] != WLAN_EID_EXTENSION ||
+		    token[1] < 2 ||
+		    token[2] != WLAN_EID_EXT_ANTI_CLOGGING_TOKEN ||
+		    (size_t)token[1] + 2 != token_len)
+			return -1;
+		token_len = token[1] - 1;
+		token += 3;
+	} else if (token_len >
+	    IEEE80211_SAE_ENGINE_ANTI_CLOGGING_TOKEN_MAX) {
+		return -1;
+	}
+	if (ieee80211_sae_engine_build_commit(engine, token, token_len) != 0)
 		return -1;
 	engine->anti_clogging_retries = 1;
 	engine->state = IEEE80211_SAE_ENGINE_COMMIT_PREPARED;
@@ -388,12 +460,13 @@ ieee80211_sae_engine_handle_commit(struct ieee80211_sae_engine *engine,
 		    IEEE80211_SAE_ENGINE_PEER_TX_READY :
 		    IEEE80211_SAE_ENGINE_PEER_ABORT;
 	}
-	if (event->auth_status != WLAN_STATUS_SUCCESS)
+	if (event->auth_status != ieee80211_sae_engine_commit_status(engine))
 		return IEEE80211_SAE_ENGINE_PEER_AP_REJECT;
 	if (event->body_len != IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN)
 		return IEEE80211_SAE_ENGINE_PEER_ABORT;
 	parsed = sae_parse_commit(&engine->sae, event->body, event->body_len,
-	    &peer_token, &peer_token_len, allowed_groups, 0, &ie_offset);
+	    &peer_token, &peer_token_len, allowed_groups,
+	    engine->method == IEEE80211_SAE_ENGINE_H2E_METHOD, &ie_offset);
 	if (parsed == SAE_SILENTLY_DISCARD)
 		return IEEE80211_SAE_ENGINE_PEER_DROP;
 	if (parsed != WLAN_STATUS_SUCCESS || peer_token != NULL ||
@@ -486,7 +559,7 @@ ieee80211_sae_engine_handle_peer(struct ieee80211_sae_engine *engine,
 	    event->phase == kItlSaeAuthTransportPhaseCommit &&
 	    event->wire_transaction ==
 		kItlSaeAuthTransportPeerWireTransactionCommit &&
-	    event->auth_status == WLAN_STATUS_SUCCESS)
+	    event->auth_status == ieee80211_sae_engine_commit_status(engine))
 		return IEEE80211_SAE_ENGINE_PEER_DROP;
 	if (engine->state == IEEE80211_SAE_ENGINE_COMMIT_SENT)
 		result = ieee80211_sae_engine_handle_commit(engine, event);

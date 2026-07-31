@@ -585,7 +585,7 @@ struct iwn_softc {
      * the leaf below accepts fixed public TX terminal and peer-RX values.
      * The WCL password remains solely in the separately scrubbed staging
      * record below and is copied into worker-local storage only for
-     * ieee80211_sae_engine_begin_hnp().
+     * ieee80211_sae_engine_begin().
      */
     IOSimpleLock       *sc_sae_engine_lock;
     struct iwn_sae_engine_owner sc_sae_engine_owner;

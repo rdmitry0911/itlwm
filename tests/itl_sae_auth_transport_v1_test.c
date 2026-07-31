@@ -217,6 +217,17 @@ test_request_well_formed_boundaries_and_fixed_fields(void)
     assert_request_rejected(&request);
 
     fill_request(&request);
+    request.auth_status = kItlSaeAuthTransportStatusSaeHashToElement;
+    assert(itl_sae_auth_transport_request_is_well_formed(&request));
+
+    fill_request(&request);
+    request.phase = kItlSaeAuthTransportPhaseConfirm;
+    request.wire_transaction =
+        itl_sae_auth_transport_sta_wire_transaction_for_phase(request.phase);
+    request.auth_status = kItlSaeAuthTransportStatusSaeHashToElement;
+    assert_request_rejected(&request);
+
+    fill_request(&request);
     request.body_len = 0;
     assert_request_rejected(&request);
 
@@ -301,6 +312,19 @@ test_event_well_formed_fixed_fields_and_result(void)
 
     fill_event(&request, &event);
     event.auth_status = 1;
+    assert_event_rejected(&event);
+
+    request.auth_status = kItlSaeAuthTransportStatusSaeHashToElement;
+    fill_event(&request, &event);
+    assert(itl_sae_auth_transport_event_is_well_formed(&event));
+    assert(itl_sae_auth_transport_event_matches_request(&event, &request));
+
+    fill_request(&request);
+    fill_event(&request, &event);
+    event.phase = kItlSaeAuthTransportPhaseConfirm;
+    event.wire_transaction =
+        itl_sae_auth_transport_sta_wire_transaction_for_phase(event.phase);
+    event.auth_status = kItlSaeAuthTransportStatusSaeHashToElement;
     assert_event_rejected(&event);
 
     fill_event(&request, &event);
@@ -521,6 +545,15 @@ test_selected_join_event_schema(void)
 
     fill_selected_join_event(&event);
     event.sae_method = 2;
+    event.rsnxe_capabilities = kItlSaeAuthTransportRsnxeH2e;
+    assert(itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.sae_method = 2;
+    assert(!itl_sae_selected_join_event_is_well_formed(&event));
+
+    fill_selected_join_event(&event);
+    event.rsnxe_capabilities = 2;
     assert(!itl_sae_selected_join_event_is_well_formed(&event));
 
     fill_selected_join_event(&event);

@@ -49,7 +49,6 @@ main(void)
 		IEEE80211_SAE_SCAN_EXTCAP_PASSWORD_ID_EXCLUSIVE,
 		IEEE80211_SAE_SCAN_EXTCAP_SAE_PK_EXCLUSIVE,
 		IEEE80211_SAE_SCAN_RSNXE_SAE_PK,
-		IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR,
 		IEEE80211_SAE_SCAN_SAE_EXT_KEY,
 		IEEE80211_SAE_SCAN_UNSUPPORTED,
 		IEEE80211_SAE_SCAN_PROFILE_INCONSISTENT,
@@ -120,6 +119,11 @@ main(void)
          IEEE80211_SAE_SCAN_EXTCAP_SAE_PK_EXCLUSIVE));
     assert(ieee80211_sae_scan_has_h2e_only_selector(rates_h2e_only,
         sizeof(rates_h2e_only)));
+    assert(ieee80211_sae_scan_rate_is_h2e_only_selector(
+        rates_h2e_only[0]));
+    assert(!ieee80211_sae_scan_rate_is_h2e_only_selector(
+        rates_unflagged_h2e_only[0]));
+    assert(!ieee80211_sae_scan_rate_is_h2e_only_selector(rates_other[0]));
     assert(!ieee80211_sae_scan_has_h2e_only_selector(
         rates_unflagged_h2e_only, sizeof(rates_unflagged_h2e_only)));
     assert(!ieee80211_sae_scan_has_h2e_only_selector(rates_other,
@@ -270,6 +274,8 @@ main(void)
 	    IEEE80211_SAE_SCAN_EXTCAP_PRESENT));
 	assert(strict_profile(strict_census));
 	assert(strict_profile(strict_optional));
+	assert(strict_profile(strict_optional |
+	    IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR));
 	assert(!ieee80211_sae_scan_profile_is_strict(0, 1, 1, 0, 1, 0,
 	    1, 1, 1, 1, 1, strict_census));
 	assert(!ieee80211_sae_scan_profile_is_strict(1, 0, 1, 0, 1, 0,
