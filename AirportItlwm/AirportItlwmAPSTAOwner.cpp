@@ -776,7 +776,10 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         setSoftAPPowerSaveState(
             kAirportItlwmAPSTAHostApPowerOnRestoreState,
             kAirportItlwmAPSTAHostApPowerOnRestoreReason);
-    } else if (result != kIOReturnBusy && result != kIOReturnNotReady) {
+    } else if (result != kIOReturnBusy &&
+               result != kIOReturnNotReady &&
+               result != kIOReturnTimeout &&
+               result != kIOReturnAborted) {
         radioResetResumePending = false;
     }
     return result;
