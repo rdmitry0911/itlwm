@@ -11758,20 +11758,28 @@ iwn_notif_intr(struct iwn_softc *sc)
                 (void)iwn_init_sensitivity(sc);
 
             /*
-             * Rather than go directly to scan state, try to send a
-             * directed probe request first. If that fails then the
-             * state machine will drop us into scanning after timing
-             * out waiting for a probe response.
+             * Tahoe's reference firmware link event enters
+             * WCLNetManager::linkDownInd as "Net Beacons Lost" and leaves
+             * the network immediately.  The historical OpenBSD directed
+             * probe arms the management watchdog for another minute; on a
+             * hard AP outage that kept macOS attached to a dead BSSID long
+             * after the firmware threshold had already been crossed.
+             *
+             * Publish the distinct beacon-loss edge while the selected BSS
+             * is still authoritative, then enter the same RUN -> SCAN path
+             * that the eventual management timeout would have used.  Do not
+             * manufacture a received deauthentication frame.
              */
             if (missed > ic->ic_bmissthres && !ic->ic_mgt_timer) {
                 if (ic->ic_if.if_flags & IFF_DEBUG)
                     XYLog("%s: receiving no beacons from "
-                        "%s; checking if this AP is still "
-                        "responding to probe requests\n",
+                        "%s; leaving the lost BSS\n",
                         sc->sc_dev.dv_xname, ether_sprintf(
                         ic->ic_bss->ni_macaddr));
-                IEEE80211_SEND_MGMT(ic, ic->ic_bss,
-                    IEEE80211_FC0_SUBTYPE_PROBE_REQ, 0);
+                if (ic->ic_event_handler != NULL)
+                    (*ic->ic_event_handler)(
+                        ic, IEEE80211_EVT_STA_BEACON_LOSS, NULL);
+                ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
             }
             break;
         }

@@ -9387,6 +9387,22 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 #endif
             apple80211Msg = APPLE80211_M_DEAUTH_RECEIVED;
             break;
+        case IEEE80211_EVT_STA_BEACON_LOSS:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * Exact 25C56 WCLNetManager::linkDownInd reason zero is the
+             * firmware "Net Beacons Lost" edge.  Publish its independent
+             * 0xd8 carrier while RUN still owns the selected BSS, before the
+             * lower callback enters SCAN and the parent link-down drains.
+             * Unlike STA_DEAUTH this path publishes no DEAUTH_RECEIVED.
+             */
+            (void)gate->runAction(
+                clearTahoeWclAuthAssocCompletionLeaseGated);
+            (void)gate->runAction(
+                postTahoeWclLinkDownIndGated,
+                (void *)(uintptr_t)1U, NULL, NULL);
+#endif
+            return;
         case IEEE80211_EVT_SCAN_DONE:
             RT_SET(25);
             sRT.scanDoneCount++;

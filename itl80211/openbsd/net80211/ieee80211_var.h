@@ -1259,6 +1259,16 @@ struct ieee80211_wcl_scan_start_rejected {
 #define IEEE80211_EVT_STA_OPEN_RUN_DONE           20
 
 /*
+ * The lower firmware has crossed its consecutive-missed-beacon threshold
+ * while the selected STA BSS is still authoritative.  The controller
+ * consumes this synchronously before RUN is left so Tahoe can publish its
+ * independent WCL link-down carrier with the "Net Beacons Lost" reason.
+ * This is not a received deauthentication frame and must not manufacture a
+ * DEAUTH_RECEIVED event.
+ */
+#define IEEE80211_EVT_STA_BEACON_LOSS              21
+
+/*
  * Host-owned WCL reassociation owner contract recovered from the public
  * AppleBCMWLAN binary (AppleBCMWLANCore::setWCL_REASSOC and the
  * NetAdapter::sendReassocCommand callback/event family). The local Intel
