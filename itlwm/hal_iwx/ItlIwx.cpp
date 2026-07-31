@@ -11008,7 +11008,9 @@ iwx_ap_client_task(void *arg)
             &runtime->clients[index];
         if (!client->inUse || !client->clientAssociationPending)
             continue;
+        const bool reassociation = client->clientReassociationPending;
         client->clientAssociationPending = false;
+        client->clientReassociationPending = false;
         if (!client->clientAuthenticated)
             continue;
 
@@ -11023,7 +11025,7 @@ iwx_ap_client_task(void *arg)
             error = that->iwx_ap_add_client_sta(sc, runtime, client);
         if (error == 0)
             error = itl_ap_open_build_assoc_success(
-                runtime, client, &result);
+                runtime, client, reassociation, &result);
 
         mbuf_t response = NULL;
         if (error == 0)
@@ -11039,7 +11041,8 @@ iwx_ap_client_task(void *arg)
             client->clientAssociated = true;
             client->clientAuthorized = !itl_ap_client_is_secure(runtime);
             iwx_ap_publish_station(
-                sc, client, IEEE80211_APSTA_EVENT_ASSOC);
+                sc, client, reassociation ? IEEE80211_APSTA_EVENT_REASSOC :
+                                            IEEE80211_APSTA_EVENT_ASSOC);
             if (itl_ap_client_uses_local_sae(runtime)) {
                 uint8_t m1[sizeof(struct ieee80211_eapol_key)];
                 size_t m1Length = 0;
@@ -11150,7 +11153,7 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
                result.disposition == kItlApOpenRxAssociate) {
         if (client == NULL)
             error = EINVAL;
-        const size_t ieOffset = sizeof(struct ieee80211_frame) + 4;
+        const size_t ieOffset = result.associationIEOffset;
         if (client != NULL)
             client->clientAssocIEsLength = frameLength > ieOffset ?
             MIN(frameLength - ieOffset,
@@ -11161,6 +11164,7 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
                 client->clientAssocIEs);
         if (error == 0) {
             client->clientAssociationPending = true;
+            client->clientReassociationPending = result.reassociation;
             iwx_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
         }
     } else if (error == 0 &&

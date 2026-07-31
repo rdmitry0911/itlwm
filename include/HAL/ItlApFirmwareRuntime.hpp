@@ -35,6 +35,7 @@ struct ItlApFirmwareClientRuntime {
     uint8_t clientAssocIEs[512];
     size_t clientAssocIEsLength;
     bool clientAssociationPending;
+    bool clientReassociationPending;
     bool clientAuthenticated;
     bool clientAssociated;
     bool clientAuthorized;

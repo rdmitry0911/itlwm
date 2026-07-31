@@ -41,6 +41,8 @@ struct ItlApOpenRxResult {
     bool powerSaveObserved;
     bool powerSave;
     bool timChanged;
+    bool reassociation;
+    size_t associationIEOffset;
     size_t clientIndex;
 };
 
@@ -470,6 +472,7 @@ itl_ap_open_begin_client_auth(struct ItlApFirmwareRuntime *runtime,
         (void)itl_ap_power_save_set_tim(
             runtime, client, false, &result->timChanged);
     client->clientAssociationPending = false;
+    client->clientReassociationPending = false;
     client->clientAuthenticated = false;
     client->clientAssociated = false;
     client->clientAuthorized = false;
@@ -632,13 +635,19 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
                         struct ItlApOpenRxResult *result)
 {
     const size_t headerLength = sizeof(*request);
-    const size_t fixedLength = 4;
     if (!itl_ap_open_is_running(runtime) || request == NULL || result == NULL ||
-        frameLength < headerLength + fixedLength ||
+        frameLength < headerLength + 4)
+        return 0;
+    const uint8_t subtype = request->i_fc[0] &
+        IEEE80211_FC0_SUBTYPE_MASK;
+    const bool reassociation =
+        subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ;
+    const size_t fixedLength = reassociation ? 10 : 4;
+    if (frameLength < headerLength + fixedLength ||
         (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
             IEEE80211_FC0_TYPE_MGT ||
-        (request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) !=
-            IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+        (subtype != IEEE80211_FC0_SUBTYPE_ASSOC_REQ &&
+         subtype != IEEE80211_FC0_SUBTYPE_REASSOC_REQ) ||
         !itl_ap_open_addressed_to_bss(runtime, request))
         return 0;
 
@@ -698,6 +707,8 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
     }
 
     result->disposition = kItlApOpenRxAssociate;
+    result->reassociation = reassociation;
+    result->associationIEOffset = headerLength + fixedLength;
     result->clientIndex = itl_ap_firmware_client_index(runtime, client);
     IEEE80211_ADDR_COPY(result->station, request->i_addr2);
     return 0;
@@ -706,6 +717,7 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
 static inline int
 itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
                                 const struct ItlApFirmwareClientRuntime *client,
+                                bool reassociation,
                                 struct ItlApOpenRxResult *result)
 {
     static const uint8_t rates2g[] = {
@@ -730,7 +742,9 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
     struct ieee80211_frame *response =
         reinterpret_cast<struct ieee80211_frame *>(result->reply);
     response->i_fc[0] = IEEE80211_FC0_VERSION_0 |
-        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
+        IEEE80211_FC0_TYPE_MGT |
+        (reassociation ? IEEE80211_FC0_SUBTYPE_REASSOC_RESP :
+                         IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
     response->i_fc[1] = IEEE80211_FC1_DIR_NODS;
     IEEE80211_ADDR_COPY(response->i_addr1, client->clientMac);
     IEEE80211_ADDR_COPY(response->i_addr2, runtime->config.bssid);
@@ -758,6 +772,7 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
     }
     result->replyLength = static_cast<size_t>(out - result->reply);
     result->disposition = kItlApOpenRxReply;
+    result->reassociation = reassociation;
     result->clientIndex = itl_ap_firmware_client_index(runtime, client);
     IEEE80211_ADDR_COPY(result->station, client->clientMac);
     return 0;
