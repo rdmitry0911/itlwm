@@ -8873,6 +8873,8 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
     const bool multicast = IEEE80211_IS_MULTICAST(wh->i_addr1);
     struct ItlApFirmwareClientRuntime *client = multicast ? NULL :
         itl_ap_firmware_find_client(&apRuntime, wh->i_addr1);
+    const bool firmwareRate = type == IEEE80211_FC0_TYPE_DATA &&
+        !multicast && client != NULL && client->rateControlConfigured;
     if (protectedFrame && (type != IEEE80211_FC0_TYPE_DATA ||
         (multicast ? !apRuntime.groupKeyInstalled :
                      client == NULL ||
@@ -8914,7 +8916,8 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
     } else if (IWX_RIDX_IS_CCK(rateIndex)) {
         rateFlags |= IWX_RATE_MCS_CCK_MSK_V1;
     }
-    const uint32_t commandFlags = IWX_TX_FLAGS_CMD_RATE |
+    const uint32_t commandFlags =
+        (firmwareRate ? 0 : IWX_TX_FLAGS_CMD_RATE) |
         (protectedFrame ? 0 : IWX_TX_FLAGS_ENCRYPT_DIS);
     uint16_t commandSize;
     uint16_t offloadAssist = 0;
@@ -10798,6 +10801,59 @@ iwx_ap_add_client_sta(struct iwx_softc *sc,
 }
 
 int ItlIwx::
+iwx_ap_configure_client_rates(
+    struct iwx_softc *sc, struct ItlApFirmwareClientRuntime *client)
+{
+    if (sc == NULL || client == NULL || !client->clientStationInstalled ||
+        client->clientLegacyRateMask == 0)
+        return EINVAL;
+
+    struct iwx_tlc_config_cmd_v4 command;
+    memset(&command, 0, sizeof(command));
+    command.sta_id = client->staId;
+    command.max_ch_width = IWX_RATE_MCS_CHAN_WIDTH_20;
+    command.mode = IWX_TLC_MNG_MODE_NON_HT;
+    const uint8_t antennaMask = iwx_fw_valid_tx_ant(sc);
+    if (antennaMask & IWX_ANT_A)
+        command.chains |= IWX_TLC_MNG_CHAIN_A_MSK;
+    if (antennaMask & IWX_ANT_B)
+        command.chains |= IWX_TLC_MNG_CHAIN_B_MSK;
+    if (command.chains == 0)
+        return EINVAL;
+    command.non_ht_rates = htole16(client->clientLegacyRateMask);
+
+    const uint32_t commandId = iwx_cmd_id(
+        IWX_TLC_MNG_CONFIG_CMD, IWX_DATA_PATH_GROUP, 0);
+    const uint8_t commandVersion = iwx_lookup_cmd_ver(
+        sc, IWX_DATA_PATH_GROUP, IWX_TLC_MNG_CONFIG_CMD);
+    int error;
+    if (commandVersion == 4) {
+        error = iwx_send_cmd_pdu(
+            sc, commandId, 0, sizeof(command), &command);
+    } else if (commandVersion < 4 ||
+               commandVersion == IWX_FW_CMD_VER_UNKNOWN) {
+        struct iwl_tlc_config_cmd_v3 commandV3;
+        memset(&commandV3, 0, sizeof(commandV3));
+        commandV3.sta_id = command.sta_id;
+        commandV3.max_ch_width = command.max_ch_width;
+        commandV3.mode = command.mode;
+        commandV3.chains = command.chains;
+        commandV3.non_ht_rates = command.non_ht_rates;
+        uint16_t commandSize = sizeof(commandV3);
+        if (commandVersion == IWX_FW_CMD_VER_UNKNOWN || commandVersion < 3)
+            commandSize -= 4;
+        error = iwx_send_cmd_pdu(
+            sc, commandId, 0, commandSize, &commandV3);
+        explicit_bzero(&commandV3, sizeof(commandV3));
+    } else {
+        error = EOPNOTSUPP;
+    }
+    explicit_bzero(&command, sizeof(command));
+    client->rateControlConfigured = error == 0;
+    return error;
+}
+
+int ItlIwx::
 iwx_ap_remove_client_sta(struct iwx_softc *sc,
                          struct ItlApFirmwareRuntime *runtime,
                          struct ItlApFirmwareClientRuntime *client)
@@ -10808,6 +10864,7 @@ iwx_ap_remove_client_sta(struct iwx_softc *sc,
     const int error = iwx_ap_remove_internal_sta(sc,
         client->staId, client->queueId);
     client->clientStationInstalled = false;
+    client->rateControlConfigured = false;
     client->queueId = UINT16_MAX;
     itl_ap_firmware_client_crypto_reset(client);
     explicit_bzero(client->clientStationMac,
@@ -11023,6 +11080,8 @@ iwx_ap_client_task(void *arg)
             error = that->iwx_ap_remove_client_sta(sc, runtime, client);
         if (error == 0 && !client->clientStationInstalled)
             error = that->iwx_ap_add_client_sta(sc, runtime, client);
+        if (error == 0)
+            error = that->iwx_ap_configure_client_rates(sc, client);
         if (error == 0)
             error = itl_ap_open_build_assoc_success(
                 runtime, client, reassociation, &result);

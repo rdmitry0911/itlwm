@@ -40,6 +40,8 @@ struct ItlApFirmwareClientRuntime {
     bool clientAssociated;
     bool clientAuthorized;
     bool clientStationInstalled;
+    bool rateControlConfigured;
+    uint16_t clientLegacyRateMask;
     bool clientPairwiseKeyInstalled;
     uint8_t clientPairwiseKey[16];
     uint64_t clientPairwiseTxPn;

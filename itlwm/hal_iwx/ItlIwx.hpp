@@ -548,6 +548,8 @@ public:
     int    iwx_ap_add_client_sta(struct iwx_softc *,
                                  struct ItlApFirmwareRuntime *,
                                  struct ItlApFirmwareClientRuntime *);
+    int    iwx_ap_configure_client_rates(struct iwx_softc *,
+                                         struct ItlApFirmwareClientRuntime *);
     int    iwx_ap_remove_client_sta(struct iwx_softc *,
                                     struct ItlApFirmwareRuntime *,
                                     struct ItlApFirmwareClientRuntime *);

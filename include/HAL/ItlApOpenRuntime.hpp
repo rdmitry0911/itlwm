@@ -242,6 +242,27 @@ itl_ap_key_rsc(const struct ItlHalApKey *key)
         static_cast<uint64_t>(rsc[5]) << 40;
 }
 
+static inline uint16_t
+itl_ap_legacy_rate_mask(const uint8_t *rates, size_t count)
+{
+    static const uint8_t legacyRates[] = {
+        2, 4, 11, 22, 12, 18, 24, 36, 48, 72, 96, 108
+    };
+    uint16_t mask = 0;
+    if (rates == NULL)
+        return 0;
+    for (size_t index = 0; index < count; index++) {
+        const uint8_t rate = rates[index] & IEEE80211_RATE_VAL;
+        for (size_t bit = 0; bit < nitems(legacyRates); bit++) {
+            if (legacyRates[bit] == rate) {
+                mask |= static_cast<uint16_t>(1U << bit);
+                break;
+            }
+        }
+    }
+    return mask;
+}
+
 static inline bool
 itl_ap_power_save_should_buffer(const struct ItlApFirmwareRuntime *runtime,
                                 const struct ItlApFirmwareClientRuntime *client,
@@ -664,6 +685,7 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
         frameLength;
     const uint8_t *ssid = NULL;
     const uint8_t *rates = NULL;
+    const uint8_t *extendedRates = NULL;
     const uint8_t *rsn = NULL;
     while (cursor + 2 <= end) {
         const size_t elementLength = cursor[1];
@@ -673,6 +695,8 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
             ssid = cursor;
         else if (cursor[0] == IEEE80211_ELEMID_RATES)
             rates = cursor;
+        else if (cursor[0] == IEEE80211_ELEMID_XRATES)
+            extendedRates = cursor;
         else if (cursor[0] == IEEE80211_ELEMID_RSN)
             rsn = cursor;
         cursor += 2 + elementLength;
@@ -685,6 +709,13 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
     const bool rsnValid = !secure || (rsn != NULL &&
         (localSae ? itl_ap_wpa3_rsn_ie_supported(rsn, rsnLength) :
                     itl_ap_wpa2_rsn_ie_supported(rsn, rsnLength)));
+    uint16_t legacyRateMask = rates != NULL ?
+        itl_ap_legacy_rate_mask(rates + 2, rates[1]) : 0;
+    if (extendedRates != NULL)
+        legacyRateMask |= itl_ap_legacy_rate_mask(
+            extendedRates + 2, extendedRates[1]);
+    if (runtime->config.channel > 14)
+        legacyRateMask &= 0x0ff0;
     const bool valid = client->clientAuthenticated &&
         (!localSae || ieee80211_sae_ap_is_accepted(client->sae) != 0) &&
         (capability & IEEE80211_CAPINFO_ESS) != 0 &&
@@ -695,7 +726,7 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
         ssid != NULL && ssid[1] == runtime->config.ssidLength &&
         memcmp(ssid + 2, runtime->ssid, ssid[1]) == 0 &&
         rates != NULL && rates[1] != 0 &&
-        rates[1] <= IEEE80211_RATE_MAXSIZE;
+        rates[1] <= IEEE80211_RATE_MAXSIZE && legacyRateMask != 0;
     if (!valid)
         return 0;
 
@@ -705,6 +736,7 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
         client->clientRsnIELength = rsnLength;
         memcpy(client->clientRsnIE, rsn, rsnLength);
     }
+    client->clientLegacyRateMask = legacyRateMask;
 
     result->disposition = kItlApOpenRxAssociate;
     result->reassociation = reassociation;

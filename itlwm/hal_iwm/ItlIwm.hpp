@@ -413,6 +413,8 @@ public:
     int    iwm_ap_add_client_sta(struct iwm_softc *,
                                  struct ItlApFirmwareRuntime *,
                                  struct ItlApFirmwareClientRuntime *);
+    int    iwm_ap_configure_client_rates(struct iwm_softc *,
+                                         struct ItlApFirmwareClientRuntime *);
     int    iwm_ap_remove_client_sta(struct iwm_softc *,
                                     struct ItlApFirmwareRuntime *,
                                     struct ItlApFirmwareClientRuntime *);

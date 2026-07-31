@@ -1987,6 +1987,8 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
     const bool multicast = IEEE80211_IS_MULTICAST(wh->i_addr1);
     struct ItlApFirmwareClientRuntime *client = multicast ? NULL :
         itl_ap_firmware_find_client(&apRuntime, wh->i_addr1);
+    const bool firmwareRate = type == IEEE80211_FC0_TYPE_DATA &&
+        !multicast && client != NULL && client->rateControlConfigured;
     if (protectedFrame && (type != IEEE80211_FC0_TYPE_DATA ||
         frameLength > UINT16_MAX - IEEE80211_CCMP_HDRLEN ||
         (multicast ? !apRuntime.groupKeyInstalled :
@@ -2019,11 +2021,16 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
         IWM_TID_NON_QOS : IWM_MAX_TID_COUNT;
     tx->life_time = htole32(IWM_TX_CMD_LIFE_TIME_INFINITE);
     tx->rts_retry_limit = IWM_RTS_DFAULT_RETRY_LIMIT;
-    tx->data_retry_limit = IWM_MGMT_DFAULT_RETRY_LIMIT;
+    tx->data_retry_limit = firmwareRate ? IWM_DEFAULT_TX_RETRY :
+                                         IWM_MGMT_DFAULT_RETRY_LIMIT;
     tx->pm_frame_timeout = htole16(type == IEEE80211_FC0_TYPE_MGT ? 2 : 0);
     uint32_t txFlags = IWM_TX_CMD_FLG_SEQ_CTL;
     if (!IEEE80211_IS_MULTICAST(wh->i_addr1))
         txFlags |= IWM_TX_CMD_FLG_ACK;
+    if (firmwareRate) {
+        txFlags |= IWM_TX_CMD_FLG_STA_RATE;
+        tx->initial_rate_index = 0;
+    }
     if (subtype == IEEE80211_FC0_SUBTYPE_PROBE_RESP)
         txFlags |= IWM_TX_CMD_FLG_TSF;
     tx->tx_flags = htole32(txFlags);
@@ -2559,6 +2566,55 @@ iwm_ap_add_client_sta(struct iwm_softc *sc,
 }
 
 int ItlIwm::
+iwm_ap_configure_client_rates(
+    struct iwm_softc *sc, struct ItlApFirmwareClientRuntime *client)
+{
+    if (sc == NULL || client == NULL || !client->clientStationInstalled ||
+        client->clientLegacyRateMask == 0)
+        return EINVAL;
+
+    uint8_t rateIndexes[12];
+    size_t rateCount = 0;
+    for (int index = 11; index >= 0; index--) {
+        if ((client->clientLegacyRateMask & (1U << index)) != 0)
+            rateIndexes[rateCount++] = static_cast<uint8_t>(index);
+    }
+    if (rateCount == 0)
+        return EINVAL;
+
+    struct iwm_lq_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.sta_id = client->staId;
+    uint8_t antennaMask = iwm_fw_valid_tx_ant(sc);
+    uint8_t antenna = IWM_ANT_A;
+    while ((antennaMask & antenna) == 0 && antenna < IWM_ANT_C)
+        antenna <<= 1;
+    if ((antennaMask & antenna) == 0)
+        return EINVAL;
+    command.single_stream_ant_msk = antenna;
+    command.dual_stream_ant_msk = antennaMask;
+    command.mimo_delim = IWM_LQ_MAX_RETRY_NUM;
+    command.agg_time_limit = htole16(IWL_MVM_RS_AGG_TIME_LIMIT);
+    command.agg_disable_start_th = IWL_MVM_RS_AGG_DISABLE_START;
+    command.agg_frame_cnt_limit = 1;
+    for (size_t retry = 0; retry < IWM_LQ_MAX_RETRY_NUM; retry++) {
+        const size_t ordinal = retry * rateCount / IWM_LQ_MAX_RETRY_NUM;
+        const uint8_t rateIndex = rateIndexes[ordinal];
+        uint32_t rate = (static_cast<uint32_t>(antenna) <<
+                         IWM_RATE_MCS_ANT_POS) |
+            iwl_mvm_mac80211_idx_to_hwrate(rateIndex);
+        if (rateIndex <= IWL_LAST_CCK_RATE)
+            rate |= RATE_MCS_CCK_MSK;
+        command.rs_table[retry] = htole32(rate);
+    }
+    const int error = iwm_send_cmd_pdu(
+        sc, IWM_LQ_CMD, 0, sizeof(command), &command);
+    explicit_bzero(&command, sizeof(command));
+    client->rateControlConfigured = error == 0;
+    return error;
+}
+
+int ItlIwm::
 iwm_ap_remove_client_sta(struct iwm_softc *sc,
                          struct ItlApFirmwareRuntime *runtime,
                          struct ItlApFirmwareClientRuntime *client)
@@ -2574,6 +2630,7 @@ iwm_ap_remove_client_sta(struct iwm_softc *sc,
     const int removeError = iwm_send_cmd_pdu(sc, IWM_REMOVE_STA, 0,
                                               sizeof(command), &command);
     client->clientStationInstalled = false;
+    client->rateControlConfigured = false;
     client->queueId = UINT16_MAX;
     itl_ap_firmware_client_crypto_reset(client);
     explicit_bzero(client->clientStationMac,
@@ -2797,6 +2854,8 @@ iwm_ap_client_task(void *arg)
             error = that->iwm_ap_remove_client_sta(sc, runtime, client);
         if (error == 0 && !client->clientStationInstalled)
             error = that->iwm_ap_add_client_sta(sc, runtime, client);
+        if (error == 0)
+            error = that->iwm_ap_configure_client_rates(sc, client);
         if (error == 0)
             error = itl_ap_open_build_assoc_success(
                 runtime, client, reassociation, &result);
