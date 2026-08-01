@@ -4123,6 +4123,13 @@ void ItlIwn::iwn_reset_ap_runtime_state()
         IWN_AP_CLIENT_MATERIALIZATION_IDLE;
     apClientAuthenticated = false;
     apClientReassociationPending = false;
+    apClientLegacyRateMask = 0;
+    apClientQos = false;
+    apClientHt = false;
+    apClientHtNss = 0;
+    apClientHtCapabilities = 0;
+    apClientHtAmpduParams = 0;
+    bzero(apClientHtMcs, sizeof(apClientHtMcs));
     apClientOpenAuthenticated = false;
     apClientAssociated = false;
     apClientAuthorized = false;
@@ -4972,7 +4979,10 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         return ENXIO;
     }
 
-    const size_t headerLength = sizeof(struct ieee80211_frame);
+    const bool qosData = apClientQos;
+    const size_t headerLength = qosData ?
+        sizeof(struct ieee80211_qosframe) :
+        sizeof(struct ieee80211_frame);
     const size_t ccmpHeaderLength =
         protectedFrame ? IEEE80211_CCMP_HDRLEN : 0;
     const size_t bodyLength =
@@ -4980,8 +4990,10 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         ethernetLength - ETHER_HDR_LEN;
     const size_t frameLength = headerLength + bodyLength;
     const size_t firstTransportBufferLength = IWN_TX_FIRST_TB_SIZE;
+    const size_t padLength =
+        headerLength & 3 ? 4 - (headerLength & 3) : 0;
     const size_t commandAndHeaderLength =
-        4 + sizeof(struct iwn_cmd_data) + headerLength;
+        4 + sizeof(struct iwn_cmd_data) + headerLength + padLength;
     if (frameLength > UINT16_MAX ||
         commandAndHeaderLength <= firstTransportBufferLength) {
         return EMSGSIZE;
@@ -5002,6 +5014,8 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     uint32_t flags = IWN_TX_AUTO_SEQ;
     if (!multicast)
         flags |= IWN_TX_NEED_ACK | IWN_TX_LINKQ;
+    if (padLength != 0)
+        flags |= IWN_TX_NEED_PADDING;
     tx->flags = htole32(flags);
     tx->len = htole16(static_cast<uint16_t>(frameLength));
     tx->id = multicast ?
@@ -5009,7 +5023,7 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     tx->lifetime = htole32(IWN_LIFETIME_INFINITE);
     tx->rts_ntries = 60;
     tx->data_ntries = 15;
-    tx->tid = IWN_NONQOS_TID;
+    tx->tid = qosData ? 0 : IWN_NONQOS_TID;
     tx->timeout = 0;
     tx->linkq = 0;
     if (apFirmwareConfig.channel <= 14) {
@@ -5021,20 +5035,35 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     }
     tx->rflags |= IWN_RFLAG_ANT(IWN_LSB(com.txchainmask));
 
-    struct ieee80211_frame frame;
-    bzero(&frame, sizeof(frame));
-    frame.i_fc[0] = IEEE80211_FC0_VERSION_0 |
-        IEEE80211_FC0_TYPE_DATA;
-    frame.i_fc[1] = IEEE80211_FC1_DIR_FROMDS;
+    uint8_t frameBytes[sizeof(struct ieee80211_qosframe)];
+    bzero(frameBytes, sizeof(frameBytes));
+    struct ieee80211_frame *frame =
+        reinterpret_cast<struct ieee80211_frame *>(frameBytes);
+    frame->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_DATA |
+        (qosData ? IEEE80211_FC0_SUBTYPE_QOS : 0);
+    frame->i_fc[1] = IEEE80211_FC1_DIR_FROMDS;
     if (protectedFrame)
-        frame.i_fc[1] |= IEEE80211_FC1_PROTECTED;
+        frame->i_fc[1] |= IEEE80211_FC1_PROTECTED;
     if (moreData)
-        frame.i_fc[1] |= IEEE80211_FC1_MORE_DATA;
-    IEEE80211_ADDR_COPY(frame.i_addr1, ethernetHeader.ether_dhost);
-    IEEE80211_ADDR_COPY(frame.i_addr2, apFirmwareConfig.bssid);
-    IEEE80211_ADDR_COPY(frame.i_addr3, ethernetHeader.ether_shost);
+        frame->i_fc[1] |= IEEE80211_FC1_MORE_DATA;
+    IEEE80211_ADDR_COPY(frame->i_addr1, ethernetHeader.ether_dhost);
+    IEEE80211_ADDR_COPY(frame->i_addr2, apFirmwareConfig.bssid);
+    IEEE80211_ADDR_COPY(frame->i_addr3, ethernetHeader.ether_shost);
+    if (qosData) {
+        struct ieee80211_qosframe *qos =
+            reinterpret_cast<struct ieee80211_qosframe *>(frameBytes);
+        LE_WRITE_2(qos->i_qos, 0);
+    }
     memcpy(reinterpret_cast<uint8_t *>(tx + 1),
-           &frame, sizeof(frame));
+           frameBytes, headerLength);
+    /*
+     * DVM requires the command/header transport segment to end on a
+     * four-byte boundary.  IWN_TX_NEED_PADDING makes firmware discard
+     * these zero bytes instead of consuming the first bytes of LLC/SNAP.
+     * cmd was cleared above, so extending the descriptor through
+     * padLength publishes exactly the required zero padding.
+     */
 
     uint8_t *frameBody =
         ring->ap_payload +
@@ -5438,6 +5467,13 @@ bool ItlIwn::iwn_handle_ap_sae_auth(
         IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
         apClientAuthenticated = false;
         apClientReassociationPending = false;
+        apClientLegacyRateMask = 0;
+        apClientQos = false;
+        apClientHt = false;
+        apClientHtNss = 0;
+        apClientHtCapabilities = 0;
+        apClientHtAmpduParams = 0;
+        bzero(apClientHtMcs, sizeof(apClientHtMcs));
         apClientOpenAuthenticated = false;
         apClientAssociated = false;
         apClientAuthorized = false;
@@ -5562,6 +5598,13 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
         apClientReassociationPending = false;
+        apClientLegacyRateMask = 0;
+        apClientQos = false;
+        apClientHt = false;
+        apClientHtNss = 0;
+        apClientHtCapabilities = 0;
+        apClientHtAmpduParams = 0;
+        bzero(apClientHtMcs, sizeof(apClientHtMcs));
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -5593,6 +5636,13 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         apClientAuthenticated = true;
         apClientOpenAuthenticated = iwn_ap_uses_sae();
         apClientReassociationPending = false;
+        apClientLegacyRateMask = 0;
+        apClientQos = false;
+        apClientHt = false;
+        apClientHtNss = 0;
+        apClientHtCapabilities = 0;
+        apClientHtAmpduParams = 0;
+        bzero(apClientHtMcs, sizeof(apClientHtMcs));
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -5641,7 +5691,10 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         reinterpret_cast<const uint8_t *>(request) + frameLength;
     const uint8_t *ssid = NULL;
     const uint8_t *rates = NULL;
+    const uint8_t *extendedRates = NULL;
     const uint8_t *rsn = NULL;
+    const uint8_t *htCapabilities = NULL;
+    bool qos = false;
     const uint8_t *saePmkidList = NULL;
     uint16_t saePmkidCount = 0;
     while (cursor + 2 <= end) {
@@ -5652,8 +5705,23 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
             ssid = cursor;
         else if (cursor[0] == IEEE80211_ELEMID_RATES)
             rates = cursor;
+        else if (cursor[0] == IEEE80211_ELEMID_XRATES)
+            extendedRates = cursor;
         else if (cursor[0] == IEEE80211_ELEMID_RSN)
             rsn = cursor;
+        else if (cursor[0] == IEEE80211_ELEMID_HTCAPS &&
+                 elementLength == 26)
+            htCapabilities = cursor;
+        else if (cursor[0] == IEEE80211_ELEMID_QOS_CAP &&
+                 elementLength >= 1)
+            qos = true;
+        else if (cursor[0] == IEEE80211_ELEMID_VENDOR &&
+                 elementLength == 7 &&
+                 memcmp(cursor + 2, MICROSOFT_OUI, 3) == 0 &&
+                 cursor[5] == WME_OUI_TYPE &&
+                 cursor[6] == WME_INFO_OUI_SUBTYPE &&
+                 cursor[7] == WME_VERSION)
+            qos = true;
         cursor += 2 + elementLength;
     }
 
@@ -5752,6 +5820,21 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
 
     const bool saeAuthenticated =
         ieee80211_sae_ap_is_accepted(apSae) != 0;
+    uint16_t legacyRateMask = rates != NULL ?
+        itl_hal_ap_legacy_rate_mask(rates + 2, rates[1]) : 0;
+    if (extendedRates != NULL)
+        legacyRateMask |= itl_hal_ap_legacy_rate_mask(
+            extendedRates + 2, extendedRates[1]);
+    if (apFirmwareConfig.channel > 14)
+        legacyRateMask &= 0x0ff0;
+    uint8_t htMcs[2] = { 0, 0 };
+    bool ht = qos && itl_hal_ap_ht_enabled(&apFirmwareConfig) &&
+        htCapabilities != NULL;
+    if (ht) {
+        htMcs[0] = htCapabilities[5] & apFirmwareConfig.htMcsSet[0];
+        htMcs[1] = htCapabilities[6] & apFirmwareConfig.htMcsSet[1];
+        ht = htMcs[0] != 0;
+    }
     bool saePmksaAuthenticated = false;
     if (iwn_ap_uses_sae() && apClientOpenAuthenticated) {
         for (uint16_t i = 0; i < saePmkidCount; i++) {
@@ -5780,9 +5863,11 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         memcmp(ssid + 2, apFirmwareSsid, ssid[1]) == 0 &&
         rates != NULL && rates[1] != 0 &&
         rates[1] <= IEEE80211_RATE_MAXSIZE &&
+        legacyRateMask != 0 &&
         rsnValid &&
-        (apFirmwareConfig.rsnIELength == 0 ||
-         (capability & IEEE80211_CAPINFO_PRIVACY) != 0);
+        (apFirmwareConfig.rsnIELength != 0 ?
+            (capability & IEEE80211_CAPINFO_PRIVACY) != 0 :
+            (capability & IEEE80211_CAPINFO_PRIVACY) == 0 && rsn == NULL);
     if (!valid) {
         int rejectError = 0;
         if (invalidSaePmkid) {
@@ -5847,6 +5932,15 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
 
     apClientAid = aid;
     apClientReassociationPending = reassociation;
+    apClientLegacyRateMask = legacyRateMask;
+    apClientQos = qos;
+    apClientHt = ht;
+    apClientHtNss = ht ? (htMcs[1] != 0 ? 2 : 1) : 0;
+    apClientHtCapabilities = ht ?
+        LE_READ_2(htCapabilities + 2) &
+            apFirmwareConfig.htCapabilities : 0;
+    apClientHtAmpduParams = ht ? htCapabilities[4] : 0;
+    memcpy(apClientHtMcs, htMcs, sizeof(apClientHtMcs));
     apClientRsnIELength = 0;
     bzero(apClientRsnIE, sizeof(apClientRsnIE));
     if (rsn != NULL &&
@@ -5871,7 +5965,7 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
          */
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE;
-        error = iwn_wake_ap_client_node();
+        error = iwn_update_ap_client_node();
     }
     if (error != 0) {
         if (apClientMaterializationStage ==
@@ -5962,6 +6056,13 @@ bool ItlIwn::iwn_handle_ap_disconnect(
         apClientAuthenticated = false;
         apClientOpenAuthenticated = false;
         apClientReassociationPending = false;
+        apClientLegacyRateMask = 0;
+        apClientQos = false;
+        apClientHt = false;
+        apClientHtNss = 0;
+        apClientHtCapabilities = 0;
+        apClientHtAmpduParams = 0;
+        bzero(apClientHtMcs, sizeof(apClientHtMcs));
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -6773,6 +6874,22 @@ int ItlIwn::iwn_send_ap_broadcast_link_quality(int ridx)
         &com, IWN_CMD_LINK_QUALITY, &linkq, sizeof(linkq), 1);
 }
 
+static uint32_t iwn_ap_client_ht_flags(const ItlIwn *that)
+{
+    uint32_t flags = IWN_PAN_STATION;
+    if (that != NULL && that->apClientHt) {
+        flags |= IWN_AMDPU_SIZE_FACTOR(
+            MIN(static_cast<uint32_t>(
+                    that->apClientHtAmpduParams &
+                    IEEE80211_AMPDU_PARAM_LE),
+                3U));
+        flags |= IWN_AMDPU_DENSITY(
+            (that->apClientHtAmpduParams &
+             IEEE80211_AMPDU_PARAM_SS) >> 2);
+    }
+    return flags;
+}
+
 int ItlIwn::iwn_add_ap_client_node(const uint8_t *macAddress)
 {
     if (macAddress == NULL)
@@ -6782,14 +6899,38 @@ int ItlIwn::iwn_add_ap_client_node(const uint8_t *macAddress)
      * DVM assigns the first station associated with a PAN/AP vif to firmware
      * station id 2.  This command must precede the Association Response:
      * firmware cannot route ACKed unicast data merely from the host-side AID.
-     * The current response intentionally advertises legacy rates only, so do
-     * not publish synthetic HT capabilities that the peer did not negotiate.
+     * Publish only the HT20/A-MPDU limits intersected from the station's
+     * Association Request.  BA remains disabled until the aggregation layer
+     * is materialized, but DVM still needs these peer limits before its
+     * Link Quality command can carry MCS rates.
      */
     struct iwn_node_info node;
     bzero(&node, sizeof(node));
     IEEE80211_ADDR_COPY(node.macaddr, macAddress);
     node.id = IWN5000_ID_PAN_CLIENT;
-    node.htflags = htole32(IWN_PAN_STATION);
+    node.htflags = htole32(iwn_ap_client_ht_flags(this));
+    node.htmask = htole32(
+        IWN_AMDPU_SIZE_FACTOR_MASK | IWN_AMDPU_DENSITY_MASK |
+        IWN_40MHZ_ENABLE | IWN_MIMO_DISABLE);
+    return com.ops.add_node(&com, &node, 1);
+}
+
+int ItlIwn::iwn_update_ap_client_node()
+{
+    if (!apClientNodeInstalled)
+        return EINVAL;
+
+    /* DVM ADD_STA modify: preserve station id 2/PAN ownership while a
+     * reassociation replaces the negotiated HT20 limits in place. */
+    struct iwn_node_info node;
+    bzero(&node, sizeof(node));
+    node.control = IWN_NODE_UPDATE;
+    node.id = IWN5000_ID_PAN_CLIENT;
+    node.htflags = htole32(iwn_ap_client_ht_flags(this));
+    node.htmask = htole32(
+        IWN_PWR_SAVE | IWN_AMDPU_SIZE_FACTOR_MASK |
+        IWN_AMDPU_DENSITY_MASK | IWN_40MHZ_ENABLE |
+        IWN_MIMO_DISABLE);
     return com.ops.add_node(&com, &node, 1);
 }
 
@@ -6848,21 +6989,68 @@ int ItlIwn::iwn_send_ap_client_link_quality()
     const uint8_t txant = IWN_LSB(com.txchainmask);
     linkq.antmsk_1stream = txant;
     linkq.antmsk_2stream = IWN_ANT_AB;
-    linkq.ampdu_max = IWN_AMPDU_MAX;
+    linkq.ampdu_max = IWN_AMPDU_MAX_NO_AGG;
     linkq.ampdu_threshold = 3;
     linkq.ampdu_limit = htole16(4000);
 
-    /*
-     * This is the exact initial legacy retry table observed after ADD_NODE
-     * in the live 6235 DVM AP trace: 1 Mbps CCK on antenna A for all sixteen
-     * attempts.  Rate adaptation can replace it once AP HT negotiation is
-     * represented by a real host-side node.
-     */
-    const struct iwn_rate *rate = &iwn_rates[IWN_RATE_1M_INDEX];
-    for (int index = 0; index < IWN_MAX_TX_RETRIES; index++) {
-        linkq.retry[index].plcp = rate->plcp;
-        linkq.retry[index].rflags =
-            IWN_RFLAG_ANT(txant) | IWN_RFLAG_CCK;
+    static const uint8_t legacyRidx[] = {
+        IWN_RATE_1M_INDEX, IWN_RATE_2M_INDEX,
+        IWN_RATE_5M_INDEX, IWN_RATE_11M_INDEX,
+        IWN_RATE_6M_INDEX, IWN_RATE_9M_INDEX,
+        IWN_RATE_12M_INDEX, IWN_RATE_18M_INDEX,
+        IWN_RATE_24M_INDEX, IWN_RATE_36M_INDEX,
+        IWN_RATE_48M_INDEX, IWN_RATE_54M_INDEX
+    };
+    int lowestLegacy = apFirmwareConfig.channel <= 14 ? 0 : 4;
+    while (lowestLegacy < static_cast<int>(nitems(legacyRidx)) &&
+           (apClientLegacyRateMask & (1U << lowestLegacy)) == 0)
+        lowestLegacy++;
+    if (lowestLegacy == static_cast<int>(nitems(legacyRidx)))
+        return EINVAL;
+
+    int retry = 0;
+    if (apClientHt) {
+        const bool mimo = apClientHtNss > 1;
+        const int firstMcs = mimo ? 15 : 7;
+        const int lastMcs = mimo ? 8 : 0;
+        const uint8_t antennaMask = mimo ?
+            static_cast<uint8_t>(com.txchainmask & IWN_ANT_AB) : txant;
+        for (int mcs = firstMcs;
+             mcs >= lastMcs && retry < IWN_MAX_TX_RETRIES; mcs--) {
+            const size_t stream = static_cast<size_t>(mcs / 8);
+            const uint8_t bit = static_cast<uint8_t>(1U << (mcs & 7));
+            if ((apClientHtMcs[stream] & bit) == 0)
+                continue;
+            const struct iwn_rate *rate = &iwn_rates[iwn_mcs2ridx[mcs]];
+            linkq.retry[retry].plcp = rate->ht_plcp;
+            linkq.retry[retry].rflags =
+                IWN_RFLAG_MCS | IWN_RFLAG_ANT(antennaMask);
+            if (retry < 2 &&
+                (apClientHtCapabilities & IEEE80211_HTCAP_SGI20) != 0)
+                linkq.retry[retry].rflags |= IWN_RFLAG_SGI;
+            retry++;
+        }
+        if (mimo)
+            linkq.mimo = static_cast<uint8_t>(retry);
+    } else {
+        for (int rateIndex = static_cast<int>(nitems(legacyRidx)) - 1;
+             rateIndex >= lowestLegacy && retry < IWN_MAX_TX_RETRIES;
+             rateIndex--) {
+            if ((apClientLegacyRateMask & (1U << rateIndex)) == 0)
+                continue;
+            const int ridx = legacyRidx[rateIndex];
+            linkq.retry[retry].plcp = iwn_rates[ridx].plcp;
+            linkq.retry[retry].rflags = IWN_RFLAG_ANT(txant) |
+                (IWN_RIDX_IS_CCK(ridx) ? IWN_RFLAG_CCK : 0);
+            retry++;
+        }
+    }
+    const int fallbackRidx = legacyRidx[lowestLegacy];
+    while (retry < IWN_MAX_TX_RETRIES) {
+        linkq.retry[retry].plcp = iwn_rates[fallbackRidx].plcp;
+        linkq.retry[retry].rflags = IWN_RFLAG_ANT(txant) |
+            (IWN_RIDX_IS_CCK(fallbackRidx) ? IWN_RFLAG_CCK : 0);
+        retry++;
     }
     return iwn_cmd(
         &com, IWN_CMD_LINK_QUALITY, &linkq, sizeof(linkq), 1);
@@ -6875,15 +7063,25 @@ int ItlIwn::iwn_send_ap_assoc_success()
             IWN_AP_CLIENT_MATERIALIZATION_LINK_QUALITY)
         return EINVAL;
 
-    const uint8_t supportedRates[] = {
+    const uint8_t supportedRates2g[] = {
         0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
     };
+    const uint8_t supportedRates5g[] = {
+        0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c
+    };
     const uint8_t extendedRates[] = { 0x30, 0x48, 0x60, 0x6c };
+    const bool is2g = apFirmwareConfig.channel <= 14;
+    const size_t htLength = apClientHt ?
+        kItlHalApHtCapabilityIELength +
+        kItlHalApHtOperationIELength : 0;
     uint8_t response[
         sizeof(struct ieee80211_frame) + 6 +
-        2 + sizeof(supportedRates) +
+        2 + sizeof(supportedRates2g) +
         2 + sizeof(extendedRates) +
-        sizeof(apFirmwareRsnIE)];
+        sizeof(apFirmwareRsnIE) +
+        kItlHalApHtCapabilityIELength +
+        kItlHalApHtOperationIELength +
+        sizeof(kItlHalApWmmParameterIE)];
     bzero(response, sizeof(response));
     struct ieee80211_frame *wh =
         reinterpret_cast<struct ieee80211_frame *>(response);
@@ -6901,7 +7099,7 @@ int ItlIwn::iwn_send_ap_assoc_success()
     LE_WRITE_2(out, IEEE80211_CAPINFO_ESS |
                     (apFirmwareConfig.rsnIELength != 0 ?
                         IEEE80211_CAPINFO_PRIVACY : 0) |
-                    (apFirmwareConfig.channel <= 14 ?
+                    (is2g ?
                         IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
     out += 2;
     LE_WRITE_2(out, IEEE80211_STATUS_SUCCESS);
@@ -6909,17 +7107,41 @@ int ItlIwn::iwn_send_ap_assoc_success()
     LE_WRITE_2(out, apClientAid | 0xc000);
     out += 2;
     *out++ = IEEE80211_ELEMID_RATES;
-    *out++ = sizeof(supportedRates);
-    memcpy(out, supportedRates, sizeof(supportedRates));
-    out += sizeof(supportedRates);
-    *out++ = IEEE80211_ELEMID_XRATES;
-    *out++ = sizeof(extendedRates);
-    memcpy(out, extendedRates, sizeof(extendedRates));
-    out += sizeof(extendedRates);
+    *out++ = sizeof(supportedRates2g);
+    memcpy(out, is2g ? supportedRates2g : supportedRates5g,
+           sizeof(supportedRates2g));
+    out += sizeof(supportedRates2g);
+    if (is2g) {
+        *out++ = IEEE80211_ELEMID_XRATES;
+        *out++ = sizeof(extendedRates);
+        memcpy(out, extendedRates, sizeof(extendedRates));
+        out += sizeof(extendedRates);
+    }
     if (apFirmwareConfig.rsnIELength != 0) {
         memcpy(out, apFirmwareRsnIE, apFirmwareConfig.rsnIELength);
         out += apFirmwareConfig.rsnIELength;
     }
+    if (apClientHt) {
+        out += itl_hal_ap_build_ht_capability_ie(
+            out, static_cast<size_t>(response + sizeof(response) - out),
+            &apFirmwareConfig);
+        out += itl_hal_ap_build_ht_operation_ie(
+            out, static_cast<size_t>(response + sizeof(response) - out),
+            &apFirmwareConfig);
+    }
+    if (apClientQos) {
+        memcpy(out, kItlHalApWmmParameterIE,
+               sizeof(kItlHalApWmmParameterIE));
+        out += sizeof(kItlHalApWmmParameterIE);
+    }
+
+    if (static_cast<size_t>(out - response) !=
+        sizeof(struct ieee80211_frame) + 6 +
+        2 + sizeof(supportedRates2g) +
+        (is2g ? 2 + sizeof(extendedRates) : 0) +
+        apFirmwareConfig.rsnIELength + htLength +
+        (apClientQos ? sizeof(kItlHalApWmmParameterIE) : 0))
+        return EINVAL;
 
     const bool reassociation = apClientReassociationPending;
     const int error = iwn_send_ap_mgmt_frame(

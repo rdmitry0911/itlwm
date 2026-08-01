@@ -37,7 +37,7 @@ for needle in (
     "IWN_AP_CLIENT_MATERIALIZATION_IDLE",
     "iwn_add_ap_client_node(request->i_addr2)",
     "IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE",
-    "iwn_wake_ap_client_node()",
+    "iwn_update_ap_client_node()",
     "IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE",
 ):
     assert needle in assoc, f"missing association admission fence: {needle}"

@@ -102,6 +102,7 @@ public:
     int iwn_add_ap_broadcast_node();
     int iwn_send_ap_broadcast_link_quality(int);
     int iwn_add_ap_client_node(const uint8_t *);
+    int iwn_update_ap_client_node();
     int iwn_remove_ap_client_node(const uint8_t *);
     int iwn_wake_ap_client_node();
     int iwn_allow_ap_client_sleep_tx();
@@ -506,6 +507,13 @@ public:
     uint8_t apClientMaterializationStage;
     bool apClientAuthenticated;
     bool apClientReassociationPending;
+    uint16_t apClientLegacyRateMask;
+    bool apClientQos;
+    bool apClientHt;
+    uint8_t apClientHtNss;
+    uint16_t apClientHtCapabilities;
+    uint8_t apClientHtAmpduParams;
+    uint8_t apClientHtMcs[2];
     bool apClientAssociated;
     bool apClientAuthorized;
     bool apClientPowerSave;

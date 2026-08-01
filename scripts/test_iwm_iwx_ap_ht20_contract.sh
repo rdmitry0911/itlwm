@@ -14,6 +14,8 @@ runtime = (root / "include/HAL/ItlApFirmwareRuntime.hpp").read_text()
 framing = (root / "include/HAL/ItlApOpenRuntime.hpp").read_text()
 iwm = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
+iwn_hpp = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 donor_output = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 donor_input = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 
@@ -83,6 +85,43 @@ require(response, "kItlHalApHtCapabilityIELength",
 require(response, "itl_hal_ap_build_ht_operation_ie",
         "HT association-response operation")
 
+for needle, label in (
+    ("bool apClientHt", "IWN per-client negotiated HT state"),
+    ("uint8_t apClientHtMcs[2]", "IWN one/two-stream MCS sets"),
+):
+    require(iwn_hpp, needle, label)
+iwn_parse = body(iwn, "bool ItlIwn::iwn_handle_ap_assoc_req(")
+for needle, label in (
+    ("IEEE80211_ELEMID_HTCAPS", "IWN HT Capability IE parser"),
+    ("elementLength == 26", "IWN bounded HT Capability shape"),
+    ("htCapabilities[5] & apFirmwareConfig.htMcsSet[0]",
+     "IWN one-stream MCS intersection"),
+    ("htCapabilities[6] & apFirmwareConfig.htMcsSet[1]",
+     "IWN two-stream MCS intersection"),
+    ("apClientHt = ht", "IWN association-owned HT commit"),
+):
+    require(iwn_parse, needle, label)
+iwn_add = body(iwn, "int ItlIwn::iwn_add_ap_client_node(")
+for needle, label in (
+    ("iwn_ap_client_ht_flags", "IWN negotiated peer HT flags"),
+    ("IWN_AMDPU_SIZE_FACTOR_MASK", "IWN peer A-MPDU limit mask"),
+    ("IWN_40MHZ_ENABLE", "IWN explicit HT20 station width"),
+):
+    require(iwn_add, needle, label)
+iwn_rates = body(iwn, "int ItlIwn::iwn_send_ap_client_link_quality()")
+for needle, label in (
+    ("iwn_mcs2ridx", "IWN HT firmware rate encoding"),
+    ("IWN_RFLAG_MCS", "IWN MCS retry flag"),
+    ("IWN_RFLAG_SGI", "IWN negotiated SGI20 rate encoding"),
+    ("IWN_AMPDU_MAX_NO_AGG", "IWN bounded non-aggregate HT base"),
+):
+    require(iwn_rates, needle, label)
+iwn_response = body(iwn, "int ItlIwn::iwn_send_ap_assoc_success()")
+require(iwn_response, "itl_hal_ap_build_ht_capability_ie",
+        "IWN HT association-response capability")
+require(iwn_response, "itl_hal_ap_build_ht_operation_ie",
+        "IWN HT association-response operation")
+
 iwm_add = body(iwm, "iwm_ap_add_internal_sta(struct iwm_softc *sc,")
 for needle, label in (
     ("IWM_STA_FLG_FAT_EN_20MHZ", "IWM HT20 station width"),
@@ -126,5 +165,5 @@ for family, source, task_signature in (
     require(task, "client->clientStationHtNss != client->clientHtNss",
             f"{family} NSS reassociation replacement fence")
 
-print("PASS: paired IWM/IWX AP HT20 association and firmware rate control")
+print("PASS: IWN/IWM/IWX AP HT20 association and firmware rate control")
 PY

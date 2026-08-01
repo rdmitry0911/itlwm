@@ -242,27 +242,6 @@ itl_ap_key_rsc(const struct ItlHalApKey *key)
         static_cast<uint64_t>(rsc[5]) << 40;
 }
 
-static inline uint16_t
-itl_ap_legacy_rate_mask(const uint8_t *rates, size_t count)
-{
-    static const uint8_t legacyRates[] = {
-        2, 4, 11, 22, 12, 18, 24, 36, 48, 72, 96, 108
-    };
-    uint16_t mask = 0;
-    if (rates == NULL)
-        return 0;
-    for (size_t index = 0; index < count; index++) {
-        const uint8_t rate = rates[index] & IEEE80211_RATE_VAL;
-        for (size_t bit = 0; bit < nitems(legacyRates); bit++) {
-            if (legacyRates[bit] == rate) {
-                mask |= static_cast<uint16_t>(1U << bit);
-                break;
-            }
-        }
-    }
-    return mask;
-}
-
 static inline bool
 itl_ap_power_save_should_buffer(const struct ItlApFirmwareRuntime *runtime,
                                 const struct ItlApFirmwareClientRuntime *client,
@@ -725,9 +704,9 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
         (localSae ? itl_ap_wpa3_rsn_ie_supported(rsn, rsnLength) :
                     itl_ap_wpa2_rsn_ie_supported(rsn, rsnLength)));
     uint16_t legacyRateMask = rates != NULL ?
-        itl_ap_legacy_rate_mask(rates + 2, rates[1]) : 0;
+        itl_hal_ap_legacy_rate_mask(rates + 2, rates[1]) : 0;
     if (extendedRates != NULL)
-        legacyRateMask |= itl_ap_legacy_rate_mask(
+        legacyRateMask |= itl_hal_ap_legacy_rate_mask(
             extendedRates + 2, extendedRates[1]);
     if (runtime->config.channel > 14)
         legacyRateMask &= 0x0ff0;

@@ -14,6 +14,8 @@ runtime = (root / "include/HAL/ItlApFirmwareRuntime.hpp").read_text()
 framing = (root / "include/HAL/ItlApOpenRuntime.hpp").read_text()
 iwm = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
+iwn_hpp = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 donor_output = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 donor_input = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 
@@ -89,6 +91,34 @@ for needle, label in (
 ):
     require(encap, needle, label)
 
+require(iwn_hpp, "bool apClientQos", "IWN per-client negotiated QoS state")
+iwn_parse = body(iwn, "bool ItlIwn::iwn_handle_ap_assoc_req(")
+for needle, label in (
+    ("IEEE80211_ELEMID_QOS_CAP", "IWN standard QoS Capability parser"),
+    ("elementLength == 7", "IWN bounded WMM Information parser"),
+    ("WME_INFO_OUI_SUBTYPE", "IWN WMM Information subtype validation"),
+    ("apClientQos = qos", "IWN association QoS commit"),
+):
+    require(iwn_parse, needle, label)
+iwn_response = body(iwn, "int ItlIwn::iwn_send_ap_assoc_success()")
+require(iwn_response, "memcpy(out, kItlHalApWmmParameterIE",
+        "IWN negotiated association-response WMM parameters")
+iwn_encap = body(iwn, "int ItlIwn::iwn_send_ap_data_frame(")
+for needle, label in (
+    ("sizeof(struct ieee80211_qosframe)", "IWN 26-byte QoS header"),
+    ("IEEE80211_FC0_SUBTYPE_QOS", "IWN QoS Data subtype"),
+    ("tx->tid = qosData ? 0 : IWN_NONQOS_TID",
+     "IWN Best Effort descriptor TID"),
+    ("LE_WRITE_2(qos->i_qos, 0)", "IWN Best Effort QoS Control"),
+    ("headerLength & 3 ? 4 - (headerLength & 3) : 0",
+     "IWN DVM command-header alignment"),
+    ("flags |= IWN_TX_NEED_PADDING",
+     "IWN DVM firmware padding contract"),
+    ("sizeof(struct iwn_cmd_data) + headerLength + padLength",
+     "IWN command descriptor includes physical zero padding"),
+):
+    require(iwn_encap, needle, label)
+
 iwm_tx = body(iwm, "iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m,")
 require(iwm_tx, "ieee80211_has_qos(wh)", "IWM QoS descriptor selection")
 require(iwm_tx, "ieee80211_get_qos(wh) & IEEE80211_QOS_TID",
@@ -109,5 +139,5 @@ for family, source, add_signature, task_signature, tid_name in (
     require(task, "client->clientStationQos != client->clientQos",
             f"{family} reassociation QoS replacement fence")
 
-print("PASS: paired IWM/IWX AP WMM negotiation and QoS Best Effort data path")
+print("PASS: IWN/IWM/IWX AP WMM negotiation and QoS Best Effort data path")
 PY

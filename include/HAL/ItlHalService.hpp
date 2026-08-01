@@ -47,6 +47,28 @@ static constexpr uint8_t kItlHalApWmmParameterIE[] = {
     0x62, 0x32, 0x2f, 0x00,
 };
 
+/* Canonical mac80211 legacy-rate bitmap used by every AP backend. */
+static inline uint16_t
+itl_hal_ap_legacy_rate_mask(const uint8_t *rates, size_t count)
+{
+    static const uint8_t legacyRates[] = {
+        2, 4, 11, 22, 12, 18, 24, 36, 48, 72, 96, 108
+    };
+    uint16_t mask = 0;
+    if (rates == nullptr)
+        return 0;
+    for (size_t index = 0; index < count; index++) {
+        const uint8_t rate = rates[index] & IEEE80211_RATE_VAL;
+        for (size_t bit = 0; bit < sizeof(legacyRates); bit++) {
+            if (legacyRates[bit] == rate) {
+                mask |= static_cast<uint16_t>(1U << bit);
+                break;
+            }
+        }
+    }
+    return mask;
+}
+
 /*
  * AP/GO HAL parameter shapes.
  *
