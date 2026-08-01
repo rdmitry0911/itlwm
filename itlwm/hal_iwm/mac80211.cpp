@@ -1435,6 +1435,13 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
             info->status.status_driver_data[0] =
                 RS_DRV_DATA_PACK(lq_color, tx_resp->reduced_tpc);
 
+            if (txd->sae_active) {
+                const uint32_t tx_status = status & IWM_TX_STATUS_MSK;
+                iwm_sae_tx_report_terminal(sc, txd,
+                    (info->flags & IEEE80211_TX_STAT_ACK) != 0 ? 0 :
+                    (tx_status != 0 ? (int32_t)tx_status : EIO));
+            }
+
             ieee80211_tx_status(sc, info, tid, txd->fc, ssn);
 
             iwm_reset_sched(sc, ring->qid, ring->tail, txd->sta_id);
@@ -1449,6 +1456,10 @@ void ItlIwm::
 iwm_txd_done(struct iwm_softc *sc, struct iwm_tx_data *txd)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+
+    /* A reclaim without the matching single-frame TX response is failure. */
+    if (txd->sae_active)
+        iwm_sae_tx_report_terminal(sc, txd, EIO);
     
     //    bus_dmamap_sync(sc->sc_dmat, txd->map, 0, txd->map->dm_mapsize,
     //        BUS_DMASYNC_POSTWRITE);
@@ -1686,7 +1697,8 @@ iwm_tx_fill_cmd(struct iwm_softc *sc, struct iwm_node *in,
 
 #define TB0_SIZE 20
 int ItlIwm::
-iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
+iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
+       const struct ItlSaeAuthTxRequestV1 *sae_request)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwm_node *in = (struct iwm_node *)ni;
@@ -1718,6 +1730,38 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
         hdrlen = sizeof(struct ieee80211_frame_min);
     else
         hdrlen = ieee80211_get_hdrlen(wh);
+
+    /* The direct path is exactly one public Algorithm-3 Authentication
+     * frame. Validate its complete pre-trim wire image before DMA state is
+     * touched; no generic raw-management injection is admitted here. */
+    if (sae_request != NULL) {
+        const u_int8_t *auth;
+
+        if (!itl_sae_auth_transport_request_is_well_formed(sae_request) ||
+            type != IEEE80211_FC0_TYPE_MGT ||
+            subtype != IEEE80211_FC0_SUBTYPE_AUTH ||
+            hdrlen != sizeof(struct ieee80211_frame) ||
+            mbuf_len(m) < hdrlen + 6 + sae_request->body_len ||
+            mbuf_pkthdr_len(m) != hdrlen + 6 + sae_request->body_len ||
+            memcmp(wh->i_addr1, sae_request->bssid,
+                sizeof(sae_request->bssid)) != 0 ||
+            memcmp(wh->i_addr2, sae_request->sta,
+                sizeof(sae_request->sta)) != 0 ||
+            memcmp(wh->i_addr3, sae_request->bssid,
+                sizeof(sae_request->bssid)) != 0) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+        auth = (const u_int8_t *)wh + hdrlen;
+        if (LE_READ_2(auth) != IEEE80211_AUTH_ALG_SAE ||
+            LE_READ_2(auth + 2) != sae_request->wire_transaction ||
+            LE_READ_2(auth + 4) != sae_request->auth_status ||
+            memcmp(auth + 6, sae_request->body,
+                sae_request->body_len) != 0) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+    }
     
     hasqos = ieee80211_has_qos(wh);
     if (type == IEEE80211_FC0_TYPE_DATA)
@@ -1926,6 +1970,20 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     memcpy(&data->fc, &wh->i_fc[0], sizeof(uint16_t));
     data->sta_id = tx->sta_id;
     data->info.band = IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ? NL80211_BAND_2GHZ : NL80211_BAND_5GHZ;
+    iwm_sae_tx_data_clear(data);
+    if (sae_request != NULL) {
+        data->sae_active = true;
+        data->sae_phase = sae_request->phase;
+        data->sae_auth_status = sae_request->auth_status;
+        data->sae_wire_transaction = sae_request->wire_transaction;
+        data->sae_association_epoch = sae_request->association_epoch;
+        data->sae_relay_generation = sae_request->relay_generation;
+        data->sae_ticket = sae_request->ticket;
+        data->sae_lifecycle_generation = sc->sc_sae_tx_generation;
+        memcpy(data->sae_bssid, sae_request->bssid,
+            sizeof(data->sae_bssid));
+        memcpy(data->sae_sta, sae_request->sta, sizeof(data->sae_sta));
+    }
     
     /* Fill TX descriptor. */
     desc->num_tbs = 2 + nsegs;
@@ -1957,12 +2015,34 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     //            (char *)(void *)desc - (char *)(void *)ring->desc_dma.vaddr,
     //            sizeof (*desc), BUS_DMASYNC_PREWRITE);
     
-    iwm_update_sched(sc, ring->qid, ring->cur, tx->sta_id, le16toh(tx->len));
-    
-    /* Kick TX ring. */
+    /* Kick TX ring. SAE commits scheduler ownership and MMIO under the same
+     * lifecycle/leaf fence as cancellation and reset. */
     const int doorbell_idx = ring->cur;
-    ring->cur = (ring->cur + 1) % IWM_TX_RING_COUNT;
-    IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    const int next_cur = (ring->cur + 1) % IWM_TX_RING_COUNT;
+    if (sae_request != NULL) {
+        ring->cur = next_cur;
+        if (!iwm_sae_tx_commit_doorbell(sc, sae_request->ticket,
+            ring->qid, doorbell_idx, next_cur, tx->sta_id,
+            le16toh(tx->len))) {
+            ring->cur = doorbell_idx;
+            memset(desc, 0, sizeof(*desc));
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->in = NULL;
+            data->totlen = 0;
+            data->fc = 0;
+            data->sta_id = 0;
+            data->ap_frame = false;
+            iwm_sae_tx_data_clear(data);
+            return EIO;
+        }
+    } else {
+        iwm_update_sched(sc, ring->qid, doorbell_idx, tx->sta_id,
+            le16toh(tx->len));
+        ring->cur = next_cur;
+        IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR,
+            ring->qid << 8 | ring->cur);
+    }
     if (type == IEEE80211_FC0_TYPE_MGT &&
         (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
          subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ)) {
@@ -5198,6 +5278,7 @@ iwm_init(struct _ifnet *ifp)
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
+        iwm_sae_tx_reopen(sc);
         __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
         return 0;
     }
@@ -5221,6 +5302,8 @@ iwm_init(struct _ifnet *ifp)
         }
     } while (ic->ic_state != IEEE80211_S_SCAN);
 
+    /* The lower firmware and its first synchronous scan state now exist. */
+    iwm_sae_tx_reopen(sc);
     __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     return 0;
 }
@@ -6491,6 +6574,50 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     sc->sc_nswq = taskq_create("iwmns", 1, IPL_NET, 0);
     if (sc->sc_nswq == NULL)
         goto fail4;
+
+    sc->sc_sae_tx_lifecycle_lock = IOLockAlloc();
+    if (sc->sc_sae_tx_lifecycle_lock == NULL) {
+        XYLog("%s: SAE TX lifecycle unavailable\n", DEVNAME(sc));
+        goto fail4;
+    }
+    sc->sc_sae_tx_lifecycle_active = 0;
+    sc->sc_sae_tx_lifecycle_closed = true;
+    sc->sc_sae_tx_detaching = false;
+    sc->sc_sae_tx_task_ready = false;
+    sc->sc_sae_tx_lock = IOSimpleLockAlloc();
+    if (sc->sc_sae_tx_lock == NULL) {
+        XYLog("%s: SAE TX owner unavailable\n", DEVNAME(sc));
+        goto fail4;
+    }
+    sc->sc_sae_tx_active = false;
+    sc->sc_sae_tx_doorbelled = false;
+    sc->sc_sae_tx_stopping = true;
+    sc->sc_sae_tx_active_ticket = 0;
+    sc->sc_sae_tx_cancel_through = 0;
+    sc->sc_sae_tx_direct_cancel_through = 0;
+    sc->sc_sae_tx_generation = 1;
+    sc->sc_sae_tx_active_generation = 0;
+    sc->sc_sae_tx_last_event_valid = false;
+    explicit_bzero(&sc->sc_sae_tx_active_event,
+        sizeof(sc->sc_sae_tx_active_event));
+    explicit_bzero(&sc->sc_sae_tx_last_event,
+        sizeof(sc->sc_sae_tx_last_event));
+    explicit_bzero(sc->sc_sae_tx_eventq, sizeof(sc->sc_sae_tx_eventq));
+    sc->sc_sae_tx_event_head = 0;
+    sc->sc_sae_tx_event_tail = 0;
+    sc->sc_sae_tx_event_count = 0;
+
+    /* IWM-private workloop gate: never re-enter controller policy state. */
+    fSaeTxGate = IOCommandGate::commandGate(this);
+    if (fSaeTxGate == NULL || pa->workloop == NULL ||
+        pa->workloop->addEventSource(fSaeTxGate) != kIOReturnSuccess) {
+        if (fSaeTxGate != NULL) {
+            fSaeTxGate->release();
+            fSaeTxGate = NULL;
+        }
+        XYLog("%s: could not establish SAE TX workloop gate\n", DEVNAME(sc));
+        goto fail4;
+    }
     
     /* Clear pending interrupts. */
     IWM_WRITE(sc, IWM_CSR_INT, 0xffffffff);
@@ -6568,6 +6695,8 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     }
     task_set(&sc->init_task, iwm_init_task, sc, "init_task");
     __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
+    task_set(&sc->sae_tx_task, iwm_sae_tx_task, sc, "iwm_sae_tx_task");
+    sc->sc_sae_tx_task_ready = true;
     task_set(&sc->newstate_task, iwm_newstate_task, sc, "newstate_task");
     task_set(&sc->ba_task, iwm_ba_task, sc, "ba_task");
     task_set(&sc->ap_client_task, iwm_ap_client_task, sc,

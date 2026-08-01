@@ -69,6 +69,10 @@ public:
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
 
+    IOReturn submitSaeAuthFrame(
+        const struct ItlSaeAuthTxRequestV1 *request) override;
+    void cancelSaeAuthFrame(uint64_t ticket) override;
+
     bool supportsAPMode() const override;
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
@@ -357,7 +361,30 @@ public:
     void iwm_txd_done(struct iwm_softc *, struct iwm_tx_data *);
     void iwm_ampdu_txq_advance(struct iwm_softc *, struct iwm_tx_ring *, int);
     void iwm_clear_oactive(struct iwm_softc *, struct iwm_tx_ring *);
-    int    iwm_tx(struct iwm_softc *, mbuf_t, struct ieee80211_node *, int);
+    int    iwm_tx(struct iwm_softc *, mbuf_t, struct ieee80211_node *, int,
+                  const struct ItlSaeAuthTxRequestV1 * = nullptr);
+    bool   iwm_sae_tx_commit_doorbell(struct iwm_softc *, uint64_t,
+                                      int, int, int, uint8_t, uint16_t);
+    static IOReturn iwm_sae_tx_gate_action(OSObject *, void *, void *,
+                                            void *, void *);
+    IOReturn iwm_sae_tx_submit_on_gate(struct iwm_softc *,
+        const struct ItlSaeAuthTxRequestV1 *);
+    static void iwm_sae_tx_task(void *);
+    bool   iwm_sae_tx_queue_terminal(struct iwm_softc *,
+        const struct ItlSaeAuthTransportEventV1 *, uint32_t,
+        bool = false);
+    void   iwm_sae_tx_report_terminal(struct iwm_softc *,
+                                      struct iwm_tx_data *, int32_t);
+    void   iwm_sae_tx_retire_unsubmitted(struct iwm_softc *, uint64_t);
+    void   iwm_sae_tx_cancel_all(struct iwm_softc *);
+    void   iwm_sae_tx_stop_begin(struct iwm_softc *);
+    void   iwm_sae_tx_reopen(struct iwm_softc *);
+    void   iwm_sae_tx_detach_begin(struct iwm_softc *);
+    bool   iwm_sae_tx_snapshot_reset(struct iwm_softc *,
+        struct ItlSaeAuthTransportEventV1 *);
+    void   iwm_sae_tx_emit_reset_event(struct iwm_softc *,
+        const struct ItlSaeAuthTransportEventV1 *);
+    void   iwm_sae_tx_purge(struct iwm_softc *);
     int    iwm_flush_tx_path(struct iwm_softc *, int);
     void    iwm_led_enable(struct iwm_softc *);
     void    iwm_led_disable(struct iwm_softc *);
@@ -532,6 +559,7 @@ public:
     
 public:
     IOInterruptEventSource* fInterrupt;
+    IOCommandGate *fSaeTxGate;
     IOPCIDevice *pciNub;
     struct pci_attach_args pci;
     struct iwm_softc com;

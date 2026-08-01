@@ -131,6 +131,14 @@ iwm_free_tx_ring(iwm_softc *sc, struct iwm_tx_ring *ring)
     
     for (i = 0; i < IWM_TX_RING_COUNT; i++) {
         struct iwm_tx_data *data = &ring->data[i];
+
+        if (data->sae_active) {
+            iwm_sae_tx_report_terminal(sc, data, EIO);
+            if (data->in != NULL) {
+                ieee80211_release_node(&sc->sc_ic, &data->in->in_ni);
+                data->in = NULL;
+            }
+        }
         
         if (data->m != NULL) {
             mbuf_freem(data->m);
@@ -150,6 +158,14 @@ iwm_reset_tx_ring(struct iwm_softc *sc, struct iwm_tx_ring *ring)
     
     for (i = 0; i < IWM_TX_RING_COUNT; i++) {
         struct iwm_tx_data *data = &ring->data[i];
+
+        if (data->sae_active) {
+            iwm_sae_tx_report_terminal(sc, data, EIO);
+            if (data->in != NULL) {
+                ieee80211_release_node(&sc->sc_ic, &data->in->in_ni);
+                data->in = NULL;
+            }
+        }
 
         if (data->m != NULL) {
 //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,

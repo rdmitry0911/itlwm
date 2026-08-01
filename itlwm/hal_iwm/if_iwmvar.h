@@ -120,9 +120,11 @@
 #include <net80211/ieee80211_amrr.h>
 #include <net80211/ieee80211_ra.h>
 #include <net80211/ieee80211_radiotap.h>
+#include <HAL/ItlSaeAuthTransportV1.h>
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
+#include <IOKit/IOLocks.h>
 
 #include "rs.h"
 
@@ -292,9 +294,42 @@ struct iwm_tx_data {
     uint8_t sta_id;
     /* Raw SoftAP frame: no net80211 node reference or STA TX-status owner. */
     bool ap_frame;
+
+    /*
+     * Credential-free identity for one controller/direct Algorithm-3 TX.
+     * The request body and password never survive the doorbell; firmware
+     * completion correlates only this bounded public tuple.
+     */
+    bool     sae_active;
+    uint8_t  sae_phase;
+    uint16_t sae_auth_status;
+    uint16_t sae_wire_transaction;
+    uint64_t sae_association_epoch;
+    uint64_t sae_relay_generation;
+    uint64_t sae_ticket;
+    uint32_t sae_lifecycle_generation;
+    uint8_t  sae_bssid[kItlSaeAuthTransportV1MacLength];
+    uint8_t  sae_sta[kItlSaeAuthTransportV1MacLength];
     
     struct ieee80211_tx_info info;
 };
+
+static inline void
+iwm_sae_tx_data_clear(struct iwm_tx_data *data)
+{
+    if (data == NULL)
+        return;
+    data->sae_active = false;
+    data->sae_phase = 0;
+    data->sae_auth_status = 0;
+    data->sae_wire_transaction = 0;
+    data->sae_association_epoch = 0;
+    data->sae_relay_generation = 0;
+    data->sae_ticket = 0;
+    data->sae_lifecycle_generation = 0;
+    explicit_bzero(data->sae_bssid, sizeof(data->sae_bssid));
+    explicit_bzero(data->sae_sta, sizeof(data->sae_sta));
+}
 
 struct iwm_tx_ring {
     struct iwm_dma_info    desc_dma;
@@ -506,6 +541,13 @@ struct iwm_ba_task_data {
     uint32_t        stop_tidmask;
 };
 
+#define IWM_SAE_TX_EVENTQ_LEN 4
+
+struct iwm_sae_tx_event_entry {
+    struct ItlSaeAuthTransportEventV1 event;
+    bool                              is_reset;
+};
+
 struct iwm_softc {
 	struct device sc_dev;
 	struct ieee80211com sc_ic;
@@ -519,6 +561,7 @@ struct iwm_softc {
 
 	struct task		init_task; /* NB: not reference-counted */
 	u_int8_t		init_retry_count;
+	struct task		sae_tx_task;
 //	struct refcnt		task_refs;
 	struct task		newstate_task;
 	enum ieee80211_state	ns_nstate;
@@ -647,6 +690,34 @@ struct iwm_softc {
 	int sc_nic_locks;
 
 	struct taskq *sc_nswq;
+
+    /*
+     * The sleeping lifecycle lock owns the private workloop gate lifetime;
+     * the interrupt-safe leaf owns one descriptor ticket and its bounded
+     * terminal FIFO.  Locks are never held across frame construction,
+     * firmware callbacks, or the upper event handler.
+     */
+    IOLock       *sc_sae_tx_lifecycle_lock;
+    uint32_t      sc_sae_tx_lifecycle_active;
+    bool          sc_sae_tx_lifecycle_closed;
+    bool          sc_sae_tx_detaching;
+    bool          sc_sae_tx_task_ready;
+    IOSimpleLock *sc_sae_tx_lock;
+    bool          sc_sae_tx_active;
+    bool          sc_sae_tx_doorbelled;
+    bool          sc_sae_tx_stopping;
+    uint64_t      sc_sae_tx_active_ticket;
+    uint64_t      sc_sae_tx_cancel_through;
+    uint64_t      sc_sae_tx_direct_cancel_through;
+    uint32_t      sc_sae_tx_generation;
+    uint32_t      sc_sae_tx_active_generation;
+    struct ItlSaeAuthTransportEventV1 sc_sae_tx_active_event;
+    bool          sc_sae_tx_last_event_valid;
+    struct ItlSaeAuthTransportEventV1 sc_sae_tx_last_event;
+    struct iwm_sae_tx_event_entry sc_sae_tx_eventq[IWM_SAE_TX_EVENTQ_LEN];
+    uint8_t       sc_sae_tx_event_head;
+    uint8_t       sc_sae_tx_event_tail;
+    uint8_t       sc_sae_tx_event_count;
 
 	struct iwm_rx_phy_info sc_last_phy_info;
 	int sc_ampdu_ref;

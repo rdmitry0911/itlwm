@@ -627,8 +627,16 @@ iwm_start_hw(struct iwm_softc *sc)
 void ItlIwm::
 iwm_stop_device(struct iwm_softc *sc)
 {
+    ItlIwm *that = container_of(sc, ItlIwm, com);
+    struct ItlSaeAuthTransportEventV1 sae_reset_event;
+    bool emit_sae_reset = false;
     int chnl, ntries;
     int qid;
+
+    explicit_bzero(&sae_reset_event, sizeof(sae_reset_event));
+    that->iwm_sae_tx_stop_begin(sc);
+    emit_sae_reset = that->iwm_sae_tx_snapshot_reset(sc, &sae_reset_event);
+    that->iwm_sae_tx_cancel_all(sc);
     
     iwm_disable_interrupts(sc);
     sc->sc_flags &= ~IWM_FLAG_USE_ICT;
@@ -659,6 +667,9 @@ iwm_stop_device(struct iwm_softc *sc)
     
     for (qid = 0; qid < nitems(sc->txq); qid++)
         iwm_reset_tx_ring(sc, &sc->txq[qid]);
+
+    /* Ring reset is the authoritative descriptor-reclaim boundary. */
+    that->iwm_sae_tx_purge(sc);
     
     if (sc->sc_device_family == IWM_DEVICE_FAMILY_7000) {
         if (iwm_nic_lock(sc)) {
@@ -705,6 +716,10 @@ iwm_stop_device(struct iwm_softc *sc)
     iwm_check_rfkill(sc);
     
     iwm_prepare_card_hw(sc);
+
+    if (emit_sae_reset)
+        that->iwm_sae_tx_emit_reset_event(sc, &sae_reset_event);
+    explicit_bzero(&sae_reset_event, sizeof(sae_reset_event));
 }
 
 void ItlIwm::
