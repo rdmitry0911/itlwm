@@ -5055,12 +5055,21 @@ getOP_MODE(struct apple80211_opmode_data *od)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     // AppleBCMWLANCore::getOP_MODE starts the public carrier as
-    // `version=1, op_mode=0`. It then ORs in APSTA bits, current-BSS
-    // STA/IBSS mode via IO80211BssManager when associated, and monitor bits
-    // from the core-private monitor byte. The local primary path owns only the
-    // current-BSS STA/IBSS piece; APSTA remains routed through its owner.
+    // `version=1, op_mode=0`. When its role-7 owner is running it calls the
+    // APSTA getOP_MODE slot and ORs that result into the *primary* carrier
+    // before adding current-BSS STA/IBSS and monitor bits. airportd consumes
+    // this combined value to recognize SWAP mode and admit its HostAP stop
+    // lifecycle, so publishing SoftAP only on ap1 is insufficient.
     if (!TahoeOpModeContracts::initializePrimaryCarrier(od))
         return static_cast<IOReturn>(TahoeOpModeContracts::kInvalidArgumentStatus);
+    if (instance != nullptr && instance->isHostApRunning()) {
+        AirportItlwmAPSTAOpModeDataLayout apstaMode{};
+        if (instance->getAPSTA_OP_MODE(this, &apstaMode) ==
+            kIOReturnSuccess) {
+            TahoeOpModeContracts::publishAPSTAMode(od,
+                                                    apstaMode.mode04);
+        }
+    }
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
         TahoeOpModeContracts::publishAssociatedBssMode(od, ic->ic_bss->ni_capinfo);

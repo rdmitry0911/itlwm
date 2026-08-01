@@ -1111,6 +1111,11 @@ getOP_MODE(OSObject *object,
 {
     if (!TahoeOpModeContracts::initializePrimaryCarrier(od))
         return static_cast<IOReturn>(TahoeOpModeContracts::kInvalidArgumentStatus);
+    if (isHostApRunning()) {
+        AirportItlwmAPSTAOpModeDataLayout apstaMode{};
+        if (getAPSTA_OP_MODE(object, &apstaMode) == kIOReturnSuccess)
+            TahoeOpModeContracts::publishAPSTAMode(od, apstaMode.mode04);
+    }
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
         TahoeOpModeContracts::publishAssociatedBssMode(od, ic->ic_bss->ni_capinfo);

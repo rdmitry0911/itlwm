@@ -44,6 +44,30 @@ print_method_signature(id object, SEL selector)
     printf("\n");
 }
 
+static BOOL
+parse_security_type(const char *value, NSUInteger *securityType)
+{
+    if (strcmp(value, "open") == 0) {
+        *securityType = 2;
+        return YES;
+    }
+    if (strcmp(value, "wpa2") == 0) {
+        *securityType = 0x80;
+        return YES;
+    }
+    if (strcmp(value, "wpa3") == 0) {
+        *securityType = 0x1000;
+        return YES;
+    }
+
+    char *end = NULL;
+    const unsigned long long parsed = strtoull(value, &end, 0);
+    if (end == value || *end != '\0')
+        return NO;
+    *securityType = (NSUInteger)parsed;
+    return YES;
+}
+
 int
 main(int argc, const char *argv[])
 {
@@ -80,7 +104,8 @@ main(int argc, const char *argv[])
         }
         if (strcmp(argv[2], "--start") != 0 || argc < 7) {
             fprintf(stderr,
-                    "usage: %s interface --start ssid security channel "
+                    "usage: %s interface --start ssid "
+                    "open|wpa2|wpa3|security-number channel "
                     "password [hold-seconds]\n",
                     argv[0]);
             return 2;
@@ -92,11 +117,16 @@ main(int argc, const char *argv[])
 
         NSData *ssid = [[NSData alloc]
             initWithBytes:argv[3] length:strlen(argv[3])];
-        const NSUInteger security =
-            (NSUInteger)strtoull(argv[4], NULL, 0);
+        NSUInteger security = 0;
+        if (!parse_security_type(argv[4], &security)) {
+            fprintf(stderr, "invalid security type %s\n", argv[4]);
+            return 2;
+        }
         const NSInteger requestedChannel =
             (NSInteger)strtoll(argv[5], NULL, 0);
-        NSString *password = [NSString stringWithUTF8String:argv[6]];
+        NSString *password = strlen(argv[6]) != 0
+            ? [NSString stringWithUTF8String:argv[6]]
+            : nil;
         CWChannel *channel = nil;
         for (CWChannel *candidate in [interface supportedWLANChannels]) {
             if ([candidate channelNumber] == requestedChannel) {

@@ -15,8 +15,10 @@ static constexpr uint32_t kPrimaryVersion = 1;
 static constexpr uint32_t kPrimaryInitialMode = 0x00;
 static constexpr uint32_t kAssociatedStaMode = 0x01;
 static constexpr uint32_t kAssociatedIbssMode = 0x02;
+static constexpr uint32_t kSoftAPMode = 0x08;
 static constexpr uint32_t kCurrentBssIbssCapabilityBit = 0x02;
 static constexpr uint32_t kPrimaryMonitorBit = 0x10;
+static constexpr uint32_t kPrimaryAPSTAModeMutationCount = 1;
 static constexpr uint32_t kPrimaryAssociatedModeMutationCount = 1;
 
 template <typename OpModeData>
@@ -45,6 +47,15 @@ inline void publishAssociatedBssMode(OpModeData *data,
         return;
 
     data->op_mode |= modeForAssociatedBss(currentBssCapability);
+}
+
+template <typename OpModeData>
+inline void publishAPSTAMode(OpModeData *data, uint32_t apstaMode)
+{
+    if (data == nullptr)
+        return;
+
+    data->op_mode |= apstaMode;
 }
 
 } // namespace TahoeOpModeContracts

@@ -800,10 +800,14 @@ void testTahoeOpModeContracts()
             "primary OP_MODE associated infrastructure mode is STA");
     require(kAssociatedIbssMode == 0x02,
             "primary OP_MODE associated adhoc mode is IBSS");
+    require(kSoftAPMode == 0x08,
+            "primary OP_MODE APSTA owner contributes SoftAP mode");
     require(kCurrentBssIbssCapabilityBit == 0x02,
             "primary OP_MODE reads IBSS from current-BSS capability bit 1");
     require(kPrimaryMonitorBit == 0x10,
             "primary OP_MODE monitor bit is the recovered late OR bit");
+    require(kPrimaryAPSTAModeMutationCount == 1,
+            "primary OP_MODE has one running-APSTA mode OR");
     require(kPrimaryAssociatedModeMutationCount == 1,
             "primary OP_MODE has one BssManager-associated mode OR");
     require(!initializePrimaryCarrier<OpModeProbe>(nullptr),
@@ -812,14 +816,17 @@ void testTahoeOpModeContracts()
             "primary OP_MODE helper accepts output carrier");
     require(probe.version == 1 && probe.op_mode == 0,
             "primary OP_MODE helper initializes version and zero mode");
+    publishAPSTAMode(&probe, kSoftAPMode);
+    require(probe.op_mode == kSoftAPMode,
+            "primary OP_MODE publishes the running APSTA SoftAP bit");
     require(modeForAssociatedBss(0) == kAssociatedStaMode,
             "primary OP_MODE maps non-IBSS current BSS to STA");
     require(modeForAssociatedBss(kCurrentBssIbssCapabilityBit) ==
                 kAssociatedIbssMode,
             "primary OP_MODE maps IBSS current BSS capability to IBSS");
     publishAssociatedBssMode(&probe, 0);
-    require(probe.op_mode == kAssociatedStaMode,
-            "primary OP_MODE publishes associated STA mode");
+    require(probe.op_mode == (kSoftAPMode | kAssociatedStaMode),
+            "primary OP_MODE composes concurrent SoftAP and STA modes");
     publishAssociatedBssMode(&probe, kCurrentBssIbssCapabilityBit);
     require((probe.op_mode & kAssociatedIbssMode) != 0,
             "primary OP_MODE ORs associated IBSS mode");
