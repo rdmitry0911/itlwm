@@ -70,6 +70,7 @@
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_assoc_comeback.h>
+#include <ClientKit/AirportItlwmRoamLockBridge.h>
 
 #ifdef IEEE80211_DEBUG
 int	ieee80211_debug = 0;
@@ -85,6 +86,21 @@ int _start(struct kmod_info*, void*) {
 ///
 
 int ieee80211_cache_size = IEEE80211_CACHE_SIZE;
+static volatile u_int32_t airport_itlwm_roam_locked = 0;
+
+void
+airportItlwmSetRoamLocked(bool locked)
+{
+    __atomic_store_n(&airport_itlwm_roam_locked, locked ? 1U : 0U,
+        __ATOMIC_RELEASE);
+}
+
+bool
+airportItlwmIsRoamLocked(void)
+{
+    return __atomic_load_n(&airport_itlwm_roam_locked,
+        __ATOMIC_ACQUIRE) != 0;
+}
 
 void ieee80211_setbasicrates(struct ieee80211com *);
 int ieee80211_findrate(struct ieee80211com *, enum ieee80211_phymode, int);
@@ -94,6 +110,10 @@ void
 ieee80211_begin_bgscan(struct _ifnet *ifp)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
+
+    /* roam_off suppresses only net80211's autonomous RSSI roam owner. */
+    if (airportItlwmIsRoamLocked())
+        return;
     
     if (ic->ic_state != IEEE80211_S_RUN || ic->ic_mgt_timer != 0)
         return;

@@ -28,6 +28,7 @@
 #include "TahoeWclOpenScanResumeContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
+#include <ClientKit/AirportItlwmRoamLockBridge.h>
 #include <ClientKit/AirportItlwmScanHomeAwayBridge.h>
 #include <HAL/ItlSaeDriverTarget.h>
 #include <HAL/ItlSaeWclCredentialV1.h>
@@ -8282,9 +8283,28 @@ setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data)
     if (data == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
-    // Tahoe delegates byte-0 validation and the roam_off transport lifecycle
-    // to RoamAdapter. Intel has no matching adaptive-roam owner or transport.
-    return kIOReturnUnsupported;
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    const bool locked = *reinterpret_cast<const uint8_t *>(data) != 0;
+
+    /*
+     * Tahoe serializes byte 0 as the four-byte roam_off firmware boolean.
+     * Intel has no autonomous firmware roam engine: its equivalent owner is
+     * the shared net80211 RSSI-triggered background scan.  Publish the lock
+     * to that owner and retire an already-pending timer.  Explicit WCL scans,
+     * reassociation, and beacon-loss foreground recovery remain unaffected.
+     */
+    airportItlwmSetRoamLocked(locked);
+    if (locked) {
+        timeout_del(&ic->ic_bgscan_timeout);
+        if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0 &&
+            __atomic_load_n(&ic->ic_wcl_scan_active,
+                            __ATOMIC_ACQUIRE) == 0) {
+            ic->ic_flags |= IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+        }
+    }
+
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

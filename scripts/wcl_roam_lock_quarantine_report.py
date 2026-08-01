@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify WCL Roam Lock false-success quarantine evidence."""
+"""Generate and verify the live WCL Roam Lock Intel backend evidence."""
 
 import argparse
 import json
@@ -13,12 +13,9 @@ NOTE = ROOT / "docs/reference/CR-479-wcl-roam-lock-quarantine-20260714.md"
 SIGNAL_AUDIT = ROOT / "docs/tahoe_signal_chain_audit.md"
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
 HPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.hpp"
-SOURCE_ROOTS = (
-    ROOT / "AirportItlwm",
-    ROOT / "include",
-    ROOT / "itl80211",
-    ROOT / "itlwm",
-)
+BRIDGE = ROOT / "include/ClientKit/AirportItlwmRoamLockBridge.h"
+NET80211 = ROOT / "itl80211/openbsd/net80211/ieee80211.c"
+INPUT = ROOT / "itl80211/openbsd/net80211/ieee80211_input.c"
 
 
 def section(source, begin, end):
@@ -26,21 +23,14 @@ def section(source, begin, end):
     return source[start:source.index(end, start)]
 
 
-def source_contains(token):
-    for root in SOURCE_ROOTS:
-        for path in root.rglob("*"):
-            if path.suffix not in {".c", ".cc", ".cpp", ".h", ".hpp"}:
-                continue
-            if token in path.read_text(encoding="utf-8", errors="ignore"):
-                return True
-    return False
-
-
 def report():
     cpp = CPP.read_text(encoding="utf-8")
     hpp = HPP.read_text(encoding="utf-8")
     note = NOTE.read_text(encoding="utf-8")
     signal_audit = SIGNAL_AUDIT.read_text(encoding="utf-8")
+    bridge = BRIDGE.read_text(encoding="utf-8")
+    net80211 = NET80211.read_text(encoding="utf-8")
+    input_source = INPUT.read_text(encoding="utf-8")
     normalized_signal_audit = " ".join(signal_audit.split())
     setter = section(
         cpp,
@@ -49,8 +39,8 @@ def report():
     )
     correction_heading = "## Q13 correction: WCL Roam Lock is RoamAdapter-backed"
     return {
-        "schema": "itlwm-wcl-roam-lock-quarantine-v1",
-        "source_base_revision": "462c08ec925994d9854de3dcbc3d368c30bb883d",
+        "schema": "itlwm-wcl-roam-lock-intel-backend-v2",
+        "source_base_revision": "bb3dd0fd0f2bc2a1a8d31406fafec7cbde247681",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
             "infra_wrapper": "0x100018adc",
@@ -66,10 +56,19 @@ def report():
             "transport_payload_bytes": "0x4",
         },
         "local": {
-            "matching_roam_adapter_backend_implemented": False,
+            "intel_host_roam_lock_backend_implemented": True,
             "request_false_success": False,
             "complete_public_carrier_layout_proven": False,
-            "valid_input_or_error_is_apple_parity": False,
+            "runtime_diagnostic_payload_sequence": [1, 0],
+            "runtime_final_wcl_status": "GOOD:0:0x0",
+            "runtime_final_observed_input_phase": "locked=1 before ASSOCIATE",
+            "runtime_final_loaded_uuid": "0B6DFCAD-40A1-31AC-A992-EF7CA1AD636B",
+            "runtime_final_binary_sha256": "cef09452035a15f939fb114f6a46779fe0f2eed4e6a825d498ce08ac58b5566d",
+            "runtime_pure_sae_mfp_traffic": True,
+            "runtime_locked_beacon_loss_recovery": True,
+            "runtime_radio_recovery": True,
+            "runtime_final_unlock_call_observed": False,
+            "families": ["IWN", "IWM", "IWX"],
         },
         "checks": {
             "reference_note": all(
@@ -88,14 +87,26 @@ def report():
                     "0x10017b900",
                     "0x10001e59e",
                     "complete public carrier allocation",
+                    "Runtime closure",
+                    "locked=1",
+                    "locked=0",
+                    "0B6DFCAD-40A1-31AC-A992-EF7CA1AD636B",
+                    "cef09452035a15f939fb114f6a46779fe0f2eed4e6a825d498ce08ac58b5566d",
+                    "`GOOD:0:0x0`",
+                    "MFP=yes",
+                    "final-build\n`locked=0` producer call was not observed",
                 )
             ),
-            "setter_quarantines_nonnull": all(
+            "setter_owns_supported_policy": all(
                 token in setter
                 for token in (
                     "if (data == nullptr)",
                     "return kApple80211ErrInvalidArgumentRaw;",
-                    "return kIOReturnUnsupported;",
+                    "AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();",
+                    "airportItlwmSetRoamLocked(locked);",
+                    "timeout_del(&ic->ic_bgscan_timeout);",
+                    "IEEE80211_F_DISABLE_BG_AUTO_CONNECT",
+                    "return kIOReturnSuccess;",
                 )
             )
             and all(
@@ -103,22 +114,43 @@ def report():
                 for token in (
                     "cachedWclRoamLocked",
                     "hasCachedWclRoamLock",
-                    "data->",
-                    "return kIOReturnSuccess;",
+                    "return kIOReturnUnsupported;",
                 )
             ),
-            "pseudo_state_and_layout_removed": all(
-                token not in cpp and token not in hpp
+            "layout_neutral_shared_owner": (
+                all(
+                    token in bridge
+                    for token in (
+                        "airportItlwmSetRoamLocked",
+                        "airportItlwmIsRoamLocked",
+                        "outside ieee80211com",
+                    )
+                )
+                and all(
+                    token in net80211
+                    for token in (
+                        "static volatile u_int32_t airport_itlwm_roam_locked",
+                        "__atomic_store_n(&airport_itlwm_roam_locked",
+                        "__atomic_load_n(&airport_itlwm_roam_locked",
+                    )
+                )
+            ),
+            "autonomous_roam_is_suppressed": (
+                "ieee80211_begin_bgscan(struct _ifnet *ifp)" in net80211
+                and "if (airportItlwmIsRoamLocked())" in net80211
+                and "else if (!airportItlwmIsRoamLocked() &&" in input_source
+            ),
+            "pseudo_state_and_layout_remain_absent": all(
+                token not in cpp and token not in hpp and token not in net80211
                 for token in (
                     "cachedWclRoamLocked",
                     "hasCachedWclRoamLock",
                     "struct apple80211_set_roam_lock",
                 )
             ),
-            "scoped_roam_adapter_backend_absent": all(
-                not source_contains(token)
+            "broadcom_transport_not_invented": all(
+                token not in (cpp + net80211 + input_source)
                 for token in (
-                    "setRoamLock(",
                     "handleRoamOffAsyncCallBack(",
                     "sendIOVarSet(",
                     "runIOVarSet(",
@@ -143,7 +175,7 @@ def main():
     value = report()
     failed = [key for key, passed in value["checks"].items() if not passed]
     if failed:
-        raise ValueError("WCL Roam Lock quarantine checks failed: " + ", ".join(failed))
+        raise ValueError("WCL Roam Lock backend checks failed: " + ", ".join(failed))
     rendered = json.dumps(value, indent=2, sort_keys=True) + "\n"
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -157,5 +189,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"WCL Roam Lock quarantine validation failed: {exc}", file=sys.stderr)
+        print(f"WCL Roam Lock backend validation failed: {exc}", file=sys.stderr)
         sys.exit(1)

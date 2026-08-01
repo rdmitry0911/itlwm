@@ -1,16 +1,34 @@
 {
   "checks": {
-    "pseudo_state_and_layout_removed": true,
+    "autonomous_roam_is_suppressed": true,
+    "broadcom_transport_not_invented": true,
+    "layout_neutral_shared_owner": true,
+    "pseudo_state_and_layout_remain_absent": true,
     "reference_note": true,
-    "scoped_roam_adapter_backend_absent": true,
-    "setter_quarantines_nonnull": true,
+    "setter_owns_supported_policy": true,
     "stale_q13_claim_corrected": true
   },
   "local": {
     "complete_public_carrier_layout_proven": false,
-    "matching_roam_adapter_backend_implemented": false,
+    "families": [
+      "IWN",
+      "IWM",
+      "IWX"
+    ],
+    "intel_host_roam_lock_backend_implemented": true,
     "request_false_success": false,
-    "valid_input_or_error_is_apple_parity": false
+    "runtime_diagnostic_payload_sequence": [
+      1,
+      0
+    ],
+    "runtime_final_binary_sha256": "cef09452035a15f939fb114f6a46779fe0f2eed4e6a825d498ce08ac58b5566d",
+    "runtime_final_loaded_uuid": "0B6DFCAD-40A1-31AC-A992-EF7CA1AD636B",
+    "runtime_final_observed_input_phase": "locked=1 before ASSOCIATE",
+    "runtime_final_unlock_call_observed": false,
+    "runtime_final_wcl_status": "GOOD:0:0x0",
+    "runtime_locked_beacon_loss_recovery": true,
+    "runtime_pure_sae_mfp_traffic": true,
+    "runtime_radio_recovery": true
   },
   "reference": {
     "adapter_callback": "0x10001e59e",
@@ -26,6 +44,6 @@
     "roam_adapter_offset": "0x15c0",
     "transport_payload_bytes": "0x4"
   },
-  "schema": "itlwm-wcl-roam-lock-quarantine-v1",
-  "source_base_revision": "462c08ec925994d9854de3dcbc3d368c30bb883d"
+  "schema": "itlwm-wcl-roam-lock-intel-backend-v2",
+  "source_base_revision": "bb3dd0fd0f2bc2a1a8d31406fafec7cbde247681"
 }

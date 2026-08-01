@@ -77,6 +77,7 @@
 #include <net80211/ieee80211_sae_policy.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
+#include <ClientKit/AirportItlwmRoamLockBridge.h>
 
 mbuf_t ieee80211_input_hwdecrypt(struct ieee80211com *,
                                  struct ieee80211_node *, mbuf_t,
@@ -456,7 +457,8 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
             /* Cancel or start background scan based on RSSI. */
             if ((*ic->ic_node_checkrssi)(ic, ni))
                 timeout_del(&ic->ic_bgscan_timeout);
-            else if (!timeout_pending(&ic->ic_bgscan_timeout) &&
+            else if (!airportItlwmIsRoamLocked() &&
+                     !timeout_pending(&ic->ic_bgscan_timeout) &&
                      (ic->ic_flags & IEEE80211_F_BGSCAN) == 0 &&
                      (ic->ic_flags & IEEE80211_F_DESBSSID) == 0)
                 timeout_add_msec(&ic->ic_bgscan_timeout,

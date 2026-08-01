@@ -654,8 +654,8 @@ public:
     // [590] — AppleBCMWLAN: validates param, snapshots reassoc parameters,
     // and delegates into NetAdapter reassoc send path.
     virtual IOReturn setWCL_REASSOC(apple80211_reassoc *data) override;
-    // [591] — Tahoe RoamAdapter owns byte-0 validation and roam_off transport;
-    // locally quarantined until a matching adaptive-roam owner exists.
+    // [591] — maps Tahoe's byte-0 roam_off policy to the shared Intel
+    // net80211 autonomous background-roam owner.
     virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data) override;
     // [592] — Tahoe RoamAdapter owns legacy profile policy and transport;
     // locally quarantined until a matching adaptive-roam owner exists.
