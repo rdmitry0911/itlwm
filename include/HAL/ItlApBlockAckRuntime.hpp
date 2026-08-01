@@ -36,6 +36,7 @@ enum ItlApTxBaState : uint8_t {
     kItlApTxBaIdle = 0,
     kItlApTxBaRequested,
     kItlApTxBaAgreed,
+    kItlApTxBaBlocked,
 };
 
 /*
@@ -70,6 +71,8 @@ static inline bool
 itl_ap_tx_ba_note_data(struct ItlApTxBaRuntime *runtime)
 {
     if (runtime == NULL)
+        return false;
+    if (runtime->state == kItlApTxBaBlocked)
         return false;
     if (runtime->state == kItlApTxBaAgreed)
         return false;

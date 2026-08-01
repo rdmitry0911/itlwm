@@ -42,6 +42,7 @@ for needle, label in (
     ("struct ItlApTxBaRuntime", "shared per-TID state"),
     ("kItlApTxBaStartThreshold", "bounded start threshold"),
     ("kItlApTxBaRequestPacketTimeout", "bounded request retry"),
+    ("kItlApTxBaBlocked", "per-association fallback state"),
     ("itl_ap_tx_ba_advance_sequence", "firmware sequence mirror"),
     ("itl_ap_tx_ba_response_matches", "token/TID response fence"),
     ("runtime->token == action->token", "dialog-token validation"),
@@ -120,6 +121,9 @@ for needle, label in (
     ("airportItlwmRequestAPTxDequeue", "IWN Skywalk wake"),
     ("IWN AP TX ADDBA request", "IWN request witness"),
     ("IWN AP TX ADDBA response", "IWN response witness"),
+    ("terminalAggregateFailure", "IWN terminal aggregate failure classifier"),
+    ("kItlApTxBaBlocked", "IWN per-association non-aggregate fallback"),
+    ("IWN AP TX BA fallback", "IWN stable PAN fallback witness"),
     ("qid == apClientTxBaQueue[cba->tid]", "IWN dynamic BA completion"),
 ):
     require(iwn, needle, label)

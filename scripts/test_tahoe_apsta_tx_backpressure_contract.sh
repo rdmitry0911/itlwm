@@ -37,9 +37,22 @@ for needle in (
     "usable - ring->queued",
 ):
     assert needle in free_space, f"missing shared PAN-ring admission: {needle}"
-assert "!apClientAssociated" not in free_space, \
-    "ring admission must not throttle Skywalk before station association"
+for needle in ("!apClientAssociated", "!apClientNodeInstalled"):
+    assert needle in free_space, \
+        f"AP admission must stay closed before firmware client readiness: {needle}"
 assert "airportItlwmQueryAPTxFreeSpace(ItlHalService *service)" in iwn
+
+association = body(
+    iwn,
+    "int ItlIwn::iwn_send_ap_assoc_success()",
+    "int ItlIwn::iwn_send_ap_sensitivity()",
+)
+associated = association.index("apClientAssociated = true;")
+wake = association.index(
+    "airportItlwmRequestAPTxDequeue(getController());", associated
+)
+assert associated < wake, \
+    "firmware client association must reopen AP Skywalk dequeue"
 
 tx_action = body(
     controller,

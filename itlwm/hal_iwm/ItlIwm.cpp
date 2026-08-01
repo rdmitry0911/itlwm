@@ -614,7 +614,8 @@ getAPTxFreeSpace() const
     for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
         const struct ItlApFirmwareClientRuntime *client =
             &apRuntime.clients[index];
-        if (!client->inUse || !client->clientStationInstalled)
+        if (!client->inUse || !client->clientStationInstalled ||
+            !client->clientAssociated)
             continue;
         if (client->queueId >= IWM_MAX_QUEUES)
             return 0;

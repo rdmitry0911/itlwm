@@ -72,6 +72,9 @@ for family, hal, lower, task_sig, rx_sig, add_name in (
             f"{family} open/WPA2 start")
     require(hal, "transmitAPData(mbuf_t packet)", f"{family} AP TX entry")
     require(hal, "getAPTxFreeSpace() const", f"{family} AP free space")
+    free_space = body(hal, "getAPTxFreeSpace() const")
+    require(free_space, "client->clientAssociated",
+            f"{family} pre-association AP TX gate")
     require(lower, "ap_frame = true", f"{family} raw AP TX ownership")
     task = body(lower, task_sig)
     require(task, "ItlApFirmwareClientRuntime *client",

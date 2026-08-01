@@ -5356,6 +5356,8 @@ uint32_t ItlIwn::getAPTxFreeSpace() const
 {
     if (!apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING ||
+        !apClientAssociated ||
+        !apClientNodeInstalled ||
         com.command_queue != IWN_IPAN_CMD_QUEUE ||
         IWN_IPAN_BE_QUEUE >= com.ntxqs) {
         return 0;
@@ -7824,6 +7826,15 @@ int ItlIwn::iwn_send_ap_assoc_success()
         apClientRsnIELength,
         reassociation ? IEEE80211_APSTA_EVENT_REASSOC :
                         IEEE80211_APSTA_EVENT_ASSOC);
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * AP Skywalk queues stay stopped until a firmware station exists.  The
+     * association response is the first point at which both the PAN node and
+     * its unicast queue are usable, so explicitly publish that transition to
+     * the dequeue side just as the IWM/IWX AP backends do.
+     */
+    airportItlwmRequestAPTxDequeue(getController());
+#endif
     return 0;
 }
 
@@ -13059,6 +13070,8 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
 
     if (txdata->ap_data && apAggregate) {
         mbuf_t apPsFilteredPacket = NULL;
+        const bool terminalAggregateFailure =
+            txfail && status != IWN_TX_STATUS_FAIL_DEST_PS;
         if (status == IWN_TX_STATUS_FAIL_DEST_PS && txdata->m != NULL) {
             /* DVM exposes DEST_PS as TX_FILTERED even for an aggregation
              * queue.  mac80211 then returns that same frame behind the
@@ -13077,6 +13090,33 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
             sc, txq, desc->qid, IWN_AGG_SSN_TO_TXQ_IDX(ssn));
         iwn_clear_oactive(sc, txq);
         iwn_refresh_tx_timer(sc);
+        if (terminalAggregateFailure) {
+            /*
+             * DVM can accept the peer's ADDBA yet reject the first PAN
+             * aggregate with PASSIVE_NO_RX.  Leaving that RA/TID selected
+             * strands later descriptors until the global TX watchdog resets
+             * the radio.  Tear down only this optional BA session, notify
+             * the peer, and keep ordinary QoS data on the proven PAN queue.
+             * The blocked state lasts only for this client association.
+             */
+            uint8_t delba[sizeof(struct ieee80211_frame) + 6];
+            const size_t delbaLength = itl_ap_block_ack_build_delete(
+                delba, sizeof(delba), apFirmwareConfig.bssid,
+                apClientMac, static_cast<uint8_t>(tid),
+                IEEE80211_REASON_SETUP_REQUIRED, true,
+                iwn_ap_uses_sae() && apClientAuthorized);
+            const int delbaError = delbaLength == 0 ? EINVAL :
+                iwn_send_ap_mgmt_frame(delba, delbaLength);
+            const int stopError = iwn_set_ap_client_tx_ba(
+                static_cast<uint8_t>(tid), apClientTxSequence[tid], false);
+            if (stopError == 0) {
+                itl_ap_tx_ba_reset(&apClientTxBa[tid]);
+                apClientTxBa[tid].state = kItlApTxBaBlocked;
+            }
+            XYLog("%s: IWN AP TX BA fallback tid=%d status=0x%02x "
+                  "stop=%d delba=%d\n", sc->sc_dev.dv_xname, tid,
+                  static_cast<unsigned>(status), stopError, delbaError);
+        }
         if (apPsFilteredPacket != NULL) {
             const int queueError =
                 iwn_queue_ap_ps_packet(apPsFilteredPacket, true);
