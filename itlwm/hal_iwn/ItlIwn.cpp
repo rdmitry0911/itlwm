@@ -4018,6 +4018,14 @@ enum {
 };
 
 enum {
+    /* A complete unassociated DVM scan can span both bands.  HostAP owns
+     * the next radio epoch, but must allow the exact firmware STOP_SCAN
+     * terminal enough time to retire instead of exposing a transient
+     * two-second timeout to Internet Sharing. */
+    IWN_AP_TRANSITION_SCAN_WAIT_SECONDS = 8
+};
+
+enum {
     IWN_AP_RSN_DISABLED = 0,
     IWN_AP_RSN_WAIT_M2,
     IWN_AP_RSN_WAIT_M4,
@@ -4029,6 +4037,15 @@ enum {
     IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE,
     IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE,
     IWN_AP_CLIENT_MATERIALIZATION_LINK_QUALITY
+};
+
+enum {
+    IWN_AP_CSA_CLIENT_RESTORE_IDLE = 0,
+    IWN_AP_CSA_CLIENT_RESTORE_PREPARED,
+    IWN_AP_CSA_CLIENT_RESTORE_ADD_NODE,
+    IWN_AP_CSA_CLIENT_RESTORE_LINK_QUALITY,
+    IWN_AP_CSA_CLIENT_RESTORE_GROUP_KEY,
+    IWN_AP_CSA_CLIENT_RESTORE_PAIRWISE_KEY
 };
 
 enum {
@@ -4063,6 +4080,10 @@ bool ItlIwn::attach(IOPCIDevice *device)
     apPsQueueCount = 0;
     apPsQueueReady = true;
     apTimSet = false;
+    apCsaTimeout = NULL;
+    apCsaTimerInitialized = false;
+    timeout_set(&apCsaTimeout, iwn_ap_csa_timeout, this);
+    apCsaTimerInitialized = true;
     bzero(apClientRxBa, sizeof(apClientRxBa));
     bzero(apClientTxBa, sizeof(apClientTxBa));
     bzero(&apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
@@ -4108,6 +4129,13 @@ bool ItlIwn::iwn_ap_sae_pmksa_matches(
 
 void ItlIwn::iwn_reset_ap_runtime_state()
 {
+    if (apCsaTimerInitialized)
+        timeout_del(&apCsaTimeout);
+    apCsaPending = false;
+    apCsaTargetChannel = 0;
+    apCsaMode = 0;
+    apCsaCount = 0;
+    apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_IDLE;
     iwn_set_ap_scan_transition_blocked(false);
     iwn_purge_ap_ps_queue();
     iwn_reset_ap_sae();
@@ -4286,7 +4314,8 @@ IOReturn ItlIwn::iwn_quiesce_scan_for_ap_transition()
 
     AbsoluteTime deadline;
     clock_interval_to_deadline(
-        2, kSecondScale, reinterpret_cast<uint64_t *>(&deadline));
+        IWN_AP_TRANSITION_SCAN_WAIT_SECONDS, kSecondScale,
+        reinterpret_cast<uint64_t *>(&deadline));
     IOReturn sleepResult = THREAD_AWAKENED;
     while ((sc->sc_flags & IWN_FLAG_SCANNING) != 0) {
         if (sleepResult == THREAD_TIMED_OUT)
@@ -4940,6 +4969,7 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         !apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING ||
         !apClientAssociated ||
+        !apClientNodeInstalled ||
         com.command_queue != IWN_IPAN_CMD_QUEUE ||
         IWN_IPAN_BE_QUEUE >= com.ntxqs) {
         if (++apDataTxRejectCount <= 32) {
@@ -7072,6 +7102,11 @@ void ItlIwn::
 releaseAll()
 {
     pci_intr_handle *intrHandler = com.ih;
+    if (apCsaTimerInitialized) {
+        timeout_del(&apCsaTimeout);
+        timeout_free(&apCsaTimeout);
+        apCsaTimerInitialized = false;
+    }
     
     if (com.calib_to) {
         timeout_del(&com.calib_to);
@@ -8263,6 +8298,64 @@ void ItlIwn::iwn_note_ap_firmware_event(
      * the CCMP key into the PAN RX station map on a cold 6x35 start.
      */
     if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        apCsaClientRestoreStage == IWN_AP_CSA_CLIENT_RESTORE_ADD_NODE &&
+        command == IWN_CMD_ADD_NODE &&
+        addNodeId == IWN5000_ID_PAN_CLIENT) {
+        if (addNodeStatus != 1) {
+            iwn_finish_ap_csa_client_restore(EIO);
+            return;
+        }
+        apClientNodeInstalled = true;
+        apCsaClientRestoreStage =
+            IWN_AP_CSA_CLIENT_RESTORE_LINK_QUALITY;
+        error = iwn_send_ap_client_link_quality();
+        if (error != 0)
+            iwn_finish_ap_csa_client_restore(error);
+        return;
+    }
+    if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        apCsaClientRestoreStage ==
+            IWN_AP_CSA_CLIENT_RESTORE_LINK_QUALITY &&
+        command == IWN_CMD_LINK_QUALITY) {
+        if (apFirmwareConfig.rsnIELength == 0 ||
+            !apClientAuthorized) {
+            iwn_finish_ap_csa_client_restore(0);
+            return;
+        }
+        apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_GROUP_KEY;
+        error = iwn_install_ap_ccmp_key(false, apGtkKid, apGtk);
+        if (error != 0)
+            iwn_finish_ap_csa_client_restore(error);
+        return;
+    }
+    if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        apCsaClientRestoreStage == IWN_AP_CSA_CLIENT_RESTORE_GROUP_KEY &&
+        command == IWN_CMD_ADD_NODE &&
+        addNodeId == IWN5000_ID_PAN_BROADCAST &&
+        (addNodeFlags & IWN_FLAG_SET_KEY) != 0) {
+        if (addNodeStatus != 1) {
+            iwn_finish_ap_csa_client_restore(EIO);
+            return;
+        }
+        apCsaClientRestoreStage =
+            IWN_AP_CSA_CLIENT_RESTORE_PAIRWISE_KEY;
+        error = iwn_install_ap_ccmp_key(true, 0, apPtk.tk);
+        if (error != 0)
+            iwn_finish_ap_csa_client_restore(error);
+        return;
+    }
+    if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        apCsaClientRestoreStage ==
+            IWN_AP_CSA_CLIENT_RESTORE_PAIRWISE_KEY &&
+        command == IWN_CMD_ADD_NODE &&
+        addNodeId == IWN5000_ID_PAN_CLIENT &&
+        (addNodeFlags & IWN_FLAG_SET_KEY) != 0) {
+        iwn_finish_ap_csa_client_restore(
+            addNodeStatus == 1 ? 0 : EIO);
+        return;
+    }
+
+    if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
         (apClientMaterializationStage ==
              IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE ||
          apClientMaterializationStage ==
@@ -8418,6 +8511,7 @@ void ItlIwn::iwn_note_ap_firmware_event(
             apFirmwareStage = IWN_AP_STAGE_RUNNING;
             iwn_set_ap_scan_transition_blocked(false);
             iwn_set_ap_primary_tx_quiesced(false, true);
+            iwn_complete_ap_csa_rebind();
             XYLog("%s: AP PAN context running after DVM RXON/beacon/EDCA "
                   "transition\n", com.sc_dev.dv_xname);
         }
@@ -8426,6 +8520,7 @@ void ItlIwn::iwn_note_ap_firmware_event(
         apFirmwareStage = IWN_AP_STAGE_RUNNING;
         iwn_set_ap_scan_transition_blocked(false);
         iwn_set_ap_primary_tx_quiesced(false, true);
+        iwn_complete_ap_csa_rebind();
         XYLog("%s: AP PAN context running after DVM RXON/beacon/EDCA "
               "transition\n", com.sc_dev.dv_xname);
     }
@@ -8501,8 +8596,11 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
      * but fence all ordinary output until the final PAN power reply.
      */
     iwn_set_ap_primary_tx_quiesced(true, false);
-    if (iwn_ap_primary_tx_pending())
+    if (iwn_ap_primary_tx_pending()) {
+        iwn_set_ap_primary_tx_quiesced(false, false);
+        iwn_set_ap_scan_transition_blocked(false);
         return kIOReturnNotReady;
+    }
     /*
      * DVM exposes APSTA as two firmware contexts: the existing net80211 STA
      * remains the BSS context while this role-7 interface owns PAN.  Do not
@@ -8718,6 +8816,300 @@ IOReturn ItlIwn::setAPHidden(bool hidden)
         return kIOReturnError;
     }
     return kIOReturnSuccess;
+}
+
+IOReturn ItlIwn::triggerAPCSA(const struct ItlHalApCSA *csa)
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return kIOReturnNotReady;
+    if (csa == NULL || csa->channel == 0 || csa->channel > 14 ||
+        apFirmwareConfig.channel == 0 || apFirmwareConfig.channel > 14 ||
+        csa->mode > 1)
+        return kIOReturnBadArgument;
+    if (apCsaPending)
+        return kIOReturnBusy;
+    if (csa->channel == apFirmwareConfig.channel)
+        return kIOReturnSuccess;
+
+    struct ItlHalApConfig targetConfig = apFirmwareConfig;
+    targetConfig.channel = csa->channel;
+    struct iwn_rxon targetRxon;
+    if (iwn_build_ap_rxon(&targetRxon, &targetConfig) != 0)
+        return kIOReturnBadArgument;
+
+    const uint8_t count = csa->count != 0 ? csa->count :
+        kItlApCsaDefaultCount;
+    int error = itl_ap_beacon_begin_csa(
+        apFirmwareBeacon, &apFirmwareConfig.beaconTemplateLength,
+        sizeof(apFirmwareBeacon), csa->mode,
+        static_cast<uint8_t>(csa->channel), count);
+    if (error != 0)
+        return error == EBUSY ? kIOReturnBusy : kIOReturnBadArgument;
+    error = iwn_send_ap_beacon(&apFirmwareConfig);
+    if (error != 0) {
+        (void)itl_ap_beacon_end_csa(
+            apFirmwareBeacon, &apFirmwareConfig.beaconTemplateLength,
+            static_cast<uint8_t>(csa->channel), false);
+        return kIOReturnError;
+    }
+
+    apCsaPending = true;
+    apCsaTargetChannel = csa->channel;
+    apCsaMode = csa->mode;
+    apCsaCount = count;
+    const uint32_t delayMs = MAX(1U, static_cast<uint32_t>(
+        (static_cast<uint64_t>(apFirmwareConfig.beaconInterval) *
+         IEEE80211_DUR_TU + 999) / 1000));
+    timeout_add_msec(&apCsaTimeout, delayMs);
+    XYLog("%s: IWN AP CSA armed channel=%u mode=%u count=%u delay=%u ms\n",
+          com.sc_dev.dv_xname, static_cast<unsigned>(csa->channel),
+          static_cast<unsigned>(csa->mode), static_cast<unsigned>(count),
+          static_cast<unsigned>(delayMs));
+    return kIOReturnSuccess;
+}
+
+void ItlIwn::iwn_ap_csa_timeout(void *arg)
+{
+    ItlIwn *that = static_cast<ItlIwn *>(arg);
+    if (that == NULL)
+        return;
+    const int s = splnet();
+    if (that->apCsaPending && that->apCsaCount > 1) {
+        that->apCsaCount--;
+        const int countError = itl_ap_beacon_set_csa_count(
+            that->apFirmwareBeacon,
+            that->apFirmwareConfig.beaconTemplateLength,
+            that->apCsaCount);
+        const int beaconError = countError == 0 ?
+            that->iwn_send_ap_beacon(&that->apFirmwareConfig) : countError;
+        if (beaconError == 0) {
+            const uint32_t delayMs = MAX(1U, static_cast<uint32_t>(
+                (static_cast<uint64_t>(
+                    that->apFirmwareConfig.beaconInterval) *
+                 IEEE80211_DUR_TU + 999) / 1000));
+            timeout_add_msec(&that->apCsaTimeout, delayMs);
+            splx(s);
+            return;
+        }
+    }
+    const int error = that->iwn_finish_ap_csa();
+    if (error != 0)
+        XYLog("%s: IWN AP CSA terminal error=%d\n",
+              that->com.sc_dev.dv_xname, error);
+    splx(s);
+}
+
+int ItlIwn::iwn_finish_ap_csa()
+{
+    if (!apCsaPending || !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return EINVAL;
+
+    const uint16_t oldChannel = apFirmwareConfig.channel;
+    struct ItlHalApConfig targetConfig = apFirmwareConfig;
+    targetConfig.channel = apCsaTargetChannel;
+    struct iwn_rxon targetRxon;
+    if (iwn_build_ap_rxon(&targetRxon, &targetConfig) != 0)
+        return EINVAL;
+
+    const struct iwn_rxon oldRxon = apFirmwareRxon;
+    struct iwn_rxon deactivateRxon = targetRxon;
+    apFirmwareConfig.channel = apCsaTargetChannel;
+    memcpy(&apFirmwareRxon, &targetRxon, sizeof(apFirmwareRxon));
+    int error = itl_ap_beacon_end_csa(
+        apFirmwareBeacon, &apFirmwareConfig.beaconTemplateLength,
+        static_cast<uint8_t>(apFirmwareConfig.channel), true);
+    if (error != 0)
+        goto rollback_beacon;
+
+    /* Intel's published DVM driver never submits command 0xb9 for a CP/AP
+     * context: its ordinary channel-switch command is explicitly BSS-only,
+     * while the 0xb9 P2P carrier is undocumented.  6x35 firmware asserts if
+     * that P2P command is sent to our live CP context.  Rebind the PAN owner
+     * through the same proven deactivation -> timing -> unassociated RXON ->
+     * associated RXON sequence used for initial HostAP materialization.
+     * Peers have already received the 3/2/1 CSA beacons; clearing the old
+     * firmware station makes them authenticate freshly after the target
+     * channel starts instead of retaining a client id destroyed by RXON.
+     * A fully-authorized peer, however, follows the advertised CSA without
+     * performing a new association.  Preserve that logical association and
+     * its replay/key epoch, retire only firmware-owned TX aggregation, then
+     * recreate station id 2 and its keys after the PAN context is running on
+     * the target channel. */
+    if (apClientAssociated &&
+        (apFirmwareConfig.rsnIELength == 0 || apClientAuthorized)) {
+        if (apTimSet) {
+            const int timError = iwn_update_ap_tim(false);
+            if (timError != 0)
+                XYLog("%s: IWN AP CSA TIM clear error=%d\n",
+                      com.sc_dev.dv_xname, timError);
+        }
+        iwn_purge_ap_ps_queue();
+        iwn_stop_all_ap_client_tx_ba();
+        apClientNodeInstalled = false;
+        apClientMaterializationStage =
+            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+        apClientPowerSave = false;
+        apCsaClientRestoreStage =
+            IWN_AP_CSA_CLIENT_RESTORE_PREPARED;
+    } else {
+        iwn_clear_ap_client_for_csa();
+    }
+    apFirmwareDeactivationReplySeen = false;
+    apFirmwareDeactivationNotificationSeen = false;
+    apFirmwarePostDeactivateQueued = false;
+    apFirmwareUnassociatedReplySeen = false;
+    apFirmwareUnassociatedNotificationSeen = false;
+    apFirmwareStage = IWN_AP_STAGE_INITIAL_RXON;
+    bzero(deactivateRxon.bssid, sizeof(deactivateRxon.bssid));
+    bzero(deactivateRxon.wlap, sizeof(deactivateRxon.wlap));
+    deactivateRxon.filter = 0;
+    deactivateRxon.mode = IWN_MODE_P2P;
+    error = iwn_cmd(&com, IWN_CMD_WIPAN_RXON,
+                    &deactivateRxon, com.rxonsz, 1);
+    if (error != 0) {
+        apFirmwareStage = IWN_AP_STAGE_RUNNING;
+        apFirmwareConfig.channel = oldChannel;
+        memcpy(&apFirmwareRxon, &oldRxon, sizeof(apFirmwareRxon));
+        (void)itl_ap_beacon_set_channel(
+            apFirmwareBeacon, apFirmwareConfig.beaconTemplateLength,
+            static_cast<uint8_t>(oldChannel));
+        (void)iwn_send_ap_beacon(&apFirmwareConfig);
+        goto clear_csa;
+    }
+    XYLog("%s: IWN AP CSA PAN rebind queued channel=%u\n",
+          com.sc_dev.dv_xname,
+          static_cast<unsigned>(apFirmwareConfig.channel));
+    return 0;
+
+rollback_beacon:
+    apFirmwareConfig.channel = oldChannel;
+    memcpy(&apFirmwareRxon, &oldRxon, sizeof(apFirmwareRxon));
+    (void)itl_ap_beacon_end_csa(
+        apFirmwareBeacon, &apFirmwareConfig.beaconTemplateLength,
+        static_cast<uint8_t>(apCsaTargetChannel), false);
+    (void)itl_ap_beacon_set_channel(
+        apFirmwareBeacon, apFirmwareConfig.beaconTemplateLength,
+        static_cast<uint8_t>(oldChannel));
+    (void)iwn_send_ap_beacon(&apFirmwareConfig);
+clear_csa:
+    apCsaPending = false;
+    apCsaTargetChannel = 0;
+    apCsaCount = 0;
+    return error != 0 ? error : EIO;
+}
+
+void ItlIwn::iwn_complete_ap_csa_rebind()
+{
+    if (!apCsaPending)
+        return;
+    if (apCsaClientRestoreStage ==
+        IWN_AP_CSA_CLIENT_RESTORE_PREPARED) {
+        apCsaClientRestoreStage =
+            IWN_AP_CSA_CLIENT_RESTORE_ADD_NODE;
+        const int error = iwn_add_ap_client_node(apClientMac);
+        if (error == 0) {
+            XYLog("%s: IWN AP CSA client restore queued peer="
+                  "%02x:%02x:%02x:%02x:%02x:%02x\n",
+                  com.sc_dev.dv_xname,
+                  apClientMac[0], apClientMac[1], apClientMac[2],
+                  apClientMac[3], apClientMac[4], apClientMac[5]);
+            return;
+        }
+        iwn_finish_ap_csa_client_restore(error);
+        return;
+    }
+    if (apCsaClientRestoreStage != IWN_AP_CSA_CLIENT_RESTORE_IDLE)
+        return;
+    apCsaPending = false;
+    apCsaTargetChannel = 0;
+    apCsaMode = 0;
+    apCsaCount = 0;
+    XYLog("%s: IWN AP CSA complete channel=%u\n",
+          com.sc_dev.dv_xname,
+          static_cast<unsigned>(apFirmwareConfig.channel));
+}
+
+void ItlIwn::iwn_finish_ap_csa_client_restore(int error)
+{
+    if (error != 0) {
+        XYLog("%s: IWN AP CSA client restore failed stage=%u error=%d\n",
+              com.sc_dev.dv_xname,
+              static_cast<unsigned>(apCsaClientRestoreStage), error);
+        iwn_clear_ap_client_for_csa();
+    } else {
+        XYLog("%s: IWN AP CSA client restore complete peer="
+              "%02x:%02x:%02x:%02x:%02x:%02x\n",
+              com.sc_dev.dv_xname,
+              apClientMac[0], apClientMac[1], apClientMac[2],
+              apClientMac[3], apClientMac[4], apClientMac[5]);
+    }
+    apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_IDLE;
+    iwn_complete_ap_csa_rebind();
+}
+
+void ItlIwn::iwn_clear_ap_client_for_csa()
+{
+    if (apClientAssociated)
+        iwn_publish_ap_station_event(
+            apClientMac, NULL, 0, IEEE80211_APSTA_EVENT_LEAVE);
+    if (apClientNodeInstalled) {
+        const int removeError = iwn_remove_ap_client_node(apClientMac);
+        if (removeError != 0)
+            XYLog("%s: IWN AP CSA client removal error=%d\n",
+                  com.sc_dev.dv_xname, removeError);
+    }
+    iwn_purge_ap_ps_queue();
+    iwn_reset_ap_sae();
+    if (iwn_ap_uses_sae())
+        explicit_bzero(apPmk, sizeof(apPmk));
+    if (apPairwiseSoftwareKey.k_priv != NULL)
+        ieee80211_ccmp_delete_key(
+            &com.sc_ic, &apPairwiseSoftwareKey);
+    explicit_bzero(&apPairwiseSoftwareKey,
+                   sizeof(apPairwiseSoftwareKey));
+    bzero(apClientMac, sizeof(apClientMac));
+    apClientNodeInstalled = false;
+    apClientMaterializationStage =
+        IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+    apClientAuthenticated = false;
+    apClientOpenAuthenticated = false;
+    apClientReassociationPending = false;
+    apClientLegacyRateMask = 0;
+    apClientQos = false;
+    apClientHt = false;
+    apClientHtNss = 0;
+    apClientHtCapabilities = 0;
+    apClientHtAmpduParams = 0;
+    bzero(apClientHtMcs, sizeof(apClientHtMcs));
+    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
+        itl_ap_rx_ba_stop(&apClientRxBa[tid]);
+        itl_ap_tx_ba_reset(&apClientTxBa[tid]);
+        apClientTxBaQueue[tid] = UINT8_MAX;
+    }
+    apClientRxBaMask = 0;
+    apClientTxBaMask = 0;
+    apClientDisableTid = 0;
+    apClientTxBaEnablePending = false;
+    apClientTxBaPendingTid = UINT8_MAX;
+    apClientTxBaPendingQueue = UINT8_MAX;
+    apClientTxBaPendingSsn = 0;
+    apClientTxBaPendingOldDisableTid = 0;
+    apClientAssociated = false;
+    apClientAuthorized = false;
+    apClientPowerSave = false;
+    apClientAid = 0;
+    apRsnState = apFirmwareConfig.rsnIELength == 0 ?
+        IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
+    apClientRsnIELength = 0;
+    bzero(apClientRsnIE, sizeof(apClientRsnIE));
+    explicit_bzero(&apPtk, sizeof(apPtk));
+    apSoftwareCcmpRxObserved = false;
+    apReplayCounter = 0;
+    apPairwiseTxPn = 0;
+    bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
+    apTimSet = false;
 }
 
 #define    PCI_VENDOR_INTEL    0x8086        /* Intel */

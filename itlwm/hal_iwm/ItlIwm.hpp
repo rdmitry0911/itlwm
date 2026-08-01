@@ -76,6 +76,7 @@ public:
     IOReturn setAPKey(const struct ItlHalApKey *key) override;
     IOReturn setAPMaxStations(uint32_t maxStations) override;
     IOReturn setAPHidden(bool hidden) override;
+    IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) override;
     IOReturn sendAPStationCommand(
         const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
@@ -401,7 +402,10 @@ public:
     struct ieee80211_channel *iwm_ap_find_channel(struct iwm_softc *,
                                                    uint16_t);
     int    iwm_ap_send_beacon_template(struct iwm_softc *,
-                                       const struct ItlApFirmwareRuntime *);
+            const struct ItlApFirmwareRuntime *);
+    static void iwm_ap_csa_timeout(void *);
+    int    iwm_ap_finish_csa(struct iwm_softc *,
+            struct ItlApFirmwareRuntime *);
     int    iwm_ap_mac_ctxt_cmd(struct iwm_softc *,
                                const struct ItlApFirmwareRuntime *, uint32_t);
     int    iwm_ap_binding_cmd(struct iwm_softc *,
@@ -532,6 +536,8 @@ public:
     struct pci_attach_args pci;
     struct iwm_softc com;
     struct ItlApFirmwareRuntime apRuntime;
+    CTimeout *apCsaTimeout;
+    bool apCsaTimerInitialized;
     IOSimpleLock *wclScanLock;
     ItlIwmWclScanPhase wclScanPhase;
     uint64_t wclScanUpperGeneration;

@@ -46,6 +46,10 @@ bool ItlIwm::
 attach(IOPCIDevice *device)
 {
     itl_ap_firmware_runtime_reset(&apRuntime);
+    apCsaTimeout = NULL;
+    apCsaTimerInitialized = false;
+    timeout_set(&apCsaTimeout, iwm_ap_csa_timeout, this);
+    apCsaTimerInitialized = true;
     wclScanLock = IOSimpleLockAlloc();
     if (wclScanLock == NULL)
         return false;
@@ -79,6 +83,11 @@ void ItlIwm::
 releaseAll()
 {
     pci_intr_handle *intrHandler = com.ih;
+    if (apCsaTimerInitialized) {
+        timeout_del(&apCsaTimeout);
+        timeout_free(&apCsaTimeout);
+        apCsaTimerInitialized = false;
+    }
     if (com.sc_calib_to) {
         timeout_del(&com.sc_calib_to);
         timeout_free(&com.sc_calib_to);
@@ -131,6 +140,8 @@ disable(IONetworkInterface *netif)
      * retains its profile across sleep.  Retire the firmware GO resources
      * before the generic iwm_stop() destroys their rings; wake will rebuild
      * them from that upper snapshot after the primary STA boundary. */
+    if (apCsaTimerInitialized)
+        timeout_del(&apCsaTimeout);
     if (apRuntime.stage != kItlApFirmwareResourceIdle) {
         const int apError = iwm_stop_ap_resources(&com, &apRuntime);
         if (apError != 0)
@@ -192,6 +203,8 @@ startAPMode(const struct ItlHalApConfig *config)
 IOReturn ItlIwm::
 stopAPMode()
 {
+    if (apCsaTimerInitialized)
+        timeout_del(&apCsaTimeout);
     if (apRuntime.stage == kItlApFirmwareResourceIdle)
         return kIOReturnSuccess;
     return iwm_stop_ap_resources(&com, &apRuntime) == 0 ?
@@ -370,6 +383,175 @@ setAPHidden(bool hidden)
         return kIOReturnError;
     }
     return kIOReturnSuccess;
+}
+
+IOReturn ItlIwm::
+triggerAPCSA(const struct ItlHalApCSA *csa)
+{
+    if (!itl_ap_open_is_running(&apRuntime))
+        return kIOReturnNotReady;
+    if (csa == NULL || csa->channel == 0 || csa->channel > UINT8_MAX ||
+        csa->mode > 1 || iwm_ap_find_channel(&com, csa->channel) == NULL)
+        return kIOReturnBadArgument;
+    if (apRuntime.csaPending)
+        return kIOReturnBusy;
+    if (csa->channel == apRuntime.config.channel)
+        return kIOReturnSuccess;
+
+    const uint8_t count = csa->count != 0 ? csa->count :
+        kItlApCsaDefaultCount;
+    int error = itl_ap_beacon_begin_csa(
+        apRuntime.beacon, &apRuntime.config.beaconTemplateLength,
+        sizeof(apRuntime.beacon), csa->mode,
+        static_cast<uint8_t>(csa->channel), count);
+    if (error != 0)
+        return error == EBUSY ? kIOReturnBusy : kIOReturnBadArgument;
+    error = iwm_ap_send_beacon_template(&com, &apRuntime);
+    if (error != 0) {
+        (void)itl_ap_beacon_end_csa(
+            apRuntime.beacon, &apRuntime.config.beaconTemplateLength,
+            static_cast<uint8_t>(csa->channel), false);
+        return kIOReturnError;
+    }
+
+    apRuntime.csaPending = true;
+    apRuntime.csaTargetChannel = csa->channel;
+    apRuntime.csaMode = csa->mode;
+    apRuntime.csaCount = count;
+    const uint32_t delayMs = MAX(1U, static_cast<uint32_t>(
+        (static_cast<uint64_t>(apRuntime.config.beaconInterval) *
+         IEEE80211_DUR_TU + 999) / 1000));
+    timeout_add_msec(&apCsaTimeout, delayMs);
+    XYLog("%s: IWM AP CSA armed channel=%u mode=%u count=%u delay=%u ms\n",
+          DEVNAME(&com), static_cast<unsigned>(csa->channel),
+          static_cast<unsigned>(csa->mode), static_cast<unsigned>(count),
+          static_cast<unsigned>(delayMs));
+    return kIOReturnSuccess;
+}
+
+void ItlIwm::
+iwm_ap_csa_timeout(void *arg)
+{
+    ItlIwm *that = static_cast<ItlIwm *>(arg);
+    if (that == NULL)
+        return;
+    const int s = splnet();
+    if (that->apRuntime.csaPending && that->apRuntime.csaCount > 1) {
+        that->apRuntime.csaCount--;
+        const int countError = itl_ap_beacon_set_csa_count(
+            that->apRuntime.beacon,
+            that->apRuntime.config.beaconTemplateLength,
+            that->apRuntime.csaCount);
+        const int beaconError = countError == 0 ?
+            that->iwm_ap_send_beacon_template(
+                &that->com, &that->apRuntime) : countError;
+        if (beaconError == 0) {
+            const uint32_t delayMs = MAX(1U, static_cast<uint32_t>(
+                (static_cast<uint64_t>(
+                    that->apRuntime.config.beaconInterval) *
+                 IEEE80211_DUR_TU + 999) / 1000));
+            timeout_add_msec(&that->apCsaTimeout, delayMs);
+            splx(s);
+            return;
+        }
+    }
+    const int error = that->iwm_ap_finish_csa(&that->com, &that->apRuntime);
+    if (error != 0)
+        XYLog("%s: IWM AP CSA terminal error=%d\n",
+              DEVNAME(&that->com), error);
+    splx(s);
+}
+
+int ItlIwm::
+iwm_ap_finish_csa(struct iwm_softc *sc,
+                  struct ItlApFirmwareRuntime *runtime)
+{
+    if (runtime == NULL || !runtime->csaPending ||
+        runtime->stage != kItlApFirmwareResourceRunning)
+        return EINVAL;
+    struct ieee80211_channel *target = iwm_ap_find_channel(
+        sc, runtime->csaTargetChannel);
+    if (target == NULL)
+        return EINVAL;
+
+    const uint16_t oldChannel = runtime->config.channel;
+    const uint8_t oldPhyId = runtime->phyId;
+    const bool oldSamePhy = runtime->samePhyAsPrimary;
+    struct iwm_node *primary = (struct iwm_node *)sc->sc_ic.ic_bss;
+    const bool newSamePhy =
+        (sc->sc_flags & IWM_FLAG_BINDING_ACTIVE) != 0 &&
+        primary != NULL && primary->in_phyctxt != NULL &&
+        ieee80211_chan2ieee(&sc->sc_ic, primary->in_phyctxt->channel) ==
+            runtime->csaTargetChannel;
+    const uint8_t newPhyId = newSamePhy ? primary->in_phyctxt->id : 1;
+    bool newBindingAdded = false;
+
+    int error = iwm_ap_binding_cmd(sc, runtime, false);
+    if (error != 0)
+        goto rollback_beacon;
+    runtime->samePhyAsPrimary = newSamePhy;
+    runtime->phyId = newPhyId;
+    runtime->config.channel = runtime->csaTargetChannel;
+    if (!newSamePhy) {
+        error = iwm_phy_ctxt_update(sc, &sc->sc_phyctxt[newPhyId],
+                                    target, 1, 1, 0);
+        if (error != 0)
+            goto rollback_context;
+    }
+    error = iwm_ap_mac_ctxt_cmd(sc, runtime, IWM_FW_CTXT_ACTION_MODIFY);
+    if (error != 0)
+        goto rollback_context;
+    error = iwm_ap_binding_cmd(sc, runtime, true);
+    if (error != 0)
+        goto rollback_context;
+    newBindingAdded = true;
+    error = iwm_ap_update_quotas(sc, runtime, true);
+    if (error != 0)
+        goto rollback_context;
+    error = itl_ap_beacon_end_csa(
+        runtime->beacon, &runtime->config.beaconTemplateLength,
+        static_cast<uint8_t>(runtime->config.channel), true);
+    if (error != 0)
+        goto rollback_context;
+    error = iwm_ap_send_beacon_template(sc, runtime);
+    if (error != 0)
+        goto rollback_context;
+    runtime->csaPending = false;
+    runtime->csaTargetChannel = 0;
+    runtime->csaCount = 0;
+    XYLog("%s: IWM AP CSA complete channel=%u phy=%u shared=%u\n",
+          DEVNAME(sc), static_cast<unsigned>(runtime->config.channel),
+          static_cast<unsigned>(runtime->phyId),
+          static_cast<unsigned>(runtime->samePhyAsPrimary));
+    return 0;
+
+rollback_context:
+    if (newBindingAdded)
+        (void)iwm_ap_binding_cmd(sc, runtime, false);
+    runtime->config.channel = oldChannel;
+    runtime->phyId = oldPhyId;
+    runtime->samePhyAsPrimary = oldSamePhy;
+    if (!oldSamePhy) {
+        struct ieee80211_channel *old = iwm_ap_find_channel(sc, oldChannel);
+        if (old != NULL)
+            (void)iwm_phy_ctxt_update(sc, &sc->sc_phyctxt[oldPhyId],
+                                      old, 1, 1, 0);
+    }
+    (void)iwm_ap_mac_ctxt_cmd(sc, runtime, IWM_FW_CTXT_ACTION_MODIFY);
+    (void)iwm_ap_binding_cmd(sc, runtime, true);
+    (void)iwm_ap_update_quotas(sc, runtime, true);
+rollback_beacon:
+    (void)itl_ap_beacon_end_csa(
+        runtime->beacon, &runtime->config.beaconTemplateLength,
+        static_cast<uint8_t>(runtime->csaTargetChannel), false);
+    (void)itl_ap_beacon_set_channel(
+        runtime->beacon, runtime->config.beaconTemplateLength,
+        static_cast<uint8_t>(oldChannel));
+    (void)iwm_ap_send_beacon_template(sc, runtime);
+    runtime->csaPending = false;
+    runtime->csaTargetChannel = 0;
+    runtime->csaCount = 0;
+    return error != 0 ? error : EIO;
 }
 
 IOReturn ItlIwm::

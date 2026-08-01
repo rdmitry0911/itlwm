@@ -116,6 +116,10 @@ struct ItlApFirmwareRuntime {
     bool hidden;
     bool samePhyAsPrimary;
     bool replayAfterWake;
+    bool csaPending;
+    uint16_t csaTargetChannel;
+    uint8_t csaMode;
+    uint8_t csaCount;
 };
 
 static constexpr uint32_t kItlApLocalAuthMagic = 0x41505333U;
@@ -302,6 +306,130 @@ itl_ap_firmware_set_hidden(struct ItlApFirmwareRuntime *runtime, bool hidden)
         runtime->beacon, &runtime->config.beaconTemplateLength,
         sizeof(runtime->beacon), runtime->ssid, runtime->config.ssidLength,
         &runtime->hidden, hidden);
+}
+
+enum ItlApCsaBeaconContract : uint8_t {
+    kItlApCsaElementId = 37,
+    kItlApCsaElementLength = 3,
+    kItlApCsaDefaultCount = 3,
+};
+
+/*
+ * Keep the CSA announcement in the owned beacon snapshot.  The firmware
+ * backends decide when the actual radio/context switch occurs, but every
+ * peer must first receive a standards-shaped {mode, channel, count} IE.
+ * Appending is intentional: it leaves the caller's Apple-built template and
+ * every variable-length security IE byte-for-byte stable.
+ */
+static inline int
+itl_ap_beacon_begin_csa(uint8_t *beacon, size_t *beaconLength,
+                        size_t beaconCapacity, uint8_t mode,
+                        uint8_t channel, uint8_t count)
+{
+    const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
+    if (beacon == NULL || beaconLength == NULL ||
+        *beaconLength < fixedLength || *beaconLength > beaconCapacity ||
+        channel == 0 || count == 0 || mode > 1 ||
+        *beaconLength + 2 + kItlApCsaElementLength > beaconCapacity)
+        return EINVAL;
+
+    size_t offset = fixedLength;
+    while (offset + 2 <= *beaconLength) {
+        const size_t totalLength = 2 + beacon[offset + 1];
+        if (offset + totalLength > *beaconLength)
+            return EINVAL;
+        if (beacon[offset] == kItlApCsaElementId)
+            return EBUSY;
+        offset += totalLength;
+    }
+    if (offset != *beaconLength)
+        return EINVAL;
+
+    beacon[offset + 0] = kItlApCsaElementId;
+    beacon[offset + 1] = kItlApCsaElementLength;
+    beacon[offset + 2] = mode;
+    beacon[offset + 3] = channel;
+    beacon[offset + 4] = count;
+    *beaconLength += 2 + kItlApCsaElementLength;
+    return 0;
+}
+
+static inline int
+itl_ap_beacon_set_csa_count(uint8_t *beacon, size_t beaconLength,
+                            uint8_t count)
+{
+    const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
+    if (beacon == NULL || beaconLength < fixedLength || count == 0)
+        return EINVAL;
+    size_t offset = fixedLength;
+    while (offset + 2 <= beaconLength) {
+        const size_t totalLength = 2 + beacon[offset + 1];
+        if (offset + totalLength > beaconLength)
+            return EINVAL;
+        if (beacon[offset] == kItlApCsaElementId) {
+            if (beacon[offset + 1] != kItlApCsaElementLength)
+                return EINVAL;
+            beacon[offset + 4] = count;
+            return 0;
+        }
+        offset += totalLength;
+    }
+    return ENOENT;
+}
+
+static inline int
+itl_ap_beacon_set_channel(uint8_t *beacon, size_t beaconLength,
+                          uint8_t channel)
+{
+    const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
+    if (beacon == NULL || beaconLength < fixedLength || channel == 0)
+        return EINVAL;
+    size_t offset = fixedLength;
+    while (offset + 2 <= beaconLength) {
+        const size_t totalLength = 2 + beacon[offset + 1];
+        if (offset + totalLength > beaconLength)
+            return EINVAL;
+        if ((beacon[offset] == 3 ||
+             beacon[offset] == IEEE80211_ELEMID_HTOP) &&
+            beacon[offset + 1] >= 1)
+            beacon[offset + 2] = channel;
+        offset += totalLength;
+    }
+    return offset == beaconLength ? 0 : EINVAL;
+}
+
+static inline int
+itl_ap_beacon_end_csa(uint8_t *beacon, size_t *beaconLength,
+                      uint8_t channel, bool commitChannel)
+{
+    const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
+    if (beacon == NULL || beaconLength == NULL ||
+        *beaconLength < fixedLength || channel == 0)
+        return EINVAL;
+
+    size_t csaOffset = SIZE_MAX;
+    size_t offset = fixedLength;
+    while (offset + 2 <= *beaconLength) {
+        const size_t totalLength = 2 + beacon[offset + 1];
+        if (offset + totalLength > *beaconLength)
+            return EINVAL;
+        if (beacon[offset] == kItlApCsaElementId) {
+            if (beacon[offset + 1] != kItlApCsaElementLength)
+                return EINVAL;
+            csaOffset = offset;
+        }
+        offset += totalLength;
+    }
+    if (offset != *beaconLength || csaOffset == SIZE_MAX)
+        return ENOENT;
+
+    const size_t csaLength = 2 + kItlApCsaElementLength;
+    memmove(beacon + csaOffset, beacon + csaOffset + csaLength,
+            *beaconLength - csaOffset - csaLength);
+    *beaconLength -= csaLength;
+    explicit_bzero(beacon + *beaconLength, csaLength);
+    return commitChannel ?
+        itl_ap_beacon_set_channel(beacon, *beaconLength, channel) : 0;
 }
 
 static inline struct ItlApFirmwareClientRuntime *

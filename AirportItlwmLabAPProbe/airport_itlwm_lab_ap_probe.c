@@ -14,6 +14,7 @@
 #define APPLE80211_IOC_HOST_AP_MODE 25
 #define APPLE80211_IOC_HOST_AP_MODE_START 1
 #define APPLE80211_IOC_HOST_AP_MODE_HIDDEN 336
+#define APPLE80211_IOC_SOFTAP_TRIGGER_CSA 349
 #define APPLE80211_IOC_VIRTUAL_IF_CREATE 94
 #define APPLE80211_VERSION 1
 #define APPLE80211_VIF_SOFT_AP 7
@@ -83,6 +84,16 @@ struct airport_itlwm_host_ap_mode_hidden {
     uint32_t hidden04;
 } __attribute__((packed));
 
+struct airport_itlwm_softap_csa {
+    uint32_t version00;
+    uint32_t channel_version04;
+    uint32_t channel_number08;
+    uint32_t channel_flags0c;
+    uint8_t mode10;
+    uint8_t reserved11[3];
+    uint8_t feature_gate14;
+} __attribute__((packed));
+
 static int
 set_apple80211(int fd, const char *ifname, int selector, int value,
                void *data, uint32_t length)
@@ -145,6 +156,12 @@ main(int argc, char **argv)
     const int hidden_requested = strcmp(hidden_mode, "hidden") == 0 ||
         strcmp(hidden_mode, "toggle") == 0;
     const int toggle_hidden = strcmp(hidden_mode, "toggle") == 0;
+    const unsigned long csa_channel =
+        argc > 8 ? strtoul(argv[8], NULL, 10) : 0;
+    const unsigned long csa_mode =
+        argc > 9 ? strtoul(argv[9], NULL, 10) : 0;
+    const unsigned long csa_delay_seconds =
+        argc > 10 ? strtoul(argv[10], NULL, 10) : 0;
     const int stop_only = strcmp(ssid, "--stop-only") == 0;
     const int create_only = strcmp(ssid, "--create-only") == 0;
     const int hidden_only = strcmp(ssid, "--hidden-only") == 0;
@@ -166,6 +183,7 @@ main(int argc, char **argv)
     if ((!stop_only && !create_only && !hidden_only &&
          (ssid_length == 0 || ssid_length > APPLE80211_MAX_SSID_LEN)) ||
         requested_channel == 0 || requested_channel > UINT32_MAX ||
+        csa_channel > UINT8_MAX || csa_mode > 1 ||
         (auth_upper == APPLE80211_AUTHTYPE_OPEN && password_length != 0) ||
         (auth_upper != APPLE80211_AUTHTYPE_OPEN &&
          (password_length < 8 || password_length > 63))) {
@@ -337,6 +355,28 @@ main(int argc, char **argv)
                        &hidden, sizeof(hidden)) != 0) {
         close(fd);
         return 1;
+    }
+
+    if (csa_channel != 0) {
+        if (csa_delay_seconds != 0) {
+            printf("waiting %lu seconds before CSA to channel %lu\n",
+                   csa_delay_seconds, csa_channel);
+            fflush(stdout);
+            sleep((unsigned int)csa_delay_seconds);
+        }
+        struct airport_itlwm_softap_csa csa;
+        memset(&csa, 0, sizeof(csa));
+        csa.version00 = APPLE80211_VERSION;
+        csa.channel_version04 = APPLE80211_VERSION;
+        csa.channel_number08 = (uint32_t)csa_channel;
+        csa.channel_flags0c = APPLE80211_CHANNEL_2GHZ_20MHZ;
+        csa.mode10 = (uint8_t)csa_mode;
+        if (set_apple80211(fd, station_ifname,
+                           APPLE80211_IOC_SOFTAP_TRIGGER_CSA, 0,
+                           &csa, sizeof(csa)) != 0) {
+            close(fd);
+            return 1;
+        }
     }
 
     if (hold_seconds != 0) {

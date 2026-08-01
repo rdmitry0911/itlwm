@@ -744,6 +744,7 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     if (ret == kIOReturnSuccess) {
         lifecycle = kAirportItlwmAPSTAOwnerRunning;
         state.resetState26c = 1;
+        state.resetFlag329 |= kAirportItlwmAPSTACsaResetFlagBit;
         state.hostApTransitionState270 = 1;
         /*
          * AppleBCMWLAN's recovered setHostApModeInternal success tail
@@ -1439,6 +1440,7 @@ IOReturn AirportItlwmAPSTAOwner::triggerCSA(uint16_t channel, uint8_t count)
     ItlHalApCSA csa;
     bzero(&csa, sizeof(csa));
     csa.channel = channel;
+    csa.mode = 0;
     csa.count = count;
     return owner->fHalService->triggerAPCSA(&csa);
 }
@@ -1462,7 +1464,8 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPTriggerCSA(
     ItlHalApCSA csa;
     bzero(&csa, sizeof(csa));
     csa.channel = static_cast<uint16_t>(in->channel04.channelNumber04);
-    csa.count = in->mode10;
+    csa.mode = in->mode10;
+    csa.count = kItlApCsaDefaultCount;
     return owner->fHalService->triggerAPCSA(&csa);
 }
 

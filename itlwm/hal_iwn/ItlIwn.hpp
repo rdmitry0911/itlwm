@@ -91,6 +91,7 @@ public:
     IOReturn stopAPMode() override;
     IOReturn transmitAPData(mbuf_t packet) override;
     IOReturn setAPHidden(bool hidden) override;
+    IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) override;
     uint32_t getAPTxFreeSpace() const;
     void iwn_reset_ap_runtime_state();
     void iwn_set_ap_scan_transition_blocked(bool);
@@ -133,6 +134,11 @@ public:
         const void *, size_t);
     bool iwn_handle_ap_sae_auth(const struct ieee80211_frame *, size_t);
     int iwn_update_ap_tim(bool);
+    static void iwn_ap_csa_timeout(void *);
+    int iwn_finish_ap_csa();
+    void iwn_complete_ap_csa_rebind();
+    void iwn_finish_ap_csa_client_restore(int);
+    void iwn_clear_ap_client_for_csa();
     int iwn_queue_ap_ps_packet(mbuf_t, bool atFront = false);
     void iwn_purge_ap_ps_queue();
     void iwn_drain_ap_ps_queue();
@@ -573,6 +579,13 @@ public:
     bool apPsQueueReady;
     bool apTimSet;
     bool apHidden;
+    CTimeout *apCsaTimeout;
+    bool apCsaTimerInitialized;
+    bool apCsaPending;
+    uint16_t apCsaTargetChannel;
+    uint8_t apCsaMode;
+    uint8_t apCsaCount;
+    uint8_t apCsaClientRestoreStage;
     struct pci_attach_args pci;
     struct iwn_softc com;
 };

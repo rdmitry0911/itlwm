@@ -171,6 +171,7 @@ enum ItlHalApStationCommandSelector : uint32_t {
 
 struct ItlHalApCSA {
     uint16_t channel;
+    uint8_t mode;
     uint8_t count;
 };
 
