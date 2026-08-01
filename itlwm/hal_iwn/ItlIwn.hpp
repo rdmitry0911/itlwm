@@ -505,6 +505,7 @@ public:
     bool apClientNodeInstalled;
     uint8_t apClientMaterializationStage;
     bool apClientAuthenticated;
+    bool apClientReassociationPending;
     bool apClientAssociated;
     bool apClientAuthorized;
     bool apClientPowerSave;

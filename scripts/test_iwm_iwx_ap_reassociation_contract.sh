@@ -13,6 +13,8 @@ framing = (root / "include/HAL/ItlApOpenRuntime.hpp").read_text()
 donor = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 iwm = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
+iwn_hpp = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 
 
 def require(source: str, needle: str, label: str) -> None:
@@ -60,6 +62,25 @@ response = body(framing,
 require(response, "IEEE80211_FC0_SUBTYPE_REASSOC_RESP",
         "matching reassociation response")
 
+require(iwn_hpp, "bool apClientReassociationPending",
+        "IWN asynchronous reassociation identity")
+iwn_parse = body(iwn, "bool ItlIwn::iwn_handle_ap_assoc_req(")
+for needle, label in (
+    ("IEEE80211_FC0_SUBTYPE_REASSOC_REQ", "IWN reassociation admission"),
+    ("reassociation ? 10 : 4", "IWN 4/10-byte IE offset split"),
+    ("apClientReassociationPending = reassociation",
+     "IWN deferred reassociation latch"),
+):
+    require(iwn_parse, needle, label)
+iwn_response = body(iwn, "int ItlIwn::iwn_send_ap_assoc_success()")
+for needle, label in (
+    ("IEEE80211_FC0_SUBTYPE_REASSOC_RESP",
+     "IWN matching reassociation response"),
+    ("IEEE80211_APSTA_EVENT_REASSOC",
+     "IWN non-duplicating upper station event"),
+):
+    require(iwn_response, needle, label)
+
 for family, source, task_sig, rx_sig in (
     ("IWM", iwm, "iwm_ap_client_task(void *arg)",
      "iwm_ap_handle_rx(struct iwm_softc *sc,"),
@@ -78,5 +99,5 @@ for family, source, task_sig, rx_sig in (
     require(task, "itl_ap_open_build_assoc_success",
             f"{family} matching deferred reply")
 
-print("PASS: paired IWM/IWX AP reassociation/reconnect contract")
+print("PASS: IWN/IWM/IWX AP reassociation/reconnect contract")
 PY

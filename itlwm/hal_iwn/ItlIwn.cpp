@@ -4122,6 +4122,7 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apClientMaterializationStage =
         IWN_AP_CLIENT_MATERIALIZATION_IDLE;
     apClientAuthenticated = false;
+    apClientReassociationPending = false;
     apClientOpenAuthenticated = false;
     apClientAssociated = false;
     apClientAuthorized = false;
@@ -5436,6 +5437,7 @@ bool ItlIwn::iwn_handle_ap_sae_auth(
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
         IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
         apClientAuthenticated = false;
+        apClientReassociationPending = false;
         apClientOpenAuthenticated = false;
         apClientAssociated = false;
         apClientAuthorized = false;
@@ -5559,6 +5561,7 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         apClientNodeInstalled = false;
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+        apClientReassociationPending = false;
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -5589,6 +5592,7 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
         apClientAuthenticated = true;
         apClientOpenAuthenticated = iwn_ap_uses_sae();
+        apClientReassociationPending = false;
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -5611,15 +5615,19 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     size_t frameLength)
 {
     const size_t headerLength = sizeof(*request);
-    const size_t fixedLength = 4;
+    const uint8_t subtype = request != NULL ?
+        request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK : 0;
+    const bool reassociation =
+        subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ;
+    const size_t fixedLength = reassociation ? 10 : 4;
     if (request == NULL ||
         !apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING ||
         frameLength < headerLength + fixedLength ||
         (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
             IEEE80211_FC0_TYPE_MGT ||
-        (request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) !=
-            IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+        (subtype != IEEE80211_FC0_SUBTYPE_ASSOC_REQ &&
+         subtype != IEEE80211_FC0_SUBTYPE_REASSOC_REQ) ||
         !IEEE80211_ADDR_EQ(request->i_addr1, apFirmwareConfig.bssid) ||
         !IEEE80211_ADDR_EQ(request->i_addr3, apFirmwareConfig.bssid)) {
         return false;
@@ -5784,7 +5792,8 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
                 reinterpret_cast<struct ieee80211_frame *>(rejection);
             response->i_fc[0] = IEEE80211_FC0_VERSION_0 |
                 IEEE80211_FC0_TYPE_MGT |
-                IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
+                (reassociation ? IEEE80211_FC0_SUBTYPE_REASSOC_RESP :
+                                 IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
             response->i_fc[1] = IEEE80211_FC1_DIR_NODS;
             IEEE80211_ADDR_COPY(response->i_addr1, request->i_addr2);
             IEEE80211_ADDR_COPY(
@@ -5837,6 +5846,7 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     }
 
     apClientAid = aid;
+    apClientReassociationPending = reassociation;
     apClientRsnIELength = 0;
     bzero(apClientRsnIE, sizeof(apClientRsnIE));
     if (rsn != NULL &&
@@ -5869,6 +5879,7 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
             apClientNodeInstalled = false;
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+        apClientReassociationPending = false;
     }
     XYLog("%s: AP association request from "
           "%02x:%02x:%02x:%02x:%02x:%02x aid=%u rsn=%u "
@@ -5950,6 +5961,7 @@ bool ItlIwn::iwn_handle_ap_disconnect(
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
         apClientAuthenticated = false;
         apClientOpenAuthenticated = false;
+        apClientReassociationPending = false;
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
@@ -6876,7 +6888,10 @@ int ItlIwn::iwn_send_ap_assoc_success()
     struct ieee80211_frame *wh =
         reinterpret_cast<struct ieee80211_frame *>(response);
     wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
-        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
+        IEEE80211_FC0_TYPE_MGT |
+        (apClientReassociationPending ?
+            IEEE80211_FC0_SUBTYPE_REASSOC_RESP :
+            IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
     wh->i_fc[1] = IEEE80211_FC1_DIR_NODS;
     IEEE80211_ADDR_COPY(wh->i_addr1, apClientMac);
     IEEE80211_ADDR_COPY(wh->i_addr2, apFirmwareConfig.bssid);
@@ -6906,11 +6921,13 @@ int ItlIwn::iwn_send_ap_assoc_success()
         out += apFirmwareConfig.rsnIELength;
     }
 
+    const bool reassociation = apClientReassociationPending;
     const int error = iwn_send_ap_mgmt_frame(
         response, static_cast<size_t>(out - response));
     if (error != 0)
         return error;
 
+    apClientReassociationPending = false;
     apClientAssociated = true;
     apClientAuthorized = apFirmwareConfig.rsnIELength == 0;
     apClientPowerSave = false;
@@ -6922,7 +6939,9 @@ int ItlIwn::iwn_send_ap_assoc_success()
     explicit_bzero(&apPtk, sizeof(apPtk));
     iwn_publish_ap_station_event(
         apClientMac, apClientRsnIELength != 0 ? apClientRsnIE : NULL,
-        apClientRsnIELength, IEEE80211_APSTA_EVENT_ASSOC);
+        apClientRsnIELength,
+        reassociation ? IEEE80211_APSTA_EVENT_REASSOC :
+                        IEEE80211_APSTA_EVENT_ASSOC);
     return 0;
 }
 
@@ -7324,6 +7343,7 @@ void ItlIwn::iwn_note_ap_firmware_event(
                 apClientNodeInstalled = false;
             apClientMaterializationStage =
                 IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+            apClientReassociationPending = false;
             XYLog("%s: AP client station materialization rejected "
                   "status=0x%02x\n", com.sc_dev.dv_xname,
                   static_cast<unsigned>(addNodeStatus & 0xff));
@@ -7335,6 +7355,7 @@ void ItlIwn::iwn_note_ap_firmware_event(
         if (error != 0) {
             apClientMaterializationStage =
                 IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+            apClientReassociationPending = false;
             XYLog("%s: AP client link-quality queue failed error=%d\n",
                   com.sc_dev.dv_xname, error);
         }
@@ -7347,9 +7368,11 @@ void ItlIwn::iwn_note_ap_firmware_event(
         error = iwn_send_ap_assoc_success();
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
-        if (error != 0)
+        if (error != 0) {
+            apClientReassociationPending = false;
             XYLog("%s: AP association response queue failed error=%d\n",
                   com.sc_dev.dv_xname, error);
+        }
         return;
     }
 
