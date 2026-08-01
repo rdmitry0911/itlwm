@@ -742,7 +742,9 @@ iwn_init = body(iwn, "int ItlIwn::\niwn_init(struct _ifnet *ifp)",
                 "IWN init")
 ordered(iwn_init, "IWN lower-ready fence after first scan state",
         "ifp->if_flags |= IFF_RUNNING",
-        "ieee80211_begin_scan(ifp)",
+        "error = ieee80211_begin_scan_with_result(ifp)",
+        "if (error != 0)",
+        "goto fail;",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
 
 for token in ("availabilityEpoch", "pendingPowerOnEpoch",
@@ -969,10 +971,14 @@ ordered(controlled_end, "initial hardware census publishes but never joins",
         "return;")
 require(i80211, "ic->ic_initial_scan_census_only = 0;",
         "initial census one-shot initialization")
-for source, label in ((iwn, "IWN"), (iwm_mac, "IWM"), (iwx, "IWX")):
+ordered(iwn, "IWN checked hardware-enable census arm",
+        "__atomic_store_n(&ic->ic_initial_scan_census_only, 1",
+        "ieee80211_begin_scan_with_result(ifp)")
+for source, label in ((iwm_mac, "IWM"), (iwx, "IWX")):
     ordered(source, f"{label} hardware-enable census arm",
             "__atomic_store_n(&ic->ic_initial_scan_census_only, 1",
             "ieee80211_begin_scan(ifp)")
+for source, label in ((iwn, "IWN"), (iwm_mac, "IWM"), (iwx, "IWX")):
     ordered(source, f"{label} stop clears census owner",
             "__atomic_store_n(&ic->ic_initial_scan_census_only, 0",
             "__ATOMIC_RELEASE)")

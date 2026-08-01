@@ -878,23 +878,8 @@ ieee80211_prepare_scan(struct _ifnet *ifp)
     
 }
 
-/*
- * Begin an active scan.
- */
-void
-ieee80211_begin_scan(struct _ifnet *ifp)
-{
-    ieee80211_prepare_scan(ifp);
-
-    /* Scan the next channel. */
-    ieee80211_next_scan(ifp);
-}
-
-/*
- * Switch to the next channel marked for scanning.
- */
-void
-ieee80211_next_scan(struct _ifnet *ifp)
+static int
+ieee80211_next_scan_result(struct _ifnet *ifp)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     struct ieee80211_channel *chan;
@@ -914,7 +899,7 @@ ieee80211_next_scan(struct _ifnet *ifp)
         }
         if (chan == ic->ic_bss->ni_chan) {
             ieee80211_end_scan(ifp);
-            return;
+            return 0;
         }
     }
     clrbit(ic->ic_chan_scan, ieee80211_chan2ieee(ic, chan));
@@ -923,8 +908,45 @@ ieee80211_next_scan(struct _ifnet *ifp)
      * SCAN request.  The private tag survives an IWN deferred replay to its
      * exact callback; queued IWM/IWX frontends normalize it before task
      * capture and retain their historic generic cleanup semantics. */
-    ieee80211_new_state(ic, IEEE80211_S_SCAN,
+    if (ic->ic_newstate_preflight != NULL &&
+        ic->ic_newstate_preflight(ic, IEEE80211_S_SCAN,
+            IEEE80211_NEWSTATE_ARG_SCAN_HOP) != 0)
+        return EBUSY;
+    ieee80211_pae_assoc_epoch_note_newstate(ic, IEEE80211_S_SCAN,
         IEEE80211_NEWSTATE_ARG_SCAN_HOP);
+    return ic->ic_newstate(ic, IEEE80211_S_SCAN,
+        IEEE80211_NEWSTATE_ARG_SCAN_HOP);
+}
+
+/*
+ * Begin an active scan.
+ */
+void
+ieee80211_begin_scan(struct _ifnet *ifp)
+{
+    ieee80211_prepare_scan(ifp);
+
+    /* Ordinary net80211 callers recover through their watchdog/state
+     * machine and retain the historical void contract. */
+    (void)ieee80211_next_scan_result(ifp);
+}
+
+/* A power-on owner must not publish readiness after its first lower scan was
+ * rejected.  Preserve the backend result for that synchronous boundary. */
+int
+ieee80211_begin_scan_with_result(struct _ifnet *ifp)
+{
+    ieee80211_prepare_scan(ifp);
+    return ieee80211_next_scan_result(ifp);
+}
+
+/*
+ * Switch to the next channel marked for scanning.
+ */
+void
+ieee80211_next_scan(struct _ifnet *ifp)
+{
+    (void)ieee80211_next_scan_result(ifp);
 }
 
 #ifndef IEEE80211_STA_ONLY

@@ -655,6 +655,7 @@ void ieee80211_node_detach(struct _ifnet *);
  * after it has admitted the radio transaction. */
 void ieee80211_prepare_scan(struct _ifnet *);
 void ieee80211_begin_scan(struct _ifnet *);
+int ieee80211_begin_scan_with_result(struct _ifnet *);
 void ieee80211_next_scan(struct _ifnet *);
 
 /* A lower owner that is handing a generic foreground lease to WCL, or

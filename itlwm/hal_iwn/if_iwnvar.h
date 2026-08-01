@@ -545,6 +545,7 @@ struct iwn_softc {
     struct iwn_calib_state    calib;
 
     struct task        init_task;
+    u_int8_t           init_retry_count;
     struct task        sae_tx_task;
     struct task        sae_engine_task;
     struct task        mfp_pae_task;

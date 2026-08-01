@@ -372,6 +372,7 @@ for token in (
 for token in (
         "void ieee80211_prepare_scan(struct _ifnet *);",
         "void ieee80211_begin_scan(struct _ifnet *);",
+        "int ieee80211_begin_scan_with_result(struct _ifnet *);",
         "enum ieee80211_scan_completion_mode",
         "IEEE80211_SCAN_COMPLETION_GENERIC",
         "IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
@@ -383,7 +384,55 @@ prepare = body(node, "void\nieee80211_prepare_scan", "scan preparation")
 forbid(prepare, "ieee80211_next_scan", "second lower scan from preparation")
 generic = body(node, "void\nieee80211_begin_scan", "generic scan begin")
 ordered(generic, "generic scan still submits after preparation",
-        "ieee80211_prepare_scan(ifp);", "ieee80211_next_scan(ifp);")
+        "ieee80211_prepare_scan(ifp);",
+        "(void)ieee80211_next_scan_result(ifp);")
+checked = body(node, "int\nieee80211_begin_scan_with_result",
+               "checked power-on scan begin")
+ordered(checked, "checked power-on scan returns the lower result",
+        "ieee80211_prepare_scan(ifp);",
+        "return ieee80211_next_scan_result(ifp);")
+next_result = body(node, "static int\nieee80211_next_scan_result",
+                   "result-preserving scan hop")
+ordered(next_result, "scan hop keeps preflight and epoch semantics",
+        "ic->ic_newstate_preflight(ic, IEEE80211_S_SCAN,",
+        "return EBUSY;",
+        "ieee80211_pae_assoc_epoch_note_newstate(ic, IEEE80211_S_SCAN,",
+        "return ic->ic_newstate(ic, IEEE80211_S_SCAN,")
+
+init_task = body(iwn, "iwn_init_task(void *arg1)",
+                 "IWN bounded power-on recovery")
+for token in (
+        "error = that->iwn_init(ifp);",
+        "&sc->init_retry_count, 1, __ATOMIC_ACQ_REL",
+        "if (attempt < 5)",
+        "sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;",
+        "(void)task_add(systq, &sc->init_task);",
+        "power-on recovery exhausted after %u attempts",
+):
+    require(init_task, token, "IWN bounded power-on recovery")
+ordered(init_task, "IWN retries full hardware epochs before terminal failure",
+        "error = that->iwn_init(ifp);",
+        "if (error == 0)",
+        "&sc->init_retry_count, 1, __ATOMIC_ACQ_REL",
+        "if (attempt < 5)",
+        "sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;",
+        "(void)task_add(systq, &sc->init_task);",
+        "sc->sc_flags &= ~IWN_FLAG_FATAL_RECOVERY;",
+        "power-on recovery exhausted after %u attempts")
+iwn_init = body(iwn, "iwn_init(struct _ifnet *ifp)",
+                "IWN power-on first scan")
+for token in (
+        "error = ieee80211_begin_scan_with_result(ifp);",
+        "if (error != 0)",
+        "goto fail;",
+        "IEEE80211_EVT_WCL_SCAN_REOPENED",
+):
+    require(iwn_init, token, "IWN checked power-on scan")
+ordered(iwn_init, "lower scan acceptance precedes availability",
+        "error = ieee80211_begin_scan_with_result(ifp);",
+        "if (error != 0)",
+        "goto fail;",
+        "IEEE80211_EVT_WCL_SCAN_REOPENED")
 for token in (
         "IEEE80211_EVT_STANDARD_SCAN_TERMINAL",
         "IEEE80211_EVT_STANDARD_SCAN_INVALIDATED",

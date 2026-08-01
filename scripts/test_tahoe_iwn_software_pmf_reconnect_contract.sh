@@ -168,7 +168,8 @@ order(attach, "early-unwind interrupt initialization", "sc->sc_ih = NULL;",
 
 init = body("iwn_init(struct _ifnet *ifp)", "IWN init")
 order(init, "restart only reopens after hardware config",
-      "iwn_config(sc)", "iwn_mfp_pae_reopen(sc);", "ieee80211_begin_scan(ifp);")
+      "iwn_config(sc)", "iwn_mfp_pae_reopen(sc);",
+      "ieee80211_begin_scan_with_result(ifp);")
 stop = body("iwn_stop(struct _ifnet *ifp)", "IWN stop")
 order(stop, "stop fences worker before generic abort",
       "iwn_mfp_pae_abort_all(sc);", "ieee80211_pae_mfp_txn_abort(ic);")

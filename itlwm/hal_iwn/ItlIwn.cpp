@@ -9692,6 +9692,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     timeout_set(&sc->calib_to, iwn_calib_timeout, sc);
 //    rw_init(&sc->sc_rwlock, "iwnlock");
     task_set(&sc->init_task, iwn_init_task, sc, "iwn_init_task");
+    __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     task_set(&sc->scan_lease_replay_task, iwn_scan_lease_replay_task, sc,
         "iwn_scan_lease_replay_task");
     task_set(&sc->sae_tx_task, iwn_sae_tx_task, sc, "iwn_sae_tx_task");
@@ -9917,6 +9918,7 @@ iwn_wakeup(struct iwn_softc *sc)
     reg = pci_conf_read(sc->sc_pct, sc->sc_pcitag, 0x40);
     if (reg & 0xff00)
         pci_conf_write(sc->sc_pct, sc->sc_pcitag, 0x40, reg & ~0xff00);
+    __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     task_add(systq, &sc->init_task);
 }
 
@@ -9926,6 +9928,7 @@ iwn_init_task(void *arg1)
     struct iwn_softc *sc = (struct iwn_softc *)arg1;
     struct _ifnet *ifp = &sc->sc_ic.ic_if;
     ItlIwn *that = container_of(sc, ItlIwn, com);
+    int error = 0;
     int s;
 
 //    rw_enter_write(&sc->sc_rwlock);
@@ -9941,7 +9944,29 @@ iwn_init_task(void *arg1)
     }
 
     if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
-        that->iwn_init(ifp);
+        error = that->iwn_init(ifp);
+
+    if (error == 0) {
+        __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
+    } else if ((ifp->if_flags & IFF_UP) != 0) {
+        const u_int8_t attempt = __atomic_add_fetch(
+            &sc->init_retry_count, 1, __ATOMIC_ACQ_REL);
+
+        /* Tahoe's reference powerOn path has a five-attempt recovery
+         * counter before its permanent-failure terminal.  Retain that
+         * bounded ownership here: a failed first scan keeps the controller
+         * unavailable and retries the complete firmware epoch, while a
+         * persistent hardware failure cannot spin systq forever. */
+        if (attempt < 5) {
+            sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
+            (void)task_add(systq, &sc->init_task);
+        } else {
+            sc->sc_flags &= ~IWN_FLAG_FATAL_RECOVERY;
+            (void)task_del(systq, &sc->init_task);
+            XYLog("%s: power-on recovery exhausted after %u attempts\n",
+                  sc->sc_dev.dv_xname, (unsigned)attempt);
+        }
+    }
 
     splx(s);
 //    rw_exit_write(&sc->sc_rwlock);
@@ -20498,7 +20523,12 @@ iwn_init(struct _ifnet *ifp)
     if (ic->ic_opmode != IEEE80211_M_MONITOR) {
         __atomic_store_n(&ic->ic_initial_scan_census_only, 1,
                          __ATOMIC_RELEASE);
-        ieee80211_begin_scan(ifp);
+        error = ieee80211_begin_scan_with_result(ifp);
+        if (error != 0) {
+            XYLog("%s: initial scan rejected during power-on (%d)\n",
+                  sc->sc_dev.dv_xname, error);
+            goto fail;
+        }
     } else
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
 
@@ -20509,6 +20539,8 @@ iwn_init(struct _ifnet *ifp)
             (IFF_UP | IFF_RUNNING) &&
         ic->ic_event_handler != NULL)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_SCAN_REOPENED, NULL);
+
+    __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
 
     return 0;
 
