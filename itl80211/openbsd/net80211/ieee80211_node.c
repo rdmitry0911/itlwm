@@ -1708,6 +1708,13 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
             XYLog("%s %d AP disappeared? Should not happen.\n", __FUNCTION__, __LINE__);
             goto notfound;
         }
+
+        /* The active Tahoe bracket owns the minimum candidate improvement
+         * and its per-target-band RSSI boost.  A rejected candidate is the
+         * same outcome as a fresh scan which retained the current BSS. */
+        if (selbs != curbs &&
+            !ieee80211_roam_profile_candidate_allowed(ic, curbs, selbs))
+            selbs = curbs;
         
         /*
          * After a background scan we might end up choosing the

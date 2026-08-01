@@ -454,15 +454,21 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
         ni->ni_inact = 0;
         
         if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bgscan_start) {
-            /* Cancel or start background scan based on RSSI. */
-            if ((*ic->ic_node_checkrssi)(ic, ni))
+            u_int32_t roam_delay_ms = 0;
+            int roam_profile = ieee80211_roam_profile_scan_delay(ic, ni,
+                &roam_delay_ms);
+
+            /* Tahoe profile ranges supersede the fixed OpenBSD threshold. */
+            if (roam_profile < 0 ||
+                (roam_profile == 0 && (*ic->ic_node_checkrssi)(ic, ni)))
                 timeout_del(&ic->ic_bgscan_timeout);
             else if (!airportItlwmIsRoamLocked() &&
                      !timeout_pending(&ic->ic_bgscan_timeout) &&
                      (ic->ic_flags & IEEE80211_F_BGSCAN) == 0 &&
                      (ic->ic_flags & IEEE80211_F_DESBSSID) == 0)
                 timeout_add_msec(&ic->ic_bgscan_timeout,
-                                 500 * (ic->ic_bgscan_fail + 1));
+                    roam_profile > 0 ? roam_delay_ms :
+                    500 * (ic->ic_bgscan_fail + 1));
         }
     }
     

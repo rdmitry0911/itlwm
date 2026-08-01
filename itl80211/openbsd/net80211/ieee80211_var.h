@@ -247,6 +247,42 @@ static void array_sprintf(char *output, uint8_t output_size, const uint8_t *arra
 #define IEEE80211_RSSI_THRES_RATIO_2GHZ		50	/* in percent */
 #define IEEE80211_RSSI_THRES_RATIO_5GHZ		40	/* in percent */
 
+/*
+ * Host-side form of Tahoe's modern WCL roaming profile.  Apple supplies up
+ * to three RSSI brackets for each band.  AirportItlwm normalizes every Intel
+ * receive RSSI as dBm + 100, so keep the bias explicit rather than teaching
+ * shared net80211 about an IWN/IWM/IWX-specific MIN_DBM macro.
+ */
+#define IEEE80211_ROAM_PROFILE_NBANDS		3
+#define IEEE80211_ROAM_PROFILE_NBRACKETS	3
+#define IEEE80211_ROAM_PROFILE_BAND_2GHZ	0
+#define IEEE80211_ROAM_PROFILE_BAND_5GHZ	1
+#define IEEE80211_ROAM_PROFILE_BAND_6GHZ	2
+
+struct ieee80211_roam_profile_bracket {
+	u_int8_t	flags;
+	int8_t		trigger_dbm;
+	int8_t		lower_dbm;
+	u_int8_t	roam_delta_db;
+	u_int16_t	backoff_multiplier;
+	u_int16_t	full_scan_period_s;
+	u_int16_t	initial_scan_period_s;
+	u_int16_t	nfscan;
+	u_int16_t	max_scan_period_s;
+	int8_t		boost_threshold_dbm[IEEE80211_ROAM_PROFILE_NBANDS];
+	int8_t		boost_delta_db[IEEE80211_ROAM_PROFILE_NBANDS];
+};
+
+struct ieee80211_roam_profile_policy {
+	u_int8_t	valid_mask;
+	u_int8_t	rssi_bias_db;
+	u_int8_t	count[IEEE80211_ROAM_PROFILE_NBANDS];
+	u_int8_t	join_preference_flags;
+	u_int32_t	multi_ap_environment;
+	struct ieee80211_roam_profile_bracket bracket
+	    [IEEE80211_ROAM_PROFILE_NBANDS][IEEE80211_ROAM_PROFILE_NBRACKETS];
+};
+
 #define IEEE80211_BGSCAN_FAIL_MAX		360	/* units of 500 msec */
 
 /*
@@ -713,6 +749,13 @@ struct ieee80211com {
     volatile u_int32_t ic_wcl_scan_suppress_scan_done_once;
     /* True only while an exact lower WCL lease owns an associated bgscan. */
     volatile u_int32_t ic_wcl_scan_active;
+    /*
+     * Tahoe WCL roaming policy, published by the Airport interface and
+     * consumed by the common autonomous STA scan/candidate path.  generation
+     * is a seqlock: odd while a new complete policy is being copied.
+     */
+    volatile u_int32_t ic_roam_profile_generation;
+    struct ieee80211_roam_profile_policy ic_roam_profile;
     /*
      * A hardware-enable scan is a discovery census, not association intent.
      * The exact backend arms this one-shot immediately before its initial
@@ -1393,6 +1436,12 @@ void	ieee80211_set_ess(struct ieee80211com *, struct ieee80211_ess *,
 	    struct ieee80211_node *);
 void    ieee80211_deselect_ess(struct ieee80211com *);
 struct ieee80211_ess *ieee80211_get_ess(struct ieee80211com *, const char *, int);
+void ieee80211_set_roam_profile_policy(struct ieee80211com *,
+    const struct ieee80211_roam_profile_policy *);
+int ieee80211_roam_profile_scan_delay(struct ieee80211com *,
+    const struct ieee80211_node *, u_int32_t *);
+int ieee80211_roam_profile_candidate_allowed(struct ieee80211com *,
+    const struct ieee80211_node *, const struct ieee80211_node *);
 void ieee80211_begin_cache_bgscan(struct _ifnet *);
 int ieee80211_begin_wnm_bgscan(struct _ifnet *);
 

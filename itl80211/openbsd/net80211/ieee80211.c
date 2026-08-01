@@ -102,6 +102,170 @@ airportItlwmIsRoamLocked(void)
         __ATOMIC_ACQUIRE) != 0;
 }
 
+void
+ieee80211_set_roam_profile_policy(struct ieee80211com *ic,
+    const struct ieee80211_roam_profile_policy *policy)
+{
+    u_int32_t generation;
+
+    if (ic == NULL || policy == NULL)
+        return;
+
+    /* WCL setters are serialized by the interface command gate. */
+    generation = __atomic_load_n(&ic->ic_roam_profile_generation,
+        __ATOMIC_RELAXED);
+    if (generation & 1)
+        generation++;
+    __atomic_store_n(&ic->ic_roam_profile_generation, generation + 1,
+        __ATOMIC_RELEASE);
+    memcpy(&ic->ic_roam_profile, policy, sizeof(*policy));
+    __atomic_store_n(&ic->ic_roam_profile_generation, generation + 2,
+        __ATOMIC_RELEASE);
+
+    /* A pending legacy threshold timer belongs to the preceding policy. */
+    if (ic->ic_bgscan_timeout != NULL)
+        timeout_del(&ic->ic_bgscan_timeout);
+}
+
+static int
+ieee80211_roam_profile_snapshot(struct ieee80211com *ic,
+    struct ieee80211_roam_profile_policy *policy)
+{
+    u_int32_t before, after;
+    int attempt;
+
+    if (ic == NULL || policy == NULL)
+        return 0;
+    for (attempt = 0; attempt != 4; attempt++) {
+        before = __atomic_load_n(&ic->ic_roam_profile_generation,
+            __ATOMIC_ACQUIRE);
+        if (before & 1)
+            continue;
+        memcpy(policy, &ic->ic_roam_profile, sizeof(*policy));
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        after = __atomic_load_n(&ic->ic_roam_profile_generation,
+            __ATOMIC_RELAXED);
+        if (before == after)
+            return policy->valid_mask != 0;
+    }
+    return 0;
+}
+
+static int
+ieee80211_roam_profile_band(const struct ieee80211_channel *chan)
+{
+    if (chan == NULL || chan == IEEE80211_CHAN_ANYC)
+        return -1;
+    if (chan->ic_freq >= 5925)
+        return IEEE80211_ROAM_PROFILE_BAND_6GHZ;
+    if (IEEE80211_IS_CHAN_2GHZ(chan))
+        return IEEE80211_ROAM_PROFILE_BAND_2GHZ;
+    if (IEEE80211_IS_CHAN_5GHZ(chan))
+        return IEEE80211_ROAM_PROFILE_BAND_5GHZ;
+    return -1;
+}
+
+static const struct ieee80211_roam_profile_bracket *
+ieee80211_roam_profile_active(
+    const struct ieee80211_roam_profile_policy *policy,
+    const struct ieee80211_node *ni, int *band_out)
+{
+    const struct ieee80211_roam_profile_bracket *bracket;
+    int band, rssi_dbm, i;
+
+    band = ieee80211_roam_profile_band(ni != NULL ? ni->ni_chan : NULL);
+    if (band_out != NULL)
+        *band_out = band;
+    if (band < 0 || (policy->valid_mask & (1U << band)) == 0)
+        return NULL;
+
+    rssi_dbm = (int)ni->ni_rssi - (int)policy->rssi_bias_db;
+    for (i = 0; i < policy->count[band]; i++) {
+        bracket = &policy->bracket[band][i];
+        /* Adjacent ranges share one boundary; the lower range owns it. */
+        if (rssi_dbm <= bracket->trigger_dbm &&
+            rssi_dbm > bracket->lower_dbm)
+            return bracket;
+    }
+    return NULL;
+}
+
+int
+ieee80211_roam_profile_scan_delay(struct ieee80211com *ic,
+    const struct ieee80211_node *ni, u_int32_t *delay_ms)
+{
+    struct ieee80211_roam_profile_policy policy;
+    const struct ieee80211_roam_profile_bracket *bracket;
+    u_int32_t delay_s, maximum_s, multiplier;
+    int i;
+
+    if (delay_ms == NULL || ni == NULL)
+        return 0;
+    if (!ieee80211_roam_profile_snapshot(ic, &policy))
+        return 0;               /* preserve the legacy RSSI policy */
+
+    bracket = ieee80211_roam_profile_active(&policy, ni, NULL);
+    if (bracket == NULL)
+        return -1;              /* profile configured, range is dormant */
+
+    delay_s = bracket->initial_scan_period_s;
+    maximum_s = bracket->max_scan_period_s;
+    multiplier = bracket->backoff_multiplier;
+    if (delay_s == 0)
+        delay_s = bracket->full_scan_period_s;
+    if (multiplier == 0)
+        multiplier = 1;
+    for (i = 0; i < ic->ic_bgscan_fail; i++) {
+        if (maximum_s != 0 && delay_s >= maximum_s) {
+            delay_s = maximum_s;
+            break;
+        }
+        if (delay_s > UINT32_MAX / multiplier) {
+            delay_s = maximum_s != 0 ? maximum_s : UINT32_MAX / 1000;
+            break;
+        }
+        delay_s *= multiplier;
+    }
+    if (maximum_s != 0 && delay_s > maximum_s)
+        delay_s = maximum_s;
+    if (delay_s > UINT32_MAX / 1000)
+        delay_s = UINT32_MAX / 1000;
+    *delay_ms = delay_s * 1000;
+    return 1;
+}
+
+int
+ieee80211_roam_profile_candidate_allowed(struct ieee80211com *ic,
+    const struct ieee80211_node *current,
+    const struct ieee80211_node *candidate)
+{
+    struct ieee80211_roam_profile_policy policy;
+    const struct ieee80211_roam_profile_bracket *bracket;
+    int current_dbm, candidate_dbm, candidate_score, candidate_band;
+    int boost_threshold, boost_delta;
+
+    if (current == NULL || candidate == NULL)
+        return 1;
+    if (!ieee80211_roam_profile_snapshot(ic, &policy))
+        return 1;
+    bracket = ieee80211_roam_profile_active(&policy, current, NULL);
+    if (bracket == NULL)
+        return 1;
+
+    candidate_band = ieee80211_roam_profile_band(candidate->ni_chan);
+    current_dbm = (int)current->ni_rssi - (int)policy.rssi_bias_db;
+    candidate_dbm = (int)candidate->ni_rssi - (int)policy.rssi_bias_db;
+    candidate_score = candidate_dbm;
+    if (candidate_band >= 0) {
+        boost_threshold = bracket->boost_threshold_dbm[candidate_band];
+        boost_delta = bracket->boost_delta_db[candidate_band];
+        if (boost_threshold > -128 && boost_delta > 0 &&
+            candidate_dbm >= boost_threshold)
+            candidate_score += boost_delta;
+    }
+    return candidate_score >= current_dbm + bracket->roam_delta_db;
+}
+
 void ieee80211_setbasicrates(struct ieee80211com *);
 int ieee80211_findrate(struct ieee80211com *, enum ieee80211_phymode, int);
 void ieee80211_configure_ampdu_tx(struct ieee80211com *, int);

@@ -998,6 +998,13 @@ struct tahoeDynsarDetailRequest
 static_assert(sizeof(tahoeDynsarDetailRequest) == 0x2d18,
               "tahoeDynsarDetailRequest must retain the observed caller offsets");
 
+struct apple80211_roam_profile_config
+{
+    uint8_t raw[0x23c];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_roam_profile_config) == 0x23c,
+              "modern WCL roam profile must match the recovered carrier");
+
 struct tahoeSlowWifiFeatureEnabled
 {
     uint32_t version;
@@ -8945,15 +8952,129 @@ setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data)
     return kIOReturnUnsupported;
 }
 
+static uint16_t
+tahoeRoamProfileRead16(const uint8_t *value)
+{
+    return static_cast<uint16_t>(value[0]) |
+        (static_cast<uint16_t>(value[1]) << 8);
+}
+
+static uint32_t
+tahoeRoamProfileRead32(const uint8_t *value)
+{
+    return static_cast<uint32_t>(value[0]) |
+        (static_cast<uint32_t>(value[1]) << 8) |
+        (static_cast<uint32_t>(value[2]) << 16) |
+        (static_cast<uint32_t>(value[3]) << 24);
+}
+
+static bool
+tahoeRoamProfileReadSignedByte(const uint8_t *value, int8_t *result)
+{
+    const int16_t decoded = static_cast<int16_t>(
+        tahoeRoamProfileRead16(value));
+
+    if (result == nullptr || decoded < -128 || decoded > 127)
+        return false;
+    *result = static_cast<int8_t>(decoded);
+    return true;
+}
+
+static bool
+tahoeBuildIntelRoamProfile(const apple80211_roam_profile_config *data,
+    ieee80211_roam_profile_policy *policy)
+{
+    static constexpr size_t kBandOffset[IEEE80211_ROAM_PROFILE_NBANDS] = {
+        0x000, 0x0b8, 0x170
+    };
+    const uint8_t *raw = data->raw;
+
+    bzero(policy, sizeof(*policy));
+    policy->rssi_bias_db = 100;
+    policy->multi_ap_environment = tahoeRoamProfileRead32(raw + 0x230);
+    policy->join_preference_flags = raw[0x238];
+
+    for (size_t band = 0; band != IEEE80211_ROAM_PROFILE_NBANDS;
+         band++) {
+        const size_t bandOffset = kBandOffset[band];
+        const uint32_t version = tahoeRoamProfileRead32(raw + bandOffset);
+
+        /* The reference requires the first band and permits optional 5/6G. */
+        if (version == 0) {
+            if (band == IEEE80211_ROAM_PROFILE_BAND_2GHZ)
+                return false;
+            continue;
+        }
+
+        for (size_t source = 0;
+             source != IEEE80211_ROAM_PROFILE_NBRACKETS; source++) {
+            const uint8_t *input = raw + bandOffset + 4 + source * 0x3c;
+            int8_t trigger, lower;
+
+            /* Apple uses the signed trigger word as the bracket-valid gate. */
+            if (tahoeRoamProfileRead16(input + 4) == 0)
+                continue;
+            if (!tahoeRoamProfileReadSignedByte(input + 4, &trigger) ||
+                !tahoeRoamProfileReadSignedByte(input + 6, &lower) ||
+                trigger >= 0 || lower >= trigger)
+                return false;
+
+            const size_t target = policy->count[band];
+            ieee80211_roam_profile_bracket *bracket =
+                &policy->bracket[band][target];
+            bracket->flags = input[0];
+            bracket->trigger_dbm = trigger;
+            bracket->lower_dbm = lower;
+            bracket->backoff_multiplier = tahoeRoamProfileRead16(input + 8);
+            bracket->full_scan_period_s = tahoeRoamProfileRead16(input + 0x0a);
+            bracket->initial_scan_period_s = tahoeRoamProfileRead16(input + 0x0c);
+            bracket->nfscan = tahoeRoamProfileRead16(input + 0x0e);
+            bracket->max_scan_period_s = tahoeRoamProfileRead16(input + 0x10);
+            bracket->roam_delta_db = input[0x24];
+
+            if (!tahoeRoamProfileReadSignedByte(input + 0x26,
+                    &bracket->boost_threshold_dbm[0]) ||
+                !tahoeRoamProfileReadSignedByte(input + 0x28,
+                    &bracket->boost_delta_db[0]) ||
+                !tahoeRoamProfileReadSignedByte(input + 0x2e,
+                    &bracket->boost_threshold_dbm[1]) ||
+                !tahoeRoamProfileReadSignedByte(input + 0x30,
+                    &bracket->boost_delta_db[1]) ||
+                !tahoeRoamProfileReadSignedByte(input + 0x36,
+                    &bracket->boost_threshold_dbm[2]) ||
+                !tahoeRoamProfileReadSignedByte(input + 0x38,
+                    &bracket->boost_delta_db[2]))
+                return false;
+            policy->count[band]++;
+        }
+        if (policy->count[band] == 0) {
+            if (band == IEEE80211_ROAM_PROFILE_BAND_2GHZ)
+                return false;
+            continue;
+        }
+        policy->valid_mask |= static_cast<uint8_t>(1U << band);
+    }
+    return policy->valid_mask != 0;
+}
+
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)
 {
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
+    if (fHalService == nullptr)
+        return kIOReturnNotReady;
 
-    // Tahoe fans this request into RoamAdapter policy and transport lifecycles.
-    // Intel has no matching modern profile owner or Commander backend.
-    return kIOReturnUnsupported;
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic == nullptr)
+        return kIOReturnNotReady;
+
+    ieee80211_roam_profile_policy policy;
+    if (!tahoeBuildIntelRoamProfile(data, &policy))
+        return kIOReturnBadArgumentTahoe;
+
+    ieee80211_set_roam_profile_policy(ic, &policy);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -1,16 +1,24 @@
 {
   "checks": {
-    "historical_claims_corrected": true,
-    "pseudo_state_and_layout_removed": true,
-    "reference_note": true,
-    "scoped_roam_adapter_backend_absent": true,
-    "setter_quarantines_nonnull": true
+    "all_intel_families_share_rssi_bias": true,
+    "candidate_selection_consumes_delta_and_boost": true,
+    "consumed_fields_parsed": true,
+    "exact_public_carrier_size": true,
+    "generation_published_policy_owner": true,
+    "historical_claims_updated": true,
+    "no_fake_broadcom_transport": true,
+    "reference_consumer_map": true,
+    "runtime_evidence_recorded": true,
+    "scan_schedule_consumes_profile": true,
+    "setter_publishes_or_errors": true
   },
   "local": {
-    "complete_public_carrier_layout_proven": false,
-    "matching_roam_adapter_backend_implemented": false,
-    "request_false_success": false,
-    "valid_input_or_error_is_apple_parity": false
+    "broadcom_commander_transport_emulated": false,
+    "complete_consumed_field_slice_proven": true,
+    "complete_reserved_carrier_semantics_proven": false,
+    "iwn_iwm_iwx_shared_policy": true,
+    "matching_user_visible_roam_policy_owner_implemented": true,
+    "request_false_success": false
   },
   "reference": {
     "adapter_null_cold_path": "0x1001a01a0",
@@ -28,9 +36,26 @@
     "null_status": "0xe00002bc",
     "per_band_setter": "0x10001bfca",
     "profile_callback": "0x10001bd9a",
-    "pseudo_layout_bytes": "0x23c",
+    "public_carrier_bytes": "0x23c",
     "roam_adapter_offset": "0x15c0"
   },
-  "schema": "itlwm-wcl-roam-profile-quarantine-v1",
-  "source_base_revision": "4be063c7e51e75bc23f73345fa9bb095053a2861"
+  "runtime": {
+    "active_scan_delay_ms": 20000,
+    "auxkc_sha256": "6fe8d1d331561d7402f7c9bd99bc820dd5c279b74d089798441b944dea184c9a",
+    "candidate_binary_sha256": "082e92f707f8618d407e264eb932fdcc073c1ca98cae9753e15afa0ee084a915",
+    "candidate_uuid": "8CA541DE-EE9F-351A-B6C5-BC509304E9A5",
+    "profile_band_bracket_counts": [
+      2,
+      2,
+      1
+    ],
+    "profile_valid_mask": 7,
+    "scan_delay_observations": 1288,
+    "security": "WPA3 Personal",
+    "source_bound_ping": "35/35 pre-final; 20/20 post-boot; 25/25 radio-cycle",
+    "wifi_faults": 0,
+    "wifi_recoveries": 0
+  },
+  "schema": "itlwm-wcl-roam-profile-functional-v2",
+  "source_base_revision": "20ca3b14d4dc3fc3532ad07d7fb9b8a03140e25f"
 }

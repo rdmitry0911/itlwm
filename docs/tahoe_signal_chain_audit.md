@@ -1849,9 +1849,10 @@ backend quarantines. Any still-missing hidden helper exactness belongs under
 
 The historical list also included both profile variants because they had moved
 out of inline stubs. Their later recoveries establish distinct RoamAdapter
-policy/transport lifecycles, not reusable opaque caches; each is therefore
-reclassified below as a no-local-backend quarantine. Reassociation remains a
-separate scope.
+policy/transport lifecycles, not reusable opaque caches. The legacy path
+remains a no-local-backend quarantine. The modern path was quarantined until
+its complete consumed-field map was recovered, then gained the host-side Intel
+policy owner described below. Reassociation remains a separate scope.
 
 ## Q13 correction: WCL Roam Profile Config is RoamAdapter-backed
 
@@ -1865,13 +1866,22 @@ boost, configures multi-AP state, and uses Commander `roam_prof` requests with
 async callbacks/status paths.
 
 The modern-profile recovery demonstrates a RoamAdapter policy and transport
-lifecycle and is reclassified. The port preserves the direct null error and
-returns `kIOReturnUnsupported` for non-null input before reading the opaque
-carrier, removing its dead 0x23c pseudo-layout/cache/flag/reset lines. No
-generic STA `ROAM_PROFILE`, reassociation, scan, key, link, WCL event, or
-generic adaptive-roaming property path changes. This makes no complete
-carrier-layout, policy, Commander transport, completion, or valid-input
-return-status parity claim. See
+lifecycle. The 2026-07-14 correction first removed false cache-only success;
+the 2026-08-01 functional closure then recovered the consumed field map and
+added a host-side Intel policy owner. A generation seqlock publishes three-band
+RSSI brackets to shared net80211. Autonomous IWN/IWM/IWX scan scheduling uses
+their trigger/lower bounds and initial/backoff/maximum periods; candidate
+selection applies roam delta and target-band boost. The direct null error and
+not-ready/malformed errors are retained, while a valid carrier now succeeds
+only after policy publication.
+
+The Intel backend has one full background-scan primitive, so retained
+full-scan/NF-scan values do not claim separate Broadcom firmware scan classes.
+Nor does the bridge claim Commander `roam_prof`/`join_pref`/multi-AP transport
+or callback identity. Focused runtime tracing observed the live Tahoe carrier
+publish bands 2/5/6, select the 2.4 GHz 20-second bracket 1288 times, and
+preserve DHCP plus lossless WPA3 traffic. Legacy profile configuration remains
+separately unsupported. See
 `docs/reference/CR-479-wcl-roam-profile-quarantine-20260714.md`.
 
 ## Q13 correction: WCL Legacy Roam Profile Config is RoamAdapter-backed
