@@ -12,6 +12,7 @@
 #define ItlApOpenRuntime_hpp
 
 #include <HAL/ItlApFirmwareRuntime.hpp>
+#include <HAL/ItlApBlockAckRuntime.hpp>
 #include <sys/malloc.h>
 #include <net/ethernet.h>
 #include <net/if_llc.h>
@@ -27,6 +28,8 @@ enum ItlApOpenRxDisposition : uint8_t {
     kItlApOpenRxPowerState,
     kItlApOpenRxPsPoll,
     kItlApOpenRxDisconnect,
+    kItlApOpenRxAddBaRequest,
+    kItlApOpenRxDelBa,
 };
 
 struct ItlApOpenRxResult {
@@ -44,6 +47,12 @@ struct ItlApOpenRxResult {
     bool reassociation;
     size_t associationIEOffset;
     size_t clientIndex;
+    uint8_t baToken;
+    uint8_t baTid;
+    uint16_t baSsn;
+    uint16_t baWindow;
+    uint16_t baTimeout;
+    bool baPeerInitiator;
 };
 
 enum ItlApLocalRsnState : uint8_t {
@@ -1311,6 +1320,61 @@ itl_ap_local_sae_complete_4way(struct ItlApFirmwareClientRuntime *client,
 }
 
 static inline int
+itl_ap_open_build_addba_response(
+    const struct ItlApFirmwareRuntime *runtime,
+    struct ItlApOpenRxResult *result, uint16_t status)
+{
+    if (!itl_ap_open_is_running(runtime) || result == NULL ||
+        result->disposition != kItlApOpenRxAddBaRequest ||
+        result->baTid >= 8)
+        return EINVAL;
+    const size_t responseLength = sizeof(struct ieee80211_frame) + 9;
+    int error = itl_ap_open_alloc_reply(responseLength, &result->reply);
+    if (error != 0)
+        return error;
+    const struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_client_at(
+            const_cast<struct ItlApFirmwareRuntime *>(runtime),
+            result->clientIndex);
+    const bool protectedFrame = client != NULL &&
+        itl_ap_client_uses_local_sae(runtime) && client->clientAuthorized;
+    result->replyLength = itl_ap_block_ack_build_response(
+        result->reply, responseLength, runtime->config.bssid,
+        result->station, result->baToken, result->baTid, status,
+        result->baWindow, result->baTimeout, protectedFrame);
+    if (result->replyLength == 0) {
+        ::free(result->reply);
+        result->reply = NULL;
+        return EINVAL;
+    }
+    result->disposition = kItlApOpenRxReply;
+    return 0;
+}
+
+static inline bool
+itl_ap_open_reorder_rx(struct ItlApFirmwareRuntime *runtime,
+                       mbuf_t packet, size_t frameLength,
+                       bool hardwareDecrypted,
+                       bool isAmsdu, uint8_t subframeIndex,
+                       bool lastSubframe,
+                       struct ItlApRxBaReady *ready)
+{
+    if (!itl_ap_open_is_running(runtime) || packet == NULL ||
+        frameLength < sizeof(struct ieee80211_frame))
+        return false;
+    const struct ieee80211_frame *wh =
+        mtod(packet, const struct ieee80211_frame *);
+    struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_find_client(runtime, wh->i_addr2);
+    if (client == NULL || !client->clientAssociated)
+        return false;
+    return itl_ap_rx_ba_reorder(
+        client->clientRxBa, runtime->config.bssid, client->clientMac,
+        packet, frameLength, hardwareDecrypted, 0, 0,
+        isAmsdu, subframeIndex, lastSubframe, ready);
+}
+
+static inline int
 itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
                         mbuf_t packet, size_t frameLength,
                         bool hardwareDecrypted,
@@ -1362,6 +1426,54 @@ itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
                                    hardwareDecrypted, result);
     if (error != 0 || result->disposition != kItlApOpenRxNotOurs)
         return error;
+
+    if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
+            IEEE80211_FC0_TYPE_MGT &&
+        (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_ACTION &&
+        frameLength >= sizeof(*wh) + 2 &&
+        IEEE80211_ADDR_EQ(wh->i_addr1, runtime->config.bssid) &&
+        IEEE80211_ADDR_EQ(wh->i_addr3, runtime->config.bssid)) {
+        const bool protectedFrame =
+            (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
+        const size_t bodyOffset = sizeof(*wh) +
+            (protectedFrame ? IEEE80211_CCMP_HDRLEN : 0);
+        const uint8_t *body = reinterpret_cast<const uint8_t *>(wh) +
+            bodyOffset;
+        if (frameLength >= bodyOffset + 2 &&
+            body[0] == IEEE80211_CATEG_BA) {
+            result->disposition = kItlApOpenRxConsumed;
+            struct ItlApFirmwareClientRuntime *client =
+                itl_ap_firmware_find_client(runtime, wh->i_addr2);
+            if (client == NULL)
+                return 0;
+            struct ItlApBlockAckAction action;
+            const bool claimed = itl_ap_block_ack_parse(
+                wh, frameLength, runtime->config.bssid,
+                client->clientMac, client->clientAssociated,
+                client->clientHt, client->clientAuthorized,
+                itl_ap_client_uses_local_sae(runtime) &&
+                    client->clientAuthorized,
+                hardwareDecrypted, &action);
+            if (!claimed || action.kind == kItlApBlockAckNone)
+                return 0;
+            result->clientIndex =
+                itl_ap_firmware_client_index(runtime, client);
+            IEEE80211_ADDR_COPY(result->station, client->clientMac);
+            result->baTid = action.tid;
+            if (action.kind == kItlApBlockAckAddRequest) {
+                result->disposition = kItlApOpenRxAddBaRequest;
+                result->baToken = action.token;
+                result->baSsn = action.ssn;
+                result->baWindow = action.window;
+                result->baTimeout = action.timeout;
+            } else {
+                result->disposition = kItlApOpenRxDelBa;
+                result->baPeerInitiator = action.peerInitiator;
+            }
+            return 0;
+        }
+    }
 
     if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
             IEEE80211_FC0_TYPE_MGT &&

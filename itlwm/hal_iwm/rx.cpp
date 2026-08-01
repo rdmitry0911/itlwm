@@ -944,7 +944,12 @@ iwm_rx_mpdu_mq(struct iwm_softc *sc, mbuf_t m, void *pktdata,
             (IWM_RX_MPDU_RES_STATUS_DEC_DONE |
              IWM_RX_MPDU_RES_STATUS_MIC_OK);
     if (iwm_ap_handle_rx(sc, m, mbuf_pkthdr_len(m),
-                         apHardwareDecrypted, apMl))
+                         apHardwareDecrypted, apMl, false,
+                         (desc->mac_flags2 & IWM_RX_MPDU_MFLG2_AMSDU) != 0,
+                         desc->amsdu_info &
+                             IWM_RX_MPDU_AMSDU_SUBFRAME_IDX_MASK,
+                         (desc->amsdu_info &
+                             IWM_RX_MPDU_AMSDU_LAST_SUBFRAME) != 0))
         return;
     
     /*

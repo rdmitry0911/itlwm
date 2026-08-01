@@ -415,7 +415,11 @@ public:
                                  struct ItlApFirmwareRuntime *,
                                  struct ItlApFirmwareClientRuntime *);
     int    iwm_ap_configure_client_rates(struct iwm_softc *,
-                                         struct ItlApFirmwareClientRuntime *);
+                                          struct ItlApFirmwareClientRuntime *);
+    int    iwm_ap_set_client_rx_ba(struct iwm_softc *,
+                                   struct ItlApFirmwareRuntime *,
+                                   struct ItlApFirmwareClientRuntime *,
+                                   uint8_t, uint16_t, uint16_t, bool);
     int    iwm_ap_remove_client_sta(struct iwm_softc *,
                                     struct ItlApFirmwareRuntime *,
                                     struct ItlApFirmwareClientRuntime *);
@@ -425,7 +429,9 @@ public:
     int    iwm_ap_send_raw_frame(struct iwm_softc *, mbuf_t, uint8_t,
                                  uint8_t);
     bool   iwm_ap_handle_rx(struct iwm_softc *, mbuf_t, size_t, bool,
-                            struct mbuf_list *);
+                            struct mbuf_list *, bool = false,
+                            bool = false, uint8_t = 0, bool = true);
+    static void iwm_ap_rx_ba_deliver(void *, struct ItlApRxBaReady *);
     static void iwm_ap_client_task(void *);
     int    iwm_ap_update_quotas(struct iwm_softc *,
                                 const struct ItlApFirmwareRuntime *, bool);

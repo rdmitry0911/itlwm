@@ -1989,11 +1989,12 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
         itl_ap_firmware_find_client(&apRuntime, wh->i_addr1);
     const bool firmwareRate = type == IEEE80211_FC0_TYPE_DATA &&
         !multicast && client != NULL && client->rateControlConfigured;
-    if (protectedFrame && (type != IEEE80211_FC0_TYPE_DATA ||
-        frameLength > UINT16_MAX - IEEE80211_CCMP_HDRLEN ||
-        (multicast ? !apRuntime.groupKeyInstalled :
-                     client == NULL ||
-                     !client->clientPairwiseKeyInstalled)))
+    if (protectedFrame &&
+        (frameLength > UINT16_MAX - IEEE80211_CCMP_HDRLEN ||
+         (multicast ?
+            (type != IEEE80211_FC0_TYPE_DATA ||
+             !apRuntime.groupKeyInstalled) :
+            (client == NULL || !client->clientPairwiseKeyInstalled))))
         return EACCES;
     const size_t firmwareLength = frameLength +
         (protectedFrame ? IEEE80211_CCMP_HDRLEN : 0);
@@ -2669,6 +2670,137 @@ iwm_ap_configure_client_rates(
 }
 
 int ItlIwm::
+iwm_ap_set_client_rx_ba(struct iwm_softc *sc,
+                        struct ItlApFirmwareRuntime *runtime,
+                        struct ItlApFirmwareClientRuntime *client,
+                        uint8_t tid, uint16_t ssn, uint16_t window,
+                        bool start)
+{
+    if (sc == NULL || runtime == NULL || client == NULL || tid >= 8 ||
+        !client->clientStationInstalled || !client->clientHt)
+        return EINVAL;
+    const uint16_t bit = static_cast<uint16_t>(1U << tid);
+    if (((client->clientRxBaMask & bit) != 0) == start)
+        return 0;
+    if (start && sc->sc_rx_ba_sessions >= IWM_MAX_RX_BA_SESSIONS)
+        return ENOSPC;
+
+    struct iwm_add_sta_cmd command;
+    memset(&command, 0, sizeof(command));
+    command.sta_id = client->staId;
+    command.mac_id_n_color = htole32(IWM_FW_CMD_ID_AND_COLOR(
+        runtime->macId, runtime->macColor));
+    command.add_modify = IWM_STA_MODE_MODIFY;
+    command.modify_mask = start ? IWM_STA_MODIFY_ADD_BA_TID :
+                                  IWM_STA_MODIFY_REMOVE_BA_TID;
+    if (start) {
+        command.add_immediate_ba_tid = tid;
+        command.add_immediate_ba_ssn = htole16(ssn);
+        command.rx_ba_window = htole16(window);
+    } else {
+        command.remove_immediate_ba_tid = tid;
+    }
+    const size_t commandSize =
+        isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE) ?
+            sizeof(command) : sizeof(struct iwm_add_sta_cmd_v7);
+    uint32_t status = IWM_ADD_STA_SUCCESS;
+    int error = iwm_send_cmd_pdu_status(
+        sc, IWM_ADD_STA, commandSize, &command, &status);
+    if (error == 0 &&
+        (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
+        error = EIO;
+    if (error != 0)
+        return error;
+
+    if (sc->sc_mqrx_supported) {
+        if (start) {
+            const uint8_t baid = static_cast<uint8_t>(
+                (status & IWM_ADD_STA_BAID_MASK) >>
+                IWM_ADD_STA_BAID_SHIFT);
+            if ((status & IWM_ADD_STA_BAID_VALID_MASK) == 0 ||
+                baid == IWM_RX_REORDER_DATA_INVALID_BAID ||
+                baid >= nitems(sc->sc_rxba_data) ||
+                sc->sc_rxba_data[baid].baid !=
+                    IWM_RX_REORDER_DATA_INVALID_BAID) {
+                /*
+                 * ADD_BA already succeeded in firmware.  If its returned
+                 * BAID cannot be represented by the host reorder table,
+                 * undo that command before refusing the peer.  Otherwise
+                 * the firmware keeps a hidden aggregation session and a
+                 * later retry for the same station/TID is rejected.
+                 */
+                memset(&command, 0, sizeof(command));
+                command.sta_id = client->staId;
+                command.mac_id_n_color = htole32(
+                    IWM_FW_CMD_ID_AND_COLOR(
+                        runtime->macId, runtime->macColor));
+                command.add_modify = IWM_STA_MODE_MODIFY;
+                command.modify_mask = IWM_STA_MODIFY_REMOVE_BA_TID;
+                command.remove_immediate_ba_tid = tid;
+                uint32_t rollbackStatus = IWM_ADD_STA_SUCCESS;
+                (void)iwm_send_cmd_pdu_status(
+                    sc, IWM_ADD_STA, commandSize, &command,
+                    &rollbackStatus);
+                return EIO;
+            }
+            struct iwm_rxba_data *rxba = &sc->sc_rxba_data[baid];
+            rxba->sta_id = client->staId;
+            rxba->tid = tid;
+            rxba->baid = baid;
+            rxba->timeout = 0;
+            getmicrouptime(&rxba->last_rx);
+            iwm_init_reorder_buffer(&rxba->reorder_buf, ssn, window);
+        } else {
+            for (size_t index = 0; index < nitems(sc->sc_rxba_data);
+                 index++) {
+                struct iwm_rxba_data *rxba = &sc->sc_rxba_data[index];
+                if (rxba->baid != IWM_RX_REORDER_DATA_INVALID_BAID &&
+                    rxba->sta_id == client->staId && rxba->tid == tid) {
+                    iwm_clear_reorder_buffer(sc, rxba);
+                    break;
+                }
+            }
+        }
+    }
+    if (start) {
+        itl_ap_rx_ba_start(&client->clientRxBa[tid], ssn, window,
+                           this, iwm_ap_rx_ba_deliver);
+        client->clientRxBaMask |= bit;
+        sc->sc_rx_ba_sessions++;
+    } else {
+        itl_ap_rx_ba_stop(&client->clientRxBa[tid]);
+        client->clientRxBaMask &= static_cast<uint16_t>(~bit);
+        if (sc->sc_rx_ba_sessions > 0)
+            sc->sc_rx_ba_sessions--;
+    }
+    return 0;
+}
+
+void ItlIwm::iwm_ap_rx_ba_deliver(void *owner,
+                                  struct ItlApRxBaReady *ready)
+{
+    ItlIwm *that = static_cast<ItlIwm *>(owner);
+    if (that == NULL || ready == NULL)
+        return;
+    struct mbuf_list apFrames = MBUF_LIST_INITIALIZER();
+    for (size_t index = 0; index < ready->count; index++) {
+        struct ItlApRxBaBufferedFrame *frame = &ready->frames[index];
+        mbuf_t packet;
+        while ((packet = frame->packet) != NULL) {
+            frame->packet = mbuf_nextpkt(packet);
+            mbuf_setnextpkt(packet, NULL);
+            if (!that->iwm_ap_handle_rx(&that->com, packet,
+                    mbuf_pkthdr_len(packet), frame->hardwareDecrypted,
+                    &apFrames, true))
+                mbuf_freem(packet);
+        }
+        frame->packetTail = NULL;
+        frame->packet = NULL;
+    }
+    if_input_ap(&that->com.sc_ic.ic_if, &apFrames);
+}
+
+int ItlIwm::
 iwm_ap_remove_client_sta(struct iwm_softc *sc,
                          struct ItlApFirmwareRuntime *runtime,
                          struct ItlApFirmwareClientRuntime *client)
@@ -2676,6 +2808,15 @@ iwm_ap_remove_client_sta(struct iwm_softc *sc,
     if (runtime == NULL || client == NULL ||
         !client->clientStationInstalled)
         return 0;
+    int firstError = 0;
+    for (uint8_t tid = 0; tid < 8; tid++) {
+        if ((client->clientRxBaMask & (1U << tid)) == 0)
+            continue;
+        const int baError = iwm_ap_set_client_rx_ba(
+            sc, runtime, client, tid, 0, 0, false);
+        if (firstError == 0)
+            firstError = baError;
+    }
     const int disableError = iwm_disable_txq(sc,
         static_cast<uint8_t>(client->queueId),
         client->clientStationQos ? 0 : IWM_TID_NON_QOS, 0);
@@ -2693,6 +2834,8 @@ iwm_ap_remove_client_sta(struct iwm_softc *sc,
     itl_ap_firmware_client_crypto_reset(client);
     explicit_bzero(client->clientStationMac,
                    sizeof(client->clientStationMac));
+    if (firstError != 0)
+        return firstError;
     return disableError != 0 ? disableError : removeError;
 }
 
@@ -2973,8 +3116,33 @@ iwm_ap_client_task(void *arg)
 
 bool ItlIwm::
 iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
-                 bool hardwareDecrypted, struct mbuf_list *apFrames)
+                 bool hardwareDecrypted, struct mbuf_list *apFrames,
+                 bool alreadyOrdered, bool isAmsdu,
+                 uint8_t subframeIndex, bool lastSubframe)
 {
+    if (!alreadyOrdered) {
+        struct ItlApRxBaReady ready;
+        if (itl_ap_open_reorder_rx(
+                &apRuntime, packet, frameLength,
+                hardwareDecrypted, isAmsdu, subframeIndex,
+                lastSubframe, &ready)) {
+            for (size_t index = 0; index < ready.count; index++) {
+                struct ItlApRxBaBufferedFrame *frame =
+                    &ready.frames[index];
+                mbuf_t readyPacket;
+                while ((readyPacket = frame->packet) != NULL) {
+                    frame->packet = mbuf_nextpkt(readyPacket);
+                    mbuf_setnextpkt(readyPacket, NULL);
+                    if (!iwm_ap_handle_rx(sc, readyPacket,
+                            mbuf_pkthdr_len(readyPacket),
+                            frame->hardwareDecrypted, apFrames, true))
+                        mbuf_freem(readyPacket);
+                }
+                frame->packetTail = NULL;
+            }
+            return true;
+        }
+    }
     struct ItlApOpenRxResult result;
     const int classifyError = itl_ap_open_classify_rx(
         &apRuntime, packet, frameLength, hardwareDecrypted, &result);
@@ -3005,6 +3173,37 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
             if (error == 0)
                 error = timError;
         }
+    }
+    if (error == 0 &&
+        result.disposition == kItlApOpenRxAddBaRequest) {
+        const int baError = client == NULL ? EINVAL :
+            iwm_ap_set_client_rx_ba(sc, &apRuntime, client,
+                result.baTid, result.baSsn, result.baWindow, true);
+        error = itl_ap_open_build_addba_response(
+            &apRuntime, &result, baError == 0 ?
+                IEEE80211_STATUS_SUCCESS : IEEE80211_STATUS_REFUSED);
+        mbuf_t response = NULL;
+        if (error == 0)
+            error = iwm_ap_reply_to_mbuf(&result, &response);
+        if (error == 0 && client != NULL)
+            error = iwm_ap_send_raw_frame(sc, response,
+                static_cast<uint8_t>(client->queueId), client->staId);
+        if (error != 0 && response != NULL)
+            mbuf_freem(response);
+        XYLog("%s: IWM AP RX ADDBA tid=%u ssn=%u win=%u "
+              "firmware=%d response=%d\n", DEVNAME(sc),
+              static_cast<unsigned>(result.baTid),
+              static_cast<unsigned>(result.baSsn),
+              static_cast<unsigned>(result.baWindow), baError, error);
+        result.disposition = kItlApOpenRxConsumed;
+    } else if (error == 0 &&
+               result.disposition == kItlApOpenRxDelBa) {
+        if (result.baPeerInitiator && client != NULL)
+            error = iwm_ap_set_client_rx_ba(sc, &apRuntime, client,
+                result.baTid, 0, 0, false);
+        XYLog("%s: IWM AP RX DELBA tid=%u peer_initiator=%u error=%d\n",
+              DEVNAME(sc), static_cast<unsigned>(result.baTid),
+              result.baPeerInitiator ? 1U : 0U, error);
     }
     if (error == 0 && result.disposition == kItlApOpenRxReply) {
         const struct ieee80211_frame *reply =

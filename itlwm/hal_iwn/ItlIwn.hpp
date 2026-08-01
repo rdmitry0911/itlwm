@@ -50,6 +50,7 @@
 #include <sys/systm.h>
 #include <sys/endian.h>
 #include <sys/kpi_mbuf.h>
+#include <HAL/ItlApBlockAckRuntime.hpp>
 
 #include "if_iwnreg.h"
 #include "if_iwnvar.h"
@@ -139,6 +140,11 @@ public:
     bool iwn_handle_ap_probe_req(const struct ieee80211_frame *, size_t);
     bool iwn_handle_ap_open_auth(const struct ieee80211_frame *, size_t);
     bool iwn_handle_ap_assoc_req(const struct ieee80211_frame *, size_t);
+    int iwn_set_ap_client_rx_ba(uint8_t, uint16_t, uint16_t, bool);
+    void iwn_stop_all_ap_client_rx_ba();
+    static void iwn_ap_rx_ba_deliver(void *, struct ItlApRxBaReady *);
+    bool iwn_handle_ap_block_ack(const struct ieee80211_frame *, size_t,
+        bool);
     bool iwn_handle_ap_disconnect(const struct ieee80211_frame *, size_t);
     void iwn_publish_ap_station_event(const uint8_t *, const uint8_t *,
         size_t, int);
@@ -514,6 +520,8 @@ public:
     uint16_t apClientHtCapabilities;
     uint8_t apClientHtAmpduParams;
     uint8_t apClientHtMcs[2];
+    uint16_t apClientRxBaMask;
+    struct ItlApRxBaRuntime apClientRxBa[kItlApRxBaTidCount];
     bool apClientAssociated;
     bool apClientAuthorized;
     bool apClientPowerSave;

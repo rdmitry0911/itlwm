@@ -4055,6 +4055,7 @@ bool ItlIwn::attach(IOPCIDevice *device)
     apPsQueueCount = 0;
     apPsQueueReady = true;
     apTimSet = false;
+    bzero(apClientRxBa, sizeof(apClientRxBa));
     bzero(&apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
     iwn_reset_ap_runtime_state();
     pci.pa_tag = device;
@@ -4130,6 +4131,9 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apClientHtCapabilities = 0;
     apClientHtAmpduParams = 0;
     bzero(apClientHtMcs, sizeof(apClientHtMcs));
+    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++)
+        itl_ap_rx_ba_stop(&apClientRxBa[tid]);
+    apClientRxBaMask = 0;
     apClientOpenAuthenticated = false;
     apClientAssociated = false;
     apClientAuthorized = false;
@@ -4687,6 +4691,20 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         !IEEE80211_ADDR_EQ(wh->i_addr3, apFirmwareConfig.bssid)) {
         return EINVAL;
     }
+    const bool protectedFrame =
+        (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
+    if (protectedFrame &&
+        (!apClientAuthorized ||
+         !IEEE80211_ADDR_EQ(wh->i_addr1, apClientMac) ||
+         apPairwiseTxPn >= 0xffffffffffffULL))
+        return EACCES;
+    const bool clientOwned = apClientNodeInstalled &&
+        !IEEE80211_IS_MULTICAST(wh->i_addr1) &&
+        IEEE80211_ADDR_EQ(wh->i_addr1, apClientMac);
+    const size_t transportBodyLength = bodyLength +
+        (protectedFrame ? IEEE80211_CCMP_HDRLEN : 0);
+    const size_t firmwareFrameLength = frameLength +
+        (protectedFrame ? IEEE80211_CCMP_HDRLEN : 0);
 
     struct iwn_tx_ring *ring = &com.txq[IWN_IPAN_MGMT_QUEUE];
     if (ring->queued >= IWN_TX_RING_COUNT - 1)
@@ -4704,7 +4722,7 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
 
     struct iwn_cmd_data *tx =
         reinterpret_cast<struct iwn_cmd_data *>(cmd->data);
-    tx->len = htole16(static_cast<uint16_t>(frameLength));
+    tx->len = htole16(static_cast<uint16_t>(firmwareFrameLength));
     /*
      * DVM bypasses advanced-BT arbitration for Authentication frames, but
      * not for Probe or Association Responses.
@@ -4720,7 +4738,12 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         IWN_TX_NEED_ACK | IWN_TX_AUTO_SEQ |
         (insertTimestamp ? IWN_TX_INSERT_TSTAMP : 0) |
         (ignoreBluetooth ? IWN_TX_BT_DISABLE : 0));
-    tx->id = IWN5000_ID_PAN_BROADCAST;
+    /* Auth/Assoc responses precede station materialization and therefore use
+     * the PAN broadcast owner.  Once the client exists, every unicast
+     * management frame (including an unprotected ADDBA Response) must use
+     * its station ID so DVM can match the receiver and obtain the ACK. */
+    tx->id = clientOwned ? IWN5000_ID_PAN_CLIENT :
+                           IWN5000_ID_PAN_BROADCAST;
     tx->lifetime = htole32(IWN_LIFETIME_INFINITE);
     tx->rts_ntries = insertTimestamp ? 3 : 60;
     tx->data_ntries = insertTimestamp ? 3 : 15;
@@ -4750,7 +4773,7 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
     const size_t commandAndHeaderLength =
         4 + sizeof(*tx) + headerLength;
     if (commandAndHeaderLength <= firstTransportBufferLength ||
-        bodyLength > IWN_AP_MGMT_PAYLOAD_SIZE ||
+        transportBodyLength > IWN_AP_MGMT_PAYLOAD_SIZE ||
         ring->first_tb == NULL || ring->ap_payload == NULL) {
         return EMSGSIZE;
     }
@@ -4788,14 +4811,27 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         static_cast<uint16_t>(((ring->cur + 1) & 0x0fff) << 4));
     uint8_t *frameBody =
         ring->ap_payload + ring->cur * IWN_AP_MGMT_PAYLOAD_SIZE;
-    memcpy(frameBody,
+    if (protectedFrame) {
+        ++apPairwiseTxPn;
+        frameBody[0] = apPairwiseTxPn;
+        frameBody[1] = apPairwiseTxPn >> 8;
+        frameBody[2] = 0;
+        frameBody[3] = IEEE80211_WEP_EXTIV;
+        frameBody[4] = apPairwiseTxPn >> 16;
+        frameBody[5] = apPairwiseTxPn >> 24;
+        frameBody[6] = apPairwiseTxPn >> 32;
+        frameBody[7] = apPairwiseTxPn >> 40;
+        tx->security = IWN_CIPHER_CCMP;
+        memcpy(tx->key, apPtk.tk, sizeof(tx->key));
+    }
+    memcpy(frameBody + (protectedFrame ? IEEE80211_CCMP_HDRLEN : 0),
            static_cast<const uint8_t *>(frameBytes) + headerLength,
            bodyLength);
     mbuf_adj(m, headerLength);
 
     data->m = m;
     data->ni = NULL;
-    data->totlen = static_cast<int>(frameLength);
+    data->totlen = static_cast<int>(firmwareFrameLength);
     data->ampdu_txmcs = 0;
     data->ampdu_nframes = 0;
     data->tx_apple_nrate = 0;
@@ -4854,11 +4890,13 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         ring->cur * IWN_AP_MGMT_PAYLOAD_SIZE;
     desc->segs[2].addr = htole32(IWN_LOADDR(frameBodyAddress));
     desc->segs[2].len = htole16(
-        IWN_HIADDR(frameBodyAddress) | bodyLength << 4);
+        IWN_HIADDR(frameBodyAddress) | transportBodyLength << 4);
 
     com.ops.update_sched(
         &com, ring->qid, ring->cur, tx->id,
-        static_cast<uint16_t>(frameLength));
+        static_cast<uint16_t>(firmwareFrameLength +
+            (protectedFrame && com.hw_type != IWN_HW_REV_TYPE_4965 ?
+                IEEE80211_CCMP_MICLEN : 0)));
     ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
     IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
     if (++ring->queued > IWN_TX_RING_HIMARK)
@@ -6090,6 +6128,123 @@ bool ItlIwn::iwn_handle_ap_disconnect(
     return true;
 }
 
+int ItlIwn::iwn_set_ap_client_rx_ba(uint8_t tid, uint16_t ssn,
+                                    uint16_t window, bool start)
+{
+    if (!apClientNodeInstalled || !apClientAssociated || !apClientHt ||
+        tid >= IWN_NUM_AMPDU_TID)
+        return EINVAL;
+    const uint16_t bit = static_cast<uint16_t>(1U << tid);
+    if (((apClientRxBaMask & bit) != 0) == start)
+        return 0;
+
+    struct iwn_node_info node;
+    bzero(&node, sizeof(node));
+    node.id = IWN5000_ID_PAN_CLIENT;
+    node.control = IWN_NODE_UPDATE;
+    node.flags = start ? IWN_FLAG_SET_ADDBA : IWN_FLAG_SET_DELBA;
+    if (start) {
+        node.addba_tid = tid;
+        node.addba_ssn = htole16(ssn);
+    } else {
+        node.delba_tid = tid;
+    }
+    const int error = com.ops.add_node(&com, &node, 1);
+    if (error == 0) {
+        if (start) {
+            itl_ap_rx_ba_start(&apClientRxBa[tid], ssn, window,
+                               this, iwn_ap_rx_ba_deliver);
+            apClientRxBaMask |= bit;
+        } else {
+            itl_ap_rx_ba_stop(&apClientRxBa[tid]);
+            apClientRxBaMask &= static_cast<uint16_t>(~bit);
+        }
+    }
+    return error;
+}
+
+void ItlIwn::iwn_ap_rx_ba_deliver(void *owner,
+                                  struct ItlApRxBaReady *ready)
+{
+    ItlIwn *that = static_cast<ItlIwn *>(owner);
+    if (that == NULL || ready == NULL)
+        return;
+    struct mbuf_list apFrames = MBUF_LIST_INITIALIZER();
+    for (size_t index = 0; index < ready->count; index++) {
+        struct ItlApRxBaBufferedFrame *frame = &ready->frames[index];
+        mbuf_t packet;
+        while ((packet = frame->packet) != NULL) {
+            frame->packet = mbuf_nextpkt(packet);
+            mbuf_setnextpkt(packet, NULL);
+            (void)that->iwn_handle_ap_data(
+                packet, mbuf_pkthdr_len(packet), &apFrames,
+                frame->rxFlags, frame->descriptorType);
+            mbuf_freem(packet);
+        }
+        frame->packetTail = NULL;
+        frame->packet = NULL;
+    }
+    if_input_ap(&that->com.sc_ic.ic_if, &apFrames);
+}
+
+void ItlIwn::iwn_stop_all_ap_client_rx_ba()
+{
+    for (uint8_t tid = 0; tid < IWN_NUM_AMPDU_TID; tid++) {
+        if ((apClientRxBaMask & (1U << tid)) == 0)
+            continue;
+        const int error = iwn_set_ap_client_rx_ba(tid, 0, 0, false);
+        if (error != 0)
+            XYLog("%s: AP DELBA cleanup tid=%u error=%d\n",
+                  com.sc_dev.dv_xname, static_cast<unsigned>(tid), error);
+    }
+}
+
+bool ItlIwn::iwn_handle_ap_block_ack(
+    const struct ieee80211_frame *request, size_t frameLength,
+    bool hardwareDecrypted)
+{
+    if (request == NULL || !apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return false;
+    struct ItlApBlockAckAction action;
+    const bool claimed = itl_ap_block_ack_parse(
+        request, frameLength, apFirmwareConfig.bssid, apClientMac,
+        apClientAssociated, apClientHt, apClientAuthorized,
+        iwn_ap_uses_sae() && apClientAuthorized,
+        hardwareDecrypted, &action);
+    if (!claimed)
+        return false;
+    if (action.kind == kItlApBlockAckAddRequest) {
+        const int baError = iwn_set_ap_client_rx_ba(
+            action.tid, action.ssn, action.window, true);
+        uint8_t response[sizeof(struct ieee80211_frame) + 9];
+        const size_t responseLength = itl_ap_block_ack_build_response(
+            response, sizeof(response), apFirmwareConfig.bssid,
+            apClientMac, action.token, action.tid,
+            baError == 0 ? IEEE80211_STATUS_SUCCESS :
+                           IEEE80211_STATUS_REFUSED,
+            action.window, action.timeout,
+            iwn_ap_uses_sae() && apClientAuthorized);
+        const int responseError = responseLength == 0 ? EINVAL :
+            iwn_send_ap_mgmt_frame(response, responseLength);
+        XYLog("%s: IWN AP RX ADDBA tid=%u ssn=%u win=%u "
+              "firmware=%d response=%d\n", com.sc_dev.dv_xname,
+              static_cast<unsigned>(action.tid),
+              static_cast<unsigned>(action.ssn),
+              static_cast<unsigned>(action.window),
+              baError, responseError);
+        return true;
+    }
+    if (action.kind == kItlApBlockAckDelete) {
+        const int error = action.peerInitiator ?
+            iwn_set_ap_client_rx_ba(action.tid, 0, 0, false) : 0;
+        XYLog("%s: IWN AP RX DELBA tid=%u peer_initiator=%u error=%d\n",
+              com.sc_dev.dv_xname, static_cast<unsigned>(action.tid),
+              action.peerInitiator ? 1U : 0U, error);
+    }
+    return true;
+}
+
 bool ItlIwn::iwn_handle_ap_ps_poll(
     const struct ieee80211_frame_pspoll *request, size_t frameLength)
 {
@@ -6938,6 +7093,9 @@ int ItlIwn::iwn_remove_ap_client_node(const uint8_t *macAddress)
 {
     if (macAddress == NULL)
         return EINVAL;
+
+    iwn_stop_all_ap_client_rx_ba();
+    apClientRxBaMask = 0;
 
     struct iwn_remove_node node;
     bzero(&node, sizeof(node));
@@ -11285,6 +11443,16 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         mbuf_freem(m);
         return;
     }
+    const bool apHardwareDecrypted =
+        (flags & IWN_RX_CIPHER_MASK) == IWN_RX_CIPHER_CCMP &&
+        (desc->type == IWN_MPDU_RX_DONE ?
+            (flags & (IWN_RX_MPDU_DEC | IWN_RX_MPDU_MIC_OK)) ==
+                (IWN_RX_MPDU_DEC | IWN_RX_MPDU_MIC_OK) :
+            (flags & IWN_RX_DECRYPT_MASK) == IWN_RX_DECRYPT_OK);
+    if (iwn_handle_ap_block_ack(wh, len, apHardwareDecrypted)) {
+        mbuf_freem(m);
+        return;
+    }
     if (iwn_handle_ap_disconnect(wh, len)) {
         mbuf_freem(m);
         return;
@@ -11293,6 +11461,28 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
             reinterpret_cast<const struct ieee80211_frame_pspoll *>(wh),
             len)) {
         mbuf_freem(m);
+        return;
+    }
+    struct ItlApRxBaReady apBaReady;
+    if (itl_ap_rx_ba_reorder(
+            apClientRxBa, apFirmwareConfig.bssid, apClientMac,
+            m, len, apHardwareDecrypted, flags, desc->type,
+            false, 0, true,
+            &apBaReady)) {
+        for (size_t index = 0; index < apBaReady.count; index++) {
+            struct ItlApRxBaBufferedFrame *frame =
+                &apBaReady.frames[index];
+            mbuf_t readyPacket;
+            while ((readyPacket = frame->packet) != NULL) {
+                frame->packet = mbuf_nextpkt(readyPacket);
+                mbuf_setnextpkt(readyPacket, NULL);
+                (void)iwn_handle_ap_data(
+                    readyPacket, mbuf_pkthdr_len(readyPacket), apMl,
+                    frame->rxFlags, frame->descriptorType);
+                mbuf_freem(readyPacket);
+            }
+            frame->packetTail = NULL;
+        }
         return;
     }
     if (iwn_handle_ap_data(m, len, apMl, flags, desc->type)) {

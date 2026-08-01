@@ -11,6 +11,7 @@
 #define ItlApFirmwareRuntime_hpp
 
 #include <HAL/ItlHalService.hpp>
+#include <HAL/ItlApBlockAckRuntime.hpp>
 #include <net80211/ieee80211_sae_engine.h>
 
 enum ItlApFirmwareResourceStage : uint8_t {
@@ -49,6 +50,8 @@ struct ItlApFirmwareClientRuntime {
     uint16_t clientHtCapabilities;
     uint8_t clientHtAmpduParams;
     uint8_t clientHtMcs[2];
+    uint16_t clientRxBaMask;
+    struct ItlApRxBaRuntime clientRxBa[kItlApRxBaTidCount];
     bool rateControlConfigured;
     uint16_t clientLegacyRateMask;
     bool clientPairwiseKeyInstalled;
@@ -169,6 +172,8 @@ itl_ap_firmware_client_reset(struct ItlApFirmwareClientRuntime *client)
         return;
     itl_ap_firmware_sae_reset(client);
     itl_ap_firmware_power_save_purge(client);
+    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++)
+        itl_ap_rx_ba_stop(&client->clientRxBa[tid]);
     explicit_bzero(client, sizeof(*client));
     client->staId = UINT8_MAX;
     client->queueId = UINT16_MAX;
