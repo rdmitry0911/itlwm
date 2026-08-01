@@ -955,6 +955,7 @@ public:
     AirportItlwmAPSTAOwner *ensureAPSTAOwner(
         const struct apple80211_virt_if_create_data *create);
     bool copyPermanentHardwareAddress(uint8_t *address) const;
+    IOReturn publishDefaultAPSTAInterface();
     IOReturn materializeAPSTAInterface(
         const struct apple80211_virt_if_create_data *create);
     void forwardAPSTAPacket(IO80211NetworkPacket *packet);

@@ -6403,6 +6403,22 @@ performTahoeBootChipImageGated(OSObject *owner, void *, void *, void *, void *)
     return kIOReturnSuccess;
 }
 
+static IOReturn
+publishDefaultAPSTAInterfaceGated(OSObject *owner, void *, void *, void *,
+                                  void *)
+{
+    AirportItlwm *self = OSDynamicCast(AirportItlwm, owner);
+    if (self == nullptr)
+        return kIOReturnBadArgument;
+
+    const IOReturn result = self->publishDefaultAPSTAInterface();
+    if (result != kIOReturnSuccess && result != kIOReturnUnsupported) {
+        XYLog("AirportItlwm: default APSTA publication failed 0x%x; "
+              "continuing with primary STA\n", result);
+    }
+    return result;
+}
+
 static void
 handleTahoeBootChipImage(thread_call_param_t param0, thread_call_param_t)
 {
@@ -9233,6 +9249,24 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         }
         that->reopenWclPhysicalScanAfterRadioReset();
         that->reopenStandardPhysicalScanAfterRadioReset();
+        /*
+         * CoreWiFi's Tahoe request proxy resolves HostAP requests by matching
+         * an already cached APPLE80211_VIRT_IF_ROLE_APSTA interface; its miss
+         * path refreshes the inventory but does not issue VIRTUAL_IF_CREATE.
+         * Publish the default role at this tagged post-init edge, after IWN
+         * has parsed the firmware TLVs and reached S_SCAN but before the
+         * PowerOn availability carrier exposes the new radio epoch.
+         *
+         * enableAdapter() is too early because IWN activation is asynchronous:
+         * live 6235 boots showed the PAN/TLV capability witnesses become valid
+         * only before REOPENED.  The same edge recurs after a radio reset, so
+         * the idempotent publication also verifies the role survived wake.
+         * Only the idle Skywalk role is allocated here; CHANNEL/HOST_AP_MODE
+         * remains the later and explicit radio-start boundary.
+         */
+        IOCommandGate *gate = that->getCommandGate();
+        if (gate != nullptr)
+            (void)gate->runAction(publishDefaultAPSTAInterfaceGated);
         /*
          * IWN reaches REOPENED only after firmware configuration and the
          * first S_SCAN transition.  That is the Intel equivalent of the
@@ -15798,6 +15832,29 @@ bool AirportItlwm::copyPermanentHardwareAddress(uint8_t *address) const
         return false;
     memcpy(address, fPermanentHardwareAddress.octet, IEEE80211_ADDR_LEN);
     return true;
+}
+
+IOReturn AirportItlwm::publishDefaultAPSTAInterface()
+{
+    if (fHalService == nullptr)
+        return kIOReturnNotReady;
+    if (!fHalService->supportsAPMode())
+        return kIOReturnUnsupported;
+
+    apple80211_virt_if_create_data create{};
+    create.version = APPLE80211_VERSION;
+    create.role = APPLE80211_VIF_SOFT_AP;
+    strlcpy(reinterpret_cast<char *>(create.bsd_name), "ap1",
+            sizeof(create.bsd_name));
+
+    AirportItlwmAPSTAOwner *owner = ensureAPSTAOwner(&create);
+    if (owner == nullptr)
+        return kIOReturnNoMemory;
+
+    const IOReturn result = materializeAPSTAInterface(&create);
+    if (result != kIOReturnSuccess)
+        deleteAPSTAOwner();
+    return result;
 }
 
 IOReturn AirportItlwm::materializeAPSTAInterface(
