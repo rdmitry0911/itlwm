@@ -1032,16 +1032,29 @@ struct tahoeUsbHostNotification
 static_assert(sizeof(tahoeUsbHostNotification) == 0x10,
               "tahoeUsbHostNotification must match the recovered Apple dword offsets");
 
+struct apple80211_reassoc_candidate
+{
+    uint32_t score;
+    uint16_t channel_spec;
+} __attribute__((packed));
+
 struct apple80211_reassoc
 {
-    uint8_t reserved00[0x68];
-    uint16_t channels[7];
-    uint32_t channel_scores[7];
-    uint32_t channel_count;
-    uint32_t score_count;
-    uint8_t feature_flags;
-    int8_t roam_reason;
+    uint16_t channel_specs[50];                         // +0x00
+    apple80211_reassoc_candidate candidates[7];        // +0x64
+    uint16_t reserved8e;                               // +0x8e
+    uint32_t candidate_count;                          // +0x90
+    uint32_t channel_spec_count;                       // +0x94
+    uint8_t feature_flags;                             // +0x98
+    int8_t prune_rssi_dbm;                             // +0x99
+    uint16_t reserved9a;                               // +0x9a
 } __attribute__((packed));
+static_assert(offsetof(apple80211_reassoc, candidates) == 0x64,
+              "apple80211_reassoc candidates must start at Apple +0x64");
+static_assert(offsetof(apple80211_reassoc, candidate_count) == 0x90,
+              "apple80211_reassoc candidate count must live at Apple +0x90");
+static_assert(offsetof(apple80211_reassoc, channel_spec_count) == 0x94,
+              "apple80211_reassoc chanspec count must live at Apple +0x94");
 static_assert(sizeof(apple80211_reassoc) == 0x9c,
               "apple80211_reassoc must cover the Apple offsets used by sendReassocCommand");
 
@@ -8829,6 +8842,12 @@ setWCL_REASSOC(apple80211_reassoc *data)
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
 
+    /* Exact 25C56 Core behavior: NULL and not-associated requests fail
+     * synchronously before the firmware roam owner is changed. */
+    if (data == nullptr || ic == nullptr ||
+        ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
     /* WCL reassociation owns its current-BSS policy independently. */
     ieee80211_public_initial_bssid_pin_disarm(ic);
 
@@ -8842,111 +8861,35 @@ setWCL_REASSOC(apple80211_reassoc *data)
             TahoeOwnerRegistry::AssociationOwner{};
     }
 
-    // A reassociation start invalidates an externally delivered PMK:
-    // the host supplicant must re-install a fresh PMK through
-    // CIPHER_KEY(PMK), CIPHER_KEY(MSK), PLTI DeliverPMK, or a retained
-    // private/ABI CUR_PMK path on the reassociated network. A locally owned
-    // PSK PMK, however, must
-    // SURVIVE this edge: this producer always reassociates to the
-    // CURRENT BSS (ieee80211_send_mgmt(ic->ic_bss, REASSOC_REQ)
-    // below), a PSK PMK is a pure function of passphrase+SSID and
-    // stays valid across it, and wifid does not re-deliver key
-    // material after WCL_REASSOC. Clearing unconditionally left the
-    // post-reassoc 4-way M1 permanently deferred (owner=none,
-    // ic_psk_nonzero_bytes=0) until the AP deauthed with reason 15
-    // (4WAY-HANDSHAKE-TIMEOUT), churning RUN->AUTH every ~24s.
-    bool reassoc_psk_present = false;
-    {
-        for (size_t psk_i = 0; psk_i < sizeof(ic->ic_psk); ++psk_i) {
-            if (ic->ic_psk[psk_i] != 0) {
-                reassoc_psk_present = true;
-                break;
-            }
-        }
-    }
-    if (!reassoc_psk_present)
-        clearExternalPmkEligibilityLocked("setWCL_REASSOC");
-
-    // AppleBCMWLANCore::setWCL_REASSOC is not an ack-only stub: it snapshots
-    // the recovered reassoc request, refuses NULL with 0xe00002bc, and bails
-    // out with the same code when the interface is not associated. The actual
-    // producer then delegates to NetAdapter::sendReassocCommand(...).
-    //
-    // The local port does not carry Apple's firmware command owner, but the
-    // net80211 STA stack already owns reassociation frame generation via
-    // `ieee80211_send_mgmt(..., REASSOC_REQ, ...)`. Preserve the same request
-    // coverage and association gate instead of leaving slot [590] as inline
-    // success.
-    if (data == nullptr)
-        return kIOReturnBadArgumentTahoe;
-
     memcpy(cachedReassocRequest, data, sizeof(*data));
     hasCachedReassocRequest = true;
 
-    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
-        return kIOReturnBadArgumentTahoe;
-
-    /*
-     * Reference parity for steady-state same-BSS reassociation.
-     *
-     * AppleBCMWLANNetAdapter::sendReassocCommand issues firmware WLC_REASSOC
-     * against the current BSS: the host-visible link and PTK stay up, and the
-     * WCL reassoc terminal selector is delivered by the firmware event path.
-     * Sending an OTA REASSOC_REQ to the AP we are already running with makes
-     * hostapd restart key/BA state and opens a data-path hole. For a live
-     * same-BSS RSNA, mirror the firmware path: keep link/key state intact and
-     * publish the WCL terminal success edge without emitting a management
-     * reassociation frame.
-     */
-    if (ic->ic_bss->ni_port_valid &&
-        (ic->ic_bss->ni_flags & IEEE80211_NODE_TXRXPROT)) {
-        ic->ic_wcl_reassoc_owner_active = 1;
-        ic->ic_wcl_reassoc_owner_last_leaf =
-            IEEE80211_WCL_REASSOC_OWNER_LEAF_SAME_BSS_TRANSPARENT;
-        ieee80211_wcl_reassoc_post_success(ic);
-        return kIOReturnSuccess;
+    ieee80211_wcl_reassoc_request request{};
+    request.channel_count = static_cast<uint8_t>(
+        data->channel_spec_count < IEEE80211_WCL_REASSOC_MAX_CHANSPECS
+            ? data->channel_spec_count
+            : IEEE80211_WCL_REASSOC_MAX_CHANSPECS);
+    request.candidate_count = static_cast<uint8_t>(
+        data->candidate_count < IEEE80211_WCL_REASSOC_MAX_CANDIDATES
+            ? data->candidate_count
+            : IEEE80211_WCL_REASSOC_MAX_CANDIDATES);
+    request.feature_flags = data->feature_flags;
+    request.prune_rssi_dbm = data->prune_rssi_dbm;
+    for (uint8_t i = 0; i < request.channel_count; ++i)
+        request.channel_spec[i] = data->channel_specs[i];
+    for (uint8_t i = 0; i < request.candidate_count; ++i) {
+        request.candidate[i].score = data->candidates[i].score;
+        request.candidate[i].channel_spec =
+            data->candidates[i].channel_spec;
     }
 
-    /* An OTA reassociation owns a new attempt before it can emit a response. */
-    (void)ieee80211_pae_assoc_epoch_begin(ic);
-
-    /*
-     * Recovered host-owned WCL reassociation owner contract: open the
-     * owner record before delegating to the lower owner so any later
-     * terminal selector publication can be gated on real lower-owner
-     * progression. The producer itself never publishes 0x49 / 0xcf;
-     * publication is performed by the post-send-gated helpers in
-     * net80211 after the lower owner has actually sent or attempted
-     * to send the reassociation request. Pre-send abandonment closes
-     * the owner state via the producer's synchronous return without
-     * firing a terminal selector, matching the recovered Apple body.
-     */
-    ic->ic_wcl_reassoc_owner_active = 1;
-    ic->ic_wcl_reassoc_owner_last_leaf =
-        IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP;
-
-    const int rc = ieee80211_send_mgmt(ic, ic->ic_bss,
-                                       IEEE80211_FC0_SUBTYPE_REASSOC_REQ,
-                                       0, 0);
-    if (rc == 0) {
-        /*
-         * Lower host owner has accepted and sent the reassociation
-         * request frame; the WCL terminal edge is now owned by the
-         * net80211 reassoc-response RX path or the management-frame
-         * timeout, not by this producer.
-         */
-        ic->ic_wcl_reassoc_owner_last_leaf =
-            IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT;
-    } else {
-        /*
-         * The lower send was attempted and failed synchronously. This
-         * is a real send-failure edge; the post-send gate accepts it
-         * for terminal 0xcf publication.
-         */
-        ic->ic_wcl_reassoc_owner_last_leaf =
-            IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL;
-        ieee80211_wcl_reassoc_post_failure(ic, static_cast<u_int32_t>(rc));
-    }
+    /* Apple sends these arrays to WLC_REASSOC and starts a firmware roam
+     * scan.  Intel has no equivalent command, so common net80211 owns the
+     * corresponding real HAL background scan and target switch.  Preserve
+     * the current PMK/driver-resident SAE credential until a different BSS
+     * has actually been selected. */
+    const int rc = ieee80211_begin_wcl_reassoc_bgscan(
+        IC2IFP(ic), &request);
     return rc == 0 ? kIOReturnSuccess : static_cast<IOReturn>(rc);
 }
 

@@ -2439,6 +2439,7 @@ iwn_sae_engine_publish_hooks(struct iwn_softc *sc, bool enabled,
         ic->ic_sae_wcl_request_revoke = ItlIwn::iwn_sae_wcl_request_revoke;
         ic->ic_sae_roam_port_valid = ItlIwn::iwn_sae_roam_port_valid;
         ic->ic_sae_wnm_roam_start = ItlIwn::iwn_sae_wnm_roam_start;
+        ic->ic_sae_wcl_roam_start = ItlIwn::iwn_sae_wcl_roam_start;
     } else {
         ic->ic_sae_auth_hold = NULL;
         /* A closing S_AUTH owner must remain visible even after the other
@@ -2460,6 +2461,7 @@ iwn_sae_engine_publish_hooks(struct iwn_softc *sc, bool enabled,
         ic->ic_sae_wcl_request_revoke = NULL;
         ic->ic_sae_roam_port_valid = NULL;
         ic->ic_sae_wnm_roam_start = NULL;
+        ic->ic_sae_wcl_roam_start = NULL;
     }
     if (lock != NULL)
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
@@ -2591,8 +2593,9 @@ out:
 }
 
 int ItlIwn::
-iwn_sae_wnm_roam_start(struct ieee80211com *ic,
-    const struct ieee80211_node *source)
+iwn_sae_targeted_roam_start(struct ieee80211com *ic,
+    const struct ieee80211_node *source,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN], bool consume_wnm)
 {
     struct iwn_softc *sc;
     ItlIwn *that;
@@ -2600,7 +2603,6 @@ iwn_sae_wnm_roam_start(struct ieee80211com *ic,
     struct ieee80211_node *candidate;
     u_int8_t source_ssid[IEEE80211_NWID_LEN];
     u_int8_t source_ssid_len = 0;
-    u_int8_t target_bssid[IEEE80211_ADDR_LEN];
     u_int64_t generation = 0;
     bool active_copied = false;
     bool transitioned = false;
@@ -2608,8 +2610,8 @@ iwn_sae_wnm_roam_start(struct ieee80211com *ic,
 
     explicit_bzero(&credential, sizeof(credential));
     explicit_bzero(source_ssid, sizeof(source_ssid));
-    explicit_bzero(target_bssid, sizeof(target_bssid));
-    if (ic == NULL || source == NULL || source != ic->ic_bss ||
+    if (ic == NULL || source == NULL || target_bssid == NULL ||
+        source != ic->ic_bss ||
         ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_RUN || !source->ni_port_valid ||
         source->ni_esslen == 0 ||
@@ -2628,8 +2630,6 @@ iwn_sae_wnm_roam_start(struct ieee80211com *ic,
             (IEEE80211_F_RSNON | IEEE80211_F_MFPR) ||
         (ic->ic_flags & IEEE80211_F_PSK) != 0 ||
         ic->ic_rsnakms != IEEE80211_AKM_SAE ||
-        ieee80211_wnm_bss_transition_copy_retarget(ic, source_ssid,
-            source_ssid_len, target_bssid) == 0 ||
         IEEE80211_ADDR_EQ(target_bssid, source->ni_bssid))
         goto leave;
 
@@ -2680,8 +2680,12 @@ iwn_sae_wnm_roam_start(struct ieee80211com *ic,
     IEEE80211_ADDR_COPY(credential.bssid, target_bssid);
     if (!itl_sae_wcl_credential_is_well_formed(&credential) ||
         that->stageSaeWclCredential(&credential) != kIOReturnSuccess ||
-        !ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
-            ic, generation))
+        !(consume_wnm ?
+          ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
+              ic, generation) :
+          ieee80211_sae_wcl_request_admit_cached_roam_candidate(
+              ic, generation, target_bssid, source_ssid,
+              source_ssid_len)))
         goto leave;
 
     candidate = ieee80211_find_node(ic, target_bssid);
@@ -2697,9 +2701,11 @@ iwn_sae_wnm_roam_start(struct ieee80211com *ic,
     ieee80211_node_join_bss(ic, candidate);
     if (!ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss))
         goto leave;
-    ieee80211_wnm_bss_transition_consume(ic, source_ssid,
-        source_ssid_len, target_bssid);
-    XYLog("iwn_sae_roam DRIVER_RESIDENT_BTM_STARTED\n");
+    if (consume_wnm)
+        ieee80211_wnm_bss_transition_consume(ic, source_ssid,
+            source_ssid_len, target_bssid);
+    XYLog("iwn_sae_roam DRIVER_RESIDENT_%s_STARTED\n",
+        consume_wnm ? "BTM" : "WCL");
     started = 1;
 leave:
     if (!started && generation != 0) {
@@ -2712,9 +2718,43 @@ leave:
 out:
     explicit_bzero(&credential, sizeof(credential));
     explicit_bzero(source_ssid, sizeof(source_ssid));
-    explicit_bzero(target_bssid, sizeof(target_bssid));
     (void)transitioned;
     return started;
+}
+
+int ItlIwn::
+iwn_sae_wnm_roam_start(struct ieee80211com *ic,
+    const struct ieee80211_node *source)
+{
+    u_int8_t target_bssid[IEEE80211_ADDR_LEN];
+    u_int8_t source_ssid[IEEE80211_NWID_LEN];
+    u_int8_t source_ssid_len;
+    int started = 0;
+
+    explicit_bzero(target_bssid, sizeof(target_bssid));
+    explicit_bzero(source_ssid, sizeof(source_ssid));
+    if (ic == NULL || source == NULL || source != ic->ic_bss ||
+        source->ni_esslen == 0 ||
+        source->ni_esslen > sizeof(source_ssid))
+        goto out;
+    source_ssid_len = source->ni_esslen;
+    memcpy(source_ssid, source->ni_essid, source_ssid_len);
+    if (ieee80211_wnm_bss_transition_copy_retarget(ic, source_ssid,
+            source_ssid_len, target_bssid) == 0)
+        goto out;
+    started = iwn_sae_targeted_roam_start(ic, source, target_bssid, true);
+out:
+    explicit_bzero(source_ssid, sizeof(source_ssid));
+    explicit_bzero(target_bssid, sizeof(target_bssid));
+    return started;
+}
+
+int ItlIwn::
+iwn_sae_wcl_roam_start(struct ieee80211com *ic,
+    const struct ieee80211_node *source,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN])
+{
+    return iwn_sae_targeted_roam_start(ic, source, target_bssid, false);
 }
 
 int ItlIwn::

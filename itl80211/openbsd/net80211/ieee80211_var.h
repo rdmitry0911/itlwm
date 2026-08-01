@@ -283,6 +283,31 @@ struct ieee80211_roam_profile_policy {
 	    [IEEE80211_ROAM_PROFILE_NBANDS][IEEE80211_ROAM_PROFILE_NBRACKETS];
 };
 
+/*
+ * Bounded host form of Tahoe's apple80211_reassoc carrier.  The public
+ * carrier contains a 50-entry AppleChannelSpec scan list at +0x00 and up to
+ * seven packed {score, channel} candidate preferences at +0x64.  Keep the
+ * normalized request in common net80211 so IWN, IWM, and IWX all drive the
+ * same real background-scan and BSS-selection path.
+ */
+#define IEEE80211_WCL_REASSOC_MAX_CHANSPECS 50
+#define IEEE80211_WCL_REASSOC_MAX_CANDIDATES 7
+
+struct ieee80211_wcl_reassoc_candidate {
+	u_int32_t	score;
+	u_int16_t	channel_spec;
+};
+
+struct ieee80211_wcl_reassoc_request {
+	u_int16_t	channel_spec[IEEE80211_WCL_REASSOC_MAX_CHANSPECS];
+	struct ieee80211_wcl_reassoc_candidate candidate
+	    [IEEE80211_WCL_REASSOC_MAX_CANDIDATES];
+	u_int8_t	channel_count;
+	u_int8_t	candidate_count;
+	u_int8_t	feature_flags;
+	int8_t		prune_rssi_dbm;
+};
+
 #define IEEE80211_BGSCAN_FAIL_MAX		360	/* units of 500 msec */
 
 /*
@@ -817,6 +842,9 @@ struct ieee80211com {
                             const struct ieee80211_node *);
     int             (*ic_sae_wnm_roam_start)(struct ieee80211com *,
                             const struct ieee80211_node *);
+    int             (*ic_sae_wcl_roam_start)(struct ieee80211com *,
+                            const struct ieee80211_node *,
+                            const u_int8_t [IEEE80211_ADDR_LEN]);
     /*
      * Host-owned WCL reassociation owner state (see contract notes near
      * IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT). active is set
@@ -827,6 +855,9 @@ struct ieee80211com {
      */
     u_int32_t       ic_wcl_reassoc_owner_active;
     u_int32_t       ic_wcl_reassoc_owner_last_leaf;
+    struct ieee80211_wcl_reassoc_request ic_wcl_reassoc_request;
+    u_int8_t        ic_wcl_reassoc_source_bssid[IEEE80211_ADDR_LEN];
+    u_int8_t        ic_wcl_reassoc_target_bssid[IEEE80211_ADDR_LEN];
     /*
      * Controller-owned BSS blacklist state. The public request is the exact
      * 43-byte Core carrier. The applied list changes only for valid counts;
@@ -1334,6 +1365,9 @@ struct ieee80211_wcl_scan_start_rejected {
 
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE              0U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP             1U
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED      2U
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED       3U
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED      4U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_SAME_BSS_TRANSPARENT 23U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT  24U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL 25U
@@ -1349,6 +1383,9 @@ static __inline int
 ieee80211_wcl_reassoc_leaf_is_post_send(u_int32_t leaf)
 {
     switch (leaf) {
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED:
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED:
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED:
     case IEEE80211_WCL_REASSOC_OWNER_LEAF_SAME_BSS_TRANSPARENT:
     case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT:
     case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL:
@@ -1361,6 +1398,12 @@ ieee80211_wcl_reassoc_leaf_is_post_send(u_int32_t leaf)
 
 void	ieee80211_wcl_reassoc_post_failure(struct ieee80211com *, u_int32_t);
 void	ieee80211_wcl_reassoc_post_success(struct ieee80211com *);
+void	ieee80211_wcl_reassoc_target_port_valid(struct ieee80211com *,
+    const struct ieee80211_node *);
+int	ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *,
+    const struct ieee80211_wcl_reassoc_request *);
+int	ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *,
+    const struct ieee80211_node *, u_int32_t *);
 
 /*
  * Net80211 AP station-event producer bridge.

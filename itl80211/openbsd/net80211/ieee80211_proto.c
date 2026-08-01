@@ -1650,6 +1650,7 @@ ieee80211_public_initial_bssid_pin_port_valid(struct ieee80211com *ic,
 		ieee80211_public_initial_bssid_pin_clear_locked(ic);
 	}
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_wcl_reassoc_target_port_valid(ic, ni);
 }
 
 /*
@@ -2985,6 +2986,51 @@ ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
 	    IEEE80211_ADDR_EQ(request->bssid, transition->target_bssid) &&
 	    request->ssid_len == transition->ssid_len &&
 	    memcmp(request->ssid, transition->ssid, request->ssid_len) == 0) {
+		request->phase = IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED;
+		admitted = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return admitted;
+}
+
+/*
+ * Promote an exact cached target selected by the just-completed explicit WCL
+ * reassociation scan.  This is the non-WNM peer of the protected BTM helper
+ * above: the active WCL roam owner and its selected target are the freshness
+ * proof, while the direct-SAE request still has to match the complete policy
+ * and bind the copied BSS in node_join_bss().
+ */
+int
+ieee80211_sae_wcl_request_admit_cached_roam_candidate(
+    struct ieee80211com *ic, u_int64_t generation,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN],
+    const u_int8_t *ssid, u_int ssid_len)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request *request;
+	int admitted = 0;
+
+	if (ic == NULL || generation == 0 || target_bssid == NULL ||
+	    ssid == NULL || ssid_len == 0 || ssid_len > IEEE80211_NWID_LEN ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	request = &ic->ic_sae_wcl_request;
+	if (ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    request->generation == generation &&
+	    request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING &&
+	    request->association_epoch == 0 &&
+	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request) &&
+	    ic->ic_wcl_reassoc_owner_active != 0 &&
+	    ic->ic_wcl_reassoc_owner_last_leaf ==
+	        IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED &&
+	    IEEE80211_ADDR_EQ(ic->ic_wcl_reassoc_target_bssid, target_bssid) &&
+	    IEEE80211_ADDR_EQ(request->bssid, target_bssid) &&
+	    request->ssid_len == ssid_len &&
+	    memcmp(request->ssid, ssid, ssid_len) == 0) {
 		request->phase = IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED;
 		admitted = 1;
 	}
@@ -5277,6 +5323,7 @@ justcleanup:
 				ni->ni_assoc_fail = 0;
 				if (ic->ic_opmode == IEEE80211_M_STA &&
 				    (ic->ic_flags & IEEE80211_F_RSNON) == 0) {
+					ieee80211_wcl_reassoc_target_port_valid(ic, ni);
 					if (ic->ic_sae_roam_port_valid != NULL)
 						(*ic->ic_sae_roam_port_valid)(ic, ni);
 					if (ic->ic_event_handler != NULL)

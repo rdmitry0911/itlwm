@@ -425,6 +425,12 @@ public:
         const struct ieee80211_node *);
     static int iwn_sae_wnm_roam_start(struct ieee80211com *,
         const struct ieee80211_node *);
+    static int iwn_sae_wcl_roam_start(struct ieee80211com *,
+        const struct ieee80211_node *,
+        const u_int8_t [IEEE80211_ADDR_LEN]);
+    static int iwn_sae_targeted_roam_start(struct ieee80211com *,
+        const struct ieee80211_node *,
+        const u_int8_t [IEEE80211_ADDR_LEN], bool);
     static void iwn_sae_engine_task(void *);
     void       iwn_sae_engine_stop_begin(struct iwn_softc *);
     void       iwn_sae_engine_reopen(struct iwn_softc *);

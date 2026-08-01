@@ -309,6 +309,128 @@ ieee80211_begin_bgscan(struct _ifnet *ifp)
     }
 }
 
+static u_int8_t
+ieee80211_wcl_reassoc_primary_channel(u_int16_t channel_spec)
+{
+	/* Tahoe AppleChannelSpec keeps the primary 20 MHz channel in byte 0.
+	 * Bits 15:14 describe the band and the remaining width/sideband bits do
+	 * not change candidate identity for this net80211 scan. */
+	return (u_int8_t)(channel_spec & 0xff);
+}
+
+int
+ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *ic,
+    const struct ieee80211_node *ni, u_int32_t *score)
+{
+	const struct ieee80211_wcl_reassoc_request *request;
+	u_int8_t channel;
+	u_int32_t best_score = 0;
+	int channel_allowed = 0;
+	int scored = 0;
+	u_int i;
+
+	if (score != NULL)
+		*score = 0;
+	if (ic == NULL || ni == NULL || !ic->ic_wcl_reassoc_owner_active ||
+	    (ic->ic_wcl_reassoc_owner_last_leaf !=
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+	    ic->ic_wcl_reassoc_owner_last_leaf !=
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED))
+		return 0;
+
+	/* A WCL roam request must demonstrate a different over-the-air BSS. */
+	if (IEEE80211_ADDR_EQ(ni->ni_bssid,
+	    ic->ic_wcl_reassoc_source_bssid))
+		return -1;
+	channel = (u_int8_t)ieee80211_chan2ieee(ic, ni->ni_chan);
+	request = &ic->ic_wcl_reassoc_request;
+
+	if (request->channel_count == 0) {
+		channel_allowed = 1;
+	} else {
+		for (i = 0; i < request->channel_count; i++) {
+			if (ieee80211_wcl_reassoc_primary_channel(
+			    request->channel_spec[i]) == channel) {
+				channel_allowed = 1;
+				break;
+			}
+		}
+	}
+	if (!channel_allowed)
+		return -1;
+
+	if (request->prune_rssi_dbm != 0 &&
+	    (int)ni->ni_rssi - 100 < (int)request->prune_rssi_dbm)
+		return -1;
+
+	for (i = 0; i < request->candidate_count; i++) {
+		if (ieee80211_wcl_reassoc_primary_channel(
+		    request->candidate[i].channel_spec) != channel)
+			continue;
+		if (!scored || request->candidate[i].score > best_score)
+			best_score = request->candidate[i].score;
+		scored = 1;
+	}
+	if (score != NULL)
+		*score = best_score;
+	return scored ? 1 : 0;
+}
+
+int
+ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
+    const struct ieee80211_wcl_reassoc_request *request)
+{
+	struct ieee80211com *ic = (struct ieee80211com *)ifp;
+	int error;
+
+	if (ic == NULL || request == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL ||
+	    ic->ic_mgt_timer != 0 || (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+	    ic->ic_bgscan_start == NULL || ic->ic_wcl_reassoc_owner_active ||
+	    request->channel_count > IEEE80211_WCL_REASSOC_MAX_CHANSPECS ||
+	    request->candidate_count > IEEE80211_WCL_REASSOC_MAX_CANDIDATES)
+		return EBUSY;
+	if ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+	    !ic->ic_bss->ni_port_valid)
+		return EBUSY;
+
+	ic->ic_wcl_reassoc_request = *request;
+	IEEE80211_ADDR_COPY(ic->ic_wcl_reassoc_source_bssid,
+	    ic->ic_bss->ni_bssid);
+	explicit_bzero(ic->ic_wcl_reassoc_target_bssid,
+	    sizeof(ic->ic_wcl_reassoc_target_bssid));
+	ic->ic_wcl_reassoc_owner_active = 1;
+	ic->ic_wcl_reassoc_owner_last_leaf =
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP;
+
+	/* Explicit WCL reassociation is user/airportd intent and is therefore not
+	 * suppressed by the autonomous-roam preference.  Every HAL already owns
+	 * a real associated background scan through this callback. */
+	error = (*ic->ic_bgscan_start)(ic);
+	if (error != 0) {
+		ic->ic_wcl_reassoc_owner_active = 0;
+		ic->ic_wcl_reassoc_owner_last_leaf =
+		    IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
+		explicit_bzero(&ic->ic_wcl_reassoc_request,
+		    sizeof(ic->ic_wcl_reassoc_request));
+		explicit_bzero(ic->ic_wcl_reassoc_source_bssid,
+		    sizeof(ic->ic_wcl_reassoc_source_bssid));
+		return error;
+	}
+
+	/* Keep only the live source BSS.  A candidate is eligible only when this
+	 * newly accepted physical scan observes it again. */
+	ieee80211_free_allnodes(ic, 0);
+	ic->ic_flags |= IEEE80211_F_BGSCAN;
+	ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+	ic->ic_wcl_reassoc_owner_last_leaf =
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
+	XYLog("wcl_reassoc REAL_SCAN_STARTED channels=%u candidates=%u flags=0x%x prune=%d\n",
+	    request->channel_count, request->candidate_count,
+	    request->feature_flags, request->prune_rssi_dbm);
+	return 0;
+}
+
 void
 ieee80211_begin_cache_bgscan(struct _ifnet *ifp)
 {
@@ -468,6 +590,15 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     ic->ic_wcl_scan_suppress_scan_done_once = 0;
     ic->ic_wcl_scan_active = 0;
     ic->ic_initial_scan_census_only = 0;
+    ic->ic_wcl_reassoc_owner_active = 0;
+    ic->ic_wcl_reassoc_owner_last_leaf =
+        IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
+    memset(&ic->ic_wcl_reassoc_request, 0,
+           sizeof(ic->ic_wcl_reassoc_request));
+    memset(ic->ic_wcl_reassoc_source_bssid, 0,
+           sizeof(ic->ic_wcl_reassoc_source_bssid));
+    memset(ic->ic_wcl_reassoc_target_bssid, 0,
+           sizeof(ic->ic_wcl_reassoc_target_bssid));
     /* A missing leaf lock leaves the dormant snapshot unpublishable. */
 	if (ic->ic_pae_selected_bss_lock == NULL)
 		ic->ic_pae_selected_bss_lock = IOSimpleLockAlloc();
@@ -551,6 +682,15 @@ ieee80211_ifdetach(struct _ifnet *ifp)
     /* Close future async STA owners before queues, crypto, and nodes vanish. */
     ieee80211_public_initial_bssid_pin_disarm(ic);
     ieee80211_wnm_bss_transition_clear(ic);
+    ic->ic_wcl_reassoc_owner_active = 0;
+    ic->ic_wcl_reassoc_owner_last_leaf =
+        IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
+    explicit_bzero(&ic->ic_wcl_reassoc_request,
+                   sizeof(ic->ic_wcl_reassoc_request));
+    explicit_bzero(ic->ic_wcl_reassoc_source_bssid,
+                   sizeof(ic->ic_wcl_reassoc_source_bssid));
+    explicit_bzero(ic->ic_wcl_reassoc_target_bssid,
+                   sizeof(ic->ic_wcl_reassoc_target_bssid));
     (void)ieee80211_pae_assoc_epoch_begin(ic);
     timeout_del(&ic->ic_wnm_bgscan_retry_timeout);
     timeout_free(&ic->ic_wnm_bgscan_retry_timeout);
@@ -1959,6 +2099,12 @@ ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
     if (!ieee80211_wcl_reassoc_leaf_is_post_send(
             ic->ic_wcl_reassoc_owner_last_leaf))
         return;
+    /* Scan acceptance is progress, not reassociation completion. */
+    if (ic->ic_wcl_reassoc_owner_last_leaf ==
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED ||
+        ic->ic_wcl_reassoc_owner_last_leaf ==
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED)
+        return;
     /*
      * Close the owner state before publishing so the terminal selector
      * cannot be re-emitted by a subsequent unrelated state change.
@@ -1966,6 +2112,12 @@ ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
+    explicit_bzero(&ic->ic_wcl_reassoc_request,
+                   sizeof(ic->ic_wcl_reassoc_request));
+    explicit_bzero(ic->ic_wcl_reassoc_source_bssid,
+                   sizeof(ic->ic_wcl_reassoc_source_bssid));
+    explicit_bzero(ic->ic_wcl_reassoc_target_bssid,
+                   sizeof(ic->ic_wcl_reassoc_target_bssid));
     if (ic->ic_event_handler)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_DONE, NULL);
 }
@@ -1973,6 +2125,8 @@ ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
 void
 ieee80211_wcl_reassoc_post_failure(struct ieee80211com *ic, u_int32_t result)
 {
+    u_int32_t leaf;
+
     if (ic == NULL)
         return;
     if (!ic->ic_wcl_reassoc_owner_active)
@@ -1980,11 +2134,41 @@ ieee80211_wcl_reassoc_post_failure(struct ieee80211com *ic, u_int32_t result)
     if (!ieee80211_wcl_reassoc_leaf_is_post_send(
             ic->ic_wcl_reassoc_owner_last_leaf))
         return;
-    /* Terminal failure invalidates the request epoch before publication. */
-    (void)ieee80211_pae_assoc_epoch_begin(ic);
+    leaf = ic->ic_wcl_reassoc_owner_last_leaf;
+    /* A roam scan which finds no eligible target is an asynchronous command
+     * failure in the reference and must leave the source association alive.
+     * Once radio switching or an OTA reassociation has started, the ordinary
+     * association epoch is no longer reusable and must be fenced. */
+    if (leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+        leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED)
+        (void)ieee80211_pae_assoc_epoch_begin(ic);
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
+    explicit_bzero(&ic->ic_wcl_reassoc_request,
+                   sizeof(ic->ic_wcl_reassoc_request));
+    explicit_bzero(ic->ic_wcl_reassoc_source_bssid,
+                   sizeof(ic->ic_wcl_reassoc_source_bssid));
+    explicit_bzero(ic->ic_wcl_reassoc_target_bssid,
+                   sizeof(ic->ic_wcl_reassoc_target_bssid));
     if (ic->ic_event_handler)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_FAIL, &result);
+}
+
+void
+ieee80211_wcl_reassoc_target_port_valid(struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+    if (ic == NULL || ni == NULL || !ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_last_leaf !=
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_RUN || ic->ic_bss != ni ||
+        ((ic->ic_flags & IEEE80211_F_RSNON) != 0 && !ni->ni_port_valid) ||
+        !IEEE80211_ADDR_EQ(ni->ni_bssid,
+            ic->ic_wcl_reassoc_target_bssid))
+        return;
+    XYLog("wcl_reassoc TARGET_PORT_VALID bssid=%s\n",
+          ether_sprintf(ni->ni_bssid));
+    ieee80211_wcl_reassoc_post_success(ic);
 }

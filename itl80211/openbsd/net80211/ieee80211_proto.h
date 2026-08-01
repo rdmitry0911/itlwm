@@ -318,6 +318,9 @@ extern	int ieee80211_sae_wcl_request_scan_started(struct ieee80211com *,
  * This carries no credential or node and is false for every ordinary join. */
 extern	int ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
 	    struct ieee80211com *, u_int64_t);
+extern	int ieee80211_sae_wcl_request_admit_cached_roam_candidate(
+	    struct ieee80211com *, u_int64_t,
+	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int);
 /* During the one direct pure-SAE scan handoff the historical ESS list must
  * not overwrite the already-published RSN/SAE policy before BSS selection.
  * HOLD is the pre-publication/PENDING-or-STARTING half: end_scan() must

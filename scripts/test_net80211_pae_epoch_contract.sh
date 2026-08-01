@@ -43,6 +43,11 @@ def require(text, needle, label):
         fail(f"missing {label}: {needle}")
 
 
+def forbid(text, needle, label):
+    if needle in text:
+        fail(f"unexpected {label}: {needle}")
+
+
 def ordered(text, label, *needles):
     pos = 0
     for needle in needles:
@@ -438,16 +443,23 @@ ordered(clear_external_pmk, "external PMK fallback fence",
 wcl_reassoc = body(skywalk_cpp,
                    "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_REASSOC",
                    "WCL reassociation")
-transparent_end = wcl_reassoc.find("return kIOReturnSuccess;",
-                                   wcl_reassoc.find("ni_port_valid"))
-if transparent_end < 0:
-    fail("missing transparent WCL reassociation return")
-if "ieee80211_pae_assoc_epoch_begin" in wcl_reassoc[:transparent_end]:
-    fail("transparent WCL reassociation must not fabricate an OTA epoch")
-wcl_ota = wcl_reassoc[transparent_end:]
-ordered(wcl_ota, "OTA WCL reassociation request fence",
-        "ieee80211_pae_assoc_epoch_begin(ic)",
-        "ic->ic_wcl_reassoc_owner_active = 1", "ieee80211_send_mgmt")
+require(wcl_reassoc, "ieee80211_begin_wcl_reassoc_bgscan",
+        "WCL reassociation delegates a real roam scan")
+forbid(wcl_reassoc, "IEEE80211_FC0_SUBTYPE_REASSOC_REQ",
+       "same-BSS OTA reassociation shortcut")
+forbid(wcl_reassoc, "SAME_BSS_TRANSPARENT",
+       "fabricated same-BSS completion")
+forbid(wcl_reassoc, 'clearExternalPmkEligibilityLocked("setWCL_REASSOC")',
+       "credential destruction before a target is selected")
+
+wcl_scan = body(core_c, "ieee80211_begin_wcl_reassoc_bgscan(",
+                "WCL real roam scan")
+ordered(wcl_scan, "WCL scan lower-owner admission",
+        "ic->ic_wcl_reassoc_owner_last_leaf =",
+        "(*ic->ic_bgscan_start)(ic)",
+        "IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED")
+forbid(wcl_scan, "airportItlwmIsRoamLocked",
+       "explicit WCL request suppressed by autonomous roam preference")
 
 # Epoch/replacement cancellation now owns an active PMF transaction as well.
 # It must snapshot/cancel under the selected-BSS leaf lock, invoke the driver

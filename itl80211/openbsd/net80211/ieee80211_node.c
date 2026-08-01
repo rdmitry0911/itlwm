@@ -1052,11 +1052,15 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
                     int bgscan)
 {
     u_int8_t rate;
-    int fail, wnm_target;
+    int fail, wnm_target, wcl_target;
     
     fail = 0;
     wnm_target = bgscan ?
         ieee80211_wnm_bss_transition_candidate_disposition(ic, ni) : 0;
+    wcl_target = bgscan && ic->ic_wcl_reassoc_owner_active &&
+        ic->ic_wcl_reassoc_owner_last_leaf ==
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+        ieee80211_wcl_reassoc_candidate_disposition(ic, ni, NULL) >= 0;
 
     /*
      * Apple/macOS: skip ALL BSS filtering when AUTO_JOIN && des_esslen==0.
@@ -1121,7 +1125,7 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
         fail |= IEEE80211_NODE_ASSOCFAIL_ESSID;
     if ((ic->ic_flags & IEEE80211_F_DESBSSID) &&
         !IEEE80211_ADDR_EQ(ic->ic_des_bssid, ni->ni_bssid) &&
-        wnm_target != 1)
+        wnm_target != 1 && !wcl_target)
         fail |= IEEE80211_NODE_ASSOCFAIL_BSSID;
     
     if (ic->ic_flags & IEEE80211_F_RSNON) {
@@ -1195,6 +1199,10 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
     
     if ((ic->ic_flags & IEEE80211_F_BGSCAN) == 0) {
         free(sba);
+        if (ic->ic_wcl_reassoc_owner_active &&
+            ic->ic_wcl_reassoc_owner_last_leaf ==
+                IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)
+            ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)ECANCELED);
         return;
     }
     
@@ -1204,6 +1212,10 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
     if (selbs == NULL) {
         free(sba);
         ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+        if (ic->ic_wcl_reassoc_owner_active &&
+            ic->ic_wcl_reassoc_owner_last_leaf ==
+                IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)
+            ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)ENOENT);
         ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
         return;
     }
@@ -1212,6 +1224,10 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
     if (curbs == NULL) {
         free(sba);
         ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+        if (ic->ic_wcl_reassoc_owner_active &&
+            ic->ic_wcl_reassoc_owner_last_leaf ==
+                IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)
+            ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)ENOENT);
         ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
         return;
     }
@@ -1370,6 +1386,11 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
     struct ieee80211_node *ni, *nextbs, *selbs = NULL,
     *selbs2 = NULL, *selbs5 = NULL;
     uint8_t min_5ghz_rssi;
+    u_int32_t selected_wcl_score = 0;
+    int selected_wcl_scored = 0;
+    int wcl_reassoc_scan = bgscan && ic->ic_wcl_reassoc_owner_active &&
+        ic->ic_wcl_reassoc_owner_last_leaf ==
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
     int nodeCount = 0, failCount = 0;
 
     ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
@@ -1398,9 +1419,34 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
         if (ieee80211_wnm_bss_transition_candidate_disposition(ic, ni) < 0)
             continue;
 
+        u_int32_t wcl_score = 0;
+        int wcl_disposition =
+            ieee80211_wcl_reassoc_candidate_disposition(ic, ni,
+                &wcl_score);
+        if (wcl_reassoc_scan && wcl_disposition < 0)
+            continue;
+
         int fail = ieee80211_match_bss(ic, ni, bgscan);
         if (fail != 0) {
             failCount++;
+            continue;
+        }
+
+        /* The explicit WCL command carries its own bounded channel and
+         * candidate preference arrays.  Do not replace that policy with the
+         * generic 5 GHz preference or periodic-roam RSSI delta. */
+        if (wcl_reassoc_scan) {
+            int scored = wcl_disposition > 0;
+            if (selbs == NULL ||
+                (scored && !selected_wcl_scored) ||
+                (scored == selected_wcl_scored &&
+                 ((scored && wcl_score > selected_wcl_score) ||
+                  (wcl_score == selected_wcl_score &&
+                   ni->ni_rssi > selbs->ni_rssi)))) {
+                selbs = ni;
+                selected_wcl_score = wcl_score;
+                selected_wcl_scored = scored;
+            }
             continue;
         }
         
@@ -1428,6 +1474,8 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
     if (!selbs5 && !selbs2 && !selbs)
         XYLog("%s: no BSS selected (nodes=%d rejected=%d des_esslen=%d)\n",
               __FUNCTION__, nodeCount, failCount, ic->ic_des_esslen);
+    if (wcl_reassoc_scan)
+        return selbs;
     if (selbs5 && (*ic->ic_node_checkrssi)(ic, selbs5))
         selbs = selbs5;
     else if (selbs5 && selbs2)
@@ -1454,6 +1502,9 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
                   ic->ic_state == IEEE80211_S_RUN);
     int roamscan = bgscan &&
                 (ic->ic_flags & IEEE80211_F_DISABLE_BG_AUTO_CONNECT) == 0;
+    int wcl_reassoc_scan = bgscan && ic->ic_wcl_reassoc_owner_active &&
+        ic->ic_wcl_reassoc_owner_last_leaf ==
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
 
     AirportItlwmPostPltiTraceRecord(
         ic, kAirportItlwmPostPltiTraceEventScanCompleted);
@@ -1557,6 +1608,14 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
 #endif
     if (ni == NULL) {
         DPRINTF(("no scan candidate\n"));
+        if (wcl_reassoc_scan) {
+            ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                              IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+            ic->ic_wcl_reassoc_owner_last_leaf =
+                IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+            ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)ENOENT);
+            return;
+        }
     notfound:
         
         AirportItlwmPostPltiTraceRecord(
@@ -1632,6 +1691,88 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
         u_int8_t wnm_dialog_token = 0;
         u_int8_t wnm_target_bssid[IEEE80211_ADDR_LEN];
         struct ieee80211_node *wnm_source;
+
+        if (wcl_reassoc_scan) {
+            struct ieee80211_node *source = ic->ic_bss;
+            int pure_sae;
+
+            if (selbs == NULL || source == NULL || selbs == source ||
+                IEEE80211_ADDR_EQ(selbs->ni_bssid,
+                    ic->ic_wcl_reassoc_source_bssid)) {
+                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+                ic->ic_wcl_reassoc_owner_last_leaf =
+                    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+                XYLog("wcl_reassoc NO_ELIGIBLE_TARGET\n");
+                ieee80211_wcl_reassoc_post_failure(ic,
+                    (u_int32_t)ENOENT);
+                return;
+            }
+
+            IEEE80211_ADDR_COPY(ic->ic_wcl_reassoc_target_bssid,
+                selbs->ni_bssid);
+            ic->ic_wcl_reassoc_owner_last_leaf =
+                IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+            XYLog("wcl_reassoc TARGET_SELECTED bssid=%s channel=%u rssi=%d\n",
+                ether_sprintf(selbs->ni_bssid),
+                ieee80211_chan2ieee(ic, selbs->ni_chan),
+                (int)selbs->ni_rssi - 100);
+
+            pure_sae = (ic->ic_flags &
+                (IEEE80211_F_RSNON | IEEE80211_F_MFPR)) ==
+                (IEEE80211_F_RSNON | IEEE80211_F_MFPR) &&
+                (ic->ic_flags & IEEE80211_F_PSK) == 0 &&
+                ic->ic_rsnakms == IEEE80211_AKM_SAE;
+            if (pure_sae) {
+                if (ic->ic_sae_wcl_roam_start != NULL &&
+                    (*ic->ic_sae_wcl_roam_start)(ic, source,
+                        selbs->ni_bssid) != 0)
+                    return;
+                /* IWM/IWX have no driver-resident SAE credential owner.  A
+                 * generic switch would silently lose the password and send
+                 * Open-System auth, so preserve the validated source link. */
+                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+                ic->ic_wcl_reassoc_owner_last_leaf =
+                    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+                ieee80211_wcl_reassoc_post_failure(ic,
+                    (u_int32_t)EOPNOTSUPP);
+                return;
+            }
+
+            arg = (struct ieee80211_node_switch_bss_arg *)malloc(
+                sizeof(*arg), 0, 0);
+            if (arg == NULL) {
+                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+                ic->ic_wcl_reassoc_owner_last_leaf =
+                    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+                ieee80211_wcl_reassoc_post_failure(ic,
+                    (u_int32_t)ENOMEM);
+                return;
+            }
+            ieee80211_stop_ampdu_tx(ic, source,
+                                    IEEE80211_FC0_SUBTYPE_DEAUTH);
+            if (IEEE80211_SEND_MGMT(ic, source,
+                    IEEE80211_FC0_SUBTYPE_DEAUTH,
+                    IEEE80211_REASON_AUTH_LEAVE) != 0) {
+                free(arg);
+                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+                ic->ic_wcl_reassoc_owner_last_leaf =
+                    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+                ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)EIO);
+                return;
+            }
+            (void)ieee80211_pae_assoc_epoch_begin(ic);
+            ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
+            IEEE80211_ADDR_COPY(arg->cur_macaddr, source->ni_macaddr);
+            IEEE80211_ADDR_COPY(arg->sel_macaddr, selbs->ni_macaddr);
+            source->ni_unref_arg = arg;
+            source->ni_unref_arg_size = sizeof(*arg);
+            source->ni_unref_cb = ieee80211_node_switch_bss;
+            return;
+        }
 
         explicit_bzero(wnm_target_bssid, sizeof(wnm_target_bssid));
         if (ieee80211_wnm_bss_transition_active(ic,
