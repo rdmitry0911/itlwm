@@ -3,7 +3,8 @@
 #
 # The host AX211 advertises only one AP-type interface, so this helper never
 # tries multi-BSS or creates a second VIF.  It temporarily replaces the pinned
-# AIAMlab6235 hostapd process with a WPA2-PSK LabAP BSS on the same interface.
+# AIAMlab6235 hostapd process with a pure-SAE/MFP-required LabAP BSS on the same
+# interface.
 # An independently supervised watchdog restores the original BSS if the
 # invoking process is interrupted.  It never changes addresses, routes, DHCP,
 # DNS, forwarding, NetworkManager, or host reboot state.
@@ -13,7 +14,7 @@
 #
 # `--activate` defaults to a randomly generated, ephemeral test passphrase.
 # `--credential-stdin` is available only for a later real-credential run; it
-# reads one WPA2 passphrase from stdin without placing it in argv, environment,
+# reads one SAE passphrase from stdin without placing it in argv, environment,
 # state text, or output.  The staged hostapd config is mode 600 and is removed
 # only after a verified rollback.
 set -euo pipefail
@@ -773,9 +774,10 @@ write_test_config() {
         printf '%s\n' 'auth_algs=1'
         printf '%s\n' 'wpa=2'
         printf 'wpa_passphrase=%s\n' "$passphrase"
-        printf '%s\n' 'wpa_key_mgmt=WPA-PSK'
+        printf '%s\n' 'wpa_key_mgmt=SAE'
         printf '%s\n' 'rsn_pairwise=CCMP'
-        printf '%s\n' 'ieee80211w=0'
+        printf '%s\n' 'ieee80211w=2'
+        printf '%s\n' 'sae_require_mfp=1'
         printf '%s\n' 'ctrl_interface=/run/hostapd'
         printf '%s\n' 'logger_stdout=-1'
         printf '%s\n' 'logger_syslog=-1'
@@ -793,15 +795,17 @@ validate_test_config() {
     [ "$(grep -c '^ignore_broadcast_ssid=' "$config")" = 1 ] || return 1
     [ "$(grep -c '^wpa=2$' "$config")" = 1 ] || return 1
     [ "$(grep -c '^wpa=' "$config")" = 1 ] || return 1
-    [ "$(grep -c '^wpa_key_mgmt=WPA-PSK$' "$config")" = 1 ] || return 1
+    [ "$(grep -c '^wpa_key_mgmt=SAE$' "$config")" = 1 ] || return 1
     [ "$(grep -c '^wpa_key_mgmt=' "$config")" = 1 ] || return 1
     [ "$(grep -c '^rsn_pairwise=CCMP$' "$config")" = 1 ] || return 1
     [ "$(grep -c '^rsn_pairwise=' "$config")" = 1 ] || return 1
-    [ "$(grep -c '^ieee80211w=0$' "$config")" = 1 ] || return 1
+    [ "$(grep -c '^ieee80211w=2$' "$config")" = 1 ] || return 1
     [ "$(grep -c '^ieee80211w=' "$config")" = 1 ] || return 1
+    [ "$(grep -c '^sae_require_mfp=1$' "$config")" = 1 ] || return 1
+    [ "$(grep -c '^sae_require_mfp=' "$config")" = 1 ] || return 1
     [ "$(grep -c '^ctrl_interface=/run/hostapd$' "$config")" = 1 ] || return 1
     [ "$(grep -c '^wpa_passphrase=' "$config")" = 1 ] || return 1
-    ! grep -Fq 'SAE' "$config"
+    [ "$(grep -c '^wpa_key_mgmt=SAE$' "$config")" = 1 ]
 }
 
 passive_flushed_scan() {
@@ -1491,7 +1495,7 @@ do_activate() {
     else
         passphrase="$(generated_passphrase)" || die "could not generate temporary passphrase"
     fi
-    valid_wpa_passphrase "$passphrase" || die "credential is not a valid WPA2 passphrase"
+    valid_wpa_passphrase "$passphrase" || die "credential is not a valid SAE passphrase"
     write_test_config "$passphrase" || die "could not stage temporary hostapd configuration"
     passphrase=""
     validate_test_config || die "temporary hostapd configuration failed local validation"

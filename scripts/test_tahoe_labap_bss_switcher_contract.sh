@@ -31,6 +31,10 @@ for token in \
     'DIRECT_TEST_SSID="IWNDirectJoin"' \
     'ACTIVE_TEST_SSID="$TEST_SSID"' \
     "ignore_broadcast_ssid=0" \
+    'wpa_key_mgmt=SAE' \
+    'ieee80211w=2' \
+    'sae_require_mfp=1' \
+    'credential is not a valid SAE passphrase' \
     '--direct-join' \
     'direct join requires credential stdin' \
     'stable_direct_test_ssid_absence' \
