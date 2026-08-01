@@ -276,9 +276,12 @@ forbid(submit, "sc->sc_flags |= IWN_FLAG_SCANNING;",
        "late scan-flag publication after doorbell")
 cmd = body(iwn, "int ItlIwn::\niwn_cmd_with_doorbell_hook",
            "IWN hooked command submission")
-ordered(cmd, "doorbell ownership covers firmware visibility",
+ordered(cmd, "transport readiness precedes the IRQ-safe doorbell fence",
+        "error = iwn_set_cmd_in_flight(sc);",
+        "if (error != 0)",
         "(*pre_doorbell)(sc, doorbell_context)",
-        "ops->update_sched(sc, ring->qid, ring->cur, 0, 0);",
+        "iwn_clear_cmd_in_flight(sc);",
+        "ops->update_sched(sc, ring->qid, submittedIndex, 0, 0);",
         "IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR",
         "(*post_doorbell)(sc, doorbell_context)")
 for token in (

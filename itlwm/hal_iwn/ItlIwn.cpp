@@ -15818,23 +15818,10 @@ iwn_cmd_with_doorbell_hook(struct iwn_softc *sc, int code, const void *buf,
 //        (caddr_t)desc - ring->desc_dma.vaddr, sizeof (*desc),
 //        BUS_DMASYNC_PREWRITE);
 
-    /* A scan lease can make the final ownership decision only here: all
-     * allocation and descriptor construction is complete, while the command
-     * remains invisible to firmware.  Its post hook releases the IRQ-safe
-     * fence only after the real WRPTR write below. */
-    if (pre_doorbell != NULL && !(*pre_doorbell)(sc, doorbell_context)) {
-        if (m != NULL) {
-            explicit_bzero(cmd, totlen);
-            mbuf_freem(m);
-            data->m = NULL;
-            data->map->dm_nsegs = 0;
-        } else {
-            explicit_bzero(cmd, sizeof(*cmd));
-        }
-        explicit_bzero(desc, sizeof(*desc));
-        return ECANCELED;
-    }
-
+    /* Wake/reserve the command transport before an optional pre-doorbell
+     * hook takes an IRQ-safe ownership fence.  A sleeping or stopped NIC can
+     * reject this step; in that case no hook has run and no simple lock can
+     * escape into the caller's taskq thread. */
     error = iwn_set_cmd_in_flight(sc);
     if (error != 0) {
         if (m != NULL) {
@@ -15847,6 +15834,24 @@ iwn_cmd_with_doorbell_hook(struct iwn_softc *sc, int code, const void *buf,
         }
         explicit_bzero(desc, sizeof(*desc));
         return error;
+    }
+
+    /* A scan lease can make the final ownership decision only here: all
+     * allocation, descriptor construction, and transport wake are complete,
+     * while the command remains invisible to firmware.  Its post hook
+     * releases the IRQ-safe fence only after the real WRPTR write below. */
+    if (pre_doorbell != NULL && !(*pre_doorbell)(sc, doorbell_context)) {
+        iwn_clear_cmd_in_flight(sc);
+        if (m != NULL) {
+            explicit_bzero(cmd, totlen);
+            mbuf_freem(m);
+            data->m = NULL;
+            data->map->dm_nsegs = 0;
+        } else {
+            explicit_bzero(cmd, sizeof(*cmd));
+        }
+        explicit_bzero(desc, sizeof(*desc));
+        return ECANCELED;
     }
 
     const int submittedIndex = ring->cur;
