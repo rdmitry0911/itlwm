@@ -555,6 +555,10 @@ public:
                                    struct ItlApFirmwareRuntime *,
                                    struct ItlApFirmwareClientRuntime *,
                                    uint8_t, uint16_t, uint16_t, bool);
+    int    iwx_ap_set_client_tx_ba(struct iwx_softc *,
+                                   struct ItlApFirmwareRuntime *,
+                                   struct ItlApFirmwareClientRuntime *,
+                                   uint8_t, uint16_t, bool);
     int    iwx_ap_remove_client_sta(struct iwx_softc *,
                                     struct ItlApFirmwareRuntime *,
                                     struct ItlApFirmwareClientRuntime *);

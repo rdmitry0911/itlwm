@@ -134,8 +134,11 @@ notif = body(
 )
 for needle in (
     "completedAddNodeStatus = addNodeStatus;",
+    "completedAddNodeFlags = completedNode->flags;",
+    "completedAddNodeId = completedNode->id;",
     "iwn_note_ap_firmware_event(",
-    "completedAddNodeStatus);",
+    "completedAddNodeStatus, completedAddNodeFlags,",
+    "completedAddNodeId);",
 ):
     assert needle in notif, f"missing firmware ADD_STA status handoff: {needle}"
 

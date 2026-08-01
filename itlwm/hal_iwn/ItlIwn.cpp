@@ -105,6 +105,13 @@ static bool iwn_scan_lease_mark_abort(
     u_int64_t *, bool *);
 static void iwn_scan_lease_abort_submission_failed(
     struct iwn_softc *, u_int64_t);
+int iwn_nic_lock(struct iwn_softc *);
+void iwn_nic_unlock(struct iwn_softc *);
+void iwn_prph_write(struct iwn_softc *, uint32_t, uint32_t);
+void iwn_prph_setbits(struct iwn_softc *, uint32_t, uint32_t);
+void iwn_prph_clrbits(struct iwn_softc *, uint32_t, uint32_t);
+void iwn_mem_write(struct iwn_softc *, uint32_t, uint32_t);
+void iwn_mem_write_2(struct iwn_softc *, uint32_t, uint16_t);
 
 /* The laboratory switch exposes diagnostic observation and stimulus only.
  * Product WCL SAE/PMF admission is tied separately to the Tahoe in-kext
@@ -4056,6 +4063,7 @@ bool ItlIwn::attach(IOPCIDevice *device)
     apPsQueueReady = true;
     apTimSet = false;
     bzero(apClientRxBa, sizeof(apClientRxBa));
+    bzero(apClientTxBa, sizeof(apClientTxBa));
     bzero(&apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
     iwn_reset_ap_runtime_state();
     pci.pa_tag = device;
@@ -4131,9 +4139,21 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apClientHtCapabilities = 0;
     apClientHtAmpduParams = 0;
     bzero(apClientHtMcs, sizeof(apClientHtMcs));
-    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++)
+    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
         itl_ap_rx_ba_stop(&apClientRxBa[tid]);
+        itl_ap_tx_ba_reset(&apClientTxBa[tid]);
+        apClientTxBaQueue[tid] = UINT8_MAX;
+        apClientTxSequence[tid] = 0;
+    }
     apClientRxBaMask = 0;
+    apClientTxBaMask = 0;
+    apClientDisableTid = 0;
+    apClientTxBaEnablePending = false;
+    apClientTxBaPendingTid = UINT8_MAX;
+    apClientTxBaPendingQueue = UINT8_MAX;
+    apClientTxBaPendingSsn = 0;
+    apClientTxBaPendingOldDisableTid = 0;
+    apClientTxDialogToken = 0;
     apClientOpenAuthenticated = false;
     apClientAssociated = false;
     apClientAuthorized = false;
@@ -4997,7 +5017,12 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         }
     }
 
-    struct iwn_tx_ring *ring = &com.txq[IWN_IPAN_BE_QUEUE];
+    const int dataQueueId = !multicast &&
+        (apClientTxBaMask & 1U) != 0 ? apClientTxBaQueue[0] :
+                                      IWN_IPAN_BE_QUEUE;
+    if (dataQueueId < 0 || dataQueueId >= com.ntxqs)
+        return ENOSPC;
+    struct iwn_tx_ring *ring = &com.txq[dataQueueId];
     if (ring->queued >= IWN_TX_RING_COUNT - 1) {
         if (++apDataTxRejectCount <= 32)
             XYLog("%s: AP Ethernet TX reject #%u ring-full queued=%u\n",
@@ -5049,9 +5074,18 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
 
     struct iwn_cmd_data *tx =
         reinterpret_cast<struct iwn_cmd_data *>(cmd->data);
-    uint32_t flags = IWN_TX_AUTO_SEQ;
+    /*
+     * Exact DVM rule: firmware sequence control is used for non-QoS frames,
+     * while every QoS data MPDU carries the driver-owned per-RA/TID sequence.
+     * An aggregate scheduler starts at the ADDBA SSN and will not consume a
+     * descriptor whose header is left at sequence zero under AUTO_SEQ.
+     */
+    uint32_t flags = qosData ? 0 : IWN_TX_AUTO_SEQ;
     if (!multicast)
         flags |= IWN_TX_NEED_ACK | IWN_TX_LINKQ;
+    if (!multicast && ring->qid >= com.first_agg_txq &&
+        com.hw_type != IWN_HW_REV_TYPE_4965)
+        flags |= IWN_TX_NEED_PROTECTION;
     if (padLength != 0)
         flags |= IWN_TX_NEED_PADDING;
     tx->flags = htole32(flags);
@@ -5095,6 +5129,14 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     }
     memcpy(reinterpret_cast<uint8_t *>(tx + 1),
            frameBytes, headerLength);
+    if (qosData) {
+        struct ieee80211_frame *submittedHeader =
+            reinterpret_cast<struct ieee80211_frame *>(tx + 1);
+        LE_WRITE_2(submittedHeader->i_seq,
+            static_cast<uint16_t>(
+                (apClientTxSequence[0] & 0x0fff) <<
+                IEEE80211_SEQ_SEQ_SHIFT));
+    }
     /*
      * DVM requires the command/header transport segment to end on a
      * four-byte boundary.  IWN_TX_NEED_PADDING makes firmware discard
@@ -5121,6 +5163,8 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         frameBody[6] = *packetNumber >> 32;
         frameBody[7] = *packetNumber >> 40;
         tx->security = IWN_CIPHER_CCMP;
+        if (ring->qid >= com.first_agg_txq)
+            tx->flags |= htole32(IWN_TX_AMPDU_CCMP);
         memcpy(tx->key, multicast ? apGtk : apPtk.tk,
                sizeof(tx->key));
     } else {
@@ -5201,6 +5245,32 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         com.qfullmsk |= 1 << ring->qid;
     iwn_refresh_tx_timer(&com);
 
+    if (!multicast && apClientQos)
+        itl_ap_tx_ba_advance_sequence(&apClientTxSequence[0]);
+    if (!multicast && !eapol && apClientQos && apClientHt &&
+        itl_ap_tx_ba_note_data(&apClientTxBa[0])) {
+        uint8_t token = ++apClientTxDialogToken;
+        if (token == 0)
+            token = ++apClientTxDialogToken;
+        itl_ap_tx_ba_request(&apClientTxBa[0], token, 0,
+                             apClientTxSequence[0]);
+        uint8_t request[sizeof(struct ieee80211_frame) + 9];
+        const size_t requestLength = itl_ap_block_ack_build_request(
+            request, sizeof(request), apFirmwareConfig.bssid, apClientMac,
+            token, 0, apClientTxSequence[0], IEEE80211_BA_MAX_WINSZ, 0,
+            iwn_ap_uses_sae() && apClientAuthorized);
+        const int requestError = requestLength == 0 ? EINVAL :
+            iwn_send_ap_mgmt_frame(request, requestLength);
+        if (requestError != 0) {
+            itl_ap_tx_ba_reset(&apClientTxBa[0]);
+        } else {
+            XYLog("%s: IWN AP TX ADDBA request tid=0 ssn=%u token=%u\n",
+                  com.sc_dev.dv_xname,
+                  static_cast<unsigned>(apClientTxSequence[0]),
+                  static_cast<unsigned>(token));
+        }
+    }
+
     return 0;
 }
 
@@ -5262,7 +5332,17 @@ uint32_t ItlIwn::getAPTxFreeSpace() const
     /* Keep one descriptor empty so producer and consumer indices cannot
      * alias.  All four AP Skywalk ACs share this single PAN BE ring. */
     const uint32_t usable = IWN_TX_RING_COUNT - 1;
-    return ring->queued < usable ? usable - ring->queued : 0;
+    uint32_t freeSpace = ring->queued < usable ? usable - ring->queued : 0;
+    if ((apClientTxBaMask & 1U) != 0 &&
+        apClientTxBaQueue[0] >= com.first_agg_txq &&
+        apClientTxBaQueue[0] < com.ntxqs) {
+        const struct iwn_tx_ring *aggregate =
+            &com.txq[apClientTxBaQueue[0]];
+        const uint32_t aggregateFree = aggregate->queued < usable ?
+            usable - aggregate->queued : 0;
+        freeSpace = MIN(freeSpace, aggregateFree);
+    }
+    return freeSpace;
 }
 
 extern "C" uint32_t
@@ -6199,6 +6279,249 @@ void ItlIwn::iwn_stop_all_ap_client_rx_ba()
     }
 }
 
+void ItlIwn::iwn_ap_ampdu_tx_start(
+    int qid, uint8_t tid, uint16_t ssn, uint8_t frameLimit)
+{
+    /* DVM keeps a distinct AC-to-FIFO table for the PAN RXON context.
+     * TIDs 0/3 are BE, 1/2 BK, 4/5 VI and 6/7 VO.  The corresponding PAN
+     * FIFOs are BE=4, BK=0, VI=2 and VO=5; using the ordinary BSS FIFO here
+     * leaves a valid q2ratid queue permanently unconsumed by FH DMA. */
+    static const uint8_t iwnIpanTid2Fifo[IWN_NUM_AMPDU_TID] = {
+        4, 0, 0, 4, 2, 2, 5, 5
+    };
+    const uint8_t fifo = iwnIpanTid2Fifo[tid];
+    const uint16_t idx = IWN_AGG_SSN_TO_TXQ_IDX(ssn);
+    /* DVM clamps the peer's negotiated reorder-buffer size to the
+     * firmware-wide station limit (63), then programs that same value into
+     * both halves of SCD context2.  64 is a valid 802.11 BA window but is
+     * not a valid 6x35 aggregate frame-count limit. */
+    frameLimit = MIN(frameLimit, static_cast<uint8_t>(IWN_AMPDU_MAX));
+    if (frameLimit == 0)
+        frameLimit = IWN_AMPDU_MAX;
+    if (com.hw_type == IWN_HW_REV_TYPE_4965) {
+        iwn_prph_write(&com, IWN4965_SCHED_QUEUE_STATUS(qid),
+            IWN4965_TXQ_STATUS_CHGACT);
+        iwn_mem_write_2(
+            &com, com.sched_base + IWN4965_SCHED_TRANS_TBL(qid),
+            IWN5000_ID_PAN_CLIENT << 4 | tid);
+        iwn_prph_setbits(&com, IWN4965_SCHED_QCHAIN_SEL, 1U << qid);
+        com.txq[qid].cur = com.txq[qid].read = idx;
+        IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
+        iwn_prph_write(
+            &com, IWN4965_SCHED_QUEUE_RDPTR(qid), ssn);
+        iwn_mem_write(
+            &com, com.sched_base + IWN4965_SCHED_QUEUE_OFFSET(qid),
+            frameLimit);
+        iwn_mem_write(
+            &com, com.sched_base + IWN4965_SCHED_QUEUE_OFFSET(qid) + 4,
+            static_cast<uint32_t>(frameLimit) << 16);
+        iwn_prph_setbits(&com, IWN4965_SCHED_INTR_MASK, 1U << qid);
+        iwn_prph_write(&com, IWN4965_SCHED_QUEUE_STATUS(qid),
+            IWN4965_TXQ_STATUS_ACTIVE | IWN4965_TXQ_STATUS_AGGR_ENA |
+            fifo << 1);
+        return;
+    }
+
+    iwn_prph_write(&com, IWN5000_SCHED_QUEUE_STATUS(qid),
+        IWN5000_TXQ_STATUS_CHGACT);
+    iwn_mem_write_2(
+        &com, com.sched_base + IWN5000_SCHED_TRANS_TBL(qid),
+        IWN5000_ID_PAN_CLIENT << 4 | tid);
+    iwn_prph_setbits(&com, IWN5000_SCHED_QCHAIN_SEL, 1U << qid);
+    iwn_prph_setbits(&com, IWN5000_SCHED_AGGR_SEL, 1U << qid);
+    com.txq[qid].cur = com.txq[qid].read = idx;
+    IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
+    iwn_prph_write(&com, IWN5000_SCHED_QUEUE_RDPTR(qid), ssn);
+    /* Match DVM's iwl_trans_txq_enable ordering: clear the first queue
+     * context dword every time this dynamic aggregate queue is assigned.
+     * post_alive() initializes it too, but a queue can be recycled without a
+     * firmware restart and must not inherit scheduler state from its former
+     * RA/TID owner. */
+    iwn_mem_write(
+        &com, com.sched_base + IWN5000_SCHED_QUEUE_OFFSET(qid), 0);
+    iwn_mem_write(
+        &com, com.sched_base + IWN5000_SCHED_QUEUE_OFFSET(qid) + 4,
+        static_cast<uint32_t>(frameLimit) << 16 | frameLimit);
+    /* Gen1 Linux DVM leaves SCD_INTERRUPT_MASK at zero for the PAN queue
+     * topology and does not modify it in iwl_trans_pcie_txq_enable().  Keep
+     * this dynamic RA/TID transition identical to that transport contract;
+     * the queue status write below is the activation edge. */
+    iwn_prph_write(&com, IWN5000_SCHED_QUEUE_STATUS(qid),
+        IWN5000_TXQ_STATUS_ACTIVE | fifo);
+}
+
+void ItlIwn::iwn_ap_ampdu_tx_stop(
+    int qid, uint8_t tid, uint16_t ssn)
+{
+    static const uint8_t iwnIpanTid2Fifo[IWN_NUM_AMPDU_TID] = {
+        4, 0, 0, 4, 2, 2, 5, 5
+    };
+    const uint8_t fifo = iwnIpanTid2Fifo[tid];
+    const uint16_t idx = IWN_AGG_SSN_TO_TXQ_IDX(ssn);
+    if (com.hw_type == IWN_HW_REV_TYPE_4965) {
+        iwn_prph_write(&com, IWN4965_SCHED_QUEUE_STATUS(qid),
+            IWN4965_TXQ_STATUS_CHGACT);
+        com.txq[qid].cur = com.txq[qid].read = idx;
+        IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
+        iwn_prph_write(
+            &com, IWN4965_SCHED_QUEUE_RDPTR(qid), ssn);
+        iwn_prph_clrbits(&com, IWN4965_SCHED_INTR_MASK, 1U << qid);
+        iwn_prph_write(&com, IWN4965_SCHED_QUEUE_STATUS(qid),
+            IWN4965_TXQ_STATUS_INACTIVE | fifo << 1);
+        return;
+    }
+
+    iwn_prph_write(&com, IWN5000_SCHED_QUEUE_STATUS(qid),
+        IWN5000_TXQ_STATUS_CHGACT);
+    iwn_prph_clrbits(&com, IWN5000_SCHED_AGGR_SEL, 1U << qid);
+    com.txq[qid].cur = com.txq[qid].read = idx;
+    IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
+    iwn_prph_write(&com, IWN5000_SCHED_QUEUE_RDPTR(qid), ssn);
+    /* See start: the 5000-family SCD interrupt mask remains firmware-owned. */
+    iwn_prph_write(&com, IWN5000_SCHED_QUEUE_STATUS(qid),
+        IWN5000_TXQ_STATUS_INACTIVE | fifo);
+}
+
+int ItlIwn::iwn_set_ap_client_tx_ba(uint8_t tid, uint16_t ssn, bool start)
+{
+    if (!apClientNodeInstalled || !apClientAssociated || !apClientHt ||
+        tid >= IWN_NUM_AMPDU_TID)
+        return EINVAL;
+    const uint16_t bit = static_cast<uint16_t>(1U << tid);
+    if (start && apClientTxBaEnablePending)
+        return EBUSY;
+    if (!start && apClientTxBaEnablePending &&
+        apClientTxBaPendingTid == tid) {
+        apClientDisableTid = apClientTxBaPendingOldDisableTid;
+        apClientTxBaEnablePending = false;
+        apClientTxBaPendingTid = UINT8_MAX;
+        apClientTxBaPendingQueue = UINT8_MAX;
+        apClientTxBaPendingSsn = 0;
+        apClientTxBaPendingOldDisableTid = 0;
+        struct iwn_node_info cancel;
+        bzero(&cancel, sizeof(cancel));
+        cancel.id = IWN5000_ID_PAN_CLIENT;
+        cancel.control = IWN_NODE_UPDATE;
+        cancel.flags = IWN_FLAG_SET_DISABLE_TID;
+        cancel.disable_tid = htole16(apClientDisableTid);
+        return com.ops.add_node(&com, &cancel, 1);
+    }
+    if (((apClientTxBaMask & bit) != 0) == start)
+        return 0;
+    int qid = start ? -1 : apClientTxBaQueue[tid];
+    if (start) {
+        /*
+         * DVM aggregation queues belong to an RA/TID, not to a TID alone.
+         * The primary STA can already own first_agg_txq + tid, so choose a
+         * separately provisioned free queue for PAN station 2.  Linux DVM's
+         * iwlagn_alloc_agg_txq() scans FIRST_AMPDU_QUEUE..num_of_queues in
+         * ascending order; preserve that allocation order instead of making
+         * the highest hardware queue the first live AP aggregate queue.
+         */
+        const int firstCandidate =
+            com.command_queue == IWN_IPAN_CMD_QUEUE ?
+                IWN_IPAN_FIRST_AGG_QUEUE : com.first_agg_txq;
+        for (int candidate = firstCandidate;
+             candidate < com.ntxqs; candidate++) {
+            struct iwn_tx_ring *available = &com.txq[candidate];
+            if ((com.agg_queue_mask & (1U << candidate)) == 0 &&
+                available->queued == 0 && available->first_tb != NULL &&
+                available->ap_payload != NULL) {
+                qid = candidate;
+                break;
+            }
+        }
+    }
+    if (qid < com.first_agg_txq || qid >= com.ntxqs)
+        return start ? ENOSPC : EINVAL;
+    struct iwn_tx_ring *ring = &com.txq[qid];
+    if (ring->first_tb == NULL || ring->ap_payload == NULL)
+        return ENOSPC;
+
+    struct iwn_node_info node;
+    bzero(&node, sizeof(node));
+    node.id = IWN5000_ID_PAN_CLIENT;
+    node.control = IWN_NODE_UPDATE;
+    node.flags = IWN_FLAG_SET_DISABLE_TID;
+    const uint16_t oldDisableTid = apClientDisableTid;
+    if (start) {
+        apClientDisableTid &= static_cast<uint16_t>(~bit);
+        apClientTxBaEnablePending = true;
+        apClientTxBaPendingTid = tid;
+        apClientTxBaPendingQueue = static_cast<uint8_t>(qid);
+        apClientTxBaPendingSsn = ssn & 0x0fff;
+        apClientTxBaPendingOldDisableTid = oldDisableTid;
+    }
+    node.disable_tid = htole16(apClientDisableTid);
+    int error = start ? com.ops.add_node(&com, &node, 1) : 0;
+    if (start && error != 0) {
+        apClientDisableTid = oldDisableTid;
+        apClientTxBaEnablePending = false;
+        apClientTxBaPendingTid = UINT8_MAX;
+        apClientTxBaPendingQueue = UINT8_MAX;
+        apClientTxBaPendingSsn = 0;
+        apClientTxBaPendingOldDisableTid = 0;
+        return error;
+    }
+    /* DVM's synchronous iwl_sta_tx_modify_enable_tid() is the ordering
+     * fence for SCD activation.  This port issues ADD_STA asynchronously
+     * from the RX path, so its exact command completion activates qid and
+     * publishes apClientTxBaMask in iwn_note_ap_firmware_event(). */
+    if (start)
+        return 0;
+
+    iwn_ampdu_txq_advance(&com, ring, qid, ring->cur);
+    const int lockError = iwn_nic_lock(&com);
+    if (lockError != 0) {
+        apClientDisableTid = oldDisableTid;
+        node.disable_tid = htole16(apClientDisableTid);
+        (void)com.ops.add_node(&com, &node, 1);
+        return lockError;
+    }
+    iwn_ap_ampdu_tx_stop(qid, tid, ssn & 0x0fff);
+    iwn_nic_unlock(&com);
+
+    com.agg_queue_mask &= ~(1U << qid);
+    apClientTxBaMask &= static_cast<uint16_t>(~bit);
+    apClientTxBaQueue[tid] = UINT8_MAX;
+    apClientDisableTid |= bit;
+    node.disable_tid = htole16(apClientDisableTid);
+    error = com.ops.add_node(&com, &node, 1);
+    XYLog("%s: IWN AP TX BA %s tid=%u qid=%d ssn=%u\n",
+          com.sc_dev.dv_xname, "stopped",
+          static_cast<unsigned>(tid), qid,
+          static_cast<unsigned>(ssn & 0x0fff));
+    return error;
+}
+
+void ItlIwn::iwn_stop_all_ap_client_tx_ba()
+{
+    if (apClientTxBaEnablePending &&
+        apClientTxBaPendingTid < IWN_NUM_AMPDU_TID) {
+        (void)iwn_set_ap_client_tx_ba(
+            apClientTxBaPendingTid, apClientTxBaPendingSsn, false);
+    }
+    for (uint8_t tid = 0; tid < IWN_NUM_AMPDU_TID; tid++) {
+        if ((apClientTxBaMask & (1U << tid)) != 0) {
+            const int error = iwn_set_ap_client_tx_ba(
+                tid, apClientTxSequence[tid], false);
+            if (error != 0)
+                XYLog("%s: AP TX DELBA cleanup tid=%u error=%d\n",
+                      com.sc_dev.dv_xname, static_cast<unsigned>(tid), error);
+        }
+        itl_ap_tx_ba_reset(&apClientTxBa[tid]);
+    }
+    apClientTxBaMask = 0;
+    apClientDisableTid = 0;
+    apClientTxBaEnablePending = false;
+    apClientTxBaPendingTid = UINT8_MAX;
+    apClientTxBaPendingQueue = UINT8_MAX;
+    apClientTxBaPendingSsn = 0;
+    apClientTxBaPendingOldDisableTid = 0;
+    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++)
+        apClientTxBaQueue[tid] = UINT8_MAX;
+}
+
 bool ItlIwn::iwn_handle_ap_block_ack(
     const struct ieee80211_frame *request, size_t frameLength,
     bool hardwareDecrypted)
@@ -6206,14 +6529,79 @@ bool ItlIwn::iwn_handle_ap_block_ack(
     if (request == NULL || !apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING)
         return false;
+    const bool addressedToAp =
+        frameLength >= sizeof(*request) + 2 &&
+        (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
+            IEEE80211_FC0_TYPE_MGT &&
+        (request->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_ACTION &&
+        IEEE80211_ADDR_EQ(request->i_addr1, apFirmwareConfig.bssid) &&
+        IEEE80211_ADDR_EQ(request->i_addr2, apClientMac) &&
+        IEEE80211_ADDR_EQ(request->i_addr3, apFirmwareConfig.bssid);
+    if (!addressedToAp)
+        return false;
+
+    const bool protectedFrame =
+        (request->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
+    const struct ieee80211_frame *parsedFrame = request;
+    size_t parsedLength = frameLength;
+    bool protectedVerified = protectedFrame && hardwareDecrypted;
+    bool plaintextBody = false;
+    mbuf_t plaintext = NULL;
+
+    /*
+     * Match net80211's robust-management RX contract before inspecting the
+     * Action category.  DVM normally leaves the CCMP IV in a hardware-
+     * decrypted frame, but 6x35 PAN RX can deliver the intact encrypted
+     * MMPDU without cipher status.  The pairwise software descriptor is the
+     * exact fallback owner already used by AP data RX: it verifies MIC and
+     * the management PN, strips IV/MIC, and clears Protected.  Restore that
+     * bit only as metadata for the AP classifier; plaintextBody records the
+     * normalized layout explicitly.
+     */
+    if (protectedFrame && !hardwareDecrypted) {
+        if (!apClientAuthorized ||
+            apPairwiseSoftwareKey.k_priv == NULL ||
+            apPairwiseSoftwareKey.k_cipher != IEEE80211_CIPHER_CCMP ||
+            (apPairwiseSoftwareKey.k_flags & IEEE80211_KEY_SWCRYPTO) == 0 ||
+            frameLength < sizeof(*request) + IEEE80211_CCMP_HDRLEN + 2 +
+                IEEE80211_CCMP_MICLEN) {
+            return true;
+        }
+        unsigned int maxChunks = 1;
+        mbuf_t encrypted = NULL;
+        if (mbuf_allocpacket(MBUF_DONTWAIT, frameLength, &maxChunks,
+                &encrypted) != 0 || encrypted == NULL)
+            return true;
+        mbuf_setlen(encrypted, frameLength);
+        mbuf_pkthdr_setlen(encrypted, frameLength);
+        memcpy(mtod(encrypted, void *), request, frameLength);
+        plaintext = ieee80211_ccmp_decrypt(
+            &com.sc_ic, encrypted, &apPairwiseSoftwareKey);
+        if (plaintext == NULL)
+            return true;
+        parsedLength = mbuf_pkthdr_len(plaintext);
+        if (parsedLength < sizeof(*request) + 2) {
+            mbuf_freem(plaintext);
+            return true;
+        }
+        struct ieee80211_frame *normalized =
+            mtod(plaintext, struct ieee80211_frame *);
+        normalized->i_fc[1] |= IEEE80211_FC1_PROTECTED;
+        parsedFrame = normalized;
+        protectedVerified = true;
+        plaintextBody = true;
+    }
     struct ItlApBlockAckAction action;
     const bool claimed = itl_ap_block_ack_parse(
-        request, frameLength, apFirmwareConfig.bssid, apClientMac,
+        parsedFrame, parsedLength, apFirmwareConfig.bssid, apClientMac,
         apClientAssociated, apClientHt, apClientAuthorized,
         iwn_ap_uses_sae() && apClientAuthorized,
-        hardwareDecrypted, &action);
+        protectedVerified, plaintextBody, &action);
+    if (plaintext != NULL)
+        mbuf_freem(plaintext);
     if (!claimed)
-        return false;
+        return protectedFrame;
     if (action.kind == kItlApBlockAckAddRequest) {
         const int baError = iwn_set_ap_client_rx_ba(
             action.tid, action.ssn, action.window, true);
@@ -6235,9 +6623,45 @@ bool ItlIwn::iwn_handle_ap_block_ack(
               baError, responseError);
         return true;
     }
+    if (action.kind == kItlApBlockAckAddResponse) {
+        struct ItlApTxBaRuntime *txBa = &apClientTxBa[action.tid];
+        int error = 0;
+        if (!itl_ap_tx_ba_response_matches(txBa, &action)) {
+            error = EINVAL;
+        } else if (action.status != IEEE80211_STATUS_SUCCESS) {
+            itl_ap_tx_ba_reset(txBa);
+        } else {
+            error = iwn_set_ap_client_tx_ba(
+                action.tid, txBa->ssn, true);
+            if (error == 0) {
+                itl_ap_tx_ba_accept(txBa, &action);
+            } else {
+                uint8_t delba[sizeof(struct ieee80211_frame) + 6];
+                const size_t delbaLength = itl_ap_block_ack_build_delete(
+                    delba, sizeof(delba), apFirmwareConfig.bssid,
+                    apClientMac, action.tid,
+                    IEEE80211_REASON_SETUP_REQUIRED, true,
+                    iwn_ap_uses_sae() && apClientAuthorized);
+                if (delbaLength != 0)
+                    (void)iwn_send_ap_mgmt_frame(delba, delbaLength);
+                itl_ap_tx_ba_reset(txBa);
+            }
+        }
+        XYLog("%s: IWN AP TX ADDBA response tid=%u status=%u win=%u "
+              "timeout=%u error=%d\n",
+              com.sc_dev.dv_xname, static_cast<unsigned>(action.tid),
+              static_cast<unsigned>(action.status),
+              static_cast<unsigned>(action.window),
+              static_cast<unsigned>(action.timeout), error);
+        return true;
+    }
     if (action.kind == kItlApBlockAckDelete) {
         const int error = action.peerInitiator ?
-            iwn_set_ap_client_rx_ba(action.tid, 0, 0, false) : 0;
+            iwn_set_ap_client_rx_ba(action.tid, 0, 0, false) :
+            iwn_set_ap_client_tx_ba(
+                action.tid, apClientTxSequence[action.tid], false);
+        if (!action.peerInitiator)
+            itl_ap_tx_ba_reset(&apClientTxBa[action.tid]);
         XYLog("%s: IWN AP RX DELBA tid=%u peer_initiator=%u error=%d\n",
               com.sc_dev.dv_xname, static_cast<unsigned>(action.tid),
               action.peerInitiator ? 1U : 0U, error);
@@ -7094,6 +7518,7 @@ int ItlIwn::iwn_remove_ap_client_node(const uint8_t *macAddress)
     if (macAddress == NULL)
         return EINVAL;
 
+    iwn_stop_all_ap_client_tx_ba();
     iwn_stop_all_ap_client_rx_ba();
     apClientRxBaMask = 0;
 
@@ -7147,7 +7572,34 @@ int ItlIwn::iwn_send_ap_client_link_quality()
     const uint8_t txant = IWN_LSB(com.txchainmask);
     linkq.antmsk_1stream = txant;
     linkq.antmsk_2stream = IWN_ANT_AB;
-    linkq.ampdu_max = IWN_AMPDU_MAX_NO_AGG;
+    /* DVM starts at the hardware default and, after every successful ADDBA,
+     * republishes the minimum negotiated buffer size across the station's
+     * active TIDs.  Firmware has one aggregate limit per station even when
+     * the peer advertises a different window for each TID. */
+    uint8_t aggregateLimit = apClientHt ? IWN_AMPDU_MAX :
+        IWN_AMPDU_MAX_NO_AGG;
+    if (apClientHt) {
+        for (uint8_t tid = 0; tid < IWN_NUM_AMPDU_TID; tid++) {
+            const struct ItlApTxBaRuntime *txBa = &apClientTxBa[tid];
+            if (txBa->state != kItlApTxBaAgreed)
+                continue;
+            uint8_t negotiated = static_cast<uint8_t>(MIN(
+                txBa->window, static_cast<uint16_t>(IWN_AMPDU_MAX)));
+            if (negotiated == 0)
+                negotiated = IWN_AMPDU_MAX;
+            aggregateLimit = MIN(aggregateLimit, negotiated);
+        }
+    }
+    linkq.ampdu_max = aggregateLimit;
+    /* 6x35 belongs to the DVM families whose HT aggregate transport uses
+     * RTS/CTS.  Linux publishes both sides of that contract together:
+     * TX_CMD carries PROT_REQUIRE and the post-ADDBA LQ table carries the
+     * station TLC_RTS flag.  A protected aggregate with only the TX_CMD bit
+     * can remain owned by SCD without ever reaching a transmit FIFO. */
+    if (apClientHt && apClientTxBaMask != 0 &&
+        com.hw_type != IWN_HW_REV_TYPE_4965) {
+        linkq.flags |= IWN_LINK_QUAL_FLAGS_SET_STA_TLC_RTS;
+    }
     linkq.ampdu_threshold = 3;
     linkq.ampdu_limit = htole16(4000);
 
@@ -7666,7 +8118,8 @@ void ItlIwn::iwn_continue_ap_after_deactivation()
 }
 
 void ItlIwn::iwn_note_ap_firmware_event(
-    int command, int notification, int addNodeStatus)
+    int command, int notification, int addNodeStatus,
+    int addNodeFlags, int addNodeId)
 {
     if (!apFirmwareTransitionActive)
         return;
@@ -7702,6 +8155,90 @@ void ItlIwn::iwn_note_ap_firmware_event(
 
     const int ridx = apFirmwareConfig.channel <= 14 ?
         IWN_RIDX_CCK : IWN_RIDX_OFDM;
+
+    /* Linux DVM makes iwl_sta_tx_modify_enable_tid() synchronous before it
+     * exposes the aggregate SCD queue.  RX action processing cannot block on
+     * an IWN host command, so the matching ADD_STA completion is our exact
+     * fence: no qid descriptor can be selected before this point. */
+    if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        apClientTxBaEnablePending && command == IWN_CMD_ADD_NODE &&
+        addNodeId == IWN5000_ID_PAN_CLIENT &&
+        (addNodeFlags & IWN_FLAG_SET_DISABLE_TID) != 0) {
+        const uint8_t tid = apClientTxBaPendingTid;
+        const uint8_t qid = apClientTxBaPendingQueue;
+        const uint16_t requestedSsn = apClientTxBaPendingSsn;
+        /* mac80211 stops a TID while DVM crosses ADDBA -> ADD_STA -> SCD,
+         * so its negotiated SSN is still the next frame sequence when the
+         * aggregate queue is activated.  Tahoe's Skywalk producer cannot be
+         * synchronously stopped from this RX notification: frames already
+         * accepted during the asynchronous command fence use the fixed PAN
+         * BE queue and advance apClientTxSequence.  Start SCD at that live
+         * next sequence so ring index and the first aggregate QoS header are
+         * identical; the peer's negotiated reorder window still begins at
+         * requestedSsn and admits this bounded forward advance. */
+        const uint16_t activationSsn =
+            tid < IWN_NUM_AMPDU_TID ?
+            apClientTxSequence[tid] & 0x0fff : requestedSsn;
+        const uint16_t oldDisableTid = apClientTxBaPendingOldDisableTid;
+        apClientTxBaEnablePending = false;
+        apClientTxBaPendingTid = UINT8_MAX;
+        apClientTxBaPendingQueue = UINT8_MAX;
+        apClientTxBaPendingSsn = 0;
+        apClientTxBaPendingOldDisableTid = 0;
+
+        int startError = addNodeStatus == 1 ? 0 : EIO;
+        if (startError == 0 &&
+            (tid >= IWN_NUM_AMPDU_TID ||
+             qid < com.first_agg_txq ||
+             qid >= com.ntxqs)) {
+            startError = EINVAL;
+        }
+        if (startError == 0) {
+            startError = iwn_nic_lock(&com);
+            if (startError == 0) {
+                uint8_t frameLimit = static_cast<uint8_t>(MIN(
+                    apClientTxBa[tid].window,
+                    static_cast<uint16_t>(IWN_AMPDU_MAX)));
+                if (frameLimit == 0)
+                    frameLimit = IWN_AMPDU_MAX;
+                iwn_ap_ampdu_tx_start(
+                    qid, tid, activationSsn, frameLimit);
+                iwn_nic_unlock(&com);
+                com.agg_queue_mask |= 1U << qid;
+                apClientTxBaMask |= static_cast<uint16_t>(1U << tid);
+                apClientTxBaQueue[tid] = qid;
+                XYLog("%s: IWN AP TX BA started tid=%u qid=%u "
+                      "requested_ssn=%u activation_ssn=%u win=%u "
+                      "after ADD_STA\n", com.sc_dev.dv_xname,
+                      static_cast<unsigned>(tid),
+                      static_cast<unsigned>(qid),
+                      static_cast<unsigned>(requestedSsn),
+                      static_cast<unsigned>(activationSsn),
+                      static_cast<unsigned>(frameLimit));
+                const int lqError = iwn_send_ap_client_link_quality();
+                if (lqError != 0)
+                    XYLog("%s: IWN AP TX BA LQ update tid=%u "
+                          "win=%u error=%d\n", com.sc_dev.dv_xname,
+                          static_cast<unsigned>(tid),
+                          static_cast<unsigned>(frameLimit), lqError);
+                return;
+            }
+        }
+
+        apClientDisableTid = oldDisableTid;
+        struct iwn_node_info rollback;
+        bzero(&rollback, sizeof(rollback));
+        rollback.id = IWN5000_ID_PAN_CLIENT;
+        rollback.control = IWN_NODE_UPDATE;
+        rollback.flags = IWN_FLAG_SET_DISABLE_TID;
+        rollback.disable_tid = htole16(apClientDisableTid);
+        (void)com.ops.add_node(&com, &rollback, 1);
+        XYLog("%s: IWN AP TX BA enable rejected tid=%u qid=%u "
+              "status=0x%02x error=%d\n", com.sc_dev.dv_xname,
+              static_cast<unsigned>(tid), static_cast<unsigned>(qid),
+              static_cast<unsigned>(addNodeStatus & 0xff), startError);
+        return;
+    }
 
     /*
      * Linux DVM does not expose Association Response until ADD_STA has
@@ -9404,6 +9941,8 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
     bus_addr_t paddr;
     bus_size_t size;
     int i, error;
+    const bool apAggregateQueue =
+        qid >= sc->first_agg_txq && qid < sc->ntxqs;
 
     ring->qid = qid;
     ring->queued = 0;
@@ -9435,9 +9974,14 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
      * Gen1 data transport keeps the bidirectional first 20 command bytes in
      * a physically separate low-DMA pool.  The conventional itlwm queues
      * coalesce that prefix with the rest of the command, but PAN q7 needs
-     * the original transport shape.  Allocate the pool for that queue only.
+     * the original transport shape.  Dynamic DVM uses every hardware queue
+     * at or above first_agg_txq (q7..q15 on 4965, q10..q19 on 5000) as its
+     * hardware resource pool.  PAN reserves q10 as AUX, so its RA/TID
+     * allocator starts at q11; provision the complete range while keeping
+     * that allocation boundary explicit.
      */
-    if (qid == IWN_IPAN_MGMT_QUEUE || qid == IWN_IPAN_BE_QUEUE) {
+    if (qid == IWN_IPAN_MGMT_QUEUE || qid == IWN_IPAN_BE_QUEUE ||
+        apAggregateQueue) {
         size = IWN_TX_RING_COUNT * IWN_TX_FIRST_TB_STRIDE;
         error = iwn_dma_contig_alloc(sc->sc_dmat, &ring->first_tb_dma,
             (void **)&ring->first_tb, size, IWN_TX_FIRST_TB_STRIDE);
@@ -9447,7 +9991,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
             goto fail;
         }
         const bus_size_t payloadStride =
-            qid == IWN_IPAN_BE_QUEUE ?
+            (qid == IWN_IPAN_BE_QUEUE || apAggregateQueue) ?
                 IWN_AP_DATA_PAYLOAD_SIZE : IWN_AP_MGMT_PAYLOAD_SIZE;
         size = IWN_TX_RING_COUNT * payloadStride;
         error = iwn_dma_contig_alloc(sc->sc_dmat, &ring->ap_payload_dma,
@@ -11746,18 +12290,40 @@ iwn_rx_compressed_ba(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     uint16_t seq, ssn;
     int qid;
 
-    if (ic->ic_state != IEEE80211_S_RUN)
+    const bool apRunning = apFirmwareTransitionActive &&
+        apFirmwareStage == IWN_AP_STAGE_RUNNING && apClientAssociated;
+    if (ic->ic_state != IEEE80211_S_RUN && !apRunning)
         return;
 
     bus_dmamap_sync(sc->sc_dmat, data->map, sizeof (*desc), sizeof (*cba),
         BUS_DMASYNC_POSTREAD);
+
+    qid = le16toh(cba->qid);
+    if (apRunning &&
+        cba->tid < IWN_NUM_AMPDU_TID &&
+        (apClientTxBaMask & (1U << cba->tid)) != 0 &&
+        IEEE80211_ADDR_EQ(apClientMac, cba->macaddr) &&
+        qid == apClientTxBaQueue[cba->tid] && qid < sc->ntxqs) {
+        txq = &sc->txq[qid];
+        ssn = le16toh(cba->ssn);
+        iwn_ampdu_txq_advance(sc, txq, qid,
+                              IWN_AGG_SSN_TO_TXQ_IDX(ssn));
+        iwn_clear_oactive(sc, txq);
+        iwn_refresh_tx_timer(sc);
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmRequestAPTxDequeue(getController());
+#endif
+        return;
+    }
+
+    if (ic->ic_state != IEEE80211_S_RUN)
+        return;
 
     if (!IEEE80211_ADDR_EQ(ic->ic_bss->ni_macaddr, cba->macaddr))
         return;
 
     ni = ic->ic_bss;
 
-    qid = le16toh(cba->qid);
     if (qid < sc->first_agg_txq || qid >= sc->ntxqs)
         return;
 
@@ -11968,17 +12534,30 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = &ic->ic_if;
-    int tid = desc->qid - sc->first_agg_txq;
     struct iwn_tx_data *txdata = &txq->data[desc->idx];
     struct ieee80211_node *ni = txdata->ni;
     int txfail = (status != IWN_TX_STATUS_SUCCESS &&
         status != IWN_TX_STATUS_DIRECT_DONE);
     struct ieee80211_tx_ba *ba;
     uint16_t seq;
+    int apTid = -1;
+    for (uint8_t candidate = 0; candidate < IWN_NUM_AMPDU_TID;
+         candidate++) {
+        if ((apClientTxBaMask & (1U << candidate)) != 0 &&
+            apClientTxBaQueue[candidate] == desc->qid) {
+            apTid = candidate;
+            break;
+        }
+    }
+    const int tid = apTid >= 0 ? apTid :
+        desc->qid - sc->first_agg_txq;
+    const bool apAggregate = apTid >= 0 &&
+        apFirmwareTransitionActive &&
+        apFirmwareStage == IWN_AP_STAGE_RUNNING && apClientAssociated;
 
     sc->sc_tx_timer = 0;
 
-    if (ic->ic_state != IEEE80211_S_RUN)
+    if (ic->ic_state != IEEE80211_S_RUN && !apAggregate)
         return;
 
     if (nframes > 1) {
@@ -12010,6 +12589,38 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
             txdata->ampdu_txmcs = rate;
             txdata->ampdu_nframes = nframes;
         }
+        return;
+    }
+
+    if (txdata->ap_data && apAggregate) {
+        mbuf_t apPsFilteredPacket = NULL;
+        if (status == IWN_TX_STATUS_FAIL_DEST_PS && txdata->m != NULL) {
+            /* DVM exposes DEST_PS as TX_FILTERED even for an aggregation
+             * queue.  mac80211 then returns that same frame behind the
+             * station PS gate instead of dropping it.  Transfer the mbuf
+             * out of the firmware-owned descriptor before reclaiming the
+             * aggregate window and make the AP TIM/PS queue its next owner. */
+            apPsFilteredPacket = txdata->m;
+            txdata->m = NULL;
+            apClientPowerSave = true;
+        } else if (txfail) {
+            XYLog("%s: IWN AP aggregate TX failed tid=%d status=0x%02x\n",
+                  sc->sc_dev.dv_xname, tid,
+                  static_cast<unsigned>(status));
+        }
+        iwn_ampdu_txq_advance(
+            sc, txq, desc->qid, IWN_AGG_SSN_TO_TXQ_IDX(ssn));
+        iwn_clear_oactive(sc, txq);
+        iwn_refresh_tx_timer(sc);
+        if (apPsFilteredPacket != NULL) {
+            const int queueError =
+                iwn_queue_ap_ps_packet(apPsFilteredPacket, true);
+            if (queueError != 0)
+                mbuf_freem(apPsFilteredPacket);
+        }
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmRequestAPTxDequeue(getController());
+#endif
         return;
     }
 
@@ -12247,8 +12858,13 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
 //    bus_dmamap_unload(sc->sc_dmat, data->map);
     mbuf_freem(data->m);
     data->m = NULL;
-    ieee80211_release_node(ic, data->ni);
-    data->ni = NULL;
+    if (data->ni != NULL) {
+        ieee80211_release_node(ic, data->ni);
+        data->ni = NULL;
+    } else {
+        KASSERT(data->ap_mgmt || data->ap_data,
+                "iwn tx data has node or AP owner");
+    }
     data->totlen = 0;
     data->ampdu_nframes = 0;
     data->ampdu_txmcs = 0;
@@ -12267,8 +12883,15 @@ iwn_clear_oactive(struct iwn_softc *sc, struct iwn_tx_ring *ring)
     struct _ifnet *ifp = &ic->ic_if;
     ItlIwn *that = container_of(sc, ItlIwn, com);
 
+    bool apDataQueue = ring->qid == IWN_IPAN_BE_QUEUE;
+    for (uint8_t tid = 0;
+         !apDataQueue && tid < IWN_NUM_AMPDU_TID; tid++) {
+        apDataQueue =
+            (that->apClientTxBaMask & (1U << tid)) != 0 &&
+            that->apClientTxBaQueue[tid] == ring->qid;
+    }
     const bool apQueueWasFull =
-        ring->qid == IWN_IPAN_BE_QUEUE &&
+        apDataQueue &&
         (sc->qfullmsk & (1 << ring->qid)) != 0;
     if (ring->queued < IWN_TX_RING_LOMARK) {
         sc->qfullmsk &= ~(1 << ring->qid);
@@ -12530,6 +13153,7 @@ iwn_notif_intr(struct iwn_softc *sc)
                 if (apFirmwareStage != IWN_AP_STAGE_RUNNING ||
                     apClientMaterializationStage !=
                         IWN_AP_CLIENT_MATERIALIZATION_IDLE ||
+                    apClientTxBaEnablePending ||
                     (completedNode->flags & IWN_FLAG_SET_KEY) != 0) {
                     XYLog("%s: AP ADD_NODE reply id=%u flags=0x%02x "
                           "status=0x%02x len=%u\n",
@@ -12540,14 +13164,25 @@ iwn_notif_intr(struct iwn_softc *sc)
                           static_cast<unsigned>(replyLength));
                 }
             }
-            if (apFirmwareTransitionActive)
+            if (apFirmwareTransitionActive) {
+                int completedAddNodeFlags = -1;
+                int completedAddNodeId = -1;
+                if (completedCommand->code == IWN_CMD_ADD_NODE) {
+                    const struct iwn_node_info *completedNode =
+                        reinterpret_cast<const struct iwn_node_info *>(
+                            completedCommand->data);
+                    completedAddNodeFlags = completedNode->flags;
+                    completedAddNodeId = completedNode->id;
+                }
                 iwn_note_ap_firmware_event(
                     completedCommand->code, -1,
-                    completedAddNodeStatus);
+                    completedAddNodeStatus, completedAddNodeFlags,
+                    completedAddNodeId);
+            }
         }
         if (apFirmwareTransitionActive &&
             desc->type == IWN_WIPAN_DEACTIVATION_COMPLETE) {
-            iwn_note_ap_firmware_event(-1, desc->type, -1);
+            iwn_note_ap_firmware_event(-1, desc->type, -1, -1, -1);
         }
 
         if (sc->auth_seq1_tx_pending) {
@@ -14129,6 +14764,16 @@ iwn_watchdog(struct _ifnet *ifp)
             goto done;
         }
         if (--sc->sc_tx_timer == 0) {
+            int aggregateQueueId = -1;
+            for (int qid = sc->first_agg_txq;
+                 qid < sc->ntxqs; qid++) {
+                struct iwn_tx_ring *candidate = &sc->txq[qid];
+                if (candidate->queued != 0 &&
+                    candidate->data[candidate->read].ap_data) {
+                    aggregateQueueId = qid;
+                    break;
+                }
+            }
             uint32_t panMgmtReadPointer = 0xffffffff;
             uint32_t panMgmtStatus = 0xffffffff;
             uint32_t queueChainMask = 0xffffffff;
@@ -14140,6 +14785,11 @@ iwn_watchdog(struct _ifnet *ifp)
             uint32_t schedulerEnableControl = 0xffffffff;
             uint32_t panMgmtContext1 = 0xffffffff;
             uint32_t panMgmtContext2 = 0xffffffff;
+            uint32_t aggregateReadPointer = 0xffffffff;
+            uint32_t aggregateStatus = 0xffffffff;
+            uint32_t aggregateContext1 = 0xffffffff;
+            uint32_t aggregateContext2 = 0xffffffff;
+            uint32_t aggregateTranslationDword = 0xffffffff;
             if (sc->hw_type != IWN_HW_REV_TYPE_4965 &&
                 iwn_nic_lock(sc) == 0) {
                 panMgmtReadPointer = iwn_prph_read(
@@ -14166,6 +14816,26 @@ iwn_watchdog(struct _ifnet *ifp)
                 panMgmtContext2 = iwn_mem_read(
                     sc, sc->sched_base +
                     IWN5000_SCHED_QUEUE_OFFSET(IWN_IPAN_MGMT_QUEUE) + 4);
+                if (aggregateQueueId >= sc->first_agg_txq &&
+                    aggregateQueueId < sc->ntxqs) {
+                    aggregateReadPointer = iwn_prph_read(
+                        sc, IWN5000_SCHED_QUEUE_RDPTR(
+                            aggregateQueueId));
+                    aggregateStatus = iwn_prph_read(
+                        sc, IWN5000_SCHED_QUEUE_STATUS(
+                            aggregateQueueId));
+                    aggregateContext1 = iwn_mem_read(
+                        sc, sc->sched_base +
+                        IWN5000_SCHED_QUEUE_OFFSET(aggregateQueueId));
+                    aggregateContext2 = iwn_mem_read(
+                        sc, sc->sched_base +
+                        IWN5000_SCHED_QUEUE_OFFSET(aggregateQueueId) + 4);
+                    const uint32_t translationAddress =
+                        sc->sched_base +
+                        IWN5000_SCHED_TRANS_TBL(aggregateQueueId);
+                    aggregateTranslationDword = iwn_mem_read(
+                        sc, translationAddress & ~3U);
+                }
                 iwn_nic_unlock(sc);
             }
             struct iwn_tx_ring *panMgmt =
@@ -14249,6 +14919,80 @@ iwn_watchdog(struct _ifnet *ifp)
                   static_cast<unsigned>(letoh32(panTx->flags)),
                   panData->totlen,
                   static_cast<unsigned>(panData->ap_mgmt));
+            if (aggregateQueueId >= sc->first_agg_txq &&
+                aggregateQueueId < sc->ntxqs) {
+                struct iwn_tx_ring *aggregate =
+                    &sc->txq[aggregateQueueId];
+                const int aggregateIndex = aggregate->read;
+                struct iwn_tx_desc *aggregateDescriptor =
+                    &aggregate->desc[aggregateIndex];
+                struct iwn_tx_cmd *aggregateCommand =
+                    &aggregate->cmd[aggregateIndex];
+                struct iwn_cmd_data *aggregateTx =
+                    reinterpret_cast<struct iwn_cmd_data *>(
+                        aggregateCommand->data);
+                struct iwn_tx_data *aggregateData =
+                    &aggregate->data[aggregateIndex];
+                const uint16_t aggregateByteCount = letoh16(
+                    sc->sched[aggregateQueueId * IWN5000_SCHED_COUNT +
+                              aggregateIndex]);
+                const uint16_t aggregateRaTid = static_cast<uint16_t>(
+                    aggregateQueueId & 1 ?
+                    aggregateTranslationDword >> 16 :
+                    aggregateTranslationDword);
+                const struct ieee80211_frame *aggregateHeader =
+                    reinterpret_cast<const struct ieee80211_frame *>(
+                        aggregateTx + 1);
+                const unsigned aggregateFifo =
+                    static_cast<unsigned>(aggregateStatus & 7U);
+                XYLog("%s: device timeout AP aggregate qid=%d "
+                      "queued=%d cur=%d read=%d scd_read=0x%08x "
+                      "status=0x%08x fifo=%u ctx1=0x%08x ctx2=0x%08x "
+                      "ratid=0x%04x byte_count=0x%04x "
+                      "cbbc=0x%08x expected_cbbc=0x%08x\n",
+                      sc->sc_dev.dv_xname, aggregateQueueId,
+                      aggregate->queued, aggregate->cur, aggregate->read,
+                      aggregateReadPointer, aggregateStatus, aggregateFifo,
+                      aggregateContext1, aggregateContext2,
+                      static_cast<unsigned>(aggregateRaTid),
+                      static_cast<unsigned>(aggregateByteCount),
+                      IWN_READ(sc, IWN_FH_CBBC_QUEUE(aggregateQueueId)),
+                      static_cast<uint32_t>(
+                          aggregate->desc_dma.paddr >> 8));
+                XYLog("%s: device timeout AP aggregate descriptor "
+                      "nsegs=%u seg0=0x%08x/0x%04x "
+                      "seg1=0x%08x/0x%04x seg2=0x%08x/0x%04x "
+                      "cmd=%u/%u/%u txid=%u tid=%u security=0x%02x "
+                      "txlen=%u txflags=0x%08x seq=%u totlen=%d "
+                      "ap_data=%u\n",
+                      sc->sc_dev.dv_xname,
+                      static_cast<unsigned>(aggregateDescriptor->nsegs),
+                      static_cast<unsigned>(letoh32(
+                          aggregateDescriptor->segs[0].addr)),
+                      static_cast<unsigned>(letoh16(
+                          aggregateDescriptor->segs[0].len)),
+                      static_cast<unsigned>(letoh32(
+                          aggregateDescriptor->segs[1].addr)),
+                      static_cast<unsigned>(letoh16(
+                          aggregateDescriptor->segs[1].len)),
+                      static_cast<unsigned>(letoh32(
+                          aggregateDescriptor->segs[2].addr)),
+                      static_cast<unsigned>(letoh16(
+                          aggregateDescriptor->segs[2].len)),
+                      static_cast<unsigned>(aggregateCommand->code),
+                      static_cast<unsigned>(aggregateCommand->qid),
+                      static_cast<unsigned>(aggregateCommand->idx),
+                      static_cast<unsigned>(aggregateTx->id),
+                      static_cast<unsigned>(aggregateTx->tid),
+                      static_cast<unsigned>(aggregateTx->security),
+                      static_cast<unsigned>(letoh16(aggregateTx->len)),
+                      static_cast<unsigned>(letoh32(aggregateTx->flags)),
+                      static_cast<unsigned>(
+                          LE_READ_2(aggregateHeader->i_seq) >>
+                          IEEE80211_SEQ_SEQ_SHIFT),
+                      aggregateData->totlen,
+                      aggregateData->ap_data ? 1U : 0U);
+            }
             for (int qid = 0; qid < sc->ntxqs; qid++) {
                 if (sc->txq[qid].queued != 0) {
                     XYLog("%s: device timeout pending qid=%d "

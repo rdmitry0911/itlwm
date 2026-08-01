@@ -134,7 +134,9 @@ for needle, label in (
     ("RATE_MCS_HT_MSK", "IWM HT firmware rate encoding"),
     ("RATE_MCS_SGI_MSK", "IWM negotiated SGI20 rate encoding"),
     ("client->clientLegacyRateMask", "IWM mandatory legacy fallback"),
-    ("command.agg_frame_cnt_limit = 1", "bounded non-aggregate HT base"),
+    ("client->clientTxBaMask != 0", "agreement-gated aggregate limit"),
+    ("LINK_QUAL_AGG_FRAME_LIMIT_DEF : 1",
+     "bounded non-aggregate HT base"),
 ):
     require(iwm_rates, needle, label)
 

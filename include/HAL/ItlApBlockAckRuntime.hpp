@@ -15,6 +15,7 @@
 enum ItlApBlockAckActionKind : uint8_t {
     kItlApBlockAckNone = 0,
     kItlApBlockAckAddRequest,
+    kItlApBlockAckAddResponse,
     kItlApBlockAckDelete,
 };
 
@@ -25,10 +26,106 @@ struct ItlApBlockAckAction {
     uint16_t ssn;
     uint16_t window;
     uint16_t timeout;
+    uint16_t status;
     bool peerInitiator;
 };
 
 enum { kItlApRxBaTidCount = 8, kItlApRxBaMaxWindow = 64 };
+
+enum ItlApTxBaState : uint8_t {
+    kItlApTxBaIdle = 0,
+    kItlApTxBaRequested,
+    kItlApTxBaAgreed,
+};
+
+/*
+ * AP TX does not pass through net80211's ieee80211_node BA arrays: Tahoe's
+ * role-7 Skywalk interface owns a separate firmware station lifetime.  Keep
+ * the equivalent state beside that station and share its wire semantics
+ * across DVM (IWN), MVM (IWM), and the newer TVQM backend (IWX).
+ */
+struct ItlApTxBaRuntime {
+    uint8_t state;
+    uint8_t token;
+    uint8_t tid;
+    uint16_t ssn;
+    uint16_t window;
+    uint16_t timeout;
+    uint16_t packetsSinceRequest;
+};
+
+enum {
+    kItlApTxBaStartThreshold = 10,
+    kItlApTxBaRequestPacketTimeout = 128,
+};
+
+static inline void
+itl_ap_tx_ba_reset(struct ItlApTxBaRuntime *runtime)
+{
+    if (runtime != NULL)
+        bzero(runtime, sizeof(*runtime));
+}
+
+static inline bool
+itl_ap_tx_ba_note_data(struct ItlApTxBaRuntime *runtime)
+{
+    if (runtime == NULL)
+        return false;
+    if (runtime->state == kItlApTxBaAgreed)
+        return false;
+    if (runtime->state == kItlApTxBaRequested) {
+        if (++runtime->packetsSinceRequest <
+                kItlApTxBaRequestPacketTimeout)
+            return false;
+        itl_ap_tx_ba_reset(runtime);
+    }
+    if (runtime->packetsSinceRequest < kItlApTxBaStartThreshold)
+        runtime->packetsSinceRequest++;
+    return runtime->packetsSinceRequest >= kItlApTxBaStartThreshold;
+}
+
+static inline void
+itl_ap_tx_ba_advance_sequence(uint16_t *nextSequence)
+{
+    if (nextSequence != NULL)
+        *nextSequence = static_cast<uint16_t>((*nextSequence + 1) & 0x0fff);
+}
+
+static inline bool
+itl_ap_tx_ba_response_matches(const struct ItlApTxBaRuntime *runtime,
+                               const struct ItlApBlockAckAction *action)
+{
+    return runtime != NULL && action != NULL &&
+        runtime->state == kItlApTxBaRequested &&
+        action->kind == kItlApBlockAckAddResponse &&
+        runtime->token == action->token && runtime->tid == action->tid;
+}
+
+static inline void
+itl_ap_tx_ba_request(struct ItlApTxBaRuntime *runtime, uint8_t token,
+                     uint8_t tid, uint16_t ssn)
+{
+    if (runtime == NULL)
+        return;
+    itl_ap_tx_ba_reset(runtime);
+    runtime->state = kItlApTxBaRequested;
+    runtime->token = token;
+    runtime->tid = tid;
+    runtime->ssn = ssn & 0x0fff;
+    runtime->window = IEEE80211_BA_MAX_WINSZ;
+}
+
+static inline void
+itl_ap_tx_ba_accept(struct ItlApTxBaRuntime *runtime,
+                    const struct ItlApBlockAckAction *action)
+{
+    if (!itl_ap_tx_ba_response_matches(runtime, action))
+        return;
+    runtime->state = kItlApTxBaAgreed;
+    runtime->window = action->window;
+    runtime->timeout = action->timeout;
+    runtime->packetsSinceRequest = 0;
+}
 
 struct ItlApRxBaReady;
 typedef void (*ItlApRxBaDeliver)(void *, struct ItlApRxBaReady *);
@@ -391,7 +488,8 @@ static inline bool
 itl_ap_block_ack_parse(const struct ieee80211_frame *wh, size_t frameLength,
                        const uint8_t *bssid, const uint8_t *station,
                        bool associated, bool ht, bool authorized,
-                       bool requireProtected, bool hardwareDecrypted,
+                       bool requireProtected, bool protectedVerified,
+                       bool plaintextBody,
                        struct ItlApBlockAckAction *result)
 {
     if (result != NULL)
@@ -410,7 +508,7 @@ itl_ap_block_ack_parse(const struct ieee80211_frame *wh, size_t frameLength,
     const bool protectedFrame =
         (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
     const size_t bodyOffset = sizeof(*wh) +
-        (protectedFrame ? IEEE80211_CCMP_HDRLEN : 0);
+        (protectedFrame && !plaintextBody ? IEEE80211_CCMP_HDRLEN : 0);
     if (frameLength < bodyOffset + 2)
         return true;
     const uint8_t *body = reinterpret_cast<const uint8_t *>(wh) +
@@ -419,9 +517,7 @@ itl_ap_block_ack_parse(const struct ieee80211_frame *wh, size_t frameLength,
         return false;
 
     if (!associated || !ht || !authorized ||
-        (requireProtected &&
-         (((wh->i_fc[1] & IEEE80211_FC1_PROTECTED) == 0) ||
-          !hardwareDecrypted)))
+        (requireProtected && !protectedVerified))
         return true;
 
     if (body[1] == IEEE80211_ACTION_ADDBA_REQ) {
@@ -449,6 +545,31 @@ itl_ap_block_ack_parse(const struct ieee80211_frame *wh, size_t frameLength,
         return true;
     }
 
+    if (body[1] == IEEE80211_ACTION_ADDBA_RESP) {
+        if (frameLength < bodyOffset + 9)
+            return true;
+        const uint16_t status = LE_READ_2(body + 3);
+        const uint16_t params = LE_READ_2(body + 5);
+        const uint8_t tid = static_cast<uint8_t>(
+            (params & IEEE80211_ADDBA_TID_MASK) >>
+            IEEE80211_ADDBA_TID_SHIFT);
+        if (tid >= 8 || (status == IEEE80211_STATUS_SUCCESS &&
+            (params & IEEE80211_ADDBA_BA_POLICY) == 0))
+            return true;
+        uint16_t window = static_cast<uint16_t>(
+            (params & IEEE80211_ADDBA_BUFSZ_MASK) >>
+            IEEE80211_ADDBA_BUFSZ_SHIFT);
+        if (window == 0 || window > IEEE80211_BA_MAX_WINSZ)
+            window = IEEE80211_BA_MAX_WINSZ;
+        result->kind = kItlApBlockAckAddResponse;
+        result->token = body[2];
+        result->tid = tid;
+        result->status = status;
+        result->window = window;
+        result->timeout = LE_READ_2(body + 7);
+        return true;
+    }
+
     if (body[1] == IEEE80211_ACTION_DELBA) {
         if (frameLength < bodyOffset + 6)
             return true;
@@ -466,6 +587,74 @@ itl_ap_block_ack_parse(const struct ieee80211_frame *wh, size_t frameLength,
     }
 
     return true;
+}
+
+static inline size_t
+itl_ap_block_ack_build_request(uint8_t *frame, size_t capacity,
+                               const uint8_t *bssid,
+                               const uint8_t *station, uint8_t token,
+                               uint8_t tid, uint16_t ssn, uint16_t window,
+                               uint16_t timeout, bool protectedFrame)
+{
+    const size_t frameLength = sizeof(struct ieee80211_frame) + 9;
+    if (frame == NULL || bssid == NULL || station == NULL || tid >= 8 ||
+        capacity < frameLength)
+        return 0;
+    bzero(frame, frameLength);
+    struct ieee80211_frame *wh =
+        reinterpret_cast<struct ieee80211_frame *>(frame);
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ACTION;
+    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS |
+        (protectedFrame ? IEEE80211_FC1_PROTECTED : 0);
+    IEEE80211_ADDR_COPY(wh->i_addr1, station);
+    IEEE80211_ADDR_COPY(wh->i_addr2, bssid);
+    IEEE80211_ADDR_COPY(wh->i_addr3, bssid);
+    uint8_t *body = reinterpret_cast<uint8_t *>(wh + 1);
+    body[0] = IEEE80211_CATEG_BA;
+    body[1] = IEEE80211_ACTION_ADDBA_REQ;
+    body[2] = token;
+    const uint16_t params = static_cast<uint16_t>(
+        IEEE80211_ADDBA_BA_POLICY |
+        (tid << IEEE80211_ADDBA_TID_SHIFT) |
+        (MIN(window, static_cast<uint16_t>(IEEE80211_BA_MAX_WINSZ)) <<
+            IEEE80211_ADDBA_BUFSZ_SHIFT));
+    LE_WRITE_2(body + 3, params);
+    LE_WRITE_2(body + 5, timeout);
+    LE_WRITE_2(body + 7, static_cast<uint16_t>((ssn & 0x0fff) << 4));
+    return frameLength;
+}
+
+static inline size_t
+itl_ap_block_ack_build_delete(uint8_t *frame, size_t capacity,
+                              const uint8_t *bssid,
+                              const uint8_t *station, uint8_t tid,
+                              uint16_t reason, bool initiator,
+                              bool protectedFrame)
+{
+    const size_t frameLength = sizeof(struct ieee80211_frame) + 6;
+    if (frame == NULL || bssid == NULL || station == NULL || tid >= 8 ||
+        capacity < frameLength)
+        return 0;
+    bzero(frame, frameLength);
+    struct ieee80211_frame *wh =
+        reinterpret_cast<struct ieee80211_frame *>(frame);
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ACTION;
+    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS |
+        (protectedFrame ? IEEE80211_FC1_PROTECTED : 0);
+    IEEE80211_ADDR_COPY(wh->i_addr1, station);
+    IEEE80211_ADDR_COPY(wh->i_addr2, bssid);
+    IEEE80211_ADDR_COPY(wh->i_addr3, bssid);
+    uint8_t *body = reinterpret_cast<uint8_t *>(wh + 1);
+    body[0] = IEEE80211_CATEG_BA;
+    body[1] = IEEE80211_ACTION_DELBA;
+    const uint16_t params = static_cast<uint16_t>(
+        (tid << IEEE80211_DELBA_TID_INFO_SHIFT) |
+        (initiator ? IEEE80211_DELBA_INITIATOR : 0));
+    LE_WRITE_2(body + 2, params);
+    LE_WRITE_2(body + 4, reason);
+    return frameLength;
 }
 
 static inline size_t

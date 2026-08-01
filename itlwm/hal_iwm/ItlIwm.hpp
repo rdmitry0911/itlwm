@@ -420,6 +420,10 @@ public:
                                    struct ItlApFirmwareRuntime *,
                                    struct ItlApFirmwareClientRuntime *,
                                    uint8_t, uint16_t, uint16_t, bool);
+    int    iwm_ap_set_client_tx_ba(struct iwm_softc *,
+                                   struct ItlApFirmwareRuntime *,
+                                   struct ItlApFirmwareClientRuntime *,
+                                   uint8_t, uint16_t, bool);
     int    iwm_ap_remove_client_sta(struct iwm_softc *,
                                     struct ItlApFirmwareRuntime *,
                                     struct ItlApFirmwareClientRuntime *);

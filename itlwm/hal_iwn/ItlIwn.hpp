@@ -142,6 +142,10 @@ public:
     bool iwn_handle_ap_assoc_req(const struct ieee80211_frame *, size_t);
     int iwn_set_ap_client_rx_ba(uint8_t, uint16_t, uint16_t, bool);
     void iwn_stop_all_ap_client_rx_ba();
+    int iwn_set_ap_client_tx_ba(uint8_t, uint16_t, bool);
+    void iwn_stop_all_ap_client_tx_ba();
+    void iwn_ap_ampdu_tx_start(int, uint8_t, uint16_t, uint8_t);
+    void iwn_ap_ampdu_tx_stop(int, uint8_t, uint16_t);
     static void iwn_ap_rx_ba_deliver(void *, struct ItlApRxBaReady *);
     bool iwn_handle_ap_block_ack(const struct ieee80211_frame *, size_t,
         bool);
@@ -152,7 +156,7 @@ public:
         const struct ieee80211_frame_pspoll *, size_t);
     bool iwn_handle_ap_data(mbuf_t, size_t, struct mbuf_list *,
         uint32_t, uint8_t);
-    void iwn_note_ap_firmware_event(int, int, int);
+    void iwn_note_ap_firmware_event(int, int, int, int, int);
     void iwn_continue_ap_after_deactivation();
 
     /* One-ticket, real IWN management-TX path for the SAE relay. */
@@ -522,6 +526,17 @@ public:
     uint8_t apClientHtMcs[2];
     uint16_t apClientRxBaMask;
     struct ItlApRxBaRuntime apClientRxBa[kItlApRxBaTidCount];
+    uint16_t apClientTxBaMask;
+    uint16_t apClientDisableTid;
+    bool apClientTxBaEnablePending;
+    uint8_t apClientTxBaPendingTid;
+    uint8_t apClientTxBaPendingQueue;
+    uint16_t apClientTxBaPendingSsn;
+    uint16_t apClientTxBaPendingOldDisableTid;
+    uint8_t apClientTxDialogToken;
+    uint8_t apClientTxBaQueue[kItlApRxBaTidCount];
+    uint16_t apClientTxSequence[kItlApRxBaTidCount];
+    struct ItlApTxBaRuntime apClientTxBa[kItlApRxBaTidCount];
     bool apClientAssociated;
     bool apClientAuthorized;
     bool apClientPowerSave;

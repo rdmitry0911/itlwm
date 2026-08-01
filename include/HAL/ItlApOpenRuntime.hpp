@@ -29,6 +29,7 @@ enum ItlApOpenRxDisposition : uint8_t {
     kItlApOpenRxPsPoll,
     kItlApOpenRxDisconnect,
     kItlApOpenRxAddBaRequest,
+    kItlApOpenRxAddBaResponse,
     kItlApOpenRxDelBa,
 };
 
@@ -52,6 +53,7 @@ struct ItlApOpenRxResult {
     uint16_t baSsn;
     uint16_t baWindow;
     uint16_t baTimeout;
+    uint16_t baStatus;
     bool baPeerInitiator;
 };
 
@@ -1028,6 +1030,75 @@ itl_ap_open_encap_data(const struct ItlApFirmwareRuntime *runtime,
 }
 
 static inline int
+itl_ap_open_alloc_block_ack_frame(size_t frameLength, mbuf_t *packet)
+{
+    if (packet == NULL || frameLength == 0 || frameLength > MCLBYTES)
+        return EINVAL;
+    unsigned int maxChunks = 1;
+    *packet = NULL;
+    if (mbuf_allocpacket(MBUF_DONTWAIT, frameLength, &maxChunks, packet) != 0 ||
+        *packet == NULL)
+        return ENOMEM;
+    mbuf_setlen(*packet, frameLength);
+    mbuf_pkthdr_setlen(*packet, frameLength);
+    bzero(mbuf_data(*packet), frameLength);
+    return 0;
+}
+
+static inline int
+itl_ap_open_build_tx_addba_request(
+    const struct ItlApFirmwareRuntime *runtime,
+    const struct ItlApFirmwareClientRuntime *client, uint8_t tid,
+    mbuf_t *packet)
+{
+    if (!itl_ap_open_is_running(runtime) || client == NULL || packet == NULL ||
+        tid >= kItlApRxBaTidCount || !client->clientAssociated ||
+        !client->clientQos || !client->clientHt ||
+        client->clientTxBa[tid].state != kItlApTxBaRequested)
+        return EINVAL;
+    const size_t frameLength = sizeof(struct ieee80211_frame) + 9;
+    int error = itl_ap_open_alloc_block_ack_frame(frameLength, packet);
+    if (error != 0)
+        return error;
+    const struct ItlApTxBaRuntime *ba = &client->clientTxBa[tid];
+    const size_t built = itl_ap_block_ack_build_request(
+        mtod(*packet, uint8_t *), frameLength, runtime->config.bssid,
+        client->clientMac, ba->token, tid, ba->ssn, ba->window, 0,
+        itl_ap_client_uses_local_sae(runtime) && client->clientAuthorized);
+    if (built != frameLength) {
+        mbuf_freem(*packet);
+        *packet = NULL;
+        return EINVAL;
+    }
+    return 0;
+}
+
+static inline int
+itl_ap_open_build_tx_delba(
+    const struct ItlApFirmwareRuntime *runtime,
+    const struct ItlApFirmwareClientRuntime *client, uint8_t tid,
+    uint16_t reason, mbuf_t *packet)
+{
+    if (!itl_ap_open_is_running(runtime) || client == NULL || packet == NULL ||
+        tid >= kItlApRxBaTidCount || !client->clientAssociated)
+        return EINVAL;
+    const size_t frameLength = sizeof(struct ieee80211_frame) + 6;
+    int error = itl_ap_open_alloc_block_ack_frame(frameLength, packet);
+    if (error != 0)
+        return error;
+    const size_t built = itl_ap_block_ack_build_delete(
+        mtod(*packet, uint8_t *), frameLength, runtime->config.bssid,
+        client->clientMac, tid, reason, true,
+        itl_ap_client_uses_local_sae(runtime) && client->clientAuthorized);
+    if (built != frameLength) {
+        mbuf_freem(*packet);
+        *packet = NULL;
+        return EINVAL;
+    }
+    return 0;
+}
+
+static inline int
 itl_ap_local_eapol_packet(const struct ItlApFirmwareRuntime *runtime,
                           const struct ItlApFirmwareClientRuntime *client,
                           const void *eapol, size_t eapolLength,
@@ -1454,7 +1525,7 @@ itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
                 client->clientHt, client->clientAuthorized,
                 itl_ap_client_uses_local_sae(runtime) &&
                     client->clientAuthorized,
-                hardwareDecrypted, &action);
+                protectedFrame && hardwareDecrypted, false, &action);
             if (!claimed || action.kind == kItlApBlockAckNone)
                 return 0;
             result->clientIndex =
@@ -1467,6 +1538,13 @@ itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
                 result->baSsn = action.ssn;
                 result->baWindow = action.window;
                 result->baTimeout = action.timeout;
+            } else if (action.kind == kItlApBlockAckAddResponse) {
+                result->disposition = kItlApOpenRxAddBaResponse;
+                result->baToken = action.token;
+                result->baTid = action.tid;
+                result->baWindow = action.window;
+                result->baTimeout = action.timeout;
+                result->baStatus = action.status;
             } else {
                 result->disposition = kItlApOpenRxDelBa;
                 result->baPeerInitiator = action.peerInitiator;

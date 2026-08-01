@@ -251,6 +251,32 @@ transmitAPData(mbuf_t packet)
         mbuf_freem(wirePacket);
         return error == ENOBUFS ? kIOReturnNoResources : kIOReturnError;
     }
+    if (!multicast && ethernet.ether_type != htons(ETHERTYPE_PAE) &&
+        client->clientQos && client->clientHt &&
+        itl_ap_tx_ba_note_data(&client->clientTxBa[0])) {
+        uint8_t token = ++client->clientTxDialogToken;
+        if (token == 0)
+            token = ++client->clientTxDialogToken;
+        itl_ap_tx_ba_request(&client->clientTxBa[0], token, 0,
+                             client->clientTxSequence[0]);
+        mbuf_t request = NULL;
+        int requestError = itl_ap_open_build_tx_addba_request(
+            &apRuntime, client, 0, &request);
+        if (requestError == 0)
+            requestError = iwm_ap_send_raw_frame(
+                &com, request, static_cast<uint8_t>(client->queueId),
+                client->staId);
+        if (requestError != 0) {
+            if (request != NULL)
+                mbuf_freem(request);
+            itl_ap_tx_ba_reset(&client->clientTxBa[0]);
+        } else {
+            XYLog("%s: IWM AP TX ADDBA request tid=0 ssn=%u token=%u\n",
+                  DEVNAME(&com),
+                  static_cast<unsigned>(client->clientTxSequence[0]),
+                  static_cast<unsigned>(token));
+        }
+    }
     mbuf_freem(packet);
     return kIOReturnSuccess;
 }

@@ -52,6 +52,10 @@ struct ItlApFirmwareClientRuntime {
     uint8_t clientHtMcs[2];
     uint16_t clientRxBaMask;
     struct ItlApRxBaRuntime clientRxBa[kItlApRxBaTidCount];
+    uint16_t clientTxBaMask;
+    uint8_t clientTxDialogToken;
+    uint16_t clientTxSequence[kItlApRxBaTidCount];
+    struct ItlApTxBaRuntime clientTxBa[kItlApRxBaTidCount];
     bool rateControlConfigured;
     uint16_t clientLegacyRateMask;
     bool clientPairwiseKeyInstalled;
@@ -172,8 +176,10 @@ itl_ap_firmware_client_reset(struct ItlApFirmwareClientRuntime *client)
         return;
     itl_ap_firmware_sae_reset(client);
     itl_ap_firmware_power_save_purge(client);
-    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++)
+    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
         itl_ap_rx_ba_stop(&client->clientRxBa[tid]);
+        itl_ap_tx_ba_reset(&client->clientTxBa[tid]);
+    }
     explicit_bzero(client, sizeof(*client));
     client->staId = UINT8_MAX;
     client->queueId = UINT16_MAX;
