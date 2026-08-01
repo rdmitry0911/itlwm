@@ -53,5 +53,19 @@ for needle in (
 ):
     assert needle in probe, f"missing exact CoreWLAN security mapping: {needle}"
 
+for needle in (
+    'strcmp(argv[2], "--stop-sharing") == 0',
+    'start-sharing requires root or the private ',
+    'stop-sharing requires root or the private ',
+    '__stopNetworkRelayBridgeForInterfaceName:relayInterfaceName',
+    'if (!relayReplyReceived || relayError != nil)',
+    'NetworkRelay failed-start cleanup error=',
+):
+    assert needle in probe, f"missing bounded NetworkRelay lifecycle: {needle}"
+assert probe.count("geteuid() != 0") == 2, \
+    "NetworkRelay start/stop must reject an unentitled non-root harness"
+assert "actualPassword UTF8String" not in probe
+assert "[password UTF8String]" not in probe
+
 print("PASS: Tahoe primary OP_MODE publishes running APSTA for CoreWLAN stop")
 PY

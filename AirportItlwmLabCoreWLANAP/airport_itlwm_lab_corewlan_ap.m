@@ -238,8 +238,61 @@ main(int argc, const char *argv[])
             printf("stopHostAPMode sent\n");
             return 0;
         }
+        if (strcmp(argv[2], "--stop-sharing") == 0) {
+            if (geteuid() != 0) {
+                fprintf(stderr,
+                        "stop-sharing requires root or the private "
+                        "NetworkSharing entitlement\n");
+                return 1;
+            }
+            Class proxyClass = NSClassFromString(@"CWFXPCRequestProxy");
+            SEL relaySelector = sel_registerName(
+                "__stopNetworkRelayBridgeForInterfaceName:reply:");
+            if (proxyClass == Nil ||
+                ![proxyClass instancesRespondToSelector:relaySelector]) {
+                fprintf(stderr, "NetworkRelay consumer is unavailable\n");
+                return 1;
+            }
+            NSString *relayInterfaceName = argc > 3
+                ? [NSString stringWithUTF8String:argv[3]]
+                : @"ap1";
+            __block BOOL stopReplyReceived = NO;
+            __block NSError *stopError = nil;
+            CWFXPCRequestProxy *relayProxy = [[proxyClass alloc] init];
+            [relayProxy
+                __stopNetworkRelayBridgeForInterfaceName:relayInterfaceName
+                reply:^(NSError *error) {
+                    stopError = error;
+                    stopReplyReceived = YES;
+                    printf("NetworkRelay stop reply error=%s\n",
+                           error != nil
+                               ? [[error description] UTF8String]
+                               : "<none>");
+                }];
+            const NSDate *deadline =
+                [NSDate dateWithTimeIntervalSinceNow:5.0];
+            while (!stopReplyReceived &&
+                   [deadline timeIntervalSinceNow] > 0.0) {
+                [[NSRunLoop currentRunLoop]
+                    runMode:NSDefaultRunLoopMode
+                    beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+            }
+            [interface stopHostAPMode];
+            printf("NetworkRelay stop reply-received=%u error=%s\n",
+                   stopReplyReceived ? 1U : 0U,
+                   stopError != nil
+                       ? [[stopError description] UTF8String]
+                       : "<none>");
+            return stopReplyReceived && stopError == nil ? 0 : 1;
+        }
         const BOOL startSharing =
             strcmp(argv[2], "--start-sharing") == 0;
+        if (startSharing && geteuid() != 0) {
+            fprintf(stderr,
+                    "start-sharing requires root or the private "
+                    "NetworkSharing entitlement\n");
+            return 1;
+        }
         if ((!startSharing && strcmp(argv[2], "--start") != 0) || argc < 7) {
             fprintf(stderr,
                     "usage: %s interface --start|--start-sharing ssid "
@@ -387,7 +440,26 @@ main(int argc, const char *argv[])
                    relayError != nil
                        ? [[relayError description] UTF8String]
                        : "<none>");
-            if (relayReplyReceived && relayError != nil) {
+            if (!relayReplyReceived || relayError != nil) {
+                __block BOOL cleanupReplyReceived = NO;
+                [relayProxy
+                    __stopNetworkRelayBridgeForInterfaceName:
+                        relayInterfaceName
+                    reply:^(NSError *error) {
+                        printf("NetworkRelay failed-start cleanup error=%s\n",
+                               error != nil
+                                   ? [[error description] UTF8String]
+                                   : "<none>");
+                        cleanupReplyReceived = YES;
+                    }];
+                const NSDate *cleanupDeadline =
+                    [NSDate dateWithTimeIntervalSinceNow:5.0];
+                while (!cleanupReplyReceived &&
+                       [cleanupDeadline timeIntervalSinceNow] > 0.0) {
+                    [[NSRunLoop currentRunLoop]
+                        runMode:NSDefaultRunLoopMode
+                        beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+                }
                 [interface stopHostAPMode];
                 return 1;
             }
