@@ -28,6 +28,7 @@
 #include "TahoeWclOpenScanResumeContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
+#include <ClientKit/AirportItlwmScanHomeAwayBridge.h>
 #include <HAL/ItlSaeDriverTarget.h>
 #include <HAL/ItlSaeWclCredentialV1.h>
 #include <sys/CTimeout.hpp>
@@ -360,6 +361,27 @@ extern "C" volatile uint64_t setCUR_PMK_pmk_install_count = 0;
 extern "C" volatile uint64_t external_pmk_eligibility_clear_count = 0;
 
 static volatile uint32_t sIo80211InputProbeCount = 0;
+static volatile uint32_t sScanHomeAwayTimeMs = 0;
+static volatile uint32_t sScanHomeAwayTimeValid = 0;
+
+extern "C" void
+airportItlwmSetScanHomeAwayTime(uint32_t milliseconds)
+{
+    sScanHomeAwayTimeMs = milliseconds;
+    __sync_synchronize();
+    sScanHomeAwayTimeValid = 1;
+}
+
+extern "C" bool
+airportItlwmGetScanHomeAwayTime(uint32_t *milliseconds)
+{
+    if (milliseconds == nullptr || sScanHomeAwayTimeValid == 0)
+        return false;
+
+    __sync_synchronize();
+    *milliseconds = sScanHomeAwayTimeMs;
+    return true;
+}
 
 static uint16_t airportItlwmHostEtherType(const ether_header *eh)
 {
@@ -9114,14 +9136,32 @@ setWCL_LINK_UP_DONE(void *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     // AppleBCMWLANCore::setWCL_SET_SCAN_HOME_AWAY_TIME consumes a single dword
     // and forwards it into the scan-adapter owner. Preserve the same carrier
     // instead of acknowledging slot [604] and discarding the timing request.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // The Intel port has no scan-adapter iovar transport.
-    return kIOReturnUnsupported;
+    /*
+     * Tahoe forwards this dword to the reference scan adapter as the
+     * persistent scan_home_away_time policy.  Intel exposes the equivalent
+     * policy in every associated-scan command rather than through a separate
+     * iovar: DVM has max_out/pause_scan and MVM uses
+     * max_out_time/suspend_time.  Retain both the value and an independent
+     * validity bit because zero is a real request (disable home/away
+     * scheduling), not the local "use backend default" sentinel.
+     *
+     * DVM's packed pause_scan field has ten bits for the whole-beacon count;
+     * 1000 ms is therefore the largest common value all three Intel families
+     * can represent even with a 1-TU beacon interval.  Reject a value the
+     * common backend cannot program instead of acknowledging dead state.
+     */
+    if (data->milliseconds > 1000U)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    airportItlwmSetScanHomeAwayTime(data->milliseconds);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

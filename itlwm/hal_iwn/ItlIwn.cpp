@@ -39,6 +39,7 @@
 #include <HAL/ItlApFirmwareRuntime.hpp>
 #include "../../AirportItlwm/TahoeNrateContracts.hpp"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
+#include <ClientKit/AirportItlwmScanHomeAwayBridge.h>
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
@@ -17453,21 +17454,32 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
         apFirmwareStage == IWN_AP_STAGE_RUNNING;
     if (bgscan || apContextRunning) {
         int bintval;
+        u_int32_t configuredHomeAwayMs = 0;
+        const bool hasConfiguredHomeAway =
+            airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs);
+        const u_int32_t maxOutMs = hasConfiguredHomeAway ?
+            configuredHomeAwayMs : 200U;
+        const u_int32_t pauseMs = hasConfiguredHomeAway ?
+            configuredHomeAwayMs : 100U;
 
         /*
          * DVM applies associated-scan home/away scheduling whenever any
          * RXON context is associated.  PAN/AP therefore keeps this policy
          * even when the primary STA is doing a foreground reconnect scan.
+         * A live Tahoe WCL policy replaces both legacy DVM constants; zero
+         * deliberately leaves both command fields disabled.
          */
-        hdr->max_out = htole32(200 * 1024);
+        hdr->max_out = htole32(maxOutMs * 1024U);
 
         /* Configure scan pauses which service on-channel traffic. */
         bintval = apContextRunning &&
             apFirmwareConfig.beaconInterval != 0 ?
             apFirmwareConfig.beaconInterval :
             (ic->ic_bss->ni_intval ? ic->ic_bss->ni_intval : 100);
-        hdr->pause_scan = htole32(((100 / bintval) << 22) |
-            ((100 % bintval) * 1024));
+        if (pauseMs != 0) {
+            hdr->pause_scan = htole32(((pauseMs / bintval) << 22) |
+                ((pauseMs % bintval) * 1024U));
+        }
     }
 
     /* Select antennas for scanning. */

@@ -109,6 +109,7 @@
 #include "ItlIwx.hpp"
 #include "IwxMfpIgtkContracts.hpp"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
+#include <ClientKit/AirportItlwmScanHomeAwayBridge.h>
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
@@ -10124,7 +10125,11 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
     struct iwx_scan_umac_chan_param *chanparam;
     size_t req_len;
     int err, async = bgscan;
-    const uint32_t timeout = bgscan ?  htole32(120) : htole32(0);
+    uint32_t configuredHomeAwayMs = 0;
+    const uint32_t homeAwayMs =
+        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
+            configuredHomeAwayMs : 120U;
+    const uint32_t timeout = bgscan ? htole32(homeAwayMs) : htole32(0);
     uint8_t scan_ver = iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_SCAN_REQ_UMAC);
     
     if (scan_ver == 12)
@@ -10289,7 +10294,11 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     struct iwx_scan_req_umac_v12 *req;
     size_t req_len;
     uint16_t gen_flags = 0;
-    const uint32_t timeout = bgscan ?  htole32(120) : htole32(0);
+    uint32_t configuredHomeAwayMs = 0;
+    const uint32_t homeAwayMs =
+        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
+            configuredHomeAwayMs : 120U;
+    const uint32_t timeout = bgscan ? htole32(homeAwayMs) : htole32(0);
     struct iwx_scan_general_params_v10 *general_params;
     struct iwx_scan_channel_params_v4 *cp;
     struct iwx_host_cmd hcmd = {
@@ -10389,7 +10398,11 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     uint16_t gen_flags = 0;
     struct iwx_scan_general_params_v10 *general_params;
     struct iwx_scan_channel_params_v6 *cp;
-    const uint32_t timeout = bgscan ?  htole32(120) : htole32(0);
+    uint32_t configuredHomeAwayMs = 0;
+    const uint32_t homeAwayMs =
+        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
+            configuredHomeAwayMs : 120U;
+    const uint32_t timeout = bgscan ? htole32(homeAwayMs) : htole32(0);
     struct iwx_host_cmd hcmd = {
         .id = iwx_cmd_id(IWX_SCAN_REQ_UMAC, IWX_LONG_GROUP, 0),
         .len = { 0, },

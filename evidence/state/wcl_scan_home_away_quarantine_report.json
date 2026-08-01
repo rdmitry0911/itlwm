@@ -1,13 +1,22 @@
 {
   "checks": {
-    "intel_source_has_no_backend": true,
-    "pseudo_state_removed": true,
+    "dead_interface_cache_remains_absent": true,
+    "iwm_programs_lmac_and_umac": true,
+    "iwn_programs_dvm_command": true,
+    "iwx_programs_all_umac_versions": true,
+    "layout_neutral_policy_bridge": true,
     "reference_note": true,
-    "setter_quarantines_nonnull": true
+    "setter_owns_supported_policy": true
   },
   "local": {
-    "backend_scan_home_away_adapter": false,
+    "backend_scan_home_away_adapter": true,
+    "families": [
+      "IWN",
+      "IWM",
+      "IWX"
+    ],
     "request_false_success": false,
+    "runtime_observed_milliseconds": 110,
     "selector_slot": 604
   },
   "reference": {
@@ -16,6 +25,6 @@
     "firmware_iovar": "scan_home_away_time",
     "public_bridge": "0xffffff8001522d28"
   },
-  "schema": "itlwm-wcl-scan-home-away-quarantine-v1",
-  "source_base_revision": "688b0a4"
+  "schema": "itlwm-wcl-scan-home-away-intel-backend-v2",
+  "source_base_revision": "9a87971"
 }

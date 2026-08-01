@@ -121,6 +121,7 @@
 
 #include "ItlIwm.hpp"
 #include "rs.h"
+#include <ClientKit/AirportItlwmScanHomeAwayBridge.h>
 
 uint16_t ItlIwm::
 iwm_scan_rx_chain(struct iwm_softc *sc)
@@ -338,6 +339,10 @@ int ItlIwm::
 iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    uint32_t configuredHomeAwayMs = 0;
+    const uint32_t homeAwayMs =
+        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
+            configuredHomeAwayMs : 120U;
     struct iwm_host_cmd hcmd = {
         .id = IWM_SCAN_OFFLOAD_REQUEST_CMD,
         .len = { 0, },
@@ -369,8 +374,8 @@ iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
     req->fragmented_dwell = 44;
     req->extended_dwell = 90;
     if (bgscan) {
-        req->max_out_time = htole32(120);
-        req->suspend_time = htole32(120);
+        req->max_out_time = htole32(homeAwayMs);
+        req->suspend_time = htole32(homeAwayMs);
     } else {
         req->max_out_time = htole32(0);
         req->suspend_time = htole32(0);
@@ -580,6 +585,10 @@ int ItlIwm::
 iwm_umac_scan(struct iwm_softc *sc, int bgscan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    uint32_t configuredHomeAwayMs = 0;
+    const uint32_t homeAwayMs =
+        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
+            configuredHomeAwayMs : 120U;
     struct iwm_host_cmd hcmd = {
         .id = iwm_cmd_id(IWM_SCAN_REQ_UMAC, IWM_LONG_GROUP, 0),
         .len = { 0, },
@@ -645,7 +654,7 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
     }
     
     if (bgscan) {
-        const uint32_t timeout = htole32(120);
+        const uint32_t timeout = htole32(homeAwayMs);
         if (isset(sc->sc_ucode_api,
                   IWM_UCODE_TLV_API_ADAPTIVE_DWELL_V2)) {
             req->v8.max_out_time[IWM_SCAN_LB_LMAC_IDX] = timeout;

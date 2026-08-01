@@ -10,6 +10,7 @@ import sys
 
 root = Path(sys.argv[1])
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
+bridge = (root / "include/ClientKit/AirportItlwmScanHomeAwayBridge.h").read_text()
 
 limit = iwn[
     iwn.index("iwn_limit_dwell(struct iwn_softc *sc"):
@@ -29,11 +30,22 @@ submit = iwn[
     iwn.index("void ItlIwn::\niwn_scan_abort(")
 ]
 home = submit.index("if (bgscan || apContextRunning)")
-max_out = submit.index("hdr->max_out = htole32(200 * 1024)")
+policy = submit.index("airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs)")
+default_max_out = submit.index("configuredHomeAwayMs : 200U")
+default_pause = submit.index("configuredHomeAwayMs : 100U")
+max_out = submit.index("hdr->max_out = htole32(maxOutMs * 1024U)")
 pause = submit.index("hdr->pause_scan = htole32")
 channel_loop = submit.index("for (c  = &ic->ic_channels[1]")
-assert home < max_out < pause < channel_loop, \
+assert home < policy < default_max_out < default_pause < max_out < pause < channel_loop, \
     "AP-active foreground scans must program home/away before channels"
+assert "if (pauseMs != 0)" in submit, \
+    "an explicit zero WCL policy must leave DVM home/away fields disabled"
+for needle in (
+    "airportItlwmSetScanHomeAwayTime",
+    "airportItlwmGetScanHomeAwayTime",
+    "avoids changing the shared ieee80211com ABI layout",
+):
+    assert needle in bridge, f"missing layout-neutral home/away bridge rule: {needle}"
 
 extensions = submit.index("wcl_foreground_5ghz_extended_dwell")
 final_limit = submit.rindex("dwell_passive = iwn_limit_dwell(sc, dwell_passive)")
