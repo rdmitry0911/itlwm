@@ -16,6 +16,10 @@ v2h = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 iwnh = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
 iwnvar = (root / "itlwm/hal_iwn/if_iwnvar.h").read_text()
+iwm = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
+iwmvar = (root / "itlwm/hal_iwm/if_iwmvar.h").read_text()
+iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
+iwxvar = (root / "itlwm/hal_iwx/if_iwxvar.h").read_text()
 hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 node = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 nodeh = (root / "itl80211/openbsd/net80211/ieee80211_node.h").read_text()
@@ -433,6 +437,65 @@ ordered(iwn_init, "lower scan acceptance precedes availability",
         "if (error != 0)",
         "goto fail;",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
+
+for source, var_source, prefix, flags in (
+        (iwm, iwmvar, "IWM", "IWM_FLAG_SHUTDOWN | IWM_FLAG_RFKILL"),
+        (iwx, iwxvar, "IWX", "IWX_FLAG_SHUTDOWN | IWX_FLAG_RFKILL")):
+    require(var_source, "u_int8_t\t\tinit_retry_count;",
+            f"{prefix} bounded power-on counter")
+    task = body(source, f"{prefix.lower()}_init_task(void *arg1)",
+                f"{prefix} bounded power-on recovery")
+    for token in (
+            "attempted = true;",
+            "&sc->init_retry_count, 1, __ATOMIC_ACQ_REL",
+            f"sc->sc_flags & ({flags})",
+            "if (attempt < 5)",
+            "power-on recovery exhausted after %u attempts"):
+        require(task, token, f"{prefix} bounded power-on recovery")
+
+iwm_task = body(iwm, "iwm_init_task(void *arg1)",
+                "IWM bounded power-on recovery")
+ordered(iwm_task, "IWM retries a complete firmware/first-scan epoch",
+        "error = that->iwm_init(ifp);",
+        "&sc->init_retry_count, 1, __ATOMIC_ACQ_REL",
+        "if (attempt < 5)",
+        "(void)task_add(systq, &sc->init_task);")
+iwm_wake = body(iwm, "iwm_activate(struct iwm_softc *sc, int act)",
+                "IWM wake recovery admission")
+ordered(iwm_wake, "IWM wake never strands a transient ready failure",
+        "case DVACT_WAKEUP:",
+        "&sc->init_retry_count, 0, __ATOMIC_RELEASE",
+        "if (!iwm_set_hw_ready(sc))",
+        "(void)task_add(systq, &sc->init_task);")
+forbid(iwm_wake, "init_task NOT scheduled",
+       "IWM transient ready failure stranding power-on")
+
+iwx_task = body(iwx, "iwx_init_task(void *arg1)",
+                "IWX bounded power-on recovery")
+ordered(iwx_task, "IWX retries through its bootstrap lifecycle token",
+        "error = that->iwx_init_internal(ifp, true);",
+        "&sc->init_retry_count, 1, __ATOMIC_ACQ_REL",
+        "if (attempt < 5)",
+        "that->iwx_bootstrap_init_task(sc);")
+iwx_wake = body(iwx, "iwx_activate(struct iwx_softc *sc, int act)",
+                "IWX wake recovery admission")
+ordered(iwx_wake, "IWX wake never strands a transient ready failure",
+        "case DVACT_WAKEUP:",
+        "&sc->init_retry_count, 0, __ATOMIC_RELEASE",
+        "err = iwx_prepare_card_hw(sc);",
+        "that->iwx_bootstrap_init_task(sc);")
+forbid(iwx_wake, "init_task NOT scheduled",
+       "IWX transient ready failure stranding power-on")
+iwx_enable = body(iwx, "IOReturn ItlIwx::enable(IONetworkInterface *netif)",
+                  "IWX accepted asynchronous power-on")
+ordered(iwx_enable, "IWX resume preflight hands off to bounded recovery",
+        "ifp->if_flags |= IFF_UP;",
+        "iwx_activate(&com, DVACT_RESUME)",
+        "continuing with bounded power-on recovery",
+        "iwx_activate(&com, DVACT_WAKEUP)",
+        "return kIOReturnSuccess;")
+forbid(iwx_enable, "ifp->if_flags &= ~IFF_UP;",
+       "IWX transient resume failure revoking accepted power-on")
 for token in (
         "IEEE80211_EVT_STANDARD_SCAN_TERMINAL",
         "IEEE80211_EVT_STANDARD_SCAN_INVALIDATED",

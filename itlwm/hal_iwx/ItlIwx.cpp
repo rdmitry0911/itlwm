@@ -753,11 +753,9 @@ IOReturn ItlIwx::enable(IONetworkInterface *netif)
     }
     ifp->if_flags |= IFF_UP;
     int err = iwx_activate(&com, DVACT_RESUME);
-    if (err) {
-        XYLog("DEBUG %s DVACT_RESUME failed err=%d, clearing IFF_UP\n", __FUNCTION__, err);
-        ifp->if_flags &= ~IFF_UP;
-        return kIOReturnError;
-    }
+    if (err)
+        XYLog("DEBUG %s DVACT_RESUME failed err=%d; continuing with bounded power-on recovery\n",
+              __FUNCTION__, err);
     iwx_activate(&com, DVACT_WAKEUP);
     return kIOReturnSuccess;
 }
@@ -13085,13 +13083,16 @@ iwx_scan(struct iwx_softc *sc)
         ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
     
     sc->sc_flags |= IWX_FLAG_SCANNING;
-    noteWclScanRadioReady();
     noteWclInitialScanCommandStarted();
     if ((sc->sc_flags & IWX_FLAG_BGSCAN) == 0) {
         ieee80211_set_link_state(ic, LINK_STATE_DOWN);
         ieee80211_node_cleanup(ic, ic->ic_bss);
     }
     ic->ic_state = IEEE80211_S_SCAN;
+    /* Availability consumers may submit immediately after this event.  Keep
+     * the reference powerOn boundary below both command acceptance and the
+     * committed lower SCAN state. */
+    noteWclScanRadioReady();
     wakeupOn(&ic->ic_state); /* wake iwx_init() */
     
     return 0;
@@ -14962,6 +14963,8 @@ iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
 
     err = 0;
 out:
+    if (err == 0)
+        __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     that->iwx_task_gate_end_epoch(sc);
     return err;
 }
@@ -18844,6 +18847,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_if_attached = false;
     sc->sc_hw_active = false;
     sc->sc_generation = 0;
+    __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     sc->sc_cmdq_lock = NULL;
     sc->sc_cmdq_next_serial = 0;
     sc->sc_cmdq_epoch = 0;
@@ -19309,6 +19313,8 @@ iwx_init_task(void *arg1)
     int s = splnet();
     int generation = sc->sc_generation;
     int fatal = (sc->sc_flags & (IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL));
+    int error = 0;
+    bool attempted = false;
 
     if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
         splx(s);
@@ -19330,10 +19336,31 @@ iwx_init_task(void *arg1)
     }
 
     if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
-        that->iwx_init_internal(ifp, true);
+        attempted = true;
+        error = that->iwx_init_internal(ifp, true);
     } else {
         XYLog("DEBUG %s SKIP iwx_init: fatal=%d IFF_UP=%d IFF_RUNNING=%d\n",
               __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
+    }
+
+    if (attempted && error != 0 && (ifp->if_flags & IFF_UP) != 0 &&
+        (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_RFKILL)) == 0) {
+        const u_int8_t attempt = __atomic_add_fetch(
+            &sc->init_retry_count, 1, __ATOMIC_ACQ_REL);
+
+        /* Tahoe 25C56 AppleBCMWLANCore::powerOn allows five complete lower
+         * attempts before its permanent-failure terminal.  A failed IWX
+         * epoch leaves admission closed and rearmed, so every retry must use
+         * the bootstrap token rather than bypassing the lifecycle gate. */
+        if (attempt < 5) {
+            XYLog("%s: power-on attempt %u failed (%d), retrying\n",
+                  DEVNAME(sc), (unsigned)attempt, error);
+            that->iwx_bootstrap_init_task(sc);
+        } else {
+            (void)task_del(systq, &sc->init_task);
+            XYLog("%s: power-on recovery exhausted after %u attempts\n",
+                  DEVNAME(sc), (unsigned)attempt);
+        }
     }
 
     //    rw_exit(&sc->ioctl_rwl);
@@ -19393,14 +19420,14 @@ iwx_activate(struct iwx_softc *sc, int act)
                       DEVNAME(sc));
             break;
         case DVACT_WAKEUP:
-            /* Hardware should be up at this point. */
+            /* Keep the full init epoch reachable after a transient preflight
+             * failure.  Its task-gated result owns the bounded retries. */
+            __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
             err = iwx_prepare_card_hw(sc);
-            if (err == 0) {
-                that->iwx_bootstrap_init_task(sc);
-            } else {
-                XYLog("%s: DVACT_WAKEUP: iwx_prepare_card_hw failed err=%d, init_task NOT scheduled\n",
+            if (err != 0)
+                XYLog("%s: DVACT_WAKEUP: hardware not ready err=%d; scheduling full power-on recovery\n",
                       DEVNAME(sc), err);
-            }
+            that->iwx_bootstrap_init_task(sc);
             break;
     }
 

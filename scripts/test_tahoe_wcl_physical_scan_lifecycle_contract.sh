@@ -383,10 +383,12 @@ for token in (
 iwx_foreground_submit = body(
     iwx, "iwx_scan(struct iwx_softc *sc)",
     "IWX foreground command submit")
-ordered(iwx_foreground_submit, "IWX post-submit STARTED edge",
+ordered(iwx_foreground_submit, "IWX post-submit readiness edge",
         "sc->sc_flags |= IWX_FLAG_SCANNING",
+        "noteWclInitialScanCommandStarted()",
+        "ic->ic_state = IEEE80211_S_SCAN",
         "noteWclScanRadioReady()",
-        "noteWclInitialScanCommandStarted()")
+        "wakeupOn(&ic->ic_state)")
 require(iwx_foreground_submit, "noteWclInitialScanCommandRejected()",
         "IWX pre-submit initial rejection")
 
@@ -540,10 +542,12 @@ for token in (
 iwm_foreground_submit = body(
     iwm_scan, "iwm_scan(struct iwm_softc *sc)",
     "IWM foreground command submit")
-ordered(iwm_foreground_submit, "IWM post-submit STARTED edge",
+ordered(iwm_foreground_submit, "IWM post-submit readiness edge",
         "sc->sc_flags |= IWM_FLAG_SCANNING",
+        "noteWclInitialScanCommandStarted()",
+        "ic->ic_state = IEEE80211_S_SCAN",
         "noteWclScanRadioReady()",
-        "noteWclInitialScanCommandStarted()")
+        "wakeupOn(&ic->ic_state)")
 require(iwm_foreground_submit, "noteWclInitialScanCommandRejected()",
         "IWM pre-submit initial rejection")
 

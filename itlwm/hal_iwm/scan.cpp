@@ -891,13 +891,16 @@ iwm_scan(struct iwm_softc *sc)
         ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
     
     sc->sc_flags |= IWM_FLAG_SCANNING;
-    noteWclScanRadioReady();
     noteWclInitialScanCommandStarted();
     if ((sc->sc_flags & IWM_FLAG_BGSCAN) == 0) {
         ieee80211_set_link_state(ic, LINK_STATE_DOWN);
         ieee80211_node_cleanup(ic, ic->ic_bss);
     }
     ic->ic_state = IEEE80211_S_SCAN;
+    /* Availability consumers may submit immediately after this event.  Keep
+     * the reference powerOn boundary below both command acceptance and the
+     * committed lower SCAN state. */
+    noteWclScanRadioReady();
     iwm_led_blink_start(sc);
     wakeupOn(&ic->ic_state); /* wake iwm_init() */
     

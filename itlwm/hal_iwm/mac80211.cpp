@@ -5198,6 +5198,7 @@ iwm_init(struct _ifnet *ifp)
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
+        __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
         return 0;
     }
     
@@ -5219,7 +5220,8 @@ iwm_init(struct _ifnet *ifp)
             return err;
         }
     } while (ic->ic_state != IEEE80211_S_SCAN);
-    
+
+    __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     return 0;
 }
 
@@ -6565,6 +6567,7 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
             ml_init(&rxba->entries[j].frames);
     }
     task_set(&sc->init_task, iwm_init_task, sc, "init_task");
+    __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     task_set(&sc->newstate_task, iwm_newstate_task, sc, "newstate_task");
     task_set(&sc->ba_task, iwm_ba_task, sc, "ba_task");
     task_set(&sc->ap_client_task, iwm_ap_client_task, sc,
@@ -6644,6 +6647,8 @@ iwm_init_task(void *arg1)
     int s = splnet();
     int generation = sc->sc_generation;
     int fatal = (sc->sc_flags & (IWM_FLAG_HW_ERR | IWM_FLAG_RFKILL));
+    int error = 0;
+    bool attempted = false;
 
     //    rw_enter_write(&sc->ioctl_rwl);
     if (generation != sc->sc_generation) {
@@ -6660,10 +6665,31 @@ iwm_init_task(void *arg1)
     }
 
     if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
-        that->iwm_init(ifp);
+        attempted = true;
+        error = that->iwm_init(ifp);
     } else {
         XYLog("DEBUG %s SKIP iwm_init: fatal=%d IFF_UP=%d IFF_RUNNING=%d\n",
               __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
+    }
+
+    if (attempted && error != 0 && (ifp->if_flags & IFF_UP) != 0 &&
+        (sc->sc_flags & (IWM_FLAG_SHUTDOWN | IWM_FLAG_RFKILL)) == 0) {
+        const u_int8_t attempt = __atomic_add_fetch(
+            &sc->init_retry_count, 1, __ATOMIC_ACQ_REL);
+
+        /* Tahoe 25C56 AppleBCMWLANCore::powerOn increments its recovery
+         * counter through five complete lower attempts before selecting the
+         * permanent-failure terminal.  IWM's checked lower boundary is the
+         * firmware epoch plus the synchronous first-SCAN transition. */
+        if (attempt < 5) {
+            XYLog("%s: power-on attempt %u failed (%d), retrying\n",
+                  DEVNAME(sc), (unsigned)attempt, error);
+            (void)task_add(systq, &sc->init_task);
+        } else {
+            (void)task_del(systq, &sc->init_task);
+            XYLog("%s: power-on recovery exhausted after %u attempts\n",
+                  DEVNAME(sc), (unsigned)attempt);
+        }
     }
 
     //    rw_exit(&sc->ioctl_rwl);
@@ -6901,13 +6927,14 @@ iwm_activate(struct iwm_softc *sc, int act)
                       DEVNAME(sc));
             break;
         case DVACT_WAKEUP:
-            /* Hardware should be up at this point. */
-            if (iwm_set_hw_ready(sc)) {
-                task_add(systq, &sc->init_task);
-            } else {
-                XYLog("%s: DVACT_WAKEUP: iwm_set_hw_ready failed, init_task NOT scheduled\n",
+            /* A transient ready preflight must not suppress the full init
+             * epoch: iwm_init_hw() repeats prepare_card_hw(), and init_task
+             * owns the reference-matched bounded recovery policy. */
+            __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
+            if (!iwm_set_hw_ready(sc))
+                XYLog("%s: DVACT_WAKEUP: hardware not ready; scheduling full power-on recovery\n",
                       DEVNAME(sc));
-            }
+            (void)task_add(systq, &sc->init_task);
             break;
     }
     

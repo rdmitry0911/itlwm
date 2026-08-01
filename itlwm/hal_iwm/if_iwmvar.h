@@ -518,6 +518,7 @@ struct iwm_softc {
     pci_intr_handle_t ih;
 
 	struct task		init_task; /* NB: not reference-counted */
+	u_int8_t		init_retry_count;
 //	struct refcnt		task_refs;
 	struct task		newstate_task;
 	enum ieee80211_state	ns_nstate;
