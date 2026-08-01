@@ -1486,6 +1486,29 @@ setAPMaxStations(uint32_t maxStations)
 }
 
 IOReturn ItlIwx::
+setAPHidden(bool hidden)
+{
+    if (!itl_ap_open_is_running(&apRuntime))
+        return kIOReturnNotReady;
+    if (apRuntime.hidden == hidden)
+        return kIOReturnSuccess;
+
+    const bool previousHidden = apRuntime.hidden;
+    int error = itl_ap_firmware_set_hidden(&apRuntime, hidden);
+    if (error != 0)
+        return error == ENOENT ? kIOReturnUnsupported : kIOReturnBadArgument;
+    error = iwx_ap_send_beacon_template(&com, &apRuntime);
+    if (error != 0) {
+        const int rollback =
+            itl_ap_firmware_set_hidden(&apRuntime, previousHidden);
+        if (rollback == 0)
+            (void)iwx_ap_send_beacon_template(&com, &apRuntime);
+        return kIOReturnError;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwx::
 sendAPStationCommand(const struct ItlHalApStationCommand *command)
 {
     if (!itl_ap_open_is_running(&apRuntime))

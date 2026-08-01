@@ -90,6 +90,7 @@ public:
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
     IOReturn transmitAPData(mbuf_t packet) override;
+    IOReturn setAPHidden(bool hidden) override;
     uint32_t getAPTxFreeSpace() const;
     void iwn_reset_ap_runtime_state();
     void iwn_set_ap_scan_transition_blocked(bool);
@@ -571,6 +572,7 @@ public:
     uint8_t apPsQueueCount;
     bool apPsQueueReady;
     bool apTimSet;
+    bool apHidden;
     struct pci_attach_args pci;
     struct iwn_softc com;
 };

@@ -13,6 +13,7 @@
 #define APPLE80211_IOC_POWER 19
 #define APPLE80211_IOC_HOST_AP_MODE 25
 #define APPLE80211_IOC_HOST_AP_MODE_START 1
+#define APPLE80211_IOC_HOST_AP_MODE_HIDDEN 336
 #define APPLE80211_IOC_VIRTUAL_IF_CREATE 94
 #define APPLE80211_VERSION 1
 #define APPLE80211_VIF_SOFT_AP 7
@@ -77,6 +78,11 @@ struct airport_itlwm_host_ap_mode {
     uint8_t vendor_ie_data2e0[1];
 } __attribute__((packed));
 
+struct airport_itlwm_host_ap_mode_hidden {
+    uint32_t version00;
+    uint32_t hidden04;
+} __attribute__((packed));
+
 static int
 set_apple80211(int fd, const char *ifname, int selector, int value,
                void *data, uint32_t length)
@@ -135,8 +141,13 @@ main(int argc, char **argv)
         argc > 4 ? strtoul(argv[4], NULL, 10) : 0;
     const char *security = argc > 5 ? argv[5] : "open";
     const char *password = argc > 6 ? argv[6] : "";
+    const char *hidden_mode = argc > 7 ? argv[7] : "visible";
+    const int hidden_requested = strcmp(hidden_mode, "hidden") == 0 ||
+        strcmp(hidden_mode, "toggle") == 0;
+    const int toggle_hidden = strcmp(hidden_mode, "toggle") == 0;
     const int stop_only = strcmp(ssid, "--stop-only") == 0;
     const int create_only = strcmp(ssid, "--create-only") == 0;
+    const int hidden_only = strcmp(ssid, "--hidden-only") == 0;
     const size_t ssid_length = strlen(ssid);
     const size_t password_length = strlen(password);
     uint32_t auth_upper = APPLE80211_AUTHTYPE_OPEN;
@@ -148,7 +159,11 @@ main(int argc, char **argv)
         fprintf(stderr, "invalid security mode\n");
         return 2;
     }
-    if ((!stop_only && !create_only &&
+    if (strcmp(hidden_mode, "visible") != 0 && !hidden_requested) {
+        fprintf(stderr, "invalid hidden mode\n");
+        return 2;
+    }
+    if ((!stop_only && !create_only && !hidden_only &&
          (ssid_length == 0 || ssid_length > APPLE80211_MAX_SSID_LEN)) ||
         requested_channel == 0 || requested_channel > UINT32_MAX ||
         (auth_upper == APPLE80211_AUTHTYPE_OPEN && password_length != 0) ||
@@ -162,6 +177,18 @@ main(int argc, char **argv)
     if (fd < 0) {
         perror("socket");
         return 2;
+    }
+
+    if (hidden_only) {
+        struct airport_itlwm_host_ap_mode_hidden hidden;
+        memset(&hidden, 0, sizeof(hidden));
+        hidden.version00 = APPLE80211_VERSION;
+        hidden.hidden04 = hidden_requested ? 1 : 0;
+        const int result = set_apple80211(
+            fd, station_ifname, APPLE80211_IOC_HOST_AP_MODE_HIDDEN, 0,
+            &hidden, sizeof(hidden));
+        close(fd);
+        return result == 0 ? 0 : 1;
     }
 
     struct apple80211_virt_if_create_data create;
@@ -300,11 +327,33 @@ main(int argc, char **argv)
         return 1;
     }
 
+    struct airport_itlwm_host_ap_mode_hidden hidden;
+    memset(&hidden, 0, sizeof(hidden));
+    hidden.version00 = APPLE80211_VERSION;
+    hidden.hidden04 = hidden_requested ? 1 : 0;
+    if (hidden_requested &&
+        set_apple80211(fd, station_ifname,
+                       APPLE80211_IOC_HOST_AP_MODE_HIDDEN, 0,
+                       &hidden, sizeof(hidden)) != 0) {
+        close(fd);
+        return 1;
+    }
+
     if (hold_seconds != 0) {
         printf("holding Apple80211 control socket for %lu seconds\n",
                hold_seconds);
         fflush(stdout);
         sleep((unsigned int)hold_seconds);
+    }
+
+    if (toggle_hidden) {
+        hidden.hidden04 = 0;
+        if (set_apple80211(fd, station_ifname,
+                          APPLE80211_IOC_HOST_AP_MODE_HIDDEN, 0,
+                          &hidden, sizeof(hidden)) != 0) {
+            close(fd);
+            return 1;
+        }
     }
 
     close(fd);

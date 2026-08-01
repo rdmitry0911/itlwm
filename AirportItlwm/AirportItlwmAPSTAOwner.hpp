@@ -116,6 +116,9 @@ private:
     AirportItlwmAPSTAStationTableEntryLayout *allocateStation(const uint8_t *mac);
     void removeStation(const uint8_t *mac);
     void clearStation(AirportItlwmAPSTAStationTableEntryLayout *entry);
+    void noteLowerAssociatedStation(const uint8_t *mac);
+    void forgetLowerAssociatedStation(const uint8_t *mac);
+    void clearLowerAssociatedStations();
     IOReturn postStationMessage(uint32_t messageId, const void *payload, size_t payloadLength);
 
     AirportItlwm *owner;
@@ -132,6 +135,9 @@ private:
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
     uint16_t radioResetResumeWaitTicks;
+    uint8_t lowerAssociatedStaCount;
+    uint8_t lowerAssociatedStaMacs[kAirportItlwmAPSTAStationTableEntryCount]
+                                   [IEEE80211_ADDR_LEN];
 };
 
 #endif /* AirportItlwmAPSTAOwner_hpp */

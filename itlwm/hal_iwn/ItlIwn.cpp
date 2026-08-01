@@ -36,6 +36,7 @@
 
 #include "ItlIwn.hpp"
 #include "IwnHt40Contracts.hpp"
+#include <HAL/ItlApFirmwareRuntime.hpp>
 #include "../../AirportItlwm/TahoeNrateContracts.hpp"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 #include <linux/types.h>
@@ -4180,6 +4181,7 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apGtkKid = 1;
     apIgtkKid = IWN_AP_IGTK_KEY_ID;
     apTimSet = false;
+    apHidden = false;
 }
 
 void ItlIwn::iwn_set_ap_scan_transition_blocked(bool blocked)
@@ -5405,10 +5407,14 @@ bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,
         memcmp(ssid + 2, apFirmwareSsid, ssid[1]) == 0;
     if (!wildcard && !exactSsid)
         return true;
+    if (apHidden && wildcard)
+        return true;
 
     const size_t templateLength = apFirmwareConfig.beaconTemplateLength;
+    const size_t responseCapacity = templateLength +
+        (apHidden ? apFirmwareConfig.ssidLength : 0);
     uint8_t *response = static_cast<uint8_t *>(
-        malloc(templateLength, M_DEVBUF, M_NOWAIT | M_ZERO));
+        malloc(responseCapacity, M_DEVBUF, M_NOWAIT | M_ZERO));
     if (response == NULL)
         return true;
 
@@ -5423,7 +5429,15 @@ bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,
         const size_t totalLength = 2 + elementLength;
         if (inputOffset + totalLength > templateLength)
             break;
-        if (templateBytes[inputOffset] != IEEE80211_ELEMID_TIM) {
+        if (apHidden &&
+            templateBytes[inputOffset] == IEEE80211_ELEMID_SSID) {
+            response[outputOffset++] = IEEE80211_ELEMID_SSID;
+            response[outputOffset++] =
+                static_cast<uint8_t>(apFirmwareConfig.ssidLength);
+            memcpy(response + outputOffset, apFirmwareSsid,
+                   apFirmwareConfig.ssidLength);
+            outputOffset += apFirmwareConfig.ssidLength;
+        } else if (templateBytes[inputOffset] != IEEE80211_ELEMID_TIM) {
             memcpy(response + outputOffset,
                    templateBytes + inputOffset, totalLength);
             outputOffset += totalLength;
@@ -5446,7 +5460,7 @@ bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,
     if (error != 0)
         XYLog("%s: AP probe response queue failed error=%d\n",
               com.sc_dev.dv_xname, error);
-    explicit_bzero(response, templateLength);
+    explicit_bzero(response, responseCapacity);
     ::free(response);
     return true;
 }
@@ -8643,6 +8657,64 @@ IOReturn ItlIwn::stopAPMode()
     if (error != 0) {
         apFirmwareStage = IWN_AP_STAGE_RUNNING;
         iwn_set_ap_scan_transition_blocked(false);
+        return kIOReturnError;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwn::setAPHidden(bool hidden)
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage == IWN_AP_STAGE_IDLE ||
+        apFirmwareStage >= IWN_AP_STAGE_STOP_RXON)
+        return kIOReturnNotReady;
+    if (apHidden == hidden)
+        return kIOReturnSuccess;
+    /*
+     * HostAP start returns once the DVM transition is queued, while the
+     * public closednet selector follows immediately.  Before the first
+     * beacon command, update the owned template in place and let the normal
+     * three-beacon bring-up sequence upload it.  Once that sequence has
+     * started, accept a live change only from RUNNING; callers can retry the
+     * short intermediate window instead of receiving a false success for a
+     * template firmware has already consumed.
+     */
+    const bool queuedBeforeFirstBeacon =
+        apFirmwareStage < IWN_AP_STAGE_FIRST_BEACON;
+    if (!queuedBeforeFirstBeacon &&
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return kIOReturnBusy;
+
+    const bool previousHidden = apHidden;
+    int error = itl_ap_beacon_set_hidden(
+        apFirmwareBeacon, &apFirmwareConfig.beaconTemplateLength,
+        sizeof(apFirmwareBeacon), apFirmwareSsid,
+        apFirmwareConfig.ssidLength, &apHidden, hidden);
+    if (error != 0) {
+        const size_t firstElement = sizeof(struct ieee80211_frame) + 12;
+        XYLog("%s: AP closednet beacon rewrite failed error=%d "
+              "beacon_len=%zu ssid_len=%zu first_ie=%u first_ie_len=%u\n",
+              com.sc_dev.dv_xname, error,
+              apFirmwareConfig.beaconTemplateLength,
+              apFirmwareConfig.ssidLength,
+              firstElement < apFirmwareConfig.beaconTemplateLength ?
+                  static_cast<unsigned>(apFirmwareBeacon[firstElement]) :
+                  UINT_MAX,
+              firstElement + 1 < apFirmwareConfig.beaconTemplateLength ?
+                  static_cast<unsigned>(apFirmwareBeacon[firstElement + 1]) :
+                  UINT_MAX);
+        return error == ENOENT ? kIOReturnUnsupported : kIOReturnBadArgument;
+    }
+    if (queuedBeforeFirstBeacon)
+        return kIOReturnSuccess;
+    error = iwn_send_ap_beacon(&apFirmwareConfig);
+    if (error != 0) {
+        const int rollback = itl_ap_beacon_set_hidden(
+            apFirmwareBeacon, &apFirmwareConfig.beaconTemplateLength,
+            sizeof(apFirmwareBeacon), apFirmwareSsid,
+            apFirmwareConfig.ssidLength, &apHidden, previousHidden);
+        if (rollback == 0)
+            (void)iwn_send_ap_beacon(&apFirmwareConfig);
         return kIOReturnError;
     }
     return kIOReturnSuccess;

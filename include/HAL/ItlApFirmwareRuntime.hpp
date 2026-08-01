@@ -113,6 +113,7 @@ struct ItlApFirmwareRuntime {
     uint8_t gtkKeyId;
     uint8_t igtkKeyId;
     struct ItlApFirmwareClientRuntime clients[kItlApFirmwareMaxClients];
+    bool hidden;
     bool samePhyAsPrimary;
     bool replayAfterWake;
 };
@@ -231,6 +232,76 @@ itl_ap_firmware_set_client_limit(struct ItlApFirmwareRuntime *runtime,
     }
     runtime->config.maxStations = effective;
     return 0;
+}
+
+/*
+ * Apple changes closednet on an already running SoftAP.  Firmware still
+ * owns the beacon cadence, so keep the currently uploaded template in the
+ * runtime snapshot and rewrite only its SSID IE: a hidden beacon carries a
+ * zero-length SSID, while directed probe responses are rebuilt with the
+ * retained real SSID by ItlApOpenRuntime.
+ */
+static inline int
+itl_ap_beacon_set_hidden(uint8_t *beacon, size_t *beaconLength,
+                         size_t beaconCapacity, const uint8_t *ssid,
+                         size_t ssidLength, bool *currentHidden,
+                         bool hidden)
+{
+    const size_t fixedLength = sizeof(struct ieee80211_frame) + 12;
+    if (beacon == NULL || beaconLength == NULL || currentHidden == NULL ||
+        ssid == NULL || ssidLength == 0 || ssidLength > IEEE80211_NWID_LEN ||
+        *beaconLength < fixedLength || *beaconLength > beaconCapacity)
+        return EINVAL;
+    if (*currentHidden == hidden)
+        return 0;
+
+    size_t offset = fixedLength;
+    while (offset + 2 <= *beaconLength) {
+        uint8_t *element = beacon + offset;
+        const size_t elementLength = element[1];
+        const size_t totalLength = 2 + elementLength;
+        if (offset + totalLength > *beaconLength)
+            return EINVAL;
+        if (element[0] != IEEE80211_ELEMID_SSID) {
+            offset += totalLength;
+            continue;
+        }
+
+        const size_t tailOffset = offset + totalLength;
+        const size_t tailLength = *beaconLength - tailOffset;
+        if (hidden) {
+            if (elementLength != ssidLength ||
+                memcmp(element + 2, ssid, ssidLength) != 0)
+                return EINVAL;
+            memmove(element + 2, element + 2 + ssidLength, tailLength);
+            explicit_bzero(beacon + *beaconLength - ssidLength,
+                           ssidLength);
+            element[1] = 0;
+            *beaconLength -= ssidLength;
+        } else {
+            if (elementLength != 0 ||
+                *beaconLength + ssidLength > beaconCapacity)
+                return EINVAL;
+            memmove(element + 2 + ssidLength, element + 2, tailLength);
+            element[1] = static_cast<uint8_t>(ssidLength);
+            memcpy(element + 2, ssid, ssidLength);
+            *beaconLength += ssidLength;
+        }
+        *currentHidden = hidden;
+        return 0;
+    }
+    return ENOENT;
+}
+
+static inline int
+itl_ap_firmware_set_hidden(struct ItlApFirmwareRuntime *runtime, bool hidden)
+{
+    if (runtime == NULL || runtime->config.beaconTemplate != runtime->beacon)
+        return EINVAL;
+    return itl_ap_beacon_set_hidden(
+        runtime->beacon, &runtime->config.beaconTemplateLength,
+        sizeof(runtime->beacon), runtime->ssid, runtime->config.ssidLength,
+        &runtime->hidden, hidden);
 }
 
 static inline struct ItlApFirmwareClientRuntime *

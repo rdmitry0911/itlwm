@@ -437,9 +437,13 @@ itl_ap_open_build_probe_response(const struct ItlApFirmwareRuntime *runtime,
         memcmp(ssid + 2, runtime->ssid, ssid[1]) == 0;
     if (!wildcard && !exact)
         return 0;
+    if (runtime->hidden && wildcard)
+        return 0;
 
     const size_t templateLength = runtime->config.beaconTemplateLength;
-    int error = itl_ap_open_alloc_reply(templateLength, &result->reply);
+    const size_t responseCapacity = templateLength +
+        (runtime->hidden ? runtime->config.ssidLength : 0);
+    int error = itl_ap_open_alloc_reply(responseCapacity, &result->reply);
     if (error != 0)
         return error;
 
@@ -451,7 +455,15 @@ itl_ap_open_build_probe_response(const struct ItlApFirmwareRuntime *runtime,
         const size_t totalLength = 2 + source[inputOffset + 1];
         if (inputOffset + totalLength > templateLength)
             break;
-        if (source[inputOffset] != IEEE80211_ELEMID_TIM) {
+        if (runtime->hidden &&
+            source[inputOffset] == IEEE80211_ELEMID_SSID) {
+            result->reply[outputOffset++] = IEEE80211_ELEMID_SSID;
+            result->reply[outputOffset++] =
+                static_cast<uint8_t>(runtime->config.ssidLength);
+            memcpy(result->reply + outputOffset, runtime->ssid,
+                   runtime->config.ssidLength);
+            outputOffset += runtime->config.ssidLength;
+        } else if (source[inputOffset] != IEEE80211_ELEMID_TIM) {
             memcpy(result->reply + outputOffset,
                    source + inputOffset, totalLength);
             outputOffset += totalLength;

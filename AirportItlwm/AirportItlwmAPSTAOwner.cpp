@@ -499,6 +499,8 @@ bool AirportItlwmAPSTAOwner::initWithController(
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetResumeWaitTicks = 0;
+    lowerAssociatedStaCount = 0;
+    bzero(lowerAssociatedStaMacs, sizeof(lowerAssociatedStaMacs));
     bzero(bsdNameStorage, sizeof(bsdNameStorage));
 
     if (!OSObject::init()) {
@@ -560,6 +562,7 @@ void AirportItlwmAPSTAOwner::free()
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetResumeWaitTicks = 0;
+    clearLowerAssociatedStations();
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
     owner = nullptr;
     OSObject::free();
@@ -590,6 +593,11 @@ void AirportItlwmAPSTAOwner::resetRuntimeState()
     state.resetState26c = 0;
     state.resetFlag329 = 0;
     state.hostApTransitionState270 = 0;
+    /* A public HostAP stop ends the closednet profile.  Radio-reset replay
+     * with an associated station deliberately bypasses resetRuntimeState(),
+     * so sleep still retains selector 336 while a later explicit AP start
+     * cannot inherit the previous network's hidden state. */
+    state.hiddenNetworkFlag0d = 0;
     state.softapAssociatedStaCount00 = 0;
     state.softapRuntimeB0 = 0;
     state.softapPowerStateB4 = 0;
@@ -602,6 +610,7 @@ void AirportItlwmAPSTAOwner::resetRuntimeState()
     state.softapRuntime90 = 0;
     state.softapRuntime98 = 0;
     state.softapRuntimeA0 = 0;
+    clearLowerAssociatedStations();
 }
 
 void AirportItlwmAPSTAOwner::setSoftAPPowerSaveState(uint8_t newState, uint8_t reason)
@@ -717,6 +726,21 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     }
     cfg.beaconTemplate = beaconTemplate;
     IOReturn ret = owner->fHalService->startAPMode(&cfg);
+    if (ret == kIOReturnSuccess && state.hiddenNetworkFlag0d != 0) {
+        /*
+         * A radio reset reconstructs the lower AP from the retained public
+         * profile.  closednet is a separate Apple selector, so replay it
+         * before publishing the AP as running; otherwise wake exposes one or
+         * more visible beacons until userspace happens to resend selector
+         * 336.  IWN accepts this while its first beacon is still queued,
+         * while IWM/IWX update their already materialized template.
+         */
+        XYLog("AirportItlwm: APSTA replaying retained hidden AP profile "
+              "after radio reset\n");
+        ret = owner->fHalService->setAPHidden(true);
+        if (ret != kIOReturnSuccess)
+            (void)owner->fHalService->stopAPMode();
+    }
     if (ret == kIOReturnSuccess) {
         lifecycle = kAirportItlwmAPSTAOwnerRunning;
         state.resetState26c = 1;
@@ -769,7 +793,8 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
      * The post-reset census terminal replays the retained profile into a new
      * PAN context before reopening this datapath.
      */
-    if (state.softapAssociatedStaCount00 == 0) {
+    if (state.softapAssociatedStaCount00 == 0 &&
+        lowerAssociatedStaCount == 0) {
         setSoftAPPowerSaveState(
             kAirportItlwmAPSTAHostApPowerOffSetPowerSaveState,
             kAirportItlwmAPSTAHostApPowerOffPowerSaveReason);
@@ -806,6 +831,7 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
     for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++)
         clearStation(&state.softapStaTableB8[i]);
     state.softapAssociatedStaCount00 = 0;
+    clearLowerAssociatedStations();
     state.resetState26c = 0;
     state.hostApTransitionState270 = 0;
     lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
@@ -1494,6 +1520,47 @@ void AirportItlwmAPSTAOwner::removeStation(const uint8_t *macAddr)
     }
 }
 
+void AirportItlwmAPSTAOwner::noteLowerAssociatedStation(
+    const uint8_t *macAddr)
+{
+    if (macAddr == nullptr || apsta_mac_is_zero(macAddr))
+        return;
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
+        if (memcmp(lowerAssociatedStaMacs[i], macAddr,
+                   IEEE80211_ADDR_LEN) == 0)
+            return;
+    }
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
+        if (!apsta_mac_is_zero(lowerAssociatedStaMacs[i]))
+            continue;
+        memcpy(lowerAssociatedStaMacs[i], macAddr, IEEE80211_ADDR_LEN);
+        lowerAssociatedStaCount++;
+        return;
+    }
+}
+
+void AirportItlwmAPSTAOwner::forgetLowerAssociatedStation(
+    const uint8_t *macAddr)
+{
+    if (macAddr == nullptr || apsta_mac_is_zero(macAddr))
+        return;
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
+        if (memcmp(lowerAssociatedStaMacs[i], macAddr,
+                   IEEE80211_ADDR_LEN) != 0)
+            continue;
+        bzero(lowerAssociatedStaMacs[i], IEEE80211_ADDR_LEN);
+        if (lowerAssociatedStaCount != 0)
+            lowerAssociatedStaCount--;
+        return;
+    }
+}
+
+void AirportItlwmAPSTAOwner::clearLowerAssociatedStations()
+{
+    lowerAssociatedStaCount = 0;
+    bzero(lowerAssociatedStaMacs, sizeof(lowerAssociatedStaMacs));
+}
+
 bool AirportItlwmAPSTAOwner::areAllStationsInLowPowerMode() const
 {
     for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
@@ -1599,6 +1666,11 @@ IOReturn AirportItlwmAPSTAOwner::publishStationEventFromNet80211(
                     status, reason)) {
                 return kIOReturnSuccess;
             }
+            /* Firmware association is authoritative for radio power.  The
+             * recovered public event path intentionally suppresses a hidden
+             * non-Apple peer, but that policy must not make S3 tear down an
+             * AP which still has a live Linux/Android station. */
+            noteLowerAssociatedStation(macAddr);
             const bool foundAppleIE =
                 apsta_check_for_apple_ie(ies, iesLength);
             if (!AirportItlwmAPSTAEventContracts::associationIsAdmitted(
@@ -1644,6 +1716,7 @@ IOReturn AirportItlwmAPSTAOwner::publishStationEventFromNet80211(
         case kAirportItlwmAPSTAEventDisassoc:
         case kAirportItlwmAPSTAEventDisassocInd: {
             apsta_copy_mac_prefix(&state.softapEvent80, &state.softapEvent84, macAddr);
+            forgetLowerAssociatedStation(macAddr);
             removeStation(macAddr);
             AirportItlwmAPSTAStaRemoveMessageLayout message;
             bzero(&message, sizeof(message));

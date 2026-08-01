@@ -208,6 +208,7 @@ public:
     IOReturn transmitAPData(mbuf_t packet) override;
     IOReturn setAPKey(const struct ItlHalApKey *key) override;
     IOReturn setAPMaxStations(uint32_t maxStations) override;
+    IOReturn setAPHidden(bool hidden) override;
     IOReturn sendAPStationCommand(
         const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
