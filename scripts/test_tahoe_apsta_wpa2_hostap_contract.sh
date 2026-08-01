@@ -86,6 +86,9 @@ for needle in required_iwn:
 
 assert "startHostAPModeWithSSID:securityType:channel:password:error:" in probe
 assert "initWithBytes:argv[3] length:strlen(argv[3])" in probe
+assert "while (nanosleep(&remaining, &remaining) == -1 && errno == EINTR)" in probe
+assert "struct timespec remaining" in probe, \
+    "CoreWLAN AP owner hold must survive IOPM signal interruption"
 for needle in (
     "uint32_t channel_version10;",
     "uint32_t channel_number14;",

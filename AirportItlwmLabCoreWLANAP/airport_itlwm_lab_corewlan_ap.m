@@ -1,8 +1,10 @@
 #import <CoreWLAN/CoreWLAN.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 @interface CWInterface (AirportItlwmLabHostAP)
@@ -469,7 +471,23 @@ main(int argc, const char *argv[])
             argc > 7 ? strtoul(argv[7], NULL, 0) : 0;
         if (holdSeconds != 0) {
             printf("holding CoreWLAN client for %lu seconds\n", holdSeconds);
-            sleep((unsigned int)holdSeconds);
+            /*
+             * IOPM signals userspace while preparing system sleep.  A bare
+             * sleep(3) returns its rounded unslept remainder on that signal,
+             * which previously let this fixture fall through to NetworkRelay
+             * stop before the machine had even entered S3.  Keep the owning XPC
+             * client alive for the requested awake interval so the ensuing
+             * wake exercise measures the driver's APSTA power lifecycle,
+             * rather than an unintended helper-initiated HOST_AP_MODE(NULL).
+             * nanosleep(2) also avoids extending the hold indefinitely when
+             * frequent sub-second signals repeatedly round sleep(3)'s return.
+             */
+            struct timespec remaining = {
+                .tv_sec = (time_t)holdSeconds,
+                .tv_nsec = 0,
+            };
+            while (nanosleep(&remaining, &remaining) == -1 && errno == EINTR)
+                ;
         }
         if (startSharing) {
             __block BOOL stopReplyReceived = NO;
