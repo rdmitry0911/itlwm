@@ -149,6 +149,16 @@ struct iwn_tx_data {
     struct ieee80211_node    *ni;
     int totlen;
 
+    /*
+     * Legacy AMRR owns an index into ni_rates, not the PLCP byte reported by
+     * firmware at TX completion.  Retain the selected index on the descriptor
+     * so a later completion can be attributed to the rate-control generation
+     * which actually submitted this frame.  In particular, the final PLCP may
+     * be a lower multi-rate-retry fallback and must not be compared directly
+     * with ni_txrate.
+     */
+    int txrate;
+
     /* A-MPDU subframes */
     int ampdu_txmcs;
     int ampdu_nframes;

@@ -13930,6 +13930,7 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
                 "iwn tx data has node or AP owner");
     }
     data->totlen = 0;
+    data->txrate = 0;
     data->ampdu_nframes = 0;
     data->ampdu_txmcs = 0;
     data->tx_apple_nrate = 0;
@@ -14085,7 +14086,15 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
                                        ackfailcnt, txfail);
         }
     } else {
-        if (rate != data->ni->ni_txrate) {
+        /*
+         * Match the OpenBSD iwn AMRR ownership rule.  stat->rate is a
+         * firmware PLCP value (and may describe a retry fallback), whereas
+         * ni_txrate is an index into ni_rates.  The untested RA conversion
+         * compared those different domains and therefore rejected every
+         * legacy completion: AMRR never accumulated samples and a 5 GHz STA
+         * remained pinned to the initial 6 Mbps rate indefinitely.
+         */
+        if (data->txrate != data->ni->ni_txrate) {
             if (++wn->lq_rate_mismatch > 15) {
                 /* Try to sync firmware with driver. */
                 iwn_set_link_quality(sc, data->ni);
@@ -15470,6 +15479,7 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
 
     data->m = m;
     data->ni = ni;
+    data->txrate = ni->ni_txrate;
     data->ampdu_txmcs = ni->ni_txmcs; /* updated upon Tx interrupt */
     data->tx_apple_nrate = tx_apple_nrate;
     data->tx_apple_nrate_valid = tx_apple_nrate_valid ? 1 : 0;
