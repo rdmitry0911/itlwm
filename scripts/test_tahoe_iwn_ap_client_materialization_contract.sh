@@ -35,10 +35,9 @@ assoc = body(
 for needle in (
     "apClientMaterializationStage !=",
     "IWN_AP_CLIENT_MATERIALIZATION_IDLE",
-    "iwn_add_ap_client_node(request->i_addr2)",
     "IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE",
-    "iwn_update_ap_client_node()",
     "IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE",
+    "iwn_submit_next_ap_client_materialization()",
 ):
     assert needle in assoc, f"missing association admission fence: {needle}"
 assert "iwn_send_ap_client_link_quality()" not in assoc, \
@@ -136,25 +135,88 @@ for needle in (
     "completedAddNodeStatus = addNodeStatus;",
     "completedAddNodeFlags = completedNode->flags;",
     "completedAddNodeId = completedNode->id;",
+    "completedAddNodeId = completedLinkQuality->id;",
     "iwn_note_ap_firmware_event(",
     "completedAddNodeStatus, completedAddNodeFlags,",
     "completedAddNodeId);",
 ):
     assert needle in notif, f"missing firmware ADD_STA status handoff: {needle}"
 
-assert "uint8_t apClientMaterializationStage;" in iwn_hpp
+for needle in (
+    "command == IWN_CMD_ADD_NODE ||",
+    "command == IWN_CMD_LINK_QUALITY",
+    "completedClient = iwn_find_ap_client_by_id(",
+    "completedClient != NULL",
+):
+    assert needle in events, f"missing exact async station owner routing: {needle}"
+assert "first pending client" in events, \
+    "LQ completion must document why pending-slot inference is invalid"
+
+assert "struct IwnApClientRuntime" in iwn_hpp
+assert "uint8_t materializationStage;" in iwn_hpp
+assert "bool commandPending;" in iwn_hpp
+assert "apClients[kItlApFirmwareMaxClients]" in iwn_hpp
 assert "int iwn_send_ap_assoc_success();" in iwn_hpp
-assert "struct ieee80211_key apPairwiseSoftwareKey;" in iwn_hpp
-assert "bool apSoftwareCcmpRxObserved;" in iwn_hpp
+assert "struct ieee80211_key pairwiseSoftwareKey;" in iwn_hpp
+assert "bool softwareCcmpRxObserved;" in iwn_hpp
 
 reset = body(
     iwn,
     "void ItlIwn::iwn_reset_ap_runtime_state()",
     "void ItlIwn::iwn_set_ap_scan_transition_blocked(",
 )
-assert "IWN_AP_CLIENT_MATERIALIZATION_IDLE" in reset
-assert "ieee80211_ccmp_delete_key(" in reset
-assert "apSoftwareCcmpRxObserved = false;" in reset
+assert "iwn_reset_ap_client(&apClients[index], true, true)" in reset
+client_reset = body(
+    iwn,
+    "void ItlIwn::iwn_reset_ap_client(",
+    "struct IwnApClientRuntime *ItlIwn::iwn_allocate_ap_client(",
+)
+assert "ieee80211_ccmp_delete_key(" in client_reset
+assert "ieee80211_sae_ap_destroy(&client->sae);" in client_reset
+assert "itl_ap_rx_ba_stop(&client->rxBa[tid]);" in client_reset
+for needle in (
+    "bool preserveSaePmksa",
+    "preserveSaePmksa && client->saePmksaValid",
+    "client->saePmksaValid = true;",
+):
+    assert needle in client_reset, f"missing per-client PMKSA preservation: {needle}"
+
+reauth = body(
+    iwn,
+    "int ItlIwn::iwn_prepare_ap_client_reauthentication(",
+    "void ItlIwn::iwn_reset_ap_runtime_state()",
+)
+for needle in (
+    "iwn_stop_all_ap_client_tx_ba();",
+    "iwn_stop_all_ap_client_rx_ba();",
+    "iwn_remove_ap_client_node(apClientMac)",
+    "ieee80211_ccmp_delete_key(",
+    "if (!preserveSaePmksa)",
+    "iwn_clear_ap_sae_pmksa();",
+    "apClientContext->commandPending = false;",
+    "explicit_bzero(&apPtk, sizeof(apPtk));",
+    "apReplayCounter = 0;",
+    "bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));",
+):
+    assert needle in reauth, f"missing isolated reauthentication reset: {needle}"
+assert "iwn_reset_ap_client(" not in reauth, \
+    "reauthentication must retain this client's slot/station ID/AID"
+
+sae = body(
+    iwn,
+    "bool ItlIwn::iwn_handle_ap_sae_auth(",
+    "bool ItlIwn::iwn_handle_ap_open_auth(",
+)
+assert sae.index("iwn_prepare_ap_client_reauthentication(false)") < \
+    sae.index("ieee80211_sae_ap_begin_hnp("), \
+    "fresh SAE Commit must retire the old key/BA epoch before a new engine"
+open_auth = body(
+    iwn,
+    "bool ItlIwn::iwn_handle_ap_open_auth(",
+    "bool ItlIwn::iwn_handle_ap_assoc_req(",
+)
+assert "iwn_prepare_ap_client_reauthentication(\n        iwn_ap_uses_sae())" in open_auth, \
+    "Open authentication must isolate reset while preserving only SAE PMKSA"
 
 print("PASS: Tahoe IWN AP client materialization and cold CCMP fallback contract")
 PY

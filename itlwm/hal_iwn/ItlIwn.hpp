@@ -51,6 +51,7 @@
 #include <sys/endian.h>
 #include <sys/kpi_mbuf.h>
 #include <HAL/ItlApBlockAckRuntime.hpp>
+#include <HAL/ItlApFirmwareRuntime.hpp>
 
 #include "if_iwnreg.h"
 #include "if_iwnvar.h"
@@ -74,6 +75,74 @@
 
 struct ieee80211_sae_ap;
 
+enum { IWN_AP_PS_QUEUE_LEN = 16 };
+
+/*
+ * DVM has twelve dynamic station IDs (2..13), while Tahoe exposes five
+ * APSTA station entries.  Keep every host and firmware datum that is owned
+ * by one peer in the same slot.  The apClientContext pointer below is only
+ * the serialized operation context; asynchronous completions reselect a slot by
+ * firmware station ID before touching it.
+ */
+struct IwnApClientRuntime {
+    bool inUse;
+    uint8_t stationId;
+    bool commandPending;
+    uint8_t mac[IEEE80211_ADDR_LEN];
+    bool nodeInstalled;
+    uint8_t materializationStage;
+    bool authenticated;
+    bool reassociationPending;
+    uint16_t legacyRateMask;
+    bool qos;
+    bool ht;
+    uint8_t htNss;
+    uint16_t htCapabilities;
+    uint8_t htAmpduParams;
+    uint8_t htMcs[2];
+    uint16_t rxBaMask;
+    struct ItlApRxBaRuntime rxBa[kItlApRxBaTidCount];
+    uint16_t txBaMask;
+    uint16_t disableTid;
+    bool txBaEnablePending;
+    uint8_t txBaPendingTid;
+    uint8_t txBaPendingQueue;
+    uint16_t txBaPendingSsn;
+    uint16_t txBaPendingOldDisableTid;
+    uint8_t txDialogToken;
+    uint8_t txBaQueue[kItlApRxBaTidCount];
+    uint16_t txSequence[kItlApRxBaTidCount];
+    struct ItlApTxBaRuntime txBa[kItlApRxBaTidCount];
+    bool associated;
+    bool authorized;
+    bool powerSave;
+    uint16_t aid;
+    uint8_t rsnState;
+    uint8_t rsnIE[64];
+    uint8_t pmk[IEEE80211_PMK_LEN];
+    uint8_t anonce[EAPOL_KEY_NONCE_LEN];
+    struct ieee80211_ptk ptk;
+    struct ieee80211_key pairwiseSoftwareKey;
+    bool softwareCcmpRxObserved;
+    uint64_t replayCounter;
+    uint64_t pairwiseTxPn;
+    uint64_t pairwiseRxPn[16];
+    size_t rsnIELength;
+    struct ieee80211_sae_ap *sae;
+    uint8_t saePmksaPmk[IEEE80211_PMK_LEN];
+    uint8_t saePmksaPmkid[IEEE80211_PMKID_LEN];
+    uint8_t saePmksaSta[IEEE80211_ADDR_LEN];
+    uint8_t saePmksaBssid[IEEE80211_ADDR_LEN];
+    bool saePmksaValid;
+    bool openAuthenticated;
+    mbuf_t psQueue[IWN_AP_PS_QUEUE_LEN];
+    uint8_t psQueueHead;
+    uint8_t psQueueTail;
+    uint8_t psQueueCount;
+    bool psQueueReady;
+    bool timSet;
+};
+
 class ItlIwn : public ItlHalService, ItlDriverInfo, ItlDriverController {
     OSDeclareDefaultStructors(ItlIwn)
     
@@ -90,9 +159,18 @@ public:
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
     IOReturn transmitAPData(mbuf_t packet) override;
+    IOReturn setAPMaxStations(uint32_t maxStations) override;
     IOReturn setAPHidden(bool hidden) override;
     IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) override;
     uint32_t getAPTxFreeSpace() const;
+    struct IwnApClientRuntime *iwn_find_ap_client(const uint8_t *);
+    struct IwnApClientRuntime *iwn_find_ap_client_by_id(uint8_t);
+    struct IwnApClientRuntime *iwn_allocate_ap_client(const uint8_t *);
+    struct IwnApClientRuntime *iwn_first_ap_client(bool requireAssociated);
+    void iwn_select_ap_client(struct IwnApClientRuntime *);
+    void iwn_reset_ap_client(struct IwnApClientRuntime *, bool releaseSlot,
+        bool preserveSaePmksa = false);
+    int iwn_submit_next_ap_client_materialization();
     void iwn_reset_ap_runtime_state();
     void iwn_set_ap_scan_transition_blocked(bool);
     void iwn_set_ap_primary_tx_quiesced(bool, bool);
@@ -130,6 +208,7 @@ public:
     void iwn_clear_ap_sae_pmksa();
     bool iwn_ap_sae_pmksa_matches(
         const uint8_t *, const uint8_t *) const;
+    int iwn_prepare_ap_client_reauthentication(bool preserveSaePmksa);
     int iwn_send_ap_sae_auth(const uint8_t *, uint16_t, uint16_t,
         const void *, size_t);
     bool iwn_handle_ap_sae_auth(const struct ieee80211_frame *, size_t);
@@ -138,7 +217,7 @@ public:
     int iwn_finish_ap_csa();
     void iwn_complete_ap_csa_rebind();
     void iwn_finish_ap_csa_client_restore(int);
-    void iwn_clear_ap_client_for_csa();
+    void iwn_clear_ap_client_for_csa(struct IwnApClientRuntime *);
     int iwn_queue_ap_ps_packet(mbuf_t, bool atFront = false);
     void iwn_purge_ap_ps_queue();
     void iwn_drain_ap_ps_queue();
@@ -526,65 +605,15 @@ public:
     uint8_t apFirmwareCredential[0x40];
     uint8_t apFirmwareRsnIE[64];
     uint8_t apFirmwareBeacon[MCLBYTES];
-    uint8_t apClientMac[IEEE80211_ADDR_LEN];
-    bool apClientNodeInstalled;
-    uint8_t apClientMaterializationStage;
-    bool apClientAuthenticated;
-    bool apClientReassociationPending;
-    uint16_t apClientLegacyRateMask;
-    bool apClientQos;
-    bool apClientHt;
-    uint8_t apClientHtNss;
-    uint16_t apClientHtCapabilities;
-    uint8_t apClientHtAmpduParams;
-    uint8_t apClientHtMcs[2];
-    uint16_t apClientRxBaMask;
-    struct ItlApRxBaRuntime apClientRxBa[kItlApRxBaTidCount];
-    uint16_t apClientTxBaMask;
-    uint16_t apClientDisableTid;
-    bool apClientTxBaEnablePending;
-    uint8_t apClientTxBaPendingTid;
-    uint8_t apClientTxBaPendingQueue;
-    uint16_t apClientTxBaPendingSsn;
-    uint16_t apClientTxBaPendingOldDisableTid;
-    uint8_t apClientTxDialogToken;
-    uint8_t apClientTxBaQueue[kItlApRxBaTidCount];
-    uint16_t apClientTxSequence[kItlApRxBaTidCount];
-    struct ItlApTxBaRuntime apClientTxBa[kItlApRxBaTidCount];
-    bool apClientAssociated;
-    bool apClientAuthorized;
-    bool apClientPowerSave;
-    uint16_t apClientAid;
-    uint8_t apRsnState;
-    uint8_t apClientRsnIE[64];
-    uint8_t apPmk[IEEE80211_PMK_LEN];
-    uint8_t apAnonce[EAPOL_KEY_NONCE_LEN];
+    struct IwnApClientRuntime apClients[kItlApFirmwareMaxClients];
+    struct IwnApClientRuntime *apClientContext;
+    uint32_t apMaxStations;
+    uint8_t apProfilePmk[IEEE80211_PMK_LEN];
     uint8_t apGtk[16];
     uint8_t apIgtk[16];
-    struct ieee80211_ptk apPtk;
-    struct ieee80211_key apPairwiseSoftwareKey;
-    bool apSoftwareCcmpRxObserved;
-    uint64_t apReplayCounter;
-    uint64_t apPairwiseTxPn;
     uint64_t apGroupTxPn;
-    uint64_t apPairwiseRxPn[16];
-    size_t apClientRsnIELength;
     uint8_t apGtkKid;
     uint8_t apIgtkKid;
-    struct ieee80211_sae_ap *apSae;
-    uint8_t apSaePmksaPmk[IEEE80211_PMK_LEN];
-    uint8_t apSaePmksaPmkid[IEEE80211_PMKID_LEN];
-    uint8_t apSaePmksaSta[IEEE80211_ADDR_LEN];
-    uint8_t apSaePmksaBssid[IEEE80211_ADDR_LEN];
-    bool apSaePmksaValid;
-    bool apClientOpenAuthenticated;
-    enum { IWN_AP_PS_QUEUE_LEN = 16 };
-    mbuf_t apPsQueue[IWN_AP_PS_QUEUE_LEN];
-    uint8_t apPsQueueHead;
-    uint8_t apPsQueueTail;
-    uint8_t apPsQueueCount;
-    bool apPsQueueReady;
-    bool apTimSet;
     bool apHidden;
     CTimeout *apCsaTimeout;
     bool apCsaTimerInitialized;
@@ -593,6 +622,8 @@ public:
     uint8_t apCsaMode;
     uint8_t apCsaCount;
     uint8_t apCsaClientRestoreStage;
+    uint8_t apCsaRestoreIndex;
+    bool apCsaGroupKeyRestored;
     struct pci_attach_args pci;
     struct iwn_softc com;
 };

@@ -62,7 +62,7 @@ response = body(framing,
 require(response, "IEEE80211_FC0_SUBTYPE_REASSOC_RESP",
         "matching reassociation response")
 
-require(iwn_hpp, "bool apClientReassociationPending",
+require(iwn_hpp, "bool reassociationPending;",
         "IWN asynchronous reassociation identity")
 iwn_parse = body(iwn, "bool ItlIwn::iwn_handle_ap_assoc_req(")
 for needle, label in (

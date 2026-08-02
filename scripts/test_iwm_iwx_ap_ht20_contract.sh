@@ -86,8 +86,8 @@ require(response, "itl_hal_ap_build_ht_operation_ie",
         "HT association-response operation")
 
 for needle, label in (
-    ("bool apClientHt", "IWN per-client negotiated HT state"),
-    ("uint8_t apClientHtMcs[2]", "IWN one/two-stream MCS sets"),
+    ("bool ht;", "IWN per-client negotiated HT state"),
+    ("uint8_t htMcs[2];", "IWN one/two-stream MCS sets"),
 ):
     require(iwn_hpp, needle, label)
 iwn_parse = body(iwn, "bool ItlIwn::iwn_handle_ap_assoc_req(")

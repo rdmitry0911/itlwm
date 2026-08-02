@@ -12,6 +12,8 @@ runtime = (root / "include/HAL/ItlApFirmwareRuntime.hpp").read_text()
 framing = (root / "include/HAL/ItlApOpenRuntime.hpp").read_text()
 hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 owner = (root / "AirportItlwm/AirportItlwmAPSTAOwner.cpp").read_text()
+iwn_h = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 iwm_front = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
 iwm_back = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
 iwm_reg = (root / "itlwm/hal_iwm/if_iwmreg.h").read_text()
@@ -82,6 +84,52 @@ require(hal, "virtual IOReturn setAPMaxStations(uint32_t maxStations)",
         "live maxassoc HAL bridge")
 require(owner, "setAPMaxStations(payload)", "Apple MIS_MAX_STA live forwarding")
 
+for needle, label in (
+    ("struct IwnApClientRuntime", "IWN per-client runtime type"),
+    ("apClients[kItlApFirmwareMaxClients]", "IWN five-client table"),
+    ("uint8_t stationId;", "IWN per-client DVM station identity"),
+    ("uint16_t aid;", "IWN per-client association identity"),
+    ("struct ieee80211_key pairwiseSoftwareKey;",
+     "IWN per-client software key"),
+    ("struct ieee80211_sae_ap *sae;", "IWN per-client SAE owner"),
+    ("mbuf_t psQueue[IWN_AP_PS_QUEUE_LEN]", "IWN per-client PS queue"),
+    ("struct ItlApRxBaRuntime rxBa[kItlApRxBaTidCount]",
+     "IWN per-client RX BA"),
+    ("struct ItlApTxBaRuntime txBa[kItlApRxBaTidCount]",
+     "IWN per-client TX BA"),
+):
+    require(iwn_h, needle, label)
+
+iwn_allocate = body(iwn, "ItlIwn::iwn_allocate_ap_client(")
+require(iwn_allocate, "IWN5000_ID_PAN_CLIENT + freeIndex",
+        "IWN unique dynamic station IDs")
+require(iwn_allocate, "client->aid = static_cast<uint16_t>(freeIndex + 1)",
+        "IWN unique AIDs")
+iwn_materialize = body(iwn, "ItlIwn::iwn_submit_next_ap_client_materialization()")
+require(iwn_materialize, "apClients[index].commandPending",
+        "IWN serialized ADD_STA owner")
+require(iwn_materialize, "iwn_add_ap_client_node(client->mac)",
+        "IWN per-slot ADD_STA")
+for needle, label in (
+    ("iwn_find_ap_client(request->i_addr2)", "IWN source-MAC RX routing"),
+    ("completedClient = iwn_find_ap_client_by_id(",
+     "IWN firmware-completion station-ID routing"),
+    ("iwn_find_ap_client(ethernetHeader.ether_dhost)",
+     "IWN unicast destination TX routing"),
+    ("iwn_reset_ap_client(&apClients[index], true, true)",
+     "IWN all-client runtime teardown"),
+    ("apCsaRestoreIndex < kItlApFirmwareMaxClients",
+     "IWN all-client CSA restore walk"),
+):
+    require(iwn, needle, label)
+iwn_maxassoc = body(iwn, "setAPMaxStations(uint32_t maxStations)")
+require(iwn_maxassoc,
+        "effective = MAX(effective, static_cast<uint32_t>(index + 1))",
+        "IWN live-client-preserving maxassoc reduction")
+iwn_key = body(iwn, "iwn_install_ap_ccmp_key(bool pairwise")
+require(iwn_key, "apClientContext->stationId : IWN5000_ID_PAN_BROADCAST",
+        "IWN per-client PTK station ID")
+
 for family, front, back, task_signature, rx_signature in (
     ("IWM", iwm_front, iwm_back, "iwm_ap_client_task(void *arg)",
      "iwm_ap_handle_rx(struct iwm_softc *sc,"),
@@ -123,5 +171,5 @@ require(iwm_tx, "IWM_DQA_AP_CLIENT_QUEUE + IWM_DQA_AP_CLIENT_QUEUE_COUNT",
 require(body(iwx, "iwx_ap_add_client_sta(struct iwx_softc *sc,"),
         "iwx_ap_add_internal_sta", "IWX per-client TVQM allocation")
 
-print("PASS: paired IWM/IWX bounded multi-client AP contract")
+print("PASS: IWN/IWM/IWX bounded five-client AP contract")
 PY

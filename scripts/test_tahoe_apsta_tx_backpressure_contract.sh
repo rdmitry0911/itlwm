@@ -37,7 +37,7 @@ for needle in (
     "usable - ring->queued",
 ):
     assert needle in free_space, f"missing shared PAN-ring admission: {needle}"
-for needle in ("!apClientAssociated", "!apClientNodeInstalled"):
+for needle in ("!client->associated", "!client->nodeInstalled"):
     assert needle in free_space, \
         f"AP admission must stay closed before firmware client readiness: {needle}"
 assert "airportItlwmQueryAPTxFreeSpace(ItlHalService *service)" in iwn

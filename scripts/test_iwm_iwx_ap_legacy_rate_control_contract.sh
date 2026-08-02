@@ -57,7 +57,7 @@ for needle, label in (
 
 require(hal, "itl_hal_ap_legacy_rate_mask",
         "shared IWN/IWM/IWX legacy-rate mapper")
-require(iwn_hpp, "uint16_t apClientLegacyRateMask",
+require(iwn_hpp, "uint16_t legacyRateMask;",
         "IWN per-client legacy rate set")
 iwn_parse = body(iwn, "bool ItlIwn::iwn_handle_ap_assoc_req(")
 for needle, label in (

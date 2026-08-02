@@ -4104,10 +4104,282 @@ enum {
     IWN_AP_STATUS_INVALID_PMKID = 53
 };
 
+/* Keep the proven single-client state machine readable while making its
+ * storage genuinely per-client.  Every entry point that consumes a peer MAC,
+ * station ID, or TX queue selects the corresponding slot first. */
+#define apClientMac                apClientContext->mac
+#define apClientNodeInstalled      apClientContext->nodeInstalled
+#define apClientMaterializationStage apClientContext->materializationStage
+#define apClientAuthenticated      apClientContext->authenticated
+#define apClientReassociationPending apClientContext->reassociationPending
+#define apClientLegacyRateMask     apClientContext->legacyRateMask
+#define apClientQos                apClientContext->qos
+#define apClientHt                 apClientContext->ht
+#define apClientHtNss              apClientContext->htNss
+#define apClientHtCapabilities     apClientContext->htCapabilities
+#define apClientHtAmpduParams      apClientContext->htAmpduParams
+#define apClientHtMcs              apClientContext->htMcs
+#define apClientRxBaMask           apClientContext->rxBaMask
+#define apClientRxBa               apClientContext->rxBa
+#define apClientTxBaMask           apClientContext->txBaMask
+#define apClientDisableTid         apClientContext->disableTid
+#define apClientTxBaEnablePending  apClientContext->txBaEnablePending
+#define apClientTxBaPendingTid     apClientContext->txBaPendingTid
+#define apClientTxBaPendingQueue   apClientContext->txBaPendingQueue
+#define apClientTxBaPendingSsn     apClientContext->txBaPendingSsn
+#define apClientTxBaPendingOldDisableTid apClientContext->txBaPendingOldDisableTid
+#define apClientTxDialogToken      apClientContext->txDialogToken
+#define apClientTxBaQueue          apClientContext->txBaQueue
+#define apClientTxSequence         apClientContext->txSequence
+#define apClientTxBa               apClientContext->txBa
+#define apClientAssociated         apClientContext->associated
+#define apClientAuthorized         apClientContext->authorized
+#define apClientPowerSave          apClientContext->powerSave
+#define apClientAid                apClientContext->aid
+#define apRsnState                 apClientContext->rsnState
+#define apClientRsnIE              apClientContext->rsnIE
+#define apPmk                      apClientContext->pmk
+#define apAnonce                   apClientContext->anonce
+#define apPtk                      apClientContext->ptk
+#define apPairwiseSoftwareKey      apClientContext->pairwiseSoftwareKey
+#define apSoftwareCcmpRxObserved   apClientContext->softwareCcmpRxObserved
+#define apReplayCounter            apClientContext->replayCounter
+#define apPairwiseTxPn             apClientContext->pairwiseTxPn
+#define apPairwiseRxPn             apClientContext->pairwiseRxPn
+#define apClientRsnIELength        apClientContext->rsnIELength
+#define apSae                      apClientContext->sae
+#define apSaePmksaPmk              apClientContext->saePmksaPmk
+#define apSaePmksaPmkid            apClientContext->saePmksaPmkid
+#define apSaePmksaSta              apClientContext->saePmksaSta
+#define apSaePmksaBssid            apClientContext->saePmksaBssid
+#define apSaePmksaValid            apClientContext->saePmksaValid
+#define apClientOpenAuthenticated  apClientContext->openAuthenticated
+#define apPsQueue                  apClientContext->psQueue
+#define apPsQueueHead              apClientContext->psQueueHead
+#define apPsQueueTail              apClientContext->psQueueTail
+#define apPsQueueCount             apClientContext->psQueueCount
+#define apPsQueueReady             apClientContext->psQueueReady
+#define apTimSet                   apClientContext->timSet
+
 #ifdef DELAY
 #undef DELAY
 #define DELAY IODelay
 #endif
+
+void ItlIwn::iwn_select_ap_client(struct IwnApClientRuntime *client)
+{
+    if (client != NULL)
+        apClientContext = client;
+}
+
+struct IwnApClientRuntime *ItlIwn::iwn_find_ap_client(
+    const uint8_t *station)
+{
+    if (station == NULL)
+        return NULL;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct IwnApClientRuntime *client = &apClients[index];
+        if (client->inUse && IEEE80211_ADDR_EQ(client->mac, station))
+            return client;
+    }
+    return NULL;
+}
+
+struct IwnApClientRuntime *ItlIwn::iwn_find_ap_client_by_id(
+    uint8_t stationId)
+{
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct IwnApClientRuntime *client = &apClients[index];
+        if (client->inUse && client->stationId == stationId)
+            return client;
+    }
+    return NULL;
+}
+
+struct IwnApClientRuntime *ItlIwn::iwn_first_ap_client(
+    bool requireAssociated)
+{
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct IwnApClientRuntime *client = &apClients[index];
+        if (client->inUse && (!requireAssociated || client->associated))
+            return client;
+    }
+    return NULL;
+}
+
+void ItlIwn::iwn_reset_ap_client(
+    struct IwnApClientRuntime *client, bool releaseSlot,
+    bool preserveSaePmksa)
+{
+    if (client == NULL)
+        return;
+    const uint8_t stationId = client->stationId;
+    uint8_t cachedPmk[IEEE80211_PMK_LEN];
+    uint8_t cachedPmkid[IEEE80211_PMKID_LEN];
+    uint8_t cachedSta[IEEE80211_ADDR_LEN];
+    uint8_t cachedBssid[IEEE80211_ADDR_LEN];
+    const bool cached = preserveSaePmksa && client->saePmksaValid;
+    if (cached) {
+        memcpy(cachedPmk, client->saePmksaPmk, sizeof(cachedPmk));
+        memcpy(cachedPmkid, client->saePmksaPmkid,
+               sizeof(cachedPmkid));
+        IEEE80211_ADDR_COPY(cachedSta, client->saePmksaSta);
+        IEEE80211_ADDR_COPY(cachedBssid, client->saePmksaBssid);
+    }
+    if (client->pairwiseSoftwareKey.k_priv != NULL)
+        ieee80211_ccmp_delete_key(
+            &com.sc_ic, &client->pairwiseSoftwareKey);
+    ieee80211_sae_ap_destroy(&client->sae);
+    while (client->psQueueCount != 0) {
+        mbuf_t packet = client->psQueue[client->psQueueHead];
+        client->psQueue[client->psQueueHead] = NULL;
+        client->psQueueHead = static_cast<uint8_t>(
+            (client->psQueueHead + 1) % IWN_AP_PS_QUEUE_LEN);
+        client->psQueueCount--;
+        if (packet != NULL)
+            mbuf_freem(packet);
+    }
+    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
+        itl_ap_rx_ba_stop(&client->rxBa[tid]);
+        itl_ap_tx_ba_reset(&client->txBa[tid]);
+    }
+    explicit_bzero(client, sizeof(*client));
+    client->stationId = releaseSlot ? UINT8_MAX : stationId;
+    client->txBaPendingTid = UINT8_MAX;
+    client->txBaPendingQueue = UINT8_MAX;
+    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++)
+        client->txBaQueue[tid] = UINT8_MAX;
+    client->psQueueReady = true;
+    if (cached) {
+        memcpy(client->saePmksaPmk, cachedPmk,
+               sizeof(client->saePmksaPmk));
+        memcpy(client->saePmksaPmkid, cachedPmkid,
+               sizeof(client->saePmksaPmkid));
+        IEEE80211_ADDR_COPY(client->saePmksaSta, cachedSta);
+        IEEE80211_ADDR_COPY(client->saePmksaBssid, cachedBssid);
+        client->saePmksaValid = true;
+        explicit_bzero(cachedPmk, sizeof(cachedPmk));
+        explicit_bzero(cachedPmkid, sizeof(cachedPmkid));
+    }
+}
+
+struct IwnApClientRuntime *ItlIwn::iwn_allocate_ap_client(
+    const uint8_t *station)
+{
+    struct IwnApClientRuntime *client = iwn_find_ap_client(station);
+    if (client != NULL)
+        return client;
+    if (station == NULL)
+        return NULL;
+    const size_t limit = MIN(
+        static_cast<size_t>(apMaxStations),
+        static_cast<size_t>(kItlApFirmwareMaxClients));
+    struct IwnApClientRuntime *cachedClient = NULL;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct IwnApClientRuntime *candidate = &apClients[index];
+        if (!candidate->inUse && candidate->saePmksaValid &&
+            IEEE80211_ADDR_EQ(candidate->saePmksaSta, station) &&
+            IEEE80211_ADDR_EQ(
+                candidate->saePmksaBssid, apFirmwareConfig.bssid)) {
+            cachedClient = candidate;
+            break;
+        }
+    }
+    size_t freeIndex = limit;
+    for (size_t index = 0; index < limit; index++) {
+        if (!apClients[index].inUse &&
+            !apClients[index].saePmksaValid) {
+            freeIndex = index;
+            break;
+        }
+    }
+    if (freeIndex == limit) {
+        for (size_t index = 0; index < limit; index++) {
+            if (!apClients[index].inUse) {
+                freeIndex = index;
+                break;
+            }
+        }
+    }
+    if (freeIndex < limit) {
+        client = &apClients[freeIndex];
+        uint8_t cachedPmk[IEEE80211_PMK_LEN];
+        uint8_t cachedPmkid[IEEE80211_PMKID_LEN];
+        const bool importCache = cachedClient != NULL;
+        if (importCache) {
+            memcpy(cachedPmk, cachedClient->saePmksaPmk,
+                   sizeof(cachedPmk));
+            memcpy(cachedPmkid, cachedClient->saePmksaPmkid,
+                   sizeof(cachedPmkid));
+        }
+        iwn_reset_ap_client(client, true);
+        client->inUse = true;
+        client->stationId = static_cast<uint8_t>(
+            IWN5000_ID_PAN_CLIENT + freeIndex);
+        client->aid = static_cast<uint16_t>(freeIndex + 1);
+        client->rsnState = apFirmwareConfig.rsnIELength == 0 ?
+            IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
+        if (!iwn_ap_uses_sae())
+            memcpy(client->pmk, apProfilePmk, sizeof(client->pmk));
+        IEEE80211_ADDR_COPY(client->mac, station);
+        if (importCache) {
+            memcpy(client->saePmksaPmk, cachedPmk,
+                   sizeof(client->saePmksaPmk));
+            memcpy(client->saePmksaPmkid, cachedPmkid,
+                   sizeof(client->saePmksaPmkid));
+            IEEE80211_ADDR_COPY(client->saePmksaSta, station);
+            IEEE80211_ADDR_COPY(
+                client->saePmksaBssid, apFirmwareConfig.bssid);
+            client->saePmksaValid = true;
+            if (cachedClient != client) {
+                explicit_bzero(cachedClient->saePmksaPmk,
+                               sizeof(cachedClient->saePmksaPmk));
+                explicit_bzero(cachedClient->saePmksaPmkid,
+                               sizeof(cachedClient->saePmksaPmkid));
+                bzero(cachedClient->saePmksaSta,
+                      sizeof(cachedClient->saePmksaSta));
+                bzero(cachedClient->saePmksaBssid,
+                      sizeof(cachedClient->saePmksaBssid));
+                cachedClient->saePmksaValid = false;
+            }
+            explicit_bzero(cachedPmk, sizeof(cachedPmk));
+            explicit_bzero(cachedPmkid, sizeof(cachedPmkid));
+        }
+        return client;
+    }
+    return NULL;
+}
+
+int ItlIwn::iwn_submit_next_ap_client_materialization()
+{
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        if (apClients[index].inUse && apClients[index].commandPending)
+            return 0;
+    }
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct IwnApClientRuntime *client = &apClients[index];
+        if (!client->inUse || client->commandPending ||
+            (client->materializationStage !=
+                 IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE &&
+             client->materializationStage !=
+                 IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE))
+            continue;
+        iwn_select_ap_client(client);
+        const int error = client->materializationStage ==
+            IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE ?
+            iwn_add_ap_client_node(client->mac) :
+            iwn_update_ap_client_node();
+        if (error != 0) {
+            client->materializationStage =
+                IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+            client->reassociationPending = false;
+            return error;
+        }
+        client->commandPending = true;
+        return 0;
+    }
+    return 0;
+}
 
 bool ItlIwn::attach(IOPCIDevice *device)
 {
@@ -4115,25 +4387,16 @@ bool ItlIwn::attach(IOPCIDevice *device)
     com.sc_scan_lease_lock = NULL;
     com.sc_ap_transition_scan_blocked = false;
     fSaeTxGate = NULL;
-    apSae = NULL;
-    apSaePmksaValid = false;
-    bzero(apSaePmksaPmk, sizeof(apSaePmksaPmk));
-    bzero(apSaePmksaPmkid, sizeof(apSaePmksaPmkid));
-    bzero(apSaePmksaSta, sizeof(apSaePmksaSta));
-    bzero(apSaePmksaBssid, sizeof(apSaePmksaBssid));
-    bzero(apPsQueue, sizeof(apPsQueue));
-    apPsQueueHead = 0;
-    apPsQueueTail = 0;
-    apPsQueueCount = 0;
-    apPsQueueReady = true;
-    apTimSet = false;
+    bzero(apClients, sizeof(apClients));
+    apClientContext = &apClients[0];
+    apMaxStations = kItlApFirmwareMaxClients;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++)
+        iwn_reset_ap_client(&apClients[index], true);
+    explicit_bzero(apProfilePmk, sizeof(apProfilePmk));
     apCsaTimeout = NULL;
     apCsaTimerInitialized = false;
     timeout_set(&apCsaTimeout, iwn_ap_csa_timeout, this);
     apCsaTimerInitialized = true;
-    bzero(apClientRxBa, sizeof(apClientRxBa));
-    bzero(apClientTxBa, sizeof(apClientTxBa));
-    bzero(&apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
     iwn_reset_ap_runtime_state();
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
@@ -4174,6 +4437,82 @@ bool ItlIwn::iwn_ap_sae_pmksa_matches(
             apSaePmksaPmkid, pmkid, sizeof(apSaePmksaPmkid)) == 0;
 }
 
+int ItlIwn::iwn_prepare_ap_client_reauthentication(
+    bool preserveSaePmksa)
+{
+    if (apClientContext == NULL || !apClientContext->inUse)
+        return EINVAL;
+    if (apTimSet) {
+        const int timError = iwn_update_ap_tim(false);
+        if (timError != 0)
+            return timError;
+    }
+    iwn_purge_ap_ps_queue();
+    if (apClientNodeInstalled) {
+        iwn_stop_all_ap_client_tx_ba();
+        iwn_stop_all_ap_client_rx_ba();
+        const int removeError = iwn_remove_ap_client_node(apClientMac);
+        if (removeError != 0)
+            return removeError;
+    } else {
+        for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
+            itl_ap_rx_ba_stop(&apClientRxBa[tid]);
+            itl_ap_tx_ba_reset(&apClientTxBa[tid]);
+            apClientTxBaQueue[tid] = UINT8_MAX;
+        }
+    }
+    if (apPairwiseSoftwareKey.k_priv != NULL)
+        ieee80211_ccmp_delete_key(
+            &com.sc_ic, &apPairwiseSoftwareKey);
+    explicit_bzero(&apPairwiseSoftwareKey,
+                   sizeof(apPairwiseSoftwareKey));
+    iwn_reset_ap_sae();
+    if (!preserveSaePmksa)
+        iwn_clear_ap_sae_pmksa();
+
+    apClientNodeInstalled = false;
+    apClientMaterializationStage =
+        IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+    apClientContext->commandPending = false;
+    apClientAuthenticated = false;
+    apClientOpenAuthenticated = false;
+    apClientReassociationPending = false;
+    apClientLegacyRateMask = 0;
+    apClientQos = false;
+    apClientHt = false;
+    apClientHtNss = 0;
+    apClientHtCapabilities = 0;
+    apClientHtAmpduParams = 0;
+    bzero(apClientHtMcs, sizeof(apClientHtMcs));
+    apClientRxBaMask = 0;
+    apClientTxBaMask = 0;
+    apClientDisableTid = 0;
+    apClientTxBaEnablePending = false;
+    apClientTxBaPendingTid = UINT8_MAX;
+    apClientTxBaPendingQueue = UINT8_MAX;
+    apClientTxBaPendingSsn = 0;
+    apClientTxBaPendingOldDisableTid = 0;
+    bzero(apClientTxSequence, sizeof(apClientTxSequence));
+    apClientAssociated = false;
+    apClientAuthorized = false;
+    apClientPowerSave = false;
+    apRsnState = apFirmwareConfig.rsnIELength == 0 ?
+        IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
+    apClientRsnIELength = 0;
+    bzero(apClientRsnIE, sizeof(apClientRsnIE));
+    explicit_bzero(apPmk, sizeof(apPmk));
+    if (!iwn_ap_uses_sae())
+        memcpy(apPmk, apProfilePmk, sizeof(apPmk));
+    explicit_bzero(apAnonce, sizeof(apAnonce));
+    explicit_bzero(&apPtk, sizeof(apPtk));
+    apSoftwareCcmpRxObserved = false;
+    apReplayCounter = 0;
+    apPairwiseTxPn = 0;
+    bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
+    apTimSet = false;
+    return 0;
+}
+
 void ItlIwn::iwn_reset_ap_runtime_state()
 {
     if (apCsaTimerInitialized)
@@ -4183,9 +4522,13 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apCsaMode = 0;
     apCsaCount = 0;
     apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_IDLE;
+    apCsaRestoreIndex = 0;
+    apCsaGroupKeyRestored = false;
     iwn_set_ap_scan_transition_blocked(false);
-    iwn_purge_ap_ps_queue();
-    iwn_reset_ap_sae();
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++)
+        iwn_reset_ap_client(&apClients[index], true, true);
+    apClientContext = &apClients[0];
+    apMaxStations = kItlApFirmwareMaxClients;
     apFirmwareTransitionActive = false;
     apFirmwareDeactivationReplySeen = false;
     apFirmwareDeactivationNotificationSeen = false;
@@ -4202,60 +4545,12 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     bzero(apFirmwareCredential, sizeof(apFirmwareCredential));
     bzero(apFirmwareRsnIE, sizeof(apFirmwareRsnIE));
     bzero(apFirmwareBeacon, sizeof(apFirmwareBeacon));
-    bzero(apClientMac, sizeof(apClientMac));
-    apClientNodeInstalled = false;
-    apClientMaterializationStage =
-        IWN_AP_CLIENT_MATERIALIZATION_IDLE;
-    apClientAuthenticated = false;
-    apClientReassociationPending = false;
-    apClientLegacyRateMask = 0;
-    apClientQos = false;
-    apClientHt = false;
-    apClientHtNss = 0;
-    apClientHtCapabilities = 0;
-    apClientHtAmpduParams = 0;
-    bzero(apClientHtMcs, sizeof(apClientHtMcs));
-    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
-        itl_ap_rx_ba_stop(&apClientRxBa[tid]);
-        itl_ap_tx_ba_reset(&apClientTxBa[tid]);
-        apClientTxBaQueue[tid] = UINT8_MAX;
-        apClientTxSequence[tid] = 0;
-    }
-    apClientRxBaMask = 0;
-    apClientTxBaMask = 0;
-    apClientDisableTid = 0;
-    apClientTxBaEnablePending = false;
-    apClientTxBaPendingTid = UINT8_MAX;
-    apClientTxBaPendingQueue = UINT8_MAX;
-    apClientTxBaPendingSsn = 0;
-    apClientTxBaPendingOldDisableTid = 0;
-    apClientTxDialogToken = 0;
-    apClientOpenAuthenticated = false;
-    apClientAssociated = false;
-    apClientAuthorized = false;
-    apClientPowerSave = false;
-    apClientAid = 0;
-    apRsnState = IWN_AP_RSN_DISABLED;
-    bzero(apClientRsnIE, sizeof(apClientRsnIE));
-    explicit_bzero(apPmk, sizeof(apPmk));
-    explicit_bzero(apAnonce, sizeof(apAnonce));
+    explicit_bzero(apProfilePmk, sizeof(apProfilePmk));
     explicit_bzero(apGtk, sizeof(apGtk));
     explicit_bzero(apIgtk, sizeof(apIgtk));
-    explicit_bzero(&apPtk, sizeof(apPtk));
-    if (apPairwiseSoftwareKey.k_priv != NULL)
-        ieee80211_ccmp_delete_key(
-            &com.sc_ic, &apPairwiseSoftwareKey);
-    explicit_bzero(
-        &apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
-    apSoftwareCcmpRxObserved = false;
-    apReplayCounter = 0;
-    apPairwiseTxPn = 0;
     apGroupTxPn = 0;
-    bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
-    apClientRsnIELength = 0;
     apGtkKid = 1;
     apIgtkKid = IWN_AP_IGTK_KEY_ID;
-    apTimSet = false;
     apHidden = false;
 }
 
@@ -4428,7 +4723,7 @@ int ItlIwn::iwn_install_ap_ccmp_key(bool pairwise, uint8_t keyId,
         IEEE80211_ADDR_COPY(node.macaddr, etherbroadcastaddr);
     node.control = IWN_NODE_UPDATE;
     node.id = pairwise ?
-        IWN5000_ID_PAN_CLIENT : IWN5000_ID_PAN_BROADCAST;
+        apClientContext->stationId : IWN5000_ID_PAN_BROADCAST;
     node.flags = IWN_FLAG_SET_KEY;
     uint16_t keyFlags =
         IWN_KFLAG_CCMP | IWN_KFLAG_MAP | IWN_KFLAG_KID(keyId);
@@ -4789,14 +5084,18 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
         !IEEE80211_ADDR_EQ(wh->i_addr3, apFirmwareConfig.bssid)) {
         return EINVAL;
     }
+    struct IwnApClientRuntime *client =
+        iwn_find_ap_client(wh->i_addr1);
+    if (client != NULL)
+        iwn_select_ap_client(client);
     const bool protectedFrame =
         (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
     if (protectedFrame &&
-        (!apClientAuthorized ||
-         !IEEE80211_ADDR_EQ(wh->i_addr1, apClientMac) ||
-         apPairwiseTxPn >= 0xffffffffffffULL))
+        (client == NULL || !client->authorized ||
+         !IEEE80211_ADDR_EQ(wh->i_addr1, client->mac) ||
+         client->pairwiseTxPn >= 0xffffffffffffULL))
         return EACCES;
-    const bool clientOwned = apClientNodeInstalled &&
+    const bool clientOwned = client != NULL && apClientNodeInstalled &&
         !IEEE80211_IS_MULTICAST(wh->i_addr1) &&
         IEEE80211_ADDR_EQ(wh->i_addr1, apClientMac);
     const size_t transportBodyLength = bodyLength +
@@ -4840,7 +5139,7 @@ int ItlIwn::iwn_send_ap_mgmt_frame(const void *frameBytes,
      * the PAN broadcast owner.  Once the client exists, every unicast
      * management frame (including an unprotected ADDBA Response) must use
      * its station ID so DVM can match the receiver and obtain the ACK. */
-    tx->id = clientOwned ? IWN5000_ID_PAN_CLIENT :
+    tx->id = clientOwned ? apClientContext->stationId :
                            IWN5000_ID_PAN_BROADCAST;
     tx->lifetime = htole32(IWN_LIFETIME_INFINITE);
     tx->rts_ntries = insertTimestamp ? 3 : 60;
@@ -5015,19 +5314,16 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
             IWN_AP_DATA_PAYLOAD_SIZE - LLC_SNAPFRAMELEN ||
         !apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING ||
-        !apClientAssociated ||
-        !apClientNodeInstalled ||
         com.command_queue != IWN_IPAN_CMD_QUEUE ||
         IWN_IPAN_BE_QUEUE >= com.ntxqs) {
         if (++apDataTxRejectCount <= 32) {
             XYLog("%s: AP Ethernet TX reject #%u length=%u active=%u "
-                  "stage=%u associated=%u command_queue=%u ntxqs=%u\n",
+                  "stage=%u command_queue=%u ntxqs=%u\n",
                   com.sc_dev.dv_xname,
                   static_cast<unsigned>(apDataTxRejectCount),
                   static_cast<unsigned>(ethernetLength),
                   apFirmwareTransitionActive ? 1U : 0U,
                   static_cast<unsigned>(apFirmwareStage),
-                  apClientAssociated ? 1U : 0U,
                   static_cast<unsigned>(com.command_queue),
                   static_cast<unsigned>(com.ntxqs));
         }
@@ -5041,6 +5337,25 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     }
     const bool multicast =
         IEEE80211_IS_MULTICAST(ethernetHeader.ether_dhost);
+    struct IwnApClientRuntime *client = NULL;
+    if (multicast) {
+        for (size_t index = 0;
+             index < kItlApFirmwareMaxClients; index++) {
+            struct IwnApClientRuntime *candidate = &apClients[index];
+            if (candidate->inUse && candidate->associated &&
+                candidate->nodeInstalled &&
+                (apFirmwareConfig.rsnIELength == 0 ||
+                 candidate->authorized)) {
+                client = candidate;
+                break;
+            }
+        }
+    } else {
+        client = iwn_find_ap_client(ethernetHeader.ether_dhost);
+    }
+    if (client == NULL || !client->associated || !client->nodeInstalled)
+        return EHOSTUNREACH;
+    iwn_select_ap_client(client);
     const bool eapol =
         ethernetHeader.ether_type == htons(ETHERTYPE_PAE);
     const bool protectedFrame =
@@ -5170,7 +5485,7 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     tx->flags = htole32(flags);
     tx->len = htole16(static_cast<uint16_t>(frameLength));
     tx->id = multicast ?
-        IWN5000_ID_PAN_BROADCAST : IWN5000_ID_PAN_CLIENT;
+        IWN5000_ID_PAN_BROADCAST : apClientContext->stationId;
     tx->lifetime = htole32(IWN_LIFETIME_INFINITE);
     tx->rts_ntries = 60;
     tx->data_ntries = 15;
@@ -5402,8 +5717,6 @@ uint32_t ItlIwn::getAPTxFreeSpace() const
 {
     if (!apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING ||
-        !apClientAssociated ||
-        !apClientNodeInstalled ||
         com.command_queue != IWN_IPAN_CMD_QUEUE ||
         IWN_IPAN_BE_QUEUE >= com.ntxqs) {
         return 0;
@@ -5414,16 +5727,24 @@ uint32_t ItlIwn::getAPTxFreeSpace() const
      * alias.  All four AP Skywalk ACs share this single PAN BE ring. */
     const uint32_t usable = IWN_TX_RING_COUNT - 1;
     uint32_t freeSpace = ring->queued < usable ? usable - ring->queued : 0;
-    if ((apClientTxBaMask & 1U) != 0 &&
-        apClientTxBaQueue[0] >= com.first_agg_txq &&
-        apClientTxBaQueue[0] < com.ntxqs) {
+    bool found = false;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        const struct IwnApClientRuntime *client = &apClients[index];
+        if (!client->inUse || !client->associated ||
+            !client->nodeInstalled)
+            continue;
+        found = true;
+        if ((client->txBaMask & 1U) == 0 ||
+            client->txBaQueue[0] < com.first_agg_txq ||
+            client->txBaQueue[0] >= com.ntxqs)
+            continue;
         const struct iwn_tx_ring *aggregate =
-            &com.txq[apClientTxBaQueue[0]];
+            &com.txq[client->txBaQueue[0]];
         const uint32_t aggregateFree = aggregate->queued < usable ?
             usable - aggregate->queued : 0;
         freeSpace = MIN(freeSpace, aggregateFree);
     }
-    return freeSpace;
+    return found ? freeSpace : 0;
 }
 
 extern "C" uint32_t
@@ -5617,6 +5938,18 @@ bool ItlIwn::iwn_handle_ap_sae_auth(
     const size_t bodyLength =
         frameLength - headerLength - 6;
 
+    struct IwnApClientRuntime *client =
+        iwn_find_ap_client(request->i_addr2);
+    if (transaction == IWN_AP_SAE_COMMIT_TRANSACTION && client == NULL)
+        client = iwn_allocate_ap_client(request->i_addr2);
+    if (client == NULL) {
+        (void)iwn_send_ap_sae_auth(
+            request->i_addr2, transaction,
+            IEEE80211_STATUS_TOOMANY, NULL, 0);
+        return true;
+    }
+    iwn_select_ap_client(client);
+
     if (status != IEEE80211_SAE_AP_STATUS_SUCCESS ||
         (transaction != IWN_AP_SAE_COMMIT_TRANSACTION &&
          transaction != IWN_AP_SAE_CONFIRM_TRANSACTION)) {
@@ -5634,7 +5967,16 @@ bool ItlIwn::iwn_handle_ap_sae_auth(
          * hostapd's handle_auth_sae()/sae_sm_step(), not Open-System's
          * request/response sequence numbering.
          */
-        iwn_reset_ap_sae();
+        const int resetError =
+            iwn_prepare_ap_client_reauthentication(false);
+        if (resetError != 0) {
+            (void)iwn_send_ap_sae_auth(
+                request->i_addr2, transaction,
+                IEEE80211_SAE_AP_STATUS_UNSPECIFIED, NULL, 0);
+            XYLog("%s: AP SAE peer reset failed error=%d\n",
+                  com.sc_dev.dv_xname, resetError);
+            return true;
+        }
         uint8_t responseBody[
             IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN];
         bzero(responseBody, sizeof(responseBody));
@@ -5666,31 +6008,6 @@ bool ItlIwn::iwn_handle_ap_sae_auth(
             return true;
         }
 
-        if (apTimSet)
-            (void)iwn_update_ap_tim(false);
-        iwn_purge_ap_ps_queue();
-        if (apClientNodeInstalled) {
-            (void)iwn_remove_ap_client_node(apClientMac);
-            apClientNodeInstalled = false;
-        }
-        apClientMaterializationStage =
-            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
-        IEEE80211_ADDR_COPY(apClientMac, request->i_addr2);
-        apClientAuthenticated = false;
-        apClientReassociationPending = false;
-        apClientLegacyRateMask = 0;
-        apClientQos = false;
-        apClientHt = false;
-        apClientHtNss = 0;
-        apClientHtCapabilities = 0;
-        apClientHtAmpduParams = 0;
-        bzero(apClientHtMcs, sizeof(apClientHtMcs));
-        apClientOpenAuthenticated = false;
-        apClientAssociated = false;
-        apClientAuthorized = false;
-        apClientPowerSave = false;
-        apClientAid = 0;
-        apRsnState = IWN_AP_RSN_DISABLED;
         XYLog("%s: AP SAE Commit accepted peer="
               "%02x:%02x:%02x:%02x:%02x:%02x group=19\n",
               com.sc_dev.dv_xname,
@@ -5772,6 +6089,27 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         LE_READ_2(auth + 4) != IEEE80211_STATUS_SUCCESS) {
         return false;
     }
+    struct IwnApClientRuntime *client =
+        iwn_allocate_ap_client(request->i_addr2);
+    if (client == NULL) {
+        uint8_t rejection[sizeof(struct ieee80211_frame) + 6];
+        bzero(rejection, sizeof(rejection));
+        struct ieee80211_frame *response =
+            reinterpret_cast<struct ieee80211_frame *>(rejection);
+        response->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+            IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_AUTH;
+        response->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+        IEEE80211_ADDR_COPY(response->i_addr1, request->i_addr2);
+        IEEE80211_ADDR_COPY(response->i_addr2, apFirmwareConfig.bssid);
+        IEEE80211_ADDR_COPY(response->i_addr3, apFirmwareConfig.bssid);
+        uint8_t *body = rejection + sizeof(*response);
+        LE_WRITE_2(body, IEEE80211_AUTH_ALG_OPEN);
+        LE_WRITE_2(body + 2, IEEE80211_AUTH_OPEN_RESPONSE);
+        LE_WRITE_2(body + 4, IEEE80211_STATUS_TOOMANY);
+        (void)iwn_send_ap_mgmt_frame(rejection, sizeof(rejection));
+        return true;
+    }
+    iwn_select_ap_client(client);
     /*
      * IEEE 802.11 SAE PMKSA caching deliberately uses Open-System
      * authentication before the Association Request carries its PMKID.
@@ -5779,49 +6117,17 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
      * either selects the cached PMKSA or returns INVALID_PMKID from
      * association so the station can fall back to a fresh SAE exchange.
      */
-    if (iwn_ap_uses_sae())
-        iwn_reset_ap_sae();
-
     /*
      * Authentication starts a fresh per-peer power-save lifetime.  Retire
      * any buffered frames and remove the old AID from the beacon before the
      * station can receive a new successful response.
      */
-    if (apTimSet) {
-        const int timError = iwn_update_ap_tim(false);
-        if (timError != 0) {
-            XYLog("%s: AP authentication TIM clear failed error=%d\n",
-                  com.sc_dev.dv_xname, timError);
-            return true;
-        }
-    }
-    iwn_purge_ap_ps_queue();
-
-    if (apClientNodeInstalled &&
-        !IEEE80211_ADDR_EQ(apClientMac, request->i_addr2)) {
-        const int removeError = iwn_remove_ap_client_node(apClientMac);
-        if (removeError != 0) {
-            XYLog("%s: AP open authentication could not replace client "
-                  "remove=%d\n", com.sc_dev.dv_xname, removeError);
-            return true;
-        }
-        apClientNodeInstalled = false;
-        apClientMaterializationStage =
-            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
-        apClientReassociationPending = false;
-        apClientLegacyRateMask = 0;
-        apClientQos = false;
-        apClientHt = false;
-        apClientHtNss = 0;
-        apClientHtCapabilities = 0;
-        apClientHtAmpduParams = 0;
-        bzero(apClientHtMcs, sizeof(apClientHtMcs));
-        apClientAssociated = false;
-        apClientAuthorized = false;
-        apClientPowerSave = false;
-        apClientAid = 0;
-        apRsnState = IWN_AP_RSN_DISABLED;
-        explicit_bzero(&apPtk, sizeof(apPtk));
+    const int resetError = iwn_prepare_ap_client_reauthentication(
+        iwn_ap_uses_sae());
+    if (resetError != 0) {
+        XYLog("%s: AP authentication peer reset failed error=%d\n",
+              com.sc_dev.dv_xname, resetError);
+        return true;
     }
 
     uint8_t response[sizeof(struct ieee80211_frame) + 6];
@@ -5857,7 +6163,6 @@ bool ItlIwn::iwn_handle_ap_open_auth(const struct ieee80211_frame *request,
         apClientAssociated = false;
         apClientAuthorized = false;
         apClientPowerSave = false;
-        apClientAid = 0;
         apRsnState = IWN_AP_RSN_DISABLED;
         apClientRsnIELength = 0;
         bzero(apClientRsnIE, sizeof(apClientRsnIE));
@@ -5893,6 +6198,12 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
         !IEEE80211_ADDR_EQ(request->i_addr3, apFirmwareConfig.bssid)) {
         return false;
     }
+
+    struct IwnApClientRuntime *client =
+        iwn_find_ap_client(request->i_addr2);
+    if (client == NULL)
+        return true;
+    iwn_select_ap_client(client);
 
     const uint8_t *body =
         reinterpret_cast<const uint8_t *>(request) + headerLength;
@@ -6130,7 +6441,7 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     if (saePmksaAuthenticated)
         memcpy(apPmk, apSaePmksaPmk, sizeof(apPmk));
 
-    const uint16_t aid = 1;
+    const uint16_t aid = apClientContext->aid;
     if (apClientMaterializationStage !=
         IWN_AP_CLIENT_MATERIALIZATION_IDLE) {
         /*
@@ -6164,9 +6475,6 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
     if (!apClientNodeInstalled) {
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE;
-        error = iwn_add_ap_client_node(request->i_addr2);
-        if (error == 0)
-            apClientNodeInstalled = true;
     } else {
         /*
          * Reassociation of the same station reuses its firmware table
@@ -6176,12 +6484,9 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
          */
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE;
-        error = iwn_update_ap_client_node();
     }
+    error = iwn_submit_next_ap_client_materialization();
     if (error != 0) {
-        if (apClientMaterializationStage ==
-            IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE)
-            apClientNodeInstalled = false;
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
         apClientReassociationPending = false;
@@ -6244,6 +6549,11 @@ bool ItlIwn::iwn_handle_ap_disconnect(
         subtype != IEEE80211_FC0_SUBTYPE_DISASSOC) {
         return false;
     }
+    struct IwnApClientRuntime *client =
+        iwn_find_ap_client(request->i_addr2);
+    if (client == NULL)
+        return true;
+    iwn_select_ap_client(client);
     if (!apClientNodeInstalled ||
         !IEEE80211_ADDR_EQ(request->i_addr1, apFirmwareConfig.bssid) ||
         !IEEE80211_ADDR_EQ(request->i_addr2, apClientMac)) {
@@ -6260,40 +6570,7 @@ bool ItlIwn::iwn_handle_ap_disconnect(
                 XYLog("%s: AP disconnect TIM clear failed error=%d\n",
                       com.sc_dev.dv_xname, timError);
         }
-        iwn_purge_ap_ps_queue();
-        apClientNodeInstalled = false;
-        apClientMaterializationStage =
-            IWN_AP_CLIENT_MATERIALIZATION_IDLE;
-        apClientAuthenticated = false;
-        apClientOpenAuthenticated = false;
-        apClientReassociationPending = false;
-        apClientLegacyRateMask = 0;
-        apClientQos = false;
-        apClientHt = false;
-        apClientHtNss = 0;
-        apClientHtCapabilities = 0;
-        apClientHtAmpduParams = 0;
-        bzero(apClientHtMcs, sizeof(apClientHtMcs));
-        apClientAssociated = false;
-        apClientAuthorized = false;
-        apClientPowerSave = false;
-        apClientAid = 0;
-        apRsnState = apFirmwareConfig.rsnIELength == 0 ?
-            IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
-        apClientRsnIELength = 0;
-        bzero(apClientRsnIE, sizeof(apClientRsnIE));
-        apReplayCounter = 0;
-        apPairwiseTxPn = 0;
-        bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
-        if (apPairwiseSoftwareKey.k_priv != NULL)
-            ieee80211_ccmp_delete_key(
-                &com.sc_ic, &apPairwiseSoftwareKey);
-        explicit_bzero(
-            &apPairwiseSoftwareKey,
-            sizeof(apPairwiseSoftwareKey));
-        apSoftwareCcmpRxObserved = false;
-        explicit_bzero(&apPtk, sizeof(apPtk));
-        iwn_reset_ap_sae();
+        iwn_reset_ap_client(client, true, true);
     }
     XYLog("%s: AP client disconnect subtype=0x%02x remove=%d\n",
           com.sc_dev.dv_xname, static_cast<unsigned>(subtype),
@@ -6313,7 +6590,7 @@ int ItlIwn::iwn_set_ap_client_rx_ba(uint8_t tid, uint16_t ssn,
 
     struct iwn_node_info node;
     bzero(&node, sizeof(node));
-    node.id = IWN5000_ID_PAN_CLIENT;
+    node.id = apClientContext->stationId;
     node.control = IWN_NODE_UPDATE;
     node.flags = start ? IWN_FLAG_SET_ADDBA : IWN_FLAG_SET_DELBA;
     if (start) {
@@ -6396,7 +6673,7 @@ void ItlIwn::iwn_ap_ampdu_tx_start(
             IWN4965_TXQ_STATUS_CHGACT);
         iwn_mem_write_2(
             &com, com.sched_base + IWN4965_SCHED_TRANS_TBL(qid),
-            IWN5000_ID_PAN_CLIENT << 4 | tid);
+            apClientContext->stationId << 4 | tid);
         iwn_prph_setbits(&com, IWN4965_SCHED_QCHAIN_SEL, 1U << qid);
         com.txq[qid].cur = com.txq[qid].read = idx;
         IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
@@ -6419,7 +6696,7 @@ void ItlIwn::iwn_ap_ampdu_tx_start(
         IWN5000_TXQ_STATUS_CHGACT);
     iwn_mem_write_2(
         &com, com.sched_base + IWN5000_SCHED_TRANS_TBL(qid),
-        IWN5000_ID_PAN_CLIENT << 4 | tid);
+        apClientContext->stationId << 4 | tid);
     iwn_prph_setbits(&com, IWN5000_SCHED_QCHAIN_SEL, 1U << qid);
     iwn_prph_setbits(&com, IWN5000_SCHED_AGGR_SEL, 1U << qid);
     com.txq[qid].cur = com.txq[qid].read = idx;
@@ -6493,7 +6770,7 @@ int ItlIwn::iwn_set_ap_client_tx_ba(uint8_t tid, uint16_t ssn, bool start)
         apClientTxBaPendingOldDisableTid = 0;
         struct iwn_node_info cancel;
         bzero(&cancel, sizeof(cancel));
-        cancel.id = IWN5000_ID_PAN_CLIENT;
+        cancel.id = apClientContext->stationId;
         cancel.control = IWN_NODE_UPDATE;
         cancel.flags = IWN_FLAG_SET_DISABLE_TID;
         cancel.disable_tid = htole16(apClientDisableTid);
@@ -6506,7 +6783,7 @@ int ItlIwn::iwn_set_ap_client_tx_ba(uint8_t tid, uint16_t ssn, bool start)
         /*
          * DVM aggregation queues belong to an RA/TID, not to a TID alone.
          * The primary STA can already own first_agg_txq + tid, so choose a
-         * separately provisioned free queue for PAN station 2.  Linux DVM's
+         * separately provisioned free queue for this PAN station. Linux DVM's
          * iwlagn_alloc_agg_txq() scans FIRST_AMPDU_QUEUE..num_of_queues in
          * ascending order; preserve that allocation order instead of making
          * the highest hardware queue the first live AP aggregate queue.
@@ -6533,7 +6810,7 @@ int ItlIwn::iwn_set_ap_client_tx_ba(uint8_t tid, uint16_t ssn, bool start)
 
     struct iwn_node_info node;
     bzero(&node, sizeof(node));
-    node.id = IWN5000_ID_PAN_CLIENT;
+    node.id = apClientContext->stationId;
     node.control = IWN_NODE_UPDATE;
     node.flags = IWN_FLAG_SET_DISABLE_TID;
     const uint16_t oldDisableTid = apClientDisableTid;
@@ -6622,6 +6899,11 @@ bool ItlIwn::iwn_handle_ap_block_ack(
     if (request == NULL || !apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING)
         return false;
+    struct IwnApClientRuntime *client =
+        iwn_find_ap_client(request->i_addr2);
+    if (client == NULL)
+        return false;
+    iwn_select_ap_client(client);
     const bool addressedToAp =
         frameLength >= sizeof(*request) + 2 &&
         (request->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
@@ -6779,6 +7061,11 @@ bool ItlIwn::iwn_handle_ap_ps_poll(
                            apFirmwareConfig.bssid)) {
         return false;
     }
+    struct IwnApClientRuntime *client =
+        iwn_find_ap_client(request->i_ta);
+    if (client == NULL)
+        return true;
+    iwn_select_ap_client(client);
     if (!apClientAssociated ||
         !IEEE80211_ADDR_EQ(request->i_ta, apClientMac) ||
         (LE_READ_2(request->i_aid) & 0x3fff) != apClientAid) {
@@ -6824,13 +7111,17 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
     if (packet == NULL || frames == NULL ||
         !apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING ||
-        !apClientAssociated ||
         frameLength < sizeof(struct ieee80211_frame)) {
         return false;
     }
 
     const struct ieee80211_frame *wh =
         mtod(packet, const struct ieee80211_frame *);
+    struct IwnApClientRuntime *client =
+        iwn_find_ap_client(wh->i_addr2);
+    if (client == NULL || !client->associated)
+        return false;
+    iwn_select_ap_client(client);
     if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
             IEEE80211_FC0_TYPE_DATA ||
         (wh->i_fc[1] & IEEE80211_FC1_DIR_MASK) !=
@@ -7181,14 +7472,11 @@ releaseAll()
 
 void ItlIwn::free()
 {
-	if (apPairwiseSoftwareKey.k_priv != NULL)
-		ieee80211_ccmp_delete_key(
-		    &com.sc_ic, &apPairwiseSoftwareKey);
-	explicit_bzero(
-	    &apPairwiseSoftwareKey, sizeof(apPairwiseSoftwareKey));
+	for (size_t index = 0; index < kItlApFirmwareMaxClients; index++)
+		iwn_reset_ap_client(&apClients[index], true);
+	apClientContext = &apClients[0];
 	if (ieee80211_bip_lifetime_drain(&com.sc_ic) != 0)
 		panic("ItlIwn::free BIP lifetime");
-	iwn_clear_ap_sae_pmksa();
 	ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic);
     super::free();
 }
@@ -7574,7 +7862,7 @@ int ItlIwn::iwn_add_ap_client_node(const uint8_t *macAddress)
 
     /*
      * DVM assigns the first station associated with a PAN/AP vif to firmware
-     * station id 2.  This command must precede the Association Response:
+     * selected dynamic station ID. This command must precede the Association Response:
      * firmware cannot route ACKed unicast data merely from the host-side AID.
      * Publish only the HT20/A-MPDU limits intersected from the station's
      * Association Request.  BA remains disabled until the aggregation layer
@@ -7584,7 +7872,7 @@ int ItlIwn::iwn_add_ap_client_node(const uint8_t *macAddress)
     struct iwn_node_info node;
     bzero(&node, sizeof(node));
     IEEE80211_ADDR_COPY(node.macaddr, macAddress);
-    node.id = IWN5000_ID_PAN_CLIENT;
+    node.id = apClientContext->stationId;
     node.htflags = htole32(iwn_ap_client_ht_flags(this));
     node.htmask = htole32(
         IWN_AMDPU_SIZE_FACTOR_MASK | IWN_AMDPU_DENSITY_MASK |
@@ -7597,12 +7885,12 @@ int ItlIwn::iwn_update_ap_client_node()
     if (!apClientNodeInstalled)
         return EINVAL;
 
-    /* DVM ADD_STA modify: preserve station id 2/PAN ownership while a
+    /* DVM ADD_STA modify: preserve the selected station ID/PAN ownership while a
      * reassociation replaces the negotiated HT20 limits in place. */
     struct iwn_node_info node;
     bzero(&node, sizeof(node));
     node.control = IWN_NODE_UPDATE;
-    node.id = IWN5000_ID_PAN_CLIENT;
+    node.id = apClientContext->stationId;
     node.htflags = htole32(iwn_ap_client_ht_flags(this));
     node.htmask = htole32(
         IWN_PWR_SAVE | IWN_AMDPU_SIZE_FACTOR_MASK |
@@ -7633,13 +7921,13 @@ int ItlIwn::iwn_wake_ap_client_node()
     /*
      * Exact DVM iwl_sta_modify_ps_wake() wire contract.  In iwn_node_info,
      * control is ADD_STA.mode, htflags is station_flags and htmask is
-     * station_flags_msk.  A zero value under the PS mask marks station 2
+     * station_flags_msk. A zero value under the PS mask marks this station
      * awake without disturbing its PAN identity or rate configuration.
      */
     struct iwn_node_info node;
     bzero(&node, sizeof(node));
     node.control = IWN_NODE_UPDATE;
-    node.id = IWN5000_ID_PAN_CLIENT;
+    node.id = apClientContext->stationId;
     node.htmask = htole32(IWN_PWR_SAVE);
     return com.ops.add_node(&com, &node, 1);
 }
@@ -7654,7 +7942,7 @@ int ItlIwn::iwn_allow_ap_client_sleep_tx()
     struct iwn_node_info node;
     bzero(&node, sizeof(node));
     node.control = IWN_NODE_UPDATE;
-    node.id = IWN5000_ID_PAN_CLIENT;
+    node.id = apClientContext->stationId;
     node.flags = IWN_FLAG_SET_SLEEP_TX_COUNT;
     node.htflags = htole32(IWN_PWR_SAVE);
     node.htmask = htole32(IWN_PWR_SAVE);
@@ -7666,7 +7954,7 @@ int ItlIwn::iwn_send_ap_client_link_quality()
 {
     struct iwn_cmd_link_quality linkq;
     bzero(&linkq, sizeof(linkq));
-    linkq.id = IWN5000_ID_PAN_CLIENT;
+    linkq.id = apClientContext->stationId;
     const uint8_t txant = IWN_LSB(com.txchainmask);
     linkq.antmsk_1stream = txant;
     linkq.antmsk_2stream = IWN_ANT_AB;
@@ -8263,13 +8551,29 @@ void ItlIwn::iwn_note_ap_firmware_event(
     const int ridx = apFirmwareConfig.channel <= 14 ?
         IWN_RIDX_CCK : IWN_RIDX_OFDM;
 
+    struct IwnApClientRuntime *completedClient = NULL;
+    if ((command == IWN_CMD_ADD_NODE ||
+         command == IWN_CMD_LINK_QUALITY) &&
+        addNodeId >= IWN5000_ID_PAN_CLIENT &&
+        addNodeId < IWN5000_ID_PAN_BROADCAST) {
+        /* ADD_STA and LINK_QUALITY both carry the firmware station ID in
+         * their submitted command body.  Recover that exact owner from the
+         * completed command-ring descriptor: another associated client's
+         * BA-driven LQ update may complete while a new peer is awaiting its
+         * initial LQ fence, so "first pending client" is not an owner. */
+        completedClient = iwn_find_ap_client_by_id(
+            static_cast<uint8_t>(addNodeId));
+        if (completedClient != NULL)
+            iwn_select_ap_client(completedClient);
+    }
+
     /* Linux DVM makes iwl_sta_tx_modify_enable_tid() synchronous before it
      * exposes the aggregate SCD queue.  RX action processing cannot block on
      * an IWN host command, so the matching ADD_STA completion is our exact
      * fence: no qid descriptor can be selected before this point. */
     if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
         apClientTxBaEnablePending && command == IWN_CMD_ADD_NODE &&
-        addNodeId == IWN5000_ID_PAN_CLIENT &&
+        addNodeId == apClientContext->stationId &&
         (addNodeFlags & IWN_FLAG_SET_DISABLE_TID) != 0) {
         const uint8_t tid = apClientTxBaPendingTid;
         const uint8_t qid = apClientTxBaPendingQueue;
@@ -8335,7 +8639,7 @@ void ItlIwn::iwn_note_ap_firmware_event(
         apClientDisableTid = oldDisableTid;
         struct iwn_node_info rollback;
         bzero(&rollback, sizeof(rollback));
-        rollback.id = IWN5000_ID_PAN_CLIENT;
+        rollback.id = apClientContext->stationId;
         rollback.control = IWN_NODE_UPDATE;
         rollback.flags = IWN_FLAG_SET_DISABLE_TID;
         rollback.disable_tid = htole16(apClientDisableTid);
@@ -8351,14 +8655,14 @@ void ItlIwn::iwn_note_ap_firmware_event(
      * Linux DVM does not expose Association Response until ADD_STA has
      * completed successfully and the initial link-quality command has
      * completed.  That order is functional, not cosmetic: accepting the
-     * client's 4-way handshake while firmware station id 2 is still being
+     * client's 4-way handshake while its firmware station ID is still being
      * materialized can make a later SET_KEY reply succeed without linking
      * the CCMP key into the PAN RX station map on a cold 6x35 start.
      */
     if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
         apCsaClientRestoreStage == IWN_AP_CSA_CLIENT_RESTORE_ADD_NODE &&
         command == IWN_CMD_ADD_NODE &&
-        addNodeId == IWN5000_ID_PAN_CLIENT) {
+        addNodeId == apClientContext->stationId) {
         if (addNodeStatus != 1) {
             iwn_finish_ap_csa_client_restore(EIO);
             return;
@@ -8374,10 +8678,19 @@ void ItlIwn::iwn_note_ap_firmware_event(
     if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
         apCsaClientRestoreStage ==
             IWN_AP_CSA_CLIENT_RESTORE_LINK_QUALITY &&
-        command == IWN_CMD_LINK_QUALITY) {
+        command == IWN_CMD_LINK_QUALITY &&
+        completedClient != NULL) {
         if (apFirmwareConfig.rsnIELength == 0 ||
             !apClientAuthorized) {
             iwn_finish_ap_csa_client_restore(0);
+            return;
+        }
+        if (apCsaGroupKeyRestored) {
+            apCsaClientRestoreStage =
+                IWN_AP_CSA_CLIENT_RESTORE_PAIRWISE_KEY;
+            error = iwn_install_ap_ccmp_key(true, 0, apPtk.tk);
+            if (error != 0)
+                iwn_finish_ap_csa_client_restore(error);
             return;
         }
         apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_GROUP_KEY;
@@ -8395,6 +8708,7 @@ void ItlIwn::iwn_note_ap_firmware_event(
             iwn_finish_ap_csa_client_restore(EIO);
             return;
         }
+        apCsaGroupKeyRestored = true;
         apCsaClientRestoreStage =
             IWN_AP_CSA_CLIENT_RESTORE_PAIRWISE_KEY;
         error = iwn_install_ap_ccmp_key(true, 0, apPtk.tk);
@@ -8406,7 +8720,7 @@ void ItlIwn::iwn_note_ap_firmware_event(
         apCsaClientRestoreStage ==
             IWN_AP_CSA_CLIENT_RESTORE_PAIRWISE_KEY &&
         command == IWN_CMD_ADD_NODE &&
-        addNodeId == IWN5000_ID_PAN_CLIENT &&
+        addNodeId == apClientContext->stationId &&
         (addNodeFlags & IWN_FLAG_SET_KEY) != 0) {
         iwn_finish_ap_csa_client_restore(
             addNodeStatus == 1 ? 0 : EIO);
@@ -8418,7 +8732,8 @@ void ItlIwn::iwn_note_ap_firmware_event(
              IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE ||
          apClientMaterializationStage ==
              IWN_AP_CLIENT_MATERIALIZATION_WAKE_NODE) &&
-        command == IWN_CMD_ADD_NODE) {
+        command == IWN_CMD_ADD_NODE &&
+        addNodeId == apClientContext->stationId) {
         if (addNodeStatus != 1) {
             if (apClientMaterializationStage ==
                 IWN_AP_CLIENT_MATERIALIZATION_ADD_NODE)
@@ -8426,11 +8741,14 @@ void ItlIwn::iwn_note_ap_firmware_event(
             apClientMaterializationStage =
                 IWN_AP_CLIENT_MATERIALIZATION_IDLE;
             apClientReassociationPending = false;
+            apClientContext->commandPending = false;
             XYLog("%s: AP client station materialization rejected "
                   "status=0x%02x\n", com.sc_dev.dv_xname,
                   static_cast<unsigned>(addNodeStatus & 0xff));
+            (void)iwn_submit_next_ap_client_materialization();
             return;
         }
+        apClientNodeInstalled = true;
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_LINK_QUALITY;
         error = iwn_send_ap_client_link_quality();
@@ -8438,23 +8756,29 @@ void ItlIwn::iwn_note_ap_firmware_event(
             apClientMaterializationStage =
                 IWN_AP_CLIENT_MATERIALIZATION_IDLE;
             apClientReassociationPending = false;
+            apClientContext->commandPending = false;
             XYLog("%s: AP client link-quality queue failed error=%d\n",
                   com.sc_dev.dv_xname, error);
         }
+        if (error != 0)
+            (void)iwn_submit_next_ap_client_materialization();
         return;
     }
     if (apFirmwareStage == IWN_AP_STAGE_RUNNING &&
         apClientMaterializationStage ==
             IWN_AP_CLIENT_MATERIALIZATION_LINK_QUALITY &&
-        command == IWN_CMD_LINK_QUALITY) {
+        command == IWN_CMD_LINK_QUALITY &&
+        completedClient != NULL) {
         error = iwn_send_ap_assoc_success();
         apClientMaterializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
+        apClientContext->commandPending = false;
         if (error != 0) {
             apClientReassociationPending = false;
             XYLog("%s: AP association response queue failed error=%d\n",
                   com.sc_dev.dv_xname, error);
         }
+        (void)iwn_submit_next_ap_client_materialization();
         return;
     }
 
@@ -8689,23 +9013,29 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
     apFirmwareConfig.rsnIE =
         config->rsnIELength != 0 ? apFirmwareRsnIE : NULL;
     apFirmwareConfig.beaconTemplate = apFirmwareBeacon;
+    apMaxStations = MIN(
+        config->maxStations != 0 ? config->maxStations :
+                                   static_cast<uint32_t>(1),
+        static_cast<uint32_t>(kItlApFirmwareMaxClients));
     memcpy(&apFirmwareRxon, &ap_rxon, sizeof(apFirmwareRxon));
 
-    /*
-     * Preserve one SAE PMKSA only across a radio reset that replays the
-     * same BSSID. Explicit HostAP stop clears it; a different profile must
-     * never inherit it merely because the controller object survived.
-     */
-    if (!iwn_ap_uses_sae() ||
-        (apSaePmksaValid &&
-         !IEEE80211_ADDR_EQ(
-             apSaePmksaBssid, apFirmwareConfig.bssid))) {
-        iwn_clear_ap_sae_pmksa();
+    /* Preserve bounded SAE PMKSA entries only across a radio reset that
+     * replays the same BSSID. An explicit stop clears every entry below; a
+     * different profile must never inherit cache state merely because the
+     * controller object survived. */
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct IwnApClientRuntime *client = &apClients[index];
+        if (!client->saePmksaValid)
+            continue;
+        iwn_select_ap_client(client);
+        if (!iwn_ap_uses_sae() ||
+            !IEEE80211_ADDR_EQ(
+                client->saePmksaBssid, apFirmwareConfig.bssid))
+            iwn_clear_ap_sae_pmksa();
     }
 
     if (config->rsnIELength != 0) {
-        iwn_reset_ap_sae();
-        explicit_bzero(apPmk, sizeof(apPmk));
+        explicit_bzero(apProfilePmk, sizeof(apProfilePmk));
         if (iwn_ap_uses_sae()) {
 #if !ITL_SAE_DRIVER_CRYPTO_AVAILABLE
             iwn_reset_ap_runtime_state();
@@ -8721,7 +9051,7 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
                    config->credentialLength);
             const int deriveError = pbkdf2_sha1(
                 passphrase, apFirmwareSsid, config->ssidLength, 4096,
-                apPmk, sizeof(apPmk));
+                apProfilePmk, sizeof(apProfilePmk));
             explicit_bzero(passphrase, sizeof(passphrase));
             if (deriveError != 0) {
                 iwn_reset_ap_runtime_state();
@@ -8735,9 +9065,6 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
             arc4random_buf(apIgtk, sizeof(apIgtk));
         apGtkKid = 1;
         apIgtkKid = IWN_AP_IGTK_KEY_ID;
-        apRsnState = IWN_AP_RSN_DISABLED;
-    } else {
-        apRsnState = IWN_AP_RSN_AUTHORIZED;
     }
 
     apFirmwareTransitionActive = true;
@@ -8784,7 +9111,10 @@ IOReturn ItlIwn::stopAPMode()
         iwn_quiesce_scan_for_ap_transition();
     if (scanResult != kIOReturnSuccess)
         return scanResult;
-    iwn_clear_ap_sae_pmksa();
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        iwn_select_ap_client(&apClients[index]);
+        iwn_clear_ap_sae_pmksa();
+    }
     if (!apFirmwareTransitionActive ||
         apFirmwareStage == IWN_AP_STAGE_IDLE) {
         iwn_reset_ap_runtime_state();
@@ -8815,6 +9145,24 @@ IOReturn ItlIwn::stopAPMode()
         iwn_set_ap_scan_transition_blocked(false);
         return kIOReturnError;
     }
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwn::setAPMaxStations(uint32_t maxStations)
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return kIOReturnNotReady;
+    if (maxStations == 0)
+        return kIOReturnBadArgument;
+    uint32_t effective = MIN(
+        maxStations, static_cast<uint32_t>(kItlApFirmwareMaxClients));
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        if (apClients[index].inUse)
+            effective = MAX(effective, static_cast<uint32_t>(index + 1));
+    }
+    apMaxStations = effective;
+    apFirmwareConfig.maxStations = effective;
     return kIOReturnSuccess;
 }
 
@@ -8973,6 +9321,7 @@ int ItlIwn::iwn_finish_ap_csa()
 
     const struct iwn_rxon oldRxon = apFirmwareRxon;
     struct iwn_rxon deactivateRxon = targetRxon;
+    bool restoreClients = false;
     apFirmwareConfig.channel = apCsaTargetChannel;
     memcpy(&apFirmwareRxon, &targetRxon, sizeof(apFirmwareRxon));
     int error = itl_ap_beacon_end_csa(
@@ -8993,27 +9342,42 @@ int ItlIwn::iwn_finish_ap_csa()
      * A fully-authorized peer, however, follows the advertised CSA without
      * performing a new association.  Preserve that logical association and
      * its replay/key epoch, retire only firmware-owned TX aggregation, then
-     * recreate station id 2 and its keys after the PAN context is running on
-     * the target channel. */
-    if (apClientAssociated &&
-        (apFirmwareConfig.rsnIELength == 0 || apClientAuthorized)) {
-        if (apTimSet) {
+     * recreate every retained dynamic station id and its keys after the PAN
+     * context is running on the target channel.  This is the same two-table
+     * contract as DVM iwl_clear_ucode_stations()/iwl_restore_stations(): the
+     * RXON transition invalidates firmware ownership but does not collapse
+     * the driver's logical station table to one selected peer. */
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct IwnApClientRuntime *client = &apClients[index];
+        if (!client->inUse)
+            continue;
+        iwn_select_ap_client(client);
+        if (!client->associated ||
+            (apFirmwareConfig.rsnIELength != 0 && !client->authorized)) {
+            iwn_clear_ap_client_for_csa(client);
+            continue;
+        }
+        if (client->timSet) {
             const int timError = iwn_update_ap_tim(false);
             if (timError != 0)
-                XYLog("%s: IWN AP CSA TIM clear error=%d\n",
-                      com.sc_dev.dv_xname, timError);
+                XYLog("%s: IWN AP CSA TIM clear id=%u error=%d\n",
+                      com.sc_dev.dv_xname,
+                      static_cast<unsigned>(client->stationId), timError);
         }
         iwn_purge_ap_ps_queue();
         iwn_stop_all_ap_client_tx_ba();
-        apClientNodeInstalled = false;
-        apClientMaterializationStage =
+        client->nodeInstalled = false;
+        client->materializationStage =
             IWN_AP_CLIENT_MATERIALIZATION_IDLE;
-        apClientPowerSave = false;
-        apCsaClientRestoreStage =
-            IWN_AP_CSA_CLIENT_RESTORE_PREPARED;
-    } else {
-        iwn_clear_ap_client_for_csa();
+        client->commandPending = false;
+        client->powerSave = false;
+        restoreClients = true;
     }
+    apCsaRestoreIndex = 0;
+    apCsaGroupKeyRestored = false;
+    apCsaClientRestoreStage = restoreClients ?
+        IWN_AP_CSA_CLIENT_RESTORE_PREPARED :
+        IWN_AP_CSA_CLIENT_RESTORE_IDLE;
     apFirmwareDeactivationReplySeen = false;
     apFirmwareDeactivationNotificationSeen = false;
     apFirmwarePostDeactivateQueued = false;
@@ -9030,6 +9394,14 @@ int ItlIwn::iwn_finish_ap_csa()
         apFirmwareStage = IWN_AP_STAGE_RUNNING;
         apFirmwareConfig.channel = oldChannel;
         memcpy(&apFirmwareRxon, &oldRxon, sizeof(apFirmwareRxon));
+        for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+            struct IwnApClientRuntime *client = &apClients[index];
+            if (client->inUse && client->associated)
+                client->nodeInstalled = true;
+        }
+        apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_IDLE;
+        apCsaRestoreIndex = 0;
+        apCsaGroupKeyRestored = false;
         (void)itl_ap_beacon_set_channel(
             apFirmwareBeacon, apFirmwareConfig.beaconTemplateLength,
             static_cast<uint8_t>(oldChannel));
@@ -9054,7 +9426,11 @@ rollback_beacon:
 clear_csa:
     apCsaPending = false;
     apCsaTargetChannel = 0;
+    apCsaMode = 0;
     apCsaCount = 0;
+    apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_IDLE;
+    apCsaRestoreIndex = 0;
+    apCsaGroupKeyRestored = false;
     return error != 0 ? error : EIO;
 }
 
@@ -9064,19 +9440,32 @@ void ItlIwn::iwn_complete_ap_csa_rebind()
         return;
     if (apCsaClientRestoreStage ==
         IWN_AP_CSA_CLIENT_RESTORE_PREPARED) {
-        apCsaClientRestoreStage =
-            IWN_AP_CSA_CLIENT_RESTORE_ADD_NODE;
-        const int error = iwn_add_ap_client_node(apClientMac);
-        if (error == 0) {
-            XYLog("%s: IWN AP CSA client restore queued peer="
-                  "%02x:%02x:%02x:%02x:%02x:%02x\n",
-                  com.sc_dev.dv_xname,
-                  apClientMac[0], apClientMac[1], apClientMac[2],
-                  apClientMac[3], apClientMac[4], apClientMac[5]);
+        while (apCsaRestoreIndex < kItlApFirmwareMaxClients) {
+            struct IwnApClientRuntime *client =
+                &apClients[apCsaRestoreIndex];
+            if (!client->inUse || !client->associated ||
+                (apFirmwareConfig.rsnIELength != 0 &&
+                 !client->authorized)) {
+                apCsaRestoreIndex++;
+                continue;
+            }
+            iwn_select_ap_client(client);
+            apCsaClientRestoreStage =
+                IWN_AP_CSA_CLIENT_RESTORE_ADD_NODE;
+            const int error = iwn_add_ap_client_node(client->mac);
+            if (error == 0) {
+                XYLog("%s: IWN AP CSA client restore queued id=%u peer="
+                      "%02x:%02x:%02x:%02x:%02x:%02x\n",
+                      com.sc_dev.dv_xname,
+                      static_cast<unsigned>(client->stationId),
+                      client->mac[0], client->mac[1], client->mac[2],
+                      client->mac[3], client->mac[4], client->mac[5]);
+                return;
+            }
+            iwn_finish_ap_csa_client_restore(error);
             return;
         }
-        iwn_finish_ap_csa_client_restore(error);
-        return;
+        apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_IDLE;
     }
     if (apCsaClientRestoreStage != IWN_AP_CSA_CLIENT_RESTORE_IDLE)
         return;
@@ -9084,6 +9473,8 @@ void ItlIwn::iwn_complete_ap_csa_rebind()
     apCsaTargetChannel = 0;
     apCsaMode = 0;
     apCsaCount = 0;
+    apCsaRestoreIndex = 0;
+    apCsaGroupKeyRestored = false;
     XYLog("%s: IWN AP CSA complete channel=%u\n",
           com.sc_dev.dv_xname,
           static_cast<unsigned>(apFirmwareConfig.channel));
@@ -9091,24 +9482,35 @@ void ItlIwn::iwn_complete_ap_csa_rebind()
 
 void ItlIwn::iwn_finish_ap_csa_client_restore(int error)
 {
+    struct IwnApClientRuntime *client = apClientContext;
     if (error != 0) {
-        XYLog("%s: IWN AP CSA client restore failed stage=%u error=%d\n",
+        XYLog("%s: IWN AP CSA client restore failed id=%u stage=%u "
+              "error=%d\n",
               com.sc_dev.dv_xname,
+              static_cast<unsigned>(client->stationId),
               static_cast<unsigned>(apCsaClientRestoreStage), error);
-        iwn_clear_ap_client_for_csa();
+        iwn_clear_ap_client_for_csa(client);
     } else {
-        XYLog("%s: IWN AP CSA client restore complete peer="
+        XYLog("%s: IWN AP CSA client restore complete id=%u peer="
               "%02x:%02x:%02x:%02x:%02x:%02x\n",
               com.sc_dev.dv_xname,
-              apClientMac[0], apClientMac[1], apClientMac[2],
-              apClientMac[3], apClientMac[4], apClientMac[5]);
+              static_cast<unsigned>(client->stationId),
+              client->mac[0], client->mac[1], client->mac[2],
+              client->mac[3], client->mac[4], client->mac[5]);
     }
+    apCsaRestoreIndex++;
     apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_IDLE;
+    if (apCsaRestoreIndex < kItlApFirmwareMaxClients)
+        apCsaClientRestoreStage = IWN_AP_CSA_CLIENT_RESTORE_PREPARED;
     iwn_complete_ap_csa_rebind();
 }
 
-void ItlIwn::iwn_clear_ap_client_for_csa()
+void ItlIwn::iwn_clear_ap_client_for_csa(
+    struct IwnApClientRuntime *client)
 {
+    if (client == NULL || !client->inUse)
+        return;
+    iwn_select_ap_client(client);
     if (apClientAssociated)
         iwn_publish_ap_station_event(
             apClientMac, NULL, 0, IEEE80211_APSTA_EVENT_LEAVE);
@@ -9118,56 +9520,7 @@ void ItlIwn::iwn_clear_ap_client_for_csa()
             XYLog("%s: IWN AP CSA client removal error=%d\n",
                   com.sc_dev.dv_xname, removeError);
     }
-    iwn_purge_ap_ps_queue();
-    iwn_reset_ap_sae();
-    if (iwn_ap_uses_sae())
-        explicit_bzero(apPmk, sizeof(apPmk));
-    if (apPairwiseSoftwareKey.k_priv != NULL)
-        ieee80211_ccmp_delete_key(
-            &com.sc_ic, &apPairwiseSoftwareKey);
-    explicit_bzero(&apPairwiseSoftwareKey,
-                   sizeof(apPairwiseSoftwareKey));
-    bzero(apClientMac, sizeof(apClientMac));
-    apClientNodeInstalled = false;
-    apClientMaterializationStage =
-        IWN_AP_CLIENT_MATERIALIZATION_IDLE;
-    apClientAuthenticated = false;
-    apClientOpenAuthenticated = false;
-    apClientReassociationPending = false;
-    apClientLegacyRateMask = 0;
-    apClientQos = false;
-    apClientHt = false;
-    apClientHtNss = 0;
-    apClientHtCapabilities = 0;
-    apClientHtAmpduParams = 0;
-    bzero(apClientHtMcs, sizeof(apClientHtMcs));
-    for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
-        itl_ap_rx_ba_stop(&apClientRxBa[tid]);
-        itl_ap_tx_ba_reset(&apClientTxBa[tid]);
-        apClientTxBaQueue[tid] = UINT8_MAX;
-    }
-    apClientRxBaMask = 0;
-    apClientTxBaMask = 0;
-    apClientDisableTid = 0;
-    apClientTxBaEnablePending = false;
-    apClientTxBaPendingTid = UINT8_MAX;
-    apClientTxBaPendingQueue = UINT8_MAX;
-    apClientTxBaPendingSsn = 0;
-    apClientTxBaPendingOldDisableTid = 0;
-    apClientAssociated = false;
-    apClientAuthorized = false;
-    apClientPowerSave = false;
-    apClientAid = 0;
-    apRsnState = apFirmwareConfig.rsnIELength == 0 ?
-        IWN_AP_RSN_AUTHORIZED : IWN_AP_RSN_DISABLED;
-    apClientRsnIELength = 0;
-    bzero(apClientRsnIE, sizeof(apClientRsnIE));
-    explicit_bzero(&apPtk, sizeof(apPtk));
-    apSoftwareCcmpRxObserved = false;
-    apReplayCounter = 0;
-    apPairwiseTxPn = 0;
-    bzero(apPairwiseRxPn, sizeof(apPairwiseRxPn));
-    apTimSet = false;
+    iwn_reset_ap_client(client, true, true);
 }
 
 #define    PCI_VENDOR_INTEL    0x8086        /* Intel */
@@ -12555,7 +12908,12 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         return;
     }
     struct ItlApRxBaReady apBaReady;
-    if (itl_ap_rx_ba_reorder(
+    struct IwnApClientRuntime *apRxClient =
+        iwn_find_ap_client(wh->i_addr2);
+    if (apRxClient != NULL)
+        iwn_select_ap_client(apRxClient);
+    if (apRxClient != NULL && apRxClient->associated &&
+        itl_ap_rx_ba_reorder(
             apClientRxBa, apFirmwareConfig.bssid, apClientMac,
             m, len, apHardwareDecrypted, flags, desc->type,
             false, 0, true,
@@ -12837,8 +13195,13 @@ iwn_rx_compressed_ba(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     uint16_t seq, ssn;
     int qid;
 
+    struct IwnApClientRuntime *apClient =
+        iwn_find_ap_client(cba->macaddr);
+    if (apClient != NULL)
+        iwn_select_ap_client(apClient);
     const bool apRunning = apFirmwareTransitionActive &&
-        apFirmwareStage == IWN_AP_STAGE_RUNNING && apClientAssociated;
+        apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        apClient != NULL && apClient->associated;
     if (ic->ic_state != IEEE80211_S_RUN && !apRunning)
         return;
 
@@ -13088,19 +13451,30 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
     struct ieee80211_tx_ba *ba;
     uint16_t seq;
     int apTid = -1;
-    for (uint8_t candidate = 0; candidate < IWN_NUM_AMPDU_TID;
-         candidate++) {
-        if ((apClientTxBaMask & (1U << candidate)) != 0 &&
-            apClientTxBaQueue[candidate] == desc->qid) {
-            apTid = candidate;
-            break;
+    struct IwnApClientRuntime *apClient = NULL;
+    for (size_t index = 0;
+         index < kItlApFirmwareMaxClients && apTid < 0; index++) {
+        struct IwnApClientRuntime *candidateClient = &apClients[index];
+        if (!candidateClient->inUse)
+            continue;
+        for (uint8_t candidate = 0; candidate < IWN_NUM_AMPDU_TID;
+             candidate++) {
+            if ((candidateClient->txBaMask & (1U << candidate)) != 0 &&
+                candidateClient->txBaQueue[candidate] == desc->qid) {
+                apClient = candidateClient;
+                apTid = candidate;
+                break;
+            }
         }
     }
+    if (apClient != NULL)
+        iwn_select_ap_client(apClient);
     const int tid = apTid >= 0 ? apTid :
         desc->qid - sc->first_agg_txq;
     const bool apAggregate = apTid >= 0 &&
         apFirmwareTransitionActive &&
-        apFirmwareStage == IWN_AP_STAGE_RUNNING && apClientAssociated;
+        apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+        apClient != NULL && apClient->associated;
 
     sc->sc_tx_timer = 0;
 
@@ -13342,6 +13716,9 @@ iwn5000_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         int txfail = (status != IWN_TX_STATUS_SUCCESS &&
                       status != IWN_TX_STATUS_DIRECT_DONE);
         mbuf_t apPsFilteredPacket = NULL;
+        struct IwnApClientRuntime *apTxClient =
+            that->iwn_find_ap_client(
+                ring->data[desc->idx].diag_peer);
         if (status == IWN_TX_STATUS_FAIL_DEST_PS &&
             ring->data[desc->idx].ap_data &&
             ring->data[desc->idx].m != NULL) {
@@ -13367,8 +13744,7 @@ iwn5000_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
                   static_cast<unsigned>(desc->qid),
                   static_cast<unsigned>(desc->idx),
                   static_cast<unsigned>(
-                      ring->data[desc->idx].ap_data ?
-                          IWN5000_ID_PAN_CLIENT :
+                      apTxClient != NULL ? apTxClient->stationId :
                           IWN5000_ID_PAN_BROADCAST));
         }
         /* DIAGNOSTIC (auth-ACK boundary): capture the firmware TX status
@@ -13408,6 +13784,11 @@ iwn5000_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
             apPsFilteredPacket != NULL ? 0 : txfail,
             desc->qid, letoh16(stat->len));
         if (apPsFilteredPacket != NULL) {
+            if (apTxClient == NULL) {
+                mbuf_freem(apPsFilteredPacket);
+                return;
+            }
+            that->iwn_select_ap_client(apTxClient);
             that->apClientPowerSave = true;
             const int queueError =
                 that->iwn_queue_ap_ps_packet(
@@ -13460,11 +13841,18 @@ iwn_clear_oactive(struct iwn_softc *sc, struct iwn_tx_ring *ring)
     ItlIwn *that = container_of(sc, ItlIwn, com);
 
     bool apDataQueue = ring->qid == IWN_IPAN_BE_QUEUE;
-    for (uint8_t tid = 0;
-         !apDataQueue && tid < IWN_NUM_AMPDU_TID; tid++) {
-        apDataQueue =
-            (that->apClientTxBaMask & (1U << tid)) != 0 &&
-            that->apClientTxBaQueue[tid] == ring->qid;
+    for (size_t index = 0;
+         !apDataQueue && index < kItlApFirmwareMaxClients; index++) {
+        const struct IwnApClientRuntime *client =
+            &that->apClients[index];
+        if (!client->inUse)
+            continue;
+        for (uint8_t tid = 0;
+             !apDataQueue && tid < IWN_NUM_AMPDU_TID; tid++) {
+            apDataQueue =
+                (client->txBaMask & (1U << tid)) != 0 &&
+                client->txBaQueue[tid] == ring->qid;
+        }
     }
     const bool apQueueWasFull =
         apDataQueue &&
@@ -13530,12 +13918,16 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     u_int8_t wnm_tx_fence_kind = 0;
 
     if (data->ap_mgmt || data->ap_data) {
+        struct IwnApClientRuntime *client =
+            that->iwn_find_ap_client(data->diag_peer);
+        if (client != NULL)
+            that->iwn_select_ap_client(client);
         const bool beginApFourWay =
             data->ap_mgmt && !txfail &&
             data->diag_subtype == IEEE80211_FC0_SUBTYPE_ASSOC_RESP &&
             that->apFirmwareConfig.rsnIELength != 0 &&
-            that->apClientAssociated &&
-            IEEE80211_ADDR_EQ(data->diag_peer, that->apClientMac);
+            client != NULL && client->associated &&
+            IEEE80211_ADDR_EQ(data->diag_peer, client->mac);
         if (txfail)
             ifp->netStat->outputErrors++;
         if (txfail)
@@ -13560,8 +13952,10 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         ring->queued--;
         iwn_clear_oactive(sc, ring);
         iwn_refresh_tx_timer(sc);
-        if (beginApFourWay)
+        if (beginApFourWay && client != NULL) {
+            that->iwn_select_ap_client(client);
             that->iwn_begin_ap_4way();
+        }
         return;
     }
 
@@ -13749,6 +14143,12 @@ iwn_notif_intr(struct iwn_softc *sc)
                             completedCommand->data);
                     completedAddNodeFlags = completedNode->flags;
                     completedAddNodeId = completedNode->id;
+                } else if (completedCommand->code ==
+                           IWN_CMD_LINK_QUALITY) {
+                    const struct iwn_cmd_link_quality *completedLinkQuality =
+                        reinterpret_cast<const struct iwn_cmd_link_quality *>(
+                            completedCommand->data);
+                    completedAddNodeId = completedLinkQuality->id;
                 }
                 iwn_note_ap_firmware_event(
                     completedCommand->code, -1,

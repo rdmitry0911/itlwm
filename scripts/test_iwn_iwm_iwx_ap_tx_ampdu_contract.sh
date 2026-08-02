@@ -74,9 +74,9 @@ for needle, label in (
 
 for needle, label in (
     ("iwn_set_ap_client_tx_ba", "IWN TX BA API"),
-    ("apClientTxBaMask", "IWN agreement ownership"),
-    ("apClientTxBaQueue[kItlApRxBaTidCount]", "IWN per-RA/TID queue map"),
-    ("apClientTxSequence", "IWN sequence ownership"),
+    ("uint16_t txBaMask;", "IWN per-client agreement ownership"),
+    ("txBaQueue[kItlApRxBaTidCount]", "IWN per-RA/TID queue map"),
+    ("txSequence[kItlApRxBaTidCount]", "IWN sequence ownership"),
 ):
     require(iwn_h, needle, label)
 for needle, label in (

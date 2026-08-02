@@ -105,8 +105,7 @@ open_auth = body(
     "bool ItlIwn::iwn_handle_ap_assoc_req(",
 )
 for needle in (
-    "if (iwn_ap_uses_sae())",
-    "iwn_reset_ap_sae();",
+    "iwn_prepare_ap_client_reauthentication(\n        iwn_ap_uses_sae())",
     "apClientOpenAuthenticated = iwn_ap_uses_sae();",
     "IEEE80211_AUTH_OPEN_RESPONSE",
     "IEEE80211_STATUS_SUCCESS",
@@ -130,12 +129,12 @@ for needle in (
     assert needle in assoc, f"missing SAE PMKSA association contract: {needle}"
 
 for needle in (
-    "uint8_t apSaePmksaPmk[IEEE80211_PMK_LEN];",
-    "uint8_t apSaePmksaPmkid[IEEE80211_PMKID_LEN];",
-    "uint8_t apSaePmksaSta[IEEE80211_ADDR_LEN];",
-    "uint8_t apSaePmksaBssid[IEEE80211_ADDR_LEN];",
-    "bool apSaePmksaValid;",
-    "bool apClientOpenAuthenticated;",
+    "uint8_t saePmksaPmk[IEEE80211_PMK_LEN];",
+    "uint8_t saePmksaPmkid[IEEE80211_PMKID_LEN];",
+    "uint8_t saePmksaSta[IEEE80211_ADDR_LEN];",
+    "uint8_t saePmksaBssid[IEEE80211_ADDR_LEN];",
+    "bool saePmksaValid;",
+    "bool openAuthenticated;",
 ):
     assert needle in iwn_hpp, f"missing bounded SAE PMKSA state: {needle}"
 
@@ -144,15 +143,46 @@ reset = body(
     "void ItlIwn::iwn_reset_ap_runtime_state()",
     "void ItlIwn::iwn_purge_ap_ps_queue()",
 )
-assert "iwn_reset_ap_sae();" in reset
+assert "iwn_reset_ap_client(&apClients[index], true, true)" in reset
 assert "iwn_clear_ap_sae_pmksa();" not in reset, \
     "radio reset must preserve the bounded SAE PMKSA"
+for needle in (
+    "const bool cached = preserveSaePmksa && client->saePmksaValid;",
+    "memcpy(client->saePmksaPmk, cachedPmk,",
+    "client->saePmksaValid = true;",
+):
+    assert needle in iwn, f"missing reset-time SAE PMKSA preservation: {needle}"
+
+allocate = body(
+    iwn,
+    "struct IwnApClientRuntime *ItlIwn::iwn_allocate_ap_client(",
+    "int ItlIwn::iwn_submit_next_ap_client_materialization()",
+)
+for needle in (
+    "!candidate->inUse && candidate->saePmksaValid",
+    "candidate->saePmksaSta, station",
+    "candidate->saePmksaBssid, apFirmwareConfig.bssid",
+    "!apClients[index].saePmksaValid",
+    "client->saePmksaValid = true;",
+):
+    assert needle in allocate, f"missing bounded PMKSA cache admission: {needle}"
+
+start = body(
+    iwn,
+    "IOReturn ItlIwn::startAPMode(",
+    "IOReturn ItlIwn::stopAPMode()",
+)
+assert "for (size_t index = 0; index < kItlApFirmwareMaxClients; index++)" in start
+assert "client->saePmksaBssid, apFirmwareConfig.bssid" in start
+assert "iwn_clear_ap_sae_pmksa();" in start, \
+    "profile change must scrub every mismatched SAE PMKSA entry"
 
 stop = body(
     iwn,
     "IOReturn ItlIwn::stopAPMode()",
     "int ItlIwn::\niwn_match(",
 )
+assert "for (size_t index = 0; index < kItlApFirmwareMaxClients; index++)" in stop
 assert "iwn_clear_ap_sae_pmksa();" in stop, \
     "explicit HostAP stop must scrub the SAE PMKSA"
 

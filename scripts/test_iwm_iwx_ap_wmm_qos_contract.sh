@@ -91,7 +91,7 @@ for needle, label in (
 ):
     require(encap, needle, label)
 
-require(iwn_hpp, "bool apClientQos", "IWN per-client negotiated QoS state")
+require(iwn_hpp, "bool qos;", "IWN per-client negotiated QoS state")
 iwn_parse = body(iwn, "bool ItlIwn::iwn_handle_ap_assoc_req(")
 for needle, label in (
     ("IEEE80211_ELEMID_QOS_CAP", "IWN standard QoS Capability parser"),

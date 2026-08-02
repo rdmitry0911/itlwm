@@ -119,25 +119,27 @@ for source, prefix, label in (
             f"{label} descriptor last-subframe witness")
 
 for needle, label in (
-    ("uint16_t apClientRxBaMask;", "IWN BA ownership"),
+    ("uint16_t rxBaMask;", "IWN per-client BA ownership"),
+    ("struct ItlApRxBaRuntime rxBa[kItlApRxBaTidCount]",
+     "IWN per-client reorder ownership"),
     ("iwn_set_ap_client_rx_ba", "IWN BA API"),
     ("iwn_handle_ap_block_ack", "IWN BA RX API"),
 ):
     require(iwn_h, needle, label)
 for needle, label in (
-    ("node.id = IWN5000_ID_PAN_CLIENT;", "IWN PAN client identity"),
+    ("node.id = apClientContext->stationId;", "IWN PAN client identity"),
     ("IWN_FLAG_SET_ADDBA", "IWN ADD_BA firmware command"),
     ("IWN_FLAG_SET_DELBA", "IWN DEL_BA firmware command"),
     ("itl_ap_block_ack_build_response", "IWN response builder"),
     ("IEEE80211_STATUS_REFUSED", "IWN fail-closed response"),
     ("iwn_stop_all_ap_client_rx_ba();", "IWN teardown fence"),
-    ("const bool clientOwned = apClientNodeInstalled",
+    ("const bool clientOwned = client != NULL && apClientNodeInstalled",
      "IWN materialized unicast owner gate"),
     ("tx->security = IWN_CIPHER_CCMP;", "IWN protected action encryption"),
     ("itl_ap_rx_ba_start(&apClientRxBa[tid]", "IWN reorder start"),
     ("itl_ap_rx_ba_stop(&apClientRxBa[tid]", "IWN reorder stop"),
     ("itl_ap_rx_ba_reorder(", "IWN pre-decap reorder dispatch"),
-    ("clientOwned ? IWN5000_ID_PAN_CLIENT",
+    ("clientOwned ? apClientContext->stationId",
      "IWN unicast management station ownership"),
 ):
     require(iwn, needle, label)
