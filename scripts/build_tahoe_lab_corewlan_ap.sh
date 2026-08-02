@@ -8,5 +8,6 @@ OUTPUT="$OUTPUT_DIR/airport_itlwm_lab_corewlan_ap"
 
 mkdir -p "$OUTPUT_DIR"
 xcrun clang -fobjc-arc -framework Foundation -framework CoreWLAN \
+    -framework SystemConfiguration \
     "$SOURCE" -o "$OUTPUT"
 printf '%s\n' "$OUTPUT"

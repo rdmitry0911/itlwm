@@ -62,8 +62,8 @@ for needle in (
     'NetworkRelay failed-start cleanup error=',
 ):
     assert needle in probe, f"missing bounded NetworkRelay lifecycle: {needle}"
-assert probe.count("geteuid() != 0") == 2, \
-    "NetworkRelay start/stop must reject an unentitled non-root harness"
+assert probe.count("geteuid() != 0") == 4, \
+    "private NetworkRelay and Internet Sharing mutations must reject non-root"
 assert "actualPassword UTF8String" not in probe
 assert "[password UTF8String]" not in probe
 

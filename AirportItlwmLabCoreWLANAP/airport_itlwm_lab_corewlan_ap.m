@@ -1,13 +1,16 @@
 #import <CoreWLAN/CoreWLAN.h>
 #import <Foundation/Foundation.h>
+#import <SystemConfiguration/SystemConfiguration.h>
 #import <objc/runtime.h>
 #include <errno.h>
+#include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 @interface CWInterface (AirportItlwmLabHostAP)
+- (BOOL)startHostAPMode:(NSError **)error;
 - (BOOL)startHostAPModeWithSSID:(NSData *)ssid
                   securityType:(NSUInteger)securityType
                        channel:(CWChannel *)channel
@@ -178,6 +181,134 @@ parse_security_type(const char *value, NSUInteger *securityType)
     return YES;
 }
 
+static BOOL
+set_internet_sharing_preferences(BOOL enabled,
+                                 NSString *primaryService,
+                                 NSString *sharingInterface)
+{
+    SCPreferencesRef preferences = SCPreferencesCreate(
+        NULL, CFSTR("AirportItlwmLabCoreWLANAP"),
+        CFSTR("com.apple.nat.plist"));
+    if (preferences == NULL) {
+        fprintf(stderr,
+                "SCPreferencesCreate(com.apple.nat.plist) failed: %s\n",
+                SCErrorString(SCError()));
+        return NO;
+    }
+
+    CFDictionaryRef current = SCPreferencesGetValue(preferences, CFSTR("NAT"));
+    NSMutableDictionary *nat = current != NULL
+        ? [(__bridge NSDictionary *)current mutableCopy]
+        : [[NSMutableDictionary alloc] init];
+    /* InternetSharingPreference checks CFNumberGetTypeID(), not CFBoolean. */
+    nat[@"Enabled"] = @((int)enabled);
+    if (enabled) {
+        nat[@"PrimaryService"] = primaryService;
+        nat[@"SharingDevices"] = @[ sharingInterface ];
+    }
+
+    BOOL succeeded = SCPreferencesSetValue(
+        preferences, CFSTR("NAT"), (__bridge CFDictionaryRef)nat);
+    if (succeeded)
+        succeeded = SCPreferencesCommitChanges(preferences);
+    if (succeeded)
+        succeeded = SCPreferencesApplyChanges(preferences);
+    if (!succeeded) {
+        fprintf(stderr, "SCPreferences update failed: %s\n",
+                SCErrorString(SCError()));
+    }
+    CFRelease(preferences);
+    return succeeded;
+}
+
+typedef NSString *(*SchemaStringForSecurityTypeFunction)(NSUInteger);
+typedef int32_t (*CWSystemKeychainSetHostAPModePasswordFunction)(
+    NSString *, NSString *, id);
+
+static BOOL
+set_host_ap_mode_configuration(NSString *interfaceName,
+                               NSData *ssid,
+                               NSUInteger securityType,
+                               NSInteger channel,
+                               NSString *password)
+{
+    SchemaStringForSecurityTypeFunction schemaStringForSecurityType =
+        (SchemaStringForSecurityTypeFunction)dlsym(
+            RTLD_DEFAULT, "schemaStringForSecurityType");
+    if (schemaStringForSecurityType == NULL) {
+        fprintf(stderr, "schemaStringForSecurityType is unavailable: %s\n",
+                dlerror());
+        return NO;
+    }
+    NSString *securitySchema = schemaStringForSecurityType(securityType);
+    if (securitySchema == nil) {
+        fprintf(stderr, "security type 0x%lx has no schema string\n",
+                (unsigned long)securityType);
+        return NO;
+    }
+
+    if (password != nil) {
+        CWSystemKeychainSetHostAPModePasswordFunction setPassword =
+            (CWSystemKeychainSetHostAPModePasswordFunction)dlsym(
+                RTLD_DEFAULT, "CWSystemKeychainSetHostAPModePassword");
+        if (setPassword == NULL) {
+            fprintf(stderr,
+                    "CWSystemKeychainSetHostAPModePassword is unavailable: "
+                    "%s\n",
+                    dlerror());
+            return NO;
+        }
+        const int32_t status = setPassword(interfaceName, password, nil);
+        if (status != 0) {
+            fprintf(stderr,
+                    "CWSystemKeychainSetHostAPModePassword failed: %d\n",
+                    status);
+            return NO;
+        }
+    }
+
+    SCPreferencesRef preferences = SCPreferencesCreate(
+        NULL, CFSTR("AirportItlwmLabCoreWLANAP"),
+        CFSTR("com.apple.airport.preferences.plist"));
+    if (preferences == NULL) {
+        fprintf(stderr,
+                "SCPreferencesCreate(com.apple.airport.preferences.plist) "
+                "failed: %s\n",
+                SCErrorString(SCError()));
+        return NO;
+    }
+    NSString *ssidString = [[NSString alloc]
+        initWithData:ssid encoding:NSUTF8StringEncoding];
+    if (ssidString == nil) {
+        fprintf(stderr, "SSID is not valid UTF-8\n");
+        CFRelease(preferences);
+        return NO;
+    }
+    NSDictionary *configuration = @{
+        @"SSID": ssid,
+        @"SSIDString": ssidString,
+        @"SecurityType": securitySchema,
+        @"Channel": @(channel),
+    };
+    BOOL succeeded = SCPreferencesSetValue(
+        preferences, CFSTR("InternetSharing"),
+        (__bridge CFDictionaryRef)configuration);
+    if (succeeded)
+        succeeded = SCPreferencesCommitChanges(preferences);
+    if (succeeded)
+        succeeded = SCPreferencesApplyChanges(preferences);
+    if (!succeeded) {
+        fprintf(stderr, "InternetSharing configuration update failed: %s\n",
+                SCErrorString(SCError()));
+    }
+    CFRelease(preferences);
+    if (succeeded) {
+        printf("InternetSharing configuration security-schema=%s\n",
+               [securitySchema UTF8String]);
+    }
+    return succeeded;
+}
+
 int
 main(int argc, const char *argv[])
 {
@@ -197,10 +328,12 @@ main(int argc, const char *argv[])
 
         SEL startSelector = sel_registerName(
             "startHostAPModeWithSSID:securityType:channel:password:error:");
+        SEL standardStartSelector = sel_registerName("startHostAPMode:");
         SEL stopSelector = sel_registerName("stopHostAPMode");
         SEL configurationSelector = sel_registerName(
             "hostAPModeConfigurationAndPassword:");
         print_method_signature(interface, startSelector);
+        print_method_signature(interface, standardStartSelector);
         print_method_signature(interface, stopSelector);
         print_method_signature(interface, configurationSelector);
 
@@ -227,6 +360,81 @@ main(int argc, const char *argv[])
                        ? [[configuration description] UTF8String]
                        : "<none>",
                    password != nil ? 1U : 0U);
+            return 0;
+        }
+        if (argc > 2 &&
+            strcmp(argv[2], "--enable-internet-sharing") == 0) {
+            if (geteuid() != 0) {
+                fprintf(stderr,
+                        "enable-internet-sharing requires root\n");
+                return 1;
+            }
+            if (argc < 4) {
+                fprintf(stderr,
+                        "usage: %s interface --enable-internet-sharing "
+                        "primary-service [sharing-interface "
+                        "[hold-seconds]]\n",
+                        argv[0]);
+                return 2;
+            }
+            NSString *primaryService =
+                [NSString stringWithUTF8String:argv[3]];
+            NSString *sharingInterface = argc > 4
+                ? [NSString stringWithUTF8String:argv[4]]
+                : @"en1";
+            if (!set_internet_sharing_preferences(
+                    YES, primaryService, sharingInterface))
+                return 1;
+            printf("Internet Sharing enabled primary-service=%s "
+                   "sharing-interface=%s\n",
+                   [primaryService UTF8String],
+                   [sharingInterface UTF8String]);
+            const unsigned long holdSeconds =
+                argc > 5 ? strtoul(argv[5], NULL, 0) : 0;
+            struct timespec remaining = {
+                .tv_sec = (time_t)holdSeconds,
+                .tv_nsec = 0,
+            };
+            while (nanosleep(&remaining, &remaining) == -1 && errno == EINTR)
+                ;
+            return 0;
+        }
+        if (argc > 2 &&
+            strcmp(argv[2], "--disable-internet-sharing") == 0) {
+            if (geteuid() != 0) {
+                fprintf(stderr,
+                        "disable-internet-sharing requires root\n");
+                return 1;
+            }
+            if (!set_internet_sharing_preferences(NO, nil, nil))
+                return 1;
+            printf("Internet Sharing disabled\n");
+            return 0;
+        }
+        if (argc > 2 && strcmp(argv[2], "--start-default") == 0) {
+            if (![interface respondsToSelector:standardStartSelector]) {
+                fprintf(stderr, "startHostAPMode: is unavailable\n");
+                return 1;
+            }
+            NSError *error = nil;
+            const BOOL started = [interface startHostAPMode:&error];
+            printf("standard start result=%u error=%s\n",
+                   started ? 1U : 0U,
+                   error != nil
+                       ? [[error description] UTF8String]
+                       : "<none>");
+            if (!started)
+                return 1;
+            const unsigned long holdSeconds =
+                argc > 3 ? strtoul(argv[3], NULL, 0) : 0;
+            struct timespec remaining = {
+                .tv_sec = (time_t)holdSeconds,
+                .tv_nsec = 0,
+            };
+            while (nanosleep(&remaining, &remaining) == -1 && errno == EINTR)
+                ;
+            [interface stopHostAPMode];
+            printf("standard stopHostAPMode sent\n");
             return 0;
         }
         if (argc <= 2 || strcmp(argv[2], "--inspect") == 0)
@@ -287,6 +495,8 @@ main(int argc, const char *argv[])
                        : "<none>");
             return stopReplyReceived && stopError == nil ? 0 : 1;
         }
+        const BOOL configureDefault =
+            strcmp(argv[2], "--configure-default") == 0;
         const BOOL startSharing =
             strcmp(argv[2], "--start-sharing") == 0;
         if (startSharing && geteuid() != 0) {
@@ -295,9 +505,11 @@ main(int argc, const char *argv[])
                     "NetworkSharing entitlement\n");
             return 1;
         }
-        if ((!startSharing && strcmp(argv[2], "--start") != 0) || argc < 7) {
+        if ((!configureDefault && !startSharing &&
+             strcmp(argv[2], "--start") != 0) || argc < 7) {
             fprintf(stderr,
-                    "usage: %s interface --start|--start-sharing ssid "
+                    "usage: %s interface --configure-default|--start|"
+                    "--start-sharing ssid "
                     "open|wpa2|wpa3|security-number channel "
                     "password [hold-seconds [upstream-interface "
                     "[relay-interface]]]\n",
@@ -321,6 +533,16 @@ main(int argc, const char *argv[])
         NSString *password = strlen(argv[6]) != 0
             ? [NSString stringWithUTF8String:argv[6]]
             : nil;
+
+        if (configureDefault) {
+            const BOOL configured = set_host_ap_mode_configuration(
+                [NSString stringWithUTF8String:interfaceName], ssid, security,
+                requestedChannel, password);
+            printf("standard configure result=%u\n",
+                   configured ? 1U : 0U);
+            return configured ? 0 : 1;
+        }
+
         CWChannel *channel = nil;
         for (CWChannel *candidate in [interface supportedWLANChannels]) {
             if ([candidate channelNumber] == requestedChannel) {
