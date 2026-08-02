@@ -58,7 +58,8 @@ ordered(idle, "single-lock idle census",
 require(v2h, "bool associationScanOwnersIdle() const;",
         "controller idle-fence declaration")
 
-join = body(sky, "tahoeJoinCachedWclCandidate(",
+join = body(sky,
+            "static bool\ntahoeJoinCachedWclCandidate(struct ieee80211com *ic,",
             "cached-candidate join helper")
 ordered(join, "strict cached-candidate admission",
         "!scanOwnersIdle",

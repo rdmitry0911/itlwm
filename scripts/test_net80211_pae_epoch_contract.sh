@@ -348,6 +348,14 @@ ordered(join, "post-copy selected BSS snapshot",
         "ieee80211_pae_selected_bss_capture(ic, ni, sae_profile,",
         "replacement_epoch);",
         "ieee80211_fix_rate")
+ordered(join, "controlled replacement timer and state submission",
+        "ieee80211_pae_selected_bss_capture(ic, ni, sae_profile,",
+        "ic->ic_mgt_timer = 0;",
+        "ic->ic_newstate_preflight(ic, IEEE80211_S_AUTH, mgt)",
+        "AirportItlwmPostPltiTraceNoteStateRequest(",
+        "ic->ic_newstate(ic, IEEE80211_S_AUTH, mgt);")
+if "ieee80211_new_state(ic, IEEE80211_S_AUTH, mgt);" in join:
+    fail("controlled BSS replacement must not invalidate its new epoch a second time")
 for source, label in ((input_c, "scan parser"),
                       (skywalk_cpp, "Tahoe request ingress")):
     if "ieee80211_pae_selected_bss_capture" in source:

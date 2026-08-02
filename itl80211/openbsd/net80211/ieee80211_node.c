@@ -1336,6 +1336,15 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
         return;
     }
     ni->ni_assoc_fail |= assoc_fail;
+
+    /* The selected-BSS replacement above owns a fresh association epoch.
+     * A management timer left by the superseded BSS cannot remain live while
+     * an asynchronous backend prepares this candidate: it can otherwise
+     * expire before the new Authentication Request is submitted, fence the
+     * new epoch, and make the eventual AUTH/ASSOC responses look stale.  The
+     * new management request arms its own response timer at the TX edge. */
+    if (ic->ic_opmode == IEEE80211_M_STA)
+        ic->ic_mgt_timer = 0;
     
     ic->ic_curmode = ieee80211_chan2mode(ic, ni->ni_chan);
     
@@ -1396,7 +1405,19 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
             mgt = IEEE80211_FC0_SUBTYPE_DEAUTH;
         }
         
-        ieee80211_new_state(ic, IEEE80211_S_AUTH, mgt);
+        /* begin_replacement() already retired the old attempt and capture()
+         * published this exact BSS in the new epoch.  Re-entering the generic
+         * ieee80211_new_state() wrapper on AUTH -> AUTH or RUN -> AUTH would
+         * advance the epoch a second time and immediately invalidate that
+         * selected-BSS publication.  Keep the ordinary backend preflight and
+         * passive state trace, then submit the state request directly under
+         * the controlled-replacement ownership established above. */
+        if (ic->ic_newstate_preflight == NULL ||
+            ic->ic_newstate_preflight(ic, IEEE80211_S_AUTH, mgt) == 0) {
+            AirportItlwmPostPltiTraceNoteStateRequest(
+                ic, (uint32_t)ic->ic_state, (uint32_t)IEEE80211_S_AUTH);
+            ic->ic_newstate(ic, IEEE80211_S_AUTH, mgt);
+        }
     }
     ieee80211_sae_wcl_request_join_end(ic);
 }
