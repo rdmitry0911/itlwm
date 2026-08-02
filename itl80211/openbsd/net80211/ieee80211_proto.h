@@ -318,6 +318,12 @@ extern	int ieee80211_sae_wcl_request_scan_started(struct ieee80211com *,
  * This carries no credential or node and is false for every ordinary join. */
 extern	int ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
 	    struct ieee80211com *, u_int64_t);
+/* Promote the exact ordinary WCL-selected SSID+BSSID to the selection-owned
+ * phase.  The caller separately proves that the physical scan owners are
+ * idle and that the matching live node is still usable before joining it. */
+extern	int ieee80211_sae_wcl_request_admit_cached_wcl_candidate(
+	    struct ieee80211com *, u_int64_t,
+	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int);
 extern	int ieee80211_sae_wcl_request_admit_cached_roam_candidate(
 	    struct ieee80211com *, u_int64_t,
 	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int);

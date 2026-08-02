@@ -122,6 +122,7 @@ for token in (
     "ieee80211_sae_wcl_request_resume_scan",
     "ieee80211_sae_wcl_request_scan_starting",
     "ieee80211_sae_wcl_request_scan_started",
+    "ieee80211_sae_wcl_request_admit_cached_wcl_candidate",
     "ieee80211_sae_wcl_request_scan_selection_held",
     "ieee80211_sae_wcl_request_scan_selection_owned",
     "ieee80211_sae_wcl_request_join_begin",
@@ -328,6 +329,29 @@ for token in (
         "ic->ic_sae_wcl_request.generation == generation",
 ):
     require(resume, token, "synchronous scan bind acknowledgement")
+
+cached_wcl = body(
+    proto_c,
+    "int\nieee80211_sae_wcl_request_admit_cached_wcl_candidate",
+    "ordinary cached WCL candidate admission")
+for token in (
+        "ic->ic_opmode != IEEE80211_M_STA",
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "ic_pae_selected_bss_lock",
+        "ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic)",
+        "request->generation == generation",
+        "request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING",
+        "request->association_epoch == 0",
+        "ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request)",
+        "IEEE80211_ADDR_EQ(request->bssid, target_bssid)",
+        "request->ssid_len == ssid_len",
+        "memcmp(request->ssid, ssid, ssid_len) == 0",
+        "request->phase = IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED",
+):
+    require(cached_wcl, token, "ordinary cached WCL candidate fence")
+for forbidden in ("password", "pmk", "pwe", "ieee80211_node", "ic_newstate"):
+    if forbidden in strip_comments(cached_wcl).lower():
+        fail(f"cached WCL admission must remain identity-only: {forbidden}")
 
 run_fence = body(proto_c,
                  "static int\nieee80211_sae_wcl_request_fence_run_resume",

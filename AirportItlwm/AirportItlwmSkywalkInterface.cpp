@@ -539,6 +539,29 @@ tahoePublicAssociationOwnerMatchesWclIdentity(
     return memcmp(owner.ssid, ssid, ssidLength) == 0;
 }
 
+/*
+ * AppleBCMWLANJoinAdapter::performJoin() rejects a second carrier while its
+ * firmware-join-active byte is set; abortFirmwareJoinSync() is the separate
+ * edge that clears that byte.  Authentication and association status are not
+ * the terminal: open RUN or the RSN handshake is.  Keep the corresponding WCL
+ * completion lease intact until that terminal or an explicit lifecycle abort.
+ * This is a JoinAdapter invariant shared by open, WPA2 and SAE, independent of
+ * the lower HAL and of SAE's shorter credential generation.
+ */
+static bool
+tahoeHasActiveWclAssociationOwner(
+    const TahoeOwnerRegistry::AssociationOwner &owner,
+    struct ieee80211com *ic)
+{
+    return ic != nullptr && ic->ic_bss != nullptr &&
+        (ic->ic_state == IEEE80211_S_AUTH ||
+         ic->ic_state == IEEE80211_S_ASSOC ||
+         ic->ic_state == IEEE80211_S_RUN) &&
+        owner.hasCarrier && !owner.publicCarrier &&
+        owner.selectedFromCandidate && owner.authAssocCompletionArmed &&
+        !owner.joinTerminalObserved;
+}
+
 namespace {
 
 static_assert(TahoeBssManagerContracts::kBeaconMetaDataSize ==
@@ -6476,9 +6499,11 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
      * JoinAdapter completion consumer as a WCL candidate.  Evict a preceding
      * WCL/public ledger on a new request, but preserve the exact public lease
      * when CoreWLAN repeats the same IOC while AUTH/ASSOC is already in
-     * flight.  Clearing that duplicate used to make the successful on-air
-     * response ownerless, so 0x4e was published but the required 0xd3
-     * completion could never be sent.
+     * flight.  A direct-SAE WCL lease is also retained while its independently
+     * verified lower request remains bound, matching performJoin's active
+     * firmware guard.  Clearing either duplicate makes the successful on-air
+     * response ownerless, so 0x4e can be published without the required 0xd3
+     * completion.
      */
     const bool preservePublicCompletionOwner =
         instance != nullptr &&
@@ -6486,10 +6511,28 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
          ic->ic_state == IEEE80211_S_ASSOC) &&
         tahoePublicAssociationOwnerMatchesRequest(
             instance->getTahoeOwnerRegistry().publicAssociation, ad);
-    if (instance != nullptr && !preservePublicCompletionOwner) {
+    const bool preserveActiveWclCompletionOwner = instance != nullptr &&
+        tahoeHasActiveWclAssociationOwner(
+            instance->getTahoeOwnerRegistry().association, ic);
+    if (instance != nullptr) {
         auto &registry = instance->getTahoeOwnerRegistry();
-        registry.association = TahoeOwnerRegistry::AssociationOwner{};
-        registry.publicAssociation = TahoeOwnerRegistry::AssociationOwner{};
+        if (!preserveActiveWclCompletionOwner)
+            registry.association = TahoeOwnerRegistry::AssociationOwner{};
+        if (!preservePublicCompletionOwner)
+            registry.publicAssociation =
+                TahoeOwnerRegistry::AssociationOwner{};
+    }
+    if (preserveActiveWclCompletionOwner) {
+        /* The reference JoinAdapter rejects every carrier while its firmware
+         * join remains active.  A public companion IOC must therefore not
+         * revoke the WCL lease or reset the direct-SAE MFP policy underneath
+         * the already-bound lower transaction. */
+        XYLog("public_assoc ACTIVE_WCL_JOIN_RETAINED\n");
+        airportItlwmRegDiagRecordAssoc(
+            kAirportItlwmRegDiagPathPublicAssoc, ad->ad_ssid,
+            ad->ad_ssid_len, ad->ad_bssid.octet, ad->ad_auth_lower,
+            ad->ad_auth_upper, ad->ad_rsn_ie_len, kIOReturnNotReady);
+        return kIOReturnNotReady;
     }
 
     /* Public IOC_ASSOCIATE carries no audited PMF request field. Never let a
@@ -7467,6 +7510,30 @@ startIwnDirectSaeCredential(
             scanResume = admitted
                 ? IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY
                 : IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED;
+    } else if (request->provenance ==
+                   AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate &&
+               instance != nullptr && instance->associationScanOwnersIdle()) {
+        /* Tahoe's JoinAdapter consumes WCL's already-selected candidate
+         * directly.  Revalidate the complete request identity/policy under
+         * the net80211 leaf, then independently validate and join the exact
+         * live cached node.  Only a failed admission retains the historical
+         * directed-scan fallback; after admission, a lost/mismatched node
+         * makes this carrier retryable instead of reusing its ownership. */
+        const bool admitted =
+            ieee80211_sae_wcl_request_admit_cached_wcl_candidate(
+                ic, generation, request->bssid, request->ssid,
+                request->ssidLength) != 0;
+        if (admitted) {
+            const bool joined = tahoeJoinCachedWclCandidate(
+                ic, request->bssid, instance->associationScanOwnersIdle());
+            scanResume = joined &&
+                ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss)
+                ? IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED
+                : IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY;
+        } else {
+            scanResume =
+                ieee80211_sae_wcl_request_resume_scan(ic, generation);
+        }
     } else {
         scanResume =
             ieee80211_sae_wcl_request_resume_scan(ic, generation);
@@ -7641,11 +7708,17 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
     }
 
     /* A replacement WCL carrier starts a new WCL candidate ledger even if it
-     * is later rejected.  Its parsed identity below decides whether it also
-     * replaces the independent public lease: Tahoe can submit both public and
-     * WCL views of the same join, and an open-network WCL view has no PMK
-     * resume branch of its own. */
-    if (instance != nullptr)
+     * is later rejected, unless the reference-equivalent firmware join is
+     * already active.  That one exception mirrors the reference
+     * JoinAdapter's firmware-join-active guard: a second carrier must not
+     * revoke the completion owner of a lower direct-SAE join that is already
+     * bound and running.  Its eventual success or explicit abort owns that
+     * lease.  Parsed identity below independently decides whether the public
+     * lease also survives. */
+    const bool preserveActiveWclCompletionOwner = instance != nullptr &&
+        tahoeHasActiveWclAssociationOwner(
+            instance->getTahoeOwnerRegistry().association, ic);
+    if (instance != nullptr && !preserveActiveWclCompletionOwner)
         instance->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
 
@@ -7742,6 +7815,19 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         kAirportItlwmRegDiagPathHiddenAssoc, auth_lower, auth_upper,
         rsn_ie_len, pmf_capability, auth_flags, candidate_count,
         assocPolicyFlags);
+
+    if (preserveActiveWclCompletionOwner) {
+        /* performJoin() returns its active-join error before replacing the
+         * firmware transaction.  kIOReturnNotReady is our retryable public
+         * equivalent; critically, the original WCL owner and lower request
+         * remain paired until completion or the explicit lifecycle abort. */
+        XYLog("wcl_assoc ACTIVE_JOIN_RETAINED\n");
+        airportItlwmRegDiagRecordAssoc(
+            kAirportItlwmRegDiagPathHiddenAssoc, ssid, ssid_len,
+            reinterpret_cast<const uint8_t *>(bssid), auth_lower,
+            auth_upper, rsn_ie_len, kIOReturnNotReady);
+        return kIOReturnNotReady;
+    }
 
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
     /*

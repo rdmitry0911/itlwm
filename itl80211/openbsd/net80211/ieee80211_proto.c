@@ -2994,6 +2994,48 @@ ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
 }
 
 /*
+ * AppleBCMWLANJoinAdapter::performJoin() consumes the exact candidate that
+ * WCL already selected; it does not require a second physical scan.  Promote
+ * the matching ordinary direct-SAE request to the same selection-owned phase
+ * here.  This leaf deliberately carries no node and makes no freshness claim:
+ * its caller must independently prove all physical scan owners idle and then
+ * pass the exact cached node through ieee80211_match_bss() before joining it.
+ */
+int
+ieee80211_sae_wcl_request_admit_cached_wcl_candidate(
+    struct ieee80211com *ic, u_int64_t generation,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN],
+    const u_int8_t *ssid, u_int ssid_len)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request *request;
+	int admitted = 0;
+
+	if (ic == NULL || generation == 0 || target_bssid == NULL ||
+	    ssid == NULL || ssid_len == 0 || ssid_len > IEEE80211_NWID_LEN ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	request = &ic->ic_sae_wcl_request;
+	if (ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    request->generation == generation &&
+	    request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING &&
+	    request->association_epoch == 0 &&
+	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request) &&
+	    IEEE80211_ADDR_EQ(request->bssid, target_bssid) &&
+	    request->ssid_len == ssid_len &&
+	    memcmp(request->ssid, ssid, ssid_len) == 0) {
+		request->phase = IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED;
+		admitted = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return admitted;
+}
+
+/*
  * Promote an exact cached target selected by the just-completed explicit WCL
  * reassociation scan.  This is the non-WNM peer of the protected BTM helper
  * above: the active WCL roam owner and its selected target are the freshness

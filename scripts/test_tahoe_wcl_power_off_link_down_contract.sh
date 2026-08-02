@@ -66,6 +66,8 @@ ordered(
     off_branch,
     "cancelDeferredPowerOnAvailabilityRaw()",
     "postTahoeWclLinkStateInd(that, false, 0)",
+    "getTahoeOwnerRegistry().association =",
+    "getTahoeOwnerRegistry().publicAssociation =",
     "postTahoeDriverAvailabilityTransition(",
     "TahoeDriverAvailabilityContracts::Transition::PowerOff",
 )
@@ -89,6 +91,20 @@ ordered(
     system,
     "publishDeferredPowerOffAvailability()",
     "disableAdapterCore(netif)",
+)
+
+disable = body("void AirportItlwm::disableAdapterCore(")
+ordered(
+    disable,
+    "ic->ic_opmode == IEEE80211_M_STA",
+    "ic->ic_state == IEEE80211_S_RUN",
+    "IEEE80211_SEND_MGMT(",
+    "IEEE80211_FC0_SUBTYPE_DEAUTH",
+    "IEEE80211_REASON_AUTH_LEAVE",
+    "power_off STA_DEAUTH_QUIESCE",
+    "IOSleep(20)",
+    "fAPSTAOwner->prepareForRadioReset()",
+    "fHalService->disable(netif)",
 )
 
 print("Tahoe WCL power-off link-down contract: PASS")

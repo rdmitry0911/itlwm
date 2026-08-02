@@ -259,8 +259,30 @@ ordered(open_completion, "open completion exact owner before publication",
         "ieee80211_pae_selected_bss_copyout_current",
         "tahoeWclOpenJoinCompletionMatchesOwner",
         "owner->connectCompletionPublished = true",
+        "owner->joinTerminalObserved = true",
         "postTahoeWclLinkUpInd",
         "postTahoeWclConnectCompleteEvent")
+
+rsn_completion = body(
+    v2, "static IOReturn postTahoeWclJoinCompletionGated(",
+    "RSN completion gate")
+ordered(rsn_completion, "RSN terminal precedes protected completion mail",
+        "markTahoeWclJoinTerminalObserved(controller)",
+        "postRsnHandshakeDoneGated(",
+        "postTahoeWclLinkUpInd",
+        "postTahoeWclConnectCompleteEvent")
+rsn_terminal = body(
+    v2, "static void markTahoeWclJoinTerminalObserved(",
+    "RSN join terminal owner matcher")
+for token in (
+        "ic->ic_state != IEEE80211_S_RUN",
+        "owner->selectedFromCandidate",
+        "owner->authAssocCompletionArmed",
+        "IEEE80211_ADDR_EQ(owner->selectedBssid, ic->ic_bss->ni_bssid)",
+        "owner = &registry.publicAssociation",
+        "owner->joinTerminalObserved = true",
+):
+    require(rsn_terminal, token, "exact RSN terminal owner")
 open_match = body(
     v2, "static bool tahoeWclOpenJoinCompletionMatchesOwner(",
     "open completion owner matcher")
@@ -326,12 +348,21 @@ require(public_assoc, "registry.association =",
         "public association clears old WCL owner")
 ordered(public_assoc, "public completion lease precedes scan resume",
         "tahoePublicAssociationOwnerMatchesRequest(",
-        "if (instance != nullptr && !preservePublicCompletionOwner)",
+        "preserveActiveWclCompletionOwner = instance != nullptr",
+        "if (instance != nullptr)",
         "registry.publicAssociation =",
         "assocResult = associateSSID(",
         "tahoeBuildPublicAssociationOwner(ad, &publicOwner)",
         "getTahoeOwnerRegistry().publicAssociation =",
         "ieee80211_new_state(")
+ordered(public_assoc, "public carrier respects active JoinAdapter",
+        "tahoePublicAssociationOwnerMatchesRequest(",
+        "tahoeHasActiveWclAssociationOwner(",
+        "if (!preserveActiveWclCompletionOwner)",
+        "if (preserveActiveWclCompletionOwner)",
+        "public_assoc ACTIVE_WCL_JOIN_RETAINED",
+        "return kIOReturnNotReady;",
+        "ic->ic_pae_mfp_requested = 0")
 
 public_match = body(
     sky, "tahoePublicAssociationOwnerMatchesRequest(",
@@ -368,8 +399,24 @@ for token in (
 
 wcl_assoc = body(sky, "setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)",
                  "WCL association setter")
+active_join_owner = body(
+    sky, "tahoeHasActiveWclAssociationOwner(",
+    "reference active-join completion owner")
+for token in (
+        "ic->ic_state == IEEE80211_S_AUTH",
+        "ic->ic_state == IEEE80211_S_ASSOC",
+        "ic->ic_state == IEEE80211_S_RUN",
+        "owner.hasCarrier", "!owner.publicCarrier",
+        "owner.authAssocCompletionArmed",
+        "!owner.joinTerminalObserved",
+):
+    require(active_join_owner, token, "active JoinAdapter lease fence")
+if "ieee80211_sae_wcl_request_bound_current" in active_join_owner:
+    fail("active JoinAdapter lease must outlive SAE credential generation")
 for token in (
         "A replacement WCL carrier starts a new WCL candidate ledger",
+        "preserveActiveWclCompletionOwner",
+        "ACTIVE_JOIN_RETAINED",
         "tahoePublicAssociationOwnerMatchesWclIdentity(",
         "getTahoeOwnerRegistry().publicAssociation =",
         "associationOwner.authAssocCompletionArmed = true",
@@ -380,6 +427,12 @@ ordered(wcl_assoc, "same-identity public/WCL lease preservation",
         "getTahoeOwnerRegistry().association =",
         "tahoePublicAssociationOwnerMatchesWclIdentity(",
         "getTahoeOwnerRegistry().publicAssociation =")
+ordered(wcl_assoc, "active owner survives retryable carrier",
+        "tahoeHasActiveWclAssociationOwner(",
+        "if (instance != nullptr && !preserveActiveWclCompletionOwner)",
+        "if (preserveActiveWclCompletionOwner)",
+        "ACTIVE_JOIN_RETAINED",
+        "return kIOReturnNotReady;")
 
 # Tahoe 25C56 calls resetAutoCountry before touching the WCL candidate and
 # propagates a non-zero firmware/config result.  Intel has no corresponding
@@ -517,6 +570,7 @@ for token in (
         "authSuccessRecorded",
         "authSuccessEpoch",
         "authSuccessBssid",
+        "joinTerminalObserved",
         "connectCompletionPublished",
         "selectedBssid",
         "candidateBssid",

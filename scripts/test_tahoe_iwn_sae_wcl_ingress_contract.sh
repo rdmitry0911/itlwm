@@ -97,6 +97,38 @@ for token in (
 association = body(sky,
     "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
     "WCL association ingress")
+active_owner = body(sky,
+    "tahoeHasActiveWclAssociationOwner(",
+    "active JoinAdapter owner fence")
+for token in (
+        "ic->ic_state == IEEE80211_S_AUTH",
+        "ic->ic_state == IEEE80211_S_ASSOC",
+        "ic->ic_state == IEEE80211_S_RUN",
+        "owner.hasCarrier", "!owner.publicCarrier",
+        "owner.authAssocCompletionArmed",
+        "!owner.joinTerminalObserved",
+):
+    require(active_owner, token, "active completion lease")
+forbid(active_owner, "ieee80211_sae_wcl_request_bound_current",
+       "active JoinAdapter lease must outlive SAE credential generation")
+ordered(association, "active JoinAdapter fence before WCL owner replacement",
+        "preserveActiveWclCompletionOwner = instance != nullptr",
+        "tahoeHasActiveWclAssociationOwner(",
+        "if (instance != nullptr && !preserveActiveWclCompletionOwner)",
+        "if (preserveActiveWclCompletionOwner)",
+        "ACTIVE_JOIN_RETAINED",
+        "return kIOReturnNotReady;")
+public_association = body(sky,
+    "setASSOCIATE(struct apple80211_assoc_data *ad)",
+    "public association ingress")
+ordered(public_association,
+        "public companion carrier cannot revoke active WCL owner",
+        "tahoeHasActiveWclAssociationOwner(",
+        "if (!preserveActiveWclCompletionOwner)",
+        "if (preserveActiveWclCompletionOwner)",
+        "public_assoc ACTIVE_WCL_JOIN_RETAINED",
+        "return kIOReturnNotReady;",
+        "ic->ic_pae_mfp_requested = 0")
 branch_marker = "if (directSaeWclPassword) {"
 branch_start = association.find(branch_marker)
 if branch_start < 0:
@@ -151,6 +183,14 @@ ordered(common, "common policy/stage/resume order",
         "fHalService->stageSaeWclCredential(&credential)",
         "setAUTH_TYPE(&authType)",
         "AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic)",
+        "ieee80211_sae_wcl_request_resume_scan(ic, generation)")
+ordered(common, "reference direct WCL candidate handoff",
+        "AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic)",
+        "AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate",
+        "instance->associationScanOwnersIdle()",
+        "ieee80211_sae_wcl_request_admit_cached_wcl_candidate(",
+        "tahoeJoinCachedWclCandidate(",
+        "ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss)",
         "ieee80211_sae_wcl_request_resume_scan(ic, generation)")
 ordered(common, "exact generation failure cleanup",
         "ieee80211_sae_wcl_request_clear_if_generation(ic, generation)",

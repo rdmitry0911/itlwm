@@ -6057,12 +6057,43 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
     return true;
 }
 
+static void markTahoeWclJoinTerminalObserved(AirportItlwm *controller)
+{
+    if (controller == nullptr || controller->fHalService == nullptr)
+        return;
+
+    struct ieee80211com *ic = controller->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr)
+        return;
+
+    TahoeOwnerRegistry &registry = controller->getTahoeOwnerRegistry();
+    TahoeOwnerRegistry::AssociationOwner *owner = &registry.association;
+    if (!owner->hasCarrier || !owner->selectedFromCandidate ||
+        !owner->authAssocCompletionArmed ||
+        !IEEE80211_ADDR_EQ(owner->selectedBssid, ic->ic_bss->ni_bssid)) {
+        owner = &registry.publicAssociation;
+        if (!owner->hasCarrier || !owner->selectedFromCandidate ||
+            !owner->authAssocCompletionArmed ||
+            !IEEE80211_ADDR_EQ(owner->selectedBssid,
+                               ic->ic_bss->ni_bssid))
+            return;
+    }
+    owner->joinTerminalObserved = true;
+}
+
 static IOReturn postTahoeWclJoinCompletionGated(
     OSObject *target, void *arg0, void *, void *, void *)
 {
     AirportItlwm *controller = OSDynamicCast(AirportItlwm, target);
     if (controller == nullptr)
         return kIOReturnBadArgument;
+
+    /* Apple JoinAdapter clears its firmware-active byte at the successful
+     * RSN terminal, not at the preceding association-status event.  Claim
+     * that terminal before publishing its WCL messages so a nested/repeated
+     * join carrier cannot replace a still-running four-way handshake. */
+    markTahoeWclJoinTerminalObserved(controller);
 
     /*
      * IO80211PostOffice::sendMail admits asynchronous messages only while
@@ -6140,6 +6171,7 @@ static IOReturn postTahoeWclOpenJoinCompletionGated(
     }
 
     owner->connectCompletionPublished = true;
+    owner->joinTerminalObserved = true;
     const bool linkPublished = postTahoeWclLinkUpInd(controller, 0);
     const bool connectPublished =
         postTahoeWclConnectCompleteEvent(controller);
@@ -8721,6 +8753,19 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
          * maps to Apple's 0xff unknown/administrative reason.
          */
         postTahoeWclLinkStateInd(that, false, 0);
+#if __IO80211_TARGET >= __MAC_26_0
+        /* Apple JoinAdapter::abortFirmwareJoinSync() clears the independent
+         * firmware-join-active byte at a radio/system power-off boundary.
+         * Retire both completion leases after publishing a possible RUN link
+         * down and before advertising DRIVER_UNAVAILABLE.  This makes the
+         * active-carrier guard independent of the shorter SAE credential
+         * generation without letting an interrupted join poison the next
+         * power-on attempt. */
+        that->getTahoeOwnerRegistry().association =
+            TahoeOwnerRegistry::AssociationOwner{};
+        that->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
+#endif
         postTahoeDriverAvailabilityTransition(
             that, TahoeDriverAvailabilityContracts::Transition::PowerOff);
         if (gate != NULL)
@@ -12593,6 +12638,29 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
      * a newer serialized PowerOn may have armed a fresh epoch by then. */
     RT_SET(10);
     sRT.disableCnt++;
+    /*
+     * AppleBCMWLANCore::powerOff() quiesces its NetAdapter before quiescing
+     * the commander.  The recovered JoinAdapter abort path implements that
+     * on-air terminal as WLC_DISASSOC with reason AUTH_LEAVE.  IWN disable
+     * resets the device immediately and previously left a PMF/SAE station
+     * authorized in the AP until its inactivity timeout; an otherwise valid
+     * power-on SAE retry then authenticated against that stale session but
+     * never completed association.  Submit the protected deauth while the
+     * selected RUN BSS, PTK and transmit path are still live, and give the
+     * already-started management queue a bounded completion window before
+     * any radio-reset owner tears down the hardware.
+     */
+    struct ieee80211com *ic = fHalService != nullptr
+        ? fHalService->get80211Controller() : nullptr;
+    if (ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr) {
+        const int deauthResult = IEEE80211_SEND_MGMT(
+            ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH,
+            IEEE80211_REASON_AUTH_LEAVE);
+        XYLog("power_off STA_DEAUTH_QUIESCE result=%d\n", deauthResult);
+        if (deauthResult == 0)
+            IOSleep(20);
+    }
     if (fAPSTAOwner != nullptr)
         fAPSTAOwner->prepareForRadioReset();
     // A disabled radio is a terminal ownership boundary. Do this before the

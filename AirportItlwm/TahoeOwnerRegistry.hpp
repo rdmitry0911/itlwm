@@ -147,6 +147,11 @@ struct TahoeOwnerRegistry {
         bool authSuccessRecorded = false;
         uint64_t authSuccessEpoch = 0;
         uint8_t authSuccessBssid[6] = {};
+        // JoinAdapter's firmware-active fence survives the earlier AUTH and
+        // ASSOC status edges.  It is retired only by the protocol terminal:
+        // open RUN or an RSN handshake completion.  Keep that fact separate
+        // from whether a later WCL publication itself succeeded.
+        bool joinTerminalObserved = false;
         // Open networks have no RSN key-done callback.  Their post-RUN WCL
         // link/connect completion is therefore a separate one-shot owned by
         // this same authenticated and associated candidate.
