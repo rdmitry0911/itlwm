@@ -963,9 +963,13 @@ struct iwx_softc {
 
 	struct iwx_ucode_status sc_uc;
 	char sc_fwver[32];
-	/* Raw API field from the validated TLV ucode header.  Do not infer this
-	 * from sc_fwver: a later TLV_FW_VERSION may rewrite the printable string.
+	/* Validated complete value from the TLV ucode header.  Images which
+	 * advertise IWX_UCODE_TLV_API_NEW_VERSION carry their compatibility
+	 * generation here; reducing 0x00000044 through IWX_UCODE_API() yields
+	 * zero and would incorrectly keep the API-68 MFP owner disabled.
 	 */
+	uint32_t sc_fw_header_version;
+	/* Legacy API subfield retained for old-format consumers and logging. */
 	uint8_t sc_fw_api;
 
 	int sc_capaflags;

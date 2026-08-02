@@ -1,9 +1,10 @@
 /*
- * Exact AX211 API-68 management-integrity-key carrier contract.
+ * Exact selected-AX210-family API-68 management-integrity-key carrier
+ * contract.
  *
  * This header intentionally models only the packed payload and the local
  * eligibility inputs.  The actual softc/config identity checks remain in
- * ItlIwx.cpp, where the two AX211 configuration objects are available.
+ * ItlIwx.cpp, where the deliberately narrow configuration whitelist lives.
  */
 
 #ifndef IwxMfpIgtkContracts_hpp
@@ -14,7 +15,7 @@
 
 namespace IwxMfpIgtkContracts {
 
-static constexpr uint8_t kAx211FirmwareApi = 68;
+static constexpr uint32_t kApi68FirmwareHeaderVersion = 68;
 static constexpr uint32_t kFirmwareMfpFlag = 1U << 2;
 static constexpr uint32_t kMultiQueueRxCapability = 68;
 static constexpr uint16_t kIgtkInstallCipher = 2U;
@@ -50,11 +51,13 @@ inline bool hasValidIgtkShape(uint32_t key_id, size_t key_len)
            key_len == kIgtkKeyLength;
 }
 
-inline bool hasExactAbiPrerequisites(uint8_t firmware_api,
+inline bool hasExactAbiPrerequisites(uint32_t firmware_header_version,
+                                     bool has_new_version_format,
                                      uint32_t firmware_flags,
                                      bool has_multi_queue_rx)
 {
-    return firmware_api == kAx211FirmwareApi &&
+    return has_new_version_format &&
+           firmware_header_version == kApi68FirmwareHeaderVersion &&
            (firmware_flags & kFirmwareMfpFlag) != 0 &&
            has_multi_queue_rx;
 }

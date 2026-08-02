@@ -1961,7 +1961,7 @@ static int iwx_hwrate_to_plcp_idx(uint32_t rate_n_flags)
 void    iwx_radiotap_attach(struct iwx_softc *);
 #endif
 
-static bool iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *);
+static bool iwx_api68_igtk_v2_ok(const struct iwx_softc *);
 static bool iwx_mfp_runtime_enabled(const struct iwx_softc *);
 static void iwx_publish_mfp_capability(struct iwx_softc *);
 static int iwx_set_sta_igtk_v2(struct iwx_softc *,
@@ -2743,6 +2743,7 @@ iwx_read_firmware(struct iwx_softc *sc)
     uncompressFirmware((u_char *)fw->fw_rawdata, (uint *)&fw->fw_rawsize, (u_char *)fwData->getBytesNoCopy(), fwData->getLength());
     
     sc->sc_capaflags = 0;
+    sc->sc_fw_header_version = 0;
     sc->sc_fw_api = 0;
     sc->sc_capa_n_scan_channels = IWX_DEFAULT_SCAN_CHANNELS;
     memset(sc->sc_enabled_capa, 0, sizeof(sc->sc_enabled_capa));
@@ -2760,10 +2761,11 @@ iwx_read_firmware(struct iwx_softc *sc)
         goto out;
     }
     
-    sc->sc_fw_api = IWX_UCODE_API(le32toh(uhdr->ver));
+    sc->sc_fw_header_version = le32toh(uhdr->ver);
+    sc->sc_fw_api = IWX_UCODE_API(sc->sc_fw_header_version);
     iwx_fw_version_str(sc->sc_fwver, sizeof(sc->sc_fwver),
-             IWX_UCODE_MAJOR(le32toh(uhdr->ver)),
-             IWX_UCODE_MINOR(le32toh(uhdr->ver)), sc->sc_fw_api);
+             IWX_UCODE_MAJOR(sc->sc_fw_header_version),
+             IWX_UCODE_MINOR(sc->sc_fw_header_version), sc->sc_fw_api);
     data = uhdr->data;
     len = fw->fw_rawsize - sizeof(*uhdr);
     
@@ -14078,7 +14080,7 @@ iwx_set_key_impl(struct ieee80211com *ic, struct ieee80211_node *ni,
             return EOPNOTSUPP;
         if (!wait_for_firmware)
             return EWOULDBLOCK;
-        if (!iwx_ax211_api68_igtk_v2_ok(sc))
+        if (!iwx_api68_igtk_v2_ok(sc))
             return EOPNOTSUPP;
         if (!IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
             return EINVAL;
@@ -14102,7 +14104,7 @@ iwx_set_key_impl(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (mfp) {
         if (!wait_for_firmware)
             return EWOULDBLOCK;
-        if (!iwx_ax211_api68_igtk_v2_ok(sc))
+        if (!iwx_api68_igtk_v2_ok(sc))
             return EOPNOTSUPP;
     }
 
@@ -14152,7 +14154,7 @@ iwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (k->k_cipher == IEEE80211_CIPHER_BIP) {
         if ((k->k_flags & IEEE80211_KEY_IGTK) != 0 &&
             iwx_mfp_runtime_enabled(sc) &&
-            iwx_ax211_api68_igtk_v2_ok(sc) &&
+            iwx_api68_igtk_v2_ok(sc) &&
             IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
             (void)iwx_set_sta_igtk_v2(sc, ni, k, true, false);
 
@@ -16435,32 +16437,9 @@ const struct iwl_cfg iwlax211_2ax_cfg_so_gf_a0_long = {
 };
 
 /*
- * This deliberately names both AX211 API-68 configuration objects instead
- * of accepting the broader AX210 family. The management-multicast key
- * command has no safe v1 fallback: a different device, API, MFP bit, or RX
- * capability leaves the feature disabled before association.
- */
-static bool
-iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *sc)
-{
-    if (sc == NULL || sc->sc_cfg == NULL)
-        return false;
-    if (sc->sc_device_family != IWX_DEVICE_FAMILY_AX210 ||
-        sc->sc_cfg->device_family != IWX_DEVICE_FAMILY_AX210)
-        return false;
-    if (sc->sc_cfg != &iwlax211_2ax_cfg_so_gf_a0 &&
-        sc->sc_cfg != &iwlax211_2ax_cfg_so_gf_a0_long)
-        return false;
-
-    return IwxMfpIgtkContracts::hasExactAbiPrerequisites(
-        sc->sc_fw_api, (uint32_t)sc->sc_capaflags,
-        isset(sc->sc_enabled_capa,
-              IWX_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT));
-}
-
-/*
- * An exact AX211/API-68 firmware match is necessary, but not sufficient for
- * MFP. The PAE Msg3 key transaction must be an asynchronous, generation-
+ * An exact selected-AX210-family/API-68 firmware match is necessary, but not
+ * sufficient for MFP. The PAE Msg3 key transaction must be an asynchronous,
+ * generation-
  * checked continuation back on the RX workloop. Until that state machine
  * exists, fail closed rather than expose a key lifecycle that can race a
  * deauth/roam callback on the same notification batch.
@@ -16468,7 +16447,7 @@ iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *sc)
 static bool
 iwx_mfp_runtime_enabled(const struct iwx_softc *sc)
 {
-    return sc != NULL && iwx_ax211_api68_igtk_v2_ok(sc) &&
+    return sc != NULL && iwx_api68_igtk_v2_ok(sc) &&
         sc->sc_mfp_pae_lock != NULL && sc->sc_cmdq_lock != NULL &&
         sc->sc_task_gate_lock != NULL && sc->sc_taskq_initialized &&
         sc->sc_task_callbacks_ready && sc->sc_nswq != NULL &&
@@ -16514,7 +16493,7 @@ iwx_set_sta_igtk_v2(struct iwx_softc *sc, struct ieee80211_node *ni,
     if (sc == NULL || k == NULL)
         return EINVAL;
     if (!iwx_mfp_runtime_enabled(sc) ||
-        !iwx_ax211_api68_igtk_v2_ok(sc))
+        !iwx_api68_igtk_v2_ok(sc))
         return EOPNOTSUPP;
     if ((k->k_flags & IEEE80211_KEY_IGTK) == 0 ||
         k->k_cipher != IEEE80211_CIPHER_BIP ||
@@ -17423,7 +17402,7 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
         return EINVAL;
     sc = (struct iwx_softc *)ic->ic_softc;
     if (sc == NULL || sc->sc_mfp_pae_lock == NULL ||
-        !iwx_ax211_api68_igtk_v2_ok(sc) ||
+        !iwx_api68_igtk_v2_ok(sc) ||
         ieee80211_pae_assoc_epoch_current(ic) != assoc_epoch ||
         ic->ic_bss != ni)
         return EOPNOTSUPP;
@@ -17659,6 +17638,35 @@ const struct iwl_cfg iwlax411_2ax_cfg_so_gf4_a0_long = {
     .trans.low_latency_xtal = 1,
     .num_rbds = IWL_NUM_RBDS_AX210_HE,
 };
+
+/*
+ * Keep this as an explicit evidence-backed configuration whitelist rather
+ * than accepting every AX210-family object.  The selected AX211 GF, AX210 TY
+ * and AX411 GF4 images have the same audited new-format API-68, MFP and
+ * MULTI_QUEUE_RX_SUPPORT prerequisites for the 0x34-byte IGTK-v2 carrier.
+ */
+static bool
+iwx_api68_igtk_v2_ok(const struct iwx_softc *sc)
+{
+    if (sc == NULL || sc->sc_cfg == NULL)
+        return false;
+    if (sc->sc_device_family != IWX_DEVICE_FAMILY_AX210 ||
+        sc->sc_cfg->device_family != IWX_DEVICE_FAMILY_AX210)
+        return false;
+    if (sc->sc_cfg != &iwlax211_2ax_cfg_so_gf_a0 &&
+        sc->sc_cfg != &iwlax211_2ax_cfg_so_gf_a0_long &&
+        sc->sc_cfg != &iwlax210_2ax_cfg_ty_gf_a0 &&
+        sc->sc_cfg != &iwlax411_2ax_cfg_so_gf4_a0 &&
+        sc->sc_cfg != &iwlax411_2ax_cfg_so_gf4_a0_long)
+        return false;
+
+    return IwxMfpIgtkContracts::hasExactAbiPrerequisites(
+        sc->sc_fw_header_version,
+        isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_NEW_VERSION),
+        (uint32_t)sc->sc_capaflags,
+        isset(sc->sc_enabled_capa,
+              IWX_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT));
+}
 
 const struct iwl_cfg iwlax411_2ax_cfg_sosnj_gf4_a0 = {
     .name = "Intel(R) Wi-Fi 6 AX411 160MHz",

@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Source-and-model contract for the AX211/API-68 PMF transaction owner.
+# Source-and-model contract for the selected AX210-family/API-68 PMF owner.
 #
 # This is deliberately a fail-closed admission test.  A PASS proves that the
-# staged AX211/IWX PSK+PMF path retains its ownership, epoch, q0, and rollback
-# fences; it does not claim a functional WPA3 association or broaden IWX into
-# the separately lab-gated IWN exact-SAE-password ingress.
+# staged IWX PSK+PMF path retains its ownership, epoch, q0, and rollback
+# fences.  The exact whitelist is AX211 GF, AX210 TY and AX411 GF4 only; this
+# does not claim a functional SAE association.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
+import hashlib
 import re
+import struct
 import sys
 
 
@@ -29,6 +31,8 @@ paths = {
     "cpp": "itlwm/hal_iwx/ItlIwx.cpp",
     "hpp": "itlwm/hal_iwx/ItlIwx.hpp",
     "iwxvar": "itlwm/hal_iwx/if_iwxvar.h",
+    "iwxreg": "itlwm/hal_iwx/if_iwxreg.h",
+    "mfp_contract": "itlwm/hal_iwx/IwxMfpIgtkContracts.hpp",
     "trace_abi": "include/ClientKit/AirportItlwmPostPltiTrace.h",
     "trace_bridge": "include/ClientKit/AirportItlwmPostPltiTraceBridge.h",
 }
@@ -36,7 +40,7 @@ source = {name: (root / path).read_text() for name, path in paths.items()}
 
 
 def fail(message):
-    raise SystemExit(f"AX211/API-68 PMF owner contract: {message}")
+    raise SystemExit(f"selected AX210-family/API-68 PMF owner contract: {message}")
 
 
 def require(text, token, label):
@@ -104,6 +108,81 @@ def require_categorical_record(text, event, controller, label):
         fail(f"missing categorical trace record for {label}")
     if match.group(1).strip() != controller:
         fail(f"trace record carries non-controller data for {label}")
+
+
+def macro_decimal(text, macro):
+    match = re.search(r"^#define\s+" + re.escape(macro) + r"\s+(\d+)\s*$",
+                      text, re.MULTILINE)
+    if match is None:
+        fail(f"missing decimal macro {macro}")
+    return int(match.group(1))
+
+
+# The selected images use the new TLV header format: the complete header
+# value is 68, while the legacy API-byte extraction is zero.  Pin the three
+# checked-in images and independently reproduce the loader's prerequisite
+# walk so the runtime gate cannot regress to filename or family inference.
+iwxreg = source["iwxreg"]
+api_changes_tlv = macro_decimal(iwxreg, "IWX_UCODE_TLV_API_CHANGES_SET")
+enabled_capa_tlv = macro_decimal(iwxreg, "IWX_UCODE_TLV_ENABLED_CAPABILITIES")
+flags_tlv = macro_decimal(iwxreg, "IWX_UCODE_TLV_FLAGS")
+new_version_bit = macro_decimal(iwxreg, "IWX_UCODE_TLV_API_NEW_VERSION")
+if (api_changes_tlv, enabled_capa_tlv, flags_tlv, new_version_bit) != \
+        (29, 30, 18, 20):
+    fail("unexpected selected API-68 firmware TLV constants")
+
+
+def verify_selected_firmware(label, filename, expected_sha256):
+    firmware = (root / "itlwm/firmware" / filename).read_bytes()
+    if hashlib.sha256(firmware).hexdigest() != expected_sha256:
+        fail(f"{label} firmware hash differs from the audited asset")
+    if len(firmware) < 0x58:
+        fail(f"{label} firmware is shorter than its TLV header")
+    header_version = struct.unpack_from("<I", firmware, 0x48)[0]
+    if header_version != 68 or ((header_version & 0x0000ff00) >> 8) != 0:
+        fail(f"{label} does not exercise the new-format API-68 gate")
+
+    has_new_version = False
+    firmware_flags = 0
+    has_multi_queue_rx = False
+    offset = 0x58
+    while offset + 8 <= len(firmware):
+        tlv_type, tlv_len = struct.unpack_from("<II", firmware, offset)
+        payload = offset + 8
+        next_offset = payload + ((tlv_len + 3) & ~3)
+        if next_offset > len(firmware):
+            fail(f"truncated {label} firmware TLV")
+        if tlv_type == api_changes_tlv:
+            if tlv_len != 8:
+                fail(f"malformed {label} API_CHANGES_SET TLV")
+            api_index, api_flags = struct.unpack_from("<II", firmware, payload)
+            has_new_version |= (api_index == 0 and
+                                (api_flags & (1 << new_version_bit)) != 0)
+        elif tlv_type == flags_tlv:
+            if tlv_len < 4:
+                fail(f"short {label} FLAGS TLV")
+            firmware_flags = struct.unpack_from("<I", firmware, payload)[0]
+        elif tlv_type == enabled_capa_tlv:
+            if tlv_len != 8:
+                fail(f"malformed {label} ENABLED_CAPABILITIES TLV")
+            capa_index, capa_flags = struct.unpack_from("<II", firmware, payload)
+            has_multi_queue_rx |= (capa_index == 68 // 32 and
+                                   (capa_flags & (1 << (68 % 32))) != 0)
+        offset = next_offset
+    if not has_new_version or (firmware_flags & (1 << 2)) == 0 or \
+            not has_multi_queue_rx:
+        fail(f"{label} lacks NEW_VERSION, MFP, or MQ-RX")
+
+
+for firmware_args in (
+    ("AX211 GF", "iwlwifi-so-a0-gf-a0-68.ucode",
+     "08f78a57bd7052e07c2f597a0f22f5cd214eaf9f215912a467cdc2c1a1ae127d"),
+    ("AX210 TY", "iwlwifi-ty-a0-gf-a0-68.ucode",
+     "6cbc5c1d375e901c7cf57b2151cdb661b39157112884bb7d12ded69c210375eb"),
+    ("AX411 GF4", "iwlwifi-so-a0-gf4-a0-68.ucode",
+     "665483f7f4d79235dc0c7cb281a32e49c7a7b8154b30e7891f45965698ba875c"),
+):
+    verify_selected_firmware(*firmware_args)
 
 
 # Value-only generic transaction state.  It owns no raw packet, userspace
@@ -219,10 +298,54 @@ for marker, label in (
 # C_MFP must bring the owned deferred ingress and three transaction callbacks
 # together; the disabled branch must clear all of them.
 cpp = source["cpp"]
-runtime = body(cpp, "static bool\niwx_mfp_runtime_enabled",
-               "AX211 PMF runtime gate")
+firmware_reader = body(cpp, "int ItlIwx::\niwx_read_firmware",
+                       "firmware reader")
+order(firmware_reader, "new-format API-68 header retention",
+      "sc->sc_fw_header_version = 0;",
+      "sc->sc_fw_header_version = le32toh(uhdr->ver);",
+      "sc->sc_fw_api = IWX_UCODE_API(sc->sc_fw_header_version);",
+      "case IWX_UCODE_TLV_API_CHANGES_SET:")
+abi_gate = body(cpp, "static bool\niwx_api68_igtk_v2_ok",
+                "selected API-68 ABI gate")
 for token in (
-    "iwx_ax211_api68_igtk_v2_ok(sc)",
+    "sc->sc_device_family != IWX_DEVICE_FAMILY_AX210",
+    "sc->sc_cfg->device_family != IWX_DEVICE_FAMILY_AX210",
+    "sc->sc_fw_header_version",
+    "IWX_UCODE_TLV_API_NEW_VERSION",
+    "IwxMfpIgtkContracts::hasExactAbiPrerequisites",
+):
+    require(abi_gate, token, "new-format API-68 ABI admission")
+forbid(abi_gate, "sc->sc_fw_api", "legacy-byte API-68 ABI admission")
+for config in (
+    "iwlax211_2ax_cfg_so_gf_a0",
+    "iwlax211_2ax_cfg_so_gf_a0_long",
+    "iwlax210_2ax_cfg_ty_gf_a0",
+    "iwlax411_2ax_cfg_so_gf4_a0",
+    "iwlax411_2ax_cfg_so_gf4_a0_long",
+):
+    require(abi_gate, f"sc->sc_cfg != &{config}",
+            "selected API-68 configuration whitelist")
+if abi_gate.count("sc->sc_cfg != &") != 5:
+    fail("selected API-68 whitelist is not exactly five configuration objects")
+for excluded in (
+    "iwlax210_2ax_cfg_so_jf_a0",
+    "iwlax210_2ax_cfg_so_hr_a0",
+    "iwlax411_2ax_cfg_sosnj_gf4_a0",
+    "iwlax211_cfg_snj_gf_a0",
+):
+    forbid(abi_gate, f"&{excluded}",
+           "unreviewed configuration in selected API-68 whitelist")
+for token in (
+    "kApi68FirmwareHeaderVersion",
+    "bool has_new_version_format",
+    "firmware_header_version == kApi68FirmwareHeaderVersion",
+):
+    require(source["mfp_contract"], token,
+            "new-format API-68 carrier contract")
+runtime = body(cpp, "static bool\niwx_mfp_runtime_enabled",
+               "selected API-68 PMF runtime gate")
+for token in (
+    "iwx_api68_igtk_v2_ok(sc)",
     "sc->sc_mfp_pae_lock != NULL",
     "sc->sc_cmdq_lock != NULL",
     "sc->sc_task_gate_lock != NULL",
@@ -927,5 +1050,5 @@ try:
 except AssertionError:
     pass
 
-print("PASS: AX211/API-68 PMF transaction owner static fences and deterministic failure matrix")
+print("PASS: selected AX210-family/API-68 PMF owner and deterministic failure matrix")
 PY
