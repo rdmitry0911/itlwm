@@ -62,14 +62,15 @@ real lower owner is the existing HAL background scan shared by IWN/IWM/IWX:
 - no candidate posts asynchronous `0xcf` while retaining the live source;
 - open/WPA2 selection uses the existing deferred net80211 BSS switch on all
   three HALs;
-- IWN pure SAE retargets its already validated private ESS credential to the
-  selected BSSID and starts the existing driver-resident SAE engine;
+- IWN, IWM and selected API-68 IWX configurations retarget their already
+  validated private ESS credential to the selected BSSID and start their
+  driver-resident SAE engine;
 - terminal success is posted only after the selected target reaches RUN and,
   for RSN, port-valid.
 
-IWM/IWX do not yet have a driver-resident SAE credential engine. Their pure
-SAE WCL roam path therefore fails without tearing down the current validated
-link; open and WPA2 use the common real switch path.
+Unsupported IWX configurations still fail a pure-SAE WCL roam without tearing
+down the current validated link. Open and WPA2 use the common real switch path
+on all three HALs.
 
 ## Removed false behavior
 

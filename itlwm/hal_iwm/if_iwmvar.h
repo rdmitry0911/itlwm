@@ -120,7 +120,10 @@
 #include <net80211/ieee80211_amrr.h>
 #include <net80211/ieee80211_ra.h>
 #include <net80211/ieee80211_radiotap.h>
+#include <net80211/ieee80211_sae_policy.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
+#include <HAL/ItlSaePmkContinuationV1.h>
+#include <HAL/ItlSaeWclCredentialV1.h>
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
@@ -542,10 +545,73 @@ struct iwm_ba_task_data {
 };
 
 #define IWM_SAE_TX_EVENTQ_LEN 4
+#define IWM_SAE_ENGINE_PEERQ_LEN 4
+#define IWM_SAE_ENGINE_CALLBACK_CLOSED 0x80000000U
+#define IWM_SAE_ENGINE_TASK_ADMISSION_CLOSED 0x80000000U
+#define IWM_MFP_PAE_CALLBACK_CLOSED 0x80000000U
+
+struct ieee80211_sae_engine;
 
 struct iwm_sae_tx_event_entry {
     struct ItlSaeAuthTransportEventV1 event;
     bool                              is_reset;
+};
+
+/* Public-only identity for the serial driver-resident SAE worker. */
+struct iwm_sae_engine_owner {
+    bool                              active;
+    bool                              start_pending;
+    bool                              cancelled;
+    bool                              suppress_scan;
+    bool                              completion_claimed;
+    bool                              assoc_tx_pending;
+    bool                              assoc_tx_accepted;
+    bool                              terminal_valid;
+    bool                              peer_overflow;
+    bool                              submit_retry_pending;
+    u_int8_t                          submit_retry_count;
+    u_int64_t                         request_generation;
+    u_int64_t                         association_epoch;
+    u_int64_t                         relay_generation;
+    u_int64_t                         in_flight_ticket;
+    struct ItlSaeSelectedJoinEventV1  selected;
+    struct ItlSaeAuthActivatedEventV1 activated;
+    struct ItlSaePmkContinuationIdentityV1 completion;
+    struct ItlSaeAuthTransportEventV1 terminal;
+    struct ItlSaeAuthPeerEventV1      peerq[IWM_SAE_ENGINE_PEERQ_LEN];
+    u_int8_t                          peer_head;
+    u_int8_t                          peer_tail;
+    u_int8_t                          peer_count;
+};
+
+enum IwmSaeAssocTxAdmission {
+    IWM_SAE_ASSOC_TX_NOT_DIRECT = 0,
+    IWM_SAE_ASSOC_TX_ADMITTED = 1,
+    IWM_SAE_ASSOC_TX_REJECTED = -1,
+};
+
+struct IwmSaeAssocTxClaim {
+    struct ItlSaePmkContinuationIdentityV1 identity;
+    bool                                    active;
+};
+
+/* IWM has no reliable PMF firmware transaction.  These values retain the
+ * software-CCMP preparation owner until the generic PAE transaction publishes
+ * its PTK/GTK/IGTK set atomically. */
+struct iwm_mfp_pae_txn {
+    bool                    active;
+    bool                    cancelled;
+    bool                    task_active;
+    bool                    pending;
+    u_int8_t                pending_stage;
+    u_int8_t                accepted_mask;
+    u_int64_t               txn_id;
+    u_int64_t               assoc_epoch;
+    u_int32_t               lifecycle_generation;
+    struct ieee80211_node   *ni;
+    struct ieee80211_key    ptk_key;
+    struct ieee80211_key    gtk_key;
+    struct ieee80211_key    pending_key;
 };
 
 struct iwm_softc {
@@ -562,6 +628,8 @@ struct iwm_softc {
 	struct task		init_task; /* NB: not reference-counted */
 	u_int8_t		init_retry_count;
 	struct task		sae_tx_task;
+	struct task		sae_engine_task;
+	struct task		mfp_pae_task;
 //	struct refcnt		task_refs;
 	struct task		newstate_task;
 	enum ieee80211_state	ns_nstate;
@@ -718,6 +786,38 @@ struct iwm_softc {
     uint8_t       sc_sae_tx_event_head;
     uint8_t       sc_sae_tx_event_tail;
     uint8_t       sc_sae_tx_event_count;
+
+    IOSimpleLock *sc_sae_engine_lock;
+    struct iwm_sae_engine_owner sc_sae_engine_owner;
+    struct ieee80211_sae_engine *sc_sae_engine;
+    u_int64_t sc_sae_engine_wcl_cancel_generation;
+    volatile u_int32_t sc_sae_engine_lifecycle_generation;
+    u_int64_t sc_sae_engine_next_ticket;
+    u_int64_t sc_sae_engine_next_relay_generation;
+    volatile u_int32_t sc_sae_engine_callback_state;
+    volatile u_int32_t sc_sae_engine_task_admission_state;
+    bool sc_sae_engine_task_ready;
+    bool sc_sae_engine_stopping;
+    bool sc_sae_engine_detaching;
+    bool sc_sae_engine_runtime_enabled;
+
+    IOSimpleLock *sc_sae_wcl_credential_lock;
+    bool sc_sae_wcl_credential_staged;
+    bool sc_sae_wcl_credential_pending;
+    bool sc_sae_wcl_credential_active;
+    bool sc_sae_wcl_credential_cancel_valid;
+    uint64_t sc_sae_wcl_credential_cancel_through_generation;
+    struct ItlSaeWclCredentialV1 sc_sae_wcl_credential;
+
+    IOSimpleLock *sc_mfp_pae_lock;
+    struct iwm_mfp_pae_txn sc_mfp_pae_txn;
+    struct iwm_mfp_pae_txn sc_mfp_pae_successor;
+    u_int32_t sc_mfp_pae_lifecycle_generation;
+    volatile u_int32_t sc_mfp_pae_callback_state;
+    bool sc_mfp_pae_detaching;
+    bool sc_mfp_pae_stopping;
+    bool sc_mfp_pae_task_ready;
+    bool sc_mfp_pae_runtime_enabled;
 
 	struct iwm_rx_phy_info sc_last_phy_info;
 	int sc_ampdu_ref;

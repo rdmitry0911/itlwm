@@ -887,7 +887,9 @@ iwm_rx_hwdecrypt(struct iwm_softc *sc, mbuf_t m, uint32_t rx_pkt_status,
     ni = ieee80211_find_rxnode(ic, wh);
     /* Handle hardware decryption. */
     if ((ni->ni_flags & IEEE80211_NODE_RXPROT) &&
-        ni->ni_pairwise_key.k_cipher == IEEE80211_CIPHER_CCMP) {
+        ni->ni_pairwise_key.k_cipher == IEEE80211_CIPHER_CCMP &&
+        (ni->ni_pairwise_key.k_flags & IEEE80211_KEY_SWCRYPTO) == 0 &&
+        (ni->ni_flags & IEEE80211_NODE_MFP) == 0) {
         if ((rx_pkt_status & IWM_RX_MPDU_RES_STATUS_SEC_ENC_MSK) !=
             IWM_RX_MPDU_RES_STATUS_SEC_CCM_ENC) {
             ic->ic_stats.is_ccmp_dec_errs++;
@@ -1721,10 +1723,14 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
     int rtsthres = ic->ic_rtsthreshold;
     int qid;
     uint16_t len, tb1_len;
+    struct IwmSaeAssocTxClaim sae_assoc_claim;
+    enum IwmSaeAssocTxAdmission sae_assoc_tx =
+        IWM_SAE_ASSOC_TX_NOT_DIRECT;
     
     wh = mtod(m, struct ieee80211_frame *);
     type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
     subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
     
     if (type == IEEE80211_FC0_TYPE_CTL)
         hdrlen = sizeof(struct ieee80211_frame_min);
@@ -1760,6 +1766,13 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
                 sae_request->body_len) != 0) {
             mbuf_freem(m);
             return EINVAL;
+        }
+    } else {
+        sae_assoc_tx = iwm_sae_engine_assoc_tx_preflight(sc, ni, wh,
+            &sae_assoc_claim);
+        if (sae_assoc_tx == IWM_SAE_ASSOC_TX_REJECTED) {
+            mbuf_freem(m);
+            return EIO;
         }
     }
     
@@ -1854,7 +1867,9 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
          * owns live IGTK lifetime and software encapsulation. */
         if (ieee80211_bip_key_is_slot(ic, k) ||
             (k->k_flags & IEEE80211_KEY_GROUP) ||
-            (k->k_cipher != IEEE80211_CIPHER_CCMP)) {
+            (k->k_cipher != IEEE80211_CIPHER_CCMP) ||
+            (k->k_flags & IEEE80211_KEY_SWCRYPTO) ||
+            (ni->ni_flags & IEEE80211_NODE_MFP)) {
             if ((m = ieee80211_encrypt(ic, m, k)) == NULL)
                 return ENOBUFS;
             /* 802.11 header may have moved. */
@@ -2036,6 +2051,22 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
             iwm_sae_tx_data_clear(data);
             return EIO;
         }
+    } else if (sae_assoc_tx == IWM_SAE_ASSOC_TX_ADMITTED &&
+               sae_assoc_claim.active) {
+        if (!iwm_sae_engine_assoc_tx_commit(sc, ring, doorbell_idx,
+            tx->sta_id, le16toh(tx->len), ni, &sae_assoc_claim)) {
+            memset(desc, 0, sizeof(*desc));
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->in = NULL;
+            data->totlen = 0;
+            data->fc = 0;
+            data->sta_id = 0;
+            data->ap_frame = false;
+            iwm_sae_tx_data_clear(data);
+            explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
+            return EIO;
+        }
     } else {
         iwm_update_sched(sc, ring->qid, doorbell_idx, tx->sta_id,
             le16toh(tx->len));
@@ -2043,6 +2074,7 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
         IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR,
             ring->qid << 8 | ring->cur);
     }
+    explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
     if (type == IEEE80211_FC0_TYPE_MGT &&
         (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
          subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ)) {
@@ -4359,6 +4391,9 @@ iwm_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
      * callbacks receive a local install carrier or an unpublished value. */
     if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
         return EINVAL;
+    if ((k->k_flags & IEEE80211_KEY_SWCRYPTO) ||
+        (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP)))
+        return ieee80211_set_key(ic, ni, k);
     if ((k->k_flags & IEEE80211_KEY_GROUP) ||
         k->k_cipher != IEEE80211_CIPHER_CCMP)  {
         /* Fallback to software crypto for other ciphers. */
@@ -4421,6 +4456,11 @@ iwm_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     /* Live BIP slots must first cross generic unpublish/retirement. */
     if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
         return;
+    if ((k->k_flags & IEEE80211_KEY_SWCRYPTO) ||
+        (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP))) {
+        ieee80211_delete_key(ic, ni, k);
+        return;
+    }
     if ((k->k_flags & IEEE80211_KEY_GROUP) ||
         (k->k_cipher != IEEE80211_CIPHER_CCMP)) {
         /* Fallback to software crypto for other ciphers. */
@@ -5278,7 +5318,9 @@ iwm_init(struct _ifnet *ifp)
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
+        iwm_mfp_pae_reopen(sc);
         iwm_sae_tx_reopen(sc);
+        iwm_sae_engine_reopen(sc);
         __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
         return 0;
     }
@@ -5303,7 +5345,9 @@ iwm_init(struct _ifnet *ifp)
     } while (ic->ic_state != IEEE80211_S_SCAN);
 
     /* The lower firmware and its first synchronous scan state now exist. */
+    iwm_mfp_pae_reopen(sc);
     iwm_sae_tx_reopen(sc);
+    iwm_sae_engine_reopen(sc);
     __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     return 0;
 }
@@ -6607,6 +6651,59 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_tx_event_tail = 0;
     sc->sc_sae_tx_event_count = 0;
 
+    __atomic_store_n(&sc->sc_sae_engine_callback_state,
+        IWM_SAE_ENGINE_CALLBACK_CLOSED, __ATOMIC_RELEASE);
+    __atomic_store_n(&sc->sc_sae_engine_task_admission_state,
+        IWM_SAE_ENGINE_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
+    sc->sc_sae_engine_lock = IOSimpleLockAlloc();
+    if (sc->sc_sae_engine_lock == NULL)
+        XYLog("%s: direct SAE owner unavailable\n", DEVNAME(sc));
+    explicit_bzero(&sc->sc_sae_engine_owner,
+        sizeof(sc->sc_sae_engine_owner));
+    sc->sc_sae_engine = NULL;
+    sc->sc_sae_engine_wcl_cancel_generation = 0;
+    __atomic_store_n(&sc->sc_sae_engine_lifecycle_generation, 1,
+        __ATOMIC_RELEASE);
+    sc->sc_sae_engine_next_ticket = 0;
+    sc->sc_sae_engine_next_relay_generation = 0;
+    sc->sc_sae_engine_task_ready = false;
+    sc->sc_sae_engine_stopping = true;
+    sc->sc_sae_engine_detaching = false;
+#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
+    sc->sc_sae_engine_runtime_enabled = true;
+#else
+    sc->sc_sae_engine_runtime_enabled = false;
+#endif
+
+    sc->sc_sae_wcl_credential_lock = IOSimpleLockAlloc();
+    if (sc->sc_sae_wcl_credential_lock == NULL)
+        XYLog("%s: SAE WCL staging unavailable\n", DEVNAME(sc));
+    sc->sc_sae_wcl_credential_staged = false;
+    sc->sc_sae_wcl_credential_pending = false;
+    sc->sc_sae_wcl_credential_active = false;
+    sc->sc_sae_wcl_credential_cancel_valid = false;
+    sc->sc_sae_wcl_credential_cancel_through_generation = 0;
+    explicit_bzero(&sc->sc_sae_wcl_credential,
+        sizeof(sc->sc_sae_wcl_credential));
+
+    __atomic_store_n(&sc->sc_mfp_pae_callback_state,
+        IWM_MFP_PAE_CALLBACK_CLOSED, __ATOMIC_RELEASE);
+    sc->sc_mfp_pae_lock = IOSimpleLockAlloc();
+    if (sc->sc_mfp_pae_lock == NULL)
+        XYLog("%s: software PMF owner unavailable\n", DEVNAME(sc));
+    explicit_bzero(&sc->sc_mfp_pae_txn, sizeof(sc->sc_mfp_pae_txn));
+    explicit_bzero(&sc->sc_mfp_pae_successor,
+        sizeof(sc->sc_mfp_pae_successor));
+    sc->sc_mfp_pae_lifecycle_generation = 1;
+    sc->sc_mfp_pae_detaching = false;
+    sc->sc_mfp_pae_stopping = true;
+    sc->sc_mfp_pae_task_ready = false;
+#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
+    sc->sc_mfp_pae_runtime_enabled = true;
+#else
+    sc->sc_mfp_pae_runtime_enabled = false;
+#endif
+
     /* IWM-private workloop gate: never re-enter controller policy state. */
     fSaeTxGate = IOCommandGate::commandGate(this);
     if (fSaeTxGate == NULL || pa->workloop == NULL ||
@@ -6634,6 +6731,7 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     IEEE80211_C_SCANALLBAND |    /* device scans all bands at once */
     IEEE80211_C_MONITOR |    /* monitor mode supported */
     IEEE80211_C_SHSLOT |    /* short slot time supported */
+    IEEE80211_C_WNM_BSS_TRANSITION | /* generic 802.11v BTM */
     IEEE80211_C_SHPREAMBLE;    /* short preamble supported */
     
     ic->ic_htcaps = IEEE80211_HTCAP_SGI20;
@@ -6646,6 +6744,7 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     ic->ic_ampdu_params = (IEEE80211_AMPDU_PARAM_SS_4 | 0x3 /* 64k */);
     ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU | IEEE80211_C_AMSDU_IN_AMPDU);
     ic->ic_caps |= IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW;
+    ic->ic_caps &= ~IEEE80211_C_MFP;
 #if 0
     ic->ic_caps |= IEEE80211_C_TX_AMPDU_SETUP_IN_RS;
 #endif
@@ -6697,6 +6796,15 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     task_set(&sc->sae_tx_task, iwm_sae_tx_task, sc, "iwm_sae_tx_task");
     sc->sc_sae_tx_task_ready = true;
+    task_set(&sc->sae_engine_task, iwm_sae_engine_task, sc,
+        "iwm_sae_engine_task");
+    sc->sc_sae_engine_task_ready = sc->sc_sae_engine_lock != NULL;
+    if (sc->sc_sae_engine_task_ready)
+        __atomic_store_n(&sc->sc_sae_engine_task_admission_state, 0,
+            __ATOMIC_RELEASE);
+    task_set(&sc->mfp_pae_task, iwm_mfp_pae_task, sc,
+        "iwm_mfp_pae_task");
+    sc->sc_mfp_pae_task_ready = sc->sc_mfp_pae_lock != NULL;
     task_set(&sc->newstate_task, iwm_newstate_task, sc, "newstate_task");
     task_set(&sc->ba_task, iwm_ba_task, sc, "ba_task");
     task_set(&sc->ap_client_task, iwm_ap_client_task, sc,
@@ -6721,6 +6829,7 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     ic->ic_ampdu_tx_start = iwm_ampdu_tx_start;
     ic->ic_ampdu_tx_stop = iwm_ampdu_tx_stop;
     ic->ic_update_chw = iwm_update_chw;
+    iwm_publish_mfp_capability(sc);
     /*
      * We cannot read the MAC address without loading the
      * firmware from disk. Postpone until mountroot is done.

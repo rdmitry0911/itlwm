@@ -22,7 +22,22 @@ extern "C" void airportItlwmRequestAPTxDequeue(
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwm, ItlHalService)
 
+static bool
+iwm_sae_wcl_credential_runtime_opted_in(void)
+{
+#if ITL_SAE_DRIVER_CRYPTO_AVAILABLE
+    return true;
+#else
+    return false;
+#endif
+}
+
 namespace {
+
+static bool iwm_sae_engine_queue_terminal(struct iwm_softc *,
+    const struct ItlSaeAuthTransportEventV1 *);
+static bool iwm_sae_engine_callback_enter(struct iwm_softc *);
+static void iwm_sae_engine_callback_leave(struct iwm_softc *);
 
 struct IwmSaeTxGateArgs {
     struct ItlSaeAuthTxRequestV1 request;
@@ -665,6 +680,7 @@ iwm_sae_tx_task(void *arg)
     bool is_reset = false;
     bool suppressed = false;
     bool more = false;
+    bool engine_consumed = false;
 
     if (sc == NULL || !iwm_sae_tx_lifecycle_enter(sc, true))
         return;
@@ -689,6 +705,18 @@ iwm_sae_tx_task(void *arg)
         IOSimpleLockUnlock(sc->sc_sae_tx_lock);
     }
     if (have_event && !suppressed &&
+        itl_sae_auth_transport_event_is_well_formed(&event)) {
+        if (iwm_sae_engine_callback_enter(sc)) {
+            const bool queued_direct =
+                iwm_sae_engine_queue_terminal(sc, &event);
+            engine_consumed = iwm_sae_tx_ticket_is_direct(event.ticket) ||
+                queued_direct;
+            iwm_sae_engine_callback_leave(sc);
+        } else if (iwm_sae_tx_ticket_is_direct(event.ticket)) {
+            engine_consumed = true;
+        }
+    }
+    if (have_event && !suppressed && !engine_consumed &&
         (is_reset || iwm_sae_tx_lifecycle_is_open(sc)) &&
         itl_sae_auth_transport_event_is_well_formed(&event) &&
         ic->ic_event_handler != NULL) {
@@ -733,6 +761,9 @@ iwm_sae_tx_detach_begin(struct iwm_softc *sc)
     }
 }
 
+#include "IwmMfpPae.inc"
+#include "IwmSaeEngine.inc"
+
 void ItlIwm::
 detach(IOPCIDevice *device)
 {
@@ -741,7 +772,13 @@ detach(IOPCIDevice *device)
 
     /* No submitter, deferred terminal, or retained private gate may outlive
      * the descriptor rings and net80211 event sink below. */
+    iwm_sae_engine_detach_begin(sc);
     iwm_sae_tx_detach_begin(sc);
+    iwm_sae_wcl_detach_begin(sc);
+    iwm_mfp_pae_detach_begin(sc);
+    iwm_sae_engine_callback_close(sc);
+    iwm_sae_engine_callback_drain(sc);
+    (void)iwm_sae_engine_publish_hooks(sc, false, false, 0);
     
     for (int txq_i = 0; txq_i < nitems(sc->txq); txq_i++)
         iwm_free_tx_ring(sc, &sc->txq[txq_i]);
@@ -753,6 +790,7 @@ detach(IOPCIDevice *device)
     iwm_dma_contig_free(&sc->sched_dma);
     iwm_dma_contig_free(&sc->fw_dma);
     ieee80211_ifdetach(ifp);
+    iwm_mfp_pae_callback_destroy(sc);
     taskq_destroy(systq);
     taskq_destroy(com.sc_nswq);
     releaseAll();
@@ -776,6 +814,7 @@ attach(IOPCIDevice *device)
     wclScanNextBackendGeneration = 0;
     wclScanPublicationInvalidated = false;
     wclScanNeedsReopen = false;
+    wclSaeAdmissionReserved = false;
 
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
@@ -840,6 +879,18 @@ releaseAll()
     if (com.sc_sae_tx_lifecycle_lock != NULL) {
         IOLockFree(com.sc_sae_tx_lifecycle_lock);
         com.sc_sae_tx_lifecycle_lock = NULL;
+    }
+    if (com.sc_sae_engine_lock != NULL) {
+        IOSimpleLockFree(com.sc_sae_engine_lock);
+        com.sc_sae_engine_lock = NULL;
+    }
+    if (com.sc_sae_wcl_credential_lock != NULL) {
+        IOSimpleLockFree(com.sc_sae_wcl_credential_lock);
+        com.sc_sae_wcl_credential_lock = NULL;
+    }
+    if (com.sc_mfp_pae_lock != NULL) {
+        IOSimpleLockFree(com.sc_mfp_pae_lock);
+        com.sc_mfp_pae_lock = NULL;
     }
 }
 
@@ -1482,7 +1533,8 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
      */
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
-    if (wclScanPhase != ItlIwmWclScanPhase::Idle) {
+    if (wclScanPhase != ItlIwmWclScanPhase::Idle ||
+        wclSaeAdmissionReserved) {
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
         return kIOReturnBusy;
     }
@@ -1527,7 +1579,8 @@ beginWclBackgroundScan(uint64_t generation,
 
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
-    if (wclScanPhase != ItlIwmWclScanPhase::Idle) {
+    if (wclScanPhase != ItlIwmWclScanPhase::Idle ||
+        wclSaeAdmissionReserved) {
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
         return kIOReturnBusy;
     }

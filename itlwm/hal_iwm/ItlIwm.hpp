@@ -72,6 +72,14 @@ public:
     IOReturn submitSaeAuthFrame(
         const struct ItlSaeAuthTxRequestV1 *request) override;
     void cancelSaeAuthFrame(uint64_t ticket) override;
+    IOReturn stageSaeWclCredential(
+        const struct ItlSaeWclCredentialV1 *credential) override;
+    void cancelSaeWclCredential(uint64_t request_generation) override;
+    void purgeSaeWclCredentialStage() override;
+    bool isSaeWclCredentialAdmissionReady() override;
+    bool reserveSaeWclCredentialAdmission() override;
+    void releaseSaeWclCredentialAdmission() override;
+    bool supportsDriverResidentSae() override;
 
     bool supportsAPMode() const override;
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
@@ -385,6 +393,45 @@ public:
     void   iwm_sae_tx_emit_reset_event(struct iwm_softc *,
         const struct ItlSaeAuthTransportEventV1 *);
     void   iwm_sae_tx_purge(struct iwm_softc *);
+    static int iwm_sae_auth_hold(struct ieee80211com *,
+        struct ieee80211_node *, enum ieee80211_state, int);
+    static int iwm_sae_auth_owned(struct ieee80211com *,
+        const struct ieee80211_node *);
+    static int iwm_sae_engine_peer_event(struct ieee80211com *,
+        const struct ItlSaeAuthPeerEventV1 *);
+    static void iwm_sae_wcl_request_revoke(struct ieee80211com *, u_int64_t);
+    static void iwm_sae_roam_port_valid(struct ieee80211com *,
+        const struct ieee80211_node *);
+    static int iwm_sae_wnm_roam_start(struct ieee80211com *,
+        const struct ieee80211_node *);
+    static int iwm_sae_wcl_roam_start(struct ieee80211com *,
+        const struct ieee80211_node *,
+        const u_int8_t [IEEE80211_ADDR_LEN]);
+    static int iwm_sae_targeted_roam_start(struct ieee80211com *,
+        const struct ieee80211_node *,
+        const u_int8_t [IEEE80211_ADDR_LEN], bool);
+    static enum IwmSaeAssocTxAdmission iwm_sae_engine_assoc_tx_preflight(
+        struct iwm_softc *, const struct ieee80211_node *,
+        const struct ieee80211_frame *, struct IwmSaeAssocTxClaim *);
+    static bool iwm_sae_engine_assoc_tx_commit(struct iwm_softc *,
+        struct iwm_tx_ring *, int, uint8_t, uint16_t,
+        const struct ieee80211_node *, const struct IwmSaeAssocTxClaim *);
+    static void iwm_sae_engine_task(void *);
+    void iwm_sae_engine_stop_begin(struct iwm_softc *);
+    void iwm_sae_engine_reopen(struct iwm_softc *);
+    void iwm_sae_engine_detach_begin(struct iwm_softc *);
+    void iwm_sae_wcl_stop_begin(struct iwm_softc *);
+    void iwm_sae_wcl_detach_begin(struct iwm_softc *);
+    static void iwm_mfp_pae_task(void *);
+    static int iwm_pae_mfp_txn_submit(struct ieee80211com *, u_int64_t,
+        u_int64_t, struct ieee80211_node *, const struct ieee80211_key *,
+        u_int8_t);
+    static void iwm_pae_mfp_txn_cancel(struct ieee80211com *, u_int64_t);
+    static int iwm_pae_mfp_txn_finish(struct ieee80211com *, u_int64_t);
+    void iwm_mfp_pae_reopen(struct iwm_softc *);
+    void iwm_publish_mfp_capability(struct iwm_softc *);
+    void iwm_mfp_pae_abort_all(struct iwm_softc *);
+    void iwm_mfp_pae_detach_begin(struct iwm_softc *);
     int    iwm_flush_tx_path(struct iwm_softc *, int);
     void    iwm_led_enable(struct iwm_softc *);
     void    iwm_led_disable(struct iwm_softc *);
@@ -573,6 +620,7 @@ public:
     uint32_t wclScanNextBackendGeneration;
     bool wclScanPublicationInvalidated;
     bool wclScanNeedsReopen;
+    bool wclSaeAdmissionReserved;
 };
 
 #endif /* ItlIwm_hpp */
