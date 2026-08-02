@@ -320,6 +320,13 @@ public:
         (void)csa;
         return kIOReturnUnsupported;
     }
+    /*
+     * Return the lower runtime's committed AP channel, or zero when there
+     * is no running AP context.  A firmware backend owns CSA completion;
+     * upper APSTA replay must therefore snapshot this value instead of the
+     * original userspace profile before a destructive radio reset.
+     */
+    virtual uint16_t getAPCurrentChannel() const { return 0; }
     virtual IOReturn setAPHidden(bool hidden) {
         (void)hidden;
         return kIOReturnUnsupported;

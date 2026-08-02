@@ -162,6 +162,7 @@ public:
     IOReturn setAPMaxStations(uint32_t maxStations) override;
     IOReturn setAPHidden(bool hidden) override;
     IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) override;
+    uint16_t getAPCurrentChannel() const override;
     uint32_t getAPTxFreeSpace() const;
     struct IwnApClientRuntime *iwn_find_ap_client(const uint8_t *);
     struct IwnApClientRuntime *iwn_find_ap_client_by_id(uint8_t);

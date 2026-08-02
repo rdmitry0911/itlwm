@@ -9275,6 +9275,14 @@ IOReturn ItlIwn::triggerAPCSA(const struct ItlHalApCSA *csa)
     return kIOReturnSuccess;
 }
 
+uint16_t ItlIwn::getAPCurrentChannel() const
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return 0;
+    return apFirmwareConfig.channel;
+}
+
 void ItlIwn::iwn_ap_csa_timeout(void *arg)
 {
     ItlIwn *that = static_cast<ItlIwn *>(arg);

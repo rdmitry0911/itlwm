@@ -1205,6 +1205,13 @@ triggerAPCSA(const struct ItlHalApCSA *csa)
     return kIOReturnSuccess;
 }
 
+uint16_t ItlIwm::
+getAPCurrentChannel() const
+{
+    return itl_ap_open_is_running(&apRuntime) ?
+        apRuntime.config.channel : 0;
+}
+
 void ItlIwm::
 iwm_ap_csa_timeout(void *arg)
 {

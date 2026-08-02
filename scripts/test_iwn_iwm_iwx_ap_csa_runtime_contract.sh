@@ -43,6 +43,8 @@ for needle, label in (
      "Apple running-edge CSA gate"),
     ("csa.mode = in->mode10;", "Apple +0x10 mode mapping"),
     ("csa.count = kItlApCsaDefaultCount;", "private default countdown"),
+    ("getAPCurrentChannel()", "lower committed-channel readback"),
+    ("apChannel = lowerChannel;", "radio-reset committed-channel replay"),
 ):
     require(owner, needle, label)
 
@@ -95,6 +97,8 @@ for source, label, countdown in (
     require(source, countdown, f"{label} countdown")
     require(source, "timeout_add_msec", f"{label} TBTT-bounded scheduling")
     require(source, "AP CSA complete channel=", f"{label} terminal evidence")
+    require(source, "getAPCurrentChannel() const",
+            f"{label} committed-channel readback")
 
 for needle, label in (
     ("APPLE80211_IOC_SOFTAP_TRIGGER_CSA 349", "public selector 349"),

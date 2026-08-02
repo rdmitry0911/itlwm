@@ -804,6 +804,25 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
         return;
     }
 
+    /*
+     * Broadcom's reference FullMAC context survives hostAPPowerOff(), so a
+     * completed CSA remains the active channel without rebuilding the AP
+     * from its original profile.  Intel DVM/MVM firmware loses that context
+     * during the destructive radio reset.  The lower HAL is authoritative
+     * for asynchronous CSA completion (and rollback), therefore snapshot
+     * its committed channel immediately before teardown and replay that
+     * channel rather than the stale initial SET_CHANNEL value.
+     */
+    const uint16_t lowerChannel =
+        owner != nullptr && owner->fHalService != nullptr
+            ? owner->fHalService->getAPCurrentChannel() : 0;
+    if (lowerChannel != 0 && lowerChannel != apChannel) {
+        XYLog("APSTA radio-reset channel snapshot profile=%u committed=%u\n",
+              static_cast<unsigned>(apChannel),
+              static_cast<unsigned>(lowerChannel));
+        apChannel = lowerChannel;
+    }
+
     setSoftAPPowerSaveState(
         kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackState,
         kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackReason);
