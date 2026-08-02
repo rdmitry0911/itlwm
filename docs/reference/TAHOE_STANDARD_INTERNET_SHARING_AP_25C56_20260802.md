@@ -79,6 +79,20 @@ guest virtio `en0` through the standard Internet Sharing daemon.
   AES-128-CMAC. AX211 completed SAE group 19 with `pmf=2` and BIP, received
   `192.168.2.2`, passed 4/4 ICMP in both directions, and returned HTTP 200
   through guest NAT.
+- WPA3 5 GHz: the same standard producer selected channel 149 without a
+  private driver-side override. The beacon advertised the correct 5 GHz rate
+  set plus SAE/required MFP/AES-128-CMAC. AX211 associated at 5745 MHz,
+  completed SAE group 19 with PMF/BIP, received `192.168.2.2`, passed 4/4
+  gateway ICMP, and returned HTTP 200 through guest NAT.
+- Client reconnect: terminating the AX211 supplicant removed the live client;
+  a fresh supplicant instance with the same station MAC completed a new SAE
+  Commit/Confirm and four-way handshake. It reacquired `192.168.2.2`, passed
+  3/3 gateway ICMP and returned HTTP 200. Serial evidence contains two
+  separate `AP SAE Commit accepted`, `AP SAE Confirm ... authenticated=1`,
+  and `AP WPA3 4-way complete ... authorized=1` sequences.
+- Client power save: with AX211 power save enabled after an idle interval,
+  guest-to-client traffic passed 8/8 packets through the AP TIM/power-save
+  path, client-to-gateway traffic passed 8/8, and NAT HTTP returned 200.
 - Forced sleep request with the WPA3 client active produced the reference
   `DenySystemSleep` assertion and DarkWake, not S3. Association, DHCP address,
   PMF/BIP state, 4/4 gateway ICMP and NAT HTTP 200 all remained valid after
