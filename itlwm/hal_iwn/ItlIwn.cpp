@@ -4535,7 +4535,8 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apFirmwarePostDeactivateQueued = false;
     apFirmwareUnassociatedReplySeen = false;
     apFirmwareUnassociatedNotificationSeen = false;
-    apStaPanPriorityActive = false;
+    apStaScanPriorityActive = false;
+    apStaAuthPriorityActive = false;
     apStaBssAssociated = false;
     iwn_set_ap_primary_tx_quiesced(false, false);
     apFirmwareStage = IWN_AP_STAGE_IDLE;
@@ -7745,7 +7746,9 @@ int ItlIwn::iwn_send_ap_pan_params(const struct ItlHalApConfig *config)
                 admissionWindow - minimumSlotWidth : minimumSlotWidth));
     uint16_t bssSlotWidth;
     uint16_t panSlotWidth;
-    if (apStaPanPriorityActive) {
+    const bool bssPriorityActive =
+        apStaScanPriorityActive || apStaAuthPriorityActive;
+    if (bssPriorityActive) {
         bssSlotWidth = admissionRemainder;
         panSlotWidth = minimumSlotWidth;
     } else if (apStaBssAssociated &&
@@ -7765,21 +7768,68 @@ int ItlIwn::iwn_send_ap_pan_params(const struct ItlHalApConfig *config)
     command.slots[0].width = htole16(bssSlotWidth);
     command.slots[1].type = 1;
     command.slots[1].width = htole16(panSlotWidth);
+    XYLog("%s: APSTA PAN slots bss=%u pan=%u priority=%u "
+          "scan=%u auth=%u bss_associated=%u stage=%u\n",
+          com.sc_dev.dv_xname,
+          static_cast<unsigned>(bssSlotWidth),
+          static_cast<unsigned>(panSlotWidth),
+          bssPriorityActive ? 1U : 0U,
+          apStaScanPriorityActive ? 1U : 0U,
+          apStaAuthPriorityActive ? 1U : 0U,
+          apStaBssAssociated ? 1U : 0U,
+          static_cast<unsigned>(apFirmwareStage));
     return iwn_cmd(
         &com, IWN_CMD_WIPAN_PARAMS, &command, sizeof(command), 1);
 }
 
-int ItlIwn::iwn_set_ap_sta_pan_priority(bool active)
+int ItlIwn::iwn_set_ap_sta_scan_priority(bool active)
 {
     if (!apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING)
         return 0;
 
-    const bool previous = apStaPanPriorityActive;
-    apStaPanPriorityActive = active;
+    const bool previousScan = apStaScanPriorityActive;
+    const bool previousAuth = apStaAuthPriorityActive;
+    apStaScanPriorityActive = active;
+    if (active)
+        apStaAuthPriorityActive = false;
+    const int error = iwn_send_ap_pan_params(&apFirmwareConfig);
+    if (error != 0) {
+        apStaScanPriorityActive = previousScan;
+        apStaAuthPriorityActive = previousAuth;
+    }
+    return error;
+}
+
+int ItlIwn::iwn_set_ap_sta_auth_priority(bool active)
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return 0;
+
+    const bool previous = apStaAuthPriorityActive;
+    apStaAuthPriorityActive = active;
     const int error = iwn_send_ap_pan_params(&apFirmwareConfig);
     if (error != 0)
-        apStaPanPriorityActive = previous;
+        apStaAuthPriorityActive = previous;
+    return error;
+}
+
+int ItlIwn::iwn_clear_ap_sta_pan_priority()
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+        return 0;
+
+    const bool previousScan = apStaScanPriorityActive;
+    const bool previousAuth = apStaAuthPriorityActive;
+    apStaScanPriorityActive = false;
+    apStaAuthPriorityActive = false;
+    const int error = iwn_send_ap_pan_params(&apFirmwareConfig);
+    if (error != 0) {
+        apStaScanPriorityActive = previousScan;
+        apStaAuthPriorityActive = previousAuth;
+    }
     return error;
 }
 
@@ -8219,16 +8269,45 @@ int ItlIwn::iwn_send_ap_timing(const struct ItlHalApConfig *config)
     if (config == NULL)
         return EINVAL;
 
-    const uint16_t beaconInterval =
+    uint16_t beaconInterval =
         config->beaconInterval != 0 ? config->beaconInterval : 100;
     struct iwn_cmd_timing command;
     bzero(&command, sizeof(command));
+    bool retainedBssTiming = false;
+
+    /*
+     * Linux DVM's iwl_send_rxon_timing() does not give a concurrently
+     * beaconing PAN context an unrelated zero-epoch TBTT.  When the primary
+     * BSS is already associated, the PAN timing inherits that BSS beacon
+     * interval and uses its last received TSF to schedule the next TBTT.
+     *
+     * A standalone AP tolerates a zero timestamp, but in APSTA that creates
+     * two formally valid same-channel contexts with unrelated beacon
+     * epochs.  6x35 then services PAN while the BSS misses its beacons and
+     * Tahoe keeps publishing a stale association until DHCP falls back to
+     * link-local.  Preserve the firmware's shared timing owner instead.
+     */
+    struct ieee80211_node *bss = com.sc_ic.ic_bss;
+    if (apStaBssAssociated && bss != NULL && bss->ni_intval != 0) {
+        beaconInterval = bss->ni_intval;
+        memcpy(&command.tstamp, bss->ni_tstamp, sizeof(command.tstamp));
+        retainedBssTiming = true;
+    }
     command.bintval = htole16(beaconInterval);
-    command.binitval = htole32(
-        static_cast<uint32_t>(beaconInterval) * IEEE80211_DUR_TU);
+    const uint64_t intervalUsec =
+        static_cast<uint64_t>(beaconInterval) * IEEE80211_DUR_TU;
+    const uint64_t timestamp = letoh64(command.tstamp);
+    const uint64_t remainder = timestamp % intervalUsec;
+    command.binitval = htole32(static_cast<uint32_t>(
+        intervalUsec - remainder));
     command.lintval = htole16(10);
     command.dtim_period =
         config->dtimPeriod != 0 ? config->dtimPeriod : 1;
+    XYLog("%s: AP PAN timing source=%s interval=%u init=%u\n",
+          com.sc_dev.dv_xname,
+          retainedBssTiming ? "retained-BSS" : "standalone",
+          static_cast<unsigned>(beaconInterval),
+          static_cast<unsigned>(le32toh(command.binitval)));
     return iwn_cmd(
         &com, IWN_CMD_WIPAN_TIMING, &command, sizeof(command), 1);
 }
@@ -12503,6 +12582,12 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 
     if (ic->ic_state >= IEEE80211_S_ASSOC &&
         nstate <= IEEE80211_S_ASSOC) {
+        const bool authWillCommitRxon =
+            that->apFirmwareTransitionActive &&
+            that->apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+            (nstate == IEEE80211_S_AUTH ||
+             (nstate == IEEE80211_S_ASSOC &&
+              ic->ic_state == IEEE80211_S_RUN));
         /* Reset state to handle re- and disassociations. */
         iwn_clear_apple_nrate_cache(sc);
         sc->rxon.associd = 0;
@@ -12514,10 +12599,24 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
                                    IWN_RXON_HT_CHANMODE_PURE40 | IWN_RXON_HT_HT40MINUS);
         sc->calib.state = IWN_CALIB_STATE_INIT;
         sc->agg_queue_mask = 0;
-        error = that->iwn_cmd(sc, IWN_CMD_RXON, &sc->rxon, sc->rxonsz, 1);
-        if (error != 0)
-            XYLog("%s: RXON command failed\n",
-                sc->sc_dev.dv_xname);
+        if (!authWillCommitRxon) {
+            error = that->iwn_cmd(
+                sc, IWN_CMD_RXON, &sc->rxon, sc->rxonsz, 1);
+            if (error != 0)
+                XYLog("%s: RXON command failed\n",
+                    sc->sc_dev.dv_xname);
+        } else {
+            /* iwlagn_commit_rxon() owns one unassociated RXON transaction.
+             * The generic net80211 reset above and iwn_auth() historically
+             * emitted two back-to-back full BSS RXON commands.  With a live
+             * PAN context, the first one invalidates outstanding primary
+             * descriptors without rebuilding its broadcast station or PAN
+             * scheduler; a later reconnect then wedges an ordinary AC queue.
+             * Keep the logical reset, but let iwn_auth() commit the candidate
+             * RXON and immediately follow it with broadcast/PAN restoration. */
+            XYLog("%s: APSTA auth coalesced duplicate reset RXON\n",
+                  sc->sc_dev.dv_xname);
+        }
     }
 
     switch (nstate) {
@@ -14436,7 +14535,7 @@ iwn_notif_intr(struct iwn_softc *sc)
              * continuation above, then restore it only for this exact final
              * physical terminal.
              */
-            if (iwn_set_ap_sta_pan_priority(false) != 0) {
+            if (iwn_set_ap_sta_scan_priority(false) != 0) {
                 XYLog("%s: could not restore APSTA PAN parameters after "
                       "scan\n", sc->sc_dev.dv_xname);
                 sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
@@ -18260,8 +18359,8 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
      */
     if (apFirmwareTransitionActive &&
         apFirmwareStage == IWN_AP_STAGE_RUNNING &&
-        !apStaPanPriorityActive) {
-        error = iwn_set_ap_sta_pan_priority(true);
+        !apStaScanPriorityActive) {
+        error = iwn_set_ap_sta_scan_priority(true);
         if (error != 0) {
             AirportItlwmPostPltiTraceRecord(
                 ic, kAirportItlwmPostPltiTraceEventIwnScanCommandRejected);
@@ -18287,7 +18386,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
             AirportItlwmPostPltiTraceRecord(
                 ic, kAirportItlwmPostPltiTraceEventIwnScanCommandRejected);
             if (ap_sta_pan_priority_changed)
-                (void)iwn_set_ap_sta_pan_priority(false);
+                (void)iwn_set_ap_sta_scan_priority(false);
             explicit_bzero(buf, IWN_SCAN_MAXSZ);
             ::free(buf);
             return ECANCELED;
@@ -18331,7 +18430,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
         AirportItlwmPostPltiTraceRecord(
             ic, kAirportItlwmPostPltiTraceEventIwnScanCommandRejected);
         if (ap_sta_pan_priority_changed)
-            (void)iwn_set_ap_sta_pan_priority(false);
+            (void)iwn_set_ap_sta_scan_priority(false);
     }
     ::free(buf);
     return error;
@@ -18465,16 +18564,11 @@ iwn_auth(struct iwn_softc *sc, int arg)
 
     /*
      * Authentication is the other DVM "active but unassociated" BSS case.
-     * Give the station context the same admission window before changing
-     * RXON, so AUTH/ASSOC management exchange can coexist with HostAP.
+     * Mark the station context unassociated now, but preserve Linux DVM's
+     * command order below: first commit the unassociated BSS RXON carrying
+     * the candidate channel, then recompute PAN slots for that new context.
      */
     apStaBssAssociated = false;
-    error = iwn_set_ap_sta_pan_priority(true);
-    if (error != 0) {
-        XYLog("%s: could not prioritize STA PAN slot for auth\n",
-              sc->sc_dev.dv_xname);
-        return error;
-    }
 
     /* Update adapter configuration. */
     IEEE80211_ADDR_COPY(sc->rxon.bssid, ni->ni_bssid);
@@ -18534,6 +18628,17 @@ iwn_auth(struct iwn_softc *sc, int arg)
     error = iwn_cmd(sc, IWN_CMD_RXON, &sc->rxon, sc->rxonsz, 1);
     if (error != 0) {
         XYLog("%s: RXON command failed\n", sc->sc_dev.dv_xname);
+        return error;
+    }
+
+    /* iwlagn_commit_rxon() performs iwlagn_rxon_disconn() before
+     * iwlagn_set_pan_params().  Sending WIPAN_PARAMS against the old BSS
+     * channel leaves the two-context scheduler on the previous tune and can
+     * make the replacement BSS miss every beacon while PAN remains live. */
+    error = iwn_set_ap_sta_auth_priority(true);
+    if (error != 0) {
+        XYLog("%s: could not prioritize STA PAN slot after auth RXON\n",
+              sc->sc_dev.dv_xname);
         return error;
     }
 
@@ -18708,12 +18813,31 @@ iwn_run(struct iwn_softc *sc)
     ieee80211_ra_node_init(ic, &wn->rn, &wn->ni);
 
     /*
-     * RXON now carries the negotiated AID/BSS filter.  Leave temporary
-     * scan/auth priority and return the active HostAP PAN context to its
-     * normal DVM admission window.
+     * A full BSS RXON retunes the primary context.  Linux DVM retains the
+     * concurrently beaconing PAN owner across that commit; replaying the
+     * already-built template here restores the same invariant for this
+     * backend before the scheduler returns to its steady split.  Without
+     * this edge, the replacement STA link runs but a different-channel AP
+     * stops emitting beacons and every client leaves with beacon loss.
      */
+    if (apFirmwareTransitionActive &&
+        apFirmwareStage == IWN_AP_STAGE_RUNNING) {
+        error = iwn_send_ap_beacon(&apFirmwareConfig);
+        if (error != 0) {
+            XYLog("%s: could not replay HostAP beacon after STA RXON\n",
+                  sc->sc_dev.dv_xname);
+            return error;
+        }
+        XYLog("%s: IWN AP beacon replay queued after STA RXON channel=%u\n",
+              sc->sc_dev.dv_xname,
+              static_cast<unsigned>(apFirmwareConfig.channel));
+    }
+
+    /* RXON now carries the negotiated AID/BSS filter.  Leave temporary
+     * scan/auth priority and return both associated contexts to DVM's
+     * normal admission window. */
     apStaBssAssociated = true;
-    error = iwn_set_ap_sta_pan_priority(false);
+    error = iwn_clear_ap_sta_pan_priority();
     if (error != 0) {
         XYLog("%s: could not restore HostAP PAN slots after STA auth\n",
               sc->sc_dev.dv_xname);

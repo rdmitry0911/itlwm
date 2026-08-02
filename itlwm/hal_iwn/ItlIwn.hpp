@@ -179,7 +179,9 @@ public:
     IOReturn iwn_quiesce_scan_for_ap_transition();
     int iwn_build_ap_rxon(struct iwn_rxon *, const struct ItlHalApConfig *);
     int iwn_send_ap_pan_params(const struct ItlHalApConfig *);
-    int iwn_set_ap_sta_pan_priority(bool);
+    int iwn_set_ap_sta_scan_priority(bool);
+    int iwn_set_ap_sta_auth_priority(bool);
+    int iwn_clear_ap_sta_pan_priority();
     int iwn_send_ap_stop_pan_params();
     int iwn_add_ap_broadcast_node();
     int iwn_send_ap_broadcast_link_quality(int);
@@ -596,7 +598,8 @@ public:
     bool apFirmwarePostDeactivateQueued;
     bool apFirmwareUnassociatedReplySeen;
     bool apFirmwareUnassociatedNotificationSeen;
-    bool apStaPanPriorityActive;
+    bool apStaScanPriorityActive;
+    bool apStaAuthPriorityActive;
     bool apStaBssAssociated;
     bool apPrimaryTxQuiesced;
     uint8_t apFirmwareStage;

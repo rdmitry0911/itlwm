@@ -97,7 +97,7 @@ assert final_power < final_pan < balanced_pan < final_pan_reply < resume_tx, \
 
 pan_params = iwn[
     iwn.index("int ItlIwn::iwn_send_ap_pan_params("):
-    iwn.index("int ItlIwn::iwn_set_ap_sta_pan_priority(")
+    iwn.index("int ItlIwn::iwn_set_ap_sta_scan_priority(")
 ]
 assert "apFirmwareStage == IWN_AP_STAGE_FINAL_PAN_PARAMS" in pan_params
 assert "bssSlotWidth = beaconInterval / 2;" in pan_params

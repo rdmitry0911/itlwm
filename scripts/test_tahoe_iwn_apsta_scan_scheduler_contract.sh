@@ -12,8 +12,11 @@ root = Path(sys.argv[1])
 iwn_hpp = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 
-assert "bool apStaPanPriorityActive;" in iwn_hpp
-assert "int iwn_set_ap_sta_pan_priority(bool);" in iwn_hpp
+assert "bool apStaScanPriorityActive;" in iwn_hpp
+assert "bool apStaAuthPriorityActive;" in iwn_hpp
+assert "int iwn_set_ap_sta_scan_priority(bool);" in iwn_hpp
+assert "int iwn_set_ap_sta_auth_priority(bool);" in iwn_hpp
+assert "int iwn_clear_ap_sta_pan_priority();" in iwn_hpp
 
 pan = iwn[
     iwn.index("int ItlIwn::iwn_send_ap_pan_params("):
@@ -22,7 +25,7 @@ pan = iwn[
 for needle in (
     "static_cast<uint32_t>(dtimPeriod) * beaconInterval * 3",
     "const uint16_t minimumSlotWidth = 20;",
-    "if (apStaPanPriorityActive)",
+    "apStaScanPriorityActive || apStaAuthPriorityActive",
     "bssSlotWidth = admissionRemainder;",
     "panSlotWidth = minimumSlotWidth;",
     "bssSlotWidth = minimumSlotWidth;",
@@ -34,14 +37,14 @@ submit = iwn[
     iwn.index("iwn_scan_submit(struct iwn_softc *sc, uint16_t flags"):
     iwn.index("void ItlIwn::\niwn_scan_abort(")
 ]
-priority = submit.index("iwn_set_ap_sta_pan_priority(true)")
+priority = submit.index("iwn_set_ap_sta_scan_priority(true)")
 doorbell = submit.index(
     "iwn_cmd_with_doorbell_hook(sc, IWN_CMD_SCAN"
 )
 assert priority < doorbell, \
     "STA PAN priority must cross the command ring before IWN_CMD_SCAN"
 assert "if (ap_sta_pan_priority_changed)" in submit
-assert "iwn_set_ap_sta_pan_priority(false)" in submit
+assert "iwn_set_ap_sta_scan_priority(false)" in submit
 
 stop = iwn[
     iwn.index("case IWN_STOP_SCAN:"):
@@ -51,7 +54,7 @@ continuation = stop.index(
     "iwn_scan_continue(sc, IEEE80211_CHAN_5GHZ"
 )
 continuation_break = stop.index("break;", continuation)
-restore = stop.index("iwn_set_ap_sta_pan_priority(false)")
+restore = stop.index("iwn_set_ap_sta_scan_priority(false)")
 assert continuation < continuation_break < restore, \
     "2.4 -> 5 GHz continuation must retain STA PAN priority"
 assert stop.index("iwn_scan_lease_claim_terminal") < restore, \
@@ -61,23 +64,52 @@ auth = iwn[
     iwn.index("iwn_auth(struct iwn_softc *sc, int arg)"):
     iwn.index("int ItlIwn::\niwn_run(")
 ]
-assert auth.index("iwn_set_ap_sta_pan_priority(true)") < auth.index(
-    "iwn_cmd(sc, IWN_CMD_RXON"
-), "AUTH must receive its DVM admission window before RXON"
+unassociated_rxon = auth.index("iwn_cmd(sc, IWN_CMD_RXON")
+priority = auth.index("iwn_set_ap_sta_auth_priority(true)")
+txpower = auth.index("ops->set_txpower(sc, 1)")
+assert unassociated_rxon < priority < txpower, \
+    "DVM recomputes PAN slots after the candidate-channel BSS RXON"
+
+newstate = iwn[
+    iwn.index("iwn_newstate(struct ieee80211com *ic"):
+    iwn.index("void ItlIwn::\niwn_iter_func")
+]
+assert "authWillCommitRxon" in newstate
+assert "nstate == IEEE80211_S_AUTH" in newstate
+assert "!authWillCommitRxon" in newstate
+assert "APSTA auth coalesced duplicate reset RXON" in newstate
 
 run = iwn[
     iwn.index("iwn_run(struct iwn_softc *sc)"):
     iwn.index("iwn_pae_mfp_txn_submit(")
 ]
-assert run.index("iwn_add_bss_node(sc, ni)") < run.index(
-    "iwn_set_ap_sta_pan_priority(false)"
-), "associated STA/AP balance requires the committed BSS context"
+add_bss = run.index("iwn_add_bss_node(sc, ni)")
+replay_beacon = run.index("iwn_send_ap_beacon(&apFirmwareConfig)")
+steady_pan = run.index("iwn_clear_ap_sta_pan_priority()")
+assert add_bss < replay_beacon < steady_pan, \
+    "the retained PAN beacon must be replayed before steady APSTA slots"
 
 reset = iwn[
     iwn.index("void ItlIwn::iwn_reset_ap_runtime_state()"):
     iwn.index("void ItlIwn::iwn_set_ap_scan_transition_blocked(")
 ]
-assert "apStaPanPriorityActive = false;" in reset
+assert "apStaScanPriorityActive = false;" in reset
+assert "apStaAuthPriorityActive = false;" in reset
+
+scan_priority = iwn[
+    iwn.index("int ItlIwn::iwn_set_ap_sta_scan_priority(bool active)"):
+    iwn.index("int ItlIwn::iwn_set_ap_sta_auth_priority(bool active)")
+]
+assert "apStaScanPriorityActive = active;" in scan_priority
+assert "if (active)\n        apStaAuthPriorityActive = false;" in scan_priority
+
+auth_priority = iwn[
+    iwn.index("int ItlIwn::iwn_set_ap_sta_auth_priority(bool active)"):
+    iwn.index("int ItlIwn::iwn_clear_ap_sta_pan_priority()")
+]
+assert "apStaAuthPriorityActive = active;" in auth_priority
+assert "apStaScanPriorityActive =" not in auth_priority, \
+    "a late scan terminal must not erase an active AUTH owner"
 
 print("PASS: Tahoe IWN APSTA scan/auth PAN scheduler contract")
 PY

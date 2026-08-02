@@ -27,11 +27,24 @@ assert "com.sc_ic.ic_state == IEEE80211_S_RUN || bssRxonAssociated" in start
 
 pan = iwn[
     iwn.index("int ItlIwn::iwn_send_ap_pan_params("):
-    iwn.index("int ItlIwn::iwn_set_ap_sta_pan_priority(")
+    iwn.index("int ItlIwn::iwn_set_ap_sta_scan_priority(")
 ]
 assert "apStaBssAssociated" in pan
 assert "bssSlotWidth = beaconInterval / 2;" in pan
 assert "panSlotWidth = beaconInterval - bssSlotWidth;" in pan
 
-print("PASS: Tahoe APSTA start retains an associated BSS across scan state")
+timing = iwn[
+    iwn.index("int ItlIwn::iwn_send_ap_timing("):
+    iwn.index("int ItlIwn::iwn_send_ap_edca(")
+]
+assert "apStaBssAssociated && bss != NULL && bss->ni_intval != 0" in timing
+assert "memcpy(&command.tstamp, bss->ni_tstamp" in timing
+assert "beaconInterval = bss->ni_intval;" in timing
+assert "timestamp % intervalUsec" in timing
+assert 'retainedBssTiming ? "retained-BSS" : "standalone"' in timing
+
+assert "APSTA PAN slots bss=%u pan=%u priority=%u" in pan
+assert '"scan=%u auth=%u bss_associated=%u stage=%u\\n"' in pan
+
+print("PASS: Tahoe APSTA start retains an associated BSS and its timing across scan state")
 PY
