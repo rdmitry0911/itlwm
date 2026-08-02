@@ -14,6 +14,7 @@ node = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 proto = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
 var = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
+iwx = (root / "itlwm/hal_iwx/IwxSaeEngine.inc").read_text()
 
 
 def fail(message):
@@ -163,7 +164,22 @@ require(iwn, "ic->ic_sae_wcl_roam_start = ItlIwn::iwn_sae_wcl_roam_start",
         "IWN hook publication")
 require(iwn, "ic->ic_sae_wcl_roam_start = NULL",
         "IWN hook teardown")
+targeted_iwx = body(iwx, "iwx_sae_targeted_roam_start(",
+                    "IWX targeted SAE roam")
+for token in (
+    "sc_sae_wcl_credential_active",
+    "ieee80211_sae_wcl_request_begin",
+    "stageSaeWclCredential",
+    "ieee80211_sae_wcl_request_admit_cached_roam_candidate",
+    "ieee80211_node_join_bss",
+    'consume_wnm ? "BTM" : "WCL"',
+):
+    require(targeted_iwx, token, "IWX driver-resident SAE retarget")
+require(iwx, "ic->ic_sae_wcl_roam_start = ItlIwx::iwx_sae_wcl_roam_start",
+        "IWX hook publication")
+require(iwx, "ic->ic_sae_wcl_roam_start = NULL",
+        "IWX hook teardown")
 require(var, "ic_sae_wcl_roam_start", "common optional SAE roam hook")
 
-print("PASS: Tahoe WCL reassoc uses a real bounded roam scan and IWN SAE retarget")
+print("PASS: Tahoe WCL reassoc uses a real bounded roam scan and IWN/IWX SAE retarget")
 PY

@@ -45,9 +45,21 @@ SAE stimulus remains IWN-only.
 
 Admission remains limited to the five already audited new-format API-68 MFP
 configurations (AX211 GF normal/long, AX210 TY, AX411 GF4 normal/long). Other
-IWX firmware/config objects stay closed. This layer implements initial pure
-SAE/transition association. Targeted multi-AP SAE credential replay hooks are
-still null and are the next reconnect/roam layer.
+IWX firmware/config objects stay closed. Initial pure SAE/transition
+association and targeted multi-AP credential replay share the same owner. For
+an explicit WCL roam or confirmed 802.11v target, IWX copies an active
+credential only after exact ESS/BSSID/port-valid checks, crosses the
+association epoch, binds a new request generation to the selected cached node
+and starts the same driver-resident SAE engine. A missing or stale credential
+preserves the working source link and fails the roam request.
+
+This follows the recovered `AppleBCMWLANCore::setWCL_REASSOC` boundary in
+`ghidra_output/aiam_applebcm_reassoc_25C56_20260801/reassoc.txt`: the reference
+updates the roam policy and submits a bounded firmware roam scan, selecting
+V3, V1 or legacy command format by firmware-interface version. Intel has no
+BCM reassoc command ABI, so the common real background scan supplies the
+target and the IWX host owner performs the equivalent lower retarget; it does
+not fabricate a same-BSS reassociation frame or immediate success.
 
 The laboratory VM has physical IWN, not an IWX device. Its whole-kext runtime
 can prove IWN regression safety and sleep/wake recovery, but it cannot be

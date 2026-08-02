@@ -1750,7 +1750,8 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
                     (*ic->ic_sae_wcl_roam_start)(ic, source,
                         selbs->ni_bssid) != 0)
                     return;
-                /* IWM/IWX have no driver-resident SAE credential owner.  A
+                /* A backend without a driver-resident SAE credential owner
+                 * (currently IWM) cannot follow this generic path.  A
                  * generic switch would silently lose the password and send
                  * Open-System auth, so preserve the validated source link. */
                 ic->ic_flags &= ~(IEEE80211_F_BGSCAN |

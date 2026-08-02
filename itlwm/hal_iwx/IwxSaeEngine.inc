@@ -1291,10 +1291,8 @@ iwx_sae_engine_publish_hooks(struct iwx_softc *sc, bool enabled,
         ic->ic_sae_engine_peer_event = ItlIwx::iwx_sae_engine_peer_event;
         ic->ic_sae_wcl_request_revoke = ItlIwx::iwx_sae_wcl_request_revoke;
         ic->ic_sae_roam_port_valid = ItlIwx::iwx_sae_roam_port_valid;
-        /* Targeted multi-AP replay is a separate follow-up layer. Initial
-         * pure-SAE ownership is complete without publishing either hook. */
-        ic->ic_sae_wnm_roam_start = NULL;
-        ic->ic_sae_wcl_roam_start = NULL;
+        ic->ic_sae_wnm_roam_start = ItlIwx::iwx_sae_wnm_roam_start;
+        ic->ic_sae_wcl_roam_start = ItlIwx::iwx_sae_wcl_roam_start;
     } else {
         ic->ic_sae_auth_hold = NULL;
         /* A closing S_AUTH owner must remain visible even after the other
@@ -1445,6 +1443,169 @@ iwx_sae_roam_port_valid(struct ieee80211com *ic,
     IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
 out:
     iwx_sae_engine_callback_leave(sc);
+}
+
+int ItlIwx::
+iwx_sae_targeted_roam_start(struct ieee80211com *ic,
+    const struct ieee80211_node *source,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN], bool consume_wnm)
+{
+    struct iwx_softc *sc;
+    ItlIwx *that;
+    struct ItlSaeWclCredentialV1 credential;
+    struct ieee80211_node *candidate;
+    u_int8_t source_ssid[IEEE80211_NWID_LEN];
+    u_int8_t source_ssid_len = 0;
+    u_int64_t generation = 0;
+    bool active_copied = false;
+    bool transitioned = false;
+    int started = 0;
+
+    explicit_bzero(&credential, sizeof(credential));
+    explicit_bzero(source_ssid, sizeof(source_ssid));
+    if (ic == NULL || source == NULL || target_bssid == NULL ||
+        source != ic->ic_bss ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_RUN || !source->ni_port_valid ||
+        source->ni_esslen == 0 ||
+        source->ni_esslen > sizeof(source_ssid))
+        goto out;
+    sc = (struct iwx_softc *)ic->ic_softc;
+    if (!iwx_sae_engine_callback_enter(sc))
+        goto out;
+    that = container_of(sc, ItlIwx, com);
+
+    source_ssid_len = source->ni_esslen;
+    memcpy(source_ssid, source->ni_essid, source_ssid_len);
+    if (!iwx_sae_engine_runtime_enabled(sc) ||
+        sc->sc_sae_wcl_credential_lock == NULL ||
+        (ic->ic_flags & (IEEE80211_F_RSNON | IEEE80211_F_MFPR)) !=
+            (IEEE80211_F_RSNON | IEEE80211_F_MFPR) ||
+        (ic->ic_flags & IEEE80211_F_PSK) != 0 ||
+        ic->ic_rsnakms != IEEE80211_AKM_SAE ||
+        IEEE80211_ADDR_EQ(target_bssid, source->ni_bssid))
+        goto leave;
+
+    candidate = ieee80211_find_node(ic, target_bssid);
+    if (candidate == NULL || candidate == source ||
+        candidate->ni_fails != 0 ||
+        candidate->ni_chan == IEEE80211_CHAN_ANYC ||
+        candidate->ni_esslen != source_ssid_len ||
+        memcmp(candidate->ni_essid, source_ssid,
+            source_ssid_len) != 0)
+        goto leave;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential) &&
+        sc->sc_sae_wcl_credential.ssid_len == source_ssid_len &&
+        IEEE80211_ADDR_EQ(sc->sc_sae_wcl_credential.bssid,
+            source->ni_bssid) &&
+        memcmp(sc->sc_sae_wcl_credential.ssid, source_ssid,
+            source_ssid_len) == 0) {
+        credential = sc->sc_sae_wcl_credential;
+        active_copied = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    if (!active_copied)
+        goto leave;
+
+    /* The reference starts a bounded firmware roam scan rather than sending
+     * a same-BSS reassociation frame.  IWX has no matching firmware command,
+     * so cross the association epoch and retarget the retained ESS secret to
+     * the already selected scan candidate exactly as the IWN host owner does. */
+    ieee80211_new_state(ic, IEEE80211_S_SCAN,
+        IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD);
+    transitioned = ic->ic_state == IEEE80211_S_SCAN;
+    if (!transitioned)
+        goto leave;
+
+    generation = ieee80211_sae_wcl_request_begin(ic, target_bssid,
+        source_ssid, source_ssid_len);
+    if (generation == 0)
+        goto leave;
+    credential.request_generation = generation;
+    IEEE80211_ADDR_COPY(credential.bssid, target_bssid);
+    if (!itl_sae_wcl_credential_is_well_formed(&credential) ||
+        that->stageSaeWclCredential(&credential) != kIOReturnSuccess ||
+        !(consume_wnm ?
+          ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
+              ic, generation) :
+          ieee80211_sae_wcl_request_admit_cached_roam_candidate(
+              ic, generation, target_bssid, source_ssid,
+              source_ssid_len)))
+        goto leave;
+
+    candidate = ieee80211_find_node(ic, target_bssid);
+    if (candidate == NULL || candidate == ic->ic_bss ||
+        candidate->ni_fails != 0 ||
+        candidate->ni_chan == IEEE80211_CHAN_ANYC ||
+        candidate->ni_esslen != ic->ic_des_esslen ||
+        memcmp(candidate->ni_essid, ic->ic_des_essid,
+            ic->ic_des_esslen) != 0 ||
+        ieee80211_match_bss(ic, candidate, 0) != 0)
+        goto leave;
+
+    ieee80211_node_join_bss(ic, candidate);
+    if (!ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss))
+        goto leave;
+    if (consume_wnm)
+        ieee80211_wnm_bss_transition_consume(ic, source_ssid,
+            source_ssid_len, target_bssid);
+    XYLog("iwx_sae_roam DRIVER_RESIDENT_%s_STARTED\n",
+        consume_wnm ? "BTM" : "WCL");
+    started = 1;
+leave:
+    if (!started && generation != 0) {
+        (void)ieee80211_sae_wcl_request_clear_if_generation(ic,
+            generation);
+        that->cancelSaeWclCredential(generation);
+    }
+    explicit_bzero(&credential, sizeof(credential));
+    iwx_sae_engine_callback_leave(sc);
+out:
+    explicit_bzero(&credential, sizeof(credential));
+    explicit_bzero(source_ssid, sizeof(source_ssid));
+    (void)transitioned;
+    return started;
+}
+
+int ItlIwx::
+iwx_sae_wnm_roam_start(struct ieee80211com *ic,
+    const struct ieee80211_node *source)
+{
+    u_int8_t target_bssid[IEEE80211_ADDR_LEN];
+    u_int8_t source_ssid[IEEE80211_NWID_LEN];
+    u_int8_t source_ssid_len;
+    int started = 0;
+
+    explicit_bzero(target_bssid, sizeof(target_bssid));
+    explicit_bzero(source_ssid, sizeof(source_ssid));
+    if (ic == NULL || source == NULL || source != ic->ic_bss ||
+        source->ni_esslen == 0 ||
+        source->ni_esslen > sizeof(source_ssid))
+        goto out;
+    source_ssid_len = source->ni_esslen;
+    memcpy(source_ssid, source->ni_essid, source_ssid_len);
+    if (ieee80211_wnm_bss_transition_copy_retarget(ic, source_ssid,
+            source_ssid_len, target_bssid) == 0)
+        goto out;
+    started = iwx_sae_targeted_roam_start(ic, source, target_bssid, true);
+out:
+    explicit_bzero(source_ssid, sizeof(source_ssid));
+    explicit_bzero(target_bssid, sizeof(target_bssid));
+    return started;
+}
+
+int ItlIwx::
+iwx_sae_wcl_roam_start(struct ieee80211com *ic,
+    const struct ieee80211_node *source,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN])
+{
+    return iwx_sae_targeted_roam_start(ic, source, target_bssid, false);
 }
 
 int ItlIwx::

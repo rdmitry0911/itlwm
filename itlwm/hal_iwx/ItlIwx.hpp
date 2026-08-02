@@ -655,6 +655,14 @@ public:
             u_int64_t);
     static void iwx_sae_roam_port_valid(struct ieee80211com *,
             const struct ieee80211_node *);
+    static int iwx_sae_wnm_roam_start(struct ieee80211com *,
+            const struct ieee80211_node *);
+    static int iwx_sae_wcl_roam_start(struct ieee80211com *,
+            const struct ieee80211_node *,
+            const u_int8_t [IEEE80211_ADDR_LEN]);
+    static int iwx_sae_targeted_roam_start(struct ieee80211com *,
+            const struct ieee80211_node *,
+            const u_int8_t [IEEE80211_ADDR_LEN], bool);
     static void iwx_sae_engine_task(void *);
     void iwx_sae_engine_stop_begin(struct iwx_softc *);
     void iwx_sae_engine_reopen(struct iwx_softc *);

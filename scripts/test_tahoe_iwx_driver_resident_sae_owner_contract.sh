@@ -89,6 +89,7 @@ for token in (
 for token in (
         "stageSaeWclCredential", "iwx_sae_auth_hold",
         "iwx_sae_engine_peer_event", "iwx_sae_engine_task",
+        "iwx_sae_wnm_roam_start", "iwx_sae_wcl_roam_start",
         "supportsDriverResidentSae"):
     require(hpp, token, "IWX HAL declaration")
 
@@ -157,6 +158,23 @@ ordered(tx, "pre-trim/final ASSOC ownership",
         "iwx_sae_engine_assoc_tx_preflight", "mbuf_adj(m, hdrlen)",
         "iwx_sae_engine_assoc_tx_commit")
 
+targeted = method(engine, "iwx_sae_targeted_roam_start")
+ordered(targeted, "active-ESS SAE retarget",
+        "sc->sc_sae_wcl_credential_active",
+        "credential = sc->sc_sae_wcl_credential",
+        "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD",
+        "ieee80211_sae_wcl_request_begin",
+        "that->stageSaeWclCredential(&credential)",
+        "ieee80211_sae_wcl_request_admit_cached_roam_candidate",
+        "ieee80211_node_join_bss",
+        "ieee80211_sae_wcl_request_bound_current")
+for token in (
+        "ic->ic_sae_wnm_roam_start = ItlIwx::iwx_sae_wnm_roam_start",
+        "ic->ic_sae_wcl_roam_start = ItlIwx::iwx_sae_wcl_roam_start",
+        "ic->ic_sae_wnm_roam_start = NULL",
+        "ic->ic_sae_wcl_roam_start = NULL"):
+    require(engine, token, "targeted roam hook lifetime")
+
 for token in ("iwx_sae_engine_stop_begin(sc)",
               "iwx_sae_wcl_stop_begin(sc)", "iwx_task_gate_close"):
     require(cpp, token, "stop lifecycle")
@@ -183,5 +201,5 @@ require(start_upper, "!fHalService->supportsDriverResidentSae()",
 require(start_upper, "OSDynamicCast(ItlIwn, fHalService) == nullptr",
         "IWN-only diagnostic stimulus")
 
-print("PASS: selected API-68 IWX owns SAE credential, crypto, PMK and native ASSOC doorbell")
+print("PASS: selected API-68 IWX owns SAE credential, crypto, PMK, native ASSOC doorbell and multi-AP retarget")
 PY
