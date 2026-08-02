@@ -96,8 +96,8 @@ require(body(iwm_mac, "iwm_ap_add_internal_sta(struct iwm_softc *sc,"),
         "command.assoc_id = htole16(assocId)",
         "IWM ADD_STA AID")
 require(iwm_reg, "IWM_DQA_AP_CLIENT_QUEUE", "IWM dedicated AP client queue")
-require(iwm_reg, "IWM_DQA_AP_CLIENT_QUEUE_COUNT 4",
-        "IWM four dedicated AP client queues")
+require(iwm_reg, "IWM_DQA_AP_CLIENT_QUEUE_COUNT 5",
+        "IWM five dedicated AP client queues")
 require(body(iwm_tx, "iwm_alloc_tx_ring(iwm_softc *sc,"),
         "qid >= IWM_DQA_AP_CLIENT_QUEUE + IWM_DQA_AP_CLIENT_QUEUE_COUNT",
         "IWM AP client DMA ring allocation")

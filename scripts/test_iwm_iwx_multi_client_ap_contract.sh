@@ -41,7 +41,7 @@ def body(source: str, signature: str) -> str:
 
 
 for needle, label in (
-    ("kItlApFirmwareMaxClients = 4", "bounded four-client table"),
+    ("kItlApFirmwareMaxClients = 5", "reference five-client table"),
     ("ItlApFirmwareClientRuntime clients[kItlApFirmwareMaxClients]",
      "runtime client slots"),
     ("itl_ap_firmware_find_client", "station-MAC lookup"),
@@ -114,8 +114,8 @@ for family, front, back, task_signature, rx_signature in (
     require(set_key, "timingsafe_bcmp(apRuntime.groupKey, key->keyData",
             f"{family} idempotent shared GTK install")
 
-require(iwm_reg, "IWM_DQA_AP_CLIENT_QUEUE_COUNT 4",
-        "four IWM AP data queues")
+require(iwm_reg, "IWM_DQA_AP_CLIENT_QUEUE_COUNT 5",
+        "five IWM AP data queues")
 require(iwm_back, "IWM_DQA_AP_CLIENT_QUEUE + clientIndex",
         "IWM slot-to-queue mapping")
 require(iwm_tx, "IWM_DQA_AP_CLIENT_QUEUE + IWM_DQA_AP_CLIENT_QUEUE_COUNT",

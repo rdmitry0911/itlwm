@@ -25,7 +25,10 @@ enum ItlApFirmwareResourceStage : uint8_t {
     kItlApFirmwareResourceStopping,
 };
 
-enum { kItlApFirmwareMaxClients = 4 };
+/* AppleBCMWLAN's Tahoe APSTA station table has five 0x30-byte entries.
+ * Keep the firmware-neutral runtime at that exact public limit; individual
+ * backends still clamp a lower hardware limit when required. */
+enum { kItlApFirmwareMaxClients = 5 };
 
 struct ItlApFirmwareClientRuntime {
     uint8_t staId;
