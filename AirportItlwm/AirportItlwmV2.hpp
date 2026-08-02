@@ -268,6 +268,7 @@ struct apple80211_virt_if_create_data;
 struct AirportItlwmLinkStatePublishLifecycle {
     IOSimpleLock *admissionLock;
     IOInterruptEventSource *source;
+    IOWorkLoop *workloop;
     IOSimpleLock *payloadLock;
     bool settingUp;
     bool stopping;

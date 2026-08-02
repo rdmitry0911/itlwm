@@ -110,7 +110,9 @@ for token in (
     "kAirportItlwmRegDiagLinkPublishActionUnavailable",
     "kAirportItlwmRegDiagLinkPublishOffGateRejected",
     "kAirportItlwmRegDiagLinkPublishPublished",
-    "onThreadPred == 1 && inGatePred == 0",
+    "that->fNetIf->getWorkQueue()",
+    "onDispatchQueuePred",
+    "onThreadPred == 0 && inGatePred == 1",
 ):
     require(gated, token, "off-gate publication consumer")
 
@@ -199,6 +201,7 @@ for token in (
 enable = body(skywalk, "setInterfaceEnable(bool enable)", "#else\nbool AirportItlwmSkywalkInterface::\ninit")
 require(enable, "IO80211InfraInterface::setInterfaceEnable(enable)", "base interface enable")
 require(enable, "reserve the visible link-up edge for", "aliased low-latency boundary")
+forbid(enable, "peerManager->enable(", "driver-ready PeerManager enable")
 forbid(enable, "(void)reportLinkStatus(3", "premature active low-latency alias")
 forbid(enable, "(void)IO80211InfraInterface::setLinkState(", "premature infra link-up alias")
 

@@ -573,7 +573,7 @@ order(v2_stop, "if (!beginLifecycleDrain())", "prepareLifecycleDrain();",
       "releaseAll(false);", "super::stop(provider);", "finishLifecycleDrain();")
 order(v2_hal_claimed, "prepareLifecycleDrain();",
       "stopTahoeBootThreadCallAndDrain();",
-      "teardownLinkStatePublishSource(this, _fWorkloop);",
+      "teardownLinkStatePublishSource(this);",
       "stopWatchdogAndDrain();", "releaseAPSTAOwnerClaimed();",
       "fHalService->detach(pciNub);")
 if v2_cpp.count("fHalService->detach(pciNub);") != 1:
@@ -683,6 +683,7 @@ scan_done = airport_method("fakeScanDone")
 for needle in (
     "struct AirportItlwmLinkStatePublishLifecycle",
     "IOSimpleLock *admissionLock;",
+    "IOWorkLoop *workloop;",
     "IOSimpleLock *payloadLock;",
     "bool settingUp;",
     "bool tearingDown;",
@@ -692,19 +693,24 @@ for needle in (
     require(v2_hpp, needle, "per-controller source lifetime storage")
 order(link_setup, "state.settingUp = true;", "workloop->retain();",
       "workloop->addEventSource(source)", "source->enable();",
-      "state.source = source;", "state.payloadLock = payloadLock;",
+      "state.source = source;", "state.workloop = workloop;",
+      "state.payloadLock = payloadLock;",
       "state.settingUp = false;")
 order(link_queue, "++state.users;", "source->retain();",
       "source->interruptOccurred(0, 0, 0);", "source->release();",
       "--state.users;")
 order(link_action, "state.tearingDown", "sender != state.source",
       "IOSimpleLockLockDisableInterrupt(payloadLock);",
-      "state.pendingValid = false;")
+      "state.pendingValid = false;", "++state.users;",
+      "!serialQueue->onThread()", "_fCommandGate->runAction(",
+      "AirportItlwm::setLinkStateGated", "--state.users;")
 order(link_drain, "state.stopping = true;", "state.tearingDown = true;",
       "const bool drained = !state.settingUp && state.users == 0;",
       "source->disable();", "workloop->removeEventSource(source);",
-      "state.source = NULL;", "state.payloadLock = NULL;",
+      "state.source = NULL;", "state.workloop = NULL;",
+      "state.payloadLock = NULL;",
       "IOSimpleLockFree(payloadLock);", "source->release();",
+      "workloop->release();",
       "state.tearingDown = false;")
 order(scan_setup, "state.settingUp = true;", "workloop->retain();",
       "workloop->addEventSource(source)", "source->enable();",

@@ -833,16 +833,17 @@ static bool snapshotWclPhysicalScanTerminal(AirportItlwm *that,
                                              uint64_t generation,
                                              uint32_t backendGeneration);
 
-// Off-gate link-state publication layer.
+// Externally gated link-state publication layer.
 //
 // The inherited IO80211InfraInterface::setLinkState publication reaches
-// IO80211Glue::sendIOUCToWcl, which requires the IO80211 work-queue serial
-// owner to be on its own thread with the work-loop gate released. Invoking it
-// from inside getCommandGate()->runAction holds the recursive work-loop gate,
-// so the publication would observe inGate()==true and take the null-owner
-// panic branch. The publication is therefore deferred to a software
-// IOInterruptEventSource serviced by _fWorkloop (the same IO80211WorkQueue
-// serial owner) outside the command gate. The pending transition is a single
+// IO80211Glue::sendIOUCToWcl.  Tahoe 26.3's exact predicate is
+// `getWorkQueue()->onThread() == false && getWorkQueue()->inGate() == true`:
+// IO80211WorkQueue vtable +0x130 is onThread(), +0x138 is inGate(), and the
+// success branch tests +0x138 nonzero followed by +0x130 zero.  Defer the
+// transition to the independent watchdog workloop, then enter the IO80211
+// command gate from that external worker.  Nested PeerManager gate actions
+// remain on the same external thread with the IO80211 gate held, matching the
+// recovered family precondition.  The pending transition is a single
 // coalesced record: the latest accepted link state wins and the action
 // publishes exactly once per coalesced transition (no retry/replay).
 //
@@ -893,11 +894,10 @@ static void publishLinkStateInterruptAction(OSObject *owner,
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
     if (that == NULL)
         return;
-
     AirportItlwmLinkStatePublishLifecycle &state =
         that->fLinkStatePublishLifecycle;
     IOSimpleLock *admissionLock = state.admissionLock;
-    if (that == NULL || admissionLock == NULL)
+    if (admissionLock == NULL)
         return;
 
     // removeEventSource() drains an already-running action, but it may begin
@@ -907,7 +907,8 @@ static void publishLinkStateInterruptAction(OSObject *owner,
     IOInterruptState admissionIrq =
         IOSimpleLockLockDisableInterrupt(admissionLock);
     if (state.settingUp || state.stopping || state.tearingDown ||
-        sender != state.source || state.payloadLock == NULL) {
+        sender != state.source || state.workloop == NULL ||
+        state.payloadLock == NULL) {
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
 #if __IO80211_TARGET >= __MAC_26_0
         that->recordTahoeLinkContext(
@@ -934,6 +935,8 @@ static void publishLinkStateInterruptAction(OSObject *owner,
     rawCode = state.pendingRawCode;
     state.pendingValid = false;
     IOSimpleLockUnlockEnableInterrupt(payloadLock, irq);
+    if (valid)
+        ++state.users;
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
     if (!valid)
         return;
@@ -947,8 +950,39 @@ static void publishLinkStateInterruptAction(OSObject *owner,
         kIOReturnSuccess, AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
         -1);
 #endif
-    AirportItlwm::setLinkStateGated(that, (void *)(uintptr_t)linkState,
-                                    (void *)(uintptr_t)rawCode, NULL, NULL);
+    /*
+     * This action runs on fWatchdogWorkLoop, not on the IO80211 work-queue
+     * thread.  Entering the IO80211 command gate here establishes the exact
+     * sendIOUCToWcl predicate for the whole inherited publication, including
+     * its nested PeerManager::enable() action.
+     */
+    IO80211WorkQueue *serialQueue = that->getWorkQueue();
+    if (_fCommandGate != NULL && serialQueue != NULL &&
+        !serialQueue->onThread()) {
+        (void)_fCommandGate->runAction(
+            (IOCommandGate::Action)AirportItlwm::setLinkStateGated,
+            (void *)(uintptr_t)linkState,
+            (void *)(uintptr_t)rawCode, NULL, NULL);
+    } else {
+        that->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextPublishAction,
+            kAirportItlwmRegDiagLinkContextGateRejected,
+            static_cast<uint32_t>(linkState), rawCode,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecyclePublicationUnavailable,
+            kIOReturnNotReady,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+            -1);
+        airportItlwmRegDiagRecordLinkPublish(
+            kAirportItlwmRegDiagLinkPublishOffGateRejected,
+            static_cast<uint32_t>(linkState), rawCode,
+            kIOReturnNotReady);
+    }
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.users != 0)
+        --state.users;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
 }
 
 static bool setupLinkStatePublishSource(AirportItlwm *that,
@@ -980,7 +1014,8 @@ static bool setupLinkStatePublishSource(AirportItlwm *that,
     IOInterruptState admissionIrq =
         IOSimpleLockLockDisableInterrupt(admissionLock);
     if (state.settingUp || state.stopping || state.tearingDown ||
-        state.source != NULL || state.payloadLock != NULL) {
+        state.source != NULL || state.workloop != NULL ||
+        state.payloadLock != NULL) {
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
         IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
         return false;
@@ -995,7 +1030,8 @@ static bool setupLinkStatePublishSource(AirportItlwm *that,
     IOSimpleLock *payloadLock = IOSimpleLockAlloc();
     IOInterruptEventSource *source =
         IOInterruptEventSource::interruptEventSource(
-            that, (IOInterruptEventSource::Action)publishLinkStateInterruptAction);
+            that, (IOInterruptEventSource::Action)
+                publishLinkStateInterruptAction);
     bool sourceAdded = false;
     bool installed = false;
     if (payloadLock != NULL && source != NULL &&
@@ -1006,6 +1042,7 @@ static bool setupLinkStatePublishSource(AirportItlwm *that,
         admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
         if (!state.stopping && !state.tearingDown) {
             state.source = source;
+            state.workloop = workloop;
             state.payloadLock = payloadLock;
             state.users = 0;
             state.pendingValid = false;
@@ -1016,7 +1053,9 @@ static bool setupLinkStatePublishSource(AirportItlwm *that,
     }
 
     if (installed) {
-        workloop->release();
+        // Transfer the setup retain into the published lifecycle record.  It
+        // keeps the external worker loop valid until teardown removes
+        // this source and clears state.workloop.
         return true;
     }
 
@@ -1053,7 +1092,8 @@ static void queueOffGateLinkStatePublish(AirportItlwm *that,
     IOInterruptState admissionIrq =
         IOSimpleLockLockDisableInterrupt(admissionLock);
     if (state.settingUp || state.stopping || state.tearingDown ||
-        state.source == NULL || state.payloadLock == NULL) {
+        state.source == NULL || state.workloop == NULL ||
+        state.payloadLock == NULL) {
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
 #if __IO80211_TARGET >= __MAC_26_0
         that->recordTahoeLinkContext(
@@ -1109,8 +1149,7 @@ static void queueOffGateLinkStatePublish(AirportItlwm *that,
 // in-flight action on the work-queue thread, and the pending record is cleared
 // so no further transition can be serviced.  Closing sidecar admission first
 // eliminates the producer check-then-free race with source/payload teardown.
-static void teardownLinkStatePublishSource(AirportItlwm *that,
-                                           IOWorkLoop *workloop)
+static void teardownLinkStatePublishSource(AirportItlwm *that)
 {
     if (that == NULL)
         return;
@@ -1154,6 +1193,7 @@ static void teardownLinkStatePublishSource(AirportItlwm *that,
 
     admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
     IOInterruptEventSource *source = state.source;
+    IOWorkLoop *workloop = state.workloop;
     IOSimpleLock *payloadLock = state.payloadLock;
     if (source != NULL)
         source->retain();
@@ -1175,6 +1215,7 @@ static void teardownLinkStatePublishSource(AirportItlwm *that,
     // destroy either object. A second teardown continues to wait on the bit.
     admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
     state.source = NULL;
+    state.workloop = NULL;
     state.payloadLock = NULL;
     state.pendingValid = false;
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
@@ -1187,8 +1228,12 @@ static void teardownLinkStatePublishSource(AirportItlwm *that,
         source->release();
         source->release();
     }
-    if (workloop != NULL)
+    if (workloop != NULL) {
+        // Drop the lifecycle-owned setup retain and the local teardown
+        // retain that protected removeEventSource()/state clearing.
         workloop->release();
+        workloop->release();
+    }
 
     // Do not publish completion until every owned reference and payload
     // allocation above is gone. A concurrent teardown waits on this bit.
@@ -7998,7 +8043,7 @@ void AirportItlwm::stopHalAndDrainClaimed()
     teardownSaePeerRxMailboxSource(this, _fWorkloop);
     teardownSaeTransportMailboxSource(this, _fWorkloop);
 #endif
-    teardownLinkStatePublishSource(this, _fWorkloop);
+    teardownLinkStatePublishSource(this);
     stopWatchdogAndDrain();
 #if __IO80211_TARGET >= __MAC_26_0
     // The producer fence above makes this global trace disarm safe before the
@@ -10608,15 +10653,6 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 
-    if (!setupLinkStatePublishSource(this, _fWorkloop)) {
-        XYLog("DEBUG %s [STEP 7] FAIL: link-state publish source alloc\n", __FUNCTION__);
-        stopHalAndDrain();
-        super::stop(pciNub);
-        releaseAll();
-        DISARM_PANIC_TIMER();
-        return false;
-    }
-
 #if __IO80211_TARGET >= __MAC_26_0
     if (!setupSaeTransportMailboxSource(this, _fWorkloop)) {
         XYLog("DEBUG %s [STEP 7] FAIL: SAE transport mailbox source alloc\n",
@@ -10996,6 +11032,26 @@ bool AirportItlwm::start(IOService *provider)
     fNetIf->start(this);
     RT3_SET(11); // fNetIf->start returned
     SD_SET(15); // fNetIf->start OK
+
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * sendIOUCToWcl requires the IO80211 gate to be entered from outside its
+     * own work-queue thread.  The dedicated watchdog workloop supplies that
+     * external worker; the action then enters _fCommandGate synchronously.
+     */
+    IOWorkLoop *linkStatePublishWorkLoop = fWatchdogWorkLoop;
+#else
+    IOWorkLoop *linkStatePublishWorkLoop = _fWorkloop;
+#endif
+    if (!setupLinkStatePublishSource(this, linkStatePublishWorkLoop)) {
+        XYLog("DEBUG %s [STEP 8f] FAIL: Glue link-state publish source\n",
+              __FUNCTION__);
+        stopHalAndDrain();
+        super::stop(provider);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
 
     // Trigger IOSkywalkNetworkBSDClient matching.
     // deferBSDAttach(false) removes IODeferBSDAttach property and calls
@@ -11632,17 +11688,19 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     }
 #if __IO80211_TARGET >= __MAC_26_0
     /*
-     * Off-gate publication precondition guard, evaluated BEFORE any publication
-     * side effect. The inherited IO80211 publication path reaches
-     * IO80211Glue::sendIOUCToWcl, which requires the IO80211 work-queue serial
-     * owner to be on its own thread (onThread() == true) with the work-loop gate
-     * released (inGate() == false); otherwise it takes the null-owner panic
-     * branch. If the off-gate route did not reach this point with that
-     * precondition satisfied, perform NO WCL/IO80211 link-state publication at
-     * all (no WCL link-up indication, inherited setLinkState, setRunningState,
-     * connect-complete, or postMessage) and return kIOReturnNotReady. This is a
-     * precondition guard, not retry/replay/masking/forced-success: when the
-     * precondition fails the link is simply not published (the negative branch).
+     * External-gate publication precondition guard, evaluated BEFORE any
+     * publication side effect. The inherited IO80211 publication path reaches
+     * IO80211Glue::sendIOUCToWcl, which requires the work queue stored at Glue
+     * ivars +0x38 to be entered through its gate from an external thread
+     * (onThread() == false, inGate() == true); otherwise it takes the panic
+     * branch. IO80211Glue::initWithOptions copies this pointer from
+     * fNetIf->getWorkQueue(). If the externally gated route did not reach this
+     * point with that precondition satisfied, perform NO WCL/IO80211 link-state
+     * publication at all (no WCL link-up indication, inherited setLinkState,
+     * setRunningState, connect-complete, or postMessage) and return
+     * kIOReturnNotReady. This is a precondition guard, not
+     * retry/replay/masking/forced-success: when the precondition fails the link
+     * is simply not published (the negative branch).
      */
     if (that->fNetIf == NULL) {
         XYLog("DEBUG %s skipped: null fNetIf\n", __FUNCTION__);
@@ -11659,24 +11717,29 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
         return kIOReturnNotReady;
     }
     {
-        IOWorkLoop *publishWorkLoop = that->getWorkLoop();
+        IOWorkLoop *publishWorkLoop = reinterpret_cast<IOWorkLoop *>(
+            that->fNetIf->getWorkQueue());
         const int onThreadPred =
             publishWorkLoop ? (publishWorkLoop->onThread() ? 1 : 0) : -1;
         const int inGatePred =
             publishWorkLoop ? (publishWorkLoop->inGate() ? 1 : 0) : -1;
-        const bool offGateOwner = onThreadPred == 1 && inGatePred == 0;
+        const int onDispatchQueuePred =
+            ((IO80211InfraInterface *)that->fNetIf)->onDispatchQueue() ? 1 : 0;
+        const bool externallyGatedOwner =
+            onThreadPred == 0 && inGatePred == 1;
         if (airportItlwmRegDiagShouldRecordLinkContext()) {
             airportItlwmRegDiagRecordLinkContext(
                 kAirportItlwmRegDiagLinkContextGate,
-                offGateOwner ? kAirportItlwmRegDiagLinkContextGateReady :
+                externallyGatedOwner ? kAirportItlwmRegDiagLinkContextGateReady :
                                kAirportItlwmRegDiagLinkContextGateRejected,
                 static_cast<uint32_t>(linkState), rawCode,
                 AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
                 kAirportItlwmRegDiagLinkContextLifecyclePublicationReady,
                 that->currentTahoeAssociationEpoch(), onThreadPred, inGatePred,
-                -1, offGateOwner ? kIOReturnSuccess : kIOReturnNotReady);
+                onDispatchQueuePred,
+                externallyGatedOwner ? kIOReturnSuccess : kIOReturnNotReady);
         }
-        if (!offGateOwner) {
+        if (!externallyGatedOwner) {
             const uint32_t predicates =
                 (onThreadPred == 1 ? 0x1U : 0U) |
                 (inGatePred == 1 ? 0x2U : 0U);
@@ -11692,7 +11755,7 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     if (linkState == kIO80211NetworkLinkUp) {
         postTahoeWclLinkUpInd(that, rawCode);
     }
-    // The off-gate precondition (onThread==1, inGate==0) was guarded at the top
+    // The external-gate precondition (onThread==0, inGate==1) was guarded at the top
     // of this publication path; reaching here means it holds, so the inherited
     // publication is safe to invoke.
     // Tahoe's inherited selector returns bool, not IOReturn: true means the
