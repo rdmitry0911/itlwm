@@ -263,7 +263,8 @@ for token in ("sc_sae_tx_active", "sc_sae_tx_doorbelled",
               "sae_tx_task"):
     require(queue_terminal, token, "one-ticket terminal FIFO")
 deferred = iwx_method("iwx_sae_tx_task_dispatch")
-for token in ("sc_sae_tx_eventq", "sc_sae_tx_cancel_through",
+for token in ("sc_sae_tx_eventq", "iwx_sae_tx_ticket_cancelled_locked",
+              "iwx_sae_engine_queue_terminal", "engine_consumed",
               "iwx_task_gate_leave", "IEEE80211_EVT_SAE_AUTH_TRANSPORT",
               "ic->ic_event_handler"):
     require(deferred, token, "deferred controller terminal delivery")

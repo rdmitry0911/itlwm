@@ -108,6 +108,8 @@
 #include <net80211/ieee80211_mira.h>
 #include <net80211/ieee80211_radiotap.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
+#include <HAL/ItlSaePmkContinuationV1.h>
+#include <HAL/ItlSaeWclCredentialV1.h>
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
@@ -722,9 +724,41 @@ struct iwx_security_rx_entry {
  * controller cancellation before it reaches the main command gate.
  */
 #define IWX_SAE_TX_EVENTQ_LEN 4
+#define IWX_SAE_ENGINE_PEERQ_LEN 4
+
+struct ieee80211_sae_engine;
 
 struct iwx_sae_tx_event_entry {
     struct ItlSaeAuthTransportEventV1 event;
+};
+
+/* Public-only identity owned by the serial driver-resident SAE worker.
+ * Password, PWE, scalar and PMK remain inside the separately scrubbed WCL
+ * slot or the opaque ieee80211_sae_engine allocation. */
+struct iwx_sae_engine_owner {
+    bool                              active;
+    bool                              start_pending;
+    bool                              cancelled;
+    bool                              suppress_scan;
+    bool                              completion_claimed;
+    bool                              assoc_tx_pending;
+    bool                              assoc_tx_accepted;
+    bool                              terminal_valid;
+    bool                              peer_overflow;
+    bool                              submit_retry_pending;
+    u_int8_t                          submit_retry_count;
+    u_int64_t                         request_generation;
+    u_int64_t                         association_epoch;
+    u_int64_t                         relay_generation;
+    u_int64_t                         in_flight_ticket;
+    struct ItlSaeSelectedJoinEventV1  selected;
+    struct ItlSaeAuthActivatedEventV1 activated;
+    struct ItlSaePmkContinuationIdentityV1 completion;
+    struct ItlSaeAuthTransportEventV1 terminal;
+    struct ItlSaeAuthPeerEventV1      peerq[IWX_SAE_ENGINE_PEERQ_LEN];
+    u_int8_t                          peer_head;
+    u_int8_t                          peer_tail;
+    u_int8_t                          peer_count;
 };
 
 /*
@@ -824,6 +858,7 @@ struct iwx_softc {
 	struct task newstate_task;
 	struct task security_rx_task;
 	struct task sae_tx_task;
+	struct task sae_engine_task;
 	struct task mfp_pae_task;
 	/* Process-context AP client materialization; never wait for q0 in RX. */
 	struct task ap_client_task;
@@ -901,6 +936,9 @@ struct iwx_softc {
     bool sc_sae_tx_doorbelled;
     uint64_t sc_sae_tx_active_ticket;
     uint64_t sc_sae_tx_cancel_through;
+    /* Driver-owned tickets occupy the high-bit domain; keep their numeric
+     * cancellation fence independent from the historical controller relay. */
+    uint64_t sc_sae_tx_direct_cancel_through;
     struct ItlSaeAuthTransportEventV1 sc_sae_tx_active_event;
     bool sc_sae_tx_last_event_valid;
     struct ItlSaeAuthTransportEventV1 sc_sae_tx_last_event;
@@ -908,6 +946,28 @@ struct iwx_softc {
     uint8_t sc_sae_tx_event_head;
     uint8_t sc_sae_tx_event_tail;
     uint8_t sc_sae_tx_event_count;
+
+    IOSimpleLock *sc_sae_engine_lock;
+    struct iwx_sae_engine_owner sc_sae_engine_owner;
+    struct ieee80211_sae_engine *sc_sae_engine;
+    u_int64_t sc_sae_engine_wcl_cancel_generation;
+    volatile u_int32_t sc_sae_engine_lifecycle_generation;
+    u_int64_t sc_sae_engine_next_ticket;
+    u_int64_t sc_sae_engine_next_relay_generation;
+    volatile u_int32_t sc_sae_engine_callback_state;
+    volatile u_int32_t sc_sae_engine_task_admission_state;
+    bool sc_sae_engine_task_ready;
+    bool sc_sae_engine_stopping;
+    bool sc_sae_engine_detaching;
+    bool sc_sae_engine_runtime_enabled;
+
+    IOSimpleLock *sc_sae_wcl_credential_lock;
+    bool sc_sae_wcl_credential_staged;
+    bool sc_sae_wcl_credential_pending;
+    bool sc_sae_wcl_credential_active;
+    bool sc_sae_wcl_credential_cancel_valid;
+    uint64_t sc_sae_wcl_credential_cancel_through_generation;
+    struct ItlSaeWclCredentialV1 sc_sae_wcl_credential;
 
     /*
      * The q0 RX action and the command-gated timeout only record a terminal

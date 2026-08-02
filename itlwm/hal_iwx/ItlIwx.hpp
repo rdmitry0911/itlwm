@@ -218,6 +218,14 @@ public:
     IOReturn submitSaeAuthFrame(
         const struct ItlSaeAuthTxRequestV1 *request) override;
     void cancelSaeAuthFrame(uint64_t ticket) override;
+    IOReturn stageSaeWclCredential(
+        const struct ItlSaeWclCredentialV1 *credential) override;
+    void cancelSaeWclCredential(uint64_t request_generation) override;
+    void purgeSaeWclCredentialStage() override;
+    bool isSaeWclCredentialAdmissionReady() override;
+    bool reserveSaeWclCredentialAdmission() override;
+    void releaseSaeWclCredentialAdmission() override;
+    bool supportsDriverResidentSae() override;
 
     IOReturn beginWclBackgroundScan(
         uint64_t generation,
@@ -637,6 +645,22 @@ public:
             struct ItlSaeAuthTransportEventV1 *);
     void    iwx_sae_tx_emit_reset_event(struct iwx_softc *,
             const struct ItlSaeAuthTransportEventV1 *);
+    static int iwx_sae_auth_hold(struct ieee80211com *,
+            struct ieee80211_node *, enum ieee80211_state, int);
+    static int iwx_sae_auth_owned(struct ieee80211com *,
+            const struct ieee80211_node *);
+    static int iwx_sae_engine_peer_event(struct ieee80211com *,
+            const struct ItlSaeAuthPeerEventV1 *);
+    static void iwx_sae_wcl_request_revoke(struct ieee80211com *,
+            u_int64_t);
+    static void iwx_sae_roam_port_valid(struct ieee80211com *,
+            const struct ieee80211_node *);
+    static void iwx_sae_engine_task(void *);
+    void iwx_sae_engine_stop_begin(struct iwx_softc *);
+    void iwx_sae_engine_reopen(struct iwx_softc *);
+    void iwx_sae_engine_detach_begin(struct iwx_softc *);
+    void iwx_sae_wcl_stop_begin(struct iwx_softc *);
+    void iwx_sae_wcl_detach_begin(struct iwx_softc *);
     static void    iwx_mfp_pae_task(void *);
     static void    iwx_mfp_pae_task_dispatch(void *);
     static int     iwx_pae_mfp_txn_submit(struct ieee80211com *, u_int64_t,
@@ -733,6 +757,8 @@ public:
     uint32_t wclScanNextBackendGeneration;
     bool wclScanPublicationInvalidated;
     bool wclScanNeedsReopen;
+    /* One early WCL secret-copy reservation. The stage call consumes it. */
+    bool wclSaeAdmissionReserved;
 };
 
 #endif

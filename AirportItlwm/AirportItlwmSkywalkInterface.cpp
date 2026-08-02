@@ -7294,10 +7294,10 @@ startIwnDirectSaeCredential(
         !itl_sae_wcl_credential_bssid_is_unicast_nonzero(request->bssid) ||
         !TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential(
             request->authUpper) ||
-        fHalService == nullptr || OSDynamicCast(ItlIwn, fHalService) ==
-            nullptr) {
+        fHalService == nullptr ||
+        !fHalService->supportsDriverResidentSae()) {
         result = fHalService == nullptr ||
-            OSDynamicCast(ItlIwn, fHalService) == nullptr
+            !fHalService->supportsDriverResidentSae()
             ? kIOReturnUnsupported : kIOReturnBadArgumentTahoe;
         goto out;
     }
@@ -7305,6 +7305,10 @@ startIwnDirectSaeCredential(
     if (request->provenance ==
         AirportItlwmIwnDirectSaeCredentialProvenance::LabStimulus) {
 #if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
+        if (OSDynamicCast(ItlIwn, fHalService) == nullptr) {
+            result = kIOReturnUnsupported;
+            goto out;
+        }
         IOWorkLoop *workloop = instance != nullptr ? instance->getWorkLoop()
                                                      : nullptr;
         /* This path is intentionally entered only from the dedicated event

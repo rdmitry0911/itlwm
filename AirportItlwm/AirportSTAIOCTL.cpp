@@ -992,7 +992,8 @@ getCARD_CAPABILITIES(OSObject *object,
     TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
         cd->capabilities);
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
-    if (OSDynamicCast(ItlIwn, fHalService) != nullptr)
+    if (fHalService != nullptr &&
+        fHalService->supportsDriverResidentSae())
         TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
 #endif
     //cd->capabilities[8] = 0x40;

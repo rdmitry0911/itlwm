@@ -179,6 +179,7 @@ public:
     bool isSaeWclCredentialAdmissionReady() override;
     bool reserveSaeWclCredentialAdmission() override;
     void releaseSaeWclCredentialAdmission() override;
+    bool supportsDriverResidentSae() override;
 
     IOReturn beginWclBackgroundScan(uint64_t generation,
                                     uint32_t *outBackendGeneration) override;

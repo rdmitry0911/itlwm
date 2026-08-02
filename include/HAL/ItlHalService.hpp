@@ -480,6 +480,12 @@ public:
     virtual bool reserveSaeWclCredentialAdmission() { return false; }
     virtual void releaseSaeWclCredentialAdmission() {}
 
+    /* Stable feature publication for the Tahoe feature-0x41 query. Unlike
+     * admission readiness this does not depend on transient scan/owner state;
+     * a backend returns true only when its complete credential, crypto, PMK,
+     * association and PMF path is present for the attached device. */
+    virtual bool supportsDriverResidentSae() { return false; }
+
 protected:
     
     /* Completion paths may test their predicate before sleeping under this mutex. */

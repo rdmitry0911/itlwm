@@ -1028,6 +1028,12 @@ iwn_sae_engine_schedule_task(struct iwn_softc *sc)
 
 } // namespace
 
+bool ItlIwn::
+supportsDriverResidentSae()
+{
+    return iwn_sae_engine_runtime_enabled(&com);
+}
+
 /*
  * Report whether a new private WCL credential can reach the driver-owned SAE
  * worker without colliding with a physical scan or an older SAE request.
