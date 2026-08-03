@@ -240,10 +240,12 @@ require(capture, "ieee80211_public_initial_bssid_pin_bind_selected_bss_locked",
 # then restores the historic -1 argument before forwarding anything lower.
 # IWM/IWX queue state work, so their ingress normalizes the tag before it can
 # become an unproven task snapshot.
-next_scan = body(node_c, "ieee80211_next_scan(", "next scan")
+next_scan = body(node_c, "ieee80211_next_scan_result(", "next scan")
 ordered(next_scan, "only scanner channel hops carry the private tag",
         "ic->ic_bss->ni_chan = chan;",
-        "ieee80211_new_state(ic, IEEE80211_S_SCAN,",
+        "ic->ic_newstate_preflight(ic, IEEE80211_S_SCAN,",
+        "ieee80211_pae_assoc_epoch_note_newstate(ic, IEEE80211_S_SCAN,",
+        "return ic->ic_newstate(ic, IEEE80211_S_SCAN,",
         "IEEE80211_NEWSTATE_ARG_SCAN_HOP);")
 note_newstate = body(proto_c, "ieee80211_pae_assoc_epoch_note_newstate(",
                      "newstate epoch note")

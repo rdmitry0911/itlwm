@@ -11797,9 +11797,19 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     }
     const unsigned int setLinkCode =
         (linkState == kIO80211NetworkLinkUp) ? 1U : rawCode;
-    if (linkState == kIO80211NetworkLinkUp) {
-        postTahoeWclLinkUpInd(that, rawCode);
-    }
+    /*
+     * Keep the parent link-state edge separate from the WCL producer edge.
+     * In Apple's recovered sequence AppleBCMWLANNetAdapter::handleLink is the
+     * sole 0xd8 producer. WCLNetManager::linkUp consumes that mail and updates
+     * BSS ownership; the later connectComplete action then calls
+     * WCLNetManager::updateLinkState(true, false, true, ...), returning IOC
+     * 0x1c6 to this interface. Re-posting 0xd8 here starts a second WCL join
+     * after the completion sequence is already in flight and can make WCL
+     * tear the freshly accepted parent link back down.
+     *
+     * The protected/open join completion actions above own the one 0xd8 mail.
+     * This action owns only the inherited IO80211 link-state publication.
+     */
     // The external-gate precondition (onThread==0, inGate==1) was guarded at the top
     // of this publication path; reaching here means it holds, so the inherited
     // publication is safe to invoke.

@@ -61,6 +61,18 @@ for token in (
 if "setLinkState(" in action:
     fail("producer action must not force parent link state")
 
+parent_action = body("IOReturn AirportItlwm::\nsetLinkStateGated(")
+for token in (
+        "AppleBCMWLANNetAdapter::handleLink is the",
+        "sole 0xd8 producer",
+        "WCLNetManager::updateLinkState(true, false, true",
+        "owns only the inherited IO80211 link-state publication",
+):
+    if token not in parent_action:
+        fail(f"missing reference-backed single-owner invariant: {token}")
+if "postTahoeWclLinkUpInd(" in parent_action:
+    fail("parent link-state action must not duplicate the WCL 0xd8 producer")
+
 rsn_case_start = source.find("case IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE:")
 rsn_case_end = source.find("case IEEE80211_EVT_STA_DEAUTH:", rsn_case_start)
 if rsn_case_start < 0 or rsn_case_end < 0:
