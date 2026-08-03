@@ -12355,6 +12355,30 @@ iwn_scan_lease_retire_after_hardware_stop(struct iwn_softc *sc)
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
 }
 
+/*
+ * A protected join is not usable until the supplicant has installed its keys
+ * and opened the controlled port.  In particular, do not let a generic scan
+ * retune the BSS context after authentication has started or between the
+ * Association Response and the four-way handshake.  The driver's associated
+ * RXON can be committed while net80211 is still inside the ASSOC -> RUN
+ * transition, so keying this fence only on S_RUN leaves a real workloop race.
+ * Controller-owned background scans already had a partial copy of this
+ * policy; keep the invariant here so every state-machine entry and every
+ * physical scan owner observes the same association boundary.
+ */
+static bool
+iwn_rsn_join_scan_blocked(const struct ieee80211com *ic)
+{
+    const bool protected_join = ic != NULL &&
+        (ic->ic_state == IEEE80211_S_AUTH ||
+         ic->ic_state == IEEE80211_S_ASSOC ||
+         ic->ic_state == IEEE80211_S_RUN);
+
+    return protected_join &&
+        (ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+        (ic->ic_bss == NULL || !ic->ic_bss->ni_port_valid);
+}
+
 int ItlIwn::
 iwn_newstate_preflight(struct ieee80211com *ic,
                        enum ieee80211_state nstate, int arg)
@@ -12369,6 +12393,12 @@ iwn_newstate_preflight(struct ieee80211com *ic,
     sc = (struct iwn_softc *)ic->ic_if.if_softc;
     if (sc == NULL)
         return 0;
+    /* Reject before net80211 advances the association epoch or tears down
+     * the current BSS.  A scanner-internal hop belongs to a command which
+     * was admitted before RUN and must still be allowed to complete. */
+    if (arg != IEEE80211_NEWSTATE_ARG_SCAN_HOP &&
+        iwn_rsn_join_scan_blocked(ic))
+        return 1;
     /* Do not let an ordinary state-machine scan tear down the BSS/epoch
      * owned by an in-progress direct SAE + PMF join.  Scanner-internal hops
      * remain part of the already admitted physical command. */
@@ -18011,6 +18041,12 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
         ieee80211_wnm_bss_transition_scan_owns_admission(ic) != 0;
     if (out_backend_generation != NULL)
         *out_backend_generation = 0;
+    /* All physical scan owners share the protected-association fence.  The
+     * generic background owner is deliberately included: it does not set
+     * prearm_background, and used to retune APSTA between Association
+     * Response and EAPOL M1. */
+    if (iwn_rsn_join_scan_blocked(ic))
+        return EBUSY;
     if (prearm_background && (ic->ic_state != IEEE80211_S_RUN ||
                               ic->ic_mgt_timer != 0 ||
                               ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&

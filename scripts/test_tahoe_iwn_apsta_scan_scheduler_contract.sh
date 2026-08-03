@@ -79,15 +79,47 @@ assert "nstate == IEEE80211_S_AUTH" in newstate
 assert "!authWillCommitRxon" in newstate
 assert "APSTA auth coalesced duplicate reset RXON" in newstate
 
+rsn_scan_fence = iwn[
+    iwn.index("iwn_rsn_join_scan_blocked("):
+    iwn.index("int ItlIwn::\niwn_newstate_preflight(")
+]
+for needle in (
+    "ic->ic_state == IEEE80211_S_AUTH",
+    "ic->ic_state == IEEE80211_S_ASSOC",
+    "ic->ic_state == IEEE80211_S_RUN",
+    "IEEE80211_F_RSNON",
+    "ic->ic_bss == NULL",
+    "!ic->ic_bss->ni_port_valid",
+):
+    assert needle in rsn_scan_fence, \
+        f"missing protected auth/assoc/RUN join scan fence: {needle}"
+
+preflight = iwn[
+    iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
+    iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")
+]
+assert preflight.index("iwn_rsn_join_scan_blocked(ic)") < \
+    preflight.index("iwn_scan_lease_defer_scan"), \
+    "RUN -> SCAN must be fenced before association epoch teardown"
+
+scan_start = iwn[
+    iwn.index("iwn_scan_start(struct iwn_softc *sc, uint16_t flags"):
+    iwn.index("int ItlIwn::\niwn_scan(struct iwn_softc *sc")
+]
+assert scan_start.index("iwn_rsn_join_scan_blocked(ic)") < \
+    scan_start.index("iwn_scan_lease_reserve"), \
+    "every physical scan owner must be fenced before lease reservation"
+
 run = iwn[
     iwn.index("iwn_run(struct iwn_softc *sc)"):
     iwn.index("iwn_pae_mfp_txn_submit(")
 ]
 add_bss = run.index("iwn_add_bss_node(sc, ni)")
+associated_rxon = run.index("iwn_cmd(sc, IWN_CMD_RXON")
 replay_beacon = run.index("iwn_send_ap_beacon(&apFirmwareConfig)")
 steady_pan = run.index("iwn_clear_ap_sta_pan_priority()")
-assert add_bss < replay_beacon < steady_pan, \
-    "the retained PAN beacon must be replayed before steady APSTA slots"
+assert associated_rxon < add_bss < replay_beacon < steady_pan, \
+    "the retained PAN beacon must be replayed after BSS installation"
 
 reset = iwn[
     iwn.index("void ItlIwn::iwn_reset_ap_runtime_state()"):
