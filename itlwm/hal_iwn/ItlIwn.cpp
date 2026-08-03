@@ -21369,6 +21369,15 @@ iwn_stop(struct _ifnet *ifp)
     ieee80211_pae_mfp_txn_abort(ic);
     ieee80211_new_state(ic, IEEE80211_S_INIT, -1);
 
+    /*
+     * iwn_hw_stop() destroys the PAN RXON, stations and queues.  Retire the
+     * matching software AP runtime at the same lower epoch boundary so the
+     * host APSTA owner observes getAPCurrentChannel()==0 and can replay its
+     * durable profile.  Keeping RUNNING here left Internet Sharing enabled
+     * above a vanished BSS after firmware-fatal and TX-watchdog recovery.
+     */
+    iwn_reset_ap_runtime_state();
+
     /* Power OFF hardware. */
     iwn_hw_stop(sc);
 }

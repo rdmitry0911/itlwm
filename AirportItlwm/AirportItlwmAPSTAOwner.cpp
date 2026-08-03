@@ -779,6 +779,50 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
     return kIOReturnSuccess;
 }
 
+void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(
+    uint16_t lowerChannel)
+{
+    /*
+     * The upper HostAP profile is the durable owner across a destructive
+     * Intel firmware epoch.  The lower channel is authoritative after an
+     * asynchronous CSA, but can already be zero when a firmware fatal or TX
+     * watchdog reaches this census.  In that case apChannel is the most
+     * recent healthy watchdog snapshot.
+     */
+    if (lowerChannel != 0 && lowerChannel != apChannel) {
+        XYLog("APSTA radio-reset channel snapshot profile=%u committed=%u\n",
+              static_cast<unsigned>(apChannel),
+              static_cast<unsigned>(lowerChannel));
+        apChannel = lowerChannel;
+    }
+
+    setSoftAPPowerSaveState(
+        kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackState,
+        kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackReason);
+    struct ieee80211com *ic =
+        owner != nullptr && owner->fHalService != nullptr
+            ? owner->fHalService->get80211Controller() : nullptr;
+    /*
+     * The PM callback can arrive after the primary state left RUN.  The
+     * steady watchdog sample is therefore intentionally sticky until this
+     * retained profile has crossed the replacement firmware epoch.
+     */
+    radioResetWaitForPrimaryStaRun =
+        radioResetWaitForPrimaryStaRun ||
+        (ic != nullptr && ic->ic_state == IEEE80211_S_RUN);
+    radioResetResumeWaitTicks = 0;
+    if (owner != nullptr)
+        owner->setAPSTADatapathEnabled(false);
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++)
+        clearStation(&state.softapStaTableB8[i]);
+    state.softapAssociatedStaCount00 = 0;
+    clearLowerAssociatedStations();
+    state.resetState26c = 0;
+    state.hostApTransitionState270 = 0;
+    lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+    radioResetResumePending = true;
+}
+
 void AirportItlwmAPSTAOwner::prepareForRadioReset()
 {
     if (!isApRunning())
@@ -816,19 +860,6 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
     const uint16_t lowerChannel =
         owner != nullptr && owner->fHalService != nullptr
             ? owner->fHalService->getAPCurrentChannel() : 0;
-    if (lowerChannel != 0 && lowerChannel != apChannel) {
-        XYLog("APSTA radio-reset channel snapshot profile=%u committed=%u\n",
-              static_cast<unsigned>(apChannel),
-              static_cast<unsigned>(lowerChannel));
-        apChannel = lowerChannel;
-    }
-
-    setSoftAPPowerSaveState(
-        kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackState,
-        kAirportItlwmAPSTAHostApPowerOffConcurrencyFallbackReason);
-    struct ieee80211com *ic =
-        owner != nullptr && owner->fHalService != nullptr
-            ? owner->fHalService->get80211Controller() : nullptr;
     /*
      * Apple retains both FullMAC contexts through hostAPPowerOff().  DVM
      * loses both in iwn_hw_stop(), and its later primary IWN_CMD_RXON
@@ -843,19 +874,7 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
      * so retain that last pre-transition RUN observation across this late
      * callback instead of replacing it with a transient INIT/SCAN state.
      */
-    radioResetWaitForPrimaryStaRun =
-        radioResetWaitForPrimaryStaRun ||
-        (ic != nullptr && ic->ic_state == IEEE80211_S_RUN);
-    radioResetResumeWaitTicks = 0;
-    owner->setAPSTADatapathEnabled(false);
-    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++)
-        clearStation(&state.softapStaTableB8[i]);
-    state.softapAssociatedStaCount00 = 0;
-    clearLowerAssociatedStations();
-    state.resetState26c = 0;
-    state.hostApTransitionState270 = 0;
-    lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
-    radioResetResumePending = true;
+    prepareRetainedLowerReset(lowerChannel);
 }
 
 IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
@@ -870,11 +889,42 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         struct ieee80211com *ic =
             owner != nullptr && owner->fHalService != nullptr
                 ? owner->fHalService->get80211Controller() : nullptr;
-        radioResetWaitForPrimaryStaRun =
-            isApRunning() && ic != nullptr &&
-            ic->ic_state == IEEE80211_S_RUN;
-        radioResetResumeWaitTicks = 0;
-        return kIOReturnSuccess;
+        const bool upperRunning = isApRunning();
+        const uint16_t lowerChannel =
+            upperRunning && owner != nullptr &&
+                    owner->fHalService != nullptr
+                ? owner->fHalService->getAPCurrentChannel() : 0;
+
+        /*
+         * IWN/IWM/IWX reset destroys the firmware AP context independently
+         * of the Apple role-7 owner.  A zero lower channel while the upper
+         * owner is still Running is therefore an unexpected lower epoch,
+         * not a public HostAP stop.  Retain the configured profile, close
+         * the stale datapath and let the existing bounded replay path build
+         * a fresh lower context.  This also covers firmware fatal recovery
+         * when there was no associated station; hostAPPowerOff's deliberate
+         * no-client shutdown remains confined to prepareForRadioReset().
+         */
+        if (upperRunning && lowerChannel == 0) {
+            XYLog("APSTA unexpected lower reset detected; retaining "
+                  "HostAP profile\n");
+            prepareRetainedLowerReset(0);
+        } else {
+            /* Keep the durable profile aligned with a completed lower CSA so
+             * an unexpected reset between PM callbacks replays the actual
+             * on-air channel rather than the original SET_CHANNEL value. */
+            if (upperRunning && lowerChannel != apChannel) {
+                XYLog("APSTA live channel snapshot profile=%u committed=%u\n",
+                      static_cast<unsigned>(apChannel),
+                      static_cast<unsigned>(lowerChannel));
+                apChannel = lowerChannel;
+            }
+            radioResetWaitForPrimaryStaRun =
+                upperRunning && ic != nullptr &&
+                ic->ic_state == IEEE80211_S_RUN;
+            radioResetResumeWaitTicks = 0;
+            return kIOReturnSuccess;
+        }
     }
 
     if (radioResetWaitForPrimaryStaRun) {

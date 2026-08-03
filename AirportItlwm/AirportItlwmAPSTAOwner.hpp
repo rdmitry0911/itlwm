@@ -110,6 +110,7 @@ public:
 private:
     void initSoftAPParameters();
     void resetRuntimeState();
+    void prepareRetainedLowerReset(uint16_t lowerChannel);
     void setSoftAPPowerSaveState(uint8_t newState, uint8_t reason);
     bool areAllStationsInLowPowerMode() const;
     AirportItlwmAPSTAStationTableEntryLayout *findStation(const uint8_t *mac);

@@ -26,16 +26,21 @@ prepare = owner[
     owner.index("void AirportItlwmAPSTAOwner::prepareForRadioReset()"):
     owner.index("IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()")
 ]
+retained = owner[
+    owner.index("void AirportItlwmAPSTAOwner::prepareRetainedLowerReset("):
+    owner.index("void AirportItlwmAPSTAOwner::prepareForRadioReset()")
+]
 resume = owner[
     owner.index("IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()"):
     owner.index("void AirportItlwmAPSTAOwner::teardown()")
 ]
 
-assert "radioResetWaitForPrimaryStaRun ||" in prepare
-assert "ic->ic_state == IEEE80211_S_RUN" in prepare, \
+assert "prepareRetainedLowerReset(lowerChannel);" in prepare
+assert "radioResetWaitForPrimaryStaRun ||" in retained
+assert "ic->ic_state == IEEE80211_S_RUN" in retained, \
     "sleep must preserve the last live primary-BSS observation"
-assert prepare.index("radioResetWaitForPrimaryStaRun =") < \
-       prepare.index("radioResetResumePending = true;"), \
+assert retained.index("radioResetWaitForPrimaryStaRun =") < \
+       retained.index("radioResetResumePending = true;"), \
     "the primary-STA replay dependency must be captured before AP replay arms"
 
 runtime_sample = resume[

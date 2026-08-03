@@ -15303,6 +15303,12 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     //    refcnt_finalize(&sc->task_refs, "iwxstop");
     
     iwx_stop_device(sc);
+    /* Firmware reset is terminal for every GO queue/station/key.  Clearing
+     * the lower runtime lets the shared APSTA watchdog retain and replay the
+     * upper HostAP profile after an unexpected IWX recovery epoch. */
+    if (that->apCsaTimerInitialized)
+        timeout_del(&that->apCsaTimeout);
+    itl_ap_firmware_runtime_reset(&that->apRuntime);
     /* Device reset is the last edge required before active-slot release. */
     that->iwx_sae_tx_purge(sc);
 

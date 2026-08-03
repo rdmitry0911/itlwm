@@ -31,8 +31,11 @@ def body(source: str, signature: str) -> str:
 
 
 prepare = body(owner, "void AirportItlwmAPSTAOwner::prepareForRadioReset()")
-assert "owner->setAPSTADatapathEnabled(false);" in prepare
-assert "radioResetResumePending = true;" in prepare
+retained = body(owner,
+    "void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(")
+assert "prepareRetainedLowerReset(lowerChannel);" in prepare
+assert "owner->setAPSTADatapathEnabled(false);" in retained
+assert "radioResetResumePending = true;" in retained
 assert "stopLower()" in prepare, "empty AP must still terminate normally"
 
 resume = body(owner, "IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()")

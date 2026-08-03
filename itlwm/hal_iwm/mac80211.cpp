@@ -5484,6 +5484,13 @@ iwm_stop(struct _ifnet *ifp)
     //    refcnt_finalize(&sc->task_refs, "iwmstop");
     
     iwm_stop_device(sc);
+
+    /* The device reset discarded every GO firmware resource.  Publish that
+     * lower epoch to the common APSTA owner instead of retaining a stale
+     * Running software census across fatal/watchdog recovery. */
+    if (that->apCsaTimerInitialized)
+        timeout_del(&that->apCsaTimeout);
+    itl_ap_firmware_runtime_reset(&that->apRuntime);
     
     /* Reset soft state. */
     
