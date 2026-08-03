@@ -8183,23 +8183,77 @@ int ItlIwn::iwn_send_ap_client_link_quality()
         const int lastMcs = mimo ? 8 : 0;
         const uint8_t antennaMask = mimo ?
             static_cast<uint8_t>(com.txchainmask & IWN_ANT_AB) : txant;
-        for (int mcs = firstMcs;
-             mcs >= lastMcs && retry < IWN_MAX_TX_RETRIES; mcs--) {
+        int selectedMcs = -1;
+        for (int mcs = firstMcs; mcs >= lastMcs; mcs--) {
             const size_t stream = static_cast<size_t>(mcs / 8);
             const uint8_t bit = static_cast<uint8_t>(1U << (mcs & 7));
-            if ((apClientHtMcs[stream] & bit) == 0)
-                continue;
-            const struct iwn_rate *rate = &iwn_rates[iwn_mcs2ridx[mcs]];
-            linkq.retry[retry].plcp = rate->ht_plcp;
-            linkq.retry[retry].rflags =
-                IWN_RFLAG_MCS | IWN_RFLAG_ANT(antennaMask);
-            if (retry < 2 &&
-                (apClientHtCapabilities & IEEE80211_HTCAP_SGI20) != 0)
-                linkq.retry[retry].rflags |= IWN_RFLAG_SGI;
-            retry++;
+            if ((apClientHtMcs[stream] & bit) != 0) {
+                selectedMcs = mcs;
+                break;
+            }
+        }
+        if (selectedMcs < 0)
+            return EINVAL;
+
+        /*
+         * Match rs_fill_link_cmd() in Intel DVM.  The current HT rate is
+         * attempted three times, then one lower HT rate is attempted three
+         * times.  Only after those two groups does the table cross into a
+         * legacy ladder.  Publishing every HT MCS once and filling the
+         * remaining half with the minimum basic rate made one ordinary fade
+         * traverse MCS15..8 and then spend eight attempts at 1 Mbps.  Apart
+         * from being unlike DVM, that inflated aggregate retry latency enough
+         * to hold the PAN queue at its high-water mark.
+         */
+        int lowerMcs = selectedMcs;
+        for (int mcs = selectedMcs - 1; mcs >= lastMcs; mcs--) {
+            const size_t stream = static_cast<size_t>(mcs / 8);
+            const uint8_t bit = static_cast<uint8_t>(1U << (mcs & 7));
+            if ((apClientHtMcs[stream] & bit) != 0) {
+                lowerMcs = mcs;
+                break;
+            }
+        }
+        const int htMcs[2] = { selectedMcs, lowerMcs };
+        for (size_t group = 0; group < nitems(htMcs); group++) {
+            const struct iwn_rate *rate =
+                &iwn_rates[iwn_mcs2ridx[htMcs[group]]];
+            for (int attempt = 0;
+                 attempt < 3 && retry < IWN_MAX_TX_RETRIES;
+                 attempt++) {
+                linkq.retry[retry].plcp = rate->ht_plcp;
+                linkq.retry[retry].rflags =
+                    IWN_RFLAG_MCS | IWN_RFLAG_ANT(antennaMask);
+                if ((apClientHtCapabilities &
+                     IEEE80211_HTCAP_SGI20) != 0) {
+                    linkq.retry[retry].rflags |= IWN_RFLAG_SGI;
+                }
+                retry++;
+            }
         }
         if (mimo)
             linkq.mimo = static_cast<uint8_t>(retry);
+
+        /* rs_ht_to_legacy[] maps the base MCS modulation to the closest
+         * supported legacy rate before rs_get_lower_rate() walks prev_rs.
+         * Indices here address legacyRidx/apClientLegacyRateMask. */
+        static const uint8_t htToLegacy[] = {
+            4, 5, 6, 7, 8, 9, 10, 11
+        };
+        static const int8_t legacyPrevious[] = {
+            -1, 0, 1, 5, 2, 4, 3, 6, 7, 8, 9, 10
+        };
+        int legacyIndex = htToLegacy[lowerMcs & 7];
+        while (legacyIndex >= 0 && retry < IWN_MAX_TX_RETRIES) {
+            if ((apClientLegacyRateMask & (1U << legacyIndex)) != 0) {
+                const int ridx = legacyRidx[legacyIndex];
+                linkq.retry[retry].plcp = iwn_rates[ridx].plcp;
+                linkq.retry[retry].rflags = IWN_RFLAG_ANT(txant) |
+                    (IWN_RIDX_IS_CCK(ridx) ? IWN_RFLAG_CCK : 0);
+                retry++;
+            }
+            legacyIndex = legacyPrevious[legacyIndex];
+        }
     } else {
         for (int rateIndex = static_cast<int>(nitems(legacyRidx)) - 1;
              rateIndex >= lowestLegacy && retry < IWN_MAX_TX_RETRIES;
