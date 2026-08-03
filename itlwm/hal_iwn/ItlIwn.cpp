@@ -122,6 +122,11 @@ static enum iwn_scan_lease_owner iwn_scan_lease_begin_hardware_invalidation(
 static void iwn_scan_lease_retire_after_hardware_stop(struct iwn_softc *);
 static bool iwn_scan_lease_live_locked(const struct iwn_softc *);
 static bool iwn_scan_lease_owner_is_wcl(u_int8_t);
+static bool iwn_sae_join_scan_block_promote(
+    struct iwn_softc *, u_int64_t);
+static void iwn_sae_join_scan_block_clear_generation(
+    struct iwn_softc *, u_int64_t);
+static bool iwn_sae_join_scan_blocked(struct iwn_softc *);
 static void iwn_wcl_initial_scan_pending_clear_locked(struct iwn_softc *);
 static bool iwn_scan_lease_mark_abort(
     struct iwn_softc *, enum iwn_scan_lease_owner, u_int64_t,
@@ -1093,6 +1098,7 @@ isSaeWclCredentialAdmissionReady()
         scan_idle = !iwn_scan_lease_live_locked(sc) &&
             !sc->sc_wcl_initial_scan_pending.queued &&
             !sc->sc_sae_wcl_admission_reserved &&
+            sc->sc_sae_join_scan_block_generation == 0 &&
             (sc->sc_flags & IWN_FLAG_SCANNING) == 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
 
@@ -1145,6 +1151,7 @@ reserveSaeWclCredentialAdmission()
         if (!iwn_scan_lease_live_locked(sc) &&
             !sc->sc_wcl_initial_scan_pending.queued &&
             !sc->sc_sae_wcl_admission_reserved &&
+            sc->sc_sae_join_scan_block_generation == 0 &&
             (sc->sc_flags & IWN_FLAG_SCANNING) == 0) {
             sc->sc_sae_wcl_admission_reserved = true;
             reserved = true;
@@ -1427,6 +1434,9 @@ cancelSaeWclCredential(uint64_t request_generation)
         !iwn_sae_wcl_credential_runtime_opted_in() ||
         !iwn_sae_tx_lifecycle_enter(sc, true))
         return;
+    /* Cancellation is the exact failed-join terminal.  Release radio
+     * continuity before any recovery scan is requested by the SAE worker. */
+    iwn_sae_join_scan_block_clear_generation(sc, request_generation);
     if (sc->sc_sae_wcl_credential_lock != NULL) {
         IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
         iwn_sae_wcl_credential_cancel_through_locked(sc,
@@ -1743,6 +1753,7 @@ iwn_sae_wcl_stop_begin(struct iwn_softc *sc)
     if (sc->sc_scan_lease_lock != NULL) {
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_join_scan_block_generation = 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     }
     if (sc->sc_sae_wcl_credential_lock == NULL)
@@ -1770,6 +1781,7 @@ iwn_sae_wcl_detach_begin(struct iwn_softc *sc)
     if (sc->sc_scan_lease_lock != NULL) {
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_join_scan_block_generation = 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     }
     if (sc->sc_sae_wcl_credential_lock == NULL)
@@ -2557,6 +2569,10 @@ iwn_sae_wcl_request_revoke(struct ieee80211com *ic,
     explicit_bzero(&cancel, sizeof(cancel));
     (void)iwn_sae_engine_mark_cancelled(sc, request_generation, false,
         &cancel);
+    /* Generic has already revoked this exact association epoch.  Drop the
+     * continuity owner synchronously so its immediately following recovery
+     * S_SCAN is admitted; private credential scrubbing remains deferred. */
+    iwn_sae_join_scan_block_clear_generation(sc, request_generation);
     /* This callback is admitted from generic/RX-adjacent paths.  It has
      * recorded all public cancellation identity under an interrupt-safe leaf
      * and must not take the sleeping TX lifecycle lock or WCL leaf here. */
@@ -2570,6 +2586,7 @@ iwn_sae_roam_port_valid(struct ieee80211com *ic,
     const struct ieee80211_node *ni)
 {
     struct iwn_softc *sc;
+    u_int64_t completed_generation = 0;
     bool exact_sae_ess;
     bool identity_matches;
 
@@ -2596,6 +2613,12 @@ iwn_sae_roam_port_valid(struct ieee80211com *ic,
         ic->ic_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP;
 
     IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if ((sc->sc_sae_wcl_credential_pending ||
+        sc->sc_sae_wcl_credential_active) &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential))
+        completed_generation =
+            sc->sc_sae_wcl_credential.request_generation;
     identity_matches =
         itl_sae_wcl_credential_is_well_formed(
             &sc->sc_sae_wcl_credential) &&
@@ -2615,6 +2638,9 @@ iwn_sae_roam_port_valid(struct ieee80211com *ic,
         iwn_sae_wcl_credential_clear_locked(sc);
     }
     IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    /* Port-valid is the successful join terminal.  The 4-way/PMF exchange
+     * has published its keys, so ordinary background scans may resume. */
+    iwn_sae_join_scan_block_clear_generation(sc, completed_generation);
 out:
     iwn_sae_engine_callback_leave(sc);
 }
@@ -2820,6 +2846,14 @@ iwn_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
         !IEEE80211_ADDR_EQ(ni->ni_bssid, bound.bssid) ||
         !IEEE80211_ADDR_EQ(ic->ic_myaddr, bound.sta))
         goto leave;
+
+    /* Cached-candidate joins do not necessarily issue a physical scan.
+     * Promote their mailbox reservation here; a physical direct scan has
+     * already installed the same exact generation and this is idempotent. */
+    if (!iwn_sae_join_scan_block_promote(sc, bound.generation)) {
+        held = 1;
+        goto leave;
+    }
 
     selected.version = kItlSaeAuthTransportV1Version;
     selected.size = sizeof(selected);
@@ -9774,6 +9808,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
     sc->sc_ap_transition_scan_blocked = false;
     sc->sc_sae_wcl_admission_reserved = false;
+    sc->sc_sae_join_scan_block_generation = 0;
     sc->sc_scan_lease_next_serial = 0;
     sc->sc_scan_lease_replay_task_ready = false;
     sc->sc_scan_lease_replay_pending = false;
@@ -9932,6 +9967,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_scan_lease.phase = IWN_SCAN_LEASE_IDLE;
     sc->sc_ap_transition_scan_blocked = false;
     sc->sc_sae_wcl_admission_reserved = false;
+    sc->sc_sae_join_scan_block_generation = 0;
     sc->sc_scan_lease_next_serial = 0;
     __atomic_store_n(&sc->sc_scan_lease_replay_task_admission_state,
         IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
@@ -11541,6 +11577,64 @@ iwn_scan_lease_live_locked(const struct iwn_softc *sc)
         sc->sc_scan_lease.phase != IWN_SCAN_LEASE_IDLE;
 }
 
+/* The reference firmware join is one atomic radio owner: an unrelated scan
+ * cannot replace the selected BSS between SAE Commit and the protected
+ * 4-way terminal.  DVM exposes those stages to the host, so retain an exact
+ * generation under the existing physical-scan leaf.  Promotion either
+ * consumes the pre-secret mailbox reservation or validates an already
+ * transferred direct-scan owner; an unreserved cached roam may acquire the
+ * idle leaf only when no physical command is live. */
+static bool
+iwn_sae_join_scan_block_promote(struct iwn_softc *sc,
+    u_int64_t request_generation)
+{
+    bool promoted = false;
+
+    if (sc == NULL || request_generation == 0 ||
+        sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (sc->sc_sae_join_scan_block_generation == request_generation) {
+        promoted = true;
+    } else if (sc->sc_sae_join_scan_block_generation == 0 &&
+        !iwn_scan_lease_live_locked(sc) &&
+        (sc->sc_flags & IWN_FLAG_SCANNING) == 0 &&
+        !sc->sc_ap_transition_scan_blocked &&
+        !sc->sc_wcl_initial_scan_pending.queued) {
+        sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_join_scan_block_generation = request_generation;
+        promoted = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return promoted;
+}
+
+static void
+iwn_sae_join_scan_block_clear_generation(struct iwn_softc *sc,
+    u_int64_t request_generation)
+{
+    if (sc == NULL || request_generation == 0 ||
+        sc->sc_scan_lease_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (sc->sc_sae_join_scan_block_generation == request_generation)
+        sc->sc_sae_join_scan_block_generation = 0;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+}
+
+static bool
+iwn_sae_join_scan_blocked(struct iwn_softc *sc)
+{
+    bool blocked = false;
+
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    blocked = sc->sc_sae_join_scan_block_generation != 0;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return blocked;
+}
+
 static bool
 iwn_scan_lease_wnm_target_channel(struct iwn_softc *sc,
                                   u_int64_t required_serial,
@@ -11689,10 +11783,11 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
                        u_int64_t required_initial_handoff_serial,
                        u_int32_t *out_backend_generation,
                        u_int64_t *out_serial,
-                       bool direct_sae_scan,
+                       u_int64_t direct_sae_scan_generation,
                        u_int8_t wnm_target_channel)
 {
     u_int64_t serial;
+    const bool direct_sae_scan = direct_sae_scan_generation != 0;
 
     const bool tagged_controller_owner = iwn_scan_lease_owner_is_wcl(owner) ||
         owner == IWN_SCAN_LEASE_STANDARD_CONTROLLER;
@@ -11719,14 +11814,19 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
     if (iwn_scan_lease_live_locked(sc) ||
         (sc->sc_flags & IWN_FLAG_SCANNING) != 0 ||
         sc->sc_ap_transition_scan_blocked ||
+        sc->sc_sae_join_scan_block_generation != 0 ||
         (sc->sc_sae_wcl_admission_reserved && !direct_sae_scan) ||
+        (direct_sae_scan && !sc->sc_sae_wcl_admission_reserved) ||
         (required_initial_handoff_serial != 0 && !exact_initial_pending) ||
         (initial_pending && !exact_initial_pending)) {
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
         return false;
     }
-    if (direct_sae_scan)
+    if (direct_sae_scan) {
         sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_join_scan_block_generation =
+            direct_sae_scan_generation;
+    }
     serial = ++sc->sc_scan_lease_next_serial;
     if (serial == 0)
         serial = ++sc->sc_scan_lease_next_serial;
@@ -12269,6 +12369,12 @@ iwn_newstate_preflight(struct ieee80211com *ic,
     sc = (struct iwn_softc *)ic->ic_if.if_softc;
     if (sc == NULL)
         return 0;
+    /* Do not let an ordinary state-machine scan tear down the BSS/epoch
+     * owned by an in-progress direct SAE + PMF join.  Scanner-internal hops
+     * remain part of the already admitted physical command. */
+    if (arg != IEEE80211_NEWSTATE_ARG_SCAN_HOP &&
+        iwn_sae_join_scan_blocked(sc))
+        return 1;
     if (iwn_wcl_initial_scan_pending_blocks_generic(sc))
         return 1;
     const bool public_associate_restart =
@@ -12668,7 +12774,7 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
             return 0;
         }
         if ((error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0,
-            direct_sae_scan_generation != 0)) != 0) {
+            direct_sae_scan_generation)) != 0) {
             printf("%s: could not initiate scan\n",
                 sc->sc_dev.dv_xname);
         } else if (direct_sae_scan_generation != 0 &&
@@ -17874,7 +17980,7 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
                enum iwn_scan_lease_owner owner, u_int64_t upper_generation,
                u_int64_t required_initial_handoff_serial,
                u_int32_t *out_backend_generation,
-               bool direct_sae_scan)
+               u_int64_t direct_sae_scan_generation)
 {
     struct ieee80211com *ic;
     u_int64_t serial = 0;
@@ -17894,6 +18000,7 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
     bool abort_requested = false;
     bool command_attempted = false;
     bool foreground_prepared = false;
+    const bool direct_sae_scan = direct_sae_scan_generation != 0;
     int error;
 
     if (sc == NULL || (ic = &sc->sc_ic) == NULL ||
@@ -17940,7 +18047,8 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
     if (!iwn_scan_lease_reserve(sc, owner, upper_generation,
                                 required_initial_handoff_serial,
                                 &backend_generation, &serial,
-                                direct_sae_scan, wnm_target_channel))
+                                direct_sae_scan_generation,
+                                wnm_target_channel))
         return EBUSY;
     if (out_backend_generation != NULL)
         *out_backend_generation = backend_generation;
@@ -18046,12 +18154,12 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
 
 int ItlIwn::
 iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan,
-         bool direct_sae_scan)
+         u_int64_t direct_sae_scan_generation)
 {
     return iwn_scan_start(sc, flags, bgscan,
         bgscan ? IWN_SCAN_LEASE_GENERIC_BACKGROUND :
             IWN_SCAN_LEASE_GENERIC_FOREGROUND,
-        0, 0, NULL, direct_sae_scan);
+        0, 0, NULL, direct_sae_scan_generation);
 }
 
 int ItlIwn::
@@ -18554,7 +18662,7 @@ iwn_bgscan(struct ieee80211com *ic)
     if (ieee80211_wnm_bss_transition_target_channel(ic,
             &wnm_target_channel) != 0 && wnm_target_channel > 14)
         flags = IEEE80211_CHAN_5GHZ;
-    error = that->iwn_scan(sc, flags, 1, false);
+    error = that->iwn_scan(sc, flags, 1, 0);
     if (error)
         XYLog("%s: could not initiate background scan\n",
             sc->sc_dev.dv_xname);

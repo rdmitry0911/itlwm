@@ -132,7 +132,8 @@ order(iwn, "BTM exact-channel scan plan",
 order(iwn, "BTM channel is fenced to the admitted scan lease",
       "(void)ieee80211_wnm_bss_transition_target_channel(ic,",
       "iwn_scan_lease_reserve(sc, owner, upper_generation,",
-      "direct_sae_scan, wnm_target_channel)")
+      "direct_sae_scan_generation,",
+      "wnm_target_channel)")
 require(iwn, "sc->sc_scan_lease.wnm_target_channel = wnm_target_channel;",
         "per-lease BTM channel snapshot")
 order(iwn, "BTM exact-channel terminal",

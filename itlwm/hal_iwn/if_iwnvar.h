@@ -491,8 +491,13 @@ struct iwn_softc {
     bool                sc_ap_transition_scan_blocked;
     /* One identity-free direct-SAE mailbox reservation.  The scan-lease
      * leaf atomically excludes a competing physical scan until the direct
-     * selected-BSS scan consumes it. */
+     * selected-BSS scan transfers it to the generation fence below. */
     bool                sc_sae_wcl_admission_reserved;
+    /* Exact direct-SAE generation which owns association radio continuity.
+     * Ordinary physical scans and their S_SCAN state transition remain
+     * blocked from selected-BSS scan handoff through port-valid (or exact
+     * cancellation).  Protected by sc_scan_lease_lock. */
+    u_int64_t           sc_sae_join_scan_block_generation;
     u_int64_t           sc_scan_lease_next_serial;
     struct task         scan_lease_replay_task;
     volatile u_int32_t  sc_scan_lease_replay_task_admission_state;

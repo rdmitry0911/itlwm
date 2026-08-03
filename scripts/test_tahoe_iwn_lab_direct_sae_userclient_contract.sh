@@ -164,6 +164,8 @@ for token in ("bool reserveSaeWclCredentialAdmission() override;",
     require(iwn_h, token, "IWN reservation override")
 require(iwn_var, "bool                sc_sae_wcl_admission_reserved;",
         "lower scan-leaf reservation owner")
+require(iwn_var, "u_int64_t           sc_sae_join_scan_block_generation;",
+        "exact SAE join scan-continuity owner")
 iwn_ready = body(iwn_cpp, "isSaeWclCredentialAdmissionReady()",
                  "IWN readiness predicate")
 for token in ("iwn_sae_engine_runtime_enabled(sc)",
@@ -171,6 +173,7 @@ for token in ("iwn_sae_engine_runtime_enabled(sc)",
               "iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)",
               "!iwn_scan_lease_live_locked(sc)",
               "!sc->sc_wcl_initial_scan_pending.queued",
+              "sc->sc_sae_join_scan_block_generation == 0",
               "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
               "!sc->sc_sae_engine_owner.active",
               "sc->sc_sae_engine == NULL",
@@ -186,6 +189,7 @@ ordered(reserve, "lower reservation linearization",
         "!iwn_scan_lease_live_locked(sc)",
         "!sc->sc_wcl_initial_scan_pending.queued",
         "!sc->sc_sae_wcl_admission_reserved",
+        "sc->sc_sae_join_scan_block_generation == 0",
         "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
         "sc->sc_sae_wcl_admission_reserved = true;",
         "IOSimpleLockUnlock(sc->sc_scan_lease_lock)")
@@ -257,12 +261,36 @@ require(sky, "ieee80211_sae_wcl_request_clear_if_generation",
 scan_reserve = body(iwn_cpp, "iwn_scan_lease_reserve(",
                     "physical scan lease reservation")
 for token in ("(sc->sc_sae_wcl_admission_reserved && !direct_sae_scan)",
+              "sc->sc_sae_join_scan_block_generation != 0",
+              "(direct_sae_scan && !sc->sc_sae_wcl_admission_reserved)",
               "if (direct_sae_scan)",
-              "sc->sc_sae_wcl_admission_reserved = false;"):
+              "sc->sc_sae_wcl_admission_reserved = false;",
+              "sc->sc_sae_join_scan_block_generation =\n            direct_sae_scan_generation;"):
     require(scan_reserve, token, "atomic direct-SAE scan consumption")
 require(iwn_cpp,
-        "direct_sae_scan_generation != 0)) != 0",
+        "direct_sae_scan_generation)) != 0",
         "direct-SAE scan carries reservation-consume identity")
+preflight = body(iwn_cpp, "iwn_newstate_preflight(",
+                 "IWN state-machine scan preflight")
+ordered(preflight, "active SAE join blocks ordinary S_SCAN",
+        "arg != IEEE80211_NEWSTATE_ARG_SCAN_HOP",
+        "iwn_sae_join_scan_blocked(sc)",
+        "return 1;")
+auth_hold = body(iwn_cpp, "iwn_sae_auth_hold(", "direct SAE auth hold")
+ordered(auth_hold, "cached direct join promotes scan continuity",
+        "ieee80211_sae_wcl_request_copyout_bound_current",
+        "iwn_sae_join_scan_block_promote(sc, bound.generation)")
+port_valid = body(iwn_cpp, "iwn_sae_roam_port_valid(",
+                  "direct SAE port-valid terminal")
+ordered(port_valid, "successful join releases exact scan continuity",
+        "completed_generation =",
+        "sc->sc_sae_wcl_credential.request_generation",
+        "iwn_sae_join_scan_block_clear_generation(sc, completed_generation)")
+cancel_credential = body(iwn_cpp, "cancelSaeWclCredential(",
+                         "direct SAE failed terminal")
+ordered(cancel_credential, "failed join releases exact scan continuity",
+        "iwn_sae_join_scan_block_clear_generation(sc, request_generation)",
+        "iwn_sae_wcl_credential_cancel_through_locked")
 for token in (
         "else if (direct_sae_scan_generation != 0)",
         "ieee80211_node_cleanup_sae_wcl_scan_starting(",
