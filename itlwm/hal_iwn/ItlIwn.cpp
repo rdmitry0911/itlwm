@@ -89,6 +89,27 @@ int iwn_debug = 1;
 
 #define M_DEVBUF 2
 
+/* Linux DVM's per-device HT policy enables RTS/CTS for aggregate transport
+ * on the 1000, 2000 and 6000 families.  Keep that hardware split explicit:
+ * the 5000 family and 4965 use different scheduler/protection contracts. */
+static bool
+iwn_dvm_use_rts_for_aggregation(const struct iwn_softc *sc)
+{
+    switch (sc->hw_type) {
+    case IWN_HW_REV_TYPE_1000:
+    case IWN_HW_REV_TYPE_6000:
+    case IWN_HW_REV_TYPE_6050:
+    case IWN_HW_REV_TYPE_6005:
+    case IWN_HW_REV_TYPE_2030:
+    case IWN_HW_REV_TYPE_2000:
+    case IWN_HW_REV_TYPE_105:
+    case IWN_HW_REV_TYPE_135:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void iwn_clear_apple_nrate_cache(struct iwn_softc *sc);
 static void iwn_publish_apple_nrate(struct iwn_softc *sc, uint32_t nrate);
 static bool iwn_build_ht_apple_nrate(uint8_t rate, uint8_t rflags,
@@ -8033,7 +8054,7 @@ int ItlIwn::iwn_send_ap_client_link_quality()
      * station TLC_RTS flag.  A protected aggregate with only the TX_CMD bit
      * can remain owned by SCD without ever reaching a transmit FIFO. */
     if (apClientHt && apClientTxBaMask != 0 &&
-        com.hw_type != IWN_HW_REV_TYPE_4965) {
+        iwn_dvm_use_rts_for_aggregation(&com)) {
         linkq.flags |= IWN_LINK_QUAL_FLAGS_SET_STA_TLC_RTS;
     }
     linkq.ampdu_threshold = 3;
@@ -10046,7 +10067,8 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     memset(ic->ic_ppe_thres, 0, sizeof(ic->ic_ppe_thres));
     ic->ic_ampdu_params = (IEEE80211_AMPDU_PARAM_SS_4 | 0x3 /* 64k */);
     if (sc->sc_flags & IWN_FLAG_HAS_11N) {
-        ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU | IEEE80211_C_AMSDU_IN_AMPDU);
+        ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU |
+            IEEE80211_C_AMSDU_IN_AMPDU);
         /* Set HT capabilities. */
         ic->ic_htcaps = IEEE80211_HTCAP_SGI20;
         /* 6200 devices have issues with SGI40 for some reason. */
@@ -15338,6 +15360,18 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
         }
     }
 
+    /* DVM requires aggregate transport protection independently of the
+     * BSS's legacy mixed-mode protection setting.  qid is already the
+     * selected RA/TID scheduler queue, so this is the local equivalent of
+     * Linux's IEEE80211_TX_CTL_AMPDU -> PROT_REQUIRE rule.  The separate
+     * per-family use_rts_for_aggregation policy controls only TLC_RTS in the
+     * station Link Quality table; every post-4965 aggregate TX command still
+     * carries PROT_REQUIRE. */
+    if (!IEEE80211_IS_MULTICAST(wh->i_addr1) &&
+        ring->qid >= sc->first_agg_txq &&
+        sc->hw_type != IWN_HW_REV_TYPE_4965)
+        flags |= IWN_TX_NEED_PROTECTION;
+
     /*
      * Stock/Apple behavior: all management frames (including pre-association
      * AUTH) are transmitted via the broadcast/aux station. Routing AUTH via
@@ -16500,7 +16534,25 @@ iwn_set_link_quality(struct iwn_softc *sc, struct ieee80211_node *ni)
     linkq.id = wn->id;
     linkq.antmsk_1stream = txant;
     linkq.antmsk_2stream = IWN_ANT_AB;
-    linkq.ampdu_max = IWN_AMPDU_MAX;
+    /* Firmware exposes one aggregate frame-count limit per station even if
+     * the peer negotiated different reorder windows on individual TIDs.
+     * Publish the minimum active window, clamped to DVM's maximum of 63. */
+    uint8_t aggregateLimit = IWN_AMPDU_MAX;
+    bool txAggregationActive = false;
+    if (ni->ni_flags & IEEE80211_NODE_HT) {
+        for (uint8_t tid = 0; tid < IWN_NUM_AMPDU_TID; tid++) {
+            if (sc->sc_tx_ba[tid].wn != wn)
+                continue;
+            txAggregationActive = true;
+            uint8_t negotiated = static_cast<uint8_t>(MIN(
+                ni->ni_tx_ba[tid].ba_winsize,
+                static_cast<uint16_t>(IWN_AMPDU_MAX)));
+            if (negotiated == 0)
+                negotiated = IWN_AMPDU_MAX;
+            aggregateLimit = MIN(aggregateLimit, negotiated);
+        }
+    }
+    linkq.ampdu_max = aggregateLimit;
     linkq.ampdu_threshold = 3;
     linkq.ampdu_limit = htole16(4000);    /* 4ms */
     ht40Enabled = iwn_rxon_ht40_enabled(sc);
@@ -16509,17 +16561,10 @@ iwn_set_link_quality(struct iwn_softc *sc, struct ieee80211_node *ni)
         ieee80211_node_supports_ht_sgi20(ni),
         ieee80211_node_supports_ht_sgi40(ni));
 
-#if 0 // RTS/CTS protection not yet tested
-    if (ni->ni_flags & IEEE80211_NODE_HT &&
-        sc->agg_queue_mask > 0 &&
-        ic->ic_flags & IEEE80211_F_USEPROT)
-        if (sc->hw_type != IWN_HW_REV_TYPE_4965 &&
-            sc->hw_type != IWN_HW_REV_TYPE_5300 &&
-            sc->hw_type != IWN_HW_REV_TYPE_5150 &&
-            sc->hw_type != IWN_HW_REV_TYPE_5350 &&
-            sc->hw_type != IWN_HW_REV_TYPE_5100)
-            linkq.flags |= IWN_LINK_QUAL_FLAGS_SET_STA_TLC_RTS;
-#endif
+    /* The matching post-ADDBA half of DVM aggregate protection.  This must
+     * follow the hardware queue transition; legacy USEPROT is unrelated. */
+    if (txAggregationActive && iwn_dvm_use_rts_for_aggregation(sc))
+        linkq.flags |= IWN_LINK_QUAL_FLAGS_SET_STA_TLC_RTS;
     
     /*
      * Fill the LQ rate selection table with legacy and/or HT rates
@@ -19594,6 +19639,7 @@ iwn_ampdu_tx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
 {
     struct ieee80211_tx_ba *ba = &ni->ni_tx_ba[tid];
     struct iwn_softc *sc = (struct iwn_softc *)ic->ic_softc;
+    ItlIwn *that = container_of(sc, ItlIwn, com);
     struct iwn_ops *ops = &sc->ops;
     struct iwn_node *wn = (struct iwn_node *)ni;
     struct iwn_node_info node;
@@ -19602,7 +19648,7 @@ iwn_ampdu_tx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
 
     /* Ensure we can map this TID to an aggregation queue. */
     if (tid >= IWN_NUM_AMPDU_TID || ba->ba_winsize > IWN_SCHED_WINSZ ||
-        qid > sc->ntxqs || (sc->agg_queue_mask & (1 << qid)))
+        qid >= sc->ntxqs || (sc->agg_queue_mask & (1 << qid)))
         return ENOSPC;
 
     /* Enable TX for the specified RA/TID. */
@@ -19625,7 +19671,29 @@ iwn_ampdu_tx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
     sc->sc_tx_ba[tid].wn = wn;
     ba->ba_bitmap = 0;
 
-    return 0;
+    /* DVM republishes Link Quality after the scheduler owns the RA/TID so
+     * firmware receives the negotiated frame limit and TLC_RTS together. */
+    error = that->iwn_set_link_quality(sc, ni);
+    if (error == 0)
+        return 0;
+
+    /* net80211 treats an error as an ADDBA refusal and does not call the
+     * driver's stop callback, so undo the queue transition here. */
+    if (iwn_nic_lock(sc) == 0) {
+        ops->ampdu_tx_stop(sc, tid, ba->ba_winstart);
+        iwn_nic_unlock(sc);
+    }
+    sc->agg_queue_mask &= ~(1 << qid);
+    sc->sc_tx_ba[tid].wn = NULL;
+    ba->ba_bitmap = 0;
+    wn->disable_tid |= (1 << tid);
+    memset(&node, 0, sizeof node);
+    node.id = wn->id;
+    node.control = IWN_NODE_UPDATE;
+    node.flags = IWN_FLAG_SET_DISABLE_TID;
+    node.disable_tid = htole16(wn->disable_tid);
+    (void)ops->add_node(sc, &node, 1);
+    return error;
 }
 
 void ItlIwn::
@@ -19661,6 +19729,7 @@ iwn_ampdu_tx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
     node.flags = IWN_FLAG_SET_DISABLE_TID;
     node.disable_tid = htole16(wn->disable_tid);
     ops->add_node(sc, &node, 1);
+    (void)that->iwn_set_link_quality(sc, ni);
 }
 
 void ItlIwn::
@@ -19733,6 +19802,11 @@ iwn5000_ampdu_tx_start(struct iwn_softc *sc, struct ieee80211_node *ni,
     int qid = IWN5000_FIRST_AGG_TXQUEUE + tid;
     int idx = IWN_AGG_SSN_TO_TXQ_IDX(ssn);
     struct iwn_node *wn = (struct iwn_node *)ni;
+    uint8_t frameLimit = static_cast<uint8_t>(MIN(
+        ni->ni_tx_ba[tid].ba_winsize,
+        static_cast<uint16_t>(IWN_AMPDU_MAX)));
+    if (frameLimit == 0)
+        frameLimit = IWN_AMPDU_MAX;
 
     /* Stop TX scheduler while we're changing its configuration. */
     iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
@@ -19753,9 +19827,14 @@ iwn5000_ampdu_tx_start(struct iwn_softc *sc, struct ieee80211_node *ni,
     IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
     iwn_prph_write(sc, IWN5000_SCHED_QUEUE_RDPTR(qid), ssn);
 
-    /* Set scheduler window size and frame limit. */
+    /* DVM clamps the negotiated BA window to 63 and writes the same value
+     * into the SCD window-size and frame-limit fields.  A 64-entry 802.11
+     * reorder window is valid on air but is not a valid firmware aggregate
+     * frame-count limit.  Clear context1 when recycling this RA/TID queue. */
+    iwn_mem_write(sc,
+        sc->sched_base + IWN5000_SCHED_QUEUE_OFFSET(qid), 0);
     iwn_mem_write(sc, sc->sched_base + IWN5000_SCHED_QUEUE_OFFSET(qid) + 4,
-        IWN_SCHED_LIMIT << 16 | IWN_SCHED_WINSZ);
+        static_cast<uint32_t>(frameLimit) << 16 | frameLimit);
 
     /* Enable interrupts for the queue. */
     iwn_prph_setbits(sc, IWN5000_SCHED_INTR_MASK, 1 << qid);
