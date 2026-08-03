@@ -1363,7 +1363,7 @@ void testIwxMfpIgtkContracts()
 {
     using namespace IwxMfpIgtkContracts;
 
-    require(kAx211FirmwareApi == 68,
+    require(kApi68FirmwareHeaderVersion == 68,
             "AX211 IGTK gate pins the recovered API-68 header value");
     require(kFirmwareMfpFlag == 0x4,
             "AX211 IGTK gate pins firmware MFP flag bit 2");
@@ -1385,15 +1385,18 @@ void testIwxMfpIgtkContracts()
     require(!hasValidIgtkShape(3, 16) && !hasValidIgtkShape(6, 16) &&
                 !hasValidIgtkShape(4, 32),
             "AX211 IGTK v2 rejects unsupported key ids and lengths");
-    require(hasExactAbiPrerequisites(kAx211FirmwareApi, kFirmwareMfpFlag,
-                                     true),
+    require(hasExactAbiPrerequisites(kApi68FirmwareHeaderVersion, true,
+                                     kFirmwareMfpFlag, true),
             "AX211 IGTK gate accepts the complete recovered ABI proof");
-    require(!hasExactAbiPrerequisites(kAx211FirmwareApi - 1,
+    require(!hasExactAbiPrerequisites(kApi68FirmwareHeaderVersion - 1, true,
                                       kFirmwareMfpFlag, true) &&
-                !hasExactAbiPrerequisites(kAx211FirmwareApi, 0, true) &&
-                !hasExactAbiPrerequisites(kAx211FirmwareApi,
+                !hasExactAbiPrerequisites(kApi68FirmwareHeaderVersion, false,
+                                          kFirmwareMfpFlag, true) &&
+                !hasExactAbiPrerequisites(kApi68FirmwareHeaderVersion, true,
+                                          0, true) &&
+                !hasExactAbiPrerequisites(kApi68FirmwareHeaderVersion, true,
                                           kFirmwareMfpFlag, false),
-            "AX211 IGTK gate rejects stale API, missing MFP, and missing MQ RX");
+            "AX211 IGTK gate rejects stale/legacy format, missing MFP, and missing MQ RX");
 }
 
 static constexpr size_t kTahoeScanResultMaxRates = 15;

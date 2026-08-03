@@ -180,7 +180,8 @@ order(stop, "stop closes local PMF before generic cancellation",
       "iwn_mfp_pae_abort_all(sc);", "ieee80211_pae_mfp_txn_abort(ic);")
 init = body("iwn_init(struct _ifnet *ifp)", "IWN init")
 order(init, "fresh PMF generation before scan", "iwn_mfp_pae_reopen(sc);",
-      "ieee80211_begin_scan(ifp);")
+      "error = ieee80211_begin_scan_with_result(ifp);",
+      "if (error != 0)")
 
 print("PASS: product IWN software-PMF owner keeps the full CCMP lifetime in software")
 PY
