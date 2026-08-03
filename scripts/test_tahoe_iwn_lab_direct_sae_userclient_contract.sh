@@ -280,6 +280,21 @@ auth_hold = body(iwn_cpp, "iwn_sae_auth_hold(", "direct SAE auth hold")
 ordered(auth_hold, "cached direct join promotes scan continuity",
         "ieee80211_sae_wcl_request_copyout_bound_current",
         "iwn_sae_join_scan_block_promote(sc, bound.generation)")
+promote = body(iwn_cpp, "static bool\niwn_sae_join_scan_block_promote(",
+               "direct SAE scan-continuity promotion")
+for token in (
+        "sc->sc_scan_lease.owner == IWN_SCAN_LEASE_GENERIC_BACKGROUND",
+        "sc->sc_scan_lease.owner == IWN_SCAN_LEASE_WCL_BACKGROUND",
+        "sc->sc_scan_lease.phase == IWN_SCAN_LEASE_DRAINING",
+        "sc->sc_scan_lease.terminal_claimed",
+        "!sc->sc_scan_lease.abort_requested",
+        "!sc->sc_scan_lease.hardware_invalidated",
+        "!sc->sc_scan_lease.publication_invalidated",
+        "ic->ic_wcl_reassoc_owner_active",
+        "IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED",
+        "(!iwn_scan_lease_live_locked(sc) || completing_wcl_roam)"):
+    require(promote, token,
+            "exact completed WCL scan to SAE join continuity transfer")
 port_valid = body(iwn_cpp, "iwn_sae_roam_port_valid(",
                   "direct SAE port-valid terminal")
 ordered(port_valid, "successful join releases exact scan continuity",

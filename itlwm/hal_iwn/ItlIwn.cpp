@@ -11588,16 +11588,42 @@ static bool
 iwn_sae_join_scan_block_promote(struct iwn_softc *sc,
     u_int64_t request_generation)
 {
+    struct ieee80211com *ic;
+    bool completing_wcl_roam = false;
     bool promoted = false;
 
     if (sc == NULL || request_generation == 0 ||
         sc->sc_scan_lease_lock == NULL)
         return false;
+    ic = &sc->sc_ic;
     IOSimpleLockLock(sc->sc_scan_lease_lock);
+    /* STOP_SCAN deliberately keeps its lease in DRAINING while
+     * ieee80211_end_scan() selects and starts the target.  A pure-SAE WCL
+     * roam reaches auth_hold() inside that exact callback, before
+     * finish_terminal() can make the scan leaf idle.  Transfer continuity
+     * from that one completed WCL command to the selected SAE generation;
+     * every other live scan remains a conflict. */
+    completing_wcl_roam =
+        sc->sc_sae_join_scan_block_generation == 0 &&
+        iwn_scan_lease_live_locked(sc) &&
+        (sc->sc_scan_lease.owner == IWN_SCAN_LEASE_GENERIC_BACKGROUND ||
+         sc->sc_scan_lease.owner == IWN_SCAN_LEASE_WCL_BACKGROUND) &&
+        sc->sc_scan_lease.phase == IWN_SCAN_LEASE_DRAINING &&
+        sc->sc_scan_lease.command_submitted &&
+        sc->sc_scan_lease.terminal_claimed &&
+        !sc->sc_scan_lease.abort_requested &&
+        !sc->sc_scan_lease.hardware_invalidated &&
+        !sc->sc_scan_lease.publication_invalidated &&
+        (sc->sc_flags & IWN_FLAG_SCANNING) == 0 &&
+        !sc->sc_ap_transition_scan_blocked &&
+        !sc->sc_wcl_initial_scan_pending.queued &&
+        ic->ic_wcl_reassoc_owner_active &&
+        ic->ic_wcl_reassoc_owner_last_leaf ==
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
     if (sc->sc_sae_join_scan_block_generation == request_generation) {
         promoted = true;
     } else if (sc->sc_sae_join_scan_block_generation == 0 &&
-        !iwn_scan_lease_live_locked(sc) &&
+        (!iwn_scan_lease_live_locked(sc) || completing_wcl_roam) &&
         (sc->sc_flags & IWN_FLAG_SCANNING) == 0 &&
         !sc->sc_ap_transition_scan_blocked &&
         !sc->sc_wcl_initial_scan_pending.queued) {
