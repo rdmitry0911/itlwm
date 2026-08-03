@@ -1185,6 +1185,7 @@ iwm_rx_tx_ba_notif(struct iwm_softc *sc, struct iwm_rx_packet *pkt, struct iwm_r
         ssn = le16toh(ba_notif->scd_ssn);
         sc->sc_tx_timer[qid] = 0;
         iwm_ampdu_txq_advance(sc, ring, IWM_AGG_SSN_TO_TXQ_IDX(ssn));
+        iwm_clear_oactive(sc, ring);
 #if __IO80211_TARGET >= __MAC_26_0
         airportItlwmRequestAPTxDequeue(that->getController());
 #endif
@@ -1348,6 +1349,7 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
                 iwm_reset_sched(sc, ring->qid, ring->tail, txd->sta_id);
                 iwm_txd_done(sc, txd);
                 ring->queued--;
+                iwm_clear_oactive(sc, ring);
 #if __IO80211_TARGET >= __MAC_26_0
                 ItlIwm *that = container_of(sc, ItlIwm, com);
                 airportItlwmRequestAPTxDequeue(that->getController());
@@ -2141,7 +2143,9 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
         return EINVAL;
 
     struct iwm_tx_ring *ring = &sc->txq[queueId];
-    if (ring->queued >= IWM_TX_RING_COUNT - 1)
+    if ((sc->qfullmsk & (1U << ring->qid)) != 0 ||
+        ring->queued > IWM_TX_RING_HIMARK ||
+        ring->queued >= IWM_TX_RING_COUNT - 1)
         return ENOBUFS;
     struct iwm_tfd *descriptor = &ring->desc[ring->cur];
     struct iwm_tx_data *data = &ring->data[ring->cur];
@@ -2259,7 +2263,8 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
                      static_cast<uint16_t>(firmwareLength));
     ring->cur = (ring->cur + 1) % IWM_TX_RING_COUNT;
     IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
-    ring->queued++;
+    if (++ring->queued > IWM_TX_RING_HIMARK)
+        sc->qfullmsk |= 1U << ring->qid;
     sc->sc_tx_timer[ring->qid] = 15;
     if (client != NULL && type == IEEE80211_FC0_TYPE_DATA && txTid < 8)
         itl_ap_tx_ba_advance_sequence(&client->clientTxSequence[txTid]);

@@ -1816,8 +1816,11 @@ getAPTxFreeSpace() const
     if (multicast->ring_count == 0)
         return 0;
     const uint32_t multicastUsable = multicast->ring_count - 1;
-    const uint32_t multicastFree = multicast->queued < multicastUsable ?
-        multicastUsable - multicast->queued : 0;
+    const uint32_t multicastFree =
+        multicast->ap_queue_full ||
+        multicast->queued > multicast->hi_mark ? 0 :
+        (multicast->queued < multicastUsable ?
+            multicastUsable - multicast->queued : 0);
     uint32_t freeSpace = multicastFree;
     bool found = false;
     for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
@@ -1833,8 +1836,10 @@ getAPTxFreeSpace() const
             return 0;
         found = true;
         const uint32_t usable = ring->ring_count - 1;
-        const uint32_t clientFree = ring->queued < usable ?
-            usable - ring->queued : 0;
+        const uint32_t clientFree =
+            ring->ap_queue_full ||
+            ring->queued > ring->hi_mark ? 0 :
+            (ring->queued < usable ? usable - ring->queued : 0);
         freeSpace = MIN(freeSpace, clientFree);
     }
     return found ? freeSpace : 0;
@@ -3931,6 +3936,7 @@ iwx_tx_ring_init(struct iwx_softc *sc, struct iwx_tx_ring *ring, int size)
     if (high_mark < 2)
         high_mark = 2;
     ring->hi_mark = ring->ring_count - high_mark;
+    ring->ap_queue_full = false;
     ring->queued = 0;
     ring->cur = 0;
     ring->tail = 0;
@@ -4066,6 +4072,7 @@ iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     if (ring->qid >= 0 &&
         ring->qid < (int)(sizeof(sc->qfullmsk) * NBBY))
         sc->qfullmsk &= ~(1U << ring->qid);
+    ring->ap_queue_full = false;
     ring->queued = 0;
     ring->cur = 0;
     ring->tail = 0;
@@ -4109,6 +4116,7 @@ iwx_free_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     ring->qid = IWX_INVALID_QUEUE;
     ring->hi_mark = 0;
     ring->low_mark = 0;
+    ring->ap_queue_full = false;
     ring->ring_count = 0;
 }
 
@@ -7324,7 +7332,10 @@ iwx_clear_oactive(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     struct _ifnet *ifp = &ic->ic_if;
 
     if (ring->queued < ring->low_mark) {
-        sc->qfullmsk &= ~(1 << ring->qid);
+        ring->ap_queue_full = false;
+        if (ring->qid >= 0 &&
+            ring->qid < (int)(sizeof(sc->qfullmsk) * NBBY))
+            sc->qfullmsk &= ~(1U << ring->qid);
         if (sc->qfullmsk == 0 && ifq_is_oactive(&ifp->if_snd)) {
             ifq_clr_oactive(&ifp->if_snd);
             (*ifp->if_start)(ifp);
@@ -7394,6 +7405,7 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
 
         iwx_ampdu_txq_advance(sc, ring, IWX_AGG_SSN_TO_TXQ_IDX(le16toh(ba_tfd->tfd_index), ring->ring_count));
         if (apQueue) {
+            iwx_clear_oactive(sc, ring);
 #if __IO80211_TARGET >= __MAC_26_0
             airportItlwmRequestAPTxDequeue(that->getController());
 #endif
@@ -7475,6 +7487,7 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
         iwx_rx_tx_cmd_single(sc, pkt, txd);
         iwx_ampdu_txq_advance(sc, ring, idx);
         if (wasApFrame) {
+            iwx_clear_oactive(sc, ring);
 #if __IO80211_TARGET >= __MAC_26_0
             ItlIwx *that = container_of(sc, ItlIwx, com);
             airportItlwmRequestAPTxDequeue(that->getController());
@@ -9271,7 +9284,10 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
         return EINVAL;
 
     struct iwx_tx_ring *ring = &sc->txq[queueId];
-    if (ring->ring_count == 0 || ring->queued >= ring->ring_count - 1)
+    if (ring->ring_count == 0 ||
+        ring->ap_queue_full ||
+        ring->queued > ring->hi_mark ||
+        ring->queued >= ring->ring_count - 1)
         return ENOBUFS;
     const int index = ring->cur & (ring->ring_count - 1);
     struct iwx_tfh_tfd *descriptor = &ring->desc[index];
@@ -9374,7 +9390,8 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
     }
     ring->cur = (ring->cur + 1) % ring->ring_count;
     IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
-    ring->queued++;
+    if (++ring->queued > ring->hi_mark)
+        ring->ap_queue_full = true;
     sc->sc_tx_timer = 15;
     if (client != NULL && type == IEEE80211_FC0_TYPE_DATA && txTid < 8)
         itl_ap_tx_ba_advance_sequence(&client->clientTxSequence[txTid]);

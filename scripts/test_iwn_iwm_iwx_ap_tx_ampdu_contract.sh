@@ -45,12 +45,15 @@ for needle, label in (
     ("kItlApTxBaBlocked", "per-association fallback state"),
     ("itl_ap_tx_ba_advance_sequence", "firmware sequence mirror"),
     ("itl_ap_tx_ba_response_matches", "token/TID response fence"),
+    ("itl_ap_tx_ba_accept_completion", "out-of-order completion fence"),
+    ("advance > queued", "software-ring ownership bound"),
     ("runtime->token == action->token", "dialog-token validation"),
     ("runtime->tid == action->tid", "TID validation"),
     ("IEEE80211_ACTION_ADDBA_RESP", "ADDBA response parser"),
     ("IEEE80211_ADDBA_BA_POLICY", "immediate BA policy"),
     ("IEEE80211_BA_MAX_WINSZ", "bounded transmit window"),
     ("itl_ap_block_ack_build_request", "ADDBA request builder"),
+    ("itl_ap_block_ack_build_bar", "compressed BAR builder"),
     ("itl_ap_block_ack_build_delete", "DELBA builder"),
     ("protectedFrame ? IEEE80211_FC1_PROTECTED", "PMF action protection"),
 ):
@@ -121,9 +124,24 @@ for needle, label in (
     ("airportItlwmRequestAPTxDequeue", "IWN Skywalk wake"),
     ("IWN AP TX ADDBA request", "IWN request witness"),
     ("IWN AP TX ADDBA response", "IWN response witness"),
-    ("terminalAggregateFailure", "IWN terminal aggregate failure classifier"),
-    ("kItlApTxBaBlocked", "IWN per-association non-aggregate fallback"),
-    ("IWN AP TX BA fallback", "IWN stable PAN fallback witness"),
+    ("keeping BA session", "IWN per-MPDU retry failure lifetime witness"),
+    ("iwn_send_ap_compressed_bar", "IWN failed-MPDU compressed BAR"),
+    ("compressedBar ? IWN_IPAN_BE_QUEUE", "IWN PAN AC queue BAR transport"),
+    ("compressedBar ? IWN_TX_IMM_BA | IWN_TX_LINKQ", "IWN immediate BAR station-rate firmware flags"),
+    ("compressedBar ? IWN5000_ID_PAN_BROADCAST", "IWN non-data BAR firmware station owner"),
+    ("tx->data_ntries = compressedBar ? 60", "IWN reference BAR retry limit"),
+    ("(failedSequence + 1) & 0x0fff", "IWN failed-MPDU BAR SSN"),
+    ("txq->queued < queuedBeforeReclaim", "IWN newly reclaimed descriptor BAR gate"),
+    ("IWN AP stale compressed BA", "IWN stale BA runtime witness"),
+    ("IWN AP stale aggregate completion", "IWN stale TX runtime witness"),
+    ("itl_ap_tx_ba_set_window_start", "IWN live activation SSN fence"),
+    ("iwn_ampdu_txq_can_advance", "IWN transport reclaim ownership fence"),
+    ("lastDistance < owned", "IWN last-to-free descriptor admission"),
+    ("aggregate reclaim outside owned ring", "IWN invalid reclaim witness"),
+    ("const bool descriptorOwned = txdata->m != NULL ||", "IWN physical descriptor ownership independent of mbuf"),
+    ("txdata->ap_mgmt || txdata->ap_data", "IWN AP descriptor ownership flags"),
+    ("IWN AP DEST_PS descriptor reclaimed", "IWN power-save ownership-transfer reclaim witness"),
+    ("if (data->m != NULL)\n        mbuf_freem(data->m);", "IWN null-safe transferred-mbuf cleanup"),
     ("qid == apClientTxBaQueue[cba->tid]", "IWN dynamic BA completion"),
 ):
     require(iwn, needle, label)
@@ -131,6 +149,37 @@ ordered(iwn, "iwn_stop_all_ap_client_tx_ba();",
         "iwn_stop_all_ap_client_rx_ba();", "IWN TX teardown before RX/node")
 ordered(iwn, "itl_ap_tx_ba_response_matches(txBa, &action)",
         "iwn_set_ap_client_tx_ba(", "IWN validate before scheduler start")
+
+iwn_ampdu_start = iwn.index("iwn_ampdu_tx_done(")
+iwn_ampdu_end = iwn.index("/*\n * Process a TX_DONE firmware notification", iwn_ampdu_start)
+iwn_ampdu_completion = iwn[iwn_ampdu_start:iwn_ampdu_end]
+for forbidden, label in (
+    ("itl_ap_block_ack_build_delete", "DELBA on per-MPDU retry failure"),
+    ("iwn_set_ap_client_tx_ba(", "scheduler teardown on per-MPDU retry failure"),
+    ("kItlApTxBaBlocked", "per-association BA block on retry failure"),
+):
+    if forbidden in iwn_ampdu_completion:
+        raise SystemExit(f"FAIL: IWN aggregate completion retains {label}")
+ordered(iwn_ampdu_completion, "iwn_ampdu_txq_advance(",
+        "iwn_clear_oactive(", "IWN retry reclaim before queue wake")
+ordered(iwn_ampdu_completion, "itl_ap_tx_ba_accept_completion(",
+        "iwn_ampdu_txq_advance(", "IWN monotonic SSN fence before reclaim")
+ordered(iwn_ampdu_completion, "iwn_ampdu_txq_can_advance(",
+        "iwn_ampdu_txq_advance(", "IWN physical ownership fence before reclaim")
+ordered(iwn_ampdu_completion, "iwn_ampdu_txq_advance(",
+        "itl_ap_tx_ba_set_window_start(", "IWN logical window commit after physical reclaim")
+ordered(iwn_ampdu_completion, "iwn_ampdu_txq_advance(",
+        "iwn_send_ap_compressed_bar(", "IWN BAR submission after descriptor reclaim")
+ordered(iwn_ampdu_completion, "const bool reclaimedDescriptor",
+        "iwn_send_ap_compressed_bar(", "IWN duplicate completion BAR suppression")
+
+iwn_reclaim_start = iwn.index("iwn_ampdu_txq_advance(struct iwn_softc")
+iwn_reclaim_end = iwn.index("/*\n * Handle A-MPDU Tx queue status report", iwn_reclaim_start)
+iwn_reclaim = iwn[iwn_reclaim_start:iwn_reclaim_end]
+ordered(iwn_reclaim, "const bool descriptorOwned", "ops->reset_sched(",
+        "IWN descriptor-owner admission before scheduler reclaim")
+ordered(iwn_reclaim, "iwn_tx_done_free_txdata(", "txq->queued--",
+        "IWN descriptor cleanup before queue-accounting release")
 
 require(iwm_h, "iwm_ap_set_client_tx_ba", "IWM TX BA API")
 for needle, label in (

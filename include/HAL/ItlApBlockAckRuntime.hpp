@@ -50,6 +50,7 @@ struct ItlApTxBaRuntime {
     uint8_t token;
     uint8_t tid;
     uint16_t ssn;
+    uint16_t winstart;
     uint16_t window;
     uint16_t timeout;
     uint16_t packetsSinceRequest;
@@ -125,9 +126,36 @@ itl_ap_tx_ba_accept(struct ItlApTxBaRuntime *runtime,
     if (!itl_ap_tx_ba_response_matches(runtime, action))
         return;
     runtime->state = kItlApTxBaAgreed;
+    runtime->winstart = runtime->ssn;
     runtime->window = action->window;
     runtime->timeout = action->timeout;
     runtime->packetsSinceRequest = 0;
+}
+
+static inline void
+itl_ap_tx_ba_set_window_start(struct ItlApTxBaRuntime *runtime,
+                              uint16_t ssn)
+{
+    if (runtime != NULL && runtime->state == kItlApTxBaAgreed)
+        runtime->winstart = ssn & 0x0fff;
+}
+
+/* Firmware can report final single-MPDU attempts out of order.  Match the
+ * net80211 SEQ_LT fence and bind a forward SSN to descriptors the software
+ * ring still owns, so a stale low-byte SSN cannot wrap read through live or
+ * already-reclaimed slots. */
+static inline bool
+itl_ap_tx_ba_accept_completion(const struct ItlApTxBaRuntime *runtime,
+                                uint16_t ssn, uint16_t queued)
+{
+    if (runtime == NULL || runtime->state != kItlApTxBaAgreed)
+        return false;
+    ssn &= 0x0fff;
+    const uint16_t advance = static_cast<uint16_t>(
+        (ssn - runtime->winstart) & 0x0fff);
+    if (advance > 2048 || advance > queued)
+        return false;
+    return true;
 }
 
 struct ItlApRxBaReady;
@@ -625,6 +653,33 @@ itl_ap_block_ack_build_request(uint8_t *frame, size_t capacity,
     LE_WRITE_2(body + 3, params);
     LE_WRITE_2(body + 5, timeout);
     LE_WRITE_2(body + 7, static_cast<uint16_t>((ssn & 0x0fff) << 4));
+    return frameLength;
+}
+
+static inline size_t
+itl_ap_block_ack_build_bar(uint8_t *frame, size_t capacity,
+                           const uint8_t *bssid,
+                           const uint8_t *station, uint8_t tid,
+                           uint16_t ssn)
+{
+    const size_t frameLength = sizeof(struct ieee80211_frame_min) + 4;
+    if (frame == NULL || bssid == NULL || station == NULL || tid >= 8 ||
+        capacity < frameLength)
+        return 0;
+    bzero(frame, frameLength);
+    struct ieee80211_frame_min *wh =
+        reinterpret_cast<struct ieee80211_frame_min *>(frame);
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_CTL | IEEE80211_FC0_SUBTYPE_BAR;
+    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    IEEE80211_ADDR_COPY(wh->i_addr1, station);
+    IEEE80211_ADDR_COPY(wh->i_addr2, bssid);
+    uint8_t *body = reinterpret_cast<uint8_t *>(wh + 1);
+    LE_WRITE_2(body, static_cast<uint16_t>(
+        IEEE80211_BA_COMPRESSED |
+        (tid << IEEE80211_BA_TID_INFO_SHIFT)));
+    LE_WRITE_2(body + 2,
+        static_cast<uint16_t>((ssn & 0x0fff) << IEEE80211_SEQ_SEQ_SHIFT));
     return frameLength;
 }
 

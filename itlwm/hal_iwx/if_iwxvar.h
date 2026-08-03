@@ -463,6 +463,7 @@ struct iwx_tx_ring {
     unsigned int    ring_count;
     unsigned int    hi_mark;
     unsigned int    low_mark;
+	bool			ap_queue_full;
 	int			qid;
 	int			queued;
 	int			cur;

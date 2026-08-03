@@ -197,7 +197,9 @@ public:
     int iwn_send_ap_edca(bool accessPointValues);
     int iwn_send_ap_beacon(const struct ItlHalApConfig *);
     int iwn_send_ap_rxon_assoc();
+    int iwn_send_ap_raw_frame(const void *, size_t);
     int iwn_send_ap_mgmt_frame(const void *, size_t);
+    int iwn_send_ap_compressed_bar(uint8_t, uint16_t);
     int iwn_send_ap_data_frame(mbuf_t, bool moreData = false,
         bool psDelivery = false);
     int iwn_install_ap_ccmp_key(bool, uint8_t, const uint8_t *);
@@ -378,8 +380,9 @@ public:
                 struct iwn_rx_desc *, struct iwn_rx_data *);
     void        iwn_rx_statistics(struct iwn_softc *, struct iwn_rx_desc *,
                 struct iwn_rx_data *);
-    void        iwn_ampdu_txq_advance(struct iwn_softc *, struct iwn_tx_ring *,
-                int, int);
+    bool        iwn_ampdu_txq_can_advance(const struct iwn_tx_ring *, int) const;
+    bool        iwn_ampdu_txq_advance(struct iwn_softc *, struct iwn_tx_ring *,
+                    int, int);
     void        iwn_ampdu_tx_done(struct iwn_softc *, struct iwn_tx_ring *,
                 struct iwn_rx_desc *, uint16_t, uint8_t, uint8_t, uint8_t,
                 int, uint32_t, struct iwn_txagg_status *);

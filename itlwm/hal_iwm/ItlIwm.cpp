@@ -1390,8 +1390,10 @@ getAPTxFreeSpace() const
         return 0;
     const struct iwm_tx_ring *multicast = &com.txq[apRuntime.multicastQueueId];
     const uint32_t usable = IWM_TX_RING_COUNT - 1;
-    const uint32_t multicastFree = multicast->queued < usable ?
-        usable - multicast->queued : 0;
+    const uint32_t multicastFree =
+        (com.qfullmsk & (1U << multicast->qid)) != 0 ||
+        multicast->queued > IWM_TX_RING_HIMARK ? 0 :
+        (multicast->queued < usable ? usable - multicast->queued : 0);
     uint32_t freeSpace = multicastFree;
     bool found = false;
     for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
@@ -1404,8 +1406,10 @@ getAPTxFreeSpace() const
             return 0;
         found = true;
         const struct iwm_tx_ring *ring = &com.txq[client->queueId];
-        const uint32_t clientFree = ring->queued < usable ?
-            usable - ring->queued : 0;
+        const uint32_t clientFree =
+            (com.qfullmsk & (1U << ring->qid)) != 0 ||
+            ring->queued > IWM_TX_RING_HIMARK ? 0 :
+            (ring->queued < usable ? usable - ring->queued : 0);
         freeSpace = MIN(freeSpace, clientFree);
     }
     return found ? freeSpace : 0;
