@@ -70,7 +70,7 @@ Hostapd reported the real guest MAC authenticated, associated and authorized.
 The trace again contained one successful WCL update followed by one accepted
 parent link-up. Guest-to-host and host-to-guest ICMP both passed 20/20.
 
-## Sleep boundary exposed by the same cycle
+## Sleep recovery result
 
 After a guest-only reset, CoreWLAN automatically rejoined the controlled open
 BSSID using its private MAC `f2:9b:db:2f:58:cd`, obtained `192.168.4.56/24`,
@@ -79,19 +79,22 @@ recorded `ACPI SLEEP`, `acpi_sleep_kernel`, `ACPI S3 WAKE`, and the
 system-wake event. Hostapd observed the controlled station disconnect during
 sleep.
 
-The wake path did not return to that open BSSID. It instead emitted
+The wake path selected the saved pure-SAE `LabAP` system profile rather than
+the direct open-association carrier. It emitted
 `wcl_assoc CACHED_CANDIDATE_DIRECT_JOIN`, moved from channel zero to channel
-13, and entered `iwn_sae_roam ACTIVE_ESS_CREDENTIAL`. Channel 13 is the saved
-pure-SAE `LabAP` profile used by the preceding roam cycle, while the live
-pre-sleep BSSID was open on channel 9. The controlled AP saw no station return
-within the bounded observation interval.
+13, completed WCL authentication/association, and entered
+`iwn_sae_roam ACTIVE_ESS_CREDENTIAL`. Its retained DHCP address
+`172.16.66.187` became reachable again through the physical Wi-Fi path;
+direct Wi-Fi SSH worked and bidirectional ICMP passed 100/100.
 
-This narrows the next layer considerably: radio power-on and the cached WCL
-join both ran, but the successful open join did not replace or retire the
-driver-resident SAE ESS credential used by wake. This is not reported as S3
-recovery success. The next change must compare the reference JoinAdapter/WCL
-credential ownership at open connect completion before modifying the wake
-policy.
+The initial observation checked only the channel-9 hostapd station table and
+the former `192.168.4.56` open-BSS address, so it incorrectly classified the
+intentional saved-profile selection as a dead radio. The later direct Wi-Fi
+check proves that the driver tract recovered across S3 and a cross-security
+profile handoff. QEMU's separate virtio user-NAT management path did not
+recover and is excluded from the Wi-Fi result. This cycle does not claim that
+a direct, non-preferred open association must override the saved system
+profile selected by wifid after wake.
 
 ## Contracts
 
