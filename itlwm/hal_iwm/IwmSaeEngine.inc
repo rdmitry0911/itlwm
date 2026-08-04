@@ -1720,16 +1720,29 @@ iwm_sae_engine_selected_matches_bound(
 enum IwmSaeEngineSubmitResult {
     IWM_SAE_ENGINE_SUBMIT_OK = 0,
     /* The private workloop gate rejected us before a doorbell.  The engine
-     * rollback is therefore exact and one bounded deferred retry is safe. */
+     * rollback is therefore exact and a bounded deferred retry is safe. */
     IWM_SAE_ENGINE_SUBMIT_RETRY = 1,
     IWM_SAE_ENGINE_SUBMIT_FAIL = -1,
+    /* APSTA traffic can occupy the private gate for more than the historical
+     * two 1 ms retries.  Six exponentially spaced attempts still keep the
+     * complete per-frame contention window below 100 ms. */
+    IWM_SAE_ENGINE_SUBMIT_RETRY_LIMIT = 6,
+    IWM_SAE_ENGINE_SUBMIT_RETRY_MAX_SHIFT = 5,
 };
+
+static u_int32_t
+iwm_sae_engine_submit_retry_delay_ms(u_int8_t retry_count)
+{
+    if (retry_count > IWM_SAE_ENGINE_SUBMIT_RETRY_MAX_SHIFT)
+        retry_count = IWM_SAE_ENGINE_SUBMIT_RETRY_MAX_SHIFT;
+    return 1U << retry_count;
+}
 
 /* Worker-only: materialize one prepared engine frame, then send it through
  * the existing IWM gate/descriptor/doorbell path.  A submit failure is known
  * to be pre-doorbell, so the engine's rollback API is safe; this owner then
- * takes at most one bounded retry for a private-gate busy result and fails
- * closed for every ambiguous radio state. */
+ * takes a bounded non-blocking retry window for a private-gate busy result
+ * and fails closed for every ambiguous radio state. */
 static int
 iwm_sae_engine_submit_prepared(struct iwm_softc *sc)
 {
@@ -1766,6 +1779,10 @@ iwm_sae_engine_submit_prepared(struct iwm_softc *sc)
     if (rc == kIOReturnSuccess) {
         IOSimpleLockLock(sc->sc_sae_engine_lock);
         owner = &sc->sc_sae_engine_owner;
+        if (owner->active && !owner->cancelled && !owner->suppress_scan &&
+            !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+            owner->in_flight_ticket == ticket)
+            owner->submit_retry_count = 0;
         rearm_mgt_timer = owner->active && !owner->cancelled &&
             !owner->suppress_scan && !sc->sc_sae_engine_stopping &&
             !sc->sc_sae_engine_detaching &&
@@ -2026,6 +2043,7 @@ iwm_sae_engine_task(void *arg)
     bool assoc_tx_accepted = false;
     bool more = false;
     bool fail = false;
+    u_int8_t retry_count = 0;
     int submit_result = IWM_SAE_ENGINE_SUBMIT_OK;
 
     if (sc == NULL)
@@ -2054,6 +2072,7 @@ iwm_sae_engine_task(void *arg)
         } else if (!cancel && owner->submit_retry_pending) {
             owner->submit_retry_pending = false;
             retry_submit = true;
+            retry_count = owner->submit_retry_count;
         } else if (!cancel && owner->terminal_valid) {
             terminal = owner->terminal;
             owner->terminal_valid = false;
@@ -2091,11 +2110,11 @@ iwm_sae_engine_task(void *arg)
         goto out;
     }
     if (start || retry_submit) {
-        /* attemptAction() can reject a task solely because the private IWM
-         * gate is occupied.  That is pre-doorbell and gets only this short,
-         * bounded deferred retry; all other submission failures retire. */
+        /* attemptAction() can reject a task solely because APSTA work owns
+         * the private IWM gate.  Never block on that gate from systq: use a
+         * bounded exponential delay and let detach/power-off keep draining. */
         if (retry_submit)
-            IOSleep(1);
+            IOSleep(iwm_sae_engine_submit_retry_delay_ms(retry_count));
         submit_result = start ? iwm_sae_engine_start(sc) :
             iwm_sae_engine_submit_prepared(sc);
     } else if (have_terminal) {
@@ -2226,7 +2245,8 @@ iwm_sae_engine_task(void *arg)
         if (owner->active && !owner->cancelled && !owner->suppress_scan &&
             !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
             owner->in_flight_ticket == 0 &&
-            owner->submit_retry_count < 2) {
+            owner->submit_retry_count <
+                IWM_SAE_ENGINE_SUBMIT_RETRY_LIMIT) {
             owner->submit_retry_count++;
             owner->submit_retry_pending = true;
             retry_admitted = true;

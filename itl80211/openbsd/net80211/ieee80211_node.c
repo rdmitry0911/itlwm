@@ -1691,6 +1691,23 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
                               IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
         return;
     }
+
+    /*
+     * The reference link-down owner first publishes the completed census and
+     * then lets a fresh known-network join consume a real candidate.  A
+     * driver which retained the previously validated SAE credential can do
+     * the same without exporting its password: the beacon-loss marker and
+     * credential remain private, while this scan-terminal hook sees only the
+     * already populated node cache.  A public association which arrived in
+     * the meantime owns ic_des_essid and bypasses this fallback.
+     */
+    if (!bgscan && ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_SCAN &&
+        ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
+        ic->ic_des_esslen == 0 &&
+        ic->ic_sae_bss_loss_recover != NULL &&
+        (*ic->ic_sae_bss_loss_recover)(ic) != 0)
+        return;
     
     /* An issued direct pure-SAE WCL replacement scan owns one exact RSN
      * policy.  switch_ess() would replace it from a saved legacy ESS and

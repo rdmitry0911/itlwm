@@ -3081,6 +3081,50 @@ ieee80211_sae_wcl_request_admit_cached_roam_candidate(
 }
 
 /*
+ * A driver-resident active credential can survive the ordinary request/policy
+ * cancellation caused by a real beacon-loss RUN -> SCAN edge.  The driver's
+ * scan-terminal callback has independently proved that this BSSID was seen in
+ * that resulting census and that its SSID matches the credential which was
+ * active at the loss edge.  Promote only the new request generation and its
+ * complete pure-SAE policy here; node_join_bss() still performs the normal
+ * selected-BSS capture, policy match, and SCAN_ISSUED -> BOUND handoff.
+ */
+int
+ieee80211_sae_wcl_request_admit_bss_loss_candidate(
+    struct ieee80211com *ic, u_int64_t generation,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN],
+    const u_int8_t *ssid, u_int ssid_len)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request *request;
+	int admitted = 0;
+
+	if (ic == NULL || generation == 0 || target_bssid == NULL ||
+	    ssid == NULL || ssid_len == 0 || ssid_len > IEEE80211_NWID_LEN ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN ||
+	    (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	request = &ic->ic_sae_wcl_request;
+	if (ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    request->generation == generation &&
+	    request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING &&
+	    request->association_epoch == 0 &&
+	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request) &&
+	    IEEE80211_ADDR_EQ(request->bssid, target_bssid) &&
+	    request->ssid_len == ssid_len &&
+	    memcmp(request->ssid, ssid, ssid_len) == 0) {
+		request->phase = IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED;
+		admitted = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return admitted;
+}
+
+/*
  * A scan can finish between begin() reserving its short WEP-teardown window
  * and resume_scan() issuing the replacement scan.  Neither that reservation
  * nor a PENDING request may let end_scan() choose a historical BSS: the

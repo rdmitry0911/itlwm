@@ -501,6 +501,12 @@ struct iwn_softc {
      * blocked from selected-BSS scan handoff through port-valid (or exact
      * cancellation).  Protected by sc_scan_lease_lock. */
     u_int64_t           sc_sae_join_scan_block_generation;
+    /* A hard beacon-loss census reaches its selected-BSS callback while the
+     * completed generic foreground lease is still DRAINING.  This one-shot
+     * carries only the newly admitted SAE generation across that synchronous
+     * node_join_bss() edge; auth_hold() must consume it into the ordinary
+     * join block before terminal cleanup.  Protected by sc_scan_lease_lock. */
+    u_int64_t           sc_sae_bss_loss_join_handoff_generation;
     u_int64_t           sc_scan_lease_next_serial;
     struct task         scan_lease_replay_task;
     volatile u_int32_t  sc_scan_lease_replay_task_admission_state;
@@ -648,8 +654,10 @@ struct iwn_softc {
     bool                sc_sae_wcl_credential_staged;
     bool                sc_sae_wcl_credential_pending;
     bool                sc_sae_wcl_credential_active;
+    bool                sc_sae_bss_loss_recovery_armed;
     bool                sc_sae_wcl_credential_cancel_valid;
     uint64_t            sc_sae_wcl_credential_cancel_through_generation;
+    uint64_t            sc_sae_bss_loss_recovery_generation;
     struct ItlSaeWclCredentialV1 sc_sae_wcl_credential;
 
     /* This leaf protects only the two value owners below; it is never held

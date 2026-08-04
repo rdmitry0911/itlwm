@@ -124,6 +124,10 @@ static bool iwn_scan_lease_live_locked(const struct iwn_softc *);
 static bool iwn_scan_lease_owner_is_wcl(u_int8_t);
 static bool iwn_sae_join_scan_block_promote(
     struct iwn_softc *, u_int64_t);
+static bool iwn_sae_bss_loss_join_handoff_arm(
+    struct iwn_softc *, u_int64_t);
+static bool iwn_sae_bss_loss_join_handoff_completed(
+    struct iwn_softc *, u_int64_t);
 static void iwn_sae_join_scan_block_clear_generation(
     struct iwn_softc *, u_int64_t);
 static bool iwn_sae_join_scan_blocked(struct iwn_softc *);
@@ -280,6 +284,8 @@ iwn_sae_wcl_credential_clear_locked(struct iwn_softc *sc)
     sc->sc_sae_wcl_credential_staged = false;
     sc->sc_sae_wcl_credential_pending = false;
     sc->sc_sae_wcl_credential_active = false;
+    sc->sc_sae_bss_loss_recovery_armed = false;
+    sc->sc_sae_bss_loss_recovery_generation = 0;
 }
 
 /* Reset/cancellation may retire a not-yet-validated credential without
@@ -314,6 +320,65 @@ iwn_sae_wcl_credential_equal(const struct ItlSaeWclCredentialV1 *left,
     for (index = 0; index < sizeof(*left); index++)
         difference |= left_bytes[index] ^ right_bytes[index];
     return difference == 0;
+}
+
+/* The scan parser has reset ni_inact only for a beacon/probe response seen in
+ * the current census.  Keep candidate discovery public and credential-free:
+ * this predicate compares only the active record's SSID and the normalized
+ * RSN/SAE facts already present in the node cache. */
+static bool
+iwn_sae_bss_loss_candidate_eligible(const struct ieee80211_node *ni,
+    const struct ItlSaeWclCredentialV1 *credential)
+{
+    bool pure_sae;
+    bool transition_sae;
+
+    if (ni == NULL || credential == NULL || ni->ni_fails != 0 ||
+        ni->ni_inact != 0 || ni->ni_chan == IEEE80211_CHAN_ANYC ||
+        ni->ni_esslen != credential->ssid_len ||
+        memcmp(ni->ni_essid, credential->ssid,
+            credential->ssid_len) != 0)
+        return false;
+
+    pure_sae = ieee80211_sae_scan_profile_is_strict(
+        ni->ni_supported_rsnprotos == IEEE80211_PROTO_RSN &&
+            ni->ni_rsnprotos == IEEE80211_PROTO_RSN,
+        ni->ni_supported_rsnakms == IEEE80211_AKM_SAE &&
+            ni->ni_rsnakms == IEEE80211_AKM_SAE,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_ESS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_IBSS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_NOPAIRWISE) != 0,
+        ni->ni_rsnciphers == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPR) != 0,
+        ni->ni_sae_scan_flags);
+    transition_sae = ieee80211_sae_scan_profile_is_transition(
+        ni->ni_supported_rsnprotos == IEEE80211_PROTO_RSN &&
+            ni->ni_rsnprotos == IEEE80211_PROTO_RSN,
+        ((ni->ni_supported_rsnakms ==
+          (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK) &&
+          ni->ni_rsnakms ==
+          (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK)) ||
+         (ni->ni_supported_rsnakms ==
+          (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK |
+           IEEE80211_AKM_SHA256_PSK) &&
+          ni->ni_rsnakms ==
+          (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK |
+           IEEE80211_AKM_SHA256_PSK))),
+        (ni->ni_capinfo & IEEE80211_CAPINFO_ESS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_IBSS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_NOPAIRWISE) != 0,
+        ni->ni_rsnciphers == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPR) != 0,
+        ni->ni_sae_scan_flags);
+    return pure_sae || transition_sae;
 }
 
 /* Caller holds sc_sae_wcl_credential_lock.  The generic WCL policy assigns
@@ -1045,7 +1110,9 @@ iwn_sae_engine_fence_inflight_ticket_locked(struct iwn_softc *sc,
 static void
 iwn_sae_engine_schedule_task(struct iwn_softc *sc)
 {
-    if (sc == NULL || !iwn_sae_engine_task_admission_enter(sc))
+    if (sc == NULL)
+        return;
+    if (!iwn_sae_engine_task_admission_enter(sc))
         return;
     if (sc->sc_sae_engine_task_ready && systq != NULL)
         (void)task_add(systq, &sc->sae_engine_task);
@@ -1099,6 +1166,7 @@ isSaeWclCredentialAdmissionReady()
             !sc->sc_wcl_initial_scan_pending.queued &&
             !sc->sc_sae_wcl_admission_reserved &&
             sc->sc_sae_join_scan_block_generation == 0 &&
+            sc->sc_sae_bss_loss_join_handoff_generation == 0 &&
             (sc->sc_flags & IWN_FLAG_SCANNING) == 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
 
@@ -1152,6 +1220,7 @@ reserveSaeWclCredentialAdmission()
             !sc->sc_wcl_initial_scan_pending.queued &&
             !sc->sc_sae_wcl_admission_reserved &&
             sc->sc_sae_join_scan_block_generation == 0 &&
+            sc->sc_sae_bss_loss_join_handoff_generation == 0 &&
             (sc->sc_flags & IWN_FLAG_SCANNING) == 0) {
             sc->sc_sae_wcl_admission_reserved = true;
             reserved = true;
@@ -1754,6 +1823,7 @@ iwn_sae_wcl_stop_begin(struct iwn_softc *sc)
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         sc->sc_sae_wcl_admission_reserved = false;
         sc->sc_sae_join_scan_block_generation = 0;
+        sc->sc_sae_bss_loss_join_handoff_generation = 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     }
     if (sc->sc_sae_wcl_credential_lock == NULL)
@@ -1782,6 +1852,7 @@ iwn_sae_wcl_detach_begin(struct iwn_softc *sc)
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         sc->sc_sae_wcl_admission_reserved = false;
         sc->sc_sae_join_scan_block_generation = 0;
+        sc->sc_sae_bss_loss_join_handoff_generation = 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     }
     if (sc->sc_sae_wcl_credential_lock == NULL)
@@ -2247,6 +2318,7 @@ iwn_sae_engine_assoc_tx_preflight(struct iwn_softc *sc,
         }
     }
     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+
     IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
     if (schedule)
         iwn_sae_engine_schedule_task(sc);
@@ -2479,6 +2551,8 @@ iwn_sae_engine_publish_hooks(struct iwn_softc *sc, bool enabled,
         ic->ic_sae_roam_port_valid = ItlIwn::iwn_sae_roam_port_valid;
         ic->ic_sae_wnm_roam_start = ItlIwn::iwn_sae_wnm_roam_start;
         ic->ic_sae_wcl_roam_start = ItlIwn::iwn_sae_wcl_roam_start;
+        ic->ic_sae_bss_loss_recover =
+            ItlIwn::iwn_sae_bss_loss_recover;
     } else {
         ic->ic_sae_auth_hold = NULL;
         /* A closing S_AUTH owner must remain visible even after the other
@@ -2501,6 +2575,7 @@ iwn_sae_engine_publish_hooks(struct iwn_softc *sc, bool enabled,
         ic->ic_sae_roam_port_valid = NULL;
         ic->ic_sae_wnm_roam_start = NULL;
         ic->ic_sae_wcl_roam_start = NULL;
+        ic->ic_sae_bss_loss_recover = NULL;
     }
     if (lock != NULL)
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
@@ -2643,6 +2718,147 @@ iwn_sae_roam_port_valid(struct ieee80211com *ic,
     iwn_sae_join_scan_block_clear_generation(sc, completed_generation);
 out:
     iwn_sae_engine_callback_leave(sc);
+}
+
+bool ItlIwn::
+iwn_sae_bss_loss_arm(struct ieee80211com *ic,
+    const struct ieee80211_node *source)
+{
+    struct iwn_softc *sc;
+    bool armed = false;
+
+    if (ic == NULL || source == NULL || source != ic->ic_bss ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_RUN || !source->ni_port_valid ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0)
+        return false;
+    sc = (struct iwn_softc *)ic->ic_softc;
+    if (!iwn_sae_engine_callback_enter(sc))
+        return false;
+    if (!iwn_sae_engine_runtime_enabled(sc) ||
+        sc->sc_sae_wcl_credential_lock == NULL)
+        goto out;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential) &&
+        sc->sc_sae_wcl_credential.ssid_len == source->ni_esslen &&
+        IEEE80211_ADDR_EQ(sc->sc_sae_wcl_credential.bssid,
+            source->ni_bssid) &&
+        memcmp(sc->sc_sae_wcl_credential.ssid, source->ni_essid,
+            source->ni_esslen) == 0) {
+        sc->sc_sae_bss_loss_recovery_generation =
+            sc->sc_sae_wcl_credential.request_generation;
+        sc->sc_sae_bss_loss_recovery_armed = true;
+        armed = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    if (armed)
+        XYLog("iwn_sae_reconnect BSS_LOSS_ARMED\n");
+out:
+    iwn_sae_engine_callback_leave(sc);
+    return armed;
+}
+
+int ItlIwn::
+iwn_sae_bss_loss_recover(struct ieee80211com *ic)
+{
+    struct iwn_softc *sc;
+    ItlIwn *that;
+    struct ItlSaeWclCredentialV1 credential;
+    struct ieee80211_node *candidate;
+    struct ieee80211_node *selected = NULL;
+    u_int64_t generation = 0;
+    bool active_copied = false;
+    int started = 0;
+
+    explicit_bzero(&credential, sizeof(credential));
+    if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+        ic->ic_des_esslen != 0)
+        goto out;
+    sc = (struct iwn_softc *)ic->ic_softc;
+    if (!iwn_sae_engine_callback_enter(sc))
+        goto out;
+    that = container_of(sc, ItlIwn, com);
+    if (!iwn_sae_engine_runtime_enabled(sc) ||
+        sc->sc_sae_wcl_credential_lock == NULL)
+        goto leave;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential)) {
+        credential = sc->sc_sae_wcl_credential;
+        active_copied = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    if (!active_copied)
+        goto leave;
+
+    RB_FOREACH(candidate, ieee80211_tree, &ic->ic_tree) {
+        if (!iwn_sae_bss_loss_candidate_eligible(candidate, &credential))
+            continue;
+        if (selected == NULL || candidate->ni_rssi > selected->ni_rssi)
+            selected = candidate;
+    }
+    if (selected == NULL)
+        goto leave;
+
+    generation = ieee80211_sae_wcl_request_begin(ic,
+        selected->ni_bssid, credential.ssid, credential.ssid_len);
+    if (generation == 0)
+        goto leave;
+    credential.request_generation = generation;
+    IEEE80211_ADDR_COPY(credential.bssid, selected->ni_bssid);
+    if (!itl_sae_wcl_credential_is_well_formed(&credential) ||
+        that->stageSaeWclCredential(&credential) != kIOReturnSuccess ||
+        !ieee80211_sae_wcl_request_admit_bss_loss_candidate(ic,
+            generation, selected->ni_bssid, credential.ssid,
+            credential.ssid_len))
+        goto leave;
+
+    candidate = ieee80211_find_node(ic, selected->ni_bssid);
+    if (candidate == NULL ||
+        !iwn_sae_bss_loss_candidate_eligible(candidate, &credential) ||
+        candidate->ni_esslen != ic->ic_des_esslen ||
+        memcmp(candidate->ni_essid, ic->ic_des_essid,
+            ic->ic_des_esslen) != 0 ||
+        ieee80211_match_bss(ic, candidate, 0) != 0)
+        goto leave;
+
+    /* ieee80211_end_scan() is still inside the exact STOP_SCAN terminal.
+     * Give the synchronous AUTH hook a value-only proof that this generation
+     * may inherit that completed foreground radio owner. */
+    if (!iwn_sae_bss_loss_join_handoff_arm(sc, generation))
+        goto leave;
+    ieee80211_node_join_bss(ic, candidate);
+    if (!ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss) ||
+        !iwn_sae_bss_loss_join_handoff_completed(sc, generation))
+        goto leave;
+    XYLog("iwn_sae_reconnect DRIVER_RESIDENT_BSS_LOSS_STARTED\n");
+    started = 1;
+leave:
+    if (!started && generation != 0) {
+        (void)ieee80211_sae_wcl_request_clear_if_generation(ic,
+            generation);
+        that->cancelSaeWclCredential(generation);
+    }
+    explicit_bzero(&credential, sizeof(credential));
+    iwn_sae_engine_callback_leave(sc);
+out:
+    explicit_bzero(&credential, sizeof(credential));
+    return started;
 }
 
 int ItlIwn::
@@ -2946,16 +3162,29 @@ iwn_sae_engine_selected_matches_bound(
 enum IwnSaeEngineSubmitResult {
     IWN_SAE_ENGINE_SUBMIT_OK = 0,
     /* The private workloop gate rejected us before a doorbell.  The engine
-     * rollback is therefore exact and one bounded deferred retry is safe. */
+     * rollback is therefore exact and a bounded deferred retry is safe. */
     IWN_SAE_ENGINE_SUBMIT_RETRY = 1,
     IWN_SAE_ENGINE_SUBMIT_FAIL = -1,
+    /* APSTA traffic can occupy the private gate for more than the historical
+     * two 1 ms retries.  Six exponentially spaced attempts still keep the
+     * complete per-frame contention window below 100 ms. */
+    IWN_SAE_ENGINE_SUBMIT_RETRY_LIMIT = 6,
+    IWN_SAE_ENGINE_SUBMIT_RETRY_MAX_SHIFT = 5,
 };
+
+static u_int32_t
+iwn_sae_engine_submit_retry_delay_ms(u_int8_t retry_count)
+{
+    if (retry_count > IWN_SAE_ENGINE_SUBMIT_RETRY_MAX_SHIFT)
+        retry_count = IWN_SAE_ENGINE_SUBMIT_RETRY_MAX_SHIFT;
+    return 1U << retry_count;
+}
 
 /* Worker-only: materialize one prepared engine frame, then send it through
  * the existing IWN gate/descriptor/doorbell path.  A submit failure is known
  * to be pre-doorbell, so the engine's rollback API is safe; this owner then
- * takes at most one bounded retry for a private-gate busy result and fails
- * closed for every ambiguous radio state. */
+ * takes a bounded non-blocking retry window for a private-gate busy result
+ * and fails closed for every ambiguous radio state. */
 static int
 iwn_sae_engine_submit_prepared(struct iwn_softc *sc)
 {
@@ -2992,6 +3221,10 @@ iwn_sae_engine_submit_prepared(struct iwn_softc *sc)
     if (rc == kIOReturnSuccess) {
         IOSimpleLockLock(sc->sc_sae_engine_lock);
         owner = &sc->sc_sae_engine_owner;
+        if (owner->active && !owner->cancelled && !owner->suppress_scan &&
+            !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+            owner->in_flight_ticket == ticket)
+            owner->submit_retry_count = 0;
         rearm_mgt_timer = owner->active && !owner->cancelled &&
             !owner->suppress_scan && !sc->sc_sae_engine_stopping &&
             !sc->sc_sae_engine_detaching &&
@@ -3251,9 +3484,12 @@ iwn_sae_engine_task(void *arg)
     bool assoc_tx_accepted = false;
     bool more = false;
     bool fail = false;
+    u_int8_t retry_count = 0;
     int submit_result = IWN_SAE_ENGINE_SUBMIT_OK;
 
-    if (sc == NULL || !iwn_sae_tx_lifecycle_enter(sc, true))
+    if (sc == NULL)
+        return;
+    if (!iwn_sae_tx_lifecycle_enter(sc, true))
         return;
     explicit_bzero(&terminal, sizeof(terminal));
     explicit_bzero(&peer, sizeof(peer));
@@ -3276,6 +3512,7 @@ iwn_sae_engine_task(void *arg)
         } else if (!cancel && owner->submit_retry_pending) {
             owner->submit_retry_pending = false;
             retry_submit = true;
+            retry_count = owner->submit_retry_count;
         } else if (!cancel && owner->terminal_valid) {
             terminal = owner->terminal;
             owner->terminal_valid = false;
@@ -3313,11 +3550,11 @@ iwn_sae_engine_task(void *arg)
         goto out;
     }
     if (start || retry_submit) {
-        /* attemptAction() can reject a task solely because the private IWN
-         * gate is occupied.  That is pre-doorbell and gets only this short,
-         * bounded deferred retry; all other submission failures retire. */
+        /* attemptAction() can reject a task solely because APSTA work owns
+         * the private IWN gate.  Never block on that gate from systq: use a
+         * bounded exponential delay and let detach/power-off keep draining. */
         if (retry_submit)
-            IOSleep(1);
+            IOSleep(iwn_sae_engine_submit_retry_delay_ms(retry_count));
         submit_result = start ? iwn_sae_engine_start(sc) :
             iwn_sae_engine_submit_prepared(sc);
     } else if (have_terminal) {
@@ -3448,7 +3685,8 @@ iwn_sae_engine_task(void *arg)
         if (owner->active && !owner->cancelled && !owner->suppress_scan &&
             !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
             owner->in_flight_ticket == 0 &&
-            owner->submit_retry_count < 2) {
+            owner->submit_retry_count <
+                IWN_SAE_ENGINE_SUBMIT_RETRY_LIMIT) {
             owner->submit_retry_count++;
             owner->submit_retry_pending = true;
             retry_admitted = true;
@@ -10251,6 +10489,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_ap_transition_scan_blocked = false;
     sc->sc_sae_wcl_admission_reserved = false;
     sc->sc_sae_join_scan_block_generation = 0;
+    sc->sc_sae_bss_loss_join_handoff_generation = 0;
     sc->sc_scan_lease_next_serial = 0;
     sc->sc_scan_lease_replay_task_ready = false;
     sc->sc_scan_lease_replay_pending = false;
@@ -10410,6 +10649,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_ap_transition_scan_blocked = false;
     sc->sc_sae_wcl_admission_reserved = false;
     sc->sc_sae_join_scan_block_generation = 0;
+    sc->sc_sae_bss_loss_join_handoff_generation = 0;
     sc->sc_scan_lease_next_serial = 0;
     __atomic_store_n(&sc->sc_scan_lease_replay_task_admission_state,
         IWN_SCAN_LEASE_REPLAY_TASK_ADMISSION_CLOSED, __ATOMIC_RELEASE);
@@ -12036,11 +12276,62 @@ iwn_scan_lease_live_locked(const struct iwn_softc *sc)
  * transferred direct-scan owner; an unreserved cached roam may acquire the
  * idle leaf only when no physical command is live. */
 static bool
+iwn_sae_bss_loss_join_handoff_arm(struct iwn_softc *sc,
+    u_int64_t request_generation)
+{
+    bool armed = false;
+
+    if (sc == NULL || request_generation == 0 ||
+        sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    /* The fallback is called only from the completed generic census.  Keep
+     * this proof narrower than WCL roam: it cannot borrow a background,
+     * aborted, invalidated, still-on-air, or AP-transition scan. */
+    if (sc->sc_sae_bss_loss_join_handoff_generation == 0 &&
+        sc->sc_sae_join_scan_block_generation == 0 &&
+        iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.owner == IWN_SCAN_LEASE_GENERIC_FOREGROUND &&
+        sc->sc_scan_lease.phase == IWN_SCAN_LEASE_DRAINING &&
+        sc->sc_scan_lease.command_submitted &&
+        sc->sc_scan_lease.terminal_claimed &&
+        !sc->sc_scan_lease.abort_requested &&
+        !sc->sc_scan_lease.hardware_invalidated &&
+        !sc->sc_scan_lease.publication_invalidated &&
+        (sc->sc_flags & IWN_FLAG_SCANNING) == 0 &&
+        !sc->sc_ap_transition_scan_blocked &&
+        !sc->sc_wcl_initial_scan_pending.queued) {
+        sc->sc_sae_bss_loss_join_handoff_generation = request_generation;
+        armed = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return armed;
+}
+
+static bool
+iwn_sae_bss_loss_join_handoff_completed(struct iwn_softc *sc,
+    u_int64_t request_generation)
+{
+    bool completed = false;
+
+    if (sc == NULL || request_generation == 0 ||
+        sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    completed =
+        sc->sc_sae_bss_loss_join_handoff_generation == 0 &&
+        sc->sc_sae_join_scan_block_generation == request_generation;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return completed;
+}
+
+static bool
 iwn_sae_join_scan_block_promote(struct iwn_softc *sc,
     u_int64_t request_generation)
 {
     struct ieee80211com *ic;
     bool completing_wcl_roam = false;
+    bool completing_bss_loss = false;
     bool promoted = false;
 
     if (sc == NULL || request_generation == 0 ||
@@ -12071,14 +12362,35 @@ iwn_sae_join_scan_block_promote(struct iwn_softc *sc,
         ic->ic_wcl_reassoc_owner_active &&
         ic->ic_wcl_reassoc_owner_last_leaf ==
             IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+    completing_bss_loss =
+        sc->sc_sae_join_scan_block_generation == 0 &&
+        sc->sc_sae_bss_loss_join_handoff_generation ==
+            request_generation &&
+        iwn_scan_lease_live_locked(sc) &&
+        sc->sc_scan_lease.owner == IWN_SCAN_LEASE_GENERIC_FOREGROUND &&
+        sc->sc_scan_lease.phase == IWN_SCAN_LEASE_DRAINING &&
+        sc->sc_scan_lease.command_submitted &&
+        sc->sc_scan_lease.terminal_claimed &&
+        !sc->sc_scan_lease.abort_requested &&
+        !sc->sc_scan_lease.hardware_invalidated &&
+        !sc->sc_scan_lease.publication_invalidated &&
+        (sc->sc_flags & IWN_FLAG_SCANNING) == 0 &&
+        !sc->sc_ap_transition_scan_blocked &&
+        !sc->sc_wcl_initial_scan_pending.queued;
     if (sc->sc_sae_join_scan_block_generation == request_generation) {
+        if (sc->sc_sae_bss_loss_join_handoff_generation ==
+            request_generation)
+            sc->sc_sae_bss_loss_join_handoff_generation = 0;
         promoted = true;
     } else if (sc->sc_sae_join_scan_block_generation == 0 &&
-        (!iwn_scan_lease_live_locked(sc) || completing_wcl_roam) &&
+        ((!iwn_scan_lease_live_locked(sc) || completing_wcl_roam) ||
+         completing_bss_loss) &&
         (sc->sc_flags & IWN_FLAG_SCANNING) == 0 &&
         !sc->sc_ap_transition_scan_blocked &&
         !sc->sc_wcl_initial_scan_pending.queued) {
         sc->sc_sae_wcl_admission_reserved = false;
+        if (completing_bss_loss)
+            sc->sc_sae_bss_loss_join_handoff_generation = 0;
         sc->sc_sae_join_scan_block_generation = request_generation;
         promoted = true;
     }
@@ -12096,6 +12408,8 @@ iwn_sae_join_scan_block_clear_generation(struct iwn_softc *sc,
     IOSimpleLockLock(sc->sc_scan_lease_lock);
     if (sc->sc_sae_join_scan_block_generation == request_generation)
         sc->sc_sae_join_scan_block_generation = 0;
+    if (sc->sc_sae_bss_loss_join_handoff_generation == request_generation)
+        sc->sc_sae_bss_loss_join_handoff_generation = 0;
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
 }
 
@@ -12107,7 +12421,8 @@ iwn_sae_join_scan_blocked(struct iwn_softc *sc)
     if (sc == NULL || sc->sc_scan_lease_lock == NULL)
         return false;
     IOSimpleLockLock(sc->sc_scan_lease_lock);
-    blocked = sc->sc_sae_join_scan_block_generation != 0;
+    blocked = sc->sc_sae_join_scan_block_generation != 0 ||
+        sc->sc_sae_bss_loss_join_handoff_generation != 0;
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     return blocked;
 }
@@ -12292,6 +12607,7 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
         (sc->sc_flags & IWN_FLAG_SCANNING) != 0 ||
         sc->sc_ap_transition_scan_blocked ||
         sc->sc_sae_join_scan_block_generation != 0 ||
+        sc->sc_sae_bss_loss_join_handoff_generation != 0 ||
         (sc->sc_sae_wcl_admission_reserved && !direct_sae_scan) ||
         (direct_sae_scan && !sc->sc_sae_wcl_admission_reserved) ||
         (required_initial_handoff_serial != 0 && !exact_initial_pending) ||
@@ -12661,6 +12977,10 @@ iwn_scan_lease_finish_terminal(struct iwn_softc *sc, u_int64_t serial)
          * queued S_SCAN intent after its radio epoch has been fenced. */
         schedule_replay = !sc->sc_scan_lease.hardware_invalidated &&
             sc->sc_scan_lease_replay_pending;
+        /* auth_hold() must synchronously consume a hard-loss handoff while
+         * end_scan() owns this terminal.  Never let an unconsumed token
+         * escape into a later scan or association generation. */
+        sc->sc_sae_bss_loss_join_handoff_generation = 0;
         iwn_scan_lease_clear_locked(sc);
     }
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
@@ -13227,6 +13547,19 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         iwn_clear_apple_nrate_cache(sc);
         sc->rxon.associd = 0;
         sc->rxon.filter &= ~htole32(IWN_FILTER_BSS);
+        /*
+         * Keep the APSTA scheduler's logical association carrier in lockstep
+         * with the BSS RXON that it describes.  Linux DVM derives PAN policy
+         * from vif->cfg.assoc after clearing RXON_FILTER_ASSOC_MSK; retaining
+         * a separate true value here made a completed reconnect scan restore
+         * the steady two-associated 50/50 split even though the primary BSS
+         * had already been removed from firmware.  iwn_auth() also clears
+         * this flag, but that is too late for a scan with no immediately
+         * selected candidate.
+         */
+        if (that->apFirmwareTransitionActive &&
+            that->apFirmwareStage == IWN_AP_STAGE_RUNNING)
+            that->apStaBssAssociated = false;
         /* Do not leak PMF's no-decrypt RXON policy into the next ordinary
          * association, whose pairwise CCMP key remains firmware-owned. */
         sc->rxon.filter &= ~htole32(IWN_FILTER_NODECRYPT);
@@ -15306,6 +15639,12 @@ iwn_notif_intr(struct iwn_softc *sc)
                         "%s; leaving the lost BSS\n",
                         sc->sc_dev.dv_xname, ether_sprintf(
                         ic->ic_bss->ni_macaddr));
+                /* Arm only from this real firmware loss edge while the
+                 * port-valid source BSS still proves the active private
+                 * credential's identity.  The following generic state
+                 * transition is then free to retire the old WCL request and
+                 * public RSN policy exactly as before. */
+                (void)iwn_sae_bss_loss_arm(ic, ic->ic_bss);
                 if (ic->ic_event_handler != NULL)
                     (*ic->ic_event_handler)(
                         ic, IEEE80211_EVT_STA_BEACON_LOSS, NULL);

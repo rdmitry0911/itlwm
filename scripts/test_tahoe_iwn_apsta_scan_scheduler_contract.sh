@@ -78,6 +78,18 @@ assert "authWillCommitRxon" in newstate
 assert "nstate == IEEE80211_S_AUTH" in newstate
 assert "!authWillCommitRxon" in newstate
 assert "APSTA auth coalesced duplicate reset RXON" in newstate
+rxon_reset = newstate.index("sc->rxon.associd = 0;")
+rxon_filter_reset = newstate.index(
+    "sc->rxon.filter &= ~htole32(IWN_FILTER_BSS);", rxon_reset
+)
+logical_assoc_reset = newstate.index(
+    "that->apStaBssAssociated = false;", rxon_filter_reset
+)
+scan_submission = newstate.index(
+    "that->iwn_scan(sc, IEEE80211_CHAN_2GHZ", logical_assoc_reset
+)
+assert rxon_reset < rxon_filter_reset < logical_assoc_reset < scan_submission, \
+    "RUN -> SCAN must clear the APSTA BSS association before scan submission"
 
 rsn_scan_fence = iwn[
     iwn.index("iwn_rsn_join_scan_blocked("):

@@ -846,6 +846,17 @@ struct ieee80211com {
                             const struct ieee80211_node *,
                             const u_int8_t [IEEE80211_ADDR_LEN]);
     /*
+     * A firmware beacon-loss edge may leave a validated driver-resident SAE
+     * credential while the ordinary WCL request and its public join policy
+     * are correctly retired.  After the resulting foreground census, this
+     * optional hook may consume one freshly observed same-ESS candidate and
+     * create a new direct-SAE request generation.  It returns nonzero only
+     * after node_join_bss() has accepted that exact candidate.  Drivers must
+     * arm this path from a real beacon-loss notification; an explicit leave,
+     * arbitrary scan, staged credential, or pending credential is ineligible.
+     */
+    int             (*ic_sae_bss_loss_recover)(struct ieee80211com *);
+    /*
      * Host-owned WCL reassociation owner state (see contract notes near
      * IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT). active is set
      * by setWCL_REASSOC when the producer accepts a request; last_leaf

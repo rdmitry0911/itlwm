@@ -2298,6 +2298,14 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     } else
         ni->ni_rssi = rxi->rxi_rssi;
     ni->ni_rstamp = rxi->rxi_tstamp;
+    /* prepare_scan() raises every cached node's inactivity generation.  A
+     * beacon or probe response received by this census is the matching
+     * freshness edge, so reset it here just as ordinary RUN traffic does.
+     * Besides making the documented cache contract true, this lets a
+     * beacon-loss recovery owner distinguish an on-air BSS from the vanished
+     * source which may still have a historical cache entry. */
+    if (ic->ic_state == IEEE80211_S_SCAN)
+        ni->ni_inact = 0;
     memcpy(ni->ni_tstamp, tstamp, sizeof(ni->ni_tstamp));
     ni->ni_intval = bintval;
     ni->ni_capinfo = capinfo;
