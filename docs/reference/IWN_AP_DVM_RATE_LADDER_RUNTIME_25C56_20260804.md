@@ -116,7 +116,7 @@ misclassified as a driver crash.
 ## Result and remaining surface
 
 The IWN AP firmware retry table now follows the Intel DVM grouping and legacy
-descent, with real open/WPA2/WPA3, load and S3 recovery evidence.  The next
-high-use discrepancy is DVM-style per-client rate adaptation from compressed
-BA and TX completion statistics; the present layer deliberately does not
-claim that feedback loop.
+descent, with real open/WPA2/WPA3, load and S3 recovery evidence.  This layer
+deliberately did not claim feedback selection.  That subsequent high-use
+discrepancy is closed separately in
+`IWN_AP_DVM_RATE_FEEDBACK_RUNTIME_25C56_20260804.md`.

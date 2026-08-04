@@ -162,6 +162,9 @@ struct iwn_tx_data {
     /* A-MPDU subframes */
     int ampdu_txmcs;
     int ampdu_nframes;
+    uint32_t ampdu_rate_generation;
+    uint8_t ampdu_rate_rflags;
+    uint8_t ampdu_rate_feedback_valid;
 
     uint32_t tx_apple_nrate;
     uint8_t tx_apple_nrate_valid;

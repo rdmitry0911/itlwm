@@ -4174,6 +4174,7 @@ enum {
 #define apClientHtCapabilities     apClientContext->htCapabilities
 #define apClientHtAmpduParams      apClientContext->htAmpduParams
 #define apClientHtMcs              apClientContext->htMcs
+#define apClientRateControl        apClientContext->rateControl
 #define apClientRxBaMask           apClientContext->rxBaMask
 #define apClientRxBa               apClientContext->rxBa
 #define apClientTxBaMask           apClientContext->txBaMask
@@ -4225,6 +4226,121 @@ void ItlIwn::iwn_select_ap_client(struct IwnApClientRuntime *client)
 {
     if (client != NULL)
         apClientContext = client;
+}
+
+static bool iwn_ap_dvm_mcs_supported(
+    const struct IwnApClientRuntime *client, int mcs)
+{
+    if (client == NULL || !client->ht || mcs < 0 ||
+        mcs >= IWN_AP_RATE_MCS_COUNT)
+        return false;
+    const bool mimo = client->htNss > 1;
+    if ((mimo && mcs < 8) || (!mimo && mcs >= 8))
+        return false;
+    return (client->htMcs[mcs / 8] & (1U << (mcs & 7))) != 0;
+}
+
+static void iwn_ap_dvm_clear_rate_windows(
+    struct IwnApRateControlRuntime *rateControl)
+{
+    if (rateControl == NULL)
+        return;
+    bzero(rateControl->windows, sizeof(rateControl->windows));
+    for (size_t index = 0; index < IWN_AP_RATE_MCS_COUNT; index++)
+        rateControl->windows[index].averageThroughput = -1;
+}
+
+static uint16_t iwn_ap_dvm_expected_throughput(
+    const struct IwnApClientRuntime *client, uint8_t mcs,
+    bool aggregated)
+{
+    /* Exact DVM HT20 throughput tables, indexed as Normal, SGI, AGG,
+     * AGG+SGI.  IWN HostAP currently negotiates HT20 only. */
+    static const uint16_t siso20[4][8] = {
+        { 42, 76, 102, 124, 159, 183, 193, 202 },
+        { 46, 82, 110, 132, 168, 192, 202, 210 },
+        { 47, 91, 133, 171, 242, 305, 334, 362 },
+        { 52, 101, 145, 187, 264, 330, 361, 390 }
+    };
+    static const uint16_t mimo20[4][8] = {
+        { 74, 123, 155, 179, 214, 236, 244, 251 },
+        { 81, 131, 164, 188, 223, 243, 251, 257 },
+        { 89, 167, 235, 296, 402, 488, 526, 560 },
+        { 97, 182, 255, 320, 431, 520, 558, 593 }
+    };
+    const bool sgi = client != NULL &&
+        (client->htCapabilities & IEEE80211_HTCAP_SGI20) != 0;
+    const size_t row = (aggregated ? 2U : 0U) + (sgi ? 1U : 0U);
+    return client != NULL && client->htNss > 1 ?
+        mimo20[row][mcs & 7] : siso20[row][mcs & 7];
+}
+
+static void iwn_ap_dvm_collect_rate_window(
+    struct IwnApRateWindow *window, uint16_t attempts,
+    uint16_t successes, uint16_t expectedThroughput)
+{
+    if (window == NULL || attempts == 0)
+        return;
+    if (successes > attempts)
+        successes = attempts;
+    const uint64_t oldest = 1ULL << (IWN_AP_RATE_WINDOW_SIZE - 1);
+    while (attempts != 0) {
+        if (window->attempts >= IWN_AP_RATE_WINDOW_SIZE) {
+            window->attempts = IWN_AP_RATE_WINDOW_SIZE - 1;
+            if ((window->successHistory & oldest) != 0) {
+                window->successHistory &= ~oldest;
+                if (window->successes != 0)
+                    window->successes--;
+            }
+        }
+        window->attempts++;
+        window->successHistory <<= 1;
+        if (successes != 0) {
+            window->successes++;
+            window->successHistory |= 1;
+            successes--;
+        }
+        attempts--;
+    }
+    window->successRatio = static_cast<uint16_t>(
+        128U * (100U * window->successes) / window->attempts);
+    const uint8_t failures =
+        static_cast<uint8_t>(window->attempts - window->successes);
+    if (failures >= 6 || window->successes >= 8) {
+        window->averageThroughput = static_cast<int32_t>(
+            (window->successRatio * expectedThroughput + 64U) / 128U);
+    } else {
+        window->averageThroughput = -1;
+    }
+}
+
+static void iwn_ap_dvm_selected_rate_sample(
+    uint8_t ackfailcnt, int txfail, uint16_t *attempts,
+    uint16_t *successes)
+{
+    /*
+     * DVM exposes failure_frame + 1 attempts to rs_tx_status(), which then
+     * walks the Link Quality retry table one entry at a time.  Our table has
+     * the selected HT rate in entries 0..2, so count every attempt which
+     * actually used that rate.  A successful final attempt belongs to the
+     * selected-rate window only while it is still inside those three entries;
+     * after that it succeeded at the lower HT or legacy fallback rate.
+     */
+    const uint16_t totalAttempts =
+        static_cast<uint16_t>(ackfailcnt) + 1U;
+    *attempts = MIN(totalAttempts, static_cast<uint16_t>(3));
+    *successes = !txfail && totalAttempts <= 3U ? 1U : 0U;
+}
+
+void ItlIwn::iwn_reset_ap_client_rate_control(
+    struct IwnApClientRuntime *client)
+{
+    if (client == NULL)
+        return;
+    bzero(&client->rateControl, sizeof(client->rateControl));
+    client->rateControl.selectedMcs = UINT8_MAX;
+    client->rateControl.generation = 1;
+    iwn_ap_dvm_clear_rate_windows(&client->rateControl);
 }
 
 struct IwnApClientRuntime *ItlIwn::iwn_find_ap_client(
@@ -4539,6 +4655,7 @@ int ItlIwn::iwn_prepare_ap_client_reauthentication(
     apClientHtCapabilities = 0;
     apClientHtAmpduParams = 0;
     bzero(apClientHtMcs, sizeof(apClientHtMcs));
+    iwn_reset_ap_client_rate_control(apClientContext);
     apClientRxBaMask = 0;
     apClientTxBaMask = 0;
     apClientDisableTid = 0;
@@ -5345,6 +5462,9 @@ int ItlIwn::iwn_send_ap_raw_frame(const void *frameBytes,
     data->totlen = static_cast<int>(firmwareFrameLength);
     data->ampdu_txmcs = 0;
     data->ampdu_nframes = 0;
+    data->ampdu_rate_generation = 0;
+    data->ampdu_rate_rflags = 0;
+    data->ampdu_rate_feedback_valid = 0;
     data->tx_apple_nrate = 0;
     data->tx_apple_nrate_valid = 0;
     data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
@@ -5701,6 +5821,9 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     data->totlen = static_cast<int>(frameLength);
     data->ampdu_txmcs = 0;
     data->ampdu_nframes = 0;
+    data->ampdu_rate_generation = 0;
+    data->ampdu_rate_rflags = 0;
+    data->ampdu_rate_feedback_valid = 0;
     data->tx_apple_nrate = 0;
     data->tx_apple_nrate_valid = 0;
     data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
@@ -6577,6 +6700,7 @@ bool ItlIwn::iwn_handle_ap_assoc_req(const struct ieee80211_frame *request,
 
     apClientAid = aid;
     apClientReassociationPending = reassociation;
+    iwn_reset_ap_client_rate_control(apClientContext);
     apClientLegacyRateMask = legacyRateMask;
     apClientQos = qos;
     apClientHt = ht;
@@ -7013,6 +7137,8 @@ void ItlIwn::iwn_stop_all_ap_client_tx_ba()
     apClientTxBaPendingOldDisableTid = 0;
     for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++)
         apClientTxBaQueue[tid] = UINT8_MAX;
+    bzero(apClientRateControl.pendingAggregate,
+          sizeof(apClientRateControl.pendingAggregate));
 }
 
 bool ItlIwn::iwn_handle_ap_block_ack(
@@ -8122,6 +8248,180 @@ int ItlIwn::iwn_allow_ap_client_sleep_tx()
     return com.ops.add_node(&com, &node, 1);
 }
 
+bool ItlIwn::iwn_ap_rate_feedback_matches(
+    struct IwnApClientRuntime *client, uint8_t mcs, uint8_t rflags)
+{
+    if (client == NULL)
+        return false;
+    iwn_select_ap_client(client);
+    struct IwnApRateControlRuntime *rateControl =
+        &client->rateControl;
+    const bool expectedSgi =
+        (client->htCapabilities & IEEE80211_HTCAP_SGI20) != 0;
+    const bool matches = rateControl->initialized &&
+        (rflags & IWN_RFLAG_MCS) != 0 &&
+        mcs == rateControl->selectedMcs &&
+        ((rflags & IWN_RFLAG_SGI) != 0) == expectedSgi;
+    if (matches) {
+        rateControl->missedRateCount = 0;
+        return true;
+    }
+
+    /* rs_tx_status() ignores a completion whose initial rate no longer
+     * matches rs_table[0].  After fifteen consecutive mismatches it republishes
+     * the current LQ table in case the firmware missed a command. */
+    if (rateControl->missedRateCount < UINT8_MAX)
+        rateControl->missedRateCount++;
+    if (rateControl->missedRateCount > 15 &&
+        rateControl->initialized && client->associated &&
+        !client->commandPending && !rateControl->linkQualityPending) {
+        rateControl->missedRateCount = 0;
+        rateControl->linkQualityPending = true;
+        const int error = iwn_send_ap_client_link_quality();
+        if (error != 0)
+            rateControl->linkQualityPending = false;
+        XYLog("%s: IWN AP DVM rate feedback resync id=%u "
+              "expected_mcs=%u observed=0x%02x/0x%02x error=%d\n",
+              com.sc_dev.dv_xname,
+              static_cast<unsigned>(client->stationId),
+              static_cast<unsigned>(rateControl->selectedMcs),
+              static_cast<unsigned>(mcs),
+              static_cast<unsigned>(rflags), error);
+    }
+    return false;
+}
+
+int ItlIwn::iwn_ap_rate_control_feedback(
+    struct IwnApClientRuntime *client, uint8_t mcs, uint8_t rflags,
+    uint16_t attempts, uint16_t successes, bool aggregated,
+    uint32_t generation)
+{
+    if (client == NULL || attempts == 0 || !client->ht)
+        return EINVAL;
+    iwn_select_ap_client(client);
+    struct IwnApRateControlRuntime *rateControl =
+        &client->rateControl;
+    if (!rateControl->initialized ||
+        generation != rateControl->generation ||
+        mcs != rateControl->selectedMcs ||
+        (rflags & IWN_RFLAG_MCS) == 0 ||
+        !iwn_ap_dvm_mcs_supported(client, mcs)) {
+        return 0;
+    }
+
+    /* DVM changes its expected-throughput table when aggregation starts or
+     * stops and clears the old windows because those samples are not
+     * comparable. */
+    if (!rateControl->feedbackModeInitialized ||
+        rateControl->aggregateFeedback != aggregated) {
+        iwn_ap_dvm_clear_rate_windows(rateControl);
+        rateControl->feedbackModeInitialized = true;
+        rateControl->aggregateFeedback = aggregated;
+    }
+
+    struct IwnApRateWindow *window =
+        &rateControl->windows[mcs];
+    iwn_ap_dvm_collect_rate_window(
+        window, attempts, successes,
+        iwn_ap_dvm_expected_throughput(client, mcs, aggregated));
+    const uint8_t failures =
+        static_cast<uint8_t>(window->attempts - window->successes);
+    if ((failures < 6 && window->successes < 8) ||
+        window->averageThroughput < 0 ||
+        rateControl->linkQualityPending || client->commandPending) {
+        return 0;
+    }
+
+    const int familyLow = client->htNss > 1 ? 8 : 0;
+    const int familyHigh = client->htNss > 1 ? 15 : 7;
+    int lowerMcs = -1;
+    int higherMcs = -1;
+    for (int candidate = static_cast<int>(mcs) - 1;
+         candidate >= familyLow; candidate--) {
+        if (iwn_ap_dvm_mcs_supported(client, candidate)) {
+            lowerMcs = candidate;
+            break;
+        }
+    }
+    for (int candidate = static_cast<int>(mcs) + 1;
+         candidate <= familyHigh; candidate++) {
+        if (iwn_ap_dvm_mcs_supported(client, candidate)) {
+            higherMcs = candidate;
+            break;
+        }
+    }
+
+    const int32_t currentThroughput = window->averageThroughput;
+    const int32_t lowerThroughput = lowerMcs >= 0 ?
+        rateControl->windows[lowerMcs].averageThroughput : -1;
+    const int32_t higherThroughput = higherMcs >= 0 ?
+        rateControl->windows[higherMcs].averageThroughput : -1;
+    const uint16_t successRatio = window->successRatio;
+    int action = 0;
+
+    if (successRatio <= 128U * 15U || currentThroughput == 0) {
+        action = -1;
+    } else if (lowerThroughput < 0 && higherThroughput < 0) {
+        if (higherMcs >= 0 && successRatio >= 128U * 50U)
+            action = 1;
+    } else if (lowerThroughput >= 0 && higherThroughput >= 0 &&
+               lowerThroughput < currentThroughput &&
+               higherThroughput < currentThroughput) {
+        action = 0;
+    } else if (higherThroughput >= 0) {
+        if (higherThroughput > currentThroughput &&
+            successRatio >= 128U * 50U)
+            action = 1;
+    } else if (lowerThroughput >= 0) {
+        if (lowerThroughput > currentThroughput)
+            action = -1;
+        else if (higherMcs >= 0 && successRatio >= 128U * 50U)
+            action = 1;
+    }
+
+    /* Match DVM's guard against downscaling a rate which is succeeding well
+     * or still out-throughputting the ideal lower adjacent rate. */
+    if (action < 0 && lowerMcs >= 0 &&
+        (successRatio > 128U * 85U ||
+         currentThroughput > 100 *
+            iwn_ap_dvm_expected_throughput(
+                client, static_cast<uint8_t>(lowerMcs), aggregated))) {
+        action = 0;
+    }
+
+    const int nextMcs = action < 0 ? lowerMcs :
+        (action > 0 ? higherMcs : -1);
+    if (nextMcs < 0)
+        return 0;
+
+    const uint8_t previousMcs = rateControl->selectedMcs;
+    const uint32_t previousGeneration = rateControl->generation;
+    rateControl->selectedMcs = static_cast<uint8_t>(nextMcs);
+    if (++rateControl->generation == 0)
+        rateControl->generation = 1;
+    rateControl->linkQualityPending = true;
+    bzero(rateControl->pendingAggregate,
+          sizeof(rateControl->pendingAggregate));
+    const int error = iwn_send_ap_client_link_quality();
+    if (error != 0) {
+        rateControl->selectedMcs = previousMcs;
+        rateControl->generation = previousGeneration;
+        rateControl->linkQualityPending = false;
+        return error;
+    }
+    XYLog("%s: IWN AP DVM rate id=%u MCS%u->MCS%u "
+          "window=%u/%u ratio=%u generation=%u\n",
+          com.sc_dev.dv_xname,
+          static_cast<unsigned>(client->stationId),
+          static_cast<unsigned>(previousMcs),
+          static_cast<unsigned>(nextMcs),
+          static_cast<unsigned>(window->successes),
+          static_cast<unsigned>(window->attempts),
+          static_cast<unsigned>(successRatio),
+          static_cast<unsigned>(rateControl->generation));
+    return 0;
+}
+
 int ItlIwn::iwn_send_ap_client_link_quality()
 {
     struct iwn_cmd_link_quality linkq;
@@ -8183,15 +8483,32 @@ int ItlIwn::iwn_send_ap_client_link_quality()
         const int lastMcs = mimo ? 8 : 0;
         const uint8_t antennaMask = mimo ?
             static_cast<uint8_t>(com.txchainmask & IWN_ANT_AB) : txant;
-        int selectedMcs = -1;
-        for (int mcs = firstMcs; mcs >= lastMcs; mcs--) {
-            const size_t stream = static_cast<size_t>(mcs / 8);
-            const uint8_t bit = static_cast<uint8_t>(1U << (mcs & 7));
-            if ((apClientHtMcs[stream] & bit) != 0) {
-                selectedMcs = mcs;
-                break;
+        if (!apClientRateControl.initialized ||
+            !iwn_ap_dvm_mcs_supported(
+                apClientContext, apClientRateControl.selectedMcs)) {
+            iwn_reset_ap_client_rate_control(apClientContext);
+            for (int mcs = lastMcs; mcs <= firstMcs; mcs++) {
+                if (iwn_ap_dvm_mcs_supported(apClientContext, mcs)) {
+                    apClientRateControl.selectedMcs =
+                        static_cast<uint8_t>(mcs);
+                    apClientRateControl.initialized = true;
+                    break;
+                }
+            }
+            if (apClientRateControl.initialized) {
+                XYLog("%s: IWN AP DVM rate initialized id=%u MCS%u "
+                      "generation=%u\n",
+                      com.sc_dev.dv_xname,
+                      static_cast<unsigned>(
+                          apClientContext->stationId),
+                      static_cast<unsigned>(
+                          apClientRateControl.selectedMcs),
+                      static_cast<unsigned>(
+                          apClientRateControl.generation));
             }
         }
+        const int selectedMcs = apClientRateControl.initialized ?
+            apClientRateControl.selectedMcs : -1;
         if (selectedMcs < 0)
             return EINVAL;
 
@@ -8821,6 +9138,8 @@ void ItlIwn::iwn_note_ap_firmware_event(
         if (completedClient != NULL)
             iwn_select_ap_client(completedClient);
     }
+    if (command == IWN_CMD_LINK_QUALITY && completedClient != NULL)
+        completedClient->rateControl.linkQualityPending = false;
 
     /* Linux DVM makes iwl_sta_tx_modify_enable_tid() synchronous before it
      * exposes the aggregate SCD queue.  RX action processing cannot block on
@@ -11177,6 +11496,9 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
 
         data->cmd_paddr = paddr;
         data->scratch_paddr = paddr + 12;
+        data->ampdu_rate_generation = 0;
+        data->ampdu_rate_rflags = 0;
+        data->ampdu_rate_feedback_valid = 0;
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
@@ -11225,6 +11547,9 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
             mbuf_freem(data->m);
             data->m = NULL;
         }
+        data->ampdu_rate_generation = 0;
+        data->ampdu_rate_rflags = 0;
+        data->ampdu_rate_feedback_valid = 0;
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
@@ -11278,6 +11603,9 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
             mbuf_freem(data->m);
             data->m = NULL;
         }
+        data->ampdu_rate_generation = 0;
+        data->ampdu_rate_rflags = 0;
+        data->ampdu_rate_feedback_valid = 0;
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
         data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
@@ -13651,6 +13979,9 @@ iwn_rx_compressed_ba(struct iwn_softc *sc, struct iwn_rx_desc *desc,
             iwn_refresh_tx_timer(sc);
             return;
         }
+        struct IwnApAggregateRateFeedback feedback =
+            apClient->rateControl.pendingAggregate[cba->tid];
+        apClient->rateControl.pendingAggregate[cba->tid].valid = false;
         if (!iwn_ampdu_txq_advance(sc, txq, qid,
                                    IWN_AGG_SSN_TO_TXQ_IDX(ssn))) {
             iwn_refresh_tx_timer(sc);
@@ -13658,6 +13989,24 @@ iwn_rx_compressed_ba(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         }
         itl_ap_tx_ba_set_window_start(
             &apClientTxBa[cba->tid], ssn);
+        if (feedback.valid) {
+            uint16_t attempts = cba->nframes_sent;
+            const uint16_t successes = cba->nframes_acked;
+            /* DVM treats a bogus acked>sent report as sent=acked so corrupt
+             * firmware telemetry cannot manufacture failures. */
+            if (successes > attempts)
+                attempts = successes;
+            if (attempts != 0) {
+                const int rateError = iwn_ap_rate_control_feedback(
+                    apClient, feedback.mcs, feedback.rflags,
+                    attempts, successes, true, feedback.generation);
+                if (rateError != 0) {
+                    XYLog("%s: IWN AP compressed BA rate feedback "
+                          "error=%d\n",
+                          sc->sc_dev.dv_xname, rateError);
+                }
+            }
+        }
         iwn_clear_oactive(sc, txq);
         iwn_refresh_tx_timer(sc);
 #if __IO80211_TARGET >= __MAC_26_0
@@ -13981,6 +14330,26 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
 
     if (nframes > 1) {
         int i;
+        bool aggregateRateFeedback = false;
+        uint32_t aggregateRateGeneration = 0;
+
+        if (apAggregate && tid >= 0 &&
+            tid < IWN_AP_RATE_TID_COUNT) {
+            struct IwnApAggregateRateFeedback *pending =
+                &apClient->rateControl.pendingAggregate[tid];
+            pending->valid = false;
+            /* DVM saves tx_resp->rate_n_flags on the RA/TID and consumes it
+             * only when the matching compressed BA arrives. */
+            if (iwn_ap_rate_feedback_matches(apClient, rate, rflags)) {
+                aggregateRateFeedback = true;
+                aggregateRateGeneration =
+                    apClient->rateControl.generation;
+                pending->valid = true;
+                pending->mcs = rate;
+                pending->rflags = rflags;
+                pending->generation = aggregateRateGeneration;
+            }
+        }
         
         /*
          * Collect information about this A-MPDU.
@@ -13998,7 +14367,8 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
                 continue;
             
             txdata = &txq->data[idx];
-            if (txdata->ni == NULL)
+            if (txdata->ni == NULL &&
+                !(apAggregate && txdata->ap_data))
                 continue;
             
             /* The Tx rate was the same for all subframes. */
@@ -14007,11 +14377,33 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
                 txdata->tx_apple_nrate_valid = 1;
             txdata->ampdu_txmcs = rate;
             txdata->ampdu_nframes = nframes;
+            if (apAggregate && txdata->ap_data) {
+                /* Preserve the original aggregate rate and generation on
+                 * every descriptor.  A later single-frame completion reports
+                 * the fallback PLCP, while DVM also charges one failed sample
+                 * to the A-MPDU rate which originally owned this subframe. */
+                txdata->ampdu_rate_generation =
+                    aggregateRateGeneration;
+                txdata->ampdu_rate_rflags = rflags;
+                txdata->ampdu_rate_feedback_valid =
+                    aggregateRateFeedback ? 1 : 0;
+            }
         }
         return;
     }
 
     if (txdata->ap_data && apAggregate) {
+        struct IwnApAggregateRateFeedback *pending =
+            tid >= 0 && tid < IWN_AP_RATE_TID_COUNT ?
+            &apClient->rateControl.pendingAggregate[tid] : NULL;
+        if (pending != NULL)
+            pending->valid = false;
+        uint32_t feedbackGeneration = 0;
+        const bool rateFeedback =
+            status != IWN_TX_STATUS_FAIL_DEST_PS &&
+            iwn_ap_rate_feedback_matches(apClient, rate, rflags);
+        if (rateFeedback)
+            feedbackGeneration = apClient->rateControl.generation;
         if (!itl_ap_tx_ba_accept_completion(
                 &apClientTxBa[tid], static_cast<uint16_t>(ssn),
                 static_cast<uint16_t>(txq->queued)) ||
@@ -14042,6 +14434,16 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
             LE_READ_2(failedFrame->i_seq) >> IEEE80211_SEQ_SEQ_SHIFT);
         const uint16_t barSsn = static_cast<uint16_t>(
             (failedSequence + 1) & 0x0fff);
+        const bool priorAggregateRateFeedback =
+            status != IWN_TX_STATUS_FAIL_DEST_PS &&
+            txdata->ampdu_nframes > 1 &&
+            txdata->ampdu_rate_feedback_valid != 0;
+        const uint8_t priorAggregateMcs =
+            static_cast<uint8_t>(txdata->ampdu_txmcs);
+        const uint8_t priorAggregateRflags =
+            txdata->ampdu_rate_rflags;
+        const uint32_t priorAggregateGeneration =
+            txdata->ampdu_rate_generation;
         mbuf_t apPsFilteredPacket = NULL;
         if (status == IWN_TX_STATUS_FAIL_DEST_PS && txdata->m != NULL) {
             /* DVM exposes DEST_PS as TX_FILTERED even for an aggregation
@@ -14063,6 +14465,18 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
             &apClientTxBa[tid], static_cast<uint16_t>(ssn));
         const bool reclaimedDescriptor =
             txq->queued < queuedBeforeReclaim;
+        if (priorAggregateRateFeedback && reclaimedDescriptor) {
+            const int aggregateRateError =
+                iwn_ap_rate_control_feedback(
+                    apClient, priorAggregateMcs,
+                    priorAggregateRflags, 1, 0, true,
+                    priorAggregateGeneration);
+            if (aggregateRateError != 0) {
+                XYLog("%s: IWN AP prior aggregate rate feedback "
+                      "error=%d\n",
+                      sc->sc_dev.dv_xname, aggregateRateError);
+            }
+        }
         if (txfail && status != IWN_TX_STATUS_FAIL_DEST_PS &&
             reclaimedDescriptor) {
             /* A failed single-frame aggregate completion is retry
@@ -14082,6 +14496,21 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
                       static_cast<unsigned>(status),
                       static_cast<unsigned>(ssn & 0x0fff),
                       static_cast<unsigned>(barSsn), barError);
+            }
+        }
+        if (rateFeedback && reclaimedDescriptor) {
+            uint16_t feedbackAttempts = 0;
+            uint16_t feedbackSuccesses = 0;
+            iwn_ap_dvm_selected_rate_sample(
+                ackfailcnt, txfail, &feedbackAttempts,
+                &feedbackSuccesses);
+            const int rateError = iwn_ap_rate_control_feedback(
+                apClient, rate, rflags, feedbackAttempts,
+                feedbackSuccesses,
+                true, feedbackGeneration);
+            if (rateError != 0) {
+                XYLog("%s: IWN AP aggregate rate feedback error=%d\n",
+                      sc->sc_dev.dv_xname, rateError);
             }
         }
         iwn_clear_oactive(sc, txq);
@@ -14351,6 +14780,9 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
     data->txrate = 0;
     data->ampdu_nframes = 0;
     data->ampdu_txmcs = 0;
+    data->ampdu_rate_generation = 0;
+    data->ampdu_rate_rflags = 0;
+    data->ampdu_rate_feedback_valid = 0;
     data->tx_apple_nrate = 0;
     data->tx_apple_nrate_valid = 0;
     data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
@@ -14454,6 +14886,24 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
             that->apFirmwareConfig.rsnIELength != 0 &&
             client != NULL && client->associated &&
             IEEE80211_ADDR_EQ(data->diag_peer, client->mac);
+        if (data->ap_data && data->m != NULL && client != NULL &&
+            iwn_ap_rate_feedback_matches(client, rate, rflags)) {
+            const uint32_t generation =
+                client->rateControl.generation;
+            uint16_t feedbackAttempts = 0;
+            uint16_t feedbackSuccesses = 0;
+            iwn_ap_dvm_selected_rate_sample(
+                ackfailcnt, txfail, &feedbackAttempts,
+                &feedbackSuccesses);
+            const int rateError = iwn_ap_rate_control_feedback(
+                client, rate, rflags, feedbackAttempts,
+                feedbackSuccesses,
+                false, generation);
+            if (rateError != 0) {
+                XYLog("%s: IWN AP nonaggregate rate feedback error=%d\n",
+                      sc->sc_dev.dv_xname, rateError);
+            }
+        }
         if (txfail)
             ifp->netStat->outputErrors++;
         if (txfail)
@@ -15911,6 +16361,9 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
     data->ni = ni;
     data->txrate = ni->ni_txrate;
     data->ampdu_txmcs = ni->ni_txmcs; /* updated upon Tx interrupt */
+    data->ampdu_rate_generation = 0;
+    data->ampdu_rate_rflags = 0;
+    data->ampdu_rate_feedback_valid = 0;
     data->tx_apple_nrate = tx_apple_nrate;
     data->tx_apple_nrate_valid = tx_apple_nrate_valid ? 1 : 0;
     data->post_plti_trace_class = post_plti_trace_class;
@@ -16000,6 +16453,9 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
             data->totlen = 0;
             data->ampdu_nframes = 0;
             data->ampdu_txmcs = 0;
+            data->ampdu_rate_generation = 0;
+            data->ampdu_rate_rflags = 0;
+            data->ampdu_rate_feedback_valid = 0;
             data->tx_apple_nrate = 0;
             data->tx_apple_nrate_valid = 0;
             data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
@@ -16024,6 +16480,9 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
             data->totlen = 0;
             data->ampdu_nframes = 0;
             data->ampdu_txmcs = 0;
+            data->ampdu_rate_generation = 0;
+            data->ampdu_rate_rflags = 0;
+            data->ampdu_rate_feedback_valid = 0;
             data->tx_apple_nrate = 0;
             data->tx_apple_nrate_valid = 0;
             data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;

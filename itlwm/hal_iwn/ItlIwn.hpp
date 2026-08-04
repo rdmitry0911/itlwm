@@ -75,7 +75,47 @@
 
 struct ieee80211_sae_ap;
 
-enum { IWN_AP_PS_QUEUE_LEN = 16 };
+enum {
+    IWN_AP_PS_QUEUE_LEN = 16,
+    IWN_AP_RATE_MCS_COUNT = 16,
+    IWN_AP_RATE_TID_COUNT = 8,
+    IWN_AP_RATE_WINDOW_SIZE = 62
+};
+
+/* Intel DVM keeps one 62-attempt success bitmap per rate.  AP clients do not
+ * have a net80211 station node, so retain the same feedback ownership next to
+ * the firmware station ID instead of fabricating a node solely for rate
+ * control. */
+struct IwnApRateWindow {
+    uint64_t successHistory;
+    uint8_t attempts;
+    uint8_t successes;
+    uint16_t successRatio;
+    int32_t averageThroughput;
+};
+
+/* A compressed BA does not repeat the initial firmware rate.  DVM therefore
+ * pairs it with the immediately preceding aggregate TX response for this
+ * RA/TID. */
+struct IwnApAggregateRateFeedback {
+    bool valid;
+    uint8_t mcs;
+    uint8_t rflags;
+    uint32_t generation;
+};
+
+struct IwnApRateControlRuntime {
+    bool initialized;
+    bool feedbackModeInitialized;
+    bool aggregateFeedback;
+    bool linkQualityPending;
+    uint8_t selectedMcs;
+    uint8_t missedRateCount;
+    uint32_t generation;
+    struct IwnApRateWindow windows[IWN_AP_RATE_MCS_COUNT];
+    struct IwnApAggregateRateFeedback
+        pendingAggregate[IWN_AP_RATE_TID_COUNT];
+};
 
 /*
  * DVM has twelve dynamic station IDs (2..13), while Tahoe exposes five
@@ -100,6 +140,7 @@ struct IwnApClientRuntime {
     uint16_t htCapabilities;
     uint8_t htAmpduParams;
     uint8_t htMcs[2];
+    struct IwnApRateControlRuntime rateControl;
     uint16_t rxBaMask;
     struct ItlApRxBaRuntime rxBa[kItlApRxBaTidCount];
     uint16_t txBaMask;
@@ -190,6 +231,11 @@ public:
     int iwn_remove_ap_client_node(const uint8_t *);
     int iwn_wake_ap_client_node();
     int iwn_allow_ap_client_sleep_tx();
+    void iwn_reset_ap_client_rate_control(struct IwnApClientRuntime *);
+    bool iwn_ap_rate_feedback_matches(struct IwnApClientRuntime *,
+        uint8_t, uint8_t);
+    int iwn_ap_rate_control_feedback(struct IwnApClientRuntime *,
+        uint8_t, uint8_t, uint16_t, uint16_t, bool, uint32_t);
     int iwn_send_ap_client_link_quality();
     int iwn_send_ap_assoc_success();
     int iwn_send_ap_sensitivity();
