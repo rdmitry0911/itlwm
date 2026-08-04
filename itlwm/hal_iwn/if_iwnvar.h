@@ -655,6 +655,7 @@ struct iwn_softc {
     bool                sc_sae_wcl_credential_pending;
     bool                sc_sae_wcl_credential_active;
     bool                sc_sae_bss_loss_recovery_armed;
+    bool                sc_sae_driver_reset_recovery_pending;
     bool                sc_sae_wcl_credential_cancel_valid;
     uint64_t            sc_sae_wcl_credential_cancel_through_generation;
     uint64_t            sc_sae_bss_loss_recovery_generation;

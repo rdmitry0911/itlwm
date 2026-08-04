@@ -285,6 +285,7 @@ iwn_sae_wcl_credential_clear_locked(struct iwn_softc *sc)
     sc->sc_sae_wcl_credential_pending = false;
     sc->sc_sae_wcl_credential_active = false;
     sc->sc_sae_bss_loss_recovery_armed = false;
+    sc->sc_sae_driver_reset_recovery_pending = false;
     sc->sc_sae_bss_loss_recovery_generation = 0;
 }
 
@@ -2761,6 +2762,62 @@ iwn_sae_bss_loss_arm(struct ieee80211com *ic,
 out:
     iwn_sae_engine_callback_leave(sc);
     return armed;
+}
+
+bool ItlIwn::
+iwn_sae_driver_reset_recovery_pending(struct iwn_softc *sc, bool consume)
+{
+    bool pending = false;
+
+    if (sc == NULL || sc->sc_sae_wcl_credential_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    pending = sc->sc_sae_driver_reset_recovery_pending &&
+        sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential);
+    if (consume && pending)
+        sc->sc_sae_driver_reset_recovery_pending = false;
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    return pending;
+}
+
+void ItlIwn::
+iwn_sae_driver_reset_recovery_prepare(struct iwn_softc *sc)
+{
+    struct ieee80211com *ic;
+    bool prepared = false;
+
+    if (sc == NULL)
+        return;
+    ic = &sc->sc_ic;
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
+        (void)iwn_sae_bss_loss_arm(ic, ic->ic_bss);
+    if (sc->sc_sae_wcl_credential_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential)) {
+        sc->sc_sae_driver_reset_recovery_pending = true;
+        prepared = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    if (prepared)
+        XYLog("iwn_sae_reconnect DRIVER_RESET_RECOVERY_PREPARED\n");
 }
 
 int ItlIwn::
@@ -10722,6 +10779,9 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_wcl_credential_staged = false;
     sc->sc_sae_wcl_credential_pending = false;
     sc->sc_sae_wcl_credential_active = false;
+    sc->sc_sae_bss_loss_recovery_armed = false;
+    sc->sc_sae_driver_reset_recovery_pending = false;
+    sc->sc_sae_bss_loss_recovery_generation = 0;
     sc->sc_sae_wcl_credential_cancel_valid = false;
     sc->sc_sae_wcl_credential_cancel_through_generation = 0;
     explicit_bzero(&sc->sc_sae_wcl_credential,
@@ -11125,8 +11185,13 @@ iwn_init_task(void *arg1)
      * boundaries, so it must run here rather than in that interrupt action. */
     if (sc->sc_flags & IWN_FLAG_FATAL_RECOVERY) {
         sc->sc_flags &= ~IWN_FLAG_FATAL_RECOVERY;
-        if (ifp->if_flags & IFF_RUNNING)
+        if (ifp->if_flags & IFF_RUNNING) {
+            /* The reference publishes a distinct DriverReset before it
+             * halts the live Join FSM.  Retain the equivalent private SAE
+             * join owner before iwn_stop() destroys the selected BSS. */
+            that->iwn_sae_driver_reset_recovery_prepare(sc);
             that->iwn_stop(ifp);
+        }
     }
 
     if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
@@ -17323,6 +17388,9 @@ iwn_watchdog(struct _ifnet *ifp)
                           sc->txq[qid].read);
                 }
             }
+            /* Preserve a validated SAE ESS across this internal firmware
+             * reset.  Ordinary power-off paths never set this marker. */
+            that->iwn_sae_driver_reset_recovery_prepare(sc);
             that->iwn_stop(ifp);
             task_add(systq, &sc->init_task);
             ifp->netStat->outputErrors++;
@@ -22287,6 +22355,7 @@ iwn_init(struct _ifnet *ifp)
 {
     struct iwn_softc *sc = (struct iwn_softc *)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
+    bool driver_reset_reconnect;
     int error;
 
     memset(sc->bss_node_addr, 0, sizeof(sc->bss_node_addr));
@@ -22350,13 +22419,24 @@ iwn_init(struct _ifnet *ifp)
     iwn_sae_engine_reopen(sc);
 
     if (ic->ic_opmode != IEEE80211_M_MONITOR) {
-        __atomic_store_n(&ic->ic_initial_scan_census_only, 1,
+        /* A cold power-on census must never synthesize an association.  An
+         * unexpected firmware epoch is different: Tahoe broadcasts
+         * WCL_DriverReset and later starts a fresh known-network join.  The
+         * private active-ESS marker is that exact lower recovery owner. */
+        driver_reset_reconnect =
+            iwn_sae_driver_reset_recovery_pending(sc, false);
+        __atomic_store_n(&ic->ic_initial_scan_census_only,
+                         driver_reset_reconnect ? 0 : 1,
                          __ATOMIC_RELEASE);
         error = ieee80211_begin_scan_with_result(ifp);
         if (error != 0) {
             XYLog("%s: initial scan rejected during power-on (%d)\n",
                   sc->sc_dev.dv_xname, error);
             goto fail;
+        }
+        if (driver_reset_reconnect) {
+            (void)iwn_sae_driver_reset_recovery_pending(sc, true);
+            XYLog("iwn_sae_reconnect DRIVER_RESET_SCAN_STARTED\n");
         }
     } else
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);

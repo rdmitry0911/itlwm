@@ -408,6 +408,11 @@ public:
     static int iwm_sae_wcl_roam_start(struct ieee80211com *,
         const struct ieee80211_node *,
         const u_int8_t [IEEE80211_ADDR_LEN]);
+    static bool iwm_sae_bss_loss_arm(struct ieee80211com *,
+        const struct ieee80211_node *);
+    static int iwm_sae_bss_loss_recover(struct ieee80211com *);
+    void iwm_sae_driver_reset_recovery_prepare(struct iwm_softc *);
+    bool iwm_sae_driver_reset_recovery_pending(struct iwm_softc *, bool);
     static int iwm_sae_targeted_roam_start(struct ieee80211com *,
         const struct ieee80211_node *,
         const u_int8_t [IEEE80211_ADDR_LEN], bool);

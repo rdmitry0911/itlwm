@@ -563,6 +563,9 @@ public:
     static bool iwn_sae_bss_loss_arm(struct ieee80211com *,
         const struct ieee80211_node *);
     static int iwn_sae_bss_loss_recover(struct ieee80211com *);
+    void       iwn_sae_driver_reset_recovery_prepare(struct iwn_softc *);
+    bool       iwn_sae_driver_reset_recovery_pending(struct iwn_softc *,
+        bool);
     static int iwn_sae_targeted_roam_start(struct ieee80211com *,
         const struct ieee80211_node *,
         const u_int8_t [IEEE80211_ADDR_LEN], bool);

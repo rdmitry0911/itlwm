@@ -10,6 +10,9 @@ iwx_sae_wcl_credential_clear_locked(struct iwx_softc *sc)
     sc->sc_sae_wcl_credential_staged = false;
     sc->sc_sae_wcl_credential_pending = false;
     sc->sc_sae_wcl_credential_active = false;
+    sc->sc_sae_bss_loss_recovery_armed = false;
+    sc->sc_sae_driver_reset_recovery_pending = false;
+    sc->sc_sae_bss_loss_recovery_generation = 0;
 }
 
 /* Reset/cancellation may retire a not-yet-validated credential without
@@ -44,6 +47,63 @@ iwx_sae_wcl_credential_equal(const struct ItlSaeWclCredentialV1 *left,
     for (index = 0; index < sizeof(*left); index++)
         difference |= left_bytes[index] ^ right_bytes[index];
     return difference == 0;
+}
+
+/* Candidate discovery remains public and credential-free.  ni_inact is zero
+ * only for a beacon/probe response observed by the just-completed scan. */
+static bool
+iwx_sae_bss_loss_candidate_eligible(const struct ieee80211_node *ni,
+    const struct ItlSaeWclCredentialV1 *credential)
+{
+    bool pure_sae;
+    bool transition_sae;
+
+    if (ni == NULL || credential == NULL || ni->ni_fails != 0 ||
+        ni->ni_inact != 0 || ni->ni_chan == IEEE80211_CHAN_ANYC ||
+        ni->ni_esslen != credential->ssid_len ||
+        memcmp(ni->ni_essid, credential->ssid,
+            credential->ssid_len) != 0)
+        return false;
+
+    pure_sae = ieee80211_sae_scan_profile_is_strict(
+        ni->ni_supported_rsnprotos == IEEE80211_PROTO_RSN &&
+            ni->ni_rsnprotos == IEEE80211_PROTO_RSN,
+        ni->ni_supported_rsnakms == IEEE80211_AKM_SAE &&
+            ni->ni_rsnakms == IEEE80211_AKM_SAE,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_ESS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_IBSS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_NOPAIRWISE) != 0,
+        ni->ni_rsnciphers == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPR) != 0,
+        ni->ni_sae_scan_flags);
+    transition_sae = ieee80211_sae_scan_profile_is_transition(
+        ni->ni_supported_rsnprotos == IEEE80211_PROTO_RSN &&
+            ni->ni_rsnprotos == IEEE80211_PROTO_RSN,
+        ((ni->ni_supported_rsnakms ==
+          (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK) &&
+          ni->ni_rsnakms ==
+          (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK)) ||
+         (ni->ni_supported_rsnakms ==
+          (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK |
+           IEEE80211_AKM_SHA256_PSK) &&
+          ni->ni_rsnakms ==
+          (IEEE80211_AKM_SAE | IEEE80211_AKM_PSK |
+           IEEE80211_AKM_SHA256_PSK))),
+        (ni->ni_capinfo & IEEE80211_CAPINFO_ESS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_IBSS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_NOPAIRWISE) != 0,
+        ni->ni_rsnciphers == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPR) != 0,
+        ni->ni_sae_scan_flags);
+    return pure_sae || transition_sae;
 }
 
 /* Caller holds sc_sae_wcl_credential_lock.  The generic WCL policy assigns
@@ -1293,6 +1353,8 @@ iwx_sae_engine_publish_hooks(struct iwx_softc *sc, bool enabled,
         ic->ic_sae_roam_port_valid = ItlIwx::iwx_sae_roam_port_valid;
         ic->ic_sae_wnm_roam_start = ItlIwx::iwx_sae_wnm_roam_start;
         ic->ic_sae_wcl_roam_start = ItlIwx::iwx_sae_wcl_roam_start;
+        ic->ic_sae_bss_loss_recover =
+            ItlIwx::iwx_sae_bss_loss_recover;
     } else {
         ic->ic_sae_auth_hold = NULL;
         /* A closing S_AUTH owner must remain visible even after the other
@@ -1315,6 +1377,7 @@ iwx_sae_engine_publish_hooks(struct iwx_softc *sc, bool enabled,
         ic->ic_sae_roam_port_valid = NULL;
         ic->ic_sae_wnm_roam_start = NULL;
         ic->ic_sae_wcl_roam_start = NULL;
+        ic->ic_sae_bss_loss_recover = NULL;
     }
     if (lock != NULL)
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
@@ -1443,6 +1506,196 @@ iwx_sae_roam_port_valid(struct ieee80211com *ic,
     IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
 out:
     iwx_sae_engine_callback_leave(sc);
+}
+
+bool ItlIwx::
+iwx_sae_bss_loss_arm(struct ieee80211com *ic,
+    const struct ieee80211_node *source)
+{
+    struct iwx_softc *sc;
+    bool armed = false;
+
+    if (ic == NULL || source == NULL || source != ic->ic_bss ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_RUN || !source->ni_port_valid ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0)
+        return false;
+    sc = (struct iwx_softc *)ic->ic_softc;
+    if (!iwx_sae_engine_callback_enter(sc))
+        return false;
+    if (!iwx_sae_engine_runtime_enabled(sc) ||
+        sc->sc_sae_wcl_credential_lock == NULL)
+        goto out;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential) &&
+        sc->sc_sae_wcl_credential.ssid_len == source->ni_esslen &&
+        IEEE80211_ADDR_EQ(sc->sc_sae_wcl_credential.bssid,
+            source->ni_bssid) &&
+        memcmp(sc->sc_sae_wcl_credential.ssid, source->ni_essid,
+            source->ni_esslen) == 0) {
+        sc->sc_sae_bss_loss_recovery_generation =
+            sc->sc_sae_wcl_credential.request_generation;
+        sc->sc_sae_bss_loss_recovery_armed = true;
+        armed = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    if (armed)
+        XYLog("iwx_sae_reconnect BSS_LOSS_ARMED\n");
+out:
+    iwx_sae_engine_callback_leave(sc);
+    return armed;
+}
+
+bool ItlIwx::
+iwx_sae_driver_reset_recovery_pending(struct iwx_softc *sc, bool consume)
+{
+    bool pending = false;
+
+    if (sc == NULL || sc->sc_sae_wcl_credential_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    pending = sc->sc_sae_driver_reset_recovery_pending &&
+        sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential);
+    if (consume && pending)
+        sc->sc_sae_driver_reset_recovery_pending = false;
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    return pending;
+}
+
+void ItlIwx::
+iwx_sae_driver_reset_recovery_prepare(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic;
+    bool prepared = false;
+
+    if (sc == NULL)
+        return;
+    ic = &sc->sc_ic;
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
+        (void)iwx_sae_bss_loss_arm(ic, ic->ic_bss);
+    if (sc->sc_sae_wcl_credential_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential)) {
+        sc->sc_sae_driver_reset_recovery_pending = true;
+        prepared = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    if (prepared)
+        XYLog("iwx_sae_reconnect DRIVER_RESET_RECOVERY_PREPARED\n");
+}
+
+int ItlIwx::
+iwx_sae_bss_loss_recover(struct ieee80211com *ic)
+{
+    struct iwx_softc *sc;
+    ItlIwx *that;
+    struct ItlSaeWclCredentialV1 credential;
+    struct ieee80211_node *candidate;
+    struct ieee80211_node *selected = NULL;
+    u_int64_t generation = 0;
+    bool active_copied = false;
+    int started = 0;
+
+    explicit_bzero(&credential, sizeof(credential));
+    if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+        ic->ic_des_esslen != 0)
+        goto out;
+    sc = (struct iwx_softc *)ic->ic_softc;
+    if (!iwx_sae_engine_callback_enter(sc))
+        goto out;
+    that = container_of(sc, ItlIwx, com);
+    if (!iwx_sae_engine_runtime_enabled(sc) ||
+        sc->sc_sae_wcl_credential_lock == NULL)
+        goto leave;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential)) {
+        credential = sc->sc_sae_wcl_credential;
+        active_copied = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    if (!active_copied)
+        goto leave;
+
+    RB_FOREACH(candidate, ieee80211_tree, &ic->ic_tree) {
+        if (!iwx_sae_bss_loss_candidate_eligible(candidate, &credential))
+            continue;
+        if (selected == NULL || candidate->ni_rssi > selected->ni_rssi)
+            selected = candidate;
+    }
+    if (selected == NULL)
+        goto leave;
+
+    generation = ieee80211_sae_wcl_request_begin(ic,
+        selected->ni_bssid, credential.ssid, credential.ssid_len);
+    if (generation == 0)
+        goto leave;
+    credential.request_generation = generation;
+    IEEE80211_ADDR_COPY(credential.bssid, selected->ni_bssid);
+    if (!itl_sae_wcl_credential_is_well_formed(&credential) ||
+        that->stageSaeWclCredential(&credential) != kIOReturnSuccess ||
+        !ieee80211_sae_wcl_request_admit_bss_loss_candidate(ic,
+            generation, selected->ni_bssid, credential.ssid,
+            credential.ssid_len))
+        goto leave;
+
+    candidate = ieee80211_find_node(ic, selected->ni_bssid);
+    if (candidate == NULL ||
+        !iwx_sae_bss_loss_candidate_eligible(candidate, &credential) ||
+        candidate->ni_esslen != ic->ic_des_esslen ||
+        memcmp(candidate->ni_essid, ic->ic_des_essid,
+            ic->ic_des_esslen) != 0 ||
+        ieee80211_match_bss(ic, candidate, 0) != 0)
+        goto leave;
+
+    ieee80211_node_join_bss(ic, candidate);
+    if (!ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss))
+        goto leave;
+    XYLog("iwx_sae_reconnect DRIVER_RESIDENT_BSS_LOSS_STARTED\n");
+    started = 1;
+leave:
+    if (!started && generation != 0) {
+        (void)ieee80211_sae_wcl_request_clear_if_generation(ic,
+            generation);
+        that->cancelSaeWclCredential(generation);
+    }
+    explicit_bzero(&credential, sizeof(credential));
+    iwx_sae_engine_callback_leave(sc);
+out:
+    explicit_bzero(&credential, sizeof(credential));
+    return started;
 }
 
 int ItlIwx::

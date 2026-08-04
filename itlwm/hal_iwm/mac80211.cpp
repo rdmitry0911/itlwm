@@ -1592,6 +1592,7 @@ iwm_rx_bmiss(struct iwm_softc *sc, struct iwm_rx_packet *pkt,
              struct iwm_rx_data *data)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    ItlIwm *that = container_of(sc, ItlIwm, com);
     struct iwm_missed_beacons_notif *mbn = (struct iwm_missed_beacons_notif *)pkt->data;
     uint32_t missed;
     
@@ -1615,6 +1616,7 @@ iwm_rx_bmiss(struct iwm_softc *sc, struct iwm_rx_packet *pkt,
          * management-watchdog delay after firmware has already crossed
          * its consecutive-missed-beacon threshold.
          */
+        (void)that->iwm_sae_bss_loss_arm(ic, ic->ic_bss);
         if (ic->ic_event_handler != NULL)
             (*ic->ic_event_handler)(
                 ic, IEEE80211_EVT_STA_BEACON_LOSS, NULL);
@@ -5291,6 +5293,7 @@ iwm_init(struct _ifnet *ifp)
     struct iwm_softc *sc = (struct iwm_softc*)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
     ItlIwm *that = container_of(sc, ItlIwm, com);
+    bool driver_reset_reconnect;
     int err, generation;
     
     //    rw_assert_wrlock(&sc->ioctl_rwl);
@@ -5330,7 +5333,10 @@ iwm_init(struct _ifnet *ifp)
         return 0;
     }
     
-    __atomic_store_n(&ic->ic_initial_scan_census_only, 1,
+    driver_reset_reconnect =
+        that->iwm_sae_driver_reset_recovery_pending(sc, false);
+    __atomic_store_n(&ic->ic_initial_scan_census_only,
+                     driver_reset_reconnect ? 0 : 1,
                      __ATOMIC_RELEASE);
     ieee80211_begin_scan(ifp);
     
@@ -5353,6 +5359,10 @@ iwm_init(struct _ifnet *ifp)
     iwm_mfp_pae_reopen(sc);
     iwm_sae_tx_reopen(sc);
     iwm_sae_engine_reopen(sc);
+    if (driver_reset_reconnect) {
+        (void)that->iwm_sae_driver_reset_recovery_pending(sc, true);
+        XYLog("iwm_sae_reconnect DRIVER_RESET_SCAN_STARTED\n");
+    }
     __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
     return 0;
 }
@@ -6693,6 +6703,9 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_wcl_credential_staged = false;
     sc->sc_sae_wcl_credential_pending = false;
     sc->sc_sae_wcl_credential_active = false;
+    sc->sc_sae_bss_loss_recovery_armed = false;
+    sc->sc_sae_driver_reset_recovery_pending = false;
+    sc->sc_sae_bss_loss_recovery_generation = 0;
     sc->sc_sae_wcl_credential_cancel_valid = false;
     sc->sc_sae_wcl_credential_cancel_through_generation = 0;
     explicit_bzero(&sc->sc_sae_wcl_credential,
@@ -6909,6 +6922,8 @@ iwm_init_task(void *arg1)
     }
 
     if (ifp->if_flags & IFF_RUNNING) {
+        if (!fatal)
+            that->iwm_sae_driver_reset_recovery_prepare(sc);
         that->iwm_stop(ifp);
     } else {
         sc->sc_flags &= ~IWM_FLAG_HW_ERR;
