@@ -1197,6 +1197,7 @@ reserveSaeWclCredentialAdmission()
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = IC2IFP(ic);
     bool reserved = false;
+    bool lower_scan_deferable = false;
     bool engine_idle = false;
     bool credential_empty = false;
 
@@ -1217,13 +1218,24 @@ reserveSaeWclCredentialAdmission()
         sc->sc_sae_wcl_credential_lock != NULL &&
         iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)) {
         IOSimpleLockLock(sc->sc_scan_lease_lock);
-        if (!iwn_scan_lease_live_locked(sc) &&
-            !sc->sc_wcl_initial_scan_pending.queued &&
+        lower_scan_deferable =
+            iwn_scan_lease_live_locked(sc) &&
+            !sc->sc_scan_lease.hardware_invalidated &&
+            !sc->sc_scan_lease.terminal_claimed &&
+            sc->sc_scan_lease.phase != IWN_SCAN_LEASE_DRAINING &&
+            ic->ic_state == IEEE80211_S_SCAN &&
+            (sc->sc_flags & IWN_FLAG_SCANNING) != 0;
+        if (!sc->sc_wcl_initial_scan_pending.queued &&
             !sc->sc_sae_wcl_admission_reserved &&
             sc->sc_sae_join_scan_block_generation == 0 &&
             sc->sc_sae_bss_loss_join_handoff_generation == 0 &&
-            (sc->sc_flags & IWN_FLAG_SCANNING) == 0) {
+            !sc->sc_ap_transition_scan_blocked &&
+            ((!iwn_scan_lease_live_locked(sc) &&
+              (sc->sc_flags & IWN_FLAG_SCANNING) == 0) ||
+             lower_scan_deferable)) {
             sc->sc_sae_wcl_admission_reserved = true;
+            sc->sc_sae_wcl_admission_requires_fresh_scan =
+                lower_scan_deferable;
             reserved = true;
         }
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
@@ -1244,6 +1256,7 @@ reserveSaeWclCredentialAdmission()
         if (!engine_idle || !credential_empty) {
             IOSimpleLockLock(sc->sc_scan_lease_lock);
             sc->sc_sae_wcl_admission_reserved = false;
+            sc->sc_sae_wcl_admission_requires_fresh_scan = false;
             IOSimpleLockUnlock(sc->sc_scan_lease_lock);
             reserved = false;
         }
@@ -1251,6 +1264,21 @@ reserveSaeWclCredentialAdmission()
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
     iwn_sae_tx_lifecycle_leave(sc);
     return reserved;
+}
+
+bool ItlIwn::
+saeWclCredentialAdmissionRequiresFreshScan()
+{
+    struct iwn_softc *sc = &com;
+    bool required = false;
+
+    if (sc->sc_scan_lease_lock == NULL)
+        return false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    required = sc->sc_sae_wcl_admission_reserved &&
+        sc->sc_sae_wcl_admission_requires_fresh_scan;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return required;
 }
 
 void ItlIwn::
@@ -1264,6 +1292,7 @@ releaseSaeWclCredentialAdmission()
     if (sc->sc_scan_lease_lock != NULL) {
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_wcl_admission_requires_fresh_scan = false;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     }
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
@@ -1823,6 +1852,7 @@ iwn_sae_wcl_stop_begin(struct iwn_softc *sc)
     if (sc->sc_scan_lease_lock != NULL) {
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_wcl_admission_requires_fresh_scan = false;
         sc->sc_sae_join_scan_block_generation = 0;
         sc->sc_sae_bss_loss_join_handoff_generation = 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
@@ -1852,6 +1882,7 @@ iwn_sae_wcl_detach_begin(struct iwn_softc *sc)
     if (sc->sc_scan_lease_lock != NULL) {
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_wcl_admission_requires_fresh_scan = false;
         sc->sc_sae_join_scan_block_generation = 0;
         sc->sc_sae_bss_loss_join_handoff_generation = 0;
         IOSimpleLockUnlock(sc->sc_scan_lease_lock);
@@ -7891,6 +7922,7 @@ detach(IOPCIDevice *device)
         drain_scan_replay = sc->sc_scan_lease_replay_task_ready;
         sc->sc_scan_lease_replay_task_ready = false;
         sc->sc_scan_lease_replay_pending = false;
+        sc->sc_scan_lease_replay_sae_generation = 0;
         if (iwn_scan_lease_live_locked(sc) &&
             iwn_scan_lease_owner_is_wcl(sc->sc_scan_lease.owner)) {
             sc->sc_scan_lease.publication_invalidated = true;
@@ -10681,6 +10713,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     explicit_bzero(&sc->sc_scan_lease, sizeof(sc->sc_scan_lease));
     sc->sc_ap_transition_scan_blocked = false;
     sc->sc_sae_wcl_admission_reserved = false;
+    sc->sc_sae_wcl_admission_requires_fresh_scan = false;
     sc->sc_sae_join_scan_block_generation = 0;
     sc->sc_sae_bss_loss_join_handoff_generation = 0;
     sc->sc_scan_lease_next_serial = 0;
@@ -10688,6 +10721,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_scan_lease_replay_pending = false;
     sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
     sc->sc_scan_lease_replay_arg = -1;
+    sc->sc_scan_lease_replay_sae_generation = 0;
     explicit_bzero(&sc->sc_wcl_initial_scan_pending,
                    sizeof(sc->sc_wcl_initial_scan_pending));
 
@@ -10841,6 +10875,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_scan_lease.phase = IWN_SCAN_LEASE_IDLE;
     sc->sc_ap_transition_scan_blocked = false;
     sc->sc_sae_wcl_admission_reserved = false;
+    sc->sc_sae_wcl_admission_requires_fresh_scan = false;
     sc->sc_sae_join_scan_block_generation = 0;
     sc->sc_sae_bss_loss_join_handoff_generation = 0;
     sc->sc_scan_lease_next_serial = 0;
@@ -10850,6 +10885,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_scan_lease_replay_pending = false;
     sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
     sc->sc_scan_lease_replay_arg = -1;
+    sc->sc_scan_lease_replay_sae_generation = 0;
     explicit_bzero(&sc->sc_wcl_initial_scan_pending,
                    sizeof(sc->sc_wcl_initial_scan_pending));
     sc->sc_sae_tx_lifecycle_lock = IOLockAlloc();
@@ -12590,6 +12626,7 @@ iwn_sae_join_scan_block_promote(struct iwn_softc *sc,
         !sc->sc_ap_transition_scan_blocked &&
         !sc->sc_wcl_initial_scan_pending.queued) {
         sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_wcl_admission_requires_fresh_scan = false;
         if (completing_bss_loss)
             sc->sc_sae_bss_loss_join_handoff_generation = 0;
         sc->sc_sae_join_scan_block_generation = request_generation;
@@ -12818,6 +12855,7 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
     }
     if (direct_sae_scan) {
         sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_wcl_admission_requires_fresh_scan = false;
         sc->sc_sae_join_scan_block_generation =
             direct_sae_scan_generation;
     }
@@ -13191,6 +13229,7 @@ iwn_scan_lease_finish_terminal(struct iwn_softc *sc, u_int64_t serial)
 static bool
 iwn_scan_lease_defer_scan(struct iwn_softc *sc,
                           enum ieee80211_state nstate, int arg,
+                          u_int64_t direct_sae_generation,
                           u_int64_t *out_serial, bool *out_submit_abort)
 {
     bool deferred = false;
@@ -13213,6 +13252,8 @@ iwn_scan_lease_defer_scan(struct iwn_softc *sc,
         sc->sc_scan_lease_replay_pending = true;
         sc->sc_scan_lease_replay_nstate = nstate;
         sc->sc_scan_lease_replay_arg = arg;
+        sc->sc_scan_lease_replay_sae_generation =
+            direct_sae_generation;
         sc->sc_scan_lease.abort_requested = true;
         if (!sc->sc_scan_lease.terminal_claimed && !was_arming)
             sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ABORTING;
@@ -13249,6 +13290,7 @@ iwn_scan_lease_defer_terminal_replay(struct iwn_softc *sc,
         sc->sc_scan_lease_replay_pending = true;
         sc->sc_scan_lease_replay_nstate = nstate;
         sc->sc_scan_lease_replay_arg = arg;
+        sc->sc_scan_lease_replay_sae_generation = 0;
         deferred = true;
     }
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
@@ -13264,6 +13306,11 @@ iwn_scan_lease_drop_replay(struct iwn_softc *sc)
     sc->sc_scan_lease_replay_pending = false;
     sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
     sc->sc_scan_lease_replay_arg = -1;
+    if (sc->sc_scan_lease_replay_sae_generation != 0) {
+        sc->sc_sae_wcl_admission_reserved = false;
+        sc->sc_sae_wcl_admission_requires_fresh_scan = false;
+    }
+    sc->sc_scan_lease_replay_sae_generation = 0;
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
 }
 
@@ -13338,6 +13385,9 @@ iwn_scan_lease_begin_hardware_invalidation(
     sc->sc_scan_lease_replay_pending = false;
     sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
     sc->sc_scan_lease_replay_arg = -1;
+    sc->sc_scan_lease_replay_sae_generation = 0;
+    sc->sc_sae_wcl_admission_reserved = false;
+    sc->sc_sae_wcl_admission_requires_fresh_scan = false;
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     return publish_owner;
 }
@@ -13415,7 +13465,8 @@ iwn_newstate_preflight(struct ieee80211com *ic,
           public_associate_restart))
         return 0;
     that = container_of(sc, ItlIwn, com);
-    if (!iwn_scan_lease_defer_scan(sc, nstate, arg, &serial, &submit_abort))
+    if (!iwn_scan_lease_defer_scan(sc, nstate, arg, 0, &serial,
+                                   &submit_abort))
         return 0;
 
     /* Consume before generic epoch advancement.  Public ASSOCIATE must not
@@ -13442,6 +13493,7 @@ iwn_scan_lease_replay_task(void *arg)
     int nstate_arg;
     u_int64_t initial_generation = 0;
     u_int64_t initial_handoff_serial = 0;
+    u_int64_t direct_sae_generation = 0;
     u_int32_t initial_backend_generation = 0;
     bool launch_initial = false;
     bool reject_initial = false;
@@ -13473,9 +13525,12 @@ iwn_scan_lease_replay_task(void *arg)
             (IFF_UP | IFF_RUNNING)) {
         nstate = sc->sc_scan_lease_replay_nstate;
         nstate_arg = sc->sc_scan_lease_replay_arg;
+        direct_sae_generation =
+            sc->sc_scan_lease_replay_sae_generation;
         sc->sc_scan_lease_replay_pending = false;
         sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
         sc->sc_scan_lease_replay_arg = -1;
+        sc->sc_scan_lease_replay_sae_generation = 0;
         replay = true;
     }
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
@@ -13513,8 +13568,29 @@ iwn_scan_lease_replay_task(void *arg)
         }
         return;
     }
-    if (replay)
-        ieee80211_new_state(ic, nstate, nstate_arg);
+    if (replay) {
+        if (direct_sae_generation != 0) {
+            int resume_result;
+
+            XYLog("wcl_assoc CACHED_CANDIDATE_REFRESH_REPLAY\n");
+            resume_result = ieee80211_sae_wcl_request_resume_scan(
+                ic, direct_sae_generation);
+            /* Cancellation may supersede the upper generation after the old
+             * scan terminal queued this task but before the replay runs.  A
+             * successful direct scan consumes the lower reservation in
+             * iwn_scan_lease_reserve(); every other terminal result must
+             * release it here so the next user join is not starved. */
+            if (resume_result !=
+                    IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED &&
+                resume_result !=
+                    IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED) {
+                ItlIwn *that = container_of(sc, ItlIwn, com);
+                that->releaseSaeWclCredentialAdmission();
+            }
+        } else {
+            ieee80211_new_state(ic, nstate, nstate_arg);
+        }
+    }
 }
 
 IOReturn ItlIwn::
@@ -13723,11 +13799,33 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
                 AirportItlwmPostPltiTraceRecord(
                     ic, kAirportItlwmPostPltiTraceEventIwnScanCoalesced);
                 /* Ordinary SCAN -> SCAN stays coalesced, but direct SAE must
-                 * never select from the pre-existing scan census.  Do not
-                 * abort it asynchronously: resume_scan() will scrub this
-                 * exact generation and return a bounded NotReady retry. */
-                if (direct_sae_scan_generation != 0)
+                 * never select from the pre-existing scan census.  Preserve
+                 * the exact request behind that command, abort the old lease,
+                 * and let its terminal replay one fresh direct scan.  The
+                 * reference accepts a replacement JoinAdapter carrier here;
+                 * EAGAIN is therefore an internal deferred-start result, not
+                 * a NotReady result for WCL. */
+                if (direct_sae_scan_generation != 0) {
+                    u_int64_t serial = 0;
+                    bool submit_abort = false;
+                    if (!ieee80211_sae_wcl_request_scan_deferred(
+                        ic, direct_sae_scan_generation) ||
+                        !iwn_scan_lease_defer_scan(
+                        sc, IEEE80211_S_SCAN, -1,
+                        direct_sae_scan_generation, &serial,
+                        &submit_abort))
+                        return ECANCELED;
+                    if (submit_abort && that->iwn_cmd(
+                        sc, IWN_CMD_SCAN_ABORT, NULL, 0, 1) != 0) {
+                        iwn_scan_lease_abort_submission_failed(sc, serial);
+                        iwn_scan_lease_drop_replay(sc);
+                        sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
+                        (void)task_add(systq, &sc->init_task);
+                        return ECANCELED;
+                    }
+                    XYLog("wcl_assoc CACHED_CANDIDATE_REFRESH_DEFERRED\n");
                     return EAGAIN;
+                }
                 return 0;
             }
         } else

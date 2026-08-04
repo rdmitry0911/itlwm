@@ -313,6 +313,7 @@ public:
     void purgeSaeWclCredentialStage() override;
     bool isSaeWclCredentialAdmissionReady() override;
     bool reserveSaeWclCredentialAdmission() override;
+    bool saeWclCredentialAdmissionRequiresFreshScan();
     void releaseSaeWclCredentialAdmission() override;
     bool supportsDriverResidentSae() override;
 

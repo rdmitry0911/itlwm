@@ -58,10 +58,10 @@ ordered(idle, "single-lock idle census",
 require(v2h, "bool associationScanOwnersIdle() const;",
         "controller idle-fence declaration")
 
-join = body(sky,
-            "static bool\ntahoeJoinCachedWclCandidate(struct ieee80211com *ic,",
-            "cached-candidate join helper")
-ordered(join, "strict cached-candidate admission",
+lookup = body(sky,
+              "tahoeFindJoinableCachedWclCandidate(\n    struct ieee80211com *ic,",
+              "cached-candidate eligibility helper")
+ordered(lookup, "strict cached-candidate admission",
         "!scanOwnersIdle",
         "ic->ic_opmode != IEEE80211_M_STA",
         "ic->ic_state != IEEE80211_S_SCAN",
@@ -71,7 +71,13 @@ ordered(join, "strict cached-candidate admission",
         "candidate->ni_chan == IEEE80211_CHAN_ANYC",
         "candidate->ni_esslen != ic->ic_des_esslen",
         "memcmp(candidate->ni_essid, ic->ic_des_essid",
-        "ieee80211_match_bss(ic, candidate, 0) != 0",
+        "ieee80211_match_bss(ic, candidate, 0) != 0")
+
+join = body(sky,
+            "static bool\ntahoeJoinCachedWclCandidate(struct ieee80211com *ic,",
+            "cached-candidate join helper")
+ordered(join, "validated cached-candidate handoff",
+        "tahoeFindJoinableCachedWclCandidate(ic, bssid, scanOwnersIdle)",
         "CACHED_CANDIDATE_DIRECT_JOIN",
         "ieee80211_node_join_bss(ic, candidate)")
 

@@ -306,6 +306,11 @@ extern	int ieee80211_sae_wcl_request_clear_if_generation(
 	    struct ieee80211com *, u_int64_t);
 extern	int ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *,
 	    u_int64_t);
+/* IWN calls this only after it has observed a live older scan and before it
+ * records the exact generation for terminal replay.  It rolls STARTING back
+ * to selection-held PENDING; failure leaves the raw scan call terminal. */
+extern	int ieee80211_sae_wcl_request_scan_deferred(struct ieee80211com *,
+	    u_int64_t);
 /* The driver queries an exact STARTING request only while servicing the raw
  * S_SCAN handoff.  It must promote the same generation only after a fresh
  * scan has been accepted; a coalesced pre-existing scan remains unowned. */

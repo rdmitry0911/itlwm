@@ -16,6 +16,10 @@ sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 gate = (root / "AirportItlwm/IwnDirectSaeLabGate.hpp").read_text()
 contracts = (root / "AirportItlwm/TahoeAssociationContracts.hpp").read_text()
 owner_registry = (root / "AirportItlwm/TahoeOwnerRegistry.hpp").read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
+iwn_var = (root / "itlwm/hal_iwn/if_iwnvar.h").read_text()
+proto = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
+net_var = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 
 
 def fail(message):
@@ -176,6 +180,9 @@ common = body(sky,
     "shared direct-SAE transaction")
 common_code = re.sub(r"/\*.*?\*/|//[^\n]*", "", common, flags=re.S)
 ordered(common, "common policy/stage/resume order",
+        "kIwnWclReplacementAdmissionDrainAttempts",
+        "reserveSaeWclCredentialAdmission()",
+        "IOSleep(1)",
         "clearExternalPmkEligibilityLocked(",
         "generation = ieee80211_sae_wcl_request_begin(",
         "credential.request_generation = generation;",
@@ -188,14 +195,70 @@ ordered(common, "reference direct WCL candidate handoff",
         "AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic)",
         "AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate",
         "instance->associationScanOwnersIdle()",
+        "tahoeFindJoinableCachedWclCandidate(",
         "ieee80211_sae_wcl_request_admit_cached_wcl_candidate(",
         "tahoeJoinCachedWclCandidate(",
         "ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss)",
+        "CACHED_CANDIDATE_REFRESH_SCAN",
         "ieee80211_sae_wcl_request_resume_scan(ic, generation)")
 ordered(common, "exact generation failure cleanup",
         "ieee80211_sae_wcl_request_clear_if_generation(ic, generation)",
         "fHalService->cancelSaeWclCredential(generation)",
         "explicit_bzero(&credential")
+ordered(common, "deferred physical scan remains an accepted WCL carrier",
+        "scanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED &&",
+        "scanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED",
+        "result = kIOReturnSuccess")
+
+require(net_var, "IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED = 3",
+        "deferred resume result")
+require(iwn_var, "sc_scan_lease_replay_sae_generation",
+        "exact deferred generation slot")
+require(iwn_var, "sc_sae_wcl_admission_requires_fresh_scan",
+        "lower-live-scan admission identity")
+reserve = body(iwn, "reserveSaeWclCredentialAdmission()",
+               "IWN pre-secret lower admission")
+ordered(reserve, "active lower scan remains a deferable exact admission",
+        "lower_scan_deferable =",
+        "iwn_scan_lease_live_locked(sc)",
+        "!sc->sc_scan_lease.hardware_invalidated",
+        "!sc->sc_scan_lease.terminal_claimed",
+        "ic->ic_state == IEEE80211_S_SCAN",
+        "IWN_FLAG_SCANNING",
+        "lower_scan_deferable",
+        "sc->sc_sae_wcl_admission_reserved = true",
+        "sc->sc_sae_wcl_admission_requires_fresh_scan =")
+require(common, "iwnHal->saeWclCredentialAdmissionRequiresFreshScan()",
+        "cached-join lower radio owner fence")
+newstate = body(iwn, "iwn_newstate(struct ieee80211com *ic,",
+                "IWN state transition")
+ordered(newstate, "active-scan direct SAE abort/replay",
+        "direct_sae_scan_generation != 0",
+        "ieee80211_sae_wcl_request_scan_deferred(",
+        "iwn_scan_lease_defer_scan(",
+        "direct_sae_scan_generation, &serial",
+        "IWN_CMD_SCAN_ABORT",
+        "CACHED_CANDIDATE_REFRESH_DEFERRED",
+        "return EAGAIN;")
+replay = body(iwn, "iwn_scan_lease_replay_task(void *arg)",
+              "IWN scan replay task")
+ordered(replay, "generation-fenced deferred fresh scan",
+        "direct_sae_generation =",
+        "sc->sc_scan_lease_replay_sae_generation",
+        "sc->sc_scan_lease_replay_sae_generation = 0",
+        "CACHED_CANDIDATE_REFRESH_REPLAY",
+        "resume_result = ieee80211_sae_wcl_request_resume_scan(",
+        "ic, direct_sae_generation)",
+        "IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED",
+        "IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED",
+        "releaseSaeWclCredentialAdmission()")
+deferred = body(proto,
+    "ieee80211_sae_wcl_request_scan_deferred(struct ieee80211com *ic,",
+    "net80211 deferred request transfer")
+ordered(deferred, "STARTING to selection-held PENDING transfer",
+        "ieee80211_sae_wcl_request_scan_starting_locked(ic, generation)",
+        "ieee80211_sae_wcl_request_scan_policy_matches_locked(ic,",
+        "IEEE80211_SAE_WCL_REQUEST_PENDING")
 for token in (
         "associateSSID(", "publishPendingAssocTarget", "DeliverPMK",
         "storeAssocRsnIeOverride", "ieee80211_new_state(",

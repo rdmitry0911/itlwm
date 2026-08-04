@@ -7283,6 +7283,9 @@ enum class AirportItlwmIwnDirectSaeCredentialProvenance : uint8_t {
 static bool
 tahoeJoinCachedWclCandidate(struct ieee80211com *,
                             const uint8_t[IEEE80211_ADDR_LEN], bool);
+static struct ieee80211_node *
+tahoeFindJoinableCachedWclCandidate(struct ieee80211com *,
+                                    const uint8_t[IEEE80211_ADDR_LEN], bool);
 
 /* WCL parses this public-only metadata before calling the common direct SAE
  * transaction.  A lab stimulus supplies no such owner and can therefore not
@@ -7320,7 +7323,12 @@ startIwnDirectSaeCredential(
     struct ItlSaeWclCredentialV1 credential;
     struct apple80211_authtype_data authType;
     struct ieee80211com *ic = nullptr;
+    ItlIwn *iwnHal = nullptr;
     uint64_t generation = 0;
+    bool lowerAdmissionReserved = false;
+    bool lowerAdmissionRequiresFreshScan = false;
+    unsigned lowerAdmissionAttempts = 0;
+    static constexpr unsigned kIwnWclReplacementAdmissionDrainAttempts = 250;
     IOReturn result = kIOReturnBadArgumentTahoe;
     int scanResume = IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED;
 
@@ -7385,6 +7393,44 @@ startIwnDirectSaeCredential(
         ic->ic_state != IEEE80211_S_SCAN) {
         result = kIOReturnNotReady;
         goto out;
+    }
+
+    /* The laboratory producer reserves the lower radio owner before it
+     * queues a secret-bearing event.  Product WCL is already executing on
+     * the controller work loop, but it still needs the same pre-secret
+     * linearization point: a cached join consumes it in auth_hold(), while a
+     * directed-scan fallback consumes it when the exact generation reserves
+     * its fresh physical command.  IWM/IWX retain their established cached
+     * handoff until their lower scan leases gain the equivalent transfer. */
+    iwnHal = OSDynamicCast(ItlIwn, fHalService);
+    if (request->provenance ==
+            AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate &&
+        iwnHal != nullptr) {
+        /* Generic revoke deliberately retires the driver crypto object on
+         * systq, while CoreWLAN may publish its replacement carrier on this
+         * work loop immediately after join-abort.  The reference replaces
+         * that JoinAdapter synchronously.  Bound the split-owner drain here:
+         * reserve() remains the authoritative engine/credential/radio check,
+         * and no secret byte is copied during the wait. */
+        for (; lowerAdmissionAttempts <
+                   kIwnWclReplacementAdmissionDrainAttempts;
+             ++lowerAdmissionAttempts) {
+            if (fHalService->reserveSaeWclCredentialAdmission()) {
+                lowerAdmissionReserved = true;
+                break;
+            }
+            if (lowerAdmissionAttempts + 1 <
+                kIwnWclReplacementAdmissionDrainAttempts)
+                IOSleep(1);
+        }
+        if (!lowerAdmissionReserved) {
+            result = kIOReturnNotReady;
+            goto out;
+        }
+        if (lowerAdmissionAttempts != 0)
+            XYLog("wcl_assoc REPLACEMENT_ADMISSION_DRAINED\n");
+        lowerAdmissionRequiresFreshScan =
+            iwnHal->saeWclCredentialAdmissionRequiresFreshScan();
     }
 
     /* `begin()` reserves the exact SAE policy and creates the generation
@@ -7505,7 +7551,8 @@ startIwnDirectSaeCredential(
      * stage and before the raw scan handoff, which may synchronously enter
      * the IWN Commit path. */
     AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic);
-    if (request->confirmedWnmCandidate) {
+    if (request->confirmedWnmCandidate &&
+        !lowerAdmissionRequiresFreshScan) {
         const bool admitted =
             ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
                 ic, generation) != 0;
@@ -7522,25 +7569,40 @@ startIwnDirectSaeCredential(
                 : IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED;
     } else if (request->provenance ==
                    AirportItlwmIwnDirectSaeCredentialProvenance::WclCandidate &&
-               instance != nullptr && instance->associationScanOwnersIdle()) {
+               instance != nullptr) {
         /* Tahoe's JoinAdapter consumes WCL's already-selected candidate
-         * directly.  Revalidate the complete request identity/policy under
-         * the net80211 leaf, then independently validate and join the exact
-         * live cached node.  Only a failed admission retains the historical
-         * directed-scan fallback; after admission, a lost/mismatched node
-         * makes this carrier retryable instead of reusing its ownership. */
-        const bool admitted =
-            ieee80211_sae_wcl_request_admit_cached_wcl_candidate(
-                ic, generation, request->bssid, request->ssid,
-                request->ssidLength) != 0;
-        if (admitted) {
-            const bool joined = tahoeJoinCachedWclCandidate(
-                ic, request->bssid, instance->associationScanOwnersIdle());
-            scanResume = joined &&
-                ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss)
-                ? IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED
-                : IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY;
+         * directly.  Intel's lower node cache is a separate physical census,
+         * however, and may already mark that BSSID failed after WCL retries
+         * the same selected carrier.  Keep the request PENDING until the
+         * cached node passes the complete lower join predicate.  This mirrors
+         * the reference's acceptance of the replacement carrier while giving
+         * net80211 a fresh directed scan when its local BSS description is no
+         * longer usable; promoting to SCAN_ISSUED first would make that safe
+         * refresh impossible and surface a premature NotReady to CoreWLAN. */
+        const bool scanOwnersIdle = instance->associationScanOwnersIdle();
+        const bool cachedCandidateJoinable =
+            !lowerAdmissionRequiresFreshScan &&
+            tahoeFindJoinableCachedWclCandidate(
+                ic, request->bssid, scanOwnersIdle) != nullptr;
+        if (cachedCandidateJoinable) {
+            const bool admitted =
+                ieee80211_sae_wcl_request_admit_cached_wcl_candidate(
+                    ic, generation, request->bssid, request->ssid,
+                    request->ssidLength) != 0;
+            if (admitted) {
+                const bool joined = tahoeJoinCachedWclCandidate(
+                    ic, request->bssid, scanOwnersIdle);
+                scanResume = joined &&
+                    ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss)
+                    ? IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED
+                    : IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY;
+            } else {
+                scanResume =
+                    ieee80211_sae_wcl_request_resume_scan(ic, generation);
+            }
         } else {
+            if (scanOwnersIdle)
+                XYLog("wcl_assoc CACHED_CANDIDATE_REFRESH_SCAN\n");
             scanResume =
                 ieee80211_sae_wcl_request_resume_scan(ic, generation);
         }
@@ -7548,7 +7610,8 @@ startIwnDirectSaeCredential(
         scanResume =
             ieee80211_sae_wcl_request_resume_scan(ic, generation);
     }
-    if (scanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED) {
+    if (scanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED &&
+        scanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED) {
 #if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
         if (out_lab_outcome != nullptr)
             *out_lab_outcome =
@@ -7560,6 +7623,9 @@ startIwnDirectSaeCredential(
     }
 
     result = kIOReturnSuccess;
+    /* Success transfers the reservation to either the cached join continuity
+     * owner or the exact direct-scan/replay generation. */
+    lowerAdmissionReserved = false;
 #if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
     if (out_lab_outcome != nullptr)
         *out_lab_outcome =
@@ -7578,6 +7644,8 @@ out:
                 TahoeOwnerRegistry::AssociationOwner{};
         }
     }
+    if (lowerAdmissionReserved && fHalService != nullptr)
+        fHalService->releaseSaeWclCredentialAdmission();
     explicit_bzero(&credential, sizeof(credential));
     return result;
 }
@@ -7645,10 +7713,11 @@ cancelIwnDirectSaeLabStimulus(uint64_t generation)
  * A missing, stale, policy-mismatched, or concurrently scanned candidate is
  * not guessed: the caller retains the existing directed-scan fallback.
  */
-static bool
-tahoeJoinCachedWclCandidate(struct ieee80211com *ic,
-                            const uint8_t bssid[IEEE80211_ADDR_LEN],
-                            bool scanOwnersIdle)
+static struct ieee80211_node *
+tahoeFindJoinableCachedWclCandidate(
+    struct ieee80211com *ic,
+    const uint8_t bssid[IEEE80211_ADDR_LEN],
+    bool scanOwnersIdle)
 {
     struct ieee80211_node *candidate;
 
@@ -7656,7 +7725,7 @@ tahoeJoinCachedWclCandidate(struct ieee80211com *ic,
         ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_SCAN ||
         __atomic_load_n(&ic->ic_wcl_scan_active, __ATOMIC_ACQUIRE) != 0)
-        return false;
+        return nullptr;
 
     candidate = ieee80211_find_node(ic, bssid);
     if (candidate == nullptr || candidate == ic->ic_bss ||
@@ -7666,6 +7735,19 @@ tahoeJoinCachedWclCandidate(struct ieee80211com *ic,
         memcmp(candidate->ni_essid, ic->ic_des_essid,
                ic->ic_des_esslen) != 0 ||
         ieee80211_match_bss(ic, candidate, 0) != 0)
+        return nullptr;
+
+    return candidate;
+}
+
+static bool
+tahoeJoinCachedWclCandidate(struct ieee80211com *ic,
+                            const uint8_t bssid[IEEE80211_ADDR_LEN],
+                            bool scanOwnersIdle)
+{
+    struct ieee80211_node *candidate =
+        tahoeFindJoinableCachedWclCandidate(ic, bssid, scanOwnersIdle);
+    if (candidate == nullptr)
         return false;
 
     XYLog("wcl_assoc CACHED_CANDIDATE_DIRECT_JOIN\n");

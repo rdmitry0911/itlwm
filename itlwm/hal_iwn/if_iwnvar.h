@@ -496,6 +496,10 @@ struct iwn_softc {
      * leaf atomically excludes a competing physical scan until the direct
      * selected-BSS scan transfers it to the generation fence below. */
     bool                sc_sae_wcl_admission_reserved;
+    /* The reservation was linearized behind an already-live lower command.
+     * Product WCL must not use a cached node in this case: only aborting that
+     * command and replaying one fresh exact scan may consume the mailbox. */
+    bool                sc_sae_wcl_admission_requires_fresh_scan;
     /* Exact direct-SAE generation which owns association radio continuity.
      * Ordinary physical scans and their S_SCAN state transition remain
      * blocked from selected-BSS scan handoff through port-valid (or exact
@@ -514,6 +518,9 @@ struct iwn_softc {
     bool                sc_scan_lease_replay_pending;
     enum ieee80211_state sc_scan_lease_replay_nstate;
     int                 sc_scan_lease_replay_arg;
+    /* Non-zero only when the replay is the exact fresh-scan continuation of
+     * a WCL direct-SAE request deferred behind an older physical command. */
+    u_int64_t           sc_scan_lease_replay_sae_generation;
     struct iwn_wcl_initial_scan_pending sc_wcl_initial_scan_pending;
 
     uint8_t         hw_type;

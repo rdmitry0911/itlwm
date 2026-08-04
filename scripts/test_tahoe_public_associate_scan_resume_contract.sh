@@ -83,7 +83,7 @@ ordered_preflight = (
     "arg == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE",
     "ic->ic_state == IEEE80211_S_SCAN &&\n"
     "        !public_associate_restart",
-    "iwn_scan_lease_defer_scan(sc, nstate, arg, &serial, &submit_abort)",
+    "iwn_scan_lease_defer_scan(sc, nstate, arg, 0, &serial,",
     "IWN_CMD_SCAN_ABORT",
 )
 cursor = 0

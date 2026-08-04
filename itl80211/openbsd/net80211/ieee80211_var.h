@@ -616,13 +616,16 @@ enum ieee80211_sae_wcl_request_phase {
 };
 
 /* resume_scan() reports a retry separately from terminal admission failure.
- * RETRY means an existing driver scan was deliberately not reused for direct
- * SAE, so the caller has already scrubbed this generation and may wait for a
- * later WCL association request after scan completion. */
+ * RETRY means the driver could not preserve this request and the generation
+ * was scrubbed.  DEFERRED means IWN retained this exact generation behind a
+ * pre-existing physical scan and will issue a fresh scan after that owner's
+ * terminal; the WCL carrier has therefore been accepted even though no new
+ * command crossed the doorbell synchronously. */
 enum ieee80211_sae_wcl_request_resume_result {
 	IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED = 0,
 	IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED = 1,
 	IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY = 2,
+	IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED = 3,
 };
 
 enum ieee80211_sae_wcl_request_bind_result {

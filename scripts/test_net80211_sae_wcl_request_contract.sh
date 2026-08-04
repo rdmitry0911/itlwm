@@ -310,6 +310,7 @@ for token in (
     "IEEE80211_SAE_WCL_REQUEST_PENDING",
     "IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING",
     "IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY",
+    "IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED",
     "ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic)",
     "ieee80211_sae_wcl_request_join_active_locked(ic)",
     "ieee80211_sae_wcl_request_fence_run_resume",
@@ -329,6 +330,26 @@ for token in (
         "ic->ic_sae_wcl_request.generation == generation",
 ):
     require(resume, token, "synchronous scan bind acknowledgement")
+ordered(resume, "deferred scan is retained while terminal failures clear",
+        "scan_error == EAGAIN",
+        "IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED",
+        "result != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED &&",
+        "result != IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED",
+        "ieee80211_sae_wcl_request_clear_if_generation")
+
+deferred = body(proto_c,
+                "int\nieee80211_sae_wcl_request_scan_deferred",
+                "exact deferred-scan handoff")
+for token in (
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "ieee80211_sae_wcl_request_scan_starting_locked(ic, generation)",
+        "ieee80211_sae_wcl_request_scan_policy_matches_locked(ic,",
+        "IEEE80211_SAE_WCL_REQUEST_PENDING",
+        "association_epoch = 0",
+):
+    require(deferred, token, "exact deferred-scan handoff")
+if "ic_newstate" in deferred or "ieee80211_node" in deferred:
+    fail("deferred-scan handoff must remain a value-only phase transfer")
 
 cached_wcl = body(
     proto_c,

@@ -2834,12 +2834,36 @@ ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *ic,
 	/* This is deliberately the raw driver state method, not the epoch macro.
 	 * A newer WCL publication may supersede this request after the final
 	 * pre-call check.  IWN may return EAGAIN when another scan is already in
-	 * flight; that is an explicit retry, never permission to consume its old
-	 * census.  Success is acknowledged only if IWN promoted this exact
-	 * generation after accepting a fresh scan. */
+	 * flight; IWN may retain this exact generation for terminal replay, but it
+	 * is never permission to consume the old census.  Synchronous success is
+	 * acknowledged only if IWN promoted this generation after accepting a
+	 * fresh scan command. */
 	scan_error = (*ic->ic_newstate)(ic, IEEE80211_S_SCAN, -1);
 	if (scan_error == EAGAIN) {
-		result = IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY;
+		/* IWN may have placed this exact request behind the older physical
+		 * scan before returning EAGAIN.  That path rolls STARTING back to
+		 * PENDING under this same leaf and records the generation in its
+		 * terminal replay slot.  Distinguish it from an unowned coalesce so
+		 * WCL receives acceptance while the request remains selection-held. */
+		irq = IOSimpleLockLockDisableInterrupt(lock);
+		if (ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+		    ic->ic_sae_wcl_request.generation == generation &&
+		    ic->ic_sae_wcl_request.association_epoch == 0 &&
+		    ieee80211_sae_wcl_request_identity_is_valid_locked(
+		    &ic->ic_sae_wcl_request)) {
+			if (ic->ic_sae_wcl_request.phase ==
+			    IEEE80211_SAE_WCL_REQUEST_PENDING)
+				result = IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED;
+			else if (ieee80211_sae_wcl_request_scan_issued_locked(ic,
+			    generation) ||
+			    (ic->ic_sae_wcl_request.phase ==
+			    IEEE80211_SAE_WCL_REQUEST_BOUND &&
+			    ic->ic_sae_wcl_request.generation == generation))
+				result = IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED;
+			else
+				result = IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY;
+		}
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	} else if (scan_error == 0) {
 		irq = IOSimpleLockLockDisableInterrupt(lock);
 		if (ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
@@ -2853,7 +2877,8 @@ ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *ic,
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	}
 out:
-	if (result != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED)
+	if (result != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED &&
+	    result != IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED)
 		(void)ieee80211_sae_wcl_request_clear_if_generation(ic,
 		    generation);
 	return result;
@@ -2879,6 +2904,40 @@ ieee80211_sae_wcl_request_scan_policy_matches_locked(
 	    ic->ic_rsnciphers == IEEE80211_CIPHER_CCMP &&
 	    ic->ic_rsngroupcipher == IEEE80211_CIPHER_CCMP &&
 	    ic->ic_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP;
+}
+
+/*
+ * IWN found an older physical command after resume_scan() published
+ * STARTING.  Return this exact generation to PENDING before the lower scan
+ * lease records its abort/terminal replay.  end_scan() already holds PENDING
+ * selection, so the old census cannot bind while the replay worker waits to
+ * issue the required fresh command.
+ */
+int
+ieee80211_sae_wcl_request_scan_deferred(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int deferred = 0;
+
+	if (ic == NULL || generation == 0 ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_SCAN ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    ieee80211_sae_wcl_request_scan_starting_locked(ic, generation) &&
+	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic,
+	    &ic->ic_sae_wcl_request)) {
+		ic->ic_sae_wcl_request.phase =
+		    IEEE80211_SAE_WCL_REQUEST_PENDING;
+		ic->ic_sae_wcl_request.association_epoch = 0;
+		deferred = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return deferred;
 }
 
 /* Return only the generation of an exact direct request that is waiting for
