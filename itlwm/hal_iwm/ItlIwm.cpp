@@ -1212,6 +1212,34 @@ getAPCurrentChannel() const
         apRuntime.config.channel : 0;
 }
 
+bool ItlIwm::
+isPrimaryStaRecoveryScanPending() const
+{
+    struct iwm_softc *sc = const_cast<struct iwm_softc *>(&com);
+    struct ieee80211com *ic = &sc->sc_ic;
+    bool pending = false;
+
+    if (ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+        ic->ic_des_esslen != 0 ||
+        sc->sc_sae_wcl_credential_lock == NULL)
+        return false;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    pending = sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential);
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    return pending;
+}
+
 void ItlIwm::
 iwm_ap_csa_timeout(void *arg)
 {

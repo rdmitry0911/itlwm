@@ -670,6 +670,34 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
         return kIOReturnUnsupported;
     }
 
+    struct ieee80211com *ic = owner->fHalService->get80211Controller();
+    /*
+     * AppleBCMWLAN can hand the requested chanspec to its FullMAC AP
+     * context.  Intel DVM instead publishes STA+AP with exactly one
+     * different channel.  The public Tahoe sequence can issue POWER and run
+     * a WCL join between SET_CHANNEL and HOST_AP_MODE, so the candidate that
+     * was current when userspace selected the AP channel is not necessarily
+     * the BSS committed at this final lower admission boundary.  Make that
+     * live primary BSS authoritative before building the beacon/RXON pair;
+     * otherwise both BSD interfaces report active while AP management TX is
+     * attempted through the wrong radio context.
+     */
+    if (owner->fHalService->requiresAPSTASharedChannel() &&
+        ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
+        ic->ic_bss->ni_chan != nullptr) {
+        const int primaryChannel =
+            ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+        if (primaryChannel > 0 && primaryChannel <= UINT16_MAX &&
+            static_cast<uint16_t>(primaryChannel) != apChannel) {
+            XYLog("APSTA public start shared channel follows primary "
+                  "profile=%u primary=%u\n",
+                  static_cast<unsigned>(apChannel),
+                  static_cast<unsigned>(primaryChannel));
+            apChannel = static_cast<uint16_t>(primaryChannel);
+        }
+    }
+
     ItlHalApConfig cfg;
     bzero(&cfg, sizeof(cfg));
     memcpy(cfg.bssid, mac, IEEE80211_ADDR_LEN);
@@ -697,7 +725,6 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     }
     cfg.rsnIE = rsnIELength != 0 ? rsnIE : nullptr;
     cfg.rsnIELength = rsnIELength;
-    struct ieee80211com *ic = owner->fHalService->get80211Controller();
     if (ic != nullptr && ic->ic_sup_mcs[0] != 0) {
         /* Begin with HT20 only. Width-dependent rates and coexistence are a
          * separate layer; SGI20 and the physical stream count remain the
@@ -802,14 +829,24 @@ void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(
     struct ieee80211com *ic =
         owner != nullptr && owner->fHalService != nullptr
             ? owner->fHalService->get80211Controller() : nullptr;
+    const bool primaryRecoveryScanPending =
+        owner != nullptr && owner->fHalService != nullptr &&
+        owner->fHalService->isPrimaryStaRecoveryScanPending();
     /*
      * The PM callback can arrive after the primary state left RUN.  The
      * steady watchdog sample is therefore intentionally sticky until this
-     * retained profile has crossed the replacement firmware epoch.
+     * retained profile has crossed the replacement firmware epoch.  The
+     * reference FullMAC retains both BSS contexts across hostAPPowerOff;
+     * after a destructive Intel epoch the equivalent order is to let an
+     * exact retained-ESS recovery scan restore the primary BSS before PAN
+     * replay.  Starting PAN first aborts that physical scan.
      */
     radioResetWaitForPrimaryStaRun =
         radioResetWaitForPrimaryStaRun ||
-        (ic != nullptr && ic->ic_state == IEEE80211_S_RUN);
+        (ic != nullptr && ic->ic_state == IEEE80211_S_RUN) ||
+        primaryRecoveryScanPending;
+    if (primaryRecoveryScanPending)
+        XYLog("APSTA radio-reset primary recovery scan owns radio\n");
     radioResetResumeWaitTicks = 0;
     if (owner != nullptr)
         owner->setAPSTADatapathEnabled(false);
@@ -927,6 +964,22 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         }
     }
 
+    /*
+     * An unexpected lower-loss census can run before the replacement
+     * firmware has entered its retained-ESS scan.  The first replay attempt
+     * then returns NotReady, and a later watchdog would otherwise start PAN
+     * over the now-live primary scan.  Re-sample the exact HAL generation at
+     * that last boundary; the fail-closed HAL default keeps AP-only and
+     * ordinary scans on the immediate replay path.
+     */
+    if (!radioResetWaitForPrimaryStaRun &&
+        owner != nullptr && owner->fHalService != nullptr &&
+        owner->fHalService->isPrimaryStaRecoveryScanPending()) {
+        radioResetWaitForPrimaryStaRun = true;
+        radioResetResumeWaitTicks = 0;
+        XYLog("APSTA radio-reset late primary recovery scan owns radio\n");
+    }
+
     if (radioResetWaitForPrimaryStaRun) {
         struct ieee80211com *ic =
             owner != nullptr && owner->fHalService != nullptr
@@ -943,6 +996,40 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
               static_cast<unsigned>(ic->ic_state),
               static_cast<unsigned>(radioResetResumeWaitTicks));
         radioResetWaitForPrimaryStaRun = false;
+    }
+
+    /*
+     * The reference FullMAC retains both channel contexts across
+     * hostAPPowerOff().  Intel DVM loses both contexts and advertises only
+     * one different channel for STA+AP.  Once the primary STA has won the
+     * wake/reset ordering above, rebuild the off-air retained PAN profile on
+     * that actual BSS channel.  Replaying the stale pre-sleep AP channel
+     * would create two apparently active interfaces with neither a usable
+     * DVM schedule nor a working primary data path.
+     *
+     * startLowerIfReady() applies the same final-boundary rule to a public AP
+     * start, covering a WCL join that races between SET_CHANNEL and
+     * HOST_AP_MODE.  This earlier reset-specific update remains useful for
+     * the retained-profile log and for building the replay intent before the
+     * lower start call.
+     */
+    if (owner != nullptr && owner->fHalService != nullptr &&
+        owner->fHalService->requiresAPSTASharedChannel()) {
+        struct ieee80211com *ic =
+            owner->fHalService->get80211Controller();
+        if (ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
+            ic->ic_bss != nullptr && ic->ic_bss->ni_chan != nullptr) {
+            const int primaryChannel =
+                ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+            if (primaryChannel > 0 && primaryChannel <= UINT16_MAX &&
+                static_cast<uint16_t>(primaryChannel) != apChannel) {
+                XYLog("APSTA radio-reset shared channel follows primary "
+                      "profile=%u primary=%u\n",
+                      static_cast<unsigned>(apChannel),
+                      static_cast<unsigned>(primaryChannel));
+                apChannel = static_cast<uint16_t>(primaryChannel);
+            }
+        }
     }
 
     const IOReturn result = startLowerIfReady();

@@ -90,6 +90,7 @@ public:
     IOReturn setAPHidden(bool hidden) override;
     IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) override;
     uint16_t getAPCurrentChannel() const override;
+    bool isPrimaryStaRecoveryScanPending() const override;
     IOReturn sendAPStationCommand(
         const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
@@ -429,6 +430,8 @@ public:
     void iwm_sae_wcl_stop_begin(struct iwm_softc *);
     void iwm_sae_wcl_detach_begin(struct iwm_softc *);
     static void iwm_mfp_pae_task(void *);
+    static IOReturn iwm_mfp_pae_complete_action(OSObject *, void *, void *,
+        void *, void *);
     static int iwm_pae_mfp_txn_submit(struct ieee80211com *, u_int64_t,
         u_int64_t, struct ieee80211_node *, const struct ieee80211_key *,
         u_int8_t);

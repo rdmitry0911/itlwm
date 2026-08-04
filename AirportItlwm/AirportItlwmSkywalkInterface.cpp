@@ -8983,6 +8983,49 @@ setWCL_REASSOC(apple80211_reassoc *data)
             data->candidates[i].channel_spec;
     }
 
+    /* DVM exposes two RXON contexts but its published STA+AP combination is
+     * single-channel.  Keep the physical WCL census intact (it is also useful
+     * to CoreWLAN), while constraining only the target admitted from that
+     * census.  This preserves a running PAN context instead of accepting an
+     * impossible off-channel roam and presenting two dead-but-active BSD
+     * interfaces.  Backends with real multi-channel concurrency return zero
+     * and retain Apple's original request unchanged. */
+    const uint16_t requiredSharedChannel =
+        fHalService->getAPSTARequiredSharedChannel();
+    if (requiredSharedChannel != 0) {
+        uint8_t retainedChannels = 0;
+        uint8_t retainedCandidates = 0;
+
+        if (request.channel_count == 0) {
+            request.channel_spec[0] = requiredSharedChannel;
+            retainedChannels = 1;
+        } else {
+            for (uint8_t i = 0; i < request.channel_count; ++i) {
+                if ((request.channel_spec[i] & 0xffU) !=
+                    requiredSharedChannel)
+                    continue;
+                request.channel_spec[retainedChannels++] =
+                    request.channel_spec[i];
+            }
+            if (retainedChannels == 0)
+                return kIOReturnBusy;
+        }
+        request.channel_count = retainedChannels;
+
+        for (uint8_t i = 0; i < request.candidate_count; ++i) {
+            if ((request.candidate[i].channel_spec & 0xffU) !=
+                requiredSharedChannel)
+                continue;
+            request.candidate[retainedCandidates++] = request.candidate[i];
+        }
+        request.candidate_count = retainedCandidates;
+        XYLog("wcl_reassoc APSTA_SHARED_CHANNEL channel=%u channels=%u "
+              "candidates=%u\n",
+              static_cast<unsigned>(requiredSharedChannel),
+              static_cast<unsigned>(request.channel_count),
+              static_cast<unsigned>(request.candidate_count));
+    }
+
     /* Apple sends these arrays to WLC_REASSOC and starts a firmware roam
      * scan.  Intel has no equivalent command, so common net80211 owns the
      * corresponding real HAL background scan and target switch.  Preserve

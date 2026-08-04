@@ -193,6 +193,7 @@ public:
      * once the AP-mode firmware command path is implemented.
      */
     bool supportsAPMode() const override;
+    bool isPrimaryStaRecoveryScanPending() const override;
 
     /*
      * AP/GO HAL bring-up and tear-down. Both entries are gated on
@@ -677,6 +678,8 @@ public:
     void iwx_sae_wcl_detach_begin(struct iwx_softc *);
     static void    iwx_mfp_pae_task(void *);
     static void    iwx_mfp_pae_task_dispatch(void *);
+    static IOReturn iwx_mfp_pae_complete_action(OSObject *, void *, void *,
+            void *, void *);
     static int     iwx_pae_mfp_txn_submit(struct ieee80211com *, u_int64_t,
             u_int64_t, struct ieee80211_node *, const struct ieee80211_key *,
             u_int8_t);

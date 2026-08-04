@@ -488,6 +488,33 @@ out:
     return error;
 }
 
+struct IwmMfpPaeCompletionAction {
+    struct ieee80211com *ic;
+    u_int64_t txn_id;
+    u_int8_t stage;
+    int error;
+};
+
+IOReturn ItlIwm::
+iwm_mfp_pae_complete_action(OSObject *target, void *arg0, void *arg1,
+                            void *arg2, void *arg3)
+{
+    struct IwmMfpPaeCompletionAction *completion =
+        (struct IwmMfpPaeCompletionAction *)arg0;
+
+    (void)target;
+    (void)arg1;
+    (void)arg2;
+    (void)arg3;
+    if (completion == NULL || completion->ic == NULL ||
+        completion->txn_id == 0 ||
+        !iwm_mfp_pae_stage_valid(completion->stage))
+        return kIOReturnBadArgument;
+    ieee80211_pae_mfp_txn_complete(completion->ic, completion->txn_id,
+        completion->stage, completion->error);
+    return kIOReturnSuccess;
+}
+
 void ItlIwm::
 iwm_mfp_pae_task(void *arg)
 {
@@ -621,8 +648,28 @@ iwm_mfp_pae_task(void *arg)
     if (queue_successor && systq != NULL)
         (void)task_add(systq, &sc->mfp_pae_task);
     iwm_mfp_pae_dispose_key(ic, &key);
-    if (deliver)
-        ieee80211_pae_mfp_txn_complete(ic, txn_id, stage, error);
+    if (deliver) {
+        ItlIwm *that = container_of(sc, ItlIwm, com);
+        struct IwmMfpPaeCompletionAction completion;
+        IOCommandGate *gate = that->getMainCommandGate();
+
+        completion.ic = ic;
+        completion.txn_id = txn_id;
+        completion.stage = stage;
+        completion.error = error;
+
+        /* Generic completion can enqueue the transaction's sole EAPOL
+         * response.  IWM if_start() uses non-blocking attemptAction(); a
+         * completion from systq can therefore lose that only M4 kick while
+         * the main workloop is occupied.  Complete on the main gate so the
+         * nested if_start() reaches the firmware TX doorbell before the
+         * generic key owner and controlled port become live. */
+        if (gate == NULL || gate->runAction(iwm_mfp_pae_complete_action,
+            &completion) != kIOReturnSuccess) {
+            ieee80211_pae_mfp_txn_complete(ic, txn_id, stage, EIO);
+        }
+        explicit_bzero(&completion, sizeof(completion));
+    }
 }
 
 void ItlIwm::

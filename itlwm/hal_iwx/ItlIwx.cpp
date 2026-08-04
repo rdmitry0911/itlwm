@@ -1636,6 +1636,34 @@ getAPCurrentChannel() const
         apRuntime.config.channel : 0;
 }
 
+bool ItlIwx::
+isPrimaryStaRecoveryScanPending() const
+{
+    struct iwx_softc *sc = const_cast<struct iwx_softc *>(&com);
+    struct ieee80211com *ic = &sc->sc_ic;
+    bool pending = false;
+
+    if (ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+        ic->ic_des_esslen != 0 ||
+        sc->sc_sae_wcl_credential_lock == NULL)
+        return false;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    pending = sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential);
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    return pending;
+}
+
 void ItlIwx::
 iwx_ap_csa_timeout(void *arg)
 {
@@ -17156,6 +17184,33 @@ iwx_mfp_pae_submit_delete(struct iwx_softc *sc, u_int64_t txn_id)
     return 0;
 }
 
+struct IwxMfpPaeCompletionAction {
+    struct ieee80211com *ic;
+    u_int64_t txn_id;
+    u_int8_t stage;
+    int error;
+};
+
+IOReturn ItlIwx::
+iwx_mfp_pae_complete_action(OSObject *target, void *arg0, void *arg1,
+                            void *arg2, void *arg3)
+{
+    struct IwxMfpPaeCompletionAction *completion =
+        (struct IwxMfpPaeCompletionAction *)arg0;
+
+    (void)target;
+    (void)arg1;
+    (void)arg2;
+    (void)arg3;
+    if (completion == NULL || completion->ic == NULL ||
+        completion->txn_id == 0 ||
+        iwx_mfp_pae_stage_mask(completion->stage) == 0)
+        return kIOReturnBadArgument;
+    ieee80211_pae_mfp_txn_complete(completion->ic, completion->txn_id,
+        completion->stage, completion->error);
+    return kIOReturnSuccess;
+}
+
 void ItlIwx::
 iwx_mfp_pae_task_dispatch(void *arg)
 {
@@ -17172,6 +17227,7 @@ void ItlIwx::
 iwx_mfp_pae_task(void *arg)
 {
     struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that;
     struct iwx_mfp_pae_txn *txn;
     struct iwx_async_cmd_result result;
     struct ieee80211_node *ni;
@@ -17187,6 +17243,7 @@ iwx_mfp_pae_task(void *arg)
 
     if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
         return;
+    that = container_of(sc, ItlIwx, com);
 
     IOSimpleLockLock(sc->sc_mfp_pae_lock);
     txn = &sc->sc_mfp_pae_txn;
@@ -17225,12 +17282,32 @@ iwx_mfp_pae_task(void *arg)
     IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
 
     if (call_generic) {
+        struct IwxMfpPaeCompletionAction completion;
+        IOCommandGate *gate = that->getMainCommandGate();
+
         /* Revalidate after leaving the driver leaf lock, before PAE mutation. */
         if (error == 0 &&
             (ieee80211_pae_assoc_epoch_current(&sc->sc_ic) != assoc_epoch ||
              sc->sc_ic.ic_bss != ni))
             error = ECANCELED;
-        ieee80211_pae_mfp_txn_complete(&sc->sc_ic, txn_id, stage, error);
+        completion.ic = &sc->sc_ic;
+        completion.txn_id = txn_id;
+        completion.stage = stage;
+        completion.error = error;
+
+        /* The generic success path can enqueue the only EAPOL M4.  IWX
+         * if_start() submits through non-blocking attemptAction(), so a
+         * worker outside the main gate can strand that frame while still
+         * publishing live keys and port-valid.  Re-enter the main gate
+         * synchronously; nested if_start() then reaches q0 before generic
+         * completion exposes the protected data path. */
+        if (gate == NULL || gate->runAction(iwx_mfp_pae_complete_action,
+            &completion) != kIOReturnSuccess) {
+            error = EIO;
+            ieee80211_pae_mfp_txn_complete(&sc->sc_ic, txn_id, stage,
+                                            error);
+        }
+        explicit_bzero(&completion, sizeof(completion));
     }
 
     IOSimpleLockLock(sc->sc_mfp_pae_lock);

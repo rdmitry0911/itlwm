@@ -5005,6 +5005,8 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apStaScanPriorityActive = false;
     apStaAuthPriorityActive = false;
     apStaBssAssociated = false;
+    apStaRunPanFencePending = false;
+    apStaRunPanFenceIndex = 0;
     iwn_set_ap_primary_tx_quiesced(false, false);
     apFirmwareStage = IWN_AP_STAGE_IDLE;
     bzero(&apFirmwareConfig, sizeof(apFirmwareConfig));
@@ -8255,7 +8257,23 @@ int ItlIwn::iwn_build_ap_rxon(struct iwn_rxon *rxon,
     return 0;
 }
 
-int ItlIwn::iwn_send_ap_pan_params(const struct ItlHalApConfig *config)
+static bool iwn_ap_sta_run_pan_prepare_doorbell(
+    struct iwn_softc *sc, void *context)
+{
+    ItlIwn *that = static_cast<ItlIwn *>(context);
+
+    if (sc == NULL || that == NULL || sc != &that->com ||
+        that->apStaRunPanFencePending)
+        return false;
+
+    that->apStaRunPanFenceIndex =
+        static_cast<uint16_t>(sc->txq[sc->command_queue].cur);
+    that->apStaRunPanFencePending = true;
+    return true;
+}
+
+int ItlIwn::iwn_send_ap_pan_params(
+    const struct ItlHalApConfig *config, bool primaryRunFence)
 {
     if (config == NULL)
         return EINVAL;
@@ -8321,6 +8339,11 @@ int ItlIwn::iwn_send_ap_pan_params(const struct ItlHalApConfig *config)
           apStaAuthPriorityActive ? 1U : 0U,
           apStaBssAssociated ? 1U : 0U,
           static_cast<unsigned>(apFirmwareStage));
+    if (primaryRunFence) {
+        return iwn_cmd_with_doorbell_hook(
+            &com, IWN_CMD_WIPAN_PARAMS, &command, sizeof(command), 1,
+            iwn_ap_sta_run_pan_prepare_doorbell, NULL, this);
+    }
     return iwn_cmd(
         &com, IWN_CMD_WIPAN_PARAMS, &command, sizeof(command), 1);
 }
@@ -8358,7 +8381,7 @@ int ItlIwn::iwn_set_ap_sta_auth_priority(bool active)
     return error;
 }
 
-int ItlIwn::iwn_clear_ap_sta_pan_priority()
+int ItlIwn::iwn_clear_ap_sta_pan_priority(bool primaryRunFence)
 {
     if (!apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING)
@@ -8368,12 +8391,34 @@ int ItlIwn::iwn_clear_ap_sta_pan_priority()
     const bool previousAuth = apStaAuthPriorityActive;
     apStaScanPriorityActive = false;
     apStaAuthPriorityActive = false;
-    const int error = iwn_send_ap_pan_params(&apFirmwareConfig);
+    const int error = iwn_send_ap_pan_params(
+        &apFirmwareConfig, primaryRunFence);
     if (error != 0) {
         apStaScanPriorityActive = previousScan;
         apStaAuthPriorityActive = previousAuth;
     }
     return error;
+}
+
+void ItlIwn::iwn_note_ap_sta_run_pan_fence(
+    int command, uint16_t commandIndex)
+{
+    if (!apStaRunPanFencePending || command != IWN_CMD_WIPAN_PARAMS ||
+        commandIndex != apStaRunPanFenceIndex)
+        return;
+
+    apStaRunPanFencePending = false;
+    apStaRunPanFenceIndex = 0;
+    iwn_set_ap_primary_tx_quiesced(false, true);
+    XYLog("%s: APSTA associated BSS command fence completed; "
+          "primary TX resumed\n", com.sc_dev.dv_xname);
+}
+
+void ItlIwn::iwn_abort_ap_sta_run_pan_fence(bool resumeOutput)
+{
+    apStaRunPanFencePending = false;
+    apStaRunPanFenceIndex = 0;
+    iwn_set_ap_primary_tx_quiesced(false, resumeOutput);
 }
 
 int ItlIwn::iwn_send_ap_stop_pan_params()
@@ -9786,6 +9831,40 @@ void ItlIwn::iwn_note_ap_firmware_event(
     }
 }
 
+static uint16_t
+iwn_apsta_primary_channel(struct iwn_softc *sc)
+{
+    if (sc == NULL)
+        return 0;
+
+    struct ieee80211com *ic = &sc->sc_ic;
+    if (ic->ic_opmode != IEEE80211_M_STA)
+        return 0;
+
+    /* In steady RUN, net80211's committed BSS is authoritative. */
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+        ic->ic_bss->ni_chan != NULL) {
+        const int channel = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+        if (channel > 0 && channel <= IEEE80211_CHAN_MAX)
+            return static_cast<uint16_t>(channel);
+    }
+
+    /*
+     * A public HostAP operation can race an associated scan.  net80211 then
+     * exposes SCAN even though firmware still owns the serving BSS RXON.
+     * Recover that physical channel only when both independent association
+     * carriers remain present; an unassociated discovery RXON must not pin
+     * AP admission to whichever channel the scan happens to visit.
+     */
+    const uint16_t rxonChannel = sc->rxon.chan;
+    if ((le32toh(sc->rxon.filter) & IWN_FILTER_BSS) != 0 &&
+        IEEE80211_AID(le16toh(sc->rxon.associd)) != 0 &&
+        rxonChannel > 0 && rxonChannel <= IEEE80211_CHAN_MAX)
+        return rxonChannel;
+
+    return 0;
+}
+
 IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
 {
     if (!supportsAPMode()) {
@@ -9822,6 +9901,14 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
     if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) !=
         (IFF_UP | IFF_RUNNING)) {
         return kIOReturnNotReady;
+    }
+    const uint16_t primaryChannel = iwn_apsta_primary_channel(&com);
+    if (primaryChannel != 0 && config->channel != primaryChannel) {
+        XYLog("%s: rejecting off-channel AP start requested=%u "
+              "primary=%u\n", com.sc_dev.dv_xname,
+              static_cast<unsigned>(config->channel),
+              static_cast<unsigned>(primaryChannel));
+        return kIOReturnBusy;
     }
     const IOReturn scanResult =
         iwn_quiesce_scan_for_ap_transition();
@@ -10106,6 +10193,14 @@ IOReturn ItlIwn::triggerAPCSA(const struct ItlHalApCSA *csa)
         return kIOReturnBadArgument;
     if (apCsaPending)
         return kIOReturnBusy;
+    const uint16_t primaryChannel = iwn_apsta_primary_channel(&com);
+    if (primaryChannel != 0 && csa->channel != primaryChannel) {
+        XYLog("%s: rejecting off-channel AP CSA requested=%u "
+              "primary=%u\n", com.sc_dev.dv_xname,
+              static_cast<unsigned>(csa->channel),
+              static_cast<unsigned>(primaryChannel));
+        return kIOReturnBusy;
+    }
     if (csa->channel == apFirmwareConfig.channel)
         return kIOReturnSuccess;
 
@@ -10152,6 +10247,47 @@ uint16_t ItlIwn::getAPCurrentChannel() const
         apFirmwareStage != IWN_AP_STAGE_RUNNING)
         return 0;
     return apFirmwareConfig.channel;
+}
+
+bool ItlIwn::requiresAPSTASharedChannel() const
+{
+    /* Linux DVM publishes STA+AP with num_different_channels == 1. */
+    return true;
+}
+
+uint16_t ItlIwn::getAPSTARequiredSharedChannel() const
+{
+    /* Linux DVM advertises STA+AP with num_different_channels == 1.  PAN
+     * scheduling permits two firmware contexts, not two simultaneous radio
+     * channels, so expose the running AP channel as a hard roam constraint. */
+    return getAPCurrentChannel();
+}
+
+bool ItlIwn::isPrimaryStaRecoveryScanPending() const
+{
+    struct iwn_softc *sc = const_cast<struct iwn_softc *>(&com);
+    struct ieee80211com *ic = &sc->sc_ic;
+    bool pending = false;
+
+    if (ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+        ic->ic_des_esslen != 0 ||
+        sc->sc_sae_wcl_credential_lock == NULL)
+        return false;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    pending = sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential);
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    return pending;
 }
 
 void ItlIwn::iwn_ap_csa_timeout(void *arg)
@@ -15537,6 +15673,9 @@ iwn_notif_intr(struct iwn_softc *sc)
                     completedAddNodeStatus, completedAddNodeFlags,
                     completedAddNodeId);
             }
+            iwn_note_ap_sta_run_pan_fence(
+                completedCommand->code,
+                static_cast<uint16_t>(desc->idx));
         }
         if (apFirmwareTransitionActive &&
             desc->type == IWN_WIPAN_DEACTIVATION_COMPLETE) {
@@ -19988,10 +20127,11 @@ iwn_auth(struct iwn_softc *sc, int arg)
      * Stock/Apple behavior: do NOT add the BSS node here. Reconfiguring
      * RXON clears the firmware node table, and pre-association AUTH is
      * transmitted via the broadcast/aux station (id=broadcast_id), not a
-     * unicast BSS node. The BSS node is added in iwn_run() after
-     * association. Adding it pre-association (together with FILTER_BSS)
-     * put the firmware into associated mode with associd=0 and stalled
-     * the data TX FIFO.
+     * unicast BSS node. The BSS node is added in iwn_run() after the
+     * association response has supplied a valid AID, but before committing
+     * the associated RXON. Adding it during AUTH (together with FILTER_BSS)
+     * put the firmware into associated mode with associd=0 and stalled the
+     * data TX FIFO.
      */
 
     /*
@@ -20028,9 +20168,17 @@ iwn_run(struct iwn_softc *sc)
         iwn_set_led(sc, IWN_LED_LINK, 50, 50);
         return 0;
     }
-    if ((error = iwn_set_timing(sc, ni)) != 0) {
-        XYLog("%s: could not set timing\n", sc->sc_dev.dv_xname);
-        return error;
+
+    const bool apStaRunFence =
+        apFirmwareTransitionActive &&
+        apFirmwareStage == IWN_AP_STAGE_RUNNING;
+    if (apStaRunFence) {
+        if (apStaRunPanFencePending) {
+            XYLog("%s: APSTA associated BSS command fence already pending\n",
+                  sc->sc_dev.dv_xname);
+            return EBUSY;
+        }
+        iwn_set_ap_primary_tx_quiesced(true, false);
     }
 
     /* Update adapter configuration. */
@@ -20082,10 +20230,38 @@ iwn_run(struct iwn_softc *sc)
      * macOS-randomized) interface MAC; see the note in iwn_auth(). */
     IEEE80211_ADDR_COPY(sc->rxon.myaddr, ic->ic_myaddr);
     IEEE80211_ADDR_COPY(sc->rxon.wlap, ic->ic_myaddr);
+
+    /* Linux DVM's documented connect transaction adds the AP station before
+     * the associated RXON.  The preceding unassociated RXON has already
+     * selected the candidate BSSID/channel and rebuilt the broadcast station;
+     * installing the negotiated BSS station now lets the associated commit
+     * retain a valid unicast owner instead of briefly exposing an associated
+     * context with no AP station.  That transient ordering can leave the DVM
+     * data queue inert even though net80211 has opened the controlled port. */
+    error = iwn_add_bss_node(sc, ni);
+    if (error != 0) {
+        XYLog("%s: could not add BSS node before associated RXON\n",
+              sc->sc_dev.dv_xname);
+        if (apStaRunFence)
+            iwn_abort_ap_sta_run_pan_fence(true);
+        return error;
+    }
+
+    /* DVM's connect transaction installs the selected station first, then
+     * programs its beacon timing immediately before the associated RXON. */
+    if ((error = iwn_set_timing(sc, ni)) != 0) {
+        XYLog("%s: could not set timing\n", sc->sc_dev.dv_xname);
+        if (apStaRunFence)
+            iwn_abort_ap_sta_run_pan_fence(true);
+        return error;
+    }
+
     error = iwn_cmd(sc, IWN_CMD_RXON, &sc->rxon, sc->rxonsz, 1);
     if (error != 0) {
         XYLog("%s: could not update configuration\n",
             sc->sc_dev.dv_xname);
+        if (apStaRunFence)
+            iwn_abort_ap_sta_run_pan_fence(true);
         return error;
     }
     /* Diagnostic publication (auth-ACK boundary, iwn HAL): publish the
@@ -20116,18 +20292,16 @@ iwn_run(struct iwn_softc *sc)
     /* Configuration has changed, set TX power accordingly. */
     if ((error = ops->set_txpower(sc, 1)) != 0) {
         XYLog("%s: could not set TX power\n", sc->sc_dev.dv_xname);
-        return error;
-    }
-
-    error = iwn_add_bss_node(sc, ni);
-    if (error != 0) {
-        XYLog("%s: could not add BSS node\n", sc->sc_dev.dv_xname);
+        if (apStaRunFence)
+            iwn_abort_ap_sta_run_pan_fence(true);
         return error;
     }
 
     if ((error = iwn_init_sensitivity(sc)) != 0) {
         XYLog("%s: could not set sensitivity\n",
             sc->sc_dev.dv_xname);
+        if (apStaRunFence)
+            iwn_abort_ap_sta_run_pan_fence(true);
         return error;
     }
     /* Start periodic calibration timer. */
@@ -20151,6 +20325,8 @@ iwn_run(struct iwn_softc *sc)
         if (error != 0) {
             XYLog("%s: could not replay HostAP beacon after STA RXON\n",
                   sc->sc_dev.dv_xname);
+            if (apStaRunFence)
+                iwn_abort_ap_sta_run_pan_fence(true);
             return error;
         }
         XYLog("%s: IWN AP beacon replay queued after STA RXON channel=%u\n",
@@ -20160,12 +20336,20 @@ iwn_run(struct iwn_softc *sc)
 
     /* RXON now carries the negotiated AID/BSS filter.  Leave temporary
      * scan/auth priority and return both associated contexts to DVM's
-     * normal admission window. */
+     * normal admission window.  Linux can wait synchronously for every
+     * command in iwlagn_rxon_connect(); this RX notification path cannot.
+     * Its exact final WIPAN_PARAMS descriptor therefore acts as the FIFO
+     * completion fence for ADD_NODE, LINK_QUALITY, TIMING, associated RXON,
+     * TX power, sensitivity, and retained AP-beacon replay.  Keep primary
+     * output stopped until firmware acknowledges that descriptor so EAPOL
+     * and DHCP cannot overtake the context transaction. */
     apStaBssAssociated = true;
-    error = iwn_clear_ap_sta_pan_priority();
+    error = iwn_clear_ap_sta_pan_priority(apStaRunFence);
     if (error != 0) {
         XYLog("%s: could not restore HostAP PAN slots after STA auth\n",
               sc->sc_dev.dv_xname);
+        if (apStaRunFence)
+            iwn_abort_ap_sta_run_pan_fence(true);
         return error;
     }
 
@@ -20291,6 +20475,33 @@ unlock:
 out:
     iwn_mfp_pae_callback_leave(sc);
     return error;
+}
+
+struct IwnMfpPaeCompletionAction {
+    struct ieee80211com *ic;
+    u_int64_t txn_id;
+    u_int8_t stage;
+    int error;
+};
+
+IOReturn ItlIwn::
+iwn_mfp_pae_complete_action(OSObject *target, void *arg0, void *arg1,
+                            void *arg2, void *arg3)
+{
+    struct IwnMfpPaeCompletionAction *completion =
+        (struct IwnMfpPaeCompletionAction *)arg0;
+
+    (void)target;
+    (void)arg1;
+    (void)arg2;
+    (void)arg3;
+    if (completion == NULL || completion->ic == NULL ||
+        completion->txn_id == 0 ||
+        !iwn_mfp_pae_stage_valid(completion->stage))
+        return kIOReturnBadArgument;
+    ieee80211_pae_mfp_txn_complete(completion->ic, completion->txn_id,
+        completion->stage, completion->error);
+    return kIOReturnSuccess;
 }
 
 void ItlIwn::
@@ -20431,8 +20642,31 @@ iwn_mfp_pae_task(void *arg)
     if (queue_successor && systq != NULL)
         (void)task_add(systq, &sc->mfp_pae_task);
     iwn_mfp_pae_dispose_key(ic, &key);
-    if (deliver)
-        ieee80211_pae_mfp_txn_complete(ic, txn_id, stage, error);
+    if (deliver) {
+        ItlIwn *that = container_of(sc, ItlIwn, com);
+        struct IwnMfpPaeCompletionAction completion;
+        IOCommandGate *gate = that->getMainCommandGate();
+
+        completion.ic = ic;
+        completion.txn_id = txn_id;
+        completion.stage = stage;
+        completion.error = error;
+
+        /* Generic completion can enqueue the transaction's sole EAPOL reply.
+         * IWN if_start() deliberately uses attemptAction(); from systq that
+         * non-blocking gate entry can lose the only M4 kick while the main
+         * workloop is busy.  Complete on the main gate instead, where
+         * if_start() enters recursively and publishes the q0 doorbell before
+         * PTK/GTK/IGTK and port-valid become live. */
+        if (gate == NULL || gate->runAction(iwn_mfp_pae_complete_action,
+            &completion) != kIOReturnSuccess) {
+            /* A disappearing command gate is a lifecycle failure.  Retire the
+             * exact generic transaction instead of leaving its key owner live
+             * with an EAPOL reply stranded in if_snd. */
+            ieee80211_pae_mfp_txn_complete(ic, txn_id, stage, EIO);
+        }
+        explicit_bzero(&completion, sizeof(completion));
+    }
 }
 
 void ItlIwn::

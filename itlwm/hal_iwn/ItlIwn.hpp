@@ -204,6 +204,9 @@ public:
     IOReturn setAPHidden(bool hidden) override;
     IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) override;
     uint16_t getAPCurrentChannel() const override;
+    bool requiresAPSTASharedChannel() const override;
+    uint16_t getAPSTARequiredSharedChannel() const override;
+    bool isPrimaryStaRecoveryScanPending() const override;
     uint32_t getAPTxFreeSpace() const;
     struct IwnApClientRuntime *iwn_find_ap_client(const uint8_t *);
     struct IwnApClientRuntime *iwn_find_ap_client_by_id(uint8_t);
@@ -219,10 +222,12 @@ public:
     bool iwn_ap_primary_tx_pending() const;
     IOReturn iwn_quiesce_scan_for_ap_transition();
     int iwn_build_ap_rxon(struct iwn_rxon *, const struct ItlHalApConfig *);
-    int iwn_send_ap_pan_params(const struct ItlHalApConfig *);
+    int iwn_send_ap_pan_params(const struct ItlHalApConfig *, bool = false);
     int iwn_set_ap_sta_scan_priority(bool);
     int iwn_set_ap_sta_auth_priority(bool);
-    int iwn_clear_ap_sta_pan_priority();
+    int iwn_clear_ap_sta_pan_priority(bool = false);
+    void iwn_note_ap_sta_run_pan_fence(int, uint16_t);
+    void iwn_abort_ap_sta_run_pan_fence(bool);
     int iwn_send_ap_stop_pan_params();
     int iwn_add_ap_broadcast_node();
     int iwn_send_ap_broadcast_link_quality(int);
@@ -576,6 +581,8 @@ public:
     void       iwn_sae_wcl_stop_begin(struct iwn_softc *);
     void       iwn_sae_wcl_detach_begin(struct iwn_softc *);
     static void        iwn_mfp_pae_task(void *);
+    static IOReturn    iwn_mfp_pae_complete_action(OSObject *, void *, void *,
+                    void *, void *);
     static int         iwn_pae_mfp_txn_submit(struct ieee80211com *,
                 u_int64_t, u_int64_t, struct ieee80211_node *,
                 const struct ieee80211_key *, u_int8_t);
@@ -657,6 +664,8 @@ public:
     bool apStaAuthPriorityActive;
     bool apStaBssAssociated;
     bool apPrimaryTxQuiesced;
+    bool apStaRunPanFencePending;
+    uint16_t apStaRunPanFenceIndex;
     uint8_t apFirmwareStage;
     struct ItlHalApConfig apFirmwareConfig;
     struct iwn_rxon apFirmwareRxon;

@@ -327,6 +327,28 @@ public:
      * original userspace profile before a destructive radio reset.
      */
     virtual uint16_t getAPCurrentChannel() const { return 0; }
+    /*
+     * Return true when simultaneous STA+AP operation is physically limited
+     * to one channel.  Keep this separate from the live-channel query below:
+     * a destructive sleep/reset epoch has no running AP context, but its
+     * retained profile must still be replayed on the primary STA channel.
+     */
+    virtual bool requiresAPSTASharedChannel() const { return false; }
+    /*
+     * Return the only primary-STA channel that can coexist with the running
+     * AP context, or zero when the backend admits independent channels.  The
+     * DVM 6x35 interface combination is single-channel even though its BSS
+     * and PAN contexts have separate RXON command families; an off-channel
+     * WCL target would therefore strand one of the two data paths.
+     */
+    virtual uint16_t getAPSTARequiredSharedChannel() const { return 0; }
+    /*
+     * Return true only while the primary STA owns an exact retained-ESS
+     * recovery scan.  Intel firmware cannot replay a PAN/GO context over
+     * that scan without aborting it; the common APSTA owner uses this
+     * value-only query to preserve the primary-before-PAN reset order.
+     */
+    virtual bool isPrimaryStaRecoveryScanPending() const { return false; }
     virtual IOReturn setAPHidden(bool hidden) {
         (void)hidden;
         return kIOReturnUnsupported;

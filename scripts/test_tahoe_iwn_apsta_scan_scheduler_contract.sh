@@ -14,9 +14,20 @@ iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 
 assert "bool apStaScanPriorityActive;" in iwn_hpp
 assert "bool apStaAuthPriorityActive;" in iwn_hpp
+assert "bool apStaRunPanFencePending;" in iwn_hpp
+assert "uint16_t apStaRunPanFenceIndex;" in iwn_hpp
 assert "int iwn_set_ap_sta_scan_priority(bool);" in iwn_hpp
 assert "int iwn_set_ap_sta_auth_priority(bool);" in iwn_hpp
-assert "int iwn_clear_ap_sta_pan_priority();" in iwn_hpp
+assert "int iwn_clear_ap_sta_pan_priority(bool = false);" in iwn_hpp
+assert "void iwn_note_ap_sta_run_pan_fence(int, uint16_t);" in iwn_hpp
+
+pan_doorbell = iwn[
+    iwn.index("static bool iwn_ap_sta_run_pan_prepare_doorbell("):
+    iwn.index("int ItlIwn::iwn_send_ap_pan_params(")
+]
+assert pan_doorbell.index("apStaRunPanFenceIndex =") < \
+    pan_doorbell.index("apStaRunPanFencePending = true;")
+assert "sc->txq[sc->command_queue].cur" in pan_doorbell
 
 pan = iwn[
     iwn.index("int ItlIwn::iwn_send_ap_pan_params("):
@@ -32,6 +43,8 @@ for needle in (
     "panSlotWidth = admissionRemainder;",
 ):
     assert needle in pan, f"missing DVM APSTA PAN policy: {needle}"
+assert "iwn_cmd_with_doorbell_hook(" in pan
+assert "iwn_ap_sta_run_pan_prepare_doorbell" in pan
 
 submit = iwn[
     iwn.index("iwn_scan_submit(struct iwn_softc *sc, uint16_t flags"):
@@ -127,11 +140,32 @@ run = iwn[
     iwn.index("iwn_pae_mfp_txn_submit(")
 ]
 add_bss = run.index("iwn_add_bss_node(sc, ni)")
+quiesce = run.index("iwn_set_ap_primary_tx_quiesced(true, false)")
+timing = run.index("iwn_set_timing(sc, ni)")
 associated_rxon = run.index("iwn_cmd(sc, IWN_CMD_RXON")
 replay_beacon = run.index("iwn_send_ap_beacon(&apFirmwareConfig)")
-steady_pan = run.index("iwn_clear_ap_sta_pan_priority()")
-assert associated_rxon < add_bss < replay_beacon < steady_pan, \
-    "the retained PAN beacon must be replayed after BSS installation"
+steady_pan = run.index("iwn_clear_ap_sta_pan_priority(apStaRunFence)")
+assert quiesce < add_bss < timing < associated_rxon < replay_beacon < steady_pan, \
+    "DVM connect must fence TX and order station/timing/RXON/PAN replay"
+
+fence = iwn[
+    iwn.index("void ItlIwn::iwn_note_ap_sta_run_pan_fence("):
+    iwn.index("void ItlIwn::iwn_abort_ap_sta_run_pan_fence(")
+]
+pending = fence.index("!apStaRunPanFencePending")
+command = fence.index("command != IWN_CMD_WIPAN_PARAMS")
+index = fence.index("commandIndex != apStaRunPanFenceIndex")
+resume = fence.index("iwn_set_ap_primary_tx_quiesced(false, true)")
+assert pending < command < index < resume, \
+    "only the exact final PAN descriptor may resume primary TX"
+
+notif = iwn[
+    iwn.index("iwn_notif_intr(struct iwn_softc *sc)"):
+    iwn.index("void ItlIwn::\niwn_wakeup_intr(")
+]
+assert notif.index("iwn_note_ap_sta_run_pan_fence(") < \
+    notif.index("iwn_cmd_done(sc, desc)"), \
+    "the command body must be inspected before command-ring reclaim"
 
 reset = iwn[
     iwn.index("void ItlIwn::iwn_reset_ap_runtime_state()"):
@@ -139,6 +173,8 @@ reset = iwn[
 ]
 assert "apStaScanPriorityActive = false;" in reset
 assert "apStaAuthPriorityActive = false;" in reset
+assert "apStaRunPanFencePending = false;" in reset
+assert "apStaRunPanFenceIndex = 0;" in reset
 
 scan_priority = iwn[
     iwn.index("int ItlIwn::iwn_set_ap_sta_scan_priority(bool active)"):
@@ -149,11 +185,35 @@ assert "if (active)\n        apStaAuthPriorityActive = false;" in scan_priority
 
 auth_priority = iwn[
     iwn.index("int ItlIwn::iwn_set_ap_sta_auth_priority(bool active)"):
-    iwn.index("int ItlIwn::iwn_clear_ap_sta_pan_priority()")
+    iwn.index("int ItlIwn::iwn_clear_ap_sta_pan_priority(bool primaryRunFence)")
 ]
 assert "apStaAuthPriorityActive = active;" in auth_priority
 assert "apStaScanPriorityActive =" not in auth_priority, \
     "a late scan terminal must not erase an active AUTH owner"
+
+mfp_completion = iwn[
+    iwn.index("IOReturn ItlIwn::\niwn_mfp_pae_complete_action"):
+    iwn.index("void ItlIwn::\niwn_mfp_pae_task")
+]
+assert "ieee80211_pae_mfp_txn_complete(" in mfp_completion
+
+mfp_worker = iwn[
+    iwn.index("void ItlIwn::\niwn_mfp_pae_task"):
+    iwn.index("iwn_pae_mfp_txn_cancel(")
+]
+gate = mfp_worker.index("gate->runAction(iwn_mfp_pae_complete_action")
+fallback = mfp_worker.index(
+    "ieee80211_pae_mfp_txn_complete(ic, txn_id, stage, EIO)", gate
+)
+assert gate < fallback, \
+    "MFP completion must enter the main gate before any fail-closed fallback"
+
+iwn_start = iwn[
+    iwn.index("void ItlIwn::\niwn_start(struct _ifnet *ifp)"):
+    iwn.index("IOReturn ItlIwn::\n_iwn_start_task")
+]
+assert "attemptAction(_iwn_start_task" in iwn_start, \
+    "the MFP reply fence exists because IWN output uses non-blocking gate entry"
 
 print("PASS: Tahoe IWN APSTA scan/auth PAN scheduler contract")
 PY
