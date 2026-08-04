@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Static regression gate for the command-gated WCL link-down edge that must
-# precede radio/system power-off availability and lower-device teardown.
+# Static regression gate for the reference split between public DISASSOCIATE
+# link-down ownership and radio/system power-off availability/teardown.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -65,12 +65,16 @@ off_branch = availability[off_start:on_start]
 ordered(
     off_branch,
     "cancelDeferredPowerOnAvailabilityRaw()",
-    "postTahoeWclLinkStateInd(that, false, 0)",
+    "postTahoeWclInternalLinkDownInd()",
     "getTahoeOwnerRegistry().association =",
     "getTahoeOwnerRegistry().publicAssociation =",
     "postTahoeDriverAvailabilityTransition(",
     "TahoeDriverAvailabilityContracts::Transition::PowerOff",
 )
+if "postTahoeWclLinkStateInd(" in off_branch or \
+        "setWCL_JOIN_ABORT(" in off_branch or \
+        "APPLE80211_M_WCL_JOIN_ABORT" in off_branch:
+    fail("power-off must use only the exact internal fallback, never RUN/JOIN_ABORT")
 
 radio = body("handlePowerStateChangeCore(uint32_t newState")
 for transition in (

@@ -6236,6 +6236,31 @@ static bool postTahoeAcceptedJoinIdentityEvents(AirportItlwm *controller,
 
 } // namespace
 
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * AppleBCMWLANNetAdapter::sendInternalLinkDownInd() is deliberately
+ * independent of the firmware/RUN link-event producer above.  Tahoe's
+ * reference implementation zeroes BSSID and linkState, obtains the infra
+ * interface type, stores the literal 64-bit reason 9 at +0x08, and posts the
+ * same asynchronous 0xd8 / 0x10 carrier.  AppleBCMWLANCore owns its only
+ * call site in setDISASSOCIATE(); it is not a radio-power notification.
+ */
+bool AirportItlwm::postTahoeWclInternalLinkDownInd()
+{
+    if (fNetIf == nullptr)
+        return false;
+
+    TahoeWclLinkChangedPayload payload;
+    bzero(&payload, sizeof(payload));
+    payload.interfaceType = kTahoeWclInfraInterfaceType;
+    payload.reasonCode = 9;
+
+    postMessage(fNetIf, kTahoeWclLinkChanged, &payload,
+                sizeof(payload), true);
+    return true;
+}
+#endif
+
 static IOReturn allocateWclPhysicalScanSnapshot(AirportItlwm *that,
                                                  void **outEntries,
                                                  size_t *outEntryBytes,
@@ -8743,24 +8768,19 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
     }
     if (action == kAirportItlwmDeferredPowerAvailabilityPublishOff) {
         that->cancelDeferredPowerOnAvailabilityRaw();
-        /*
-         * Apple's normal firmware link event and its independent
-         * sendInternalLinkDownInd fallback both publish the 16-byte 0xd8
-         * carrier.  IWN radio disable has no firmware deauth completion, so
-         * close WCL's active link explicitly while the selected RUN BSS is
-         * still authoritative.  Queue it before DRIVER_UNAVAILABLE and
-         * before disableAdapterCore tears the lower state down.  rawReason=0
-         * maps to Apple's 0xff unknown/administrative reason.
-         */
-        postTahoeWclLinkStateInd(that, false, 0);
 #if __IO80211_TARGET >= __MAC_26_0
-        /* Apple JoinAdapter::abortFirmwareJoinSync() clears the independent
-         * firmware-join-active byte at a radio/system power-off boundary.
-         * Retire both completion leases after publishing a possible RUN link
-         * down and before advertising DRIVER_UNAVAILABLE.  This makes the
-         * active-carrier guard independent of the shorter SAE credential
-         * generation without letting an interrupted join poison the next
-         * power-on attempt. */
+        /* AppleBCMWLANCore::powerOff() publishes DRIVER_UNAVAILABLE but does
+         * not manufacture a JOIN_ABORT.  On Broadcom, public DISASSOCIATE or
+         * the firmware link event supplies the terminal 0xd8 first.  Tahoe's
+         * radio toggle reaches this Intel port as IOC_POWER alone, and Intel
+         * disable has no later firmware-link completion.  Use NetAdapter's
+         * exact zero-BSSID/reason-9 internal fallback as that missing lower
+         * terminal before DRIVER_UNAVAILABLE; do not reuse the RUN-only
+         * authoritative-BSSID producer. */
+        that->postTahoeWclInternalLinkDownInd();
+
+        /* Retire local completion leases only after the terminal is queued,
+         * and before the lower reset can admit a replacement association. */
         that->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
         that->getTahoeOwnerRegistry().publicAssociation =

@@ -6664,6 +6664,16 @@ setDISASSOCIATE(void *ad)
     clearExternalPmkEligibilityLocked("setDISASSOCIATE");
     ic->ic_pae_mfp_requested = 0;
 
+#if __IO80211_TARGET >= __MAC_26_0
+    /* AppleBCMWLANCore::setDISASSOCIATE is the sole reference owner of
+     * NetAdapter::sendInternalLinkDownInd.  Publish its zero-BSSID, literal
+     * reason-9 0xd8 fallback before any lower-state early return so WCL can
+     * leave WAITING_FOR_IP even when a failed join already fell back to SCAN.
+     * This precedes any subsequent DRIVER_UNAVAILABLE radio-power bulletin. */
+    if (instance != nullptr)
+        instance->postTahoeWclInternalLinkDownInd();
+#endif
+
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
         return kIOReturnSuccess;

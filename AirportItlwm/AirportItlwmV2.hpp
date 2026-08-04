@@ -943,6 +943,7 @@ public:
 #if __IO80211_TARGET >= __MAC_26_0
     IOReturn setBssBlacklistOwner(const uint8_t *request);
     IOReturn queryBssBlacklistOwner();
+    bool postTahoeWclInternalLinkDownInd();
 #endif
 
     /*
