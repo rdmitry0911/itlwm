@@ -2070,6 +2070,7 @@ static void iwx_publish_mfp_capability(struct iwx_softc *);
 static int iwx_set_sta_igtk_v2(struct iwx_softc *,
                                 struct ieee80211_node *,
                                 struct ieee80211_key *, bool, bool);
+void iwx_clear_tx_desc(struct iwx_softc *, struct iwx_tx_ring *, int);
 
 static bool
 iwx_sae_wcl_credential_runtime_opted_in(void)
@@ -3420,7 +3421,7 @@ out:
 int ItlIwx::
 iwx_read_pnvm(struct iwx_softc *sc)
 {
-    int err = 0;
+    int err = ENOENT;
     OSData *fwData = NULL;
     struct iwx_fw_info *fw = &sc->sc_fw;
     char fwname_copy[64];
@@ -3428,7 +3429,7 @@ iwx_read_pnvm(struct iwx_softc *sc)
     struct iwx_ucode_tlv *tlv;
     uint8_t *data;
     size_t len;
-    const char *find;
+    size_t api_separator = 0;
     
     if (fw->pnvm_rawdata != NULL)
         iwx_pnvm_free(fw);
@@ -3436,13 +3437,26 @@ iwx_read_pnvm(struct iwx_softc *sc)
      * The prefix unfortunately includes a hyphen at the end, so
      * don't add the dot here...
      */
-    memcpy(fwname_copy, sc->sc_fwname, sizeof(fwname_copy));
-    find = strrchr(sc->sc_fwname, '-');
-    if (!find)
+    if (snprintf(fwname_copy, sizeof(fwname_copy), "%s",
+                 sc->sc_fwname) >= sizeof(fwname_copy)) {
+        err = EINVAL;
+        XYLog("%s: firmware name is too long for PNVM lookup\n",
+              DEVNAME(sc));
         goto out;
-    if (find - sc->sc_fwname - 1 <= 0)
+    }
+    for (size_t index = 0; fwname_copy[index] != '\0'; index++) {
+        if (fwname_copy[index] == '-')
+            api_separator = index;
+    }
+    if (api_separator == 0) {
+        err = EINVAL;
+        XYLog("%s: cannot derive PNVM name from %s\n",
+              DEVNAME(sc), sc->sc_fwname);
         goto out;
-    fwname_copy[find - sc->sc_fwname - 1] = '\0';
+    }
+
+    /* Strip the API suffix (for example, "-68.ucode") only. */
+    fwname_copy[api_separator] = '\0';
     
     snprintf(pnvm_name, sizeof(pnvm_name), "%s.pnvm",
          fwname_copy);
@@ -3454,9 +3468,19 @@ iwx_read_pnvm(struct iwx_softc *sc)
         XYLog("%s resource load fail.\n", pnvm_name);
         goto out;
     }
+    XYLog("%s: PNVM lookup %s sku 0x%x 0x%x 0x%x\n",
+          DEVNAME(sc), pnvm_name, sc->sku_id[0], sc->sku_id[1],
+          sc->sku_id[2]);
     fw->pnvm_rawsize = fwData->getLength() * 20;
     fw->pnvm_rawdata = malloc(fw->pnvm_rawsize, 1, 1);
-    uncompressFirmware((u_char *)fw->pnvm_rawdata, (uint *)&fw->pnvm_rawsize, (u_char *)fwData->getBytesNoCopy(), fwData->getLength());
+    if (!uncompressFirmware((u_char *)fw->pnvm_rawdata,
+                            (uint *)&fw->pnvm_rawsize,
+                            (u_char *)fwData->getBytesNoCopy(),
+                            fwData->getLength())) {
+        err = EINVAL;
+        XYLog("%s: could not decompress %s\n", DEVNAME(sc), pnvm_name);
+        goto out;
+    }
     
     data = (uint8_t *)fw->pnvm_rawdata;
     len = fw->pnvm_rawsize;
@@ -3489,10 +3513,17 @@ iwx_read_pnvm(struct iwx_softc *sc)
                 sc->sku_id[2] == le32toh(sku_id->data[2])) {
 
                 err = iwx_pnvm_handle_section(sc, data, len);
-                if (!err)
+                if (!err) {
+                    XYLog("%s: loaded PNVM %s (%zu bytes)\n",
+                          DEVNAME(sc), pnvm_name, sc->pnvm_dram.size);
                     goto out;
+                }
             } else {
-                XYLog("SKU ID didn't match!\n");
+                XYLog("PNVM SKU 0x%x 0x%x 0x%x did not match required "
+                      "0x%x 0x%x 0x%x\n",
+                      le32toh(sku_id->data[0]), le32toh(sku_id->data[1]),
+                      le32toh(sku_id->data[2]), sc->sku_id[0],
+                      sc->sku_id[1], sc->sku_id[2]);
             }
         } else {
             data += sizeof(*tlv) + roundup(tlv_len, 4);
@@ -3510,17 +3541,23 @@ int ItlIwx::
 iwx_load_pnvm(struct iwx_softc *sc)
 {
     int err;
+    const int wait_flags = IWX_PNVM_COMPLETE;
 
     /* if the SKU_ID is empty, there's nothing to do */
     if (!sc->sku_id[0] && !sc->sku_id[1] && !sc->sku_id[2]) {
         return 0;
     }
 
-    if (!iwx_read_pnvm(sc)) {
-        goto out;
-    };
+    err = iwx_read_pnvm(sc);
+    if (err) {
+        XYLog("%s: required PNVM load failed (%d)\n", DEVNAME(sc), err);
+        iwx_pnvm_free(&sc->sc_fw);
+        return err < 0 ? -err : err;
+    }
 
-out:
+    sc->sc_init_complete &= ~wait_flags;
+    sc->sc_pnvm_status = UINT32_MAX;
+
     /* kick the doorbell */
     if (iwx_nic_lock(sc)) {
         iwx_write_umac_prph(sc, IWX_UREG_DOORBELL_TO_ISR6,
@@ -3528,10 +3565,15 @@ out:
         iwx_nic_unlock(sc);
     }
 
-    err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit", SEC_TO_NSEC(2));
-    if (err)
-        XYLog("DEBUG %s pnvm init_complete wait FAILED err=%d sc_init_complete=0x%x\n",
-              __FUNCTION__, err, sc->sc_init_complete);
+    while ((sc->sc_init_complete & wait_flags) != wait_flags) {
+        err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit",
+                          SEC_TO_NSEC(2));
+        if (err) {
+            XYLog("DEBUG %s pnvm init_complete wait FAILED err=%d sc_init_complete=0x%x\n",
+                  __FUNCTION__, err, sc->sc_init_complete);
+            break;
+        }
+    }
 
     iwx_pnvm_free(&sc->sc_fw);
 
@@ -5046,19 +5088,20 @@ iwx_protect_session(struct iwx_softc *sc, struct iwx_node *in,
 
 int ItlIwx::
 iwx_schedule_protect_session(struct iwx_softc *sc, struct iwx_node *in,
-                    uint32_t duration)
+                    uint32_t duration_tu)
 {
     struct iwx_session_prot_cmd cmd = {
         .id_and_color =
             htole32(IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color)),
         .action = htole32(IWX_FW_CTXT_ACTION_ADD),
-        .duration_tu = htole32(duration * IEEE80211_DUR_TU),
+        .conf_id = htole32(IWX_SESSION_PROTECT_CONF_ASSOC),
+        .duration_tu = htole32(duration_tu),
     };
     int err;
-    
-    cmd.conf_id = IWX_SESSION_PROTECT_CONF_ASSOC;
-    
+
     err = iwx_send_cmd_pdu(sc, iwx_cmd_id(IWX_SESSION_PROTECTION_CMD, IWX_MAC_CONF_GROUP, 0), 0, sizeof(cmd), &cmd);
+    if (err == 0)
+        sc->sc_flags |= IWX_FLAG_TE_ACTIVE;
     if (err)
         XYLog("Couldn't send the SESSION_PROTECTION_CMD %d\n", err);
     return err;
@@ -5071,11 +5114,18 @@ iwx_cancel_session_protection(struct iwx_softc *sc, struct iwx_node *in)
         .id_and_color =
             htole32(IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color)),
         .action = htole32(IWX_FW_CTXT_ACTION_REMOVE),
-        .conf_id = IWX_SESSION_PROTECT_CONF_ASSOC,
+        .conf_id = htole32(IWX_SESSION_PROTECT_CONF_ASSOC),
+        .duration_tu = 0,
     };
     int err;
-    
+
+    /* Do not ask firmware to remove a protection event which is not live. */
+    if ((sc->sc_flags & IWX_FLAG_TE_ACTIVE) == 0)
+        return 0;
+
     err = iwx_send_cmd_pdu(sc, iwx_cmd_id(IWX_SESSION_PROTECTION_CMD, IWX_MAC_CONF_GROUP, 0), 0, sizeof(cmd), &cmd);
+    if (err == 0)
+        sc->sc_flags &= ~IWX_FLAG_TE_ACTIVE;
     if (err)
         XYLog("Couldn't send the Cancel SESSION_PROTECTION_CMD %d\n", err);
     return err;
@@ -5689,7 +5739,9 @@ iwx_mac_ctxt_task(void *arg)
     if (err)
         printf("%s: failed to update MAC\n", DEVNAME(sc));
     
-    if (!isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD))
+    if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD))
+        that->iwx_cancel_session_protection(sc, in);
+    else
         that->iwx_unprotect_session(sc, in);
     
     //    refcnt_rele_wake(&sc->task_refs);
@@ -6278,11 +6330,14 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
     }
 
     /* Wait for the init complete notification from the firmware. */
-    err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit", SEC_TO_NSEC(2));
-    if (err) {
-        XYLog("DEBUG %s tsleep init_complete TIMEOUT err=%d sc_init_complete=0x%x\n",
-              __FUNCTION__, err, sc->sc_init_complete);
-        return err;
+    while ((sc->sc_init_complete & wait_flags) != wait_flags) {
+        err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit",
+                          SEC_TO_NSEC(2));
+        if (err) {
+            XYLog("DEBUG %s tsleep init_complete TIMEOUT err=%d sc_init_complete=0x%x\n",
+                  __FUNCTION__, err, sc->sc_init_complete);
+            return err;
+        }
     }
 
     if (readnvm) {
@@ -7231,81 +7286,79 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
                  rate_n_flags, device_timestamp, &rxi, ml);
 }
 
-void ItlIwx::
+bool ItlIwx::
 iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
-                     struct iwx_tx_data *txd)
+                     struct iwx_tx_ring *ring, int idx)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = IC2IFP(ic);
     struct iwx_tx_resp *tx_resp = (struct iwx_tx_resp *)pkt->data;
     int status = le16toh(tx_resp->status.status) & IWX_TX_STATUS_MSK;
-    int txfail;
+    const bool txfail = status != IWX_TX_STATUS_SUCCESS &&
+        status != IWX_TX_STATUS_DIRECT_DONE;
+    unsigned int reclaimed = 0;
+    bool was_ap_frame = false;
     
     KASSERT(tx_resp->frame_count == 1, "tx_resp->frame_count == 1");
-    
-    txfail = (status != IWX_TX_STATUS_SUCCESS);
-
-    if (txfail) {
-        XYLog("%s %d OUTPUT_ERROR type=%d status=%d\n", __FUNCTION__, __LINE__, txd->type, status);
-        ifp->netStat->outputErrors++;
-        if (txd->type == IEEE80211_FC0_TYPE_MGT)
-            iwx_toggle_tx_ant(sc, &sc->sc_mgmt_last_antenna_idx);
-    }
-
-    /* Diagnostic probe (auth-ACK boundary): log every MGT-frame TX
-     * completion (success and failure) so the auth completion can
-     * be correlated against the iwx_auth state machine and the
-     * ieee80211_recv_auth entry. iwx_tx() copies the 802.11
-     * header into the firmware TX command and then calls
-     * mbuf_adj(m, hdrlen) to trim the header from the mbuf before
-     * storing data->m, so the mbuf attached to txd at completion
-     * does NOT contain a struct ieee80211_frame and cannot be
-     * parsed as one. The identity (management subtype, receiver
-     * address i_addr1, and -- for AUTH -- the transaction
-     * sequence number) is therefore captured by iwx_tx() into
-     * txd->diag_* before the trim and read here.
-     *
-     * Sentinel handling: txd->diag_subtype = 0xff means iwx_tx()
-     * did not record a management identity for this slot (for
-     * example a non-MGT frame whose ring slot is being reused).
-     * The probe still fires for MGT-typed completions but logs
-     * the sentinel literally so a stale identity from a previous
-     * slot occupant is never silently presented as the current
-     * one. peer is logged as the captured 6 bytes; the all-zero
-     * sentinel cannot be a valid unicast receiver address.
-     *
-     * Data frames are NOT logged: their volume would flood oslog
-     * and the auth-ACK boundary is a management-frame question.
-     * Behavior-neutral: read-only access to txd fields. */
-    if (txd->type == IEEE80211_FC0_TYPE_MGT) {
-        IWX_AUTH_DIAG("iwx_rx_tx_cmd_single: MGT subtype=0x%02x "
-              "peer=%02x:%02x:%02x:%02x:%02x:%02x "
-              "auth_seq=0x%04x status=0x%x (%s) frame_count=%d "
-              "initial_rate=0x%x failure_frame=%d "
-              "wireless_media_time=%u\n",
-              txd->diag_subtype,
-              txd->diag_peer[0], txd->diag_peer[1],
-              txd->diag_peer[2], txd->diag_peer[3],
-              txd->diag_peer[4], txd->diag_peer[5],
-              (unsigned)txd->diag_auth_seq,
-              status, txfail ? "FAIL" : "SUCCESS",
-              tx_resp->frame_count,
-              le32toh(tx_resp->initial_rate),
-              tx_resp->failure_frame,
-              le16toh(tx_resp->wireless_media_time));
-    }
 
     /*
-     * This executes in firmware completion context, before the caller
-     * recycles txd through iwx_ampdu_txq_advance(). It only copies a bounded
-     * value record to the deferred worker; it never enters the controller
-     * command gate itself.
+     * Firmware reports the SCD SSN as the first descriptor it has not
+     * completed.  Reclaim [tail, idx), never data[idx].  The reported TX
+     * status belongs to the first reclaimed frame; if one response advances
+     * over more descriptors, firmware had already acknowledged the later
+     * frames before it produced that response.
      */
-    if (txd->sae_active) {
-        ItlIwx *that = container_of(sc, ItlIwx, com);
-        that->iwx_sae_tx_report_terminal(sc, txd,
-            txfail ? (status != 0 ? status : EIO) : 0);
+    while (ring->tail != idx) {
+        struct iwx_tx_data *txd = &ring->data[ring->tail];
+
+        if (txd->m != NULL) {
+            const bool frame_failed = txfail && reclaimed == 0;
+
+            reclaimed++;
+            was_ap_frame |= txd->ap_frame;
+
+            if (frame_failed) {
+                XYLog("%s %d OUTPUT_ERROR type=%d status=%d\n",
+                      __FUNCTION__, __LINE__, txd->type, status);
+                ifp->netStat->outputErrors++;
+                if (txd->type == IEEE80211_FC0_TYPE_MGT)
+                    iwx_toggle_tx_ant(sc,
+                                      &sc->sc_mgmt_last_antenna_idx);
+            }
+
+            if (txd->type == IEEE80211_FC0_TYPE_MGT) {
+                IWX_AUTH_DIAG("iwx_rx_tx_cmd_single: MGT subtype=0x%02x "
+                      "peer=%02x:%02x:%02x:%02x:%02x:%02x "
+                      "auth_seq=0x%04x status=0x%x (%s) frame_count=%d "
+                      "initial_rate=0x%x failure_frame=%d "
+                      "wireless_media_time=%u\n",
+                      txd->diag_subtype,
+                      txd->diag_peer[0], txd->diag_peer[1],
+                      txd->diag_peer[2], txd->diag_peer[3],
+                      txd->diag_peer[4], txd->diag_peer[5],
+                      (unsigned)txd->diag_auth_seq,
+                      status, frame_failed ? "FAIL" : "SUCCESS",
+                      tx_resp->frame_count,
+                      le32toh(tx_resp->initial_rate),
+                      tx_resp->failure_frame,
+                      le16toh(tx_resp->wireless_media_time));
+            }
+
+            /* Publish the exact descriptor result before iwx_txd_done(). */
+            if (txd->sae_active) {
+                ItlIwx *that = container_of(sc, ItlIwx, com);
+                that->iwx_sae_tx_report_terminal(sc, txd,
+                    frame_failed ? (status != 0 ? status : EIO) : 0);
+            }
+
+            iwx_txd_done(sc, txd);
+            iwx_clear_tx_desc(sc, ring, ring->tail);
+            ring->queued--;
+        }
+        ring->tail = (ring->tail + 1) % ring->ring_count;
     }
+
+    return was_ap_frame;
 }
 
 void
@@ -7487,11 +7540,9 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
 {
     uint32_t ssn;
     int idx;
-    int tid;
     struct iwx_tx_resp *tx_resp = (struct iwx_tx_resp *)pkt->data;
     int qid = tx_resp->tx_queue;
     struct iwx_tx_ring *ring;
-    struct iwx_tx_data *txd;
 
     bus_dmamap_sync(sc->sc_dmat, data->map, 0, IWX_RBUF_SIZE,
                     BUS_DMASYNC_POSTREAD);
@@ -7506,14 +7557,10 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
         return;
 
     if (tx_resp->frame_count <= 1) {
-        tid = tx_resp->ra_tid & 0x0f;
         memcpy(&ssn, &tx_resp->status + tx_resp->frame_count, sizeof(ssn));
         ssn = le32toh(ssn) & 0xfff;
         idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count);
-        txd = &ring->data[idx];
-        const bool wasApFrame = txd->ap_frame;
-        iwx_rx_tx_cmd_single(sc, pkt, txd);
-        iwx_ampdu_txq_advance(sc, ring, idx);
+        const bool wasApFrame = iwx_rx_tx_cmd_single(sc, pkt, ring, idx);
         if (wasApFrame) {
             iwx_clear_oactive(sc, ring);
 #if __IO80211_TARGET >= __MAC_26_0
@@ -12519,8 +12566,15 @@ iwx_task_gate_epoch_live(struct iwx_softc *sc, int generation)
         return false;
 
     IOLockLock(sc->sc_task_gate_lock);
+    /*
+     * The init owner remains live across the deliberate closed -> open
+     * admission transition.  Once iwx_task_gate_open() publishes the
+     * runnable firmware epoch, generation plus the init/stop owner counts
+     * are the lifetime fence; requiring sc_task_gate_closed here would make
+     * every successful init invalidate itself before SCAN can run.
+     */
     live = !(sc->sc_flags & IWX_FLAG_SHUTDOWN) &&
-        !sc->sc_task_gate_detaching && sc->sc_task_gate_closed &&
+        !sc->sc_task_gate_detaching &&
         sc->sc_task_gate_init_refs == 1 &&
         sc->sc_task_gate_stop_refs == 0 &&
         sc->sc_generation == generation;
@@ -13916,9 +13970,9 @@ iwx_auth(struct iwx_softc *sc)
      * by "protecting" the session with a time event.
      */
     if (in->in_ni.ni_intval)
-        duration = in->in_ni.ni_intval * 2;
+        duration = in->in_ni.ni_intval * 9;
     else
-        duration = IEEE80211_DUR_TU;
+        duration = 900;
     
     /* Try really hard to protect the session and hear a beacon
      * The new session protection command allows us to protect the
@@ -16048,14 +16102,23 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data,
                 break;
             }
                 
-            case IWX_WIDE_ID(IWX_REGULATORY_AND_NVM_GROUP, IWX_PNVM_INIT_COMPLETE_NTFY):
-                wakeupOn(&sc->sc_init_complete);
+            case IWX_WIDE_ID(IWX_REGULATORY_AND_NVM_GROUP,
+                             IWX_PNVM_INIT_COMPLETE_NTFY): {
                 struct iwl_pnvm_init_complete_ntfy *pnvm_ntf;
-                SYNC_RESP_STRUCT(pnvm_ntf, pkt, struct iwl_pnvm_init_complete_ntfy *);
-                if (le32toh(pnvm_ntf->status) != 0)
-                    XYLog("PNVM init complete notification failed status 0x%0x\n",
-                          le32toh(pnvm_ntf->status));
+                if (iwx_rx_packet_payload_len(pkt) < sizeof(*pnvm_ntf)) {
+                    sc->sc_pnvm_status = UINT32_MAX;
+                    XYLog("PNVM init complete notification is too short\n");
+                } else {
+                    SYNC_RESP_STRUCT(pnvm_ntf, pkt,
+                                     struct iwl_pnvm_init_complete_ntfy *);
+                    sc->sc_pnvm_status = le32toh(pnvm_ntf->status);
+                    XYLog("PNVM init complete notification status 0x%0x\n",
+                          sc->sc_pnvm_status);
+                }
+                sc->sc_init_complete |= IWX_PNVM_COMPLETE;
+                wakeupOn(&sc->sc_init_complete);
                 break;
+            }
                 
             case IWX_INIT_COMPLETE_NOTIF:
                 sc->sc_init_complete |= IWX_INIT_COMPLETE;

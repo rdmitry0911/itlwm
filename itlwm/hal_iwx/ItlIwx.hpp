@@ -442,8 +442,8 @@ public:
     void iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
                         size_t maxlen, struct mbuf_list *ml,
                         struct mbuf_list *apMl);
-    void    iwx_rx_tx_cmd_single(struct iwx_softc *, struct iwx_rx_packet *,
-            struct iwx_tx_data *);
+    bool    iwx_rx_tx_cmd_single(struct iwx_softc *, struct iwx_rx_packet *,
+            struct iwx_tx_ring *, int);
     void iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd);
     void iwx_clear_oactive(struct iwx_softc *sc, struct iwx_tx_ring *ring);
     void iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int idx);

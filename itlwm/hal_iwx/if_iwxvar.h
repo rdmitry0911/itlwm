@@ -1024,6 +1024,8 @@ struct iwx_softc {
 	int sc_init_complete;
 #define IWX_INIT_COMPLETE	0x01
 #define IWX_CALIB_COMPLETE	0x02
+#define IWX_PNVM_COMPLETE	0x04
+	uint32_t sc_pnvm_status;
 
 	struct iwx_ucode_status sc_uc;
 	char sc_fwver[32];

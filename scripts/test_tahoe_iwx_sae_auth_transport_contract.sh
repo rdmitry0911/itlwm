@@ -244,12 +244,28 @@ ordered(commit, "atomic final SAE doorbell",
         "IOLockUnlock")
 
 # Firmware completion, BA reclaim, and ring reset all collapse into one
-# bounded deferred terminal record. A success result is available only for a
-# single TX response marked success; there is no early controller callback.
+# bounded deferred terminal record. The firmware SSN is non-inclusive, so a
+# single-TX response must publish the result against [tail, SSN) before that
+# span is reclaimed; data[SSN] is the first uncompleted descriptor.
 rx_single = iwx_method("iwx_rx_tx_cmd_single")
-for token in ("IWX_TX_STATUS_SUCCESS", "txd->sae_active",
-              "iwx_sae_tx_report_terminal", "txfail ?"):
+for token in ("IWX_TX_STATUS_SUCCESS", "IWX_TX_STATUS_DIRECT_DONE",
+              "while (ring->tail != idx)",
+              "struct iwx_tx_data *txd = &ring->data[ring->tail]",
+              "const bool frame_failed = txfail && reclaimed == 0",
+              "was_ap_frame |= txd->ap_frame", "txd->sae_active",
+              "iwx_sae_tx_report_terminal", "iwx_txd_done(sc, txd)",
+              "iwx_clear_tx_desc(sc, ring, ring->tail)"):
     require(rx_single, token, "firmware terminal TX result")
+ordered(rx_single, "IWX SAE result-before-reclaim",
+        "iwx_sae_tx_report_terminal", "iwx_txd_done(sc, txd)",
+        "iwx_clear_tx_desc(sc, ring, ring->tail)")
+rx_cmd = iwx_method("iwx_rx_tx_cmd")
+for token in ("idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count)",
+              "iwx_rx_tx_cmd_single(sc, pkt, ring, idx)"):
+    require(rx_cmd, token, "non-inclusive IWX completion route")
+forbid(rx_cmd, "&ring->data[idx]", "inclusive SSN descriptor lookup")
+forbid(rx_cmd, "iwx_ampdu_txq_advance(sc, ring, idx)",
+       "second reclaim after descriptor-aware completion")
 tx_done = iwx_method("iwx_txd_done")
 require(tx_done, "iwx_sae_tx_report_terminal(sc, txd, EIO)",
         "BA/reclaim terminal failure")
