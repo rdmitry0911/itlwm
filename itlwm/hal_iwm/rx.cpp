@@ -943,8 +943,11 @@ iwm_rx_mpdu_mq(struct iwm_softc *sc, mbuf_t m, void *pktdata,
                        IWM_RX_MPDU_RES_STATUS_MIC_OK)) ==
             (IWM_RX_MPDU_RES_STATUS_DEC_DONE |
              IWM_RX_MPDU_RES_STATUS_MIC_OK);
+    const uint8_t apMicCrcLength = static_cast<uint8_t>(
+        (desc->mac_flags1 & IWM_RX_MPDU_MFLG1_MIC_CRC_LEN_MASK) >>
+        IWM_RX_MPDU_MFLG1_MIC_CRC_LEN_SHIFT);
     if (iwm_ap_handle_rx(sc, m, mbuf_pkthdr_len(m),
-                         apHardwareDecrypted, apMl, false,
+                         apHardwareDecrypted, apMicCrcLength, apMl, false,
                          (desc->mac_flags2 & IWM_RX_MPDU_MFLG2_AMSDU) != 0,
                          desc->amsdu_info &
                              IWM_RX_MPDU_AMSDU_SUBFRAME_IDX_MASK,

@@ -21,6 +21,9 @@ for needle, label in (
     ("struct ieee80211_sae_ap *sae", "owned SAE object"),
     ("uint8_t pmk[IEEE80211_PMK_LEN]", "driver-owned PMK"),
     ("struct ieee80211_ptk ptk", "shared PTK"),
+    ("localRsnPendingAction", "deferred firmware PAE edge"),
+    ("localRsnPendingTimeoutState", "bounded EAPOL retry edge"),
+    ("localRsnExpectedReplay[4]", "EAPOL replay acceptance window"),
     ("ieee80211_sae_ap_destroy(&client->sae)", "per-client SAE lifetime teardown"),
     ("explicit_bzero(client->pmk", "per-client PMK scrub"),
 ):
@@ -35,14 +38,23 @@ for needle, label in (
     ("ieee80211_sae_ap_confirm", "SAE Confirm responder"),
     ("ieee80211_sae_ap_is_accepted", "accepted-SAE association gate"),
     ("EAPOL_KEY_DESC_AKM_DEFINED", "SAE EAPOL descriptor"),
-    ("ieee80211_derive_ptk(IEEE80211_AKM_SAE", "SAE PTK derivation"),
+    ("IEEE80211_AKM_SAE : IEEE80211_AKM_PSK", "SAE PTK derivation selection"),
+    ("ieee80211_derive_ptk(itl_ap_local_rsn_akm(runtime)",
+     "selected AP PTK derivation"),
     ("ieee80211_eapol_key_check_mic", "M2/M4 MIC validation"),
     ("ieee80211_eapol_key_encrypt", "M3 key wrapping"),
     ("IEEE80211_KDE_GTK", "M3 GTK KDE"),
     ("*cursor++ = 9", "M3 IGTK KDE"),
     ("kItlApLocalEapolInstallPairwise", "M4 install edge"),
     ("kItlApLocalEapolResendM3", "lost-M3 duplicate-M2 recovery"),
-    ("replay != client->replayCounter - 1", "per-client duplicate-M2 replay fence"),
+    ("itl_ap_local_rsn_replay_expected(client, replay)",
+     "per-client current-stage replay window"),
+    ("replay != client->localRsnM2ReplayCounter",
+     "per-client duplicate-M2 replay fence"),
+    ("kItlApLocalRsnFirstTimeoutMs = 100", "reference first retry timeout"),
+    ("kItlApLocalRsnSubsequentTimeoutMs = 1000",
+     "reference subsequent retry timeout"),
+    ("kItlApLocalRsnMaxAttempts = 4", "bounded pairwise update count"),
     ("client->clientAuthorized", "per-client controlled-port gate"),
     ("!hardwareDecrypted", "PMF protected disconnect gate"),
 ):
@@ -50,14 +62,18 @@ for needle, label in (
 
 for backend, name, prefix in ((iwm, "IWM", "IWM"), (iwx, "IWX", "IWX")):
     for needle, label in (
-        ("itl_ap_local_sae_build_m1", "M1 start"),
-        ("itl_ap_local_sae_handle_eapol", "local EAPOL owner"),
+        ("itl_ap_local_rsn_build_m1", "M1 start"),
+        ("itl_ap_local_rsn_handle_eapol", "local EAPOL owner"),
         ("kItlHalApKeyGroup", "GTK installation"),
         ("kItlHalApKeyPairwise", "PTK installation"),
         ("kItlHalApStationAuthorize", "port authorization"),
         (f"{prefix}_STA_KEY_MFP", "firmware MFP key flag"),
         ("itl_ap_firmware_client_reset(client)", "disconnect SAE scrub"),
         ("kItlApLocalEapolResendM3", "M3 retransmission action"),
+        ("itl_ap_local_rsn_defer_action", "RX-to-process PAE handoff"),
+        ("itl_ap_local_rsn_take_deferred_action", "serial PAE owner"),
+        ("itl_ap_local_rsn_take_timeout", "serial retry owner"),
+        ("IEEE80211_REASON_4WAY_TIMEOUT", "retry exhaustion deauth"),
     ):
         require(backend, needle, f"{name} {label}")
 

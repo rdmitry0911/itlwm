@@ -584,10 +584,13 @@ public:
                                uint8_t, uint8_t, const void *, size_t,
                                const void *, size_t);
     int    iwx_ap_send_raw_frame(struct iwx_softc *, mbuf_t, uint16_t);
+    void   iwx_ap_assoc_tx_complete(struct iwx_softc *, const uint8_t *,
+                                    bool);
     bool   iwx_ap_handle_rx(struct iwx_softc *, mbuf_t, size_t, bool,
-                            struct mbuf_list *, bool = false,
+                            uint8_t, struct mbuf_list *, bool = false,
                             bool = false, uint8_t = 0, bool = true);
     static void iwx_ap_rx_ba_deliver(void *, struct ItlApRxBaReady *);
+    static void iwx_ap_local_rsn_timeout(void *);
     static void iwx_ap_client_task(void *);
     static void iwx_ap_client_task_dispatch(void *);
     int    iwx_ap_update_quotas(struct iwx_softc *,

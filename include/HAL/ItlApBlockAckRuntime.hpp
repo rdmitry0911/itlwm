@@ -167,6 +167,7 @@ struct ItlApRxBaBufferedFrame {
     size_t frameLength;
     uint32_t rxFlags;
     uint8_t descriptorType;
+    uint8_t micCrcLength;
     bool hardwareDecrypted;
     bool amsdu;
     bool amsduComplete;
@@ -331,7 +332,8 @@ static inline bool
 itl_ap_rx_ba_reorder(struct ItlApRxBaRuntime runtimes[kItlApRxBaTidCount],
                      const uint8_t *bssid, const uint8_t *station,
                      mbuf_t packet, size_t frameLength,
-                     bool hardwareDecrypted, uint32_t rxFlags,
+                     bool hardwareDecrypted, uint8_t micCrcLength,
+                     uint32_t rxFlags,
                      uint8_t descriptorType, bool isAmsdu,
                      uint8_t subframeIndex, bool lastSubframe,
                      struct ItlApRxBaReady *ready)
@@ -418,6 +420,7 @@ itl_ap_rx_ba_reorder(struct ItlApRxBaRuntime runtimes[kItlApRxBaTidCount],
                 .frameLength = frameLength,
                 .rxFlags = rxFlags,
                 .descriptorType = descriptorType,
+                .micCrcLength = micCrcLength,
                 .hardwareDecrypted = hardwareDecrypted,
                 .amsdu = true,
                 .amsduComplete = lastSubframe,
@@ -445,6 +448,7 @@ itl_ap_rx_ba_reorder(struct ItlApRxBaRuntime runtimes[kItlApRxBaTidCount],
         .frameLength = frameLength,
         .rxFlags = rxFlags,
         .descriptorType = descriptorType,
+        .micCrcLength = micCrcLength,
         .hardwareDecrypted = hardwareDecrypted,
         .amsdu = isAmsdu,
         .amsduComplete = !isAmsdu || lastSubframe,

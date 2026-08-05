@@ -71,6 +71,171 @@ enum ItlApLocalEapolAction : uint8_t {
     kItlApLocalEapolInstallPairwise,
 };
 
+/* The RX path may not wait for an IWX/IWM command completion.  Publish one
+ * validated PAE edge to the already-serialized AP client task.  Identical
+ * retransmissions coalesce; a different outstanding edge is rejected rather
+ * than overwriting key-install ownership. */
+static inline int
+itl_ap_local_rsn_defer_action(struct ItlApFirmwareClientRuntime *client,
+                              enum ItlApLocalEapolAction action)
+{
+    if (client == NULL || action <= kItlApLocalEapolConsumed ||
+        action > kItlApLocalEapolInstallPairwise)
+        return EINVAL;
+    uint8_t expected = kItlApLocalEapolConsumed;
+    const uint8_t deferred = static_cast<uint8_t>(action);
+    if (__atomic_compare_exchange_n(&client->localRsnPendingAction,
+            &expected, deferred, false, __ATOMIC_RELEASE,
+            __ATOMIC_ACQUIRE))
+        return 0;
+    return expected == deferred ? 0 : EBUSY;
+}
+
+static inline enum ItlApLocalEapolAction
+itl_ap_local_rsn_take_deferred_action(
+    struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL)
+        return kItlApLocalEapolConsumed;
+    return static_cast<enum ItlApLocalEapolAction>(
+        __atomic_exchange_n(&client->localRsnPendingAction,
+            static_cast<uint8_t>(kItlApLocalEapolConsumed),
+            __ATOMIC_ACQ_REL));
+}
+
+/* hostapd's authenticator sends the first EAPOL-Key retry after 100 ms,
+ * subsequent retries after one second, and permits four attempts.  Keep that
+ * state beside the firmware-neutral client; backend callbacks only queue the
+ * serialized AP task and never transmit from the timer/workloop context. */
+enum {
+    kItlApLocalRsnFirstTimeoutMs = 100,
+    kItlApLocalRsnSubsequentTimeoutMs = 1000,
+    kItlApLocalRsnMaxAttempts = 4,
+};
+
+static inline bool
+itl_ap_local_rsn_timeout_init(struct ItlApFirmwareClientRuntime *client,
+                              void *owner, void (*callback)(void *))
+{
+    if (client == NULL || owner == NULL || callback == NULL)
+        return false;
+    timeout_del(&client->localRsnTimeout);
+    client->localRsnOwner = owner;
+    timeout_set(&client->localRsnTimeout, callback, client);
+    return timeout_initialized(&client->localRsnTimeout) != 0;
+}
+
+static inline void
+itl_ap_local_rsn_timeout_cancel(struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL)
+        return;
+    timeout_del(&client->localRsnTimeout);
+    __atomic_store_n(&client->localRsnTimeoutState,
+        static_cast<uint8_t>(kItlApLocalRsnDisabled), __ATOMIC_RELEASE);
+}
+
+static inline bool
+itl_ap_local_rsn_timeout_arm(struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL || !timeout_initialized(&client->localRsnTimeout) ||
+        (client->localRsnState != kItlApLocalRsnWaitM2 &&
+         client->localRsnState != kItlApLocalRsnWaitM4) ||
+        client->localRsnAttempts == 0)
+        return false;
+    __atomic_store_n(&client->localRsnTimeoutState,
+        client->localRsnState, __ATOMIC_RELEASE);
+    const int timeoutMs = client->localRsnAttempts == 1 ?
+        kItlApLocalRsnFirstTimeoutMs :
+        kItlApLocalRsnSubsequentTimeoutMs;
+    if (timeout_add_msec(&client->localRsnTimeout, timeoutMs) != 0)
+        return true;
+    __atomic_store_n(&client->localRsnTimeoutState,
+        static_cast<uint8_t>(kItlApLocalRsnDisabled), __ATOMIC_RELEASE);
+    return false;
+}
+
+static inline bool
+itl_ap_local_rsn_publish_timeout(
+    struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL)
+        return false;
+    const uint8_t state = __atomic_load_n(
+        &client->localRsnTimeoutState, __ATOMIC_ACQUIRE);
+    if ((state != kItlApLocalRsnWaitM2 &&
+         state != kItlApLocalRsnWaitM4) ||
+        __atomic_load_n(&client->localRsnState,
+                        __ATOMIC_ACQUIRE) != state)
+        return false;
+    uint8_t expected = kItlApLocalRsnDisabled;
+    if (__atomic_compare_exchange_n(&client->localRsnPendingTimeoutState,
+            &expected, state, false, __ATOMIC_RELEASE,
+            __ATOMIC_ACQUIRE))
+        return true;
+    return expected == state;
+}
+
+static inline enum ItlApLocalRsnState
+itl_ap_local_rsn_take_timeout(struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL)
+        return kItlApLocalRsnDisabled;
+    return static_cast<enum ItlApLocalRsnState>(
+        __atomic_exchange_n(&client->localRsnPendingTimeoutState,
+            static_cast<uint8_t>(kItlApLocalRsnDisabled),
+            __ATOMIC_ACQ_REL));
+}
+
+static inline void
+itl_ap_local_rsn_replay_reset(struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL)
+        return;
+    client->localRsnExpectedReplayCount = 0;
+    explicit_bzero(client->localRsnExpectedReplay,
+                   sizeof(client->localRsnExpectedReplay));
+}
+
+static inline int
+itl_ap_local_rsn_begin_attempt(struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL)
+        return EINVAL;
+    if (client->localRsnAttempts >= kItlApLocalRsnMaxAttempts)
+        return ETIMEDOUT;
+    client->localRsnAttempts++;
+    client->replayCounter++;
+    const size_t count = MIN(
+        static_cast<size_t>(client->localRsnExpectedReplayCount),
+        nitems(client->localRsnExpectedReplay) - 1);
+    if (count != 0) {
+        memmove(&client->localRsnExpectedReplay[1],
+                &client->localRsnExpectedReplay[0],
+                count * sizeof(client->localRsnExpectedReplay[0]));
+    }
+    client->localRsnExpectedReplay[0] = client->replayCounter;
+    client->localRsnExpectedReplayCount = static_cast<uint8_t>(
+        MIN(count + 1, nitems(client->localRsnExpectedReplay)));
+    return 0;
+}
+
+static inline bool
+itl_ap_local_rsn_replay_expected(
+    const struct ItlApFirmwareClientRuntime *client, uint64_t replay)
+{
+    if (client == NULL)
+        return false;
+    const size_t count = MIN(
+        static_cast<size_t>(client->localRsnExpectedReplayCount),
+        nitems(client->localRsnExpectedReplay));
+    for (size_t index = 0; index < count; index++) {
+        if (client->localRsnExpectedReplay[index] == replay)
+            return true;
+    }
+    return false;
+}
+
 /* OpenBSD's M_DEVBUF compatibility tag is private to the IWM headers. */
 static constexpr int kItlApOpenMallocType = 2;
 
@@ -237,6 +402,28 @@ itl_ap_client_uses_local_sae(const struct ItlApFirmwareRuntime *runtime)
 {
     return runtime != NULL &&
         itl_ap_wpa3_config_supported(&runtime->config);
+}
+
+static inline bool
+itl_ap_client_uses_local_rsn(const struct ItlApFirmwareRuntime *runtime)
+{
+    return runtime != NULL &&
+        (itl_ap_wpa2_config_supported(&runtime->config) ||
+         itl_ap_wpa3_config_supported(&runtime->config));
+}
+
+static inline uint16_t
+itl_ap_local_rsn_descriptor(const struct ItlApFirmwareRuntime *runtime)
+{
+    return itl_ap_client_uses_local_sae(runtime) ?
+        EAPOL_KEY_DESC_AKM_DEFINED : EAPOL_KEY_DESC_V2;
+}
+
+static inline enum ieee80211_akm
+itl_ap_local_rsn_akm(const struct ItlApFirmwareRuntime *runtime)
+{
+    return itl_ap_client_uses_local_sae(runtime) ?
+        IEEE80211_AKM_SAE : IEEE80211_AKM_PSK;
 }
 
 static inline uint64_t
@@ -862,7 +1049,7 @@ itl_ap_open_build_assoc_success(const struct ItlApFirmwareRuntime *runtime,
 static inline int
 itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
                        mbuf_t packet, size_t frameLength,
-                       bool hardwareDecrypted,
+                       bool hardwareDecrypted, uint8_t micCrcLength,
                        struct ItlApOpenRxResult *result)
 {
     if (!itl_ap_open_is_running(runtime) || packet == NULL || result == NULL ||
@@ -906,7 +1093,7 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
         if (!secure || !client->clientPairwiseKeyInstalled ||
             !hardwareDecrypted ||
             frameLength < headerLength + IEEE80211_CCMP_HDRLEN +
-                LLC_SNAPFRAMELEN + IEEE80211_CCMP_MICLEN)
+                LLC_SNAPFRAMELEN + micCrcLength)
             return 0;
         uint8_t ccmp[IEEE80211_CCMP_HDRLEN];
         if (mbuf_copydata(packet, headerLength, sizeof(ccmp), ccmp) != 0 ||
@@ -926,7 +1113,11 @@ itl_ap_open_decap_data(struct ItlApFirmwareRuntime *runtime,
             return 0;
         client->clientRxPn[tid] = packetNumber;
         payloadOffset += IEEE80211_CCMP_HDRLEN;
-        payloadEnd -= IEEE80211_CCMP_MICLEN;
+        /* Intel RX descriptors report the bytes that RADA left after the
+         * MPDU in mac_flags1.MIC_CRC_LEN.  Firmware generations which strip
+         * the CCMP MIC report zero; subtracting a fixed eight bytes truncates
+         * their Ethernet payload. */
+        payloadEnd -= micCrcLength;
     }
     if (payloadEnd < payloadOffset + LLC_SNAPFRAMELEN)
         return 0;
@@ -1138,16 +1329,35 @@ itl_ap_local_eapol_packet(const struct ItlApFirmwareRuntime *runtime,
 }
 
 static inline int
-itl_ap_local_sae_build_m1(struct ItlApFirmwareRuntime *runtime,
-                          struct ItlApFirmwareClientRuntime *client,
-                          uint8_t *frame, size_t frameCapacity,
-                          size_t *frameLength)
+itl_ap_local_rsn_build_m1_internal(
+    struct ItlApFirmwareRuntime *runtime,
+    struct ItlApFirmwareClientRuntime *client, bool retry,
+    uint8_t *frame, size_t frameCapacity, size_t *frameLength)
 {
-    if (!itl_ap_client_uses_local_sae(runtime) || client == NULL || frame == NULL ||
-        frameLength == NULL || frameCapacity < sizeof(struct ieee80211_eapol_key) ||
+    if (!itl_ap_client_uses_local_rsn(runtime) || client == NULL ||
+        frame == NULL || frameLength == NULL ||
+        frameCapacity < sizeof(struct ieee80211_eapol_key) ||
         !client->clientAssociated ||
-        ieee80211_sae_ap_is_accepted(client->sae) == 0)
+        (itl_ap_client_uses_local_sae(runtime) &&
+         ieee80211_sae_ap_is_accepted(client->sae) == 0) ||
+        (retry && client->localRsnState != kItlApLocalRsnWaitM2))
         return EINVAL;
+
+    if (!retry) {
+        if (!itl_ap_client_uses_local_sae(runtime))
+            memcpy(client->pmk, runtime->profilePmk,
+                   sizeof(client->pmk));
+        client->replayCounter = 0;
+        client->localRsnAttempts = 0;
+        client->localRsnM2ReplayCounter = 0;
+        itl_ap_local_rsn_replay_reset(client);
+        arc4random_buf(client->anonce, sizeof(client->anonce));
+        client->localRsnState = kItlApLocalRsnWaitM2;
+    }
+    const int attemptError = itl_ap_local_rsn_begin_attempt(client);
+    if (attemptError != 0)
+        return attemptError;
+
     bzero(frame, frameCapacity);
     struct ieee80211_eapol_key *key =
         reinterpret_cast<struct ieee80211_eapol_key *>(frame);
@@ -1155,24 +1365,44 @@ itl_ap_local_sae_build_m1(struct ItlApFirmwareRuntime *runtime,
     key->type = EAPOL_KEY;
     key->desc = EAPOL_KEY_DESC_IEEE80211;
     BE_WRITE_2(key->info, EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK |
-        EAPOL_KEY_DESC_AKM_DEFINED);
+        itl_ap_local_rsn_descriptor(runtime));
     BE_WRITE_2(key->keylen, 16);
-    client->replayCounter = 1;
     BE_WRITE_8(key->replaycnt, client->replayCounter);
-    arc4random_buf(client->anonce, sizeof(client->anonce));
     memcpy(key->nonce, client->anonce, sizeof(key->nonce));
     BE_WRITE_2(key->paylen, 0);
     BE_WRITE_2(key->len, sizeof(*key) - 4);
-    client->localRsnState = kItlApLocalRsnWaitM2;
     *frameLength = sizeof(*key);
     return 0;
 }
 
+static inline int
+itl_ap_local_rsn_build_m1(struct ItlApFirmwareRuntime *runtime,
+                          struct ItlApFirmwareClientRuntime *client,
+                          uint8_t *frame, size_t frameCapacity,
+                          size_t *frameLength)
+{
+    return itl_ap_local_rsn_build_m1_internal(
+        runtime, client, false, frame, frameCapacity, frameLength);
+}
+
+static inline int
+itl_ap_local_rsn_build_m1_retry(
+    struct ItlApFirmwareRuntime *runtime,
+    struct ItlApFirmwareClientRuntime *client,
+    uint8_t *frame, size_t frameCapacity, size_t *frameLength)
+{
+    return itl_ap_local_rsn_build_m1_internal(
+        runtime, client, true, frame, frameCapacity, frameLength);
+}
+
 static inline void
-itl_ap_local_sae_note_m1_result(struct ItlApFirmwareClientRuntime *client,
+itl_ap_local_rsn_note_m1_result(struct ItlApFirmwareClientRuntime *client,
                                 bool sent)
 {
-    if (client != NULL && !sent) {
+    (void)sent;
+    if (client == NULL || client->localRsnState != kItlApLocalRsnWaitM2)
+        return;
+    if (!itl_ap_local_rsn_timeout_arm(client)) {
         client->localRsnState = kItlApLocalRsnDisabled;
         client->replayCounter = 0;
         explicit_bzero(client->anonce, sizeof(client->anonce));
@@ -1180,14 +1410,14 @@ itl_ap_local_sae_note_m1_result(struct ItlApFirmwareClientRuntime *client,
 }
 
 static inline int
-itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
+itl_ap_local_rsn_handle_eapol(struct ItlApFirmwareRuntime *runtime,
                               struct ItlApFirmwareClientRuntime *client,
                               const uint8_t *eapol, size_t eapolLength,
                               enum ItlApLocalEapolAction *action)
 {
     if (action != NULL)
         *action = kItlApLocalEapolConsumed;
-    if (!itl_ap_client_uses_local_sae(runtime) || client == NULL || action == NULL ||
+    if (!itl_ap_client_uses_local_rsn(runtime) || client == NULL || action == NULL ||
         eapol == NULL || eapolLength < sizeof(struct ieee80211_eapol_key) ||
         eapolLength > 512 || !client->clientAssociated)
         return EINVAL;
@@ -1202,7 +1432,8 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
     if (key->type != EAPOL_KEY || key->desc != EAPOL_KEY_DESC_IEEE80211 ||
         declaredLength != eapolLength ||
         keyDataLength > eapolLength - sizeof(*key) ||
-        (keyInfo & EAPOL_KEY_VERSION_MASK) != EAPOL_KEY_DESC_AKM_DEFINED ||
+        (keyInfo & EAPOL_KEY_VERSION_MASK) !=
+            itl_ap_local_rsn_descriptor(runtime) ||
         (keyInfo & EAPOL_KEY_PAIRWISE) == 0 ||
         (keyInfo & EAPOL_KEY_KEYMIC) == 0 ||
         (keyInfo & (EAPOL_KEY_KEYACK | EAPOL_KEY_REQUEST |
@@ -1212,7 +1443,8 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
     }
 
     if (client->localRsnState == kItlApLocalRsnWaitM2) {
-        if (BE_READ_8(key->replaycnt) != client->replayCounter) {
+        const uint64_t replay = BE_READ_8(key->replaycnt);
+        if (!itl_ap_local_rsn_replay_expected(client, replay)) {
             explicit_bzero(frame, sizeof(frame));
             return EACCES;
         }
@@ -1238,7 +1470,7 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
         }
         struct ieee80211_ptk transientPtk;
         explicit_bzero(&transientPtk, sizeof(transientPtk));
-        ieee80211_derive_ptk(IEEE80211_AKM_SAE, client->pmk,
+        ieee80211_derive_ptk(itl_ap_local_rsn_akm(runtime), client->pmk,
             runtime->config.bssid, client->clientMac,
             client->anonce, key->nonce, &transientPtk);
         const int micError =
@@ -1250,6 +1482,8 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
         }
         memcpy(&client->ptk, &transientPtk, sizeof(client->ptk));
         explicit_bzero(&transientPtk, sizeof(transientPtk));
+        client->localRsnM2ReplayCounter = replay;
+        itl_ap_local_rsn_timeout_cancel(client);
         explicit_bzero(frame, sizeof(frame));
         *action = kItlApLocalEapolSendM3;
         return 0;
@@ -1257,17 +1491,20 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
 
     if (client->localRsnState == kItlApLocalRsnWaitM4) {
         const uint64_t replay = BE_READ_8(key->replaycnt);
-        if (replay == client->replayCounter && keyDataLength == 0) {
+        if (itl_ap_local_rsn_replay_expected(client, replay) &&
+            keyDataLength == 0) {
             const int micError =
                 ieee80211_eapol_key_check_mic(key, client->ptk.kck);
             explicit_bzero(frame, sizeof(frame));
             if (micError != 0)
                 return EACCES;
+            itl_ap_local_rsn_timeout_cancel(client);
             *action = kItlApLocalEapolInstallPairwise;
             return 0;
         }
-        if (client->replayCounter == 0 ||
-            replay != client->replayCounter - 1 || keyDataLength == 0) {
+        if (client->localRsnM2ReplayCounter == 0 ||
+            replay != client->localRsnM2ReplayCounter ||
+            keyDataLength == 0) {
             explicit_bzero(frame, sizeof(frame));
             return EACCES;
         }
@@ -1293,6 +1530,7 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
         explicit_bzero(frame, sizeof(frame));
         if (micError != 0)
             return EACCES;
+        itl_ap_local_rsn_timeout_cancel(client);
         *action = kItlApLocalEapolResendM3;
         return 0;
     }
@@ -1301,7 +1539,7 @@ itl_ap_local_sae_handle_eapol(struct ItlApFirmwareRuntime *runtime,
 }
 
 static inline int
-itl_ap_local_sae_build_m3(struct ieee80211com *ic,
+itl_ap_local_rsn_build_m3(struct ieee80211com *ic,
                           struct ItlApFirmwareRuntime *runtime,
                           struct ItlApFirmwareClientRuntime *client,
                           uint8_t *frame, size_t frameCapacity,
@@ -1316,7 +1554,7 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
     (void)frameLength;
     return ENOTSUP;
 #else
-    if (ic == NULL || !itl_ap_client_uses_local_sae(runtime) || client == NULL ||
+    if (ic == NULL || !itl_ap_client_uses_local_rsn(runtime) || client == NULL ||
         frame == NULL || frameLength == NULL || frameCapacity < 256 ||
         (client->localRsnState != kItlApLocalRsnWaitM2 &&
          client->localRsnState != kItlApLocalRsnWaitM4) ||
@@ -1331,11 +1569,8 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
     key->desc = EAPOL_KEY_DESC_IEEE80211;
     BE_WRITE_2(key->info, EAPOL_KEY_PAIRWISE | EAPOL_KEY_KEYACK |
         EAPOL_KEY_KEYMIC | EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE |
-        EAPOL_KEY_ENCRYPTED | EAPOL_KEY_DESC_AKM_DEFINED);
+        EAPOL_KEY_ENCRYPTED | itl_ap_local_rsn_descriptor(runtime));
     BE_WRITE_2(key->keylen, 16);
-    if (!retry)
-        client->replayCounter++;
-    BE_WRITE_8(key->replaycnt, client->replayCounter);
     memcpy(key->nonce, client->anonce, sizeof(key->nonce));
     uint8_t *cursor = reinterpret_cast<uint8_t *>(key + 1);
     memcpy(cursor, runtime->rsnIE, runtime->config.rsnIELength);
@@ -1349,25 +1584,35 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
     *cursor++ = 0;
     memcpy(cursor, runtime->gtk, sizeof(runtime->gtk));
     cursor += sizeof(runtime->gtk);
-    *cursor++ = IEEE80211_ELEMID_VENDOR;
-    *cursor++ = 4 + 2 + 6 + sizeof(runtime->igtk);
-    memcpy(cursor, IEEE80211_OUI, 3);
-    cursor += 3;
-    *cursor++ = 9;
-    *cursor++ = runtime->igtkKeyId;
-    *cursor++ = 0;
-    bzero(cursor, 6);
-    cursor += 6;
-    memcpy(cursor, runtime->igtk, sizeof(runtime->igtk));
-    cursor += sizeof(runtime->igtk);
+    if (itl_ap_client_uses_local_sae(runtime)) {
+        *cursor++ = IEEE80211_ELEMID_VENDOR;
+        *cursor++ = 4 + 2 + 6 + sizeof(runtime->igtk);
+        memcpy(cursor, IEEE80211_OUI, 3);
+        cursor += 3;
+        *cursor++ = 9;
+        *cursor++ = runtime->igtkKeyId;
+        *cursor++ = 0;
+        bzero(cursor, 6);
+        cursor += 6;
+        memcpy(cursor, runtime->igtk, sizeof(runtime->igtk));
+        cursor += sizeof(runtime->igtk);
+    }
     const size_t plainLength = static_cast<size_t>(
         cursor - reinterpret_cast<uint8_t *>(key + 1));
     if (sizeof(*key) + plainLength + 16 > frameCapacity) {
-        if (!retry)
-            client->replayCounter--;
         explicit_bzero(frame, frameCapacity);
         return EMSGSIZE;
     }
+    if (!retry) {
+        client->localRsnAttempts = 0;
+        itl_ap_local_rsn_replay_reset(client);
+    }
+    const int attemptError = itl_ap_local_rsn_begin_attempt(client);
+    if (attemptError != 0) {
+        explicit_bzero(frame, frameCapacity);
+        return attemptError;
+    }
+    BE_WRITE_8(key->replaycnt, client->replayCounter);
     BE_WRITE_2(key->paylen, plainLength);
     BE_WRITE_2(key->len, sizeof(*key) + plainLength - 4);
     ieee80211_eapol_key_encrypt(ic, key, client->ptk.kek);
@@ -1378,28 +1623,62 @@ itl_ap_local_sae_build_m3(struct ieee80211com *ic,
 }
 
 static inline void
-itl_ap_local_sae_note_m3_result(struct ItlApFirmwareClientRuntime *client,
+itl_ap_local_rsn_note_m3_result(struct ItlApFirmwareClientRuntime *client,
                                 bool sent, bool retry)
 {
+    (void)sent;
+    (void)retry;
     if (client == NULL)
         return;
-    if (sent) {
-        client->localRsnState = kItlApLocalRsnWaitM4;
-    } else if (!retry && client->replayCounter != 0) {
-        client->replayCounter--;
+    client->localRsnState = kItlApLocalRsnWaitM4;
+    if (!itl_ap_local_rsn_timeout_arm(client)) {
+        client->localRsnState = kItlApLocalRsnDisabled;
+        explicit_bzero(&client->ptk, sizeof(client->ptk));
     }
 }
 
 static inline void
-itl_ap_local_sae_complete_4way(struct ItlApFirmwareClientRuntime *client,
+itl_ap_local_rsn_complete_4way(struct ItlApFirmwareClientRuntime *client,
                                bool installed)
 {
     if (client == NULL)
         return;
+    itl_ap_local_rsn_timeout_cancel(client);
+    __atomic_store_n(&client->localRsnPendingTimeoutState,
+        static_cast<uint8_t>(kItlApLocalRsnDisabled), __ATOMIC_RELEASE);
     client->localRsnState = installed ? kItlApLocalRsnAuthorized :
                                          kItlApLocalRsnDisabled;
     if (!installed)
         explicit_bzero(&client->ptk, sizeof(client->ptk));
+}
+
+static inline int
+itl_ap_open_build_deauth(
+    const struct ItlApFirmwareRuntime *runtime,
+    const struct ItlApFirmwareClientRuntime *client, uint16_t reason,
+    struct ItlApOpenRxResult *result)
+{
+    if (!itl_ap_open_is_running(runtime) || client == NULL || result == NULL ||
+        !client->inUse || !client->clientAssociated)
+        return EINVAL;
+    const size_t frameLength = sizeof(struct ieee80211_frame) + 2;
+    int error = itl_ap_open_alloc_reply(frameLength, &result->reply);
+    if (error != 0)
+        return error;
+    struct ieee80211_frame *frame =
+        reinterpret_cast<struct ieee80211_frame *>(result->reply);
+    frame->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_DEAUTH;
+    frame->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    LE_WRITE_2(frame->i_dur, itl_ap_open_duration(runtime));
+    IEEE80211_ADDR_COPY(frame->i_addr1, client->clientMac);
+    IEEE80211_ADDR_COPY(frame->i_addr2, runtime->config.bssid);
+    IEEE80211_ADDR_COPY(frame->i_addr3, runtime->config.bssid);
+    LE_WRITE_2(result->reply + sizeof(*frame), reason);
+    result->replyLength = frameLength;
+    result->clientIndex = itl_ap_firmware_client_index(runtime, client);
+    IEEE80211_ADDR_COPY(result->station, client->clientMac);
+    return 0;
 }
 
 static inline int
@@ -1437,7 +1716,7 @@ itl_ap_open_build_addba_response(
 static inline bool
 itl_ap_open_reorder_rx(struct ItlApFirmwareRuntime *runtime,
                        mbuf_t packet, size_t frameLength,
-                       bool hardwareDecrypted,
+                       bool hardwareDecrypted, uint8_t micCrcLength,
                        bool isAmsdu, uint8_t subframeIndex,
                        bool lastSubframe,
                        struct ItlApRxBaReady *ready)
@@ -1453,14 +1732,14 @@ itl_ap_open_reorder_rx(struct ItlApFirmwareRuntime *runtime,
         return false;
     return itl_ap_rx_ba_reorder(
         client->clientRxBa, runtime->config.bssid, client->clientMac,
-        packet, frameLength, hardwareDecrypted, 0, 0,
+        packet, frameLength, hardwareDecrypted, micCrcLength, 0, 0,
         isAmsdu, subframeIndex, lastSubframe, ready);
 }
 
 static inline int
 itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
                         mbuf_t packet, size_t frameLength,
-                        bool hardwareDecrypted,
+                        bool hardwareDecrypted, uint8_t micCrcLength,
                         struct ItlApOpenRxResult *result)
 {
     itl_ap_open_rx_result_reset(result);
@@ -1506,7 +1785,7 @@ itl_ap_open_classify_rx(struct ItlApFirmwareRuntime *runtime,
     if (error != 0 || result->disposition != kItlApOpenRxNotOurs)
         return error;
     error = itl_ap_open_decap_data(runtime, packet, frameLength,
-                                   hardwareDecrypted, result);
+                                   hardwareDecrypted, micCrcLength, result);
     if (error != 0 || result->disposition != kItlApOpenRxNotOurs)
         return error;
 

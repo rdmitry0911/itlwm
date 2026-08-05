@@ -44,6 +44,7 @@ for needle, label in (
     ("IEEE80211_BA_MAX_WINSZ", "bounded receive window"),
     ("requireProtected", "PMF receive policy"),
     ("hardwareDecrypted", "protected-action decrypt witness"),
+    ("micCrcLength", "per-frame firmware trailer length"),
     ("IEEE80211_CCMP_HDRLEN", "protected action CCMP offset"),
     ("struct ItlApRxBaRuntime", "bounded software reorder owner"),
     ("itl_ap_rx_ba_reorder", "sequence reorder engine"),

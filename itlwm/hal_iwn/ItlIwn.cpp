@@ -14313,7 +14313,7 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     if (apRxClient != NULL && apRxClient->associated &&
         itl_ap_rx_ba_reorder(
             apClientRxBa, apFirmwareConfig.bssid, apClientMac,
-            m, len, apHardwareDecrypted, flags, desc->type,
+            m, len, apHardwareDecrypted, 0, flags, desc->type,
             false, 0, true,
             &apBaReady)) {
         for (size_t index = 0; index < apBaReady.count; index++) {

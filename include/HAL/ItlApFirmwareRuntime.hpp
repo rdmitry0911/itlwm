@@ -12,6 +12,7 @@
 
 #include <HAL/ItlHalService.hpp>
 #include <HAL/ItlApBlockAckRuntime.hpp>
+#include <crypto/sha1.h>
 #include <net80211/ieee80211_sae_engine.h>
 
 enum ItlApFirmwareResourceStage : uint8_t {
@@ -74,6 +75,22 @@ struct ItlApFirmwareClientRuntime {
      */
     struct ieee80211_sae_ap *sae;
     uint8_t localRsnState;
+    /* RX validates M2/M4 without sleeping.  Firmware key commands and the
+     * dependent M3/authorization edge are consumed by the backend's serial
+     * AP client task, never by the notification path itself. */
+    uint8_t localRsnPendingAction;
+    /* Match the reference authenticator's bounded EAPOL-Key retry machine.
+     * The timer callback only publishes localRsnPendingTimeoutState; its
+     * backend owner performs every retransmit and disconnect in the existing
+     * serialized AP client task. */
+    CTimeout *localRsnTimeout;
+    void *localRsnOwner;
+    uint8_t localRsnTimeoutState;
+    uint8_t localRsnPendingTimeoutState;
+    uint8_t localRsnAttempts;
+    uint8_t localRsnExpectedReplayCount;
+    uint64_t localRsnExpectedReplay[4];
+    uint64_t localRsnM2ReplayCounter;
     uint8_t pmk[IEEE80211_PMK_LEN];
     uint8_t anonce[EAPOL_KEY_NONCE_LEN];
     struct ieee80211_ptk ptk;
@@ -111,6 +128,7 @@ struct ItlApFirmwareRuntime {
     uint8_t groupKeyId;
     uint64_t groupTxPn;
     uint32_t localAuthMagic;
+    uint8_t profilePmk[IEEE80211_PMK_LEN];
     uint8_t gtk[16];
     uint8_t igtk[16];
     uint8_t gtkKeyId;
@@ -164,6 +182,11 @@ itl_ap_firmware_client_crypto_reset(
 {
     if (client == NULL)
         return;
+    timeout_del(&client->localRsnTimeout);
+    __atomic_store_n(&client->localRsnTimeoutState, 0,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&client->localRsnPendingTimeoutState, 0,
+                     __ATOMIC_RELEASE);
     client->clientAuthorized = false;
     client->clientPairwiseKeyInstalled = false;
     client->clientPairwiseTxPn = 0;
@@ -172,7 +195,13 @@ itl_ap_firmware_client_crypto_reset(
     explicit_bzero(client->clientRxPn, sizeof(client->clientRxPn));
     itl_ap_firmware_power_save_purge(client);
     client->localRsnState = 0;
+    client->localRsnPendingAction = 0;
+    client->localRsnAttempts = 0;
+    client->localRsnExpectedReplayCount = 0;
+    client->localRsnM2ReplayCounter = 0;
     client->replayCounter = 0;
+    explicit_bzero(client->localRsnExpectedReplay,
+                   sizeof(client->localRsnExpectedReplay));
     explicit_bzero(client->anonce, sizeof(client->anonce));
     explicit_bzero(&client->ptk, sizeof(client->ptk));
 }
@@ -182,6 +211,8 @@ itl_ap_firmware_client_reset(struct ItlApFirmwareClientRuntime *client)
 {
     if (client == NULL)
         return;
+    timeout_del(&client->localRsnTimeout);
+    timeout_free(&client->localRsnTimeout);
     itl_ap_firmware_sae_reset(client);
     itl_ap_firmware_power_save_purge(client);
     for (size_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
@@ -577,11 +608,27 @@ itl_ap_firmware_runtime_snapshot(struct ItlApFirmwareRuntime *runtime,
     runtime->config.rsnIE = config->rsnIELength != 0 ?
         runtime->rsnIE : NULL;
     runtime->config.beaconTemplate = runtime->beacon;
-    if (config->authUpper == 0x1000) {
+    if (config->authUpper == 0x8) {
+        char passphrase[65];
+        bzero(passphrase, sizeof(passphrase));
+        memcpy(passphrase, runtime->credential,
+               config->credentialLength);
+        const int deriveError = pbkdf2_sha1(
+            passphrase, runtime->ssid, config->ssidLength, 4096,
+            runtime->profilePmk, sizeof(runtime->profilePmk));
+        explicit_bzero(passphrase, sizeof(passphrase));
+        if (deriveError != 0) {
+            itl_ap_firmware_runtime_reset(runtime);
+            return deriveError;
+        }
+    }
+    if (config->authUpper == 0x8 || config->authUpper == 0x1000) {
         arc4random_buf(runtime->gtk, sizeof(runtime->gtk));
-        arc4random_buf(runtime->igtk, sizeof(runtime->igtk));
         runtime->gtkKeyId = 1;
-        runtime->igtkKeyId = 4;
+        if (config->authUpper == 0x1000) {
+            arc4random_buf(runtime->igtk, sizeof(runtime->igtk));
+            runtime->igtkKeyId = 4;
+        }
     }
     return 0;
 }

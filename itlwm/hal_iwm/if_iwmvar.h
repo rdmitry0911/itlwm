@@ -297,6 +297,8 @@ struct iwm_tx_data {
     uint8_t sta_id;
     /* Raw SoftAP frame: no net80211 node reference or STA TX-status owner. */
     bool ap_frame;
+    /* Receiver identity retained after the raw 802.11 header is trimmed. */
+    uint8_t diag_peer[IEEE80211_ADDR_LEN];
 
     /*
      * Credential-free identity for one controller/direct Algorithm-3 TX.

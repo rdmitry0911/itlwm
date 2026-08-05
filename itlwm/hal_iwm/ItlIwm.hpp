@@ -523,10 +523,13 @@ public:
                                const void *, size_t);
     int    iwm_ap_send_raw_frame(struct iwm_softc *, mbuf_t, uint8_t,
                                  uint8_t);
+    void   iwm_ap_assoc_tx_complete(struct iwm_softc *, const uint8_t *,
+                                    bool);
     bool   iwm_ap_handle_rx(struct iwm_softc *, mbuf_t, size_t, bool,
-                            struct mbuf_list *, bool = false,
+                            uint8_t, struct mbuf_list *, bool = false,
                             bool = false, uint8_t = 0, bool = true);
     static void iwm_ap_rx_ba_deliver(void *, struct ItlApRxBaReady *);
+    static void iwm_ap_local_rsn_timeout(void *);
     static void iwm_ap_client_task(void *);
     int    iwm_ap_update_quotas(struct iwm_softc *,
                                 const struct ItlApFirmwareRuntime *, bool);

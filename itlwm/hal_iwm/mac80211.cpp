@@ -1340,8 +1340,18 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
 
             if (txd->ap_frame) {
                 const bool failed =
+                    skb_freed == 1 &&
                     (status & IWM_TX_STATUS_MSK) != IWM_TX_STATUS_SUCCESS &&
                     (status & IWM_TX_STATUS_MSK) != IWM_TX_STATUS_DIRECT_DONE;
+                const uint8_t subtype = static_cast<uint8_t>(
+                    le16toh(txd->fc) & IEEE80211_FC0_SUBTYPE_MASK);
+                const bool apAssocResponse =
+                    ieee80211_is_mgmt(txd->fc) &&
+                    (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_RESP ||
+                     subtype == IEEE80211_FC0_SUBTYPE_REASSOC_RESP);
+                uint8_t apAssocPeer[IEEE80211_ADDR_LEN];
+                if (apAssocResponse)
+                    IEEE80211_ADDR_COPY(apAssocPeer, txd->diag_peer);
                 if (failed)
                     XYLog("%s: IWM AP TX failed qid=%d status=0x%x\n",
                           DEVNAME(sc), qid,
@@ -1350,8 +1360,11 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
                 iwm_txd_done(sc, txd);
                 ring->queued--;
                 iwm_clear_oactive(sc, ring);
-#if __IO80211_TARGET >= __MAC_26_0
                 ItlIwm *that = container_of(sc, ItlIwm, com);
+                if (apAssocResponse)
+                    that->iwm_ap_assoc_tx_complete(
+                        sc, apAssocPeer, !failed);
+#if __IO80211_TARGET >= __MAC_26_0
                 airportItlwmRequestAPTxDequeue(that->getController());
 #endif
                 ring->tail = (ring->tail + 1) % IWM_TX_RING_COUNT;
@@ -1485,6 +1498,7 @@ iwm_txd_done(struct iwm_softc *sc, struct iwm_tx_data *txd)
     txd->fc = 0;
     txd->sta_id = 0;
     txd->ap_frame = false;
+    bzero(txd->diag_peer, sizeof(txd->diag_peer));
     memset(&txd->info, 0, sizeof(struct ieee80211_tx_info));
 }
 
@@ -2120,6 +2134,8 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
     struct ieee80211_frame *wh = mtod(m, struct ieee80211_frame *);
     const uint8_t type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
     const uint8_t subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    uint8_t peer[IEEE80211_ADDR_LEN];
+    IEEE80211_ADDR_COPY(peer, wh->i_addr1);
     uint16_t frameControl;
     memcpy(&frameControl, wh->i_fc, sizeof(frameControl));
     if (type != IEEE80211_FC0_TYPE_MGT && type != IEEE80211_FC0_TYPE_DATA)
@@ -2245,6 +2261,7 @@ iwm_ap_send_raw_frame(struct iwm_softc *sc, mbuf_t m, uint8_t queueId,
     data->totlen = (int)firmwareLength;
     data->fc = frameControl;
     data->sta_id = staId;
+    IEEE80211_ADDR_COPY(data->diag_peer, peer);
     memset(&data->info, 0, sizeof(data->info));
 
     descriptor->num_tbs = 2 + segmentCount;
@@ -3011,6 +3028,7 @@ void ItlIwm::iwm_ap_rx_ba_deliver(void *owner,
             mbuf_setnextpkt(packet, NULL);
             if (!that->iwm_ap_handle_rx(&that->com, packet,
                     mbuf_pkthdr_len(packet), frame->hardwareDecrypted,
+                    frame->micCrcLength,
                     &apFrames, true))
                 mbuf_freem(packet);
         }
@@ -3154,6 +3172,49 @@ iwm_ap_send_local_eapol(ItlIwm *that,
     return 0;
 }
 
+void ItlIwm::
+iwm_ap_local_rsn_timeout(void *arg)
+{
+    struct ItlApFirmwareClientRuntime *client =
+        static_cast<struct ItlApFirmwareClientRuntime *>(arg);
+    if (client == NULL || !itl_ap_local_rsn_publish_timeout(client))
+        return;
+    struct iwm_softc *sc = static_cast<struct iwm_softc *>(
+        __atomic_load_n(&client->localRsnOwner, __ATOMIC_ACQUIRE));
+    if (sc == NULL)
+        return;
+    ItlIwm *that = container_of(sc, ItlIwm, com);
+    that->iwm_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
+}
+
+void ItlIwm::
+iwm_ap_assoc_tx_complete(struct iwm_softc *sc, const uint8_t *station,
+                         bool acknowledged)
+{
+    struct ItlApFirmwareRuntime *runtime = &apRuntime;
+    struct ItlApFirmwareClientRuntime *client =
+        itl_ap_firmware_find_client(runtime, station);
+    if (!acknowledged || !itl_ap_open_is_running(runtime) || client == NULL ||
+        !client->clientAssociated || !client->clientStationInstalled ||
+        !itl_ap_client_uses_local_rsn(runtime) ||
+        client->localRsnState != kItlApLocalRsnDisabled)
+        return;
+
+    uint8_t m1[sizeof(struct ieee80211_eapol_key)];
+    size_t m1Length = 0;
+    int error = itl_ap_local_rsn_build_m1(
+        runtime, client, m1, sizeof(m1), &m1Length);
+    if (error == 0)
+        error = iwm_ap_send_local_eapol(
+            this, runtime, client, m1, m1Length);
+    itl_ap_local_rsn_note_m1_result(client, error == 0);
+    explicit_bzero(m1, sizeof(m1));
+    XYLog("%s: IWM AP %s EAPOL M1 queue=%d replay=%llu\n",
+          DEVNAME(sc), itl_ap_client_uses_local_sae(runtime) ?
+              "WPA3" : "WPA2",
+          error, client->replayCounter);
+}
+
 static int
 iwm_ap_update_power_save_tim(ItlIwm *that, struct iwm_softc *sc,
                              struct ItlApFirmwareRuntime *runtime,
@@ -3253,6 +3314,168 @@ iwm_ap_publish_station(struct iwm_softc *sc,
     ieee80211_apsta_event_publish(&sc->sc_ic, &witness, event);
 }
 
+static int
+iwm_ap_process_local_rsn_action(
+    ItlIwm *that, struct iwm_softc *sc,
+    struct ItlApFirmwareRuntime *runtime,
+    struct ItlApFirmwareClientRuntime *client,
+    enum ItlApLocalEapolAction action)
+{
+    if (that == NULL || sc == NULL || runtime == NULL || client == NULL ||
+        !itl_ap_open_is_running(runtime) || !client->inUse ||
+        !client->clientAssociated || !client->clientStationInstalled)
+        return ENXIO;
+
+    if (action == kItlApLocalEapolSendM3 ||
+        action == kItlApLocalEapolResendM3) {
+        const bool retry = action == kItlApLocalEapolResendM3;
+        struct ItlHalApKey gtk = {
+            .station = NULL,
+            .flags = kItlHalApKeyGroup,
+            .keyIndex = runtime->gtkKeyId,
+            .cipher = kItlHalApCipherAesCcm,
+            .keyData = runtime->gtk,
+            .keyLength = sizeof(runtime->gtk),
+            .rsc = NULL,
+            .rscLength = 0,
+        };
+        int error = (retry ||
+            that->setAPKey(&gtk) == kIOReturnSuccess) ? 0 : EIO;
+        uint8_t m3[256];
+        size_t m3Length = 0;
+        if (error == 0)
+            error = itl_ap_local_rsn_build_m3(
+                &sc->sc_ic, runtime, client,
+                m3, sizeof(m3), &m3Length);
+        if (error == 0)
+            error = iwm_ap_send_local_eapol(
+                that, runtime, client, m3, m3Length);
+        itl_ap_local_rsn_note_m3_result(
+            client, error == 0, retry);
+        explicit_bzero(m3, sizeof(m3));
+        XYLog("%s: IWM AP %s M2 %s M3=%d replay=%llu\n",
+              DEVNAME(sc), itl_ap_client_uses_local_sae(runtime) ?
+                  "WPA3" : "WPA2",
+              retry ? "retransmitted" : "accepted",
+              error, client->replayCounter);
+        return error;
+    }
+
+    if (action == kItlApLocalEapolInstallPairwise) {
+        struct ItlHalApKey ptk = {
+            .station = client->clientMac,
+            .flags = kItlHalApKeyPairwise,
+            .keyIndex = 0,
+            .cipher = kItlHalApCipherAesCcm,
+            .keyData = client->ptk.tk,
+            .keyLength = sizeof(client->clientPairwiseKey),
+            .rsc = NULL,
+            .rscLength = 0,
+        };
+        struct ItlHalApStationCommand authorize = {
+            .command = kItlHalApStationAuthorize,
+            .station = client->clientMac,
+        };
+        const bool installed =
+            that->setAPKey(&ptk) == kIOReturnSuccess &&
+            that->sendAPStationCommand(&authorize) == kIOReturnSuccess;
+        itl_ap_local_rsn_complete_4way(client, installed);
+        XYLog("%s: IWM AP %s 4-way complete authorized=%u\n",
+              DEVNAME(sc), itl_ap_client_uses_local_sae(runtime) ?
+                  "WPA3" : "WPA2", installed ? 1U : 0U);
+        return installed ? 0 : EIO;
+    }
+
+    return EINVAL;
+}
+
+static int
+iwm_ap_expire_local_rsn(ItlIwm *that, struct iwm_softc *sc,
+                        struct ItlApFirmwareRuntime *runtime,
+                        struct ItlApFirmwareClientRuntime *client)
+{
+    if (that == NULL || sc == NULL || runtime == NULL || client == NULL)
+        return EINVAL;
+    struct ItlApOpenRxResult result;
+    itl_ap_open_rx_result_reset(&result);
+    int sendError = itl_ap_open_build_deauth(
+        runtime, client, IEEE80211_REASON_4WAY_TIMEOUT, &result);
+    mbuf_t response = NULL;
+    if (sendError == 0)
+        sendError = iwm_ap_reply_to_mbuf(&result, &response);
+    if (sendError == 0)
+        sendError = that->iwm_ap_send_raw_frame(
+            sc, response, static_cast<uint8_t>(runtime->broadcastQueueId),
+            runtime->broadcastStaId);
+    if (sendError != 0 && response != NULL)
+        mbuf_freem(response);
+    if (client->clientAssociated)
+        iwm_ap_publish_station(sc, client, IEEE80211_APSTA_EVENT_LEAVE);
+    const int removeError = client->clientStationInstalled ?
+        that->iwm_ap_remove_client_sta(sc, runtime, client) : 0;
+    itl_ap_firmware_client_reset(client);
+    itl_ap_open_release_result(&result);
+    if (sendError != 0)
+        return sendError;
+    return removeError != 0 ? removeError : ETIMEDOUT;
+}
+
+static int
+iwm_ap_process_local_rsn_timeout(
+    ItlIwm *that, struct iwm_softc *sc,
+    struct ItlApFirmwareRuntime *runtime,
+    struct ItlApFirmwareClientRuntime *client,
+    enum ItlApLocalRsnState timeoutState)
+{
+    if (that == NULL || sc == NULL || runtime == NULL || client == NULL ||
+        !itl_ap_open_is_running(runtime) || !client->inUse ||
+        !client->clientAssociated || !client->clientStationInstalled)
+        return ENXIO;
+    if (client->localRsnState != timeoutState)
+        return 0;
+    if (client->localRsnAttempts >= kItlApLocalRsnMaxAttempts) {
+        XYLog("%s: IWM AP %s 4-way timeout attempts=%u\n",
+              DEVNAME(sc), itl_ap_client_uses_local_sae(runtime) ?
+                  "WPA3" : "WPA2",
+              static_cast<unsigned>(client->localRsnAttempts));
+        return iwm_ap_expire_local_rsn(that, sc, runtime, client);
+    }
+
+    uint8_t eapol[256];
+    size_t eapolLength = 0;
+    int error = 0;
+    if (timeoutState == kItlApLocalRsnWaitM2) {
+        error = itl_ap_local_rsn_build_m1_retry(
+            runtime, client, eapol, sizeof(eapol), &eapolLength);
+    } else if (timeoutState == kItlApLocalRsnWaitM4) {
+        error = itl_ap_local_rsn_build_m3(
+            &sc->sc_ic, runtime, client,
+            eapol, sizeof(eapol), &eapolLength);
+    } else {
+        error = EINVAL;
+    }
+    if (error == ETIMEDOUT) {
+        explicit_bzero(eapol, sizeof(eapol));
+        return iwm_ap_expire_local_rsn(that, sc, runtime, client);
+    }
+    if (error == 0)
+        error = iwm_ap_send_local_eapol(
+            that, runtime, client, eapol, eapolLength);
+    if (timeoutState == kItlApLocalRsnWaitM2)
+        itl_ap_local_rsn_note_m1_result(client, error == 0);
+    else if (timeoutState == kItlApLocalRsnWaitM4)
+        itl_ap_local_rsn_note_m3_result(client, error == 0, true);
+    explicit_bzero(eapol, sizeof(eapol));
+    XYLog("%s: IWM AP %s EAPOL M%u retry attempt=%u "
+          "queue=%d replay=%llu\n",
+          DEVNAME(sc), itl_ap_client_uses_local_sae(runtime) ?
+              "WPA3" : "WPA2",
+          timeoutState == kItlApLocalRsnWaitM2 ? 1U : 3U,
+          static_cast<unsigned>(client->localRsnAttempts), error,
+          client->replayCounter);
+    return error;
+}
+
 void ItlIwm::
 iwm_ap_client_task(void *arg)
 {
@@ -3293,37 +3516,31 @@ iwm_ap_client_task(void *arg)
         if (error == 0)
             error = itl_ap_open_build_assoc_success(
                 runtime, client, reassociation, &result);
+        if (error == 0 && itl_ap_client_uses_local_rsn(runtime) &&
+            !itl_ap_local_rsn_timeout_init(
+                client, sc, iwm_ap_local_rsn_timeout))
+            error = ENOMEM;
 
         mbuf_t response = NULL;
         if (error == 0)
             error = iwm_ap_reply_to_mbuf(&result, &response);
-        if (error == 0)
+        if (error == 0) {
+            /* The TX completion can run as soon as the descriptor is
+             * doorbelled; commit association before it owns EAPOL M1. */
+            client->clientAssociated = true;
+            client->clientAuthorized = !itl_ap_client_is_secure(runtime);
             error = that->iwm_ap_send_raw_frame(sc, response,
                 static_cast<uint8_t>(runtime->broadcastQueueId),
                 runtime->broadcastStaId);
+        }
         if (error != 0 && response != NULL)
             mbuf_freem(response);
 
         if (error == 0 && itl_ap_open_is_running(runtime) &&
             client->clientAuthenticated) {
-            client->clientAssociated = true;
-            client->clientAuthorized = !itl_ap_client_is_secure(runtime);
             iwm_ap_publish_station(
                 sc, client, reassociation ? IEEE80211_APSTA_EVENT_REASSOC :
                                             IEEE80211_APSTA_EVENT_ASSOC);
-            if (itl_ap_client_uses_local_sae(runtime)) {
-                uint8_t m1[sizeof(struct ieee80211_eapol_key)];
-                size_t m1Length = 0;
-                error = itl_ap_local_sae_build_m1(
-                    runtime, client, m1, sizeof(m1), &m1Length);
-                if (error == 0)
-                    error = iwm_ap_send_local_eapol(
-                        that, runtime, client, m1, m1Length);
-                itl_ap_local_sae_note_m1_result(client, error == 0);
-                explicit_bzero(m1, sizeof(m1));
-                XYLog("%s: IWM AP WPA3 SAE M1 queue=%d replay=%llu\n",
-                      DEVNAME(sc), error, client->replayCounter);
-            }
 #if __IO80211_TARGET >= __MAC_26_0
             airportItlwmRequestAPTxDequeue(that->getController());
 #endif
@@ -3340,11 +3557,44 @@ iwm_ap_client_task(void *arg)
         }
         itl_ap_open_release_result(&result);
     }
+
+    /* The AP client task is the process-context PAE owner as well as the
+     * station materialization owner.  RX only publishes a validated edge. */
+    for (size_t index = 0; index < limit; index++) {
+        struct ItlApFirmwareClientRuntime *client =
+            &runtime->clients[index];
+        if (!client->inUse)
+            continue;
+        const enum ItlApLocalEapolAction action =
+            itl_ap_local_rsn_take_deferred_action(client);
+        if (action != kItlApLocalEapolConsumed) {
+            const int error = iwm_ap_process_local_rsn_action(
+                that, sc, runtime, client, action);
+            if (error != 0)
+                XYLog("%s: IWM AP deferred RSN action=%u error=%d\n",
+                      DEVNAME(sc), static_cast<unsigned>(action), error);
+#if __IO80211_TARGET >= __MAC_26_0
+            else if (action == kItlApLocalEapolInstallPairwise)
+                airportItlwmRequestAPTxDequeue(that->getController());
+#endif
+        }
+        const enum ItlApLocalRsnState timeoutState =
+            itl_ap_local_rsn_take_timeout(client);
+        if (timeoutState == kItlApLocalRsnDisabled)
+            continue;
+        const int timeoutError = iwm_ap_process_local_rsn_timeout(
+            that, sc, runtime, client, timeoutState);
+        if (timeoutError != 0 && timeoutError != ETIMEDOUT)
+            XYLog("%s: IWM AP RSN timeout state=%u error=%d\n",
+                  DEVNAME(sc), static_cast<unsigned>(timeoutState),
+                  timeoutError);
+    }
 }
 
 bool ItlIwm::
 iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
-                 bool hardwareDecrypted, struct mbuf_list *apFrames,
+                 bool hardwareDecrypted, uint8_t micCrcLength,
+                 struct mbuf_list *apFrames,
                  bool alreadyOrdered, bool isAmsdu,
                  uint8_t subframeIndex, bool lastSubframe)
 {
@@ -3352,7 +3602,7 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
         struct ItlApRxBaReady ready;
         if (itl_ap_open_reorder_rx(
                 &apRuntime, packet, frameLength,
-                hardwareDecrypted, isAmsdu, subframeIndex,
+                hardwareDecrypted, micCrcLength, isAmsdu, subframeIndex,
                 lastSubframe, &ready)) {
             for (size_t index = 0; index < ready.count; index++) {
                 struct ItlApRxBaBufferedFrame *frame =
@@ -3363,7 +3613,8 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
                     mbuf_setnextpkt(readyPacket, NULL);
                     if (!iwm_ap_handle_rx(sc, readyPacket,
                             mbuf_pkthdr_len(readyPacket),
-                            frame->hardwareDecrypted, apFrames, true))
+                            frame->hardwareDecrypted, frame->micCrcLength,
+                            apFrames, true))
                         mbuf_freem(readyPacket);
                 }
                 frame->packetTail = NULL;
@@ -3373,7 +3624,8 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
     }
     struct ItlApOpenRxResult result;
     const int classifyError = itl_ap_open_classify_rx(
-        &apRuntime, packet, frameLength, hardwareDecrypted, &result);
+        &apRuntime, packet, frameLength, hardwareDecrypted,
+        micCrcLength, &result);
     if (result.disposition == kItlApOpenRxNotOurs)
         return false;
 
@@ -3539,7 +3791,7 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
             error = timError;
     } else if (error == 0 && result.disposition == kItlApOpenRxData) {
         bool localEapol = false;
-        if (itl_ap_client_uses_local_sae(&apRuntime) &&
+        if (itl_ap_client_uses_local_rsn(&apRuntime) &&
             result.ethernetPacket != NULL &&
             mbuf_pkthdr_len(result.ethernetPacket) >= ETHER_HDR_LEN) {
             struct ether_header ethernet;
@@ -3556,70 +3808,15 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
                     error = EINVAL;
                 } else {
                     enum ItlApLocalEapolAction action;
-                    error = itl_ap_local_sae_handle_eapol(
+                    error = itl_ap_local_rsn_handle_eapol(
                         &apRuntime, client, eapol, eapolLength, &action);
                     if (error == 0 &&
-                        (action == kItlApLocalEapolSendM3 ||
-                         action == kItlApLocalEapolResendM3)) {
-                        const bool retry =
-                            action == kItlApLocalEapolResendM3;
-                        struct ItlHalApKey gtk = {
-                            .station = NULL,
-                            .flags = kItlHalApKeyGroup,
-                            .keyIndex = apRuntime.gtkKeyId,
-                            .cipher = kItlHalApCipherAesCcm,
-                            .keyData = apRuntime.gtk,
-                            .keyLength = sizeof(apRuntime.gtk),
-                            .rsc = NULL,
-                            .rscLength = 0,
-                        };
-                        if (!retry &&
-                            setAPKey(&gtk) != kIOReturnSuccess) {
-                            error = EIO;
-                        } else {
-                            uint8_t m3[256];
-                            size_t m3Length = 0;
-                            error = itl_ap_local_sae_build_m3(
-                                &sc->sc_ic, &apRuntime, client,
-                                m3, sizeof(m3), &m3Length);
-                            if (error == 0)
-                                error = iwm_ap_send_local_eapol(
-                                    this, &apRuntime, client, m3, m3Length);
-                            itl_ap_local_sae_note_m3_result(
-                                client, error == 0, retry);
-                            explicit_bzero(m3, sizeof(m3));
-                            XYLog("%s: IWM AP WPA3 M2 %s M3=%d "
-                                  "replay=%llu\n", DEVNAME(sc),
-                                  retry ? "retransmitted" : "accepted",
-                                  error, client->replayCounter);
-                        }
-                    } else if (error == 0 &&
-                               action == kItlApLocalEapolInstallPairwise) {
-                        struct ItlHalApKey ptk = {
-                            .station = client->clientMac,
-                            .flags = kItlHalApKeyPairwise,
-                            .keyIndex = 0,
-                            .cipher = kItlHalApCipherAesCcm,
-                            .keyData = client->ptk.tk,
-                            .keyLength = sizeof(client->clientPairwiseKey),
-                            .rsc = NULL,
-                            .rscLength = 0,
-                        };
-                        struct ItlHalApStationCommand authorize = {
-                            .command = kItlHalApStationAuthorize,
-                            .station = client->clientMac,
-                        };
-                        const bool installed =
-                            setAPKey(&ptk) == kIOReturnSuccess &&
-                            sendAPStationCommand(&authorize) ==
-                                kIOReturnSuccess;
-                        itl_ap_local_sae_complete_4way(
-                            client, installed);
-                        if (!installed)
-                            error = EIO;
-                        XYLog("%s: IWM AP WPA3 4-way complete "
-                              "authorized=%u\n", DEVNAME(sc),
-                              installed ? 1U : 0U);
+                        action != kItlApLocalEapolConsumed) {
+                        error = itl_ap_local_rsn_defer_action(
+                            client, action);
+                        if (error == 0)
+                            iwm_add_task(sc, sc->sc_nswq,
+                                         &sc->ap_client_task);
                     }
                     explicit_bzero(eapol, sizeof(eapol));
                 }
