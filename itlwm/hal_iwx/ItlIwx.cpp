@@ -1591,8 +1591,21 @@ iwx_ap_stop_task_dispatch(void *argument)
     struct iwx_softc *sc = static_cast<struct iwx_softc *>(argument);
     ItlIwx *that = container_of(sc, ItlIwx, com);
 
-    if (!that->iwx_task_gate_enter(sc, false))
+    if (!that->iwx_task_gate_enter(sc, false)) {
+        /* The task has already left sc_nswq, so TASK_ONQUEUE no longer
+         * protects this request.  Preserve apLowerRunning/apStopRequested
+         * and reopen only the enqueue edge; the upper retained-stop owner
+         * will retry after the hardware epoch gate reopens. */
+        if (that->apLifecycleLock != NULL) {
+            IOLockLock(that->apLifecycleLock);
+            if (!that->apLifecycleDetached && that->apStopPending)
+                that->apStopPending = false;
+            IOLockUnlock(that->apLifecycleLock);
+        }
+        XYLog("%s: IWX AP lower stop task deferred by closed epoch gate\n",
+              DEVNAME(sc));
         return;
+    }
     iwx_ap_stop_task(argument);
     that->iwx_task_gate_leave(sc);
 }
@@ -1682,7 +1695,7 @@ stopAPMode()
     apStopRequested = true;
     if (apStartPending) {
         IOLockUnlock(apLifecycleLock);
-        return kIOReturnSuccess;
+        return kIOReturnNotReady;
     }
     if (!apLowerRunning) {
         apStopRequested = false;
@@ -1692,7 +1705,7 @@ stopAPMode()
     }
     if (apStopPending) {
         IOLockUnlock(apLifecycleLock);
-        return kIOReturnSuccess;
+        return kIOReturnNotReady;
     }
     apStopPending = true;
     IOLockUnlock(apLifecycleLock);
@@ -1703,7 +1716,12 @@ stopAPMode()
         IOLockUnlock(apLifecycleLock);
         return kIOReturnNotReady;
     }
-    return kIOReturnSuccess;
+    XYLog("%s: IWX AP lower stop queued outside upper command gate\n",
+          DEVNAME(&com));
+    /* Queue admission is not the firmware terminal.  The APSTA owner keeps
+     * its explicit HostAP NULL intent until a later poll observes the worker
+     * has cleared apLowerRunning. */
+    return kIOReturnNotReady;
 }
 
 IOReturn ItlIwx::
@@ -13046,10 +13064,15 @@ iwx_stop_ap_mode(struct iwx_softc *sc,
         return 0;
     const uint8_t previousStage = runtime->stage;
     runtime->stage = kItlApFirmwareResourceStopping;
+    /*
+     * This teardown is itself serialized on the single-threaded sc_nswq.
+     * Every client task submitted before it has therefore already retired,
+     * while iwx_del_task() removes a client task still queued behind it.
+     * Waiting on taskq_barrier(sc_nswq) from this worker waits for the worker
+     * itself and leaves firmware beaconing forever after HostAP NULL.
+     */
     if (sc->sc_nswq != NULL)
         iwx_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
-    if (sc->sc_nswq != NULL)
-        taskq_barrier(sc->sc_nswq);
     int firstError = 0;
     for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
         struct ItlApFirmwareClientRuntime *client =

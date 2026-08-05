@@ -504,6 +504,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     bzero(apCredential, sizeof(apCredential));
     apCredentialLength = 0;
+    lowerStopPending = false;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -568,6 +569,7 @@ void AirportItlwmAPSTAOwner::free()
     bzero(apCredential, sizeof(apCredential));
     apCredentialLength = 0;
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
+    lowerStopPending = false;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -805,15 +807,44 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
     radioResetResumeWaitTicks = 0;
-    if (owner != nullptr && owner->fHalService != nullptr) {
-        (void)owner->fHalService->stopAPMode();
-    }
     if (owner != nullptr)
         owner->setAPSTADatapathEnabled(false);
+
+    /*
+     * Apple setHostApModeInternal(NULL) returns the lower stop result and
+     * does not turn a failed teardown into a completed public transition.
+     * IWX must submit its firmware removals outside the upper command gate,
+     * so its first answer is deliberately NotReady.  Publish the upper AP as
+     * down immediately, but retain a private stop owner until the lower task
+     * has reached its terminal.  Otherwise a rapid stop/start can overwrite
+     * the only teardown intent while the old MAC context is still beaconing.
+     */
     resetRuntimeState();
-    if (lifecycle != kAirportItlwmAPSTAOwnerFreed) {
-        lifecycle = kAirportItlwmAPSTAOwnerTerminal;
+    lowerStopPending = true;
+    state.hostApTransitionState270 = 1;
+    lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+    return driveLowerStopToTerminal();
+}
+
+IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
+{
+    if (!lowerStopPending)
+        return kIOReturnSuccess;
+
+    const IOReturn result =
+        owner != nullptr && owner->fHalService != nullptr
+            ? owner->fHalService->stopAPMode() : kIOReturnSuccess;
+    if (result != kIOReturnSuccess) {
+        XYLog("APSTA lower stop pending result=0x%x\n",
+              static_cast<unsigned>(result));
+        return result;
     }
+
+    lowerStopPending = false;
+    state.hostApTransitionState270 = 0;
+    if (lifecycle != kAirportItlwmAPSTAOwnerFreed)
+        lifecycle = kAirportItlwmAPSTAOwnerTerminal;
+    XYLog("APSTA lower stop reached terminal\n");
     return kIOReturnSuccess;
 }
 
@@ -928,6 +959,12 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
 
 IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
 {
+    /* An explicit HostAP NULL outranks every retained-profile replay.  Drive
+     * its asynchronous IWX teardown from the same once-per-second command-
+     * gated census until the HAL reports the actual lower terminal. */
+    if (lowerStopPending)
+        return driveLowerStopToTerminal();
+
     if (!radioResetResumePending) {
         /*
          * Keep a near-boundary snapshot while the AP is running.  macOS can
@@ -1232,8 +1269,17 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
          * transition which has not crossed the replacement firmware epoch
          * yet.  Otherwise the watchdog could start a profile after
          * userspace had already withdrawn it. */
-        return isApRunning() || radioResetResumePending ?
+        return isApRunning() || radioResetResumePending || lowerStopPending ?
             stopLower() : kIOReturnSuccess;
+    }
+
+    /* Do not let a rapid replacement profile race an old asynchronous MVM
+     * MAC-context removal.  A completed lower stop can fall through and
+     * start this carrier; any pending/error terminal remains authoritative. */
+    if (lowerStopPending) {
+        const IOReturn stopResult = driveLowerStopToTerminal();
+        if (stopResult != kIOReturnSuccess)
+            return stopResult;
     }
 
     if (in->authUpper0c != kAirportItlwmAPSTAAuthUpperOpen &&

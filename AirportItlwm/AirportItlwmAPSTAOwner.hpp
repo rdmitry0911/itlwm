@@ -110,6 +110,7 @@ public:
 private:
     void initSoftAPParameters();
     void resetRuntimeState();
+    IOReturn driveLowerStopToTerminal();
     void prepareRetainedLowerReset(uint16_t lowerChannel);
     void setSoftAPPowerSaveState(uint8_t newState, uint8_t reason);
     bool areAllStationsInLowPowerMode() const;
@@ -133,6 +134,7 @@ private:
     uint32_t apAuthUpper;
     uint8_t apCredential[0x40];
     uint32_t apCredentialLength;
+    bool lowerStopPending;
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
     bool radioResetPrimaryStaScanHandoff;
