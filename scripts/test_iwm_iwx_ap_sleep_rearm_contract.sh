@@ -31,12 +31,21 @@ def body(source: str, signature: str) -> str:
 
 
 prepare = body(owner, "void AirportItlwmAPSTAOwner::prepareForRadioReset()")
+empty = body(owner,
+    "void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()")
 retained = body(owner,
     "void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(")
 assert "prepareRetainedLowerReset(lowerChannel);" in prepare
 assert "owner->setAPSTADatapathEnabled(false);" in retained
 assert "radioResetResumePending = true;" in retained
-assert "stopLower()" in prepare, "empty AP must still terminate normally"
+assert "prepareEmptyAPForRadioReset();" in prepare
+assert "stopLower()" not in prepare, \
+    "PM owner must not submit asynchronous lower work before radio reset"
+assert "(void)stopLower();" not in empty
+assert "setAPSTADatapathEnabled(false)" in empty
+assert "resetRuntimeState();" in empty
+assert "kAirportItlwmAPSTAOwnerTerminal" in empty
+assert "delegated to imminent radio reset" in empty
 
 resume = body(owner, "IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()")
 assert resume.index("ic->ic_state != IEEE80211_S_RUN") < \
@@ -60,19 +69,20 @@ assert "kIOReturnBusy" in iwm_start, \
     "IWM stale pre-sleep state must remain fail-closed"
 
 # IWX firmware command completions share the device workloop with the upper
-# power command.  Its explicit AP stop is therefore asynchronous; the generic
-# device stop is the authoritative erasure edge and clears the serialized AP
-# lifecycle only after every admitted AP worker has been cancelled/drained.
+# power command.  Therefore disable must not enqueue an explicit AP worker
+# immediately before waiting for generic device teardown.  The generic stop
+# is the authoritative erasure edge and clears the serialized AP lifecycle
+# only after every previously admitted AP worker has been cancelled/drained.
 iwx_disable = body(iwx, "disable(IONetworkInterface *netif)")
 iwx_stop_request = "(void)stopAPMode();"
-assert iwx_stop_request in iwx_disable, \
-    "IWX must request serial AP teardown before radio stop"
-assert iwx_disable.index(iwx_stop_request) < iwx_disable.index(
-    "already !IFF_UP"), \
-    "IWX AP stop request must survive an already-lowered primary ifnet"
-assert iwx_disable.index(iwx_stop_request) < iwx_disable.index(
-    "DVACT_QUIESCE"), \
-    "IWX AP stop request must precede generic firmware teardown"
+assert iwx_stop_request not in iwx_disable, \
+    "IWX PM path must not queue a firmware worker from the power workloop"
+assert "continuing radio quiesce" in iwx_disable
+already_down = iwx_disable.index("if (!(ifp->if_flags & IFF_UP))")
+quiesce = iwx_disable.index("DVACT_QUIESCE")
+assert already_down < quiesce
+assert "return kIOReturnSuccess;" not in iwx_disable[already_down:quiesce], \
+    "an already-lowered primary ifnet must not bypass AP firmware reset"
 
 iwx_device_stop = body(iwx, "iwx_stop_internal(struct _ifnet *ifp")
 assert "iwx_del_task(sc, sc->sc_nswq, &sc->ap_start_task)" in iwx_device_stop

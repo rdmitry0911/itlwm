@@ -859,21 +859,23 @@ IOReturn ItlIwx::enable(IONetworkInterface *netif)
 IOReturn ItlIwx::disable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
-    /* Close dynamic GO queues/stations while firmware still answers.  The
-     * APSTA owner retains only the user profile and re-arms a fresh context
-     * after wake; client authorization and pairwise keys are intentionally
-     * not replayed across the radio-reset security boundary. */
+    /* The APSTA owner has already closed its role-7 datapath.  Do not queue
+     * an asynchronous firmware AP stop from this power-command workloop:
+     * its worker needs command completions delivered by the same workloop,
+     * while the immediately following quiesce must drain that worker.  The
+     * generic device stop cancels admitted AP work and is the authoritative
+     * erasure edge for every GO queue, station and key. */
     if (apCsaTimerInitialized)
         timeout_del(&apCsaTimeout);
-    /* Never wait for q0 from the upper power command gate.  The serial AP
-     * worker tears resources down when it can; the immediately following
-     * device quiesce remains the authoritative fallback erasure edge. */
-    (void)stopAPMode();
     if (!(ifp->if_flags & IFF_UP)) {
-        XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
-        return kIOReturnSuccess;
+        /* APSTA can keep the firmware device live after the primary BSD
+         * interface was lowered.  A radio power-off must still cross the
+         * destructive stop boundary instead of returning with a live GO. */
+        XYLog("DEBUG %s already !IFF_UP; continuing radio quiesce\n",
+              __FUNCTION__);
+    } else {
+        ifp->if_flags &= ~IFF_UP;
     }
-    ifp->if_flags &= ~IFF_UP;
     iwx_activate(&com, DVACT_QUIESCE);
     return kIOReturnSuccess;
 }

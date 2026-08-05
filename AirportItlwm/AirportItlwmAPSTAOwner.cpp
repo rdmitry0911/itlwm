@@ -848,6 +848,34 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
     return kIOReturnSuccess;
 }
 
+void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()
+{
+    /*
+     * This path is immediately followed by HAL disable and a destructive
+     * Intel firmware reset.  Apple hostAPPowerOff still makes the no-client
+     * upper HostAP profile terminal, but submitting an asynchronous IWX AP
+     * removal here would race that reset from the power-command workloop.
+     * The generic device stop is already the authoritative lower erasure
+     * edge; retire only the upper owner here.  Explicit HostAP NULL remains
+     * owned by stopLower() and its independently observed firmware terminal.
+     */
+    setSoftAPPowerSaveState(
+        kAirportItlwmAPSTAHostApPowerOffSetPowerSaveState,
+        kAirportItlwmAPSTAHostApPowerOffPowerSaveReason);
+    state.softapParam0e = 0;
+    radioResetResumePending = false;
+    radioResetWaitForPrimaryStaRun = false;
+    radioResetPrimaryStaScanHandoff = false;
+    radioResetResumeWaitTicks = 0;
+    lowerStopPending = false;
+    if (owner != nullptr)
+        owner->setAPSTADatapathEnabled(false);
+    resetRuntimeState();
+    if (lifecycle != kAirportItlwmAPSTAOwnerFreed)
+        lifecycle = kAirportItlwmAPSTAOwnerTerminal;
+    XYLog("APSTA empty HostAP terminal delegated to imminent radio reset\n");
+}
+
 void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(
     uint16_t lowerChannel)
 {
@@ -920,11 +948,7 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
      */
     if (state.softapAssociatedStaCount00 == 0 &&
         lowerAssociatedStaCount == 0) {
-        setSoftAPPowerSaveState(
-            kAirportItlwmAPSTAHostApPowerOffSetPowerSaveState,
-            kAirportItlwmAPSTAHostApPowerOffPowerSaveReason);
-        state.softapParam0e = 0;
-        (void)stopLower();
+        prepareEmptyAPForRadioReset();
         return;
     }
 
