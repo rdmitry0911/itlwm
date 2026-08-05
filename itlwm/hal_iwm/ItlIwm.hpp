@@ -536,7 +536,8 @@ public:
     int    iwm_start_ap_resources(struct iwm_softc *,
                                   struct ItlApFirmwareRuntime *);
     int    iwm_stop_ap_resources(struct iwm_softc *,
-                                 struct ItlApFirmwareRuntime *);
+                                 struct ItlApFirmwareRuntime *,
+                                 bool preserveSaePmksa = false);
     int    iwm_mac_ctxt_cmd(struct iwm_softc *, struct iwm_node *, uint32_t, int);
     int    iwm_update_quotas(struct iwm_softc *, struct iwm_node *, int);
     void    iwm_add_task(struct iwm_softc *, struct taskq *, struct task *);

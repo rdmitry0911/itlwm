@@ -19,6 +19,9 @@ def require(text, needle, label):
 
 for needle, label in (
     ("struct ieee80211_sae_ap *sae", "owned SAE object"),
+    ("uint8_t saePmksaPmk[IEEE80211_PMK_LEN]", "bounded PMKSA PMK"),
+    ("uint8_t saePmksaPmkid[IEEE80211_PMKID_LEN]", "bounded PMKSA identity"),
+    ("bool clientOpenAuthenticated", "PMKSA Open-System auth edge"),
     ("uint8_t pmk[IEEE80211_PMK_LEN]", "driver-owned PMK"),
     ("struct ieee80211_ptk ptk", "shared PTK"),
     ("localRsnPendingAction", "deferred firmware PAE edge"),
@@ -26,6 +29,10 @@ for needle, label in (
     ("localRsnExpectedReplay[4]", "EAPOL replay acceptance window"),
     ("ieee80211_sae_ap_destroy(&client->sae)", "per-client SAE lifetime teardown"),
     ("explicit_bzero(client->pmk", "per-client PMK scrub"),
+    ("preserveSaePmksa = false", "explicit PMKSA lifetime selection"),
+    ("itl_ap_firmware_runtime_reset(runtime, true)",
+     "sleep replay PMKSA carry"),
+    ("config->authUpper != 0x1000", "non-SAE profile PMKSA scrub"),
 ):
     require(runtime, needle, label)
 
@@ -37,6 +44,16 @@ for needle, label in (
     ("ieee80211_sae_ap_begin_hnp", "SAE Commit responder"),
     ("ieee80211_sae_ap_confirm", "SAE Confirm responder"),
     ("ieee80211_sae_ap_is_accepted", "accepted-SAE association gate"),
+    ("itl_ap_wpa3_rsn_pmkid_list", "association PMKID parser"),
+    ("client->clientOpenAuthenticated", "Open-System PMKSA admission"),
+    ("itl_ap_firmware_sae_pmksa_matches", "bounded PMKID lookup"),
+    ("client->clientOpenAuthenticated &&", "cached-SAE association marker"),
+    ("!saePmksaReady", "cached PMK may start the four-way handshake"),
+    ("kItlApLocalRsnM1MaxLength", "PMKID-bearing M1 capacity"),
+    ("*cursor++ = IEEE80211_KDE_PMKID", "M1 PMKID KDE"),
+    ("kItlApStatusInvalidPmkid", "stale PMKSA fallback response"),
+    ("memcpy(client->pmk, client->saePmksaPmk",
+     "cached PMK selection"),
     ("EAPOL_KEY_DESC_AKM_DEFINED", "SAE EAPOL descriptor"),
     ("IEEE80211_AKM_SAE : IEEE80211_AKM_PSK", "SAE PTK derivation selection"),
     ("ieee80211_derive_ptk(itl_ap_local_rsn_akm(runtime)",
@@ -68,7 +85,8 @@ for backend, name, prefix in ((iwm, "IWM", "IWM"), (iwx, "IWX", "IWX")):
         ("kItlHalApKeyPairwise", "PTK installation"),
         ("kItlHalApStationAuthorize", "port authorization"),
         (f"{prefix}_STA_KEY_MFP", "firmware MFP key flag"),
-        ("itl_ap_firmware_client_reset(client)", "disconnect SAE scrub"),
+        ("itl_ap_firmware_client_reset(client, true)",
+         "disconnect PMKSA retention and transient SAE scrub"),
         ("kItlApLocalEapolResendM3", "M3 retransmission action"),
         ("itl_ap_local_rsn_defer_action", "RX-to-process PAE handoff"),
         ("itl_ap_local_rsn_take_deferred_action", "serial PAE owner"),

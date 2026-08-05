@@ -1465,7 +1465,7 @@ static void
 iwx_ap_lifecycle_reset(ItlIwx *that, bool detached)
 {
     if (that->apLifecycleLock == NULL) {
-        itl_ap_firmware_runtime_reset(&that->apRuntime);
+        itl_ap_firmware_runtime_reset(&that->apRuntime, !detached);
         return;
     }
     IOLockLock(that->apLifecycleLock);
@@ -1480,7 +1480,7 @@ iwx_ap_lifecycle_reset(ItlIwx *that, bool detached)
     that->apPrimaryStaRecoveryScanYielded = false;
     that->apPrimaryStaRecoveryScanGeneric = false;
     that->apPrimaryStaRecoveryScanGeneration = 0;
-    itl_ap_firmware_runtime_reset(&that->apRuntime);
+    itl_ap_firmware_runtime_reset(&that->apRuntime, !detached);
     IOLockUnlock(that->apLifecycleLock);
 }
 
@@ -2374,7 +2374,7 @@ sendAPStationCommand(const struct ItlHalApStationCommand *command)
         client->clientAssociated = false;
         const int error = iwx_ap_remove_client_sta(
             &com, &apRuntime, client);
-        itl_ap_firmware_client_reset(client);
+        itl_ap_firmware_client_reset(client, true);
         return error == 0 ? kIOReturnSuccess : kIOReturnError;
     }
     if (!client->clientAssociated)
@@ -12354,7 +12354,7 @@ iwx_ap_assoc_tx_complete(struct iwx_softc *sc, const uint8_t *station,
         client->localRsnState != kItlApLocalRsnDisabled)
         return;
 
-    uint8_t m1[sizeof(struct ieee80211_eapol_key)];
+    uint8_t m1[kItlApLocalRsnM1MaxLength];
     size_t m1Length = 0;
     int error = itl_ap_local_rsn_build_m1(
         runtime, client, m1, sizeof(m1), &m1Length);
@@ -12566,7 +12566,7 @@ iwx_ap_expire_local_rsn(ItlIwx *that, struct iwx_softc *sc,
         iwx_ap_publish_station(sc, client, IEEE80211_APSTA_EVENT_LEAVE);
     const int removeError = client->clientStationInstalled ?
         that->iwx_ap_remove_client_sta(sc, runtime, client) : 0;
-    itl_ap_firmware_client_reset(client);
+    itl_ap_firmware_client_reset(client, true);
     itl_ap_open_release_result(&result);
     if (sendError != 0)
         return sendError;
@@ -12706,7 +12706,7 @@ iwx_ap_client_task(void *arg)
             if (error != 0)
                 XYLog("%s: IWX open AP association task error=%d\n",
                       DEVNAME(sc), error);
-            itl_ap_firmware_client_reset(client);
+            itl_ap_firmware_client_reset(client, true);
         }
         itl_ap_open_release_result(&result);
     }
@@ -13008,7 +13008,7 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
                                        IEEE80211_APSTA_EVENT_LEAVE);
             (void)iwx_ap_remove_client_sta(sc, &apRuntime, client);
         }
-        itl_ap_firmware_client_reset(client);
+        itl_ap_firmware_client_reset(client, true);
     }
     if (error != 0)
         XYLog("%s: IWX open AP RX action=%u error=%d\n", DEVNAME(sc),

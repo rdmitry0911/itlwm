@@ -69,7 +69,7 @@ assert iwn_stop.index("iwn_reset_ap_runtime_state();") < \
 
 for family, source, signature, device_stop, runtime_reset in (
     ("IWM", iwm, "iwm_stop(struct _ifnet *ifp)", "iwm_stop_device(sc);",
-     "itl_ap_firmware_runtime_reset(&that->apRuntime);"),
+     "itl_ap_firmware_runtime_reset(&that->apRuntime, true);"),
     ("IWX", iwx, "iwx_stop_internal(struct _ifnet *ifp,",
      "iwx_stop_device(sc);", "iwx_ap_lifecycle_reset(that, false);"),
 ):
@@ -80,9 +80,9 @@ for family, source, signature, device_stop, runtime_reset in (
         f"{family} software AP retirement must follow the device reset"
 
 iwx_lifecycle_reset = body(iwx, "iwx_ap_lifecycle_reset(ItlIwx *that")
-assert "itl_ap_firmware_runtime_reset(&that->apRuntime);" in \
+assert "itl_ap_firmware_runtime_reset(&that->apRuntime, !detached);" in \
        iwx_lifecycle_reset, \
-    "IWX serialized lifecycle reset must retire the firmware runtime"
+    "IWX serialized lifecycle reset must select the PMKSA lifetime"
 
 print("PASS: IWN/IWM/IWX unexpected lower reset replays retained HostAP")
 PY

@@ -931,7 +931,8 @@ disable(IONetworkInterface *netif)
     if (apCsaTimerInitialized)
         timeout_del(&apCsaTimeout);
     if (apRuntime.stage != kItlApFirmwareResourceIdle) {
-        const int apError = iwm_stop_ap_resources(&com, &apRuntime);
+        const int apError = iwm_stop_ap_resources(
+            &com, &apRuntime, true);
         if (apError != 0)
             XYLog("%s: IWM AP radio-reset teardown error=%d\n",
                   DEVNAME(&com), apError);
@@ -1631,7 +1632,7 @@ sendAPStationCommand(const struct ItlHalApStationCommand *command)
         client->clientAssociated = false;
         const int error = iwm_ap_remove_client_sta(
             &com, &apRuntime, client);
-        itl_ap_firmware_client_reset(client);
+        itl_ap_firmware_client_reset(client, true);
         return error == 0 ? kIOReturnSuccess : kIOReturnError;
     }
     if (!client->clientAssociated)

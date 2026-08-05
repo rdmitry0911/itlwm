@@ -54,7 +54,7 @@ assert resume.index("ic->ic_state != IEEE80211_S_RUN") < \
 assert "radioResetResumePending = false;" in resume
 
 iwm_disable = body(iwm, "disable(IONetworkInterface *netif)")
-iwm_lower_stop = "iwm_stop_ap_resources(&com, &apRuntime)"
+iwm_lower_stop = "iwm_stop_ap_resources(\n            &com, &apRuntime, true)"
 assert "apRuntime.stage != kItlApFirmwareResourceIdle" in iwm_disable, \
     "IWM must notice retained GO resources"
 assert iwm_lower_stop in iwm_disable, "IWM must retire GO before radio stop"
@@ -98,7 +98,7 @@ for reset in (
     "apStopPending = false",
     "apLowerRunning = false",
     "apStopRequested = false",
-    "itl_ap_firmware_runtime_reset(&that->apRuntime)",
+    "itl_ap_firmware_runtime_reset(&that->apRuntime, !detached)",
 ):
     assert reset in iwx_lifecycle_reset, \
         f"IWX reset must clear stale AP lifecycle: {reset}"
@@ -121,6 +121,15 @@ for required in (
 ):
     assert required in crypto_reset, \
         f"radio reset must close client security state: {required}"
+
+runtime_reset = body(runtime, "itl_ap_firmware_runtime_reset(")
+assert "preserveSaePmksa" in runtime_reset
+assert "itl_ap_firmware_client_reset(&runtime->clients[index])" in \
+       runtime_reset
+assert "explicit_bzero(runtime, sizeof(*runtime))" in runtime_reset
+assert runtime_reset.index("explicit_bzero(runtime, sizeof(*runtime))") < \
+       runtime_reset.index("saePmksaValid = true"), \
+       "only bounded PMKSA may be restored after transient security reset"
 
 print("PASS: paired IWM/IWX AP resources re-arm after radio reset")
 PY

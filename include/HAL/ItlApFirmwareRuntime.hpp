@@ -74,6 +74,16 @@ struct ItlApFirmwareClientRuntime {
      * and IWX cannot acquire different security semantics.
      */
     struct ieee80211_sae_ap *sae;
+    /* A radio reset destroys firmware stations and transient SAE state, but
+     * not the authenticator's bounded PMKSA cache.  Keep the cache beside the
+     * per-peer runtime so a retained AP profile can accept Open-System auth
+     * followed by an SAE PMKID association after wake. */
+    uint8_t saePmksaPmk[IEEE80211_PMK_LEN];
+    uint8_t saePmksaPmkid[IEEE80211_PMKID_LEN];
+    uint8_t saePmksaSta[IEEE80211_ADDR_LEN];
+    uint8_t saePmksaBssid[IEEE80211_ADDR_LEN];
+    bool saePmksaValid;
+    bool clientOpenAuthenticated;
     uint8_t localRsnState;
     /* RX validates M2/M4 without sleeping.  Firmware key commands and the
      * dependent M3/authorization edge are consumed by the backend's serial
@@ -177,6 +187,34 @@ itl_ap_firmware_sae_reset(struct ItlApFirmwareClientRuntime *client)
 }
 
 static inline void
+itl_ap_firmware_sae_pmksa_clear(
+    struct ItlApFirmwareClientRuntime *client)
+{
+    if (client == NULL)
+        return;
+    explicit_bzero(client->saePmksaPmk,
+                   sizeof(client->saePmksaPmk));
+    explicit_bzero(client->saePmksaPmkid,
+                   sizeof(client->saePmksaPmkid));
+    bzero(client->saePmksaSta, sizeof(client->saePmksaSta));
+    bzero(client->saePmksaBssid, sizeof(client->saePmksaBssid));
+    client->saePmksaValid = false;
+}
+
+static inline bool
+itl_ap_firmware_sae_pmksa_matches(
+    const struct ItlApFirmwareClientRuntime *client,
+    const uint8_t *bssid, const uint8_t *station, const uint8_t *pmkid)
+{
+    return client != NULL && client->saePmksaValid && bssid != NULL &&
+        station != NULL && pmkid != NULL &&
+        IEEE80211_ADDR_EQ(client->saePmksaSta, station) &&
+        IEEE80211_ADDR_EQ(client->saePmksaBssid, bssid) &&
+        timingsafe_bcmp(client->saePmksaPmkid, pmkid,
+                        sizeof(client->saePmksaPmkid)) == 0;
+}
+
+static inline void
 itl_ap_firmware_client_crypto_reset(
     struct ItlApFirmwareClientRuntime *client)
 {
@@ -207,10 +245,23 @@ itl_ap_firmware_client_crypto_reset(
 }
 
 static inline void
-itl_ap_firmware_client_reset(struct ItlApFirmwareClientRuntime *client)
+itl_ap_firmware_client_reset(struct ItlApFirmwareClientRuntime *client,
+                             bool preserveSaePmksa = false)
 {
     if (client == NULL)
         return;
+    uint8_t cachedPmk[IEEE80211_PMK_LEN];
+    uint8_t cachedPmkid[IEEE80211_PMKID_LEN];
+    uint8_t cachedSta[IEEE80211_ADDR_LEN];
+    uint8_t cachedBssid[IEEE80211_ADDR_LEN];
+    const bool cached = preserveSaePmksa && client->saePmksaValid;
+    if (cached) {
+        memcpy(cachedPmk, client->saePmksaPmk, sizeof(cachedPmk));
+        memcpy(cachedPmkid, client->saePmksaPmkid,
+               sizeof(cachedPmkid));
+        IEEE80211_ADDR_COPY(cachedSta, client->saePmksaSta);
+        IEEE80211_ADDR_COPY(cachedBssid, client->saePmksaBssid);
+    }
     timeout_del(&client->localRsnTimeout);
     timeout_free(&client->localRsnTimeout);
     itl_ap_firmware_sae_reset(client);
@@ -222,16 +273,50 @@ itl_ap_firmware_client_reset(struct ItlApFirmwareClientRuntime *client)
     explicit_bzero(client, sizeof(*client));
     client->staId = UINT8_MAX;
     client->queueId = UINT16_MAX;
+    if (cached) {
+        memcpy(client->saePmksaPmk, cachedPmk,
+               sizeof(client->saePmksaPmk));
+        memcpy(client->saePmksaPmkid, cachedPmkid,
+               sizeof(client->saePmksaPmkid));
+        IEEE80211_ADDR_COPY(client->saePmksaSta, cachedSta);
+        IEEE80211_ADDR_COPY(client->saePmksaBssid, cachedBssid);
+        client->saePmksaValid = true;
+        explicit_bzero(cachedPmk, sizeof(cachedPmk));
+        explicit_bzero(cachedPmkid, sizeof(cachedPmkid));
+    }
 }
 
 static inline void
-itl_ap_firmware_runtime_reset(struct ItlApFirmwareRuntime *runtime)
+itl_ap_firmware_runtime_reset(struct ItlApFirmwareRuntime *runtime,
+                              bool preserveSaePmksa = false)
 {
     if (runtime == NULL)
         return;
+    struct ItlApFirmwareSaePmksaSnapshot {
+        uint8_t pmk[IEEE80211_PMK_LEN];
+        uint8_t pmkid[IEEE80211_PMKID_LEN];
+        uint8_t station[IEEE80211_ADDR_LEN];
+        uint8_t bssid[IEEE80211_ADDR_LEN];
+        bool valid;
+    } cached[kItlApFirmwareMaxClients];
+    bzero(cached, sizeof(cached));
     if (runtime->localAuthMagic == kItlApLocalAuthMagic) {
-        for (size_t index = 0; index < kItlApFirmwareMaxClients; index++)
+        for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+            const struct ItlApFirmwareClientRuntime *client =
+                &runtime->clients[index];
+            if (preserveSaePmksa && client->saePmksaValid) {
+                memcpy(cached[index].pmk, client->saePmksaPmk,
+                       sizeof(cached[index].pmk));
+                memcpy(cached[index].pmkid, client->saePmksaPmkid,
+                       sizeof(cached[index].pmkid));
+                IEEE80211_ADDR_COPY(cached[index].station,
+                                    client->saePmksaSta);
+                IEEE80211_ADDR_COPY(cached[index].bssid,
+                                    client->saePmksaBssid);
+                cached[index].valid = true;
+            }
             itl_ap_firmware_client_reset(&runtime->clients[index]);
+        }
     }
     explicit_bzero(runtime, sizeof(*runtime));
     runtime->localAuthMagic = kItlApLocalAuthMagic;
@@ -241,7 +326,23 @@ itl_ap_firmware_runtime_reset(struct ItlApFirmwareRuntime *runtime)
     for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
         runtime->clients[index].staId = UINT8_MAX;
         runtime->clients[index].queueId = UINT16_MAX;
+        if (cached[index].valid) {
+            memcpy(runtime->clients[index].saePmksaPmk,
+                   cached[index].pmk,
+                   sizeof(runtime->clients[index].saePmksaPmk));
+            memcpy(runtime->clients[index].saePmksaPmkid,
+                   cached[index].pmkid,
+                   sizeof(runtime->clients[index].saePmksaPmkid));
+            IEEE80211_ADDR_COPY(
+                runtime->clients[index].saePmksaSta,
+                cached[index].station);
+            IEEE80211_ADDR_COPY(
+                runtime->clients[index].saePmksaBssid,
+                cached[index].bssid);
+            runtime->clients[index].saePmksaValid = true;
+        }
     }
+    explicit_bzero(cached, sizeof(cached));
 }
 
 static inline size_t
@@ -494,36 +595,87 @@ itl_ap_firmware_allocate_client(struct ItlApFirmwareRuntime *runtime,
     if (runtime == NULL || station == NULL)
         return NULL;
     const size_t limit = itl_ap_firmware_client_limit(runtime);
+    struct ItlApFirmwareClientRuntime *cachedClient = NULL;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct ItlApFirmwareClientRuntime *candidate =
+            &runtime->clients[index];
+        if (!candidate->inUse && candidate->saePmksaValid &&
+            IEEE80211_ADDR_EQ(candidate->saePmksaSta, station) &&
+            IEEE80211_ADDR_EQ(candidate->saePmksaBssid,
+                              runtime->config.bssid)) {
+            cachedClient = candidate;
+            break;
+        }
+    }
+    struct ItlApFirmwareClientRuntime *selected = NULL;
+    if (cachedClient != NULL &&
+        cachedClient < &runtime->clients[limit])
+        selected = cachedClient;
     for (size_t index = 0; index < limit; index++) {
         struct ItlApFirmwareClientRuntime *client =
             &runtime->clients[index];
-        if (client->inUse)
+        if (selected != NULL || client->inUse || client->saePmksaValid)
             continue;
-        itl_ap_firmware_client_reset(client);
-        client->inUse = true;
-        client->staId = static_cast<uint8_t>(
-            runtime->firstClientStaId + index);
-        client->clientAid = static_cast<uint16_t>(index + 1);
-        IEEE80211_ADDR_COPY(client->clientMac, station);
-        return client;
+        selected = client;
+    }
+    if (selected == NULL) {
+        for (size_t index = 0; index < limit; index++) {
+            struct ItlApFirmwareClientRuntime *client =
+                &runtime->clients[index];
+            if (!client->inUse) {
+                selected = client;
+                break;
+            }
+        }
     }
     /* Authentication state has no firmware resource yet.  Reclaim one such
      * incomplete slot so a stream of abandoned Auth/SAE commits cannot lock
      * every association slot indefinitely. */
-    for (size_t index = 0; index < limit; index++) {
-        struct ItlApFirmwareClientRuntime *client =
-            &runtime->clients[index];
-        if (client->clientAssociated || client->clientStationInstalled)
-            continue;
-        itl_ap_firmware_client_reset(client);
-        client->inUse = true;
-        client->staId = static_cast<uint8_t>(
-            runtime->firstClientStaId + index);
-        client->clientAid = static_cast<uint16_t>(index + 1);
-        IEEE80211_ADDR_COPY(client->clientMac, station);
-        return client;
+    if (selected == NULL) {
+        for (size_t index = 0; index < limit; index++) {
+            struct ItlApFirmwareClientRuntime *client =
+                &runtime->clients[index];
+            if (client->clientAssociated || client->clientStationInstalled)
+                continue;
+            selected = client;
+            break;
+        }
     }
-    return NULL;
+    if (selected == NULL)
+        return NULL;
+
+    const bool importCache = cachedClient != NULL;
+    const size_t selectedIndex = static_cast<size_t>(
+        selected - &runtime->clients[0]);
+    uint8_t cachedPmk[IEEE80211_PMK_LEN];
+    uint8_t cachedPmkid[IEEE80211_PMKID_LEN];
+    if (importCache && cachedClient != selected) {
+        memcpy(cachedPmk, cachedClient->saePmksaPmk,
+               sizeof(cachedPmk));
+        memcpy(cachedPmkid, cachedClient->saePmksaPmkid,
+               sizeof(cachedPmkid));
+    }
+    itl_ap_firmware_client_reset(selected,
+                                 importCache && cachedClient == selected);
+    selected->inUse = true;
+    selected->staId = static_cast<uint8_t>(
+        runtime->firstClientStaId + selectedIndex);
+    selected->clientAid = static_cast<uint16_t>(selectedIndex + 1);
+    IEEE80211_ADDR_COPY(selected->clientMac, station);
+    if (importCache && cachedClient != selected) {
+        memcpy(selected->saePmksaPmk, cachedPmk,
+               sizeof(selected->saePmksaPmk));
+        memcpy(selected->saePmksaPmkid, cachedPmkid,
+               sizeof(selected->saePmksaPmkid));
+        IEEE80211_ADDR_COPY(selected->saePmksaSta, station);
+        IEEE80211_ADDR_COPY(selected->saePmksaBssid,
+                            runtime->config.bssid);
+        selected->saePmksaValid = true;
+        itl_ap_firmware_sae_pmksa_clear(cachedClient);
+        explicit_bzero(cachedPmk, sizeof(cachedPmk));
+        explicit_bzero(cachedPmkid, sizeof(cachedPmkid));
+    }
+    return selected;
 }
 
 static inline size_t
@@ -588,7 +740,10 @@ itl_ap_firmware_runtime_snapshot(struct ItlApFirmwareRuntime *runtime,
         IEEE80211_ADDR_EQ(config->bssid, etheranyaddr))
         return EINVAL;
 
-    itl_ap_firmware_runtime_reset(runtime);
+    /* A destructive lower-radio epoch retains a bounded PMKSA census in
+     * otherwise idle client slots.  Carry it into the replayed profile, then
+     * prune entries unless this is the same pure-SAE BSSID. */
+    itl_ap_firmware_runtime_reset(runtime, true);
     runtime->config = *config;
     runtime->config.maxStations = MIN(
         config->maxStations,
@@ -608,6 +763,15 @@ itl_ap_firmware_runtime_snapshot(struct ItlApFirmwareRuntime *runtime,
     runtime->config.rsnIE = config->rsnIELength != 0 ?
         runtime->rsnIE : NULL;
     runtime->config.beaconTemplate = runtime->beacon;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct ItlApFirmwareClientRuntime *client =
+            &runtime->clients[index];
+        if (client->saePmksaValid &&
+            (config->authUpper != 0x1000 ||
+             !IEEE80211_ADDR_EQ(client->saePmksaBssid,
+                                config->bssid)))
+            itl_ap_firmware_sae_pmksa_clear(client);
+    }
     if (config->authUpper == 0x8) {
         char passphrase[65];
         bzero(passphrase, sizeof(passphrase));

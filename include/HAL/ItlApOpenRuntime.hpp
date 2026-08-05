@@ -71,6 +71,8 @@ enum ItlApLocalEapolAction : uint8_t {
     kItlApLocalEapolInstallPairwise,
 };
 
+enum { kItlApStatusInvalidPmkid = 53 };
+
 /* The RX path may not wait for an IWX/IWM command completion.  Publish one
  * validated PAE edge to the already-serialized AP client task.  Identical
  * retransmissions coalesce; a different outstanding edge is rejected rather
@@ -111,6 +113,8 @@ enum {
     kItlApLocalRsnFirstTimeoutMs = 100,
     kItlApLocalRsnSubsequentTimeoutMs = 1000,
     kItlApLocalRsnMaxAttempts = 4,
+    kItlApLocalRsnM1MaxLength =
+        sizeof(struct ieee80211_eapol_key) + 2 + 4 + IEEE80211_PMKID_LEN,
 };
 
 static inline bool
@@ -364,6 +368,37 @@ itl_ap_wpa3_rsn_ie_supported(const uint8_t *rsnIE, size_t rsnIELength)
     cursor += pmkidBytes;
     return cursor + sizeof(bipCmac128Suite) <= end &&
         memcmp(cursor, bipCmac128Suite, sizeof(bipCmac128Suite)) == 0;
+}
+
+static inline bool
+itl_ap_wpa3_rsn_pmkid_list(const uint8_t *rsnIE, size_t rsnIELength,
+                           const uint8_t **pmkids, uint16_t *pmkidCount)
+{
+    if (pmkids == NULL || pmkidCount == NULL ||
+        !itl_ap_wpa3_rsn_ie_supported(rsnIE, rsnIELength))
+        return false;
+    const uint8_t *cursor = rsnIE + 2 + 2 + 4;
+    const uint8_t *end = rsnIE + rsnIELength;
+    if (cursor + 2 > end)
+        return false;
+    const uint16_t pairwiseCount = LE_READ_2(cursor);
+    cursor += 2 + static_cast<size_t>(pairwiseCount) * 4;
+    if (cursor + 2 > end)
+        return false;
+    const uint16_t akmCount = LE_READ_2(cursor);
+    cursor += 2 + static_cast<size_t>(akmCount) * 4;
+    if (cursor + 4 > end)
+        return false;
+    cursor += 2; /* RSN capabilities */
+    const uint16_t count = LE_READ_2(cursor);
+    cursor += 2;
+    const size_t bytes = static_cast<size_t>(count) *
+        IEEE80211_PMKID_LEN;
+    if (bytes > static_cast<size_t>(end - cursor))
+        return false;
+    *pmkids = cursor;
+    *pmkidCount = count;
+    return true;
 }
 
 static inline bool
@@ -684,6 +719,7 @@ itl_ap_open_begin_client_auth(struct ItlApFirmwareRuntime *runtime,
     client->clientAssociationPending = false;
     client->clientReassociationPending = false;
     client->clientAuthenticated = false;
+    client->clientOpenAuthenticated = false;
     client->clientAssociated = false;
     client->clientAuthorized = false;
     client->clientAssocIEsLength = 0;
@@ -756,7 +792,7 @@ itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
             if (responseStatus != IEEE80211_SAE_AP_STATUS_SUCCESS) {
                 itl_ap_firmware_sae_reset(client);
                 if (clientAllocated) {
-                    itl_ap_firmware_client_reset(client);
+                    itl_ap_firmware_client_reset(client, true);
                     client = NULL;
                 }
             }
@@ -773,15 +809,25 @@ itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
                     saeBody, sizeof(saeBody), &saeBodyLength,
                     client->pmk, sizeof(client->pmk),
                     pmkid, sizeof(pmkid));
-                explicit_bzero(pmkid, sizeof(pmkid));
                 authenticationComplete =
                     responseStatus == IEEE80211_SAE_AP_STATUS_SUCCESS;
-                if (!authenticationComplete)
+                if (authenticationComplete) {
+                    memcpy(client->saePmksaPmk, client->pmk,
+                           sizeof(client->saePmksaPmk));
+                    memcpy(client->saePmksaPmkid, pmkid,
+                           sizeof(client->saePmksaPmkid));
+                    IEEE80211_ADDR_COPY(client->saePmksaSta,
+                                        request->i_addr2);
+                    IEEE80211_ADDR_COPY(client->saePmksaBssid,
+                                        runtime->config.bssid);
+                    client->saePmksaValid = true;
+                } else {
                     explicit_bzero(client->pmk, sizeof(client->pmk));
+                }
+                explicit_bzero(pmkid, sizeof(pmkid));
             }
         }
     } else if (algorithm == IEEE80211_AUTH_ALG_OPEN &&
-               !itl_ap_client_uses_local_sae(runtime) &&
                transaction == IEEE80211_AUTH_OPEN_REQUEST &&
                peerStatus == IEEE80211_STATUS_SUCCESS) {
         if (client == NULL) {
@@ -798,7 +844,14 @@ itl_ap_open_build_auth_response(struct ItlApFirmwareRuntime *runtime,
             client->clientAssociated;
         IEEE80211_ADDR_COPY(result->departingStation,
                             client->clientMac);
+        if (itl_ap_client_uses_local_sae(runtime))
+            itl_ap_firmware_sae_reset(client);
         itl_ap_open_begin_client_auth(runtime, client, result);
+        /* SAE PMKSA caching deliberately re-enters through Open-System
+         * authentication.  The following Association Request must prove a
+         * retained PMKID before this flag can authorize use of cached PMK. */
+        client->clientOpenAuthenticated =
+            itl_ap_client_uses_local_sae(runtime);
         responseTransaction = IEEE80211_AUTH_OPEN_RESPONSE;
         authenticationComplete = true;
     } else {
@@ -810,7 +863,7 @@ build_response:
     int error = itl_ap_open_alloc_reply(responseLength, &result->reply);
     if (error != 0) {
         if (clientAllocated)
-            itl_ap_firmware_client_reset(client);
+            itl_ap_firmware_client_reset(client, true);
         explicit_bzero(saeBody, sizeof(saeBody));
         return error;
     }
@@ -835,6 +888,44 @@ build_response:
     result->authenticationComplete = authenticationComplete;
     result->clientIndex = itl_ap_firmware_client_index(runtime, client);
     IEEE80211_ADDR_COPY(result->station, request->i_addr2);
+    return 0;
+}
+
+static inline int
+itl_ap_open_build_assoc_reject(
+    const struct ItlApFirmwareRuntime *runtime,
+    const struct ItlApFirmwareClientRuntime *client, bool reassociation,
+    uint16_t status, struct ItlApOpenRxResult *result)
+{
+    if (!itl_ap_open_is_running(runtime) || client == NULL ||
+        result == NULL)
+        return EINVAL;
+    const size_t responseLength = sizeof(struct ieee80211_frame) + 6;
+    int error = itl_ap_open_alloc_reply(responseLength, &result->reply);
+    if (error != 0)
+        return error;
+    struct ieee80211_frame *response =
+        reinterpret_cast<struct ieee80211_frame *>(result->reply);
+    response->i_fc[0] = IEEE80211_FC0_VERSION_0 |
+        IEEE80211_FC0_TYPE_MGT |
+        (reassociation ? IEEE80211_FC0_SUBTYPE_REASSOC_RESP :
+                         IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
+    response->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    LE_WRITE_2(response->i_dur, itl_ap_open_duration(runtime));
+    IEEE80211_ADDR_COPY(response->i_addr1, client->clientMac);
+    IEEE80211_ADDR_COPY(response->i_addr2, runtime->config.bssid);
+    IEEE80211_ADDR_COPY(response->i_addr3, runtime->config.bssid);
+    uint8_t *body = result->reply + sizeof(*response);
+    LE_WRITE_2(body, IEEE80211_CAPINFO_ESS |
+        IEEE80211_CAPINFO_PRIVACY |
+        (runtime->config.channel <= 14 ?
+            IEEE80211_CAPINFO_SHORT_SLOTTIME : 0));
+    LE_WRITE_2(body + 2, status);
+    LE_WRITE_2(body + 4, 0);
+    result->replyLength = responseLength;
+    result->disposition = kItlApOpenRxReply;
+    result->clientIndex = itl_ap_firmware_client_index(runtime, client);
+    IEEE80211_ADDR_COPY(result->station, client->clientMac);
     return 0;
 }
 
@@ -913,6 +1004,11 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
     const bool rsnValid = !secure || (rsn != NULL &&
         (localSae ? itl_ap_wpa3_rsn_ie_supported(rsn, rsnLength) :
                     itl_ap_wpa2_rsn_ie_supported(rsn, rsnLength)));
+    const uint8_t *saePmkids = NULL;
+    uint16_t saePmkidCount = 0;
+    if (localSae && rsnValid)
+        (void)itl_ap_wpa3_rsn_pmkid_list(
+            rsn, rsnLength, &saePmkids, &saePmkidCount);
     uint16_t legacyRateMask = rates != NULL ?
         itl_hal_ap_legacy_rate_mask(rates + 2, rates[1]) : 0;
     if (extendedRates != NULL)
@@ -928,8 +1024,24 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
         htMcs[1] = htCapabilities[6] & runtime->config.htMcsSet[1];
         ht = htMcs[0] != 0;
     }
+    const bool saeAuthenticated = localSae && client->sae != NULL &&
+        ieee80211_sae_ap_is_accepted(client->sae) != 0;
+    bool saePmksaAuthenticated = false;
+    if (localSae && client->clientOpenAuthenticated) {
+        for (uint16_t index = 0; index < saePmkidCount; index++) {
+            if (itl_ap_firmware_sae_pmksa_matches(
+                    client, runtime->config.bssid, request->i_addr2,
+                    saePmkids + static_cast<size_t>(index) *
+                        IEEE80211_PMKID_LEN)) {
+                saePmksaAuthenticated = true;
+                break;
+            }
+        }
+    }
+    const bool invalidSaePmkid = localSae &&
+        client->clientOpenAuthenticated && !saePmksaAuthenticated;
     const bool valid = client->clientAuthenticated &&
-        (!localSae || ieee80211_sae_ap_is_accepted(client->sae) != 0) &&
+        (!localSae || saeAuthenticated || saePmksaAuthenticated) &&
         (capability & IEEE80211_CAPINFO_ESS) != 0 &&
         (secure ? (capability & IEEE80211_CAPINFO_PRIVACY) != 0 &&
                   rsnValid
@@ -939,8 +1051,17 @@ itl_ap_open_parse_assoc(struct ItlApFirmwareRuntime *runtime,
         memcmp(ssid + 2, runtime->ssid, ssid[1]) == 0 &&
         rates != NULL && rates[1] != 0 &&
         rates[1] <= IEEE80211_RATE_MAXSIZE && legacyRateMask != 0;
-    if (!valid)
+    if (!valid) {
+        if (invalidSaePmkid)
+            return itl_ap_open_build_assoc_reject(
+                runtime, client, reassociation,
+                kItlApStatusInvalidPmkid, result);
         return 0;
+    }
+
+    if (saePmksaAuthenticated)
+        memcpy(client->pmk, client->saePmksaPmk,
+               sizeof(client->pmk));
 
     client->clientRsnIELength = 0;
     explicit_bzero(client->clientRsnIE, sizeof(client->clientRsnIE));
@@ -1334,14 +1455,34 @@ itl_ap_local_rsn_build_m1_internal(
     struct ItlApFirmwareClientRuntime *client, bool retry,
     uint8_t *frame, size_t frameCapacity, size_t *frameLength)
 {
+    const bool saePmksaReady =
+        itl_ap_client_uses_local_sae(runtime) &&
+        client != NULL && client->clientOpenAuthenticated &&
+        client->saePmksaValid &&
+        IEEE80211_ADDR_EQ(client->saePmksaSta, client->clientMac) &&
+        IEEE80211_ADDR_EQ(client->saePmksaBssid,
+                          runtime->config.bssid) &&
+        timingsafe_bcmp(client->pmk, client->saePmksaPmk,
+                        sizeof(client->pmk)) == 0;
     if (!itl_ap_client_uses_local_rsn(runtime) || client == NULL ||
         frame == NULL || frameLength == NULL ||
         frameCapacity < sizeof(struct ieee80211_eapol_key) ||
         !client->clientAssociated ||
         (itl_ap_client_uses_local_sae(runtime) &&
-         ieee80211_sae_ap_is_accepted(client->sae) == 0) ||
+         ieee80211_sae_ap_is_accepted(client->sae) == 0 &&
+         !saePmksaReady) ||
         (retry && client->localRsnState != kItlApLocalRsnWaitM2))
         return EINVAL;
+
+    const bool includePmkid =
+        itl_ap_client_uses_local_sae(runtime) &&
+        itl_ap_firmware_sae_pmksa_matches(
+            client, runtime->config.bssid, client->clientMac,
+            client->saePmksaPmkid);
+    const size_t requiredLength = sizeof(struct ieee80211_eapol_key) +
+        (includePmkid ? 2 + 4 + IEEE80211_PMKID_LEN : 0);
+    if (frameCapacity < requiredLength)
+        return EMSGSIZE;
 
     if (!retry) {
         if (!itl_ap_client_uses_local_sae(runtime))
@@ -1369,9 +1510,21 @@ itl_ap_local_rsn_build_m1_internal(
     BE_WRITE_2(key->keylen, 16);
     BE_WRITE_8(key->replaycnt, client->replayCounter);
     memcpy(key->nonce, client->anonce, sizeof(key->nonce));
-    BE_WRITE_2(key->paylen, 0);
-    BE_WRITE_2(key->len, sizeof(*key) - 4);
-    *frameLength = sizeof(*key);
+    uint8_t *cursor = reinterpret_cast<uint8_t *>(key + 1);
+    if (includePmkid) {
+        *cursor++ = IEEE80211_ELEMID_VENDOR;
+        *cursor++ = 4 + IEEE80211_PMKID_LEN;
+        memcpy(cursor, IEEE80211_OUI, 3);
+        cursor += 3;
+        *cursor++ = IEEE80211_KDE_PMKID;
+        memcpy(cursor, client->saePmksaPmkid, IEEE80211_PMKID_LEN);
+        cursor += IEEE80211_PMKID_LEN;
+    }
+    const size_t keyDataLength = static_cast<size_t>(
+        cursor - reinterpret_cast<uint8_t *>(key + 1));
+    BE_WRITE_2(key->paylen, keyDataLength);
+    BE_WRITE_2(key->len, sizeof(*key) + keyDataLength - 4);
+    *frameLength = sizeof(*key) + keyDataLength;
     return 0;
 }
 

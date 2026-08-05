@@ -48,8 +48,10 @@ for needle, label in (
      "runtime client slots"),
     ("itl_ap_firmware_find_client", "station-MAC lookup"),
     ("itl_ap_firmware_allocate_client", "free-slot allocation"),
-    ("runtime->firstClientStaId + index", "unique firmware station IDs"),
-    ("client->clientAid = static_cast<uint16_t>(index + 1)", "unique AIDs"),
+    ("runtime->firstClientStaId + selectedIndex",
+     "unique firmware station IDs"),
+    ("selected->clientAid = static_cast<uint16_t>(selectedIndex + 1)",
+     "unique AIDs"),
     ("itl_ap_firmware_find_tx_client", "destination-client TX routing"),
     ("itl_ap_firmware_set_client_limit", "live bounded maxassoc update"),
     ("effective = MAX(effective, static_cast<uint32_t>(index + 1))",
@@ -69,7 +71,8 @@ for per_client_state in (
 for needle, label in (
     ("size_t clientIndex", "RX client identity"),
     ("IEEE80211_STATUS_TOOMANY", "full-table rejection"),
-    ("itl_ap_firmware_client_reset(client);", "failed SAE slot reclamation"),
+    ("itl_ap_firmware_client_reset(client, true);",
+     "failed SAE slot reclamation with bounded PMKSA retention"),
     ("itl_ap_firmware_find_client(runtime, wh->i_addr2)",
      "per-source data lookup"),
     ("itl_ap_firmware_find_client(runtime, poll->i_ta)",
@@ -146,8 +149,8 @@ for family, front, back, task_signature, rx_signature in (
             f"{family} per-client association state")
     rx = body(back, rx_signature)
     require(rx, "result.clientIndex", f"{family} RX client routing")
-    require(rx, "itl_ap_firmware_client_reset(client)",
-            f"{family} isolated disconnect teardown")
+    require(rx, "itl_ap_firmware_client_reset(client, true)",
+            f"{family} isolated disconnect teardown with PMKSA retention")
     stop_signature = "iwm_stop_ap_resources(struct iwm_softc *sc," if family == "IWM" else \
                      "iwx_stop_ap_mode(struct iwx_softc *sc,"
     stop = body(back, stop_signature)

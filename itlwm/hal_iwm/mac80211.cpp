@@ -3200,7 +3200,7 @@ iwm_ap_assoc_tx_complete(struct iwm_softc *sc, const uint8_t *station,
         client->localRsnState != kItlApLocalRsnDisabled)
         return;
 
-    uint8_t m1[sizeof(struct ieee80211_eapol_key)];
+    uint8_t m1[kItlApLocalRsnM1MaxLength];
     size_t m1Length = 0;
     int error = itl_ap_local_rsn_build_m1(
         runtime, client, m1, sizeof(m1), &m1Length);
@@ -3413,7 +3413,7 @@ iwm_ap_expire_local_rsn(ItlIwm *that, struct iwm_softc *sc,
         iwm_ap_publish_station(sc, client, IEEE80211_APSTA_EVENT_LEAVE);
     const int removeError = client->clientStationInstalled ?
         that->iwm_ap_remove_client_sta(sc, runtime, client) : 0;
-    itl_ap_firmware_client_reset(client);
+    itl_ap_firmware_client_reset(client, true);
     itl_ap_open_release_result(&result);
     if (sendError != 0)
         return sendError;
@@ -3553,7 +3553,7 @@ iwm_ap_client_task(void *arg)
             if (error != 0)
                 XYLog("%s: IWM open AP association task error=%d\n",
                       DEVNAME(sc), error);
-            itl_ap_firmware_client_reset(client);
+            itl_ap_firmware_client_reset(client, true);
         }
         itl_ap_open_release_result(&result);
     }
@@ -3838,7 +3838,7 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
                                        IEEE80211_APSTA_EVENT_LEAVE);
             (void)iwm_ap_remove_client_sta(sc, &apRuntime, client);
         }
-        itl_ap_firmware_client_reset(client);
+        itl_ap_firmware_client_reset(client, true);
     }
     if (error != 0)
         XYLog("%s: IWM open AP RX action=%u error=%d\n", DEVNAME(sc),
@@ -4002,7 +4002,8 @@ unwind:
 
 int ItlIwm::
 iwm_stop_ap_resources(struct iwm_softc *sc,
-                      struct ItlApFirmwareRuntime *runtime)
+                      struct ItlApFirmwareRuntime *runtime,
+                      bool preserveSaePmksa)
 {
     if (runtime == NULL || runtime->stage == kItlApFirmwareResourceIdle)
         return 0;
@@ -4050,7 +4051,7 @@ iwm_stop_ap_resources(struct iwm_softc *sc,
         if (firstError == 0)
             firstError = error;
     }
-    itl_ap_firmware_runtime_reset(runtime);
+    itl_ap_firmware_runtime_reset(runtime, preserveSaePmksa);
     return firstError;
 }
 
@@ -5733,7 +5734,7 @@ iwm_stop(struct _ifnet *ifp)
      * Running software census across fatal/watchdog recovery. */
     if (that->apCsaTimerInitialized)
         timeout_del(&that->apCsaTimeout);
-    itl_ap_firmware_runtime_reset(&that->apRuntime);
+    itl_ap_firmware_runtime_reset(&that->apRuntime, true);
     if (that->wclScanLock != NULL) {
         IOInterruptState irq =
             IOSimpleLockLockDisableInterrupt(that->wclScanLock);
