@@ -94,29 +94,76 @@ require_order(body(iwm_mac, "iwm_ap_mac_ctxt_cmd(struct iwm_softc *sc,"), [
     "iwm_read_prph(sc, IWM_DEVICE_SYSTEM_TIME_REG)",
     "iwm_nic_unlock(sc)",
 ], "IWM locked firmware system-time read")
+iwm_ap_mac = body(iwm_mac,
+    "iwm_ap_mac_ctxt_cmd(struct iwm_softc *sc,")
+for needle, label in (
+    ("runtime->config.channel <= 14 ? 0x01 : 0x15", "IWM AP basic OFDM rates"),
+    ("IWM_MAC_FILTER_IN_PROBE_REQUEST", "IWM AP probe-request filter"),
+    ("IWM_MAC_QOS_FLG_TGN", "IWM AP HT/TGN flag"),
+    ("primary->in_ni.ni_rstamp", "IWM associated-STA TBTT anchor"),
+    ("36 + arc4random_uniform(64 - 36)", "IWM reference TBTT separation"),
+):
+    require(iwm_ap_mac, needle, label)
+if "IWM_MAC_FILTER_ACCEPT_GRP" in iwm_ap_mac:
+    raise SystemExit("FAIL: IWM AP MAC must leave multicast RX to typed station")
+for state in ("IEEE80211_S_INIT", "IEEE80211_S_RUN"):
+    require(iwm_start, state, f"IWM stable AP start state {state}")
 
 for field in ("byte_cnt", "flags", "template_id", "tim_idx", "tim_size",
               "ecsa_offset", "csa_offset", "frame[0]"):
     require(iwx_reg, field, f"IWX modern beacon {field}")
+ap_wire = body(iwx_reg, "struct iwx_mac_data_ap")
+for field in ("uint32_t reserved1;", "uint32_t reserved2;"):
+    require(ap_wire, field, f"IWX API-68 AP reserved field {field}")
+if "reciprocal" in ap_wire:
+    raise SystemExit("FAIL: IWX API-68 AP reserved words must not be reciprocal fields")
+iwx_ap_fill = body(iwx_hal, "iwx_mac_ctxt_cmd_fill_ap(struct iwx_softc *sc,")
+for field in ("reserved1", "reserved2"):
+    if field in iwx_ap_fill:
+        raise SystemExit(f"FAIL: IWX API-68 AP {field} must remain zero")
 require(iwx_hal, "commandVersion != 11 && commandVersion != 12",
         "IWX API-68 beacon version gate")
 require(iwx_hal, "IWX_MAC_BEACON_CCK", "IWX v11 beacon rate flag")
 require(iwx_hal, "rateIndex - IWX_FIRST_OFDM_RATE",
         "IWX v11 beacon firmware rate index")
+iwx_beacon = body(iwx_hal,
+    "iwx_ap_send_beacon_template(struct iwx_softc *sc,")
+require_order(iwx_beacon, [
+    "IWX_BEACON_TEMPLATE_CMD,",
+    "IWX_CMD_ASYNC,",
+    "commandLength, command",
+], "IWX API-68 asynchronous beacon resource submission")
+require(iwx_hal, "case IWX_BEACON_TEMPLATE_CMD:",
+        "IWX asynchronous beacon q0 completion retirement")
 require(iwx_hal, "iwx_read_prph(sc, IWX_DEVICE_SYSTEM_TIME_REG)",
         "IWX firmware system-time TBTT")
 require(iwx_hal, "IWX_FW_CTXT_ACTION_MODIFY", "IWX same-PHY binding modify")
+iwx_ap_mac = body(iwx_hal,
+    "iwx_ap_mac_ctxt_cmd(struct iwx_softc *sc,")
+for needle, label in (
+    ("runtime->config.channel <= 14 ? 0x01 : 0x15", "IWX AP basic OFDM rates"),
+    ("IWX_MAC_FILTER_IN_PROBE_REQUEST", "IWX AP probe-request filter"),
+    ("IWX_MAC_QOS_FLG_TGN", "IWX AP HT/TGN flag"),
+    ("primary->in_ni.ni_rstamp", "IWX associated-STA TBTT anchor"),
+    ("36 + arc4random_uniform(64 - 36)", "IWX reference TBTT separation"),
+):
+    require(iwx_ap_mac, needle, label)
+if "IWX_MAC_FILTER_ACCEPT_GRP" in iwx_ap_mac:
+    raise SystemExit("FAIL: IWX AP MAC must leave multicast RX to typed station")
 for needle, label in (
     ("#if !defined(IEEE80211_OPT_OUT_STA_ONLY)", "IWX opt-out gate"),
     ("IWX_DEVICE_FAMILY_22000", "IWX 22000 family"),
     ("IWX_DEVICE_FAMILY_AX210", "IWX AX210 family"),
-    ("IWX_UCODE_TLV_CAPA_DQA_SUPPORT", "IWX DQA gate"),
     ("IWX_UCODE_TLV_API_STA_TYPE", "IWX typed-station gate"),
     ("addStationVersion < 12", "IWX ADD_STA version gate"),
     ("txCommandVersion <= 8", "IWX modern TX rate-index gate"),
     ("beaconVersion == 11 || beaconVersion == 12", "IWX beacon gate"),
 ):
     require(iwx_capability, needle, label)
+if "IWX_UCODE_TLV_CAPA_DQA_SUPPORT" in body(
+        iwx_capability, "iwx_softc_supports_ap_go("):
+    raise SystemExit(
+        "FAIL: IWX gen2/TVQM admission must not require removed DQA TLV")
 if "IWX_UCODE_TLV_CAPA_BEACON_STORING" in body(
         iwx_capability, "iwx_softc_supports_ap_go("):
     raise SystemExit("FAIL: optional BEACON_STORING must not gate base AP")
@@ -133,22 +180,26 @@ require(iwx_station, "*queueId = (uint16_t)assignedQueue;",
         "IWX firmware-assigned internal queue ownership")
 
 iwx_start = body(iwx_hal, "iwx_start_ap_mode(struct iwx_softc *sc,")
-ax210_branch = body(iwx_start,
-    "if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)")
-require_order(ax210_branch, [
+require(iwx_start, "const uint8_t beaconCommandVersion = iwx_lookup_cmd_ver(",
+        "IWX beacon-ABI epoch ordering gate")
+for state in ("IEEE80211_S_INIT", "IEEE80211_S_RUN"):
+    require(iwx_start, state, f"IWX stable AP start state {state}")
+v13_branch = body(iwx_start,
+    "if (beaconCommandVersion >= 13 &&")
+require_order(v13_branch, [
     "iwx_ap_mac_ctxt_cmd(sc, runtime,",
     "iwx_ap_send_beacon_template(sc, runtime)",
-], "IWX AX210 MAC-before-beacon bring-up")
-legacy_branch = iwx_start[iwx_start.find("} else {",
-    iwx_start.find("if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)")):]
-require_order(legacy_branch, [
+], "IWX v13 link-owned MAC-before-beacon bring-up")
+api68_branch = iwx_start[iwx_start.find("} else {",
+    iwx_start.find("if (beaconCommandVersion >= 13 &&")):]
+require_order(api68_branch, [
     "iwx_ap_send_beacon_template(sc, runtime)",
     "iwx_ap_mac_ctxt_cmd(sc, runtime,",
     "iwx_ap_binding_cmd(sc, runtime, true)",
     "runtime->multicastStaId,",
     "runtime->broadcastStaId,",
     "iwx_ap_update_quotas(sc, runtime, true)",
-], "IWX 22000 beacon-before-MAC bring-up")
+], "IWX API-68/v11-v12 beacon-before-MAC bring-up")
 require(iwx_start, "&runtime->multicastQueueId", "IWX multicast TVQM queue")
 require(iwx_start, "&runtime->broadcastQueueId", "IWX broadcast TVQM queue")
 

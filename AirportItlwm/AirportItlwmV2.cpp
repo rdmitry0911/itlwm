@@ -6546,6 +6546,8 @@ publishDefaultAPSTAInterfaceGated(OSObject *owner, void *, void *, void *,
         return kIOReturnBadArgument;
 
     const IOReturn result = self->publishDefaultAPSTAInterface();
+    XYLog("AirportItlwm: default APSTA lower-ready publication result=0x%x\n",
+          result);
     if (result != kIOReturnSuccess && result != kIOReturnUnsupported) {
         XYLog("AirportItlwm: default APSTA publication failed 0x%x; "
               "continuing with primary STA\n", result);

@@ -207,7 +207,11 @@ ordered(iwm, "itl_ap_tx_ba_response_matches(txBa, &action)",
 require(iwx_h, "iwx_ap_set_client_tx_ba", "IWX TX BA API")
 for needle, label in (
     ("itl_ap_tx_ba_note_data(&client->clientTxBa[0])", "IWX traffic trigger"),
-    ("IWX_TX_CMD_FLG_SEQ_CTL", "IWX firmware sequence owner"),
+    ("TX_FLAGS_BITS_API_S_VER_3", "IWX modern TX flag ABI"),
+    ("Sequence ownership for a TVQM queue is already",
+     "IWX TVQM firmware sequence owner"),
+    ("deviceCommand->hdr.qid = ring->qid & 0x1f",
+     "IWX sequence-owner queue descriptor"),
     ("TVQM allocated this queue for the exact AP sta_id/TID",
      "IWX TVQM RA/TID ownership"),
     ("client->clientTxBaMask |= bit", "IWX agreement transition"),

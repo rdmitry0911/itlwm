@@ -72,8 +72,12 @@ static inline bool iwx_firmware_family_supports_ap_go(int device_family)
  * BEACON_STORING and GO_UAPSD are optional features, not base AP admission
  * bits. Linux iwlwifi does not require either for start_ap; requiring them
  * here would incorrectly hide working AP support. The load-bearing gates are
- * DQA, typed stations, ADD_STA v12+, and the v11/v12 beacon carrier actually
- * emitted by this backend.
+ * IWX_DEVICE_FAMILY_22000 and AX210 use the gen2/new-TX (TVQM) API by family;
+ * current Linux iwlwifi deliberately detects that API from mac_cfg->gen2 and
+ * no longer defines the old DQA_SUPPORT firmware TLV.  Requiring that legacy
+ * bit hid AX211 even though its typed-station, ADD_STA, TX and beacon command
+ * versions exactly match the carriers emitted below.  Keep those live command
+ * ABI witnesses as the fail-closed admission boundary.
  */
 static inline uint8_t
 iwx_ap_go_command_version(const struct iwx_softc *sc, uint8_t group,
@@ -97,8 +101,7 @@ static inline bool iwx_softc_supports_ap_go(const struct iwx_softc *sc)
         return false;
     if (!iwx_firmware_family_supports_ap_go(sc->sc_device_family))
         return false;
-    if (!isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_DQA_SUPPORT) ||
-        !isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_STA_TYPE))
+    if (!isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_STA_TYPE))
         return false;
     const uint8_t addStationVersion = iwx_ap_go_command_version(
         sc, IWX_LONG_GROUP, IWX_ADD_STA);

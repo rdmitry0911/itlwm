@@ -813,7 +813,15 @@ attach(IOPCIDevice *device)
     wclScanBackendGeneration = 0;
     wclScanNextBackendGeneration = 0;
     wclScanPublicationInvalidated = false;
-    wclScanNeedsReopen = false;
+    /*
+     * The first committed SCAN state is the initial lower-radio-ready edge,
+     * not only a reset recovery edge.  AirportItlwm consumes the matching
+     * one-shot WCL_SCAN_REOPENED event to publish the idle Tahoe APSTA role
+     * after firmware capabilities are available.  Starting this false left
+     * IWM with no ap1 inventory until a later radio reset even when the
+     * loaded firmware passed every AP/GO carrier gate.
+     */
+    wclScanNeedsReopen = true;
     wclSaeAdmissionReserved = false;
 
     pci.pa_tag = device;

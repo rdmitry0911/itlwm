@@ -314,6 +314,11 @@ struct IwxSaeTxGateArgs {
 
 } // namespace
 
+static void iwx_ap_lifecycle_reset(ItlIwx *, bool);
+static bool iwx_ap_schedule_task(ItlIwx *, struct task *);
+static void iwx_ap_start_task_dispatch(void *);
+static void iwx_ap_stop_task_dispatch(void *);
+
 IOReturn ItlIwx::
 submitSaeAuthFrame(const struct ItlSaeAuthTxRequestV1 *request)
 {
@@ -530,6 +535,16 @@ out:
 
 bool ItlIwx::attach(IOPCIDevice *device)
 {
+    apLifecycleLock = IOLockAlloc();
+    if (apLifecycleLock == NULL)
+        return false;
+    apLifecycleDetached = false;
+    apStartPending = false;
+    apStopPending = false;
+    apLowerRunning = false;
+    apStopRequested = false;
+    apStartResultValid = false;
+    apStartResult = kIOReturnNotReady;
     itl_ap_firmware_runtime_reset(&apRuntime);
     apCsaTimeout = NULL;
     apCsaTimerInitialized = false;
@@ -545,7 +560,15 @@ bool ItlIwx::attach(IOPCIDevice *device)
     wclScanBackendGeneration = 0;
     wclScanNextBackendGeneration = 0;
     wclScanPublicationInvalidated = false;
-    wclScanNeedsReopen = false;
+    /*
+     * The first committed SCAN state is the initial lower-radio-ready edge,
+     * not only a reset recovery edge.  AirportItlwm consumes the matching
+     * one-shot WCL_SCAN_REOPENED event to publish the idle Tahoe APSTA role
+     * after firmware capabilities are available.  Starting this false left
+     * IWX with no ap1 inventory until a later radio reset even when the
+     * loaded firmware passed every AP/GO carrier gate.
+     */
+    wclScanNeedsReopen = true;
     wclSaeAdmissionReserved = false;
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
@@ -615,6 +638,10 @@ detach(IOPCIDevice *device)
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
         if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->ap_start_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->ap_stop_task);
+        if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
         iwx_del_task(sc, systq, &sc->init_task);
         iwx_del_task(sc, systq, &sc->ba_task);
@@ -627,6 +654,7 @@ detach(IOPCIDevice *device)
         taskq_barrier(systq);
     }
     iwx_task_gate_drain(sc, 0, 0, 0);
+    iwx_ap_lifecycle_reset(this, true);
     /*
      * task_gate_drain() covers both already-running gate actions and callers
      * that retained the gate before close but had not entered it yet.  It is
@@ -785,6 +813,10 @@ void ItlIwx::free()
     // controller/IRQ/task producer has been fenced; this is the sole point
     // at which freeing that lock cannot race a pointer load in iwx_cmdq_enter.
     iwx_cmdq_destroy(&com);
+	if (apLifecycleLock != NULL) {
+		IOLockFree(apLifecycleLock);
+		apLifecycleLock = NULL;
+	}
 	KASSERT(ieee80211_bip_lifetime_drain(&com.sc_ic) == 0,
 	    "BIP readers, retirement, or published slot remains at final free");
 	/* The same terminal lifetime fence now owns the PAE snapshot leaf lock. */
@@ -829,12 +861,10 @@ IOReturn ItlIwx::disable(IONetworkInterface *netif)
      * not replayed across the radio-reset security boundary. */
     if (apCsaTimerInitialized)
         timeout_del(&apCsaTimeout);
-    if (apRuntime.stage != kItlApFirmwareResourceIdle) {
-        const int apError = iwx_stop_ap_mode(&com, &apRuntime);
-        if (apError != 0)
-            XYLog("%s: IWX AP radio-reset teardown error=%d\n",
-                  DEVNAME(&com), apError);
-    }
+    /* Never wait for q0 from the upper power command gate.  The serial AP
+     * worker tears resources down when it can; the immediately following
+     * device quiesce remains the authoritative fallback erasure edge. */
+    (void)stopAPMode();
     if (!(ifp->if_flags & IFF_UP)) {
         XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
@@ -1104,9 +1134,28 @@ noteWclScanRadioReady()
         publish = true;
     }
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
-    if (publish && com.sc_ic.ic_event_handler != NULL)
-        (*com.sc_ic.ic_event_handler)(&com.sc_ic,
-                                     IEEE80211_EVT_WCL_SCAN_REOPENED, NULL);
+    if (publish) {
+        const uint8_t addStationVersion = iwx_ap_go_command_version(
+            &com, IWX_LONG_GROUP, IWX_ADD_STA);
+        const uint8_t txCommandVersion = iwx_ap_go_command_version(
+            &com, IWX_LONG_GROUP, IWX_TX_CMD);
+        const uint8_t beaconVersion = iwx_ap_go_command_version(
+            &com, IWX_LONG_GROUP, IWX_BEACON_TEMPLATE_CMD);
+        XYLog("IWX APSTA lower-ready handler=%p family=%d family_ok=%u "
+              "legacy_dqa_tlv=%u sta_type=%u add_sta=%u tx=%u beacon=%u "
+              "supported=%u\n",
+              com.sc_ic.ic_event_handler, com.sc_device_family,
+              iwx_firmware_family_supports_ap_go(com.sc_device_family) ? 1U : 0U,
+              isset(com.sc_enabled_capa, IWX_UCODE_TLV_CAPA_DQA_SUPPORT) ? 1U : 0U,
+              isset(com.sc_ucode_api, IWX_UCODE_TLV_API_STA_TYPE) ? 1U : 0U,
+              static_cast<unsigned>(addStationVersion),
+              static_cast<unsigned>(txCommandVersion),
+              static_cast<unsigned>(beaconVersion),
+              iwx_softc_supports_ap_go(&com) ? 1U : 0U);
+        if (com.sc_ic.ic_event_handler != NULL)
+            (*com.sc_ic.ic_event_handler)(
+                &com.sc_ic, IEEE80211_EVT_WCL_SCAN_REOPENED, NULL);
+    }
 }
 
 ItlIwxWclScanTerminalKind ItlIwx::
@@ -1364,12 +1413,187 @@ supportsAPMode() const
     return iwx_softc_supports_ap_go(&com);
 }
 
+static IOReturn
+iwx_ap_start_result_from_errno(int error)
+{
+    switch (error) {
+    case 0:
+        return kIOReturnSuccess;
+    case EOPNOTSUPP:
+        return kIOReturnUnsupported;
+    case EINVAL:
+        return kIOReturnBadArgument;
+    case EBUSY:
+        return kIOReturnBusy;
+    case ENXIO:
+    case EWOULDBLOCK:
+        return kIOReturnNotReady;
+    default:
+        return kIOReturnError;
+    }
+}
+
 /*
- * AP-mode HAL bring-up entry. Forwards to the iwx-internal
- * iwx_start_ap_mode() lifecycle helper, which gates on
- * iwx_softc_supports_ap_go(&com) and short-circuits with
- * kIOReturnUnsupported when the firmware capability gate rejects
- * AP/GO operation. EINVAL maps to kIOReturnBadArgument.
+ * Gate-close and enqueue are one operation.  The lifecycle mutex is never
+ * taken here: reset owns task-gate -> barrier -> lifecycle ordering, while
+ * upper start/stop publishes its value state before attempting admission.
+ */
+static bool
+iwx_ap_schedule_task(ItlIwx *that, struct task *task)
+{
+    struct iwx_softc *sc = &that->com;
+    bool queued = false;
+
+    if (sc->sc_task_gate_lock == NULL || !sc->sc_task_callbacks_ready ||
+        sc->sc_nswq == NULL || task == NULL)
+        return false;
+    IOLockLock(sc->sc_task_gate_lock);
+    if (!sc->sc_task_gate_closed && !sc->sc_task_gate_detaching &&
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0)
+        queued = task_add(sc->sc_nswq, task) != 0;
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return queued;
+}
+
+static void
+iwx_ap_lifecycle_reset(ItlIwx *that, bool detached)
+{
+    if (that->apLifecycleLock == NULL) {
+        itl_ap_firmware_runtime_reset(&that->apRuntime);
+        return;
+    }
+    IOLockLock(that->apLifecycleLock);
+    that->apLifecycleDetached = detached;
+    that->apStartPending = false;
+    that->apStopPending = false;
+    that->apLowerRunning = false;
+    that->apStopRequested = false;
+    that->apStartResultValid = false;
+    that->apStartResult = kIOReturnNotReady;
+    itl_ap_firmware_runtime_reset(&that->apRuntime);
+    IOLockUnlock(that->apLifecycleLock);
+}
+
+static void
+iwx_ap_start_task(void *argument)
+{
+    struct iwx_softc *sc = static_cast<struct iwx_softc *>(argument);
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    bool stopAfterStart = false;
+
+    IOLockLock(that->apLifecycleLock);
+    if (that->apLifecycleDetached || !that->apStartPending) {
+        IOLockUnlock(that->apLifecycleLock);
+        return;
+    }
+    if (that->apStopRequested) {
+        that->apStartPending = false;
+        that->apStopRequested = false;
+        itl_ap_firmware_runtime_reset(&that->apRuntime);
+        IOLockUnlock(that->apLifecycleLock);
+        XYLog("%s: IWX AP lower start cancelled before firmware submit\n",
+              DEVNAME(sc));
+        return;
+    }
+    IOLockUnlock(that->apLifecycleLock);
+
+    XYLog("%s: IWX AP lower start worker begin\n", DEVNAME(sc));
+    const int error = that->iwx_start_ap_mode(sc, &that->apRuntime);
+    const IOReturn result = iwx_ap_start_result_from_errno(error);
+
+    IOLockLock(that->apLifecycleLock);
+    that->apStartPending = false;
+    if (error == 0) {
+        that->apLowerRunning = true;
+        stopAfterStart = that->apStopRequested;
+        that->apStartResultValid = false;
+    } else {
+        const bool report = !that->apStopRequested;
+        that->apLowerRunning = false;
+        that->apStopRequested = false;
+        that->apStartResult = result;
+        that->apStartResultValid = report;
+        itl_ap_firmware_runtime_reset(&that->apRuntime);
+    }
+    IOLockUnlock(that->apLifecycleLock);
+
+    if (stopAfterStart) {
+        const int stopError = that->iwx_stop_ap_mode(sc, &that->apRuntime);
+        IOLockLock(that->apLifecycleLock);
+        that->apLowerRunning = false;
+        that->apStopRequested = false;
+        that->apStopPending = false;
+        that->apStartResultValid = false;
+        itl_ap_firmware_runtime_reset(&that->apRuntime);
+        IOLockUnlock(that->apLifecycleLock);
+        XYLog("%s: IWX AP lower cancelled start teardown error=%d\n",
+              DEVNAME(sc), stopError);
+        return;
+    }
+    XYLog("%s: IWX AP lower start worker complete error=%d result=0x%x\n",
+          DEVNAME(sc), error, static_cast<unsigned>(result));
+}
+
+static void
+iwx_ap_stop_task(void *argument)
+{
+    struct iwx_softc *sc = static_cast<struct iwx_softc *>(argument);
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    bool stopLower;
+
+    IOLockLock(that->apLifecycleLock);
+    if (that->apLifecycleDetached || !that->apStopPending) {
+        IOLockUnlock(that->apLifecycleLock);
+        return;
+    }
+    stopLower = that->apLowerRunning;
+    IOLockUnlock(that->apLifecycleLock);
+
+    const int error = stopLower ?
+        that->iwx_stop_ap_mode(sc, &that->apRuntime) : 0;
+    IOLockLock(that->apLifecycleLock);
+    that->apStopPending = false;
+    that->apLowerRunning = false;
+    that->apStopRequested = false;
+    that->apStartResultValid = false;
+    itl_ap_firmware_runtime_reset(&that->apRuntime);
+    IOLockUnlock(that->apLifecycleLock);
+    XYLog("%s: IWX AP lower stop worker complete error=%d\n",
+          DEVNAME(sc), error);
+}
+
+static void
+iwx_ap_start_task_dispatch(void *argument)
+{
+    struct iwx_softc *sc = static_cast<struct iwx_softc *>(argument);
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_ap_start_task(argument);
+    that->iwx_task_gate_leave(sc);
+}
+
+static void
+iwx_ap_stop_task_dispatch(void *argument)
+{
+    struct iwx_softc *sc = static_cast<struct iwx_softc *>(argument);
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_ap_stop_task(argument);
+    that->iwx_task_gate_leave(sc);
+}
+
+/*
+ * AP-mode HAL ingress is deliberately asynchronous.  AirportItlwm invokes
+ * this method while holding its upper command gate, and IWX firmware command
+ * completions are delivered on the device workloop.  Waiting for MAC_CONTEXT
+ * from the upper gate starves that completion for one second; the watchdog
+ * then repeats an ADD which firmware already consumed.  Snapshot once, run
+ * the complete reference-ordered resource transaction on sc_nswq, and let
+ * the existing APSTA watchdog observe its terminal value on the next tick.
  */
 IOReturn ItlIwx::
 startAPMode(const struct ItlHalApConfig *config)
@@ -1378,44 +1602,95 @@ startAPMode(const struct ItlHalApConfig *config)
         return kIOReturnUnsupported;
     if (!itl_ap_client_config_supported(config))
         return kIOReturnUnsupported;
-    if (apRuntime.stage != kItlApFirmwareResourceIdle)
-        return kIOReturnBusy;
-    int err = itl_ap_firmware_runtime_snapshot(&apRuntime, config);
-    if (err != 0)
+    if (apLifecycleLock == NULL)
+        return kIOReturnNotReady;
+
+    IOLockLock(apLifecycleLock);
+    if (apLifecycleDetached) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnNotReady;
+    }
+    if (apLowerRunning) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnSuccess;
+    }
+    if (apStartPending || apStopPending || apStopRequested) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnNotReady;
+    }
+    if (apStartResultValid) {
+        const IOReturn result = apStartResult;
+        apStartResultValid = false;
+        IOLockUnlock(apLifecycleLock);
+        return result;
+    }
+    const int snapshotError =
+        itl_ap_firmware_runtime_snapshot(&apRuntime, config);
+    if (snapshotError != 0) {
+        IOLockUnlock(apLifecycleLock);
         return kIOReturnBadArgument;
-    err = iwx_start_ap_mode(&com, &apRuntime);
-    if (err == EOPNOTSUPP) {
-        itl_ap_firmware_runtime_reset(&apRuntime);
-        return kIOReturnUnsupported;
     }
-    if (err == EINVAL) {
-        itl_ap_firmware_runtime_reset(&apRuntime);
-        return kIOReturnBadArgument;
+    apStartPending = true;
+    IOLockUnlock(apLifecycleLock);
+
+    if (!iwx_ap_schedule_task(this, &com.ap_start_task)) {
+        IOLockLock(apLifecycleLock);
+        if (apStartPending) {
+            apStartPending = false;
+            itl_ap_firmware_runtime_reset(&apRuntime);
+        }
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnNotReady;
     }
-    if (err != 0) {
-        itl_ap_firmware_runtime_reset(&apRuntime);
-        return kIOReturnError;
-    }
-    return kIOReturnSuccess;
+    XYLog("%s: IWX AP lower start queued outside upper command gate\n",
+          DEVNAME(&com));
+    return kIOReturnNotReady;
 }
 
 /*
- * AP-mode HAL tear-down entry. Forwards to iwx_stop_ap_mode(); when
- * the firmware capability gate is closed the helper returns 0 so
- * stopAPMode is idempotent across re-entry from the host APSTA
- * owner.
+ * Stop uses the same serial lower owner.  If start is in flight, its worker
+ * observes the stop bit under the lifecycle mutex and tears down before it
+ * publishes a running result.  A fully running AP gets a separate stop task,
+ * ordered behind every prior sc_nswq operation.
  */
 IOReturn ItlIwx::
 stopAPMode()
 {
     if (apCsaTimerInitialized)
         timeout_del(&apCsaTimeout);
-    int err = iwx_stop_ap_mode(&com, &apRuntime);
-    if (err == EOPNOTSUPP)
-        return kIOReturnUnsupported;
-    if (err != 0)
-        return kIOReturnError;
-    itl_ap_firmware_runtime_reset(&apRuntime);
+    if (apLifecycleLock == NULL)
+        return kIOReturnSuccess;
+
+    IOLockLock(apLifecycleLock);
+    if (apLifecycleDetached) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnSuccess;
+    }
+    apStartResultValid = false;
+    apStopRequested = true;
+    if (apStartPending) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnSuccess;
+    }
+    if (!apLowerRunning) {
+        apStopRequested = false;
+        itl_ap_firmware_runtime_reset(&apRuntime);
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnSuccess;
+    }
+    if (apStopPending) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnSuccess;
+    }
+    apStopPending = true;
+    IOLockUnlock(apLifecycleLock);
+
+    if (!iwx_ap_schedule_task(this, &com.ap_stop_task)) {
+        IOLockLock(apLifecycleLock);
+        apStopPending = false;
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnNotReady;
+    }
     return kIOReturnSuccess;
 }
 
@@ -4889,6 +5164,9 @@ iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t staId, int tid,
         .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
     };
     struct iwx_tx_ring *ring = &sc->sc_tvqm_ring;
+
+    XYLog("IWX AP TVQM begin sta=%u tid=%d size=%u\n",
+          static_cast<unsigned>(staId), tid, size);
     
     memset(ring, 0, sizeof(*ring));
     iwx_tx_ring_init(sc, ring, size);
@@ -4947,20 +5225,25 @@ iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t staId, int tid,
 
     err = iwx_send_cmd(sc, &hcmd);
     if (err) {
+        XYLog("IWX AP TVQM SCD_QUEUE_CFG transport error=%d sta=%u tid=%d\n",
+              err, static_cast<unsigned>(staId), tid);
         err = -err;
         goto fail;
     }
 
     pkt = hcmd.resp_pkt;
     if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
-        XYLog("SCD_QUEUE_CFG command failed\n");
+        XYLog("IWX AP TVQM SCD_QUEUE_CFG firmware failure sta=%u tid=%d\n",
+              static_cast<unsigned>(staId), tid);
         err = -EIO;
         goto fail;
     }
 
     resp_len = iwx_rx_packet_payload_len(pkt);
     if (resp_len != sizeof(*resp)) {
-        XYLog("SCD_QUEUE_CFG returned %zu bytes, expected %zu bytes\n", resp_len, sizeof(*resp));
+        XYLog("IWX AP TVQM SCD_QUEUE_CFG response length=%zu expected=%zu "
+              "sta=%u tid=%d\n", resp_len, sizeof(*resp),
+              static_cast<unsigned>(staId), tid);
         err = -EIO;
         goto fail;
     }
@@ -4969,10 +5252,17 @@ iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t staId, int tid,
     fwqid = le16toh(resp->queue_number);
     wr_idx = le16toh(resp->write_pointer);
     if (fwqid == IWX_DQA_CMD_QUEUE || fwqid >= ARRAY_SIZE(sc->txq)) {
-        XYLog("queue index %d unsupported", fwqid);
+        XYLog("IWX AP TVQM assigned unsupported queue=%d flags=0x%x "
+              "sta=%u tid=%d\n", fwqid,
+              static_cast<unsigned>(le16toh(resp->flags)),
+              static_cast<unsigned>(staId), tid);
         err = -EIO;
         goto fail;
     }
+    XYLog("IWX AP TVQM ready sta=%u tid=%d queue=%d write=%u flags=0x%x\n",
+          static_cast<unsigned>(staId), tid, fwqid,
+          static_cast<unsigned>(wr_idx),
+          static_cast<unsigned>(le16toh(resp->flags)));
     ring->cur = wr_idx;
     ring->qid = fwqid;
     iwx_reset_tx_ring(sc, &sc->txq[fwqid]);
@@ -7320,6 +7610,17 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
             if (frame_failed) {
                 XYLog("%s %d OUTPUT_ERROR type=%d status=%d\n",
                       __FUNCTION__, __LINE__, txd->type, status);
+                if (txd->ap_frame) {
+                    XYLog("IWX AP TX failure qid=%d type=%d subtype=0x%02x "
+                          "peer=%02x:%02x:%02x:%02x:%02x:%02x "
+                          "status=0x%x initial_rate=0x%x failure_frame=%u\n",
+                          ring->qid, txd->type, txd->diag_subtype,
+                          txd->diag_peer[0], txd->diag_peer[1],
+                          txd->diag_peer[2], txd->diag_peer[3],
+                          txd->diag_peer[4], txd->diag_peer[5], status,
+                          le32toh(tx_resp->initial_rate),
+                          tx_resp->failure_frame);
+                }
                 ifp->netStat->outputErrors++;
                 if (txd->type == IEEE80211_FC0_TYPE_MGT)
                     iwx_toggle_tx_ant(sc,
@@ -9394,7 +9695,14 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
     } else if (IWX_RIDX_IS_CCK(rateIndex)) {
         rateFlags |= IWX_RATE_MCS_CCK_MSK_V1;
     }
-    const uint32_t commandFlags = IWX_TX_CMD_FLG_SEQ_CTL |
+    /*
+     * Gen2/Gen3 devices consume TX_FLAGS_BITS_API_S_VER_3 here.  In
+     * particular, bit 13 is not the legacy TX_CMD_FLG_SEQ_CTL bit used by
+     * the pre-22000 command.  Sequence ownership for a TVQM queue is already
+     * carried by the queue/descriptor, so keep this field to the modern
+     * flags accepted by the firmware ABI.
+     */
+    const uint32_t commandFlags =
         (firmwareRate ? 0 : IWX_TX_FLAGS_CMD_RATE) |
         (protectedFrame ? 0 : IWX_TX_FLAGS_ENCRYPT_DIS);
     uint16_t commandSize;
@@ -10981,8 +11289,8 @@ iwx_mac_ctxt_cmd_fill_sta(struct iwx_softc *sc, struct iwx_node *in,
  * wire fields. Beacon-time, beacon-tsf, beacon-interval (TU), DTIM
  * period (in beacon intervals), the multicast queue id, and the
  * beacon-template id are written into `struct iwx_mac_data_ap`.
- * `beacon_tsf` is fixed to zero per the AP_MAC_DATA_API_S_VER_2
- * contract.
+ * `beacon_tsf`, `reserved1`, and `reserved2` remain zero per the
+ * AP_MAC_DATA_API_S_VER_2 contract.
  */
 void ItlIwx::
 iwx_mac_ctxt_cmd_fill_ap(struct iwx_softc *sc, struct iwx_mac_data_ap *ap,
@@ -10992,12 +11300,12 @@ iwx_mac_ctxt_cmd_fill_ap(struct iwx_softc *sc, struct iwx_mac_data_ap *ap,
 {
     uint32_t dtim_interval = bi_tu * dtim_period;
 
+    (void)sc;
+
     ap->beacon_time = htole32(beacon_time);
     ap->beacon_tsf = htole64(0);
     ap->bi = htole32(bi_tu);
-    ap->bi_reciprocal = htole32(iwx_reciprocal(bi_tu));
     ap->dtim_interval = htole32(dtim_interval);
-    ap->dtim_reciprocal = htole32(iwx_reciprocal(dtim_interval));
     ap->mcast_qid = htole32(mcast_qid);
     ap->beacon_template = htole32(beacon_template_id);
 }
@@ -11091,7 +11399,16 @@ iwx_ap_send_beacon_template(struct iwx_softc *sc,
         offset += elementLength;
     }
     memcpy(command->frame, beacon, config->beaconTemplateLength);
-    const int error = iwx_send_cmd_pdu(sc, IWX_BEACON_TEMPLATE_CMD, 0,
+    /*
+     * BEACON_TEMPLATE is a fire-and-order resource command.  The API-68
+     * iwlwifi owner submits it with CMD_ASYNC and relies on q0 ordering before
+     * the following MAC command.  Waiting for it from AirportItlwm's upper
+     * command gate starves the IWX workloop which retires the direct response;
+     * the caller therefore times out even after firmware consumed the
+     * template, and a retry overlaps a poisoned command epoch.
+     */
+    const int error = iwx_send_cmd_pdu(sc, IWX_BEACON_TEMPLATE_CMD,
+                                       IWX_CMD_ASYNC,
                                        commandLength, command);
     explicit_bzero(command, commandLength);
     ::free(command);
@@ -11105,6 +11422,8 @@ iwx_ap_mac_ctxt_cmd(struct iwx_softc *sc,
 {
 #define IWX_AP_EXP2(_x) ((1 << (_x)) - 1)
     struct ieee80211com *ic = &sc->sc_ic;
+    struct iwx_node *primary = runtime->samePhyAsPrimary ?
+        (struct iwx_node *)ic->ic_bss : NULL;
     struct iwx_mac_ctx_cmd command;
     memset(&command, 0, sizeof(command));
 
@@ -11120,12 +11439,18 @@ iwx_ap_mac_ctxt_cmd(struct iwx_softc *sc,
                               IWX_TSF_ID_A : IWX_TSF_ID_B);
     IEEE80211_ADDR_COPY(command.node_addr, runtime->config.bssid);
     IEEE80211_ADDR_COPY(command.bssid_addr, runtime->config.bssid);
+    /* Match the basic-rate set emitted by apsta_build_beacon().  The MVM
+     * command carries ACK/basic rates, not the complete supported-rate set. */
     command.cck_rates = htole32(runtime->config.channel <= 14 ? 0x0f : 0);
-    command.ofdm_rates = htole32(0xff);
-    command.cck_short_preamble = htole32(IWX_MAC_FLG_SHORT_PREAMBLE);
-    command.short_slot = htole32(IWX_MAC_FLG_SHORT_SLOT);
-    command.filter_flags = htole32(IWX_MAC_FILTER_ACCEPT_GRP |
-                                    IWX_MAC_FILTER_IN_PROBE_REQUEST);
+    command.ofdm_rates = htole32(runtime->config.channel <= 14 ? 0x01 : 0x15);
+    /* The generated AP beacon advertises short slot on 2.4 GHz and does not
+     * advertise short preamble.  Do not inherit either bit from the STA BSS. */
+    command.cck_short_preamble = 0;
+    command.short_slot = htole32(runtime->config.channel <= 14 ?
+                                  IWX_MAC_FLG_SHORT_SLOT : 0);
+    /* MVM AP mode admits probe requests here.  ACCEPT_GRP belongs to the STA
+     * filler; multicast AP traffic is owned by the typed multicast station. */
+    command.filter_flags = htole32(IWX_MAC_FILTER_IN_PROBE_REQUEST);
 
     for (int i = 0; i < EDCA_NUM_AC; i++) {
         struct ieee80211_edca_ac_params *ac = &ic->ic_edca_ac[i];
@@ -11139,6 +11464,8 @@ iwx_ap_mac_ctxt_cmd(struct iwx_softc *sc,
     }
     command.ac[IWX_AC_VO].fifos_mask |= 1 << IWX_TX_FIFO_MCAST;
     command.qos_flags = htole32(IWX_MAC_QOS_FLG_UPDATE_EDCA);
+    if (itl_hal_ap_ht_enabled(&runtime->config))
+        command.qos_flags |= htole32(IWX_MAC_QOS_FLG_TGN);
 
     uint32_t beaconTime;
     if (!iwx_nic_lock(sc))
@@ -11146,8 +11473,15 @@ iwx_ap_mac_ctxt_cmd(struct iwx_softc *sc,
     beaconTime = iwx_read_prph(sc, IWX_DEVICE_SYSTEM_TIME_REG);
     iwx_nic_unlock(sc);
     const uint32_t interval = runtime->config.beaconInterval;
-    if (runtime->samePhyAsPrimary)
-        beaconTime += interval * IEEE80211_DUR_TU / 2;
+    if (runtime->samePhyAsPrimary && primary != NULL &&
+        primary->in_ni.ni_rstamp != 0 && primary->in_ni.ni_intval != 0) {
+        /* MVM places the AP TBTT 36..63 percent of the associated station's
+         * beacon interval after that station's synchronized device time. */
+        const uint32_t percentage = 36 + arc4random_uniform(64 - 36);
+        beaconTime = primary->in_ni.ni_rstamp +
+            static_cast<uint32_t>(primary->in_ni.ni_intval) *
+            IEEE80211_DUR_TU * percentage / 100;
+    }
     iwx_mac_ctxt_cmd_fill_ap(sc, &command.ap, beaconTime, interval,
         runtime->config.dtimPeriod, 0, runtime->macId);
 
@@ -11244,8 +11578,16 @@ iwx_ap_add_internal_sta(struct iwx_softc *sc,
         command.assoc_id = htole16(assocId);
 
     uint32_t status = IWX_ADD_STA_SUCCESS;
+    XYLog("IWX AP ADD_STA begin id=%u type=%u tid=%u version=%u size=%zu "
+          "client=%u\n", static_cast<unsigned>(staId),
+          static_cast<unsigned>(stationType), static_cast<unsigned>(tid),
+          static_cast<unsigned>(commandVersion), sizeof(command),
+          client != NULL ? 1U : 0U);
     int error = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA, sizeof(command),
                                         &command, &status);
+    XYLog("IWX AP ADD_STA complete id=%u type=%u error=%d status=0x%x\n",
+          static_cast<unsigned>(staId), static_cast<unsigned>(stationType),
+          error, static_cast<unsigned>(status));
     if (error == 0 &&
         (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
         error = EIO;
@@ -11256,6 +11598,8 @@ iwx_ap_add_internal_sta(struct iwx_softc *sc,
         sc, staId, tid, 0, IWX_DEFAULT_QUEUE_SIZE);
     if (assignedQueue < 0) {
         error = -assignedQueue;
+        XYLog("IWX AP ADD_STA queue failure id=%u error=%d; removing sta\n",
+              static_cast<unsigned>(staId), error);
         struct iwx_rm_sta_cmd removeCommand;
         memset(&removeCommand, 0, sizeof(removeCommand));
         removeCommand.sta_id = staId;
@@ -11895,9 +12239,15 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
             error = EINVAL;
         const bool wasPowerSave = client != NULL &&
             client->clientPowerSave;
-        if (wasPowerSave && !result.powerSave)
-            error = iwx_ap_modify_client_power_state(
-                this, sc, &apRuntime, client, true, false);
+        /*
+         * AX210-family devices use the new TX API.  Their firmware owns the
+         * peer sleep/awake transition and reports it from the RX side; Linux
+         * iwlwifi deliberately does not send an ADD_STA wake modification in
+         * that mode.  This handler runs on the notification/RX completion
+         * path, where a synchronous host command also returns EWOULDBLOCK.
+         * Treat the received PM bit as the committed transition and reserve
+         * ADD_STA sleep_tx_count for an actual PS-Poll frame release below.
+         */
         if (error == 0)
             client->clientPowerSave = result.powerSave;
         if (error == 0 && wasPowerSave &&
@@ -12203,11 +12553,84 @@ int ItlIwx::
 iwx_start_ap_mode(struct iwx_softc *sc,
                   struct ItlApFirmwareRuntime *runtime)
 {
-    if (runtime == NULL || runtime->stage != kItlApFirmwareResourceIdle)
+    if (runtime == NULL || runtime->stage != kItlApFirmwareResourceIdle) {
+        XYLog("IWX AP start blocked runtime=%p stage=%u\n", runtime,
+              runtime != NULL ? static_cast<unsigned>(runtime->stage) : 0xffU);
         return EBUSY;
-    if ((sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR |
-                         IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) != 0)
+    }
+    const uint32_t fatalFlags = sc->sc_flags &
+        (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR);
+    if (fatalFlags != 0) {
+        XYLog("IWX AP start blocked flags=0x%x fatal=0x%x "
+              "ic_state=%d if_flags=0x%x\n",
+              static_cast<unsigned>(sc->sc_flags),
+              static_cast<unsigned>(fatalFlags), sc->sc_ic.ic_state,
+              static_cast<unsigned>(sc->sc_ic.ic_if.if_flags));
         return EBUSY;
+    }
+    /*
+     * Linux MVM serializes AP start and station state changes under the MVM
+     * mutex, and only treats a station as a TSF leader once it is associated.
+     * AirportItlwm has separate upper and lower workloops, so an AP request
+     * can otherwise reach firmware between the station AUTH key command and
+     * the matching MAC-context update.  API-68 firmware asserts on that mixed
+     * epoch.  INIT is a valid AP-only owner and RUN is a valid APSTA owner;
+     * wait through SCAN/AUTH/ASSOC and let the retained HostAP profile retry.
+     */
+    if (sc->sc_ic.ic_state != IEEE80211_S_INIT &&
+        sc->sc_ic.ic_state != IEEE80211_S_RUN) {
+        XYLog("IWX AP start waiting for stable STA epoch ic_state=%d\n",
+              sc->sc_ic.ic_state);
+        return EBUSY;
+    }
+
+    /*
+     * CoreWLAN commonly leaves one cache-only WCL background census active
+     * after the STA reaches RUN and then asks the retained role-7 interface
+     * to start.  Waiting for that scan is not a stable ownership boundary:
+     * its terminal can be delayed indefinitely once HostAP publication keeps
+     * retrying, while clearing IWX_FLAG_BGSCAN by hand would orphan both the
+     * firmware lease and the tagged upper WCL ticket.
+     *
+     * The reference HostAP path explicitly disables its background-scan
+     * policy before configuring the AP context.  At this lower serialized
+     * boundary, retire only an exact active WCL background ticket through the
+     * existing abort owner.  That owner sends SCAN_ABORT_UMAC, reconciles
+     * net80211's cache-scan flags, publishes the tagged ABORTED terminal, and
+     * suppresses a false generic SCAN_DONE.  Foreground, autonomous-roam,
+     * WNM, and starting scans remain retryable owners and are never guessed.
+     */
+    if ((sc->sc_flags & IWX_FLAG_BGSCAN) != 0 &&
+        sc->sc_ic.ic_state == IEEE80211_S_RUN && wclScanLock != NULL) {
+        uint64_t generation = 0;
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(wclScanLock);
+        if (wclScanPhase == ItlIwxWclScanPhase::BackgroundActive)
+            generation = wclScanUpperGeneration;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+
+        if (generation != 0) {
+            const IOReturn abortResult =
+                abortWclBackgroundScan(generation);
+            XYLog("IWX AP WCL background scan abort generation=%llu "
+                  "result=0x%x flags=0x%x\n",
+                  (unsigned long long)generation, abortResult,
+                  static_cast<unsigned>(sc->sc_flags));
+            if (abortResult != kIOReturnSuccess)
+                return EBUSY;
+        }
+    }
+
+    const uint32_t blockedFlags = sc->sc_flags &
+        (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
+    if (blockedFlags != 0) {
+        XYLog("IWX AP start waiting for scan owner flags=0x%x blocked=0x%x "
+              "ic_state=%d if_flags=0x%x\n",
+              static_cast<unsigned>(sc->sc_flags),
+              static_cast<unsigned>(blockedFlags), sc->sc_ic.ic_state,
+              static_cast<unsigned>(sc->sc_ic.ic_if.if_flags));
+        return EBUSY;
+    }
     struct ieee80211_channel *channel = iwx_ap_find_channel(
         sc, runtime->config.channel);
     if (channel == NULL)
@@ -12221,45 +12644,66 @@ iwx_start_ap_mode(struct iwx_softc *sc,
     struct iwx_node *primary = (struct iwx_node *)sc->sc_ic.ic_bss;
     runtime->samePhyAsPrimary =
         (sc->sc_flags & IWX_FLAG_BINDING_ACTIVE) != 0 &&
+        sc->sc_ic.ic_state == IEEE80211_S_RUN &&
         primary != NULL && primary->in_phyctxt != NULL &&
         ieee80211_chan2ieee(&sc->sc_ic, primary->in_phyctxt->channel) ==
             runtime->config.channel;
     runtime->phyId = runtime->samePhyAsPrimary ?
         primary->in_phyctxt->id : 1;
 
+    XYLog("IWX AP start channel=%u ic_state=%d flags=0x%x same_phy=%u "
+          "phy=%u mac=%u\n", static_cast<unsigned>(runtime->config.channel),
+          sc->sc_ic.ic_state, static_cast<unsigned>(sc->sc_flags),
+          runtime->samePhyAsPrimary ? 1U : 0U,
+          static_cast<unsigned>(runtime->phyId),
+          static_cast<unsigned>(runtime->macId));
+
     int error = 0;
     if (!runtime->samePhyAsPrimary) {
         error = iwx_phy_ctxt_update(sc, &sc->sc_phyctxt[runtime->phyId],
                                     channel, 1, 1, 0);
+        XYLog("IWX AP stage phy_update error=%d\n", error);
         if (error != 0)
             return error;
     }
     /*
-     * Linux iwlwifi's start_ap contract is family ordered: on 22000 the
-     * legacy beacon resource precedes MAC creation, while AX210+ makes the
-     * beacon resource belong to an already-created MAC.
+     * Keep command ordering in the same firmware-ABI epoch as the beacon
+     * carrier.  Linux sent BEACON_TEMPLATE before MAC_CONTEXT ADD through
+     * beacon command v12, including on AX210-family hardware.  Commit
+     * 36cf537798cb introduced the MAC-before-beacon order together with the
+     * link-owned v13 beacon carrier used by MLO.  Selecting that newer order
+     * merely from the device family mixes the v13 resource model with our
+     * API-68/v11-v12 command and makes MAC_CONTEXT ADD assert in firmware.
      */
-    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
+    const uint8_t beaconCommandVersion = iwx_lookup_cmd_ver(
+        sc, IWX_LONG_GROUP, IWX_BEACON_TEMPLATE_CMD);
+    if (beaconCommandVersion >= 13 &&
+        beaconCommandVersion != IWX_FW_CMD_VER_UNKNOWN) {
         error = iwx_ap_mac_ctxt_cmd(sc, runtime,
                                     IWX_FW_CTXT_ACTION_ADD);
+        XYLog("IWX AP stage mac_add error=%d\n", error);
         if (error != 0)
             return error;
         runtime->stage = kItlApFirmwareResourceMac;
         error = iwx_ap_send_beacon_template(sc, runtime);
+        XYLog("IWX AP stage beacon error=%d\n", error);
         if (error != 0)
             goto unwind;
     } else {
         error = iwx_ap_send_beacon_template(sc, runtime);
+        XYLog("IWX AP stage beacon error=%d\n", error);
         if (error != 0)
             return error;
         runtime->stage = kItlApFirmwareResourceBeacon;
         error = iwx_ap_mac_ctxt_cmd(sc, runtime,
                                     IWX_FW_CTXT_ACTION_ADD);
+        XYLog("IWX AP stage mac_add error=%d\n", error);
         if (error != 0)
             goto unwind;
         runtime->stage = kItlApFirmwareResourceMac;
     }
     error = iwx_ap_binding_cmd(sc, runtime, true);
+    XYLog("IWX AP stage binding error=%d\n", error);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceBinding;
@@ -12269,6 +12713,8 @@ iwx_start_ap_mode(struct iwx_softc *sc,
     error = iwx_ap_add_internal_sta(sc, runtime,
         runtime->multicastStaId, IWX_STA_MULTICAST, multicastAddress,
         0, &runtime->multicastQueueId, 0, NULL);
+    XYLog("IWX AP stage multicast error=%d queue=%u\n", error,
+          static_cast<unsigned>(runtime->multicastQueueId));
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceMulticastStation;
@@ -12276,16 +12722,24 @@ iwx_start_ap_mode(struct iwx_softc *sc,
         runtime->broadcastStaId, IWX_STA_GENERAL_PURPOSE,
         etherbroadcastaddr, 0,
         &runtime->broadcastQueueId, IWX_MGMT_TID, NULL);
+    XYLog("IWX AP stage broadcast error=%d queue=%u\n", error,
+          static_cast<unsigned>(runtime->broadcastQueueId));
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceBroadcastStation;
     error = iwx_ap_update_quotas(sc, runtime, true);
+    XYLog("IWX AP stage quotas error=%d\n", error);
     if (error != 0)
         goto unwind;
     runtime->stage = kItlApFirmwareResourceRunning;
+    XYLog("IWX AP start complete multicast_queue=%u broadcast_queue=%u\n",
+          static_cast<unsigned>(runtime->multicastQueueId),
+          static_cast<unsigned>(runtime->broadcastQueueId));
     return 0;
 
 unwind:
+    XYLog("IWX AP start unwind stage=%u error=%d\n",
+          static_cast<unsigned>(runtime->stage), error);
     (void)iwx_stop_ap_mode(sc, runtime);
     return error;
 }
@@ -15372,6 +15826,10 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
         if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->ap_start_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->ap_stop_task);
+        if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
         iwx_del_task(sc, systq, &sc->ba_task);
         iwx_del_task(sc, systq, &sc->mac_ctxt_task);
@@ -15416,7 +15874,7 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
      * upper HostAP profile after an unexpected IWX recovery epoch. */
     if (that->apCsaTimerInitialized)
         timeout_del(&that->apCsaTimeout);
-    itl_ap_firmware_runtime_reset(&that->apRuntime);
+    iwx_ap_lifecycle_reset(that, false);
     /* Device reset is the last edge required before active-slot release. */
     that->iwx_sae_tx_purge(sc);
 
@@ -16066,6 +16524,7 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data,
             case IWX_TX_ANT_CONFIGURATION_CMD:
             case IWX_ADD_STA:
             case IWX_MAC_CONTEXT_CMD:
+            case IWX_BEACON_TEMPLATE_CMD:
             case IWX_REPLY_SF_CFG_CMD:
             case IWX_POWER_TABLE_CMD:
             case IWX_LTR_CONFIG:
@@ -19165,6 +19624,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     memset(&sc->sae_tx_task, 0, sizeof(sc->sae_tx_task));
     memset(&sc->sae_engine_task, 0, sizeof(sc->sae_engine_task));
     memset(&sc->mfp_pae_task, 0, sizeof(sc->mfp_pae_task));
+    memset(&sc->ap_start_task, 0, sizeof(sc->ap_start_task));
+    memset(&sc->ap_stop_task, 0, sizeof(sc->ap_stop_task));
     memset(&sc->ap_client_task, 0, sizeof(sc->ap_client_task));
     memset(&sc->ba_task, 0, sizeof(sc->ba_task));
     memset(&sc->mac_ctxt_task, 0, sizeof(sc->mac_ctxt_task));
@@ -19603,6 +20064,10 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_engine_task_ready = true;
     task_set(&sc->mfp_pae_task, iwx_mfp_pae_task_dispatch, sc,
              "iwx_mfp_pae_task");
+    task_set(&sc->ap_start_task, iwx_ap_start_task_dispatch, sc,
+             "iwx_ap_start_task");
+    task_set(&sc->ap_stop_task, iwx_ap_stop_task_dispatch, sc,
+             "iwx_ap_stop_task");
     task_set(&sc->ap_client_task, iwx_ap_client_task_dispatch, sc,
              "iwx_ap_client_task");
     task_set(&sc->ba_task, iwx_ba_task_dispatch, sc, "iwx_ba_task");

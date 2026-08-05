@@ -4577,9 +4577,9 @@ struct iwx_sf_cfg_cmd {
  * @beacon_time: beacon transmit time in system time
  * @beacon_tsf: beacon transmit time in TSF
  * @bi: beacon interval in TU
- * @bi_reciprocal: 2^32 / bi
+ * @reserved1: reserved, must be zero
  * @dtim_interval: dtim transmit time in TU
- * @dtim_reciprocal: 2^32 / dtim_interval
+ * @reserved2: reserved, must be zero
  * @mcast_qid: queue ID for multicast traffic
  *    NOTE: obsolete from VER2 and on
  * @beacon_template: beacon template ID
@@ -4588,9 +4588,9 @@ struct iwx_mac_data_ap {
     uint32_t beacon_time;
     uint64_t beacon_tsf;
     uint32_t bi;
-    uint32_t bi_reciprocal;
+    uint32_t reserved1;
     uint32_t dtim_interval;
-    uint32_t dtim_reciprocal;
+    uint32_t reserved2;
     uint32_t mcast_qid;
     uint32_t beacon_template;
 } __packed; /* AP_MAC_DATA_API_S_VER_2 */

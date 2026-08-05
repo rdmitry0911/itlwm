@@ -1,5 +1,61 @@
 # iwx AP/GO MAC-Context Command Owner and HAL Boundary Layer
 
+## Runtime supersession (2026-08-05)
+
+This file began as the fail-closed May design record; statements below that
+say the AP gate is closed or that the resource owner does not exist describe
+that historical slice.  The Tahoe runtime branch now admits the selected
+AX210-family/API-68 configurations and owns beacon, MAC, binding, internal
+station, queue, quota, client and key resources.
+
+The live AX211 trace also exposed an ordering distinction that the original
+family-only model missed.  Linux used `BEACON_TEMPLATE -> MAC_CONTEXT ADD`
+through beacon command v12, including AX210-family devices.  Upstream commit
+`36cf537798cb6c738b94a67ec1604c571e15b2b8` changed newer devices to
+`MAC_CONTEXT ADD -> BEACON_TEMPLATE` together with the MLO/link-owned beacon
+v13 carrier.  The local API-68 firmware advertises beacon v12, so its resource
+sequence must follow the pre-MLO order; choosing the v13 order from hardware
+family alone causes a firmware assert at `MAC_CONTEXT ADD`.
+
+The beacon template is also an asynchronous firmware resource command. Linux
+submits it with `CMD_ASYNC` and relies on host-command queue ordering before
+the next resource command.  A synchronous local submission waited from the
+upper command gate which the IWX completion path itself needs, returned
+`EWOULDBLOCK`, and left the retry racing a timed-out q0 slot.  The local API-68
+path therefore uses `IWX_CMD_ASYNC` while retaining the command-buffer copy
+semantics already used by other asynchronous iwx commands.
+
+Live q0 evidence then narrowed the remaining timeout to execution context.
+The first `MAC_CONTEXT ADD` was consumed and completed only after the caller's
+one-second wait returned; the APSTA watchdog consequently repeated an already
+accepted ADD until firmware asserted.  HostAP ingress runs under
+AirportItlwm's command gate, while IWX direct-command completions require the
+device workloop.  The lower resource transaction is now submitted to the
+driver's serial `sc_nswq` task owner and the public call reports retryable
+`NotReady` until that worker publishes success.  Stop is ordered through the
+same lower owner, including a stop arriving during start.  Finally, opcode
+`0x91` is an actual direct beacon response on this firmware; it is included in
+the handled-response set so the async q0 slot is retired instead of leaking
+one descriptor per watchdog attempt.
+
+The first execution-context-fixed run then exposed a second independent mixed
+epoch.  The AP worker reached beacon submission while the primary STA was in
+`IEEE80211_S_AUTH`; a concurrent station key command became the last host
+command before UMAC assert `0x20101058` (`data1=0x0b`).  Linux MVM prevents
+this interleave with its global mutex and uses an associated STA as an AP TSF
+leader only when `vif->cfg.assoc` is true.  The local equivalent admits AP
+resource creation only in stable `INIT` (AP-only) or `RUN` (APSTA) state and
+retries the retained HostAP profile through SCAN/AUTH/ASSOC.
+
+The AP MAC payload is aligned to the same Linux v6.0/API-68 donor at that
+boundary: its OFDM bitmap contains basic/mandatory ACK rates (`0x01` on the
+generated 2.4-GHz profile, `0x15` on 5 GHz), short-preamble/slot bits match the
+generated beacon, the AP filter admits probe requests but does not inherit the
+STA-only `ACCEPT_GRP` bit, HT/WMM profiles set `MAC_QOS_FLG_TGN`, and a shared
+APSTA TBTT is placed 36..63 percent of the associated STA beacon interval
+after `ni_rstamp`.  The IWM owner mirrors these non-generation-specific MVM
+rules; IWX retains its API-68 reserved-word and typed-station differences.
+
 ## Purpose
 
 This document describes the project-owned iwx AP/GO MAC-context
@@ -15,6 +71,31 @@ fail-closed sequence:
 3. `iwx_start_ap_mode()` / `iwx_stop_ap_mode()` lifecycle helpers and
    the `ItlIwx::startAPMode()` / `ItlIwx::stopAPMode()` HAL boundary
    overrides that delegate to them.
+
+## Runtime AP/STA scan handoff (Tahoe WIP92)
+
+The public Tahoe HostAP sequence can reach the retained role-7 owner while a
+cache-only WCL background scan still owns the associated STA radio.  Runtime
+WIP91 proved that merely retrying on `IWX_FLAG_BGSCAN` leaves AP activation
+pending after STA reaches `IEEE80211_S_RUN`; clearing the flag would leak the
+UMAC scan and its tagged WCL terminal.
+
+`iwx_start_ap_mode()` now retires only the exact
+`ItlIwxWclScanPhase::BackgroundActive` ticket before AP firmware resource
+creation.  It snapshots that ticket's upper generation under `wclScanLock`
+and delegates to `abortWclBackgroundScan()`.  The existing owner performs the
+UMAC abort, completes net80211's cache-only scan without a generic
+`SCAN_DONE`, clears `ic_wcl_scan_active`, and publishes the tagged ABORTED
+terminal.  Foreground scans, background scans without an active WCL ticket,
+and transitional STA states remain retryable; AP startup does not infer their
+ownership.
+
+This matches the recovered Broadcom HostAP control boundary at the policy
+level: `AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal` disables the
+background-scan private-MAC policy before AP context configuration when the
+infrastructure owner is not associated.  Intel's split upper/lower workloops
+require the physical scan ticket itself to be retired at the serialized lower
+boundary as well.
 
 Every layer is gated on the existing fail-closed
 `iwx_softc_supports_ap_go(sc)` capability surface (CR-458). On every
@@ -163,10 +244,10 @@ void ItlIwx::iwx_mac_ctxt_cmd_fill_go(struct iwx_softc *sc,
                                        uint32_t opp_ps_enabled);
 ```
 
-Pure mapping helpers. The AP filler writes eight `htole32`/`htole64`
-fields of `struct iwx_mac_data_ap`. The GO filler delegates the
-embedded AP arm to the AP filler and then writes `ctwin` and
-`opp_ps_enabled`.
+Pure mapping helpers. The AP filler writes the six active
+`htole32`/`htole64` fields of `struct iwx_mac_data_ap`; the two API-v2
+reserved words remain zero. The GO filler delegates the embedded AP
+arm to the AP filler and then writes `ctwin` and `opp_ps_enabled`.
 
 ### MAC-context command owner
 

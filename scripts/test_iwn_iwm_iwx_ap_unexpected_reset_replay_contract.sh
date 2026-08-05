@@ -67,17 +67,22 @@ assert iwn_stop.index("iwn_reset_ap_runtime_state();") < \
        iwn_stop.index("iwn_hw_stop(sc);"), \
     "IWN must publish lower AP loss before destroying firmware"
 
-for family, source, signature, device_stop in (
-    ("IWM", iwm, "iwm_stop(struct _ifnet *ifp)", "iwm_stop_device(sc);"),
+for family, source, signature, device_stop, runtime_reset in (
+    ("IWM", iwm, "iwm_stop(struct _ifnet *ifp)", "iwm_stop_device(sc);",
+     "itl_ap_firmware_runtime_reset(&that->apRuntime);"),
     ("IWX", iwx, "iwx_stop_internal(struct _ifnet *ifp,",
-     "iwx_stop_device(sc);"),
+     "iwx_stop_device(sc);", "iwx_ap_lifecycle_reset(that, false);"),
 ):
     stop = body(source, signature)
-    assert "itl_ap_firmware_runtime_reset(&that->apRuntime);" in stop, \
+    assert runtime_reset in stop, \
         f"{family} must retire its stale GO runtime on device reset"
-    assert stop.index(device_stop) < stop.index(
-        "itl_ap_firmware_runtime_reset(&that->apRuntime);"), \
+    assert stop.index(device_stop) < stop.index(runtime_reset), \
         f"{family} software AP retirement must follow the device reset"
+
+iwx_lifecycle_reset = body(iwx, "iwx_ap_lifecycle_reset(ItlIwx *that")
+assert "itl_ap_firmware_runtime_reset(&that->apRuntime);" in \
+       iwx_lifecycle_reset, \
+    "IWX serialized lifecycle reset must retire the firmware runtime"
 
 print("PASS: IWN/IWM/IWX unexpected lower reset replays retained HostAP")
 PY

@@ -44,23 +44,60 @@ assert resume.index("ic->ic_state != IEEE80211_S_RUN") < \
        "retained GO must re-arm after the primary STA boundary"
 assert "radioResetResumePending = false;" in resume
 
-for family, source, lower_stop in (
-    ("IWM", iwm, "iwm_stop_ap_resources(&com, &apRuntime)"),
-    ("IWX", iwx, "iwx_stop_ap_mode(&com, &apRuntime)"),
+iwm_disable = body(iwm, "disable(IONetworkInterface *netif)")
+iwm_lower_stop = "iwm_stop_ap_resources(&com, &apRuntime)"
+assert "apRuntime.stage != kItlApFirmwareResourceIdle" in iwm_disable, \
+    "IWM must notice retained GO resources"
+assert iwm_lower_stop in iwm_disable, "IWM must retire GO before radio stop"
+assert iwm_disable.index(iwm_lower_stop) < iwm_disable.index("DVACT_QUIESCE"), \
+    "IWM GO teardown must precede generic firmware teardown"
+assert iwm_disable.index(iwm_lower_stop) < iwm_disable.index(
+    "already !IFF_UP"), \
+    "IWM cleanup must survive an already-lowered primary ifnet"
+iwm_start = body(iwm, "startAPMode(const struct ItlHalApConfig *config)")
+assert "apRuntime.stage != kItlApFirmwareResourceIdle" in iwm_start
+assert "kIOReturnBusy" in iwm_start, \
+    "IWM stale pre-sleep state must remain fail-closed"
+
+# IWX firmware command completions share the device workloop with the upper
+# power command.  Its explicit AP stop is therefore asynchronous; the generic
+# device stop is the authoritative erasure edge and clears the serialized AP
+# lifecycle only after every admitted AP worker has been cancelled/drained.
+iwx_disable = body(iwx, "disable(IONetworkInterface *netif)")
+iwx_stop_request = "(void)stopAPMode();"
+assert iwx_stop_request in iwx_disable, \
+    "IWX must request serial AP teardown before radio stop"
+assert iwx_disable.index(iwx_stop_request) < iwx_disable.index(
+    "already !IFF_UP"), \
+    "IWX AP stop request must survive an already-lowered primary ifnet"
+assert iwx_disable.index(iwx_stop_request) < iwx_disable.index(
+    "DVACT_QUIESCE"), \
+    "IWX AP stop request must precede generic firmware teardown"
+
+iwx_device_stop = body(iwx, "iwx_stop_internal(struct _ifnet *ifp")
+assert "iwx_del_task(sc, sc->sc_nswq, &sc->ap_start_task)" in iwx_device_stop
+assert "iwx_del_task(sc, sc->sc_nswq, &sc->ap_stop_task)" in iwx_device_stop
+assert iwx_device_stop.index("taskq_barrier(sc->sc_nswq)") < \
+       iwx_device_stop.index("iwx_stop_device(sc)")
+assert iwx_device_stop.index("iwx_stop_device(sc)") < \
+       iwx_device_stop.index("iwx_ap_lifecycle_reset(that, false)")
+
+iwx_lifecycle_reset = body(iwx, "iwx_ap_lifecycle_reset(ItlIwx *that")
+for reset in (
+    "apStartPending = false",
+    "apStopPending = false",
+    "apLowerRunning = false",
+    "apStopRequested = false",
+    "itl_ap_firmware_runtime_reset(&that->apRuntime)",
 ):
-    disable = body(source, "disable(IONetworkInterface *netif)")
-    assert "apRuntime.stage != kItlApFirmwareResourceIdle" in disable, \
-        f"{family} must notice retained GO resources"
-    assert lower_stop in disable, f"{family} must retire GO before radio stop"
-    assert disable.index(lower_stop) < disable.index("DVACT_QUIESCE"), \
-        f"{family} GO teardown must precede generic firmware teardown"
-    assert disable.index(lower_stop) < disable.index("already !IFF_UP"), \
-        f"{family} cleanup must survive an already-lowered primary ifnet"
-    start = body(source,
-        "startAPMode(const struct ItlHalApConfig *config)")
-    assert "apRuntime.stage != kItlApFirmwareResourceIdle" in start
-    assert "kIOReturnBusy" in start, \
-        f"{family} stale pre-sleep state must remain fail-closed"
+    assert reset in iwx_lifecycle_reset, \
+        f"IWX reset must clear stale AP lifecycle: {reset}"
+
+iwx_start = body(iwx, "startAPMode(const struct ItlHalApConfig *config)")
+assert "if (apLowerRunning)" in iwx_start
+assert "apStartPending || apStopPending || apStopRequested" in iwx_start
+assert "return kIOReturnNotReady;" in iwx_start, \
+    "IWX stale async start/stop state must remain fail-closed"
 
 crypto_reset = body(runtime,
     "itl_ap_firmware_client_crypto_reset(")

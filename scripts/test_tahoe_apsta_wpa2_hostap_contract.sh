@@ -113,8 +113,10 @@ required_power_lifecycle = (
     "radioResetResumePending = true;",
     "IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()",
     "kAirportItlwmAPSTAHostApPowerOnRestoreState",
-    "result != kIOReturnTimeout",
-    "result != kIOReturnAborted",
+    "static bool apsta_lower_start_retryable(IOReturn result)",
+    "result == kIOReturnTimeout",
+    "result == kIOReturnAborted",
+    "!apsta_lower_start_retryable(result)",
 )
 for needle in required_power_lifecycle:
     assert needle in owner, f"missing APSTA sleep/wake lifecycle: {needle}"

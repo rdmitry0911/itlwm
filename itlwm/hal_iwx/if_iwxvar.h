@@ -861,6 +861,14 @@ struct iwx_softc {
 	struct task sae_tx_task;
 	struct task sae_engine_task;
 	struct task mfp_pae_task;
+	/*
+	 * AP firmware resource creation/removal must run outside AirportItlwm's
+	 * command gate.  Synchronous q0 completions are delivered by the IWX
+	 * workloop, so waiting for them from that upper gate starves the RX
+	 * completion and turns a successful ADD into a destructive retry.
+	 */
+	struct task ap_start_task;
+	struct task ap_stop_task;
 	/* Process-context AP client materialization; never wait for q0 in RX. */
 	struct task ap_client_task;
 	enum ieee80211_state	ns_nstate;

@@ -2539,6 +2539,8 @@ iwm_ap_mac_ctxt_cmd(struct iwm_softc *sc,
 {
 #define IWM_AP_EXP2(_x) ((1 << (_x)) - 1)
     struct ieee80211com *ic = &sc->sc_ic;
+    struct iwm_node *primary = runtime->samePhyAsPrimary ?
+        (struct iwm_node *)ic->ic_bss : NULL;
     struct iwm_mac_ctx_cmd command;
     memset(&command, 0, sizeof(command));
 
@@ -2554,11 +2556,11 @@ iwm_ap_mac_ctxt_cmd(struct iwm_softc *sc,
     IEEE80211_ADDR_COPY(command.node_addr, runtime->config.bssid);
     IEEE80211_ADDR_COPY(command.bssid_addr, runtime->config.bssid);
     command.cck_rates = htole32(runtime->config.channel <= 14 ? 0x0f : 0);
-    command.ofdm_rates = htole32(0xff);
-    command.cck_short_preamble = htole32(IWM_MAC_FLG_SHORT_PREAMBLE);
-    command.short_slot = htole32(IWM_MAC_FLG_SHORT_SLOT);
-    command.filter_flags = htole32(IWM_MAC_FILTER_ACCEPT_GRP |
-                                    IWM_MAC_FILTER_IN_PROBE_REQUEST);
+    command.ofdm_rates = htole32(runtime->config.channel <= 14 ? 0x01 : 0x15);
+    command.cck_short_preamble = 0;
+    command.short_slot = htole32(runtime->config.channel <= 14 ?
+                                  IWM_MAC_FLG_SHORT_SLOT : 0);
+    command.filter_flags = htole32(IWM_MAC_FILTER_IN_PROBE_REQUEST);
 
     for (int i = 0; i < EDCA_NUM_AC; i++) {
         struct ieee80211_edca_ac_params *ac = &ic->ic_edca_ac[i];
@@ -2573,6 +2575,8 @@ iwm_ap_mac_ctxt_cmd(struct iwm_softc *sc,
     /* Linux iwlwifi makes the AP multicast FIFO inherit VO EDCA. */
     command.ac[IWM_TX_FIFO_VO].fifos_mask |= 1 << IWM_TX_FIFO_MCAST;
     command.qos_flags = htole32(IWM_MAC_QOS_FLG_UPDATE_EDCA);
+    if (itl_hal_ap_ht_enabled(&runtime->config))
+        command.qos_flags |= htole32(IWM_MAC_QOS_FLG_TGN);
 
     const uint32_t interval = runtime->config.beaconInterval;
     const uint32_t dtimInterval = interval * runtime->config.dtimPeriod;
@@ -2580,8 +2584,13 @@ iwm_ap_mac_ctxt_cmd(struct iwm_softc *sc,
         return EBUSY;
     uint32_t beaconTime = iwm_read_prph(sc, IWM_DEVICE_SYSTEM_TIME_REG);
     iwm_nic_unlock(sc);
-    if (runtime->samePhyAsPrimary)
-        beaconTime += interval * IEEE80211_DUR_TU / 2;
+    if (runtime->samePhyAsPrimary && primary != NULL &&
+        primary->in_ni.ni_rstamp != 0 && primary->in_ni.ni_intval != 0) {
+        const uint32_t percentage = 36 + arc4random_uniform(64 - 36);
+        beaconTime = primary->in_ni.ni_rstamp +
+            static_cast<uint32_t>(primary->in_ni.ni_intval) *
+            IEEE80211_DUR_TU * percentage / 100;
+    }
     command.ap.beacon_time = htole32(beaconTime);
     command.ap.beacon_tsf = 0;
     command.ap.bi = htole32(interval);
@@ -3707,6 +3716,11 @@ iwm_start_ap_resources(struct iwm_softc *sc,
     if ((sc->sc_flags & (IWM_FLAG_SHUTDOWN | IWM_FLAG_HW_ERR |
                          IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) != 0)
         return EBUSY;
+    /* Keep AP MAC creation out of a concurrent STA SCAN/AUTH/ASSOC epoch.
+     * Linux MVM obtains the equivalent serialization from its global mutex. */
+    if (sc->sc_ic.ic_state != IEEE80211_S_INIT &&
+        sc->sc_ic.ic_state != IEEE80211_S_RUN)
+        return EBUSY;
     struct ieee80211_channel *channel = iwm_ap_find_channel(
         sc, runtime->config.channel);
     if (channel == NULL)
@@ -3722,6 +3736,7 @@ iwm_start_ap_resources(struct iwm_softc *sc,
     struct iwm_node *primary = (struct iwm_node *)sc->sc_ic.ic_bss;
     runtime->samePhyAsPrimary =
         (sc->sc_flags & IWM_FLAG_BINDING_ACTIVE) != 0 &&
+        sc->sc_ic.ic_state == IEEE80211_S_RUN &&
         primary != NULL && primary->in_phyctxt != NULL &&
         ieee80211_chan2ieee(&sc->sc_ic, primary->in_phyctxt->channel) ==
             runtime->config.channel;

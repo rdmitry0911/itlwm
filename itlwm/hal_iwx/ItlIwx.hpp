@@ -765,6 +765,20 @@ public:
     struct pci_attach_args pci;
     struct iwx_softc com;
     struct ItlApFirmwareRuntime apRuntime;
+    /*
+     * Upper HostAP calls arrive through AirportItlwm's command gate, while
+     * IWX command completions arrive on the device workloop.  This mutex
+     * protects only the asynchronous lower-lifecycle handoff; it is never
+     * held while a firmware command is in flight.
+     */
+    IOLock *apLifecycleLock;
+    bool apLifecycleDetached;
+    bool apStartPending;
+    bool apStopPending;
+    bool apLowerRunning;
+    bool apStopRequested;
+    bool apStartResultValid;
+    IOReturn apStartResult;
     CTimeout *apCsaTimeout;
     bool apCsaTimerInitialized;
     IOSimpleLock *wclScanLock;

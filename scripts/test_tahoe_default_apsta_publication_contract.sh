@@ -11,6 +11,9 @@ import sys
 root = Path(sys.argv[1])
 controller = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 header = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
+iwm = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
+iwm_scan = (root / "itlwm/hal_iwm/scan.cpp").read_text()
+iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 
 assert "IOReturn publishDefaultAPSTAInterface();" in header
 
@@ -67,6 +70,47 @@ boot = controller[
 ]
 assert "publishDefaultAPSTAInterface();" not in boot, (
     "APSTA capability must not be queried before asynchronous IWN init")
+
+for family, source, scan_source, attach_start, attach_end, scan_marker in (
+    (
+        "IWM",
+        iwm,
+        iwm_scan,
+        "bool ItlIwm::\nattach(IOPCIDevice *device)",
+        "void ItlIwm::\nfree()",
+        "iwm_scan(struct iwm_softc *sc)",
+    ),
+    (
+        "IWX",
+        iwx,
+        iwx,
+        "bool ItlIwx::attach(IOPCIDevice *device)",
+        "void ItlIwx::\ndetach(IOPCIDevice *device)",
+        "iwx_scan(struct iwx_softc *sc)",
+    ),
+):
+    attach = source[source.index(attach_start):source.index(attach_end)]
+    assert "wclScanNeedsReopen = true;" in attach, (
+        f"{family} must arm its initial lower-radio-ready publication")
+    assert "first committed SCAN state" in attach, (
+        f"{family} initial APSTA publication rationale is missing")
+
+    note_start = source.index("noteWclScanRadioReady()")
+    note_end = source.index("claimWclScanTerminal(", note_start)
+    note = source[note_start:note_end]
+    for needle in (
+        "if (wclScanNeedsReopen)",
+        "wclScanNeedsReopen = false",
+        "IEEE80211_EVT_WCL_SCAN_REOPENED",
+    ):
+        assert needle in note, (
+            f"{family} one-shot lower-radio-ready edge missing: {needle}")
+
+    scan_start = scan_source.index(scan_marker)
+    scan = scan_source[scan_start:scan_source.index("return 0;", scan_start)]
+    assert scan.index("ic->ic_state = IEEE80211_S_SCAN") < scan.index(
+        "noteWclScanRadioReady()"), (
+            f"{family} must publish only after committing SCAN")
 
 print("PASS: Tahoe publishes capable APSTA role at backend-ready edge")
 PY

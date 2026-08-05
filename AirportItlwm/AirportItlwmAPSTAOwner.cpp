@@ -26,6 +26,14 @@ static bool apsta_mac_is_zero(const uint8_t *mac)
     return true;
 }
 
+static bool apsta_lower_start_retryable(IOReturn result)
+{
+    return result == kIOReturnBusy ||
+        result == kIOReturnNotReady ||
+        result == kIOReturnTimeout ||
+        result == kIOReturnAborted;
+}
+
 enum {
     kAirportItlwmAPSTAAuthUpperOpen = 0,
     kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8,
@@ -1039,13 +1047,11 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         setSoftAPPowerSaveState(
             kAirportItlwmAPSTAHostApPowerOnRestoreState,
             kAirportItlwmAPSTAHostApPowerOnRestoreReason);
-    } else if (result != kIOReturnBusy &&
-               result != kIOReturnNotReady &&
-               result != kIOReturnTimeout &&
-               result != kIOReturnAborted) {
+    } else if (!apsta_lower_start_retryable(result)) {
         radioResetResumePending = false;
         radioResetWaitForPrimaryStaRun = false;
         radioResetResumeWaitTicks = 0;
+        state.hostApTransitionState270 = 0;
     }
     return result;
 }
@@ -1183,7 +1189,12 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     }
 
     if (in == nullptr || in->ssidLength1c == 0) {
-        return isApRunning() ? stopLower() : kIOReturnSuccess;
+        /* A stop carrier is also terminal for an accepted initial HostAP
+         * transition which has not crossed the replacement firmware epoch
+         * yet.  Otherwise the watchdog could start a profile after
+         * userspace had already withdrawn it. */
+        return isApRunning() || radioResetResumePending ?
+            stopLower() : kIOReturnSuccess;
     }
 
     if (in->authUpper0c != kAirportItlwmAPSTAAuthUpperOpen &&
@@ -1233,7 +1244,33 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     }
     if (isApRunning())
         return kIOReturnSuccess;
-    return startLowerIfReady();
+    const IOReturn result = startLowerIfReady();
+    if (!apsta_lower_start_retryable(result))
+        return result;
+
+    /*
+     * Tahoe's normal CoreWLAN HostAP sequence can retire the primary Intel
+     * MAC/PHY immediately before selector 25 arrives.  Broadcom's recovered
+     * setHostApModeInternal represents this exact interval with transition
+     * state +0x270 while AP-up +0x26c remains clear.  Intel firmware startup
+     * is asynchronous, and its lower-ready callback cannot submit the
+     * synchronous AP command sequence from the same task which completes
+     * initialization.  Retain the already validated profile and let the
+     * controller watchdog retry it after that callback returns.
+     *
+     * Returning success here acknowledges ownership of the HostAP request;
+     * isApRunning(), link state and the APSTA datapath remain fail-closed
+     * until startLowerIfReady() really succeeds on a later tick.
+     */
+    lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+    state.resetState26c = 0;
+    state.hostApTransitionState270 = 1;
+    radioResetResumePending = true;
+    radioResetWaitForPrimaryStaRun = false;
+    radioResetResumeWaitTicks = 0;
+    XYLog("APSTA initial lower start deferred result=0x%x channel=%u\n",
+          result, static_cast<unsigned>(apChannel));
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)

@@ -72,5 +72,18 @@ for family, front, back, prefix in (
     ):
         require(back, needle, f"{family} {label}")
 
+# The IWX backend is always the new TX API.  Firmware has already committed
+# the peer wake transition when RX reports the PM-bit change; issuing a
+# synchronous ADD_STA wake command from iwx_ap_handle_rx both diverges from
+# iwlwifi and fails with EWOULDBLOCK on the notification workloop.
+iwx_rx = iwx[iwx.index("bool ItlIwx::\niwx_ap_handle_rx"):
+             iwx.index("int ItlIwx::\niwx_ap_update_quotas")]
+if "iwx_ap_modify_client_power_state(\n                this, sc, &apRuntime, client, true, false)" in iwx_rx:
+    raise SystemExit("FAIL: IWX new-TX RX path must not issue ADD_STA wake")
+require(iwx_rx, "client->clientPowerSave = result.powerSave",
+        "IWX firmware-owned peer PM transition")
+require(iwx_rx, "reserve\n         * ADD_STA sleep_tx_count for an actual PS-Poll frame release",
+        "IWX new-TX peer wake rationale")
+
 print("PASS: paired IWM/IWX AP client power-save/TIM/PS-Poll contract")
 PY
