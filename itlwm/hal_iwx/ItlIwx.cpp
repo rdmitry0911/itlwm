@@ -545,6 +545,10 @@ bool ItlIwx::attach(IOPCIDevice *device)
     apStopRequested = false;
     apStartResultValid = false;
     apStartResult = kIOReturnNotReady;
+    apPrimaryStaRecoveryScanAbortPending = false;
+    apPrimaryStaRecoveryScanYielded = false;
+    apPrimaryStaRecoveryScanGeneric = false;
+    apPrimaryStaRecoveryScanGeneration = 0;
     itl_ap_firmware_runtime_reset(&apRuntime);
     apCsaTimeout = NULL;
     apCsaTimerInitialized = false;
@@ -1470,6 +1474,10 @@ iwx_ap_lifecycle_reset(ItlIwx *that, bool detached)
     that->apStopRequested = false;
     that->apStartResultValid = false;
     that->apStartResult = kIOReturnNotReady;
+    that->apPrimaryStaRecoveryScanAbortPending = false;
+    that->apPrimaryStaRecoveryScanYielded = false;
+    that->apPrimaryStaRecoveryScanGeneric = false;
+    that->apPrimaryStaRecoveryScanGeneration = 0;
     itl_ap_firmware_runtime_reset(&that->apRuntime);
     IOLockUnlock(that->apLifecycleLock);
 }
@@ -1491,6 +1499,7 @@ iwx_ap_start_task(void *argument)
         that->apStopRequested = false;
         itl_ap_firmware_runtime_reset(&that->apRuntime);
         IOLockUnlock(that->apLifecycleLock);
+        that->resumePrimaryStaRecoveryScanAfterAPHandoff();
         XYLog("%s: IWX AP lower start cancelled before firmware submit\n",
               DEVNAME(sc));
         return;
@@ -1528,8 +1537,10 @@ iwx_ap_start_task(void *argument)
         IOLockUnlock(that->apLifecycleLock);
         XYLog("%s: IWX AP lower cancelled start teardown error=%d\n",
               DEVNAME(sc), stopError);
+        that->resumePrimaryStaRecoveryScanAfterAPHandoff();
         return;
     }
+    that->resumePrimaryStaRecoveryScanAfterAPHandoff();
     XYLog("%s: IWX AP lower start worker complete error=%d result=0x%x\n",
           DEVNAME(sc), error, static_cast<unsigned>(result));
 }
@@ -1640,6 +1651,7 @@ startAPMode(const struct ItlHalApConfig *config)
             itl_ap_firmware_runtime_reset(&apRuntime);
         }
         IOLockUnlock(apLifecycleLock);
+        resumePrimaryStaRecoveryScanAfterAPHandoff();
         return kIOReturnNotReady;
     }
     XYLog("%s: IWX AP lower start queued outside upper command gate\n",
@@ -1939,6 +1951,261 @@ isPrimaryStaRecoveryScanPending() const
     return pending;
 }
 
+IOReturn ItlIwx::
+handoffPrimaryStaRecoveryScanToAP()
+{
+    struct iwx_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+
+    if (!supportsAPMode() || apLifecycleLock == NULL ||
+        wclScanLock == NULL || sc->sc_sae_wcl_credential_lock == NULL)
+        return kIOReturnNotReady;
+
+    /* A tagged WCL scan has its own terminal/publication owner.  The bounded
+     * AP fallback may retire only an untagged foreground scan.  If that scan
+     * belongs to retained-ESS recovery, preserve its credential generation;
+     * otherwise resume the ordinary foreground census after AP materializes. */
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool wclOwned = wclScanPhase != ItlIwxWclScanPhase::Idle;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (wclOwned)
+        return kIOReturnBusy;
+
+    bool retiredRetryableStart = false;
+    IOLockLock(apLifecycleLock);
+    if (apPrimaryStaRecoveryScanYielded) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnSuccess;
+    }
+    if (apPrimaryStaRecoveryScanAbortPending) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnNotReady;
+    }
+    if (apStartResultValid) {
+        const IOReturn priorResult = apStartResult;
+        apStartResultValid = false;
+        apStartResult = kIOReturnNotReady;
+        if (priorResult != kIOReturnBusy &&
+            priorResult != kIOReturnNotReady) {
+            IOLockUnlock(apLifecycleLock);
+            return priorResult;
+        }
+        retiredRetryableStart = true;
+    }
+    if (apLifecycleDetached || apStartPending || apStopPending ||
+        apStopRequested || apLowerRunning) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnBusy;
+    }
+    IOLockUnlock(apLifecycleLock);
+    if (retiredRetryableStart)
+        XYLog("%s: IWX AP scan handoff retired prior retryable start "
+              "terminal\n", DEVNAME(sc));
+    if (ic->ic_state != IEEE80211_S_SCAN ||
+        (sc->sc_flags & IWX_FLAG_BGSCAN) != 0)
+        return kIOReturnBusy;
+
+    uint64_t generation = 0;
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential))
+        generation = sc->sc_sae_bss_loss_recovery_generation;
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    const bool scanGeneric = generation == 0;
+
+    /* Publish the terminal owner before submitting SCAN_ABORT_UMAC.  The
+     * completion notification can race the synchronous command response;
+     * iwx_endscan() must recognize either ordering and is the only code that
+     * promotes this request to an AP-safe yielded state. */
+    IOLockLock(apLifecycleLock);
+    if (apLifecycleDetached || apStartPending || apStopPending ||
+        apStopRequested || apStartResultValid || apLowerRunning ||
+        apPrimaryStaRecoveryScanAbortPending ||
+        apPrimaryStaRecoveryScanYielded) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnBusy;
+    }
+    apPrimaryStaRecoveryScanGeneration = generation;
+    apPrimaryStaRecoveryScanGeneric = scanGeneric;
+    apPrimaryStaRecoveryScanAbortPending = true;
+    IOLockUnlock(apLifecycleLock);
+
+    /* SCAN is a net80211 state as well as a firmware lease.  Between scan
+     * generations the state may remain SCAN after the native terminal has
+     * already cleared SCANNING.  There is then nothing to abort: publish the
+     * same one-shot yielded owner, and let the lower start gate re-check the
+     * flags before it submits any AP command. */
+    if ((sc->sc_flags & IWX_FLAG_SCANNING) == 0) {
+        IOLockLock(apLifecycleLock);
+        if (apPrimaryStaRecoveryScanAbortPending &&
+            apPrimaryStaRecoveryScanGeneration == generation &&
+            apPrimaryStaRecoveryScanGeneric == scanGeneric) {
+            apPrimaryStaRecoveryScanAbortPending = false;
+            apPrimaryStaRecoveryScanYielded = true;
+        }
+        const bool quiescentYielded =
+            apPrimaryStaRecoveryScanYielded &&
+            apPrimaryStaRecoveryScanGeneration == generation &&
+            apPrimaryStaRecoveryScanGeneric == scanGeneric;
+        IOLockUnlock(apLifecycleLock);
+        XYLog("%s: IWX quiescent foreground scan yielded to AP "
+              "generation=%llu generic=%u yielded=%u\n",
+              DEVNAME(sc), (unsigned long long)generation,
+              scanGeneric ? 1U : 0U,
+              quiescentYielded ? 1U : 0U);
+        return quiescentYielded ? kIOReturnSuccess : kIOReturnNotReady;
+    }
+
+    const int abortError = iwx_umac_scan_abort(sc);
+    if (abortError != 0) {
+        IOLockLock(apLifecycleLock);
+        if (apPrimaryStaRecoveryScanAbortPending &&
+            apPrimaryStaRecoveryScanGeneration == generation &&
+            apPrimaryStaRecoveryScanGeneric == scanGeneric) {
+            apPrimaryStaRecoveryScanAbortPending = false;
+            apPrimaryStaRecoveryScanGeneric = false;
+            apPrimaryStaRecoveryScanGeneration = 0;
+        }
+        const bool terminalWon = apPrimaryStaRecoveryScanYielded &&
+            apPrimaryStaRecoveryScanGeneration == generation &&
+            apPrimaryStaRecoveryScanGeneric == scanGeneric;
+        IOLockUnlock(apLifecycleLock);
+        return terminalWon ? kIOReturnSuccess : kIOReturnError;
+    }
+
+    IOLockLock(apLifecycleLock);
+    const bool terminalWon = apPrimaryStaRecoveryScanYielded &&
+        apPrimaryStaRecoveryScanGeneration == generation &&
+        apPrimaryStaRecoveryScanGeneric == scanGeneric;
+    IOLockUnlock(apLifecycleLock);
+    XYLog("%s: IWX foreground scan abort submitted for AP "
+          "generation=%llu generic=%u state=%u flags=0x%x terminal=%u\n",
+          DEVNAME(sc), (unsigned long long)generation,
+          scanGeneric ? 1U : 0U,
+          static_cast<unsigned>(ic->ic_state),
+          static_cast<unsigned>(sc->sc_flags),
+          static_cast<unsigned>(terminalWon));
+    return terminalWon ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
+bool ItlIwx::
+completePrimaryStaRecoveryScanAPHandoff()
+{
+    struct iwx_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+
+    if (apLifecycleLock == NULL)
+        return false;
+
+    uint64_t generation = 0;
+    bool generic = false;
+    bool claimed = false;
+    IOLockLock(apLifecycleLock);
+    if (apPrimaryStaRecoveryScanAbortPending) {
+        claimed = true;
+        generation = apPrimaryStaRecoveryScanGeneration;
+        generic = apPrimaryStaRecoveryScanGeneric;
+        apPrimaryStaRecoveryScanAbortPending = false;
+    }
+    IOLockUnlock(apLifecycleLock);
+    if (!claimed || (generation == 0 && !generic))
+        return false;
+
+    /* The native terminal, not the abort command response, retires the scan
+     * lease.  Reconcile net80211 without publishing SCAN_DONE, selecting a
+     * cached BSS, or immediately starting the next scan. */
+    sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
+    ieee80211_end_scan_controlled(
+        &ic->ic_if, IEEE80211_SCAN_COMPLETION_AP_HANDOFF);
+
+    IOLockLock(apLifecycleLock);
+    if (!apLifecycleDetached &&
+        apPrimaryStaRecoveryScanGeneration == generation &&
+        apPrimaryStaRecoveryScanGeneric == generic)
+        apPrimaryStaRecoveryScanYielded = true;
+    const bool yielded = apPrimaryStaRecoveryScanYielded &&
+        apPrimaryStaRecoveryScanGeneration == generation &&
+        apPrimaryStaRecoveryScanGeneric == generic;
+    IOLockUnlock(apLifecycleLock);
+    XYLog("%s: IWX foreground scan terminal yielded to AP generation=%llu "
+          "generic=%u state=%u flags=0x%x yielded=%u\n",
+          DEVNAME(sc), (unsigned long long)generation,
+          generic ? 1U : 0U,
+          static_cast<unsigned>(ic->ic_state),
+          static_cast<unsigned>(sc->sc_flags),
+          static_cast<unsigned>(yielded));
+    return true;
+}
+
+void ItlIwx::
+resumePrimaryStaRecoveryScanAfterAPHandoff()
+{
+    struct iwx_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+    uint64_t generation = 0;
+    bool generic = false;
+
+    if (apLifecycleLock == NULL)
+        return;
+    IOLockLock(apLifecycleLock);
+    if (apPrimaryStaRecoveryScanYielded) {
+        generation = apPrimaryStaRecoveryScanGeneration;
+        generic = apPrimaryStaRecoveryScanGeneric;
+        apPrimaryStaRecoveryScanYielded = false;
+        apPrimaryStaRecoveryScanGeneric = false;
+        apPrimaryStaRecoveryScanGeneration = 0;
+    }
+    IOLockUnlock(apLifecycleLock);
+    if ((generation == 0 && !generic) ||
+        sc->sc_sae_wcl_credential_lock == NULL || wclScanLock == NULL)
+        return;
+
+    bool generationCurrent = false;
+    if (generation != 0) {
+        IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+        generationCurrent = sc->sc_sae_bss_loss_recovery_armed &&
+            sc->sc_sae_bss_loss_recovery_generation == generation &&
+            sc->sc_sae_wcl_credential_active &&
+            !sc->sc_sae_wcl_credential_staged &&
+            !sc->sc_sae_wcl_credential_pending &&
+            sc->sc_sae_wcl_credential.request_generation == generation &&
+            itl_sae_wcl_credential_is_well_formed(
+                &sc->sc_sae_wcl_credential);
+        IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    }
+
+    if ((!generic && !generationCurrent) ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+        ic->ic_des_esslen != 0 ||
+        (ic->ic_if.if_flags & IFF_RUNNING) == 0 ||
+        (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR)) != 0)
+        return;
+    if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) != 0)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool wclOwned = wclScanPhase != ItlIwxWclScanPhase::Idle;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (wclOwned)
+        return;
+
+    XYLog("%s: IWX resuming foreground scan after AP handoff "
+          "generation=%llu generic=%u\n",
+          DEVNAME(sc), (unsigned long long)generation,
+          generic ? 1U : 0U);
+    ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+}
+
 void ItlIwx::
 iwx_ap_csa_timeout(void *arg)
 {
@@ -2155,6 +2422,19 @@ airportItlwmQueryIwxAPTxFreeSpace(ItlHalService *service, uint32_t *freeSpace)
     if (that == NULL || freeSpace == NULL)
         return false;
     *freeSpace = that->getAPTxFreeSpace();
+    return true;
+}
+
+extern "C" bool
+airportItlwmHandoffIwxPrimaryStaRecoveryScanToAP(
+    ItlHalService *service, IOReturn *result)
+{
+    ItlIwx *that = OSDynamicCast(ItlIwx, service);
+    if (that == NULL)
+        return false;
+    if (result == NULL)
+        return true;
+    *result = that->handoffPrimaryStaRecoveryScanToAP();
     return true;
 }
 
@@ -12568,17 +12848,31 @@ iwx_start_ap_mode(struct iwx_softc *sc,
               static_cast<unsigned>(sc->sc_ic.ic_if.if_flags));
         return EBUSY;
     }
+    bool recoveryScanYielded = false;
+    if (apLifecycleLock != NULL) {
+        IOLockLock(apLifecycleLock);
+        recoveryScanYielded = apPrimaryStaRecoveryScanYielded;
+        IOLockUnlock(apLifecycleLock);
+    }
+    const uint32_t scanFlags = sc->sc_flags &
+        (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
     /*
      * Linux MVM serializes AP start and station state changes under the MVM
      * mutex, and only treats a station as a TSF leader once it is associated.
      * AirportItlwm has separate upper and lower workloops, so an AP request
      * can otherwise reach firmware between the station AUTH key command and
      * the matching MAC-context update.  API-68 firmware asserts on that mixed
-     * epoch.  INIT is a valid AP-only owner and RUN is a valid APSTA owner;
-     * wait through SCAN/AUTH/ASSOC and let the retained HostAP profile retry.
+     * epoch.  INIT is a valid AP-only owner and RUN is a valid APSTA owner.
+     * A bounded foreground-scan handoff is the one additional AP-only
+     * boundary: its exact scan owner has already observed the native abort
+     * terminal, and its retained credential or ordinary census is restarted
+     * only after this transaction.
+     * Every other SCAN/AUTH/ASSOC transition remains a retryable owner.
      */
     if (sc->sc_ic.ic_state != IEEE80211_S_INIT &&
-        sc->sc_ic.ic_state != IEEE80211_S_RUN) {
+        sc->sc_ic.ic_state != IEEE80211_S_RUN &&
+        !(sc->sc_ic.ic_state == IEEE80211_S_SCAN &&
+          recoveryScanYielded && scanFlags == 0)) {
         XYLog("IWX AP start waiting for stable STA epoch ic_state=%d\n",
               sc->sc_ic.ic_state);
         return EBUSY;
@@ -15102,6 +15396,9 @@ iwx_endscan(struct iwx_softc *sc)
 //    }
     
     if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
+        return;
+
+    if (that->completePrimaryStaRecoveryScanAPHandoff())
         return;
 
     explicit_bzero(&terminal, sizeof(terminal));

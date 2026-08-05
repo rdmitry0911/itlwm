@@ -68,6 +68,10 @@ extern "C" bool airportItlwmQueryIwmAPTxFreeSpace(
     ItlHalService *, uint32_t *);
 extern "C" bool airportItlwmQueryIwxAPTxFreeSpace(
     ItlHalService *, uint32_t *);
+extern "C" bool airportItlwmHandoffIwmPrimaryStaRecoveryScanToAP(
+    ItlHalService *, IOReturn *);
+extern "C" bool airportItlwmHandoffIwxPrimaryStaRecoveryScanToAP(
+    ItlHalService *, IOReturn *);
 
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwn, ItlHalService)
@@ -6332,6 +6336,26 @@ airportItlwmQueryAPTxFreeSpace(ItlHalService *service)
         return freeSpace;
     return airportItlwmQueryIwxAPTxFreeSpace(service, &freeSpace) ?
         freeSpace : 0;
+}
+
+extern "C" IOReturn
+airportItlwmHandoffPrimaryStaRecoveryScanToAP(ItlHalService *service)
+{
+    if (service == NULL)
+        return kIOReturnBadArgument;
+
+    IOReturn result = kIOReturnUnsupported;
+    if (airportItlwmHandoffIwmPrimaryStaRecoveryScanToAP(service, &result))
+        return result;
+    if (airportItlwmHandoffIwxPrimaryStaRecoveryScanToAP(service, &result))
+        return result;
+
+    /* DVM already owns an exact lease-tagged abort plus terminal wait in
+     * iwn_quiesce_scan_for_ap_transition().  Let its existing startAPMode()
+     * boundary perform that handoff without extending the HAL vtable. */
+    if (OSDynamicCast(ItlIwn, service) != NULL)
+        return kIOReturnUnsupported;
+    return kIOReturnUnsupported;
 }
 
 bool ItlIwn::iwn_handle_ap_probe_req(const struct ieee80211_frame *request,

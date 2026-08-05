@@ -552,4 +552,16 @@ private:
 extern "C" uint32_t airportItlwmQueryAPTxFreeSpace(
     ItlHalService *service);
 
+/*
+ * A retained HostAP profile gives the primary STA a bounded opportunity to
+ * finish its foreground scan first after a destructive radio epoch.  Once
+ * that interval expires, MVM may retire only an untagged foreground scan,
+ * materialize the independent AP context, and then resume either the same
+ * retained credential generation or the ordinary census.  Keep this out of
+ * the HAL vtable for the same early-attach ABI reason as the AP TX admission
+ * bridge above.
+ */
+extern "C" IOReturn airportItlwmHandoffPrimaryStaRecoveryScanToAP(
+    ItlHalService *service);
+
 #endif /* ItlHalService_hpp */

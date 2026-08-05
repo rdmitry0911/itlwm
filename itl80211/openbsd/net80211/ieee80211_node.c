@@ -1568,10 +1568,12 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
     if (ic->ic_opmode == IEEE80211_M_STA)
         ieee80211_clean_inactive_nodes(ic, IEEE80211_INACT_SCAN);
 
-    /* A queued WCL initial request has drained a prior generic foreground
-     * lease, or an exact WCL foreground lease has just completed.  Both need
-     * ordinary scan cleanup, but neither may publish generic SCAN_DONE, loop
-     * back into ieee80211_next_scan(), select a BSS, or join it. */
+    /* A queued WCL request or a serialized AP transition has drained a
+     * generic foreground lease, or an exact WCL foreground lease has just
+     * completed.  All need ordinary scan cleanup, but none may publish a
+     * generic SCAN_DONE, loop back into ieee80211_next_scan(), select a BSS,
+     * or join it.  The exact lower owner explicitly resumes any interrupted
+     * credential generation after its transaction commits. */
     if (!generic_terminal) {
         ieee80211_reset_scan(ifp);
         return;

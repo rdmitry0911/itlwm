@@ -135,6 +135,7 @@ private:
     uint32_t apCredentialLength;
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
+    bool radioResetPrimaryStaScanHandoff;
     uint16_t radioResetResumeWaitTicks;
     uint8_t lowerAssociatedStaCount;
     uint8_t lowerAssociatedStaMacs[kAirportItlwmAPSTAStationTableEntryCount]

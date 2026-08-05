@@ -506,6 +506,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     apCredentialLength = 0;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
+    radioResetPrimaryStaScanHandoff = false;
     radioResetResumeWaitTicks = 0;
     lowerAssociatedStaCount = 0;
     bzero(lowerAssociatedStaMacs, sizeof(lowerAssociatedStaMacs));
@@ -569,6 +570,7 @@ void AirportItlwmAPSTAOwner::free()
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
+    radioResetPrimaryStaScanHandoff = false;
     radioResetResumeWaitTicks = 0;
     clearLowerAssociatedStations();
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
@@ -801,6 +803,7 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
 {
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
+    radioResetPrimaryStaScanHandoff = false;
     radioResetResumeWaitTicks = 0;
     if (owner != nullptr && owner->fHalService != nullptr) {
         (void)owner->fHalService->stopAPMode();
@@ -856,6 +859,7 @@ void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(
     if (primaryRecoveryScanPending)
         XYLog("APSTA radio-reset primary recovery scan owns radio\n");
     radioResetResumeWaitTicks = 0;
+    radioResetPrimaryStaScanHandoff = false;
     if (owner != nullptr)
         owner->setAPSTADatapathEnabled(false);
     for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++)
@@ -974,18 +978,26 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
 
     /*
      * An unexpected lower-loss census can run before the replacement
-     * firmware has entered its retained-ESS scan.  The first replay attempt
-     * then returns NotReady, and a later watchdog would otherwise start PAN
-     * over the now-live primary scan.  Re-sample the exact HAL generation at
-     * that last boundary; the fail-closed HAL default keeps AP-only and
-     * ordinary scans on the immediate replay path.
+     * firmware enters its foreground scan.  The first replay attempt then
+     * returns NotReady, and a later watchdog would otherwise submit PAN over
+     * the now-live scan forever.  Give STA a bounded interval, then ask the
+     * lower owner to abort only an untagged foreground lease at its native
+     * terminal.  Tagged WCL/background owners remain fail-closed below.
      */
     if (!radioResetWaitForPrimaryStaRun &&
-        owner != nullptr && owner->fHalService != nullptr &&
-        owner->fHalService->isPrimaryStaRecoveryScanPending()) {
-        radioResetWaitForPrimaryStaRun = true;
-        radioResetResumeWaitTicks = 0;
-        XYLog("APSTA radio-reset late primary recovery scan owns radio\n");
+        !radioResetPrimaryStaScanHandoff &&
+        owner != nullptr && owner->fHalService != nullptr) {
+        struct ieee80211com *ic =
+            owner->fHalService->get80211Controller();
+        if (ic != nullptr && ic->ic_state == IEEE80211_S_SCAN) {
+            const bool retainedRecovery =
+                owner->fHalService->isPrimaryStaRecoveryScanPending();
+            radioResetWaitForPrimaryStaRun = true;
+            radioResetResumeWaitTicks = 0;
+            XYLog("APSTA radio-reset late primary foreground scan owns "
+                  "radio retained_recovery=%u\n",
+                  retainedRecovery ? 1U : 0U);
+        }
     }
 
     if (radioResetWaitForPrimaryStaRun) {
@@ -999,6 +1011,24 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
                 kAirportItlwmAPSTARadioResetPrimaryStaWaitTicks) {
             radioResetResumeWaitTicks++;
             return kIOReturnNotReady;
+        }
+        const bool foregroundScanTimedOut =
+            ic->ic_state == IEEE80211_S_SCAN &&
+            radioResetResumeWaitTicks >=
+                kAirportItlwmAPSTARadioResetPrimaryStaWaitTicks;
+        if (foregroundScanTimedOut) {
+            const IOReturn handoffResult =
+                airportItlwmHandoffPrimaryStaRecoveryScanToAP(
+                    owner->fHalService);
+            XYLog("APSTA bounded primary foreground scan handoff "
+                  "wait_ticks=%u result=0x%x\n",
+                  static_cast<unsigned>(radioResetResumeWaitTicks),
+                  static_cast<unsigned>(handoffResult));
+            if (handoffResult != kIOReturnSuccess &&
+                handoffResult != kIOReturnUnsupported)
+                return handoffResult;
+            radioResetPrimaryStaScanHandoff =
+                handoffResult == kIOReturnSuccess;
         }
         XYLog("APSTA radio-reset primary STA boundary state=%u wait_ticks=%u\n",
               static_cast<unsigned>(ic->ic_state),
@@ -1043,6 +1073,7 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
     const IOReturn result = startLowerIfReady();
     if (result == kIOReturnSuccess) {
         radioResetResumePending = false;
+        radioResetPrimaryStaScanHandoff = false;
         radioResetResumeWaitTicks = 0;
         setSoftAPPowerSaveState(
             kAirportItlwmAPSTAHostApPowerOnRestoreState,
@@ -1050,8 +1081,16 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
     } else if (!apsta_lower_start_retryable(result)) {
         radioResetResumePending = false;
         radioResetWaitForPrimaryStaRun = false;
+        radioResetPrimaryStaScanHandoff = false;
         radioResetResumeWaitTicks = 0;
         state.hostApTransitionState270 = 0;
+    } else if (radioResetPrimaryStaScanHandoff &&
+               result != kIOReturnNotReady) {
+        /* IWX reports NotReady while its lower worker is still in flight.
+         * Any other retryable terminal has already resumed the primary scan;
+         * allow a fresh bounded arbitration interval on the next census. */
+        radioResetPrimaryStaScanHandoff = false;
+        radioResetResumeWaitTicks = 0;
     }
     return result;
 }
@@ -1267,6 +1306,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     state.hostApTransitionState270 = 1;
     radioResetResumePending = true;
     radioResetWaitForPrimaryStaRun = false;
+    radioResetPrimaryStaScanHandoff = false;
     radioResetResumeWaitTicks = 0;
     XYLog("APSTA initial lower start deferred result=0x%x channel=%u\n",
           result, static_cast<unsigned>(apChannel));

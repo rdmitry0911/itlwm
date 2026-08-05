@@ -800,6 +800,10 @@ bool ItlIwm::
 attach(IOPCIDevice *device)
 {
     itl_ap_firmware_runtime_reset(&apRuntime);
+    apPrimaryStaRecoveryScanAbortPending = false;
+    apPrimaryStaRecoveryScanYielded = false;
+    apPrimaryStaRecoveryScanGeneric = false;
+    apPrimaryStaRecoveryScanGeneration = 0;
     apCsaTimeout = NULL;
     apCsaTimerInitialized = false;
     timeout_set(&apCsaTimeout, iwm_ap_csa_timeout, this);
@@ -963,16 +967,25 @@ supportsAPMode() const
 IOReturn ItlIwm::
 startAPMode(const struct ItlHalApConfig *config)
 {
-    if (!supportsAPMode())
+    if (!supportsAPMode()) {
+        resumePrimaryStaRecoveryScanAfterAPHandoff();
         return kIOReturnUnsupported;
-    if (!itl_ap_client_config_supported(config))
+    }
+    if (!itl_ap_client_config_supported(config)) {
+        resumePrimaryStaRecoveryScanAfterAPHandoff();
         return kIOReturnUnsupported;
-    if (apRuntime.stage != kItlApFirmwareResourceIdle)
+    }
+    if (apRuntime.stage != kItlApFirmwareResourceIdle) {
+        resumePrimaryStaRecoveryScanAfterAPHandoff();
         return kIOReturnBusy;
+    }
     int error = itl_ap_firmware_runtime_snapshot(&apRuntime, config);
-    if (error != 0)
+    if (error != 0) {
+        resumePrimaryStaRecoveryScanAfterAPHandoff();
         return kIOReturnBadArgument;
+    }
     error = iwm_start_ap_resources(&com, &apRuntime);
+    resumePrimaryStaRecoveryScanAfterAPHandoff();
     if (error != 0) {
         itl_ap_firmware_runtime_reset(&apRuntime);
         if (error == EOPNOTSUPP)
@@ -987,6 +1000,7 @@ startAPMode(const struct ItlHalApConfig *config)
 IOReturn ItlIwm::
 stopAPMode()
 {
+    resumePrimaryStaRecoveryScanAfterAPHandoff();
     if (apCsaTimerInitialized)
         timeout_del(&apCsaTimeout);
     if (apRuntime.stage == kItlApFirmwareResourceIdle)
@@ -1248,6 +1262,227 @@ isPrimaryStaRecoveryScanPending() const
     return pending;
 }
 
+IOReturn ItlIwm::
+handoffPrimaryStaRecoveryScanToAP()
+{
+    struct iwm_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+
+    if (!supportsAPMode() || wclScanLock == NULL ||
+        sc->sc_sae_wcl_credential_lock == NULL)
+        return kIOReturnNotReady;
+
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool wclOwned = wclScanPhase != ItlIwmWclScanPhase::Idle;
+    const bool yielded = apPrimaryStaRecoveryScanYielded;
+    const bool abortPending = apPrimaryStaRecoveryScanAbortPending;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (wclOwned)
+        return kIOReturnBusy;
+    if (yielded)
+        return kIOReturnSuccess;
+    if (abortPending)
+        return kIOReturnNotReady;
+    if (ic->ic_state != IEEE80211_S_SCAN ||
+        (sc->sc_flags & IWM_FLAG_BGSCAN) != 0)
+        return kIOReturnBusy;
+    if (apRuntime.stage != kItlApFirmwareResourceIdle)
+        return kIOReturnBusy;
+
+    uint64_t generation = 0;
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_bss_loss_recovery_armed &&
+        sc->sc_sae_bss_loss_recovery_generation != 0 &&
+        sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged &&
+        !sc->sc_sae_wcl_credential_pending &&
+        sc->sc_sae_wcl_credential.request_generation ==
+            sc->sc_sae_bss_loss_recovery_generation &&
+        itl_sae_wcl_credential_is_well_formed(
+            &sc->sc_sae_wcl_credential))
+        generation = sc->sc_sae_bss_loss_recovery_generation;
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    const bool scanGeneric = generation == 0;
+
+    /* Publish the terminal owner before submitting the abort.  The command
+     * response only acknowledges the request; iwm_endscan() promotes the
+     * handoff after the separate native scan-complete notification. */
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (wclScanPhase != ItlIwmWclScanPhase::Idle ||
+        apPrimaryStaRecoveryScanAbortPending ||
+        apPrimaryStaRecoveryScanYielded) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return kIOReturnBusy;
+    }
+    apPrimaryStaRecoveryScanGeneration = generation;
+    apPrimaryStaRecoveryScanGeneric = scanGeneric;
+    apPrimaryStaRecoveryScanAbortPending = true;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+
+    if ((sc->sc_flags & IWM_FLAG_SCANNING) == 0) {
+        irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        if (apPrimaryStaRecoveryScanAbortPending &&
+            apPrimaryStaRecoveryScanGeneration == generation &&
+            apPrimaryStaRecoveryScanGeneric == scanGeneric) {
+            apPrimaryStaRecoveryScanAbortPending = false;
+            apPrimaryStaRecoveryScanYielded = true;
+        }
+        const bool quiescentYielded =
+            apPrimaryStaRecoveryScanYielded &&
+            apPrimaryStaRecoveryScanGeneration == generation &&
+            apPrimaryStaRecoveryScanGeneric == scanGeneric;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        XYLog("%s: IWM quiescent foreground scan yielded to AP "
+              "generation=%llu generic=%u yielded=%u\n",
+              DEVNAME(sc), (unsigned long long)generation,
+              scanGeneric ? 1U : 0U,
+              quiescentYielded ? 1U : 0U);
+        return quiescentYielded ? kIOReturnSuccess : kIOReturnNotReady;
+    }
+
+    const int abortError =
+        isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN) ?
+            iwm_umac_scan_abort(sc) : iwm_lmac_scan_abort(sc);
+    if (abortError != 0) {
+        irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        if (apPrimaryStaRecoveryScanAbortPending &&
+            apPrimaryStaRecoveryScanGeneration == generation &&
+            apPrimaryStaRecoveryScanGeneric == scanGeneric) {
+            apPrimaryStaRecoveryScanAbortPending = false;
+            apPrimaryStaRecoveryScanGeneric = false;
+            apPrimaryStaRecoveryScanGeneration = 0;
+        }
+        const bool terminalWon = apPrimaryStaRecoveryScanYielded &&
+            apPrimaryStaRecoveryScanGeneration == generation &&
+            apPrimaryStaRecoveryScanGeneric == scanGeneric;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return terminalWon ? kIOReturnSuccess : kIOReturnError;
+    }
+
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool terminalWon = apPrimaryStaRecoveryScanYielded &&
+        apPrimaryStaRecoveryScanGeneration == generation &&
+        apPrimaryStaRecoveryScanGeneric == scanGeneric;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    XYLog("%s: IWM foreground scan abort submitted for AP "
+          "generation=%llu generic=%u state=%u flags=0x%x terminal=%u\n",
+          DEVNAME(sc), (unsigned long long)generation,
+          scanGeneric ? 1U : 0U,
+          static_cast<unsigned>(ic->ic_state),
+          static_cast<unsigned>(sc->sc_flags),
+          static_cast<unsigned>(terminalWon));
+    return terminalWon ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
+bool ItlIwm::
+completePrimaryStaRecoveryScanAPHandoff()
+{
+    struct iwm_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+    if (wclScanLock == NULL)
+        return false;
+
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    uint64_t generation = 0;
+    bool generic = false;
+    bool claimed = false;
+    if (apPrimaryStaRecoveryScanAbortPending) {
+        claimed = true;
+        generation = apPrimaryStaRecoveryScanGeneration;
+        generic = apPrimaryStaRecoveryScanGeneric;
+        apPrimaryStaRecoveryScanAbortPending = false;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!claimed || (generation == 0 && !generic))
+        return false;
+
+    sc->sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN);
+    ieee80211_end_scan_controlled(
+        &ic->ic_if, IEEE80211_SCAN_COMPLETION_AP_HANDOFF);
+
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (apPrimaryStaRecoveryScanGeneration == generation &&
+        apPrimaryStaRecoveryScanGeneric == generic)
+        apPrimaryStaRecoveryScanYielded = true;
+    const bool terminalYielded = apPrimaryStaRecoveryScanYielded &&
+        apPrimaryStaRecoveryScanGeneration == generation &&
+        apPrimaryStaRecoveryScanGeneric == generic;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    XYLog("%s: IWM foreground scan terminal yielded to AP generation=%llu "
+          "generic=%u state=%u flags=0x%x yielded=%u\n",
+          DEVNAME(sc), (unsigned long long)generation,
+          generic ? 1U : 0U,
+          static_cast<unsigned>(ic->ic_state),
+          static_cast<unsigned>(sc->sc_flags),
+          static_cast<unsigned>(terminalYielded));
+    return true;
+}
+
+void ItlIwm::
+resumePrimaryStaRecoveryScanAfterAPHandoff()
+{
+    struct iwm_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+    if (wclScanLock == NULL)
+        return;
+
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool yielded = apPrimaryStaRecoveryScanYielded;
+    const uint64_t generation = yielded ?
+        apPrimaryStaRecoveryScanGeneration : 0;
+    const bool generic = yielded && apPrimaryStaRecoveryScanGeneric;
+    if (yielded) {
+        apPrimaryStaRecoveryScanYielded = false;
+        apPrimaryStaRecoveryScanGeneric = false;
+        apPrimaryStaRecoveryScanGeneration = 0;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (generation == 0 && !generic)
+        return;
+    if (sc->sc_sae_wcl_credential_lock == NULL)
+        return;
+
+    bool generationCurrent = false;
+    if (generation != 0) {
+        IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+        generationCurrent = sc->sc_sae_bss_loss_recovery_armed &&
+            sc->sc_sae_bss_loss_recovery_generation == generation &&
+            sc->sc_sae_wcl_credential_active &&
+            !sc->sc_sae_wcl_credential_staged &&
+            !sc->sc_sae_wcl_credential_pending &&
+            sc->sc_sae_wcl_credential.request_generation == generation &&
+            itl_sae_wcl_credential_is_well_formed(
+                &sc->sc_sae_wcl_credential);
+        IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    }
+
+    if ((!generic && !generationCurrent) ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_SCAN ||
+        (ic->ic_flags & IEEE80211_F_AUTO_JOIN) == 0 ||
+        ic->ic_des_esslen != 0 ||
+        (ic->ic_if.if_flags & IFF_RUNNING) == 0 ||
+        (sc->sc_flags & (IWM_FLAG_SHUTDOWN | IWM_FLAG_HW_ERR)) != 0)
+        return;
+    if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) != 0)
+        return;
+
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool wclOwned = wclScanPhase != ItlIwmWclScanPhase::Idle;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (wclOwned)
+        return;
+
+    XYLog("%s: IWM resuming foreground scan after AP handoff "
+          "generation=%llu generic=%u\n",
+          DEVNAME(sc), (unsigned long long)generation,
+          generic ? 1U : 0U);
+    ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+}
+
 void ItlIwm::
 iwm_ap_csa_timeout(void *arg)
 {
@@ -1458,6 +1693,19 @@ airportItlwmQueryIwmAPTxFreeSpace(ItlHalService *service, uint32_t *freeSpace)
     if (that == NULL || freeSpace == NULL)
         return false;
     *freeSpace = that->getAPTxFreeSpace();
+    return true;
+}
+
+extern "C" bool
+airportItlwmHandoffIwmPrimaryStaRecoveryScanToAP(
+    ItlHalService *service, IOReturn *result)
+{
+    ItlIwm *that = OSDynamicCast(ItlIwm, service);
+    if (that == NULL)
+        return false;
+    if (result == NULL)
+        return true;
+    *result = that->handoffPrimaryStaRecoveryScanToAP();
     return true;
 }
 

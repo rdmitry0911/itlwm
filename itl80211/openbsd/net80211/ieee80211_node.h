@@ -667,6 +667,7 @@ enum ieee80211_scan_completion_mode {
     IEEE80211_SCAN_COMPLETION_GENERIC = 0,
     IEEE80211_SCAN_COMPLETION_WCL_HANDOFF,
     IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND,
+    IEEE80211_SCAN_COMPLETION_AP_HANDOFF,
 };
 void ieee80211_end_scan_controlled(struct _ifnet *,
                                    enum ieee80211_scan_completion_mode);

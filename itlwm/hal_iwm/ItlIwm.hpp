@@ -91,6 +91,9 @@ public:
     IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) override;
     uint16_t getAPCurrentChannel() const override;
     bool isPrimaryStaRecoveryScanPending() const override;
+    IOReturn handoffPrimaryStaRecoveryScanToAP();
+    bool completePrimaryStaRecoveryScanAPHandoff();
+    void resumePrimaryStaRecoveryScanAfterAPHandoff();
     IOReturn sendAPStationCommand(
         const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
@@ -620,6 +623,10 @@ public:
     struct pci_attach_args pci;
     struct iwm_softc com;
     struct ItlApFirmwareRuntime apRuntime;
+    bool apPrimaryStaRecoveryScanAbortPending;
+    bool apPrimaryStaRecoveryScanYielded;
+    bool apPrimaryStaRecoveryScanGeneric;
+    uint64_t apPrimaryStaRecoveryScanGeneration;
     CTimeout *apCsaTimeout;
     bool apCsaTimerInitialized;
     IOSimpleLock *wclScanLock;

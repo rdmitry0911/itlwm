@@ -194,6 +194,9 @@ public:
      */
     bool supportsAPMode() const override;
     bool isPrimaryStaRecoveryScanPending() const override;
+    IOReturn handoffPrimaryStaRecoveryScanToAP();
+    bool completePrimaryStaRecoveryScanAPHandoff();
+    void resumePrimaryStaRecoveryScanAfterAPHandoff();
 
     /*
      * AP/GO HAL bring-up and tear-down. Both entries are gated on
@@ -779,6 +782,10 @@ public:
     bool apStopRequested;
     bool apStartResultValid;
     IOReturn apStartResult;
+    bool apPrimaryStaRecoveryScanAbortPending;
+    bool apPrimaryStaRecoveryScanYielded;
+    bool apPrimaryStaRecoveryScanGeneric;
+    uint64_t apPrimaryStaRecoveryScanGeneration;
     CTimeout *apCsaTimeout;
     bool apCsaTimerInitialized;
     IOSimpleLock *wclScanLock;

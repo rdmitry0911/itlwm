@@ -3716,10 +3716,23 @@ iwm_start_ap_resources(struct iwm_softc *sc,
     if ((sc->sc_flags & (IWM_FLAG_SHUTDOWN | IWM_FLAG_HW_ERR |
                          IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) != 0)
         return EBUSY;
+    bool recoveryScanYielded = false;
+    if (wclScanLock != NULL) {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(wclScanLock);
+        recoveryScanYielded = apPrimaryStaRecoveryScanYielded;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    }
     /* Keep AP MAC creation out of a concurrent STA SCAN/AUTH/ASSOC epoch.
-     * Linux MVM obtains the equivalent serialization from its global mutex. */
+     * Linux MVM obtains the equivalent serialization from its global mutex.
+     * The sole SCAN exception is a bounded foreground handoff whose exact
+     * firmware scan reached its native abort terminal; it creates AP-only
+     * resources and restarts the retained credential or ordinary census
+     * after this transaction. */
     if (sc->sc_ic.ic_state != IEEE80211_S_INIT &&
-        sc->sc_ic.ic_state != IEEE80211_S_RUN)
+        sc->sc_ic.ic_state != IEEE80211_S_RUN &&
+        !(sc->sc_ic.ic_state == IEEE80211_S_SCAN &&
+          recoveryScanYielded))
         return EBUSY;
     struct ieee80211_channel *channel = iwm_ap_find_channel(
         sc, runtime->config.channel);
@@ -4951,6 +4964,9 @@ iwm_endscan(struct iwm_softc *sc)
     if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
         return;
 
+    if (that->completePrimaryStaRecoveryScanAPHandoff())
+        return;
+
     explicit_bzero(&terminal, sizeof(terminal));
     const ItlIwmWclScanTerminalKind wclTerminal =
         that->claimWclScanTerminal(&terminal);
@@ -5521,6 +5537,15 @@ iwm_stop(struct _ifnet *ifp)
     if (that->apCsaTimerInitialized)
         timeout_del(&that->apCsaTimeout);
     itl_ap_firmware_runtime_reset(&that->apRuntime);
+    if (that->wclScanLock != NULL) {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(that->wclScanLock);
+        that->apPrimaryStaRecoveryScanAbortPending = false;
+        that->apPrimaryStaRecoveryScanYielded = false;
+        that->apPrimaryStaRecoveryScanGeneric = false;
+        that->apPrimaryStaRecoveryScanGeneration = 0;
+        IOSimpleLockUnlockEnableInterrupt(that->wclScanLock, irq);
+    }
     
     /* Reset soft state. */
     
