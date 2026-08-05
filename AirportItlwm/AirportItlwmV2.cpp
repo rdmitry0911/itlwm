@@ -6057,68 +6057,100 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
     return true;
 }
 
-static void markTahoeWclJoinTerminalObserved(AirportItlwm *controller)
+static bool tahoeWclProtectedJoinCompletionMatchesOwner(
+    const TahoeOwnerRegistry::AssociationOwner &owner,
+    const struct ieee80211_pae_selected_bss &selected,
+    const struct ieee80211_node *bss)
 {
-    if (controller == nullptr || controller->fHalService == nullptr)
-        return;
+    return tahoeWclSelectedBssMatchesOwner(owner, selected, bss) &&
+           owner.authUpper != APPLE80211_AUTHTYPE_NONE &&
+           owner.rsnIeLength != 0 &&
+           owner.authSuccessRecorded &&
+           owner.authSuccessEpoch == selected.epoch &&
+           IEEE80211_ADDR_EQ(owner.authSuccessBssid, selected.bssid) &&
+           owner.authAssocCompletionPublished &&
+           !owner.connectCompletionPublished;
+}
+
+static IOReturn postTahoeWclProtectedRunCompletionGated(
+    AirportItlwm *controller, unsigned int rawReason)
+{
+    if (controller == nullptr || controller->fHalService == nullptr ||
+        controller->fNetIf == nullptr)
+        return kIOReturnNotReady;
 
     struct ieee80211com *ic = controller->fHalService->get80211Controller();
     if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
-        ic->ic_bss == nullptr)
-        return;
+        ic->ic_bss == nullptr ||
+        (ic->ic_flags & IEEE80211_F_RSNON) == 0)
+        return kIOReturnNotReady;
+
+    const uint64_t epoch = ieee80211_pae_assoc_epoch_current(ic);
+    struct ieee80211_pae_selected_bss current;
+    bzero(&current, sizeof(current));
+    if (epoch == 0 ||
+        !ieee80211_pae_selected_bss_copyout_current(ic, epoch, &current) ||
+        !IEEE80211_ADDR_EQ(current.bssid, ic->ic_bss->ni_bssid))
+        return kIOReturnNotReady;
 
     TahoeOwnerRegistry &registry = controller->getTahoeOwnerRegistry();
     TahoeOwnerRegistry::AssociationOwner *owner = &registry.association;
-    if (!owner->hasCarrier || !owner->selectedFromCandidate ||
-        !owner->authAssocCompletionArmed ||
-        !IEEE80211_ADDR_EQ(owner->selectedBssid, ic->ic_bss->ni_bssid)) {
+    if (!tahoeWclProtectedJoinCompletionMatchesOwner(
+            *owner, current, ic->ic_bss)) {
         owner = &registry.publicAssociation;
-        if (!owner->hasCarrier || !owner->selectedFromCandidate ||
-            !owner->authAssocCompletionArmed ||
-            !IEEE80211_ADDR_EQ(owner->selectedBssid,
-                               ic->ic_bss->ni_bssid))
-            return;
+        if (!tahoeWclProtectedJoinCompletionMatchesOwner(
+                *owner, current, ic->ic_bss))
+            return kIOReturnNotReady;
     }
+
+    /* Claim both JoinAdapter terminal facts before asynchronous PostOffice
+     * dispatch so a nested duplicate carrier cannot replace this candidate
+     * between its link and connect-complete messages. */
+    owner->connectCompletionPublished = true;
     owner->joinTerminalObserved = true;
+
+    const bool linkPublished =
+        postTahoeWclLinkUpInd(controller, rawReason);
+    const bool connectPublished =
+        postTahoeWclConnectCompleteEvent(controller);
+    if (!linkPublished || !connectPublished) {
+        owner->connectCompletionPublished = false;
+        owner->joinTerminalObserved = false;
+        return kIOReturnNotReady;
+    }
+    return kIOReturnSuccess;
 }
 
 static IOReturn postTahoeWclJoinCompletionGated(
-    OSObject *target, void *arg0, void *, void *, void *)
+    OSObject *target, void *arg0, void *arg1, void *, void *)
 {
     AirportItlwm *controller = OSDynamicCast(AirportItlwm, target);
     if (controller == nullptr)
         return kIOReturnBadArgument;
 
-    /* Apple JoinAdapter clears its firmware-active byte at the successful
-     * RSN terminal, not at the preceding association-status event.  Claim
-     * that terminal before publishing its WCL messages so a nested/repeated
-     * join carrier cannot replace a still-running four-way handshake. */
-    markTahoeWclJoinTerminalObserved(controller);
-
     /*
      * IO80211PostOffice::sendMail admits asynchronous messages only while
-     * its controller work loop is inGate().  Keep the key-done, link-up, and
-     * connect-complete carriers in one command-gate action so 0xd8/0xd5
-     * cannot fall through sendMail with kIOReturnNotPermitted after the
-     * lower RSN callback returns to its off-gate task context.
+     * its controller work loop is inGate().  Key-done belongs to the real
+     * kernel-PAE port-valid edge.  Apple's JoinAdapter sends connect-complete
+     * only after its later current-BSS callback, so an IWX port-valid edge
+     * observed in S_ASSOC must stop after key-done and let committed S_RUN
+     * resume only the candidate-matched 0xd8/0xd5 terminal below.
      *
      * This gate is only the producer-side PostOffice contract.  WCL consumes
      * these carriers asynchronously and owns the later parent link-state
      * transition in its framework context; do not call setLinkState here.
      */
-    const IOReturn keyDone = AirportItlwm::postRsnHandshakeDoneGated(
-        target, (void *)(uintptr_t)false, nullptr, nullptr, nullptr);
-    if (keyDone != kIOReturnSuccess)
-        return keyDone;
+    const bool runContinuation = (uintptr_t)arg1 != 0;
+    if (!runContinuation) {
+        const IOReturn keyDone = AirportItlwm::postRsnHandshakeDoneGated(
+            target, (void *)(uintptr_t)false, nullptr, nullptr, nullptr);
+        if (keyDone != kIOReturnSuccess)
+            return keyDone;
+    }
 
     const unsigned int rawReason =
         static_cast<unsigned int>((uintptr_t)arg0);
-    const bool linkPublished =
-        postTahoeWclLinkUpInd(controller, rawReason);
-    const bool connectPublished =
-        postTahoeWclConnectCompleteEvent(controller);
-    return linkPublished && connectPublished ? kIOReturnSuccess
-                                              : kIOReturnNotReady;
+    return postTahoeWclProtectedRunCompletionGated(controller, rawReason);
 }
 
 static bool tahoeWclOpenJoinCompletionMatchesOwner(
@@ -9590,12 +9622,14 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             // never calls setCIPHER_KEY, so publish the reference completion
             // state here or wifid's WCL join state machine times out and fires
             // setWCL_JOIN_ABORT even though the handshake succeeded on air.
-            // PostOffice requires inGate()==true at producer admission. Keep
-            // RSN key-done and both WCL completion carriers in one command
-            // gate action; WCL owns the later parent link-state transition.
+            // PostOffice requires inGate()==true at producer admission.  A
+            // synchronous backend is already in RUN and completes WCL here;
+            // asynchronous IWX publishes key-done now and resumes only the
+            // link/connect terminal from STA_RSN_RUN_DONE after RUN commits.
 #if __IO80211_TARGET >= __MAC_26_0
             (void)gate->runAction(postTahoeWclJoinCompletionGated,
-                                  (void *)(uintptr_t)0, NULL, NULL);
+                                  (void *)(uintptr_t)0,
+                                  (void *)(uintptr_t)false, NULL);
             /*
              * Keep RSN_HANDSHAKE_DONE limited to key-completion and WCL join
              * FSM completion. The BSSID/SSID identity events that wake
@@ -9607,6 +9641,15 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 #else
             (void)gate->runAction(postRsnHandshakeDoneGated,
                                   (void *)(uintptr_t)false, NULL, NULL);
+#endif
+            return;
+        case IEEE80211_EVT_STA_RSN_RUN_DONE:
+#if __IO80211_TARGET >= __MAC_26_0
+            /* This is the delayed current-BSS terminal only.  The earlier
+             * port-valid edge already owned key completion and 0x12e. */
+            (void)gate->runAction(postTahoeWclJoinCompletionGated,
+                                  (void *)(uintptr_t)0,
+                                  (void *)(uintptr_t)true, NULL);
 #endif
             return;
         case IEEE80211_EVT_STA_DEAUTH:

@@ -1357,6 +1357,15 @@ struct ieee80211_wcl_scan_start_rejected {
 #define IEEE80211_EVT_STA_BEACON_LOSS              21
 
 /*
+ * A protected STA join reached committed S_RUN after its kernel PAE had
+ * already opened the port.  IWX commits S_RUN asynchronously, so its
+ * RSN_HANDSHAKE_DONE event can legitimately precede this state edge.  The
+ * controller consumes this second, credential-free fact only to finish the
+ * candidate-matched WCL link/connect terminal; it must not repeat key-done.
+ */
+#define IEEE80211_EVT_STA_RSN_RUN_DONE              22
+
+/*
  * Host-owned WCL reassociation owner contract recovered from the public
  * AppleBCMWLAN binary (AppleBCMWLANCore::setWCL_REASSOC and the
  * NetAdapter::sendReassocCommand callback/event family). The local Intel

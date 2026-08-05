@@ -266,23 +266,38 @@ ordered(open_completion, "open completion exact owner before publication",
 rsn_completion = body(
     v2, "static IOReturn postTahoeWclJoinCompletionGated(",
     "RSN completion gate")
-ordered(rsn_completion, "RSN terminal precedes protected completion mail",
-        "markTahoeWclJoinTerminalObserved(controller)",
+ordered(rsn_completion, "RSN key terminal precedes protected RUN completion",
+        "runContinuation",
         "postRsnHandshakeDoneGated(",
+        "postTahoeWclProtectedRunCompletionGated")
+protected_match = body(
+    v2, "static bool tahoeWclProtectedJoinCompletionMatchesOwner(",
+    "protected completion owner matcher")
+for token in (
+        "tahoeWclSelectedBssMatchesOwner",
+        "owner.authUpper != APPLE80211_AUTHTYPE_NONE",
+        "owner.rsnIeLength != 0",
+        "owner.authSuccessRecorded",
+        "owner.authSuccessEpoch == selected.epoch",
+        "owner.authSuccessBssid",
+        "owner.authAssocCompletionPublished",
+        "!owner.connectCompletionPublished",
+):
+    require(protected_match, token, "protected completion owner fence")
+protected_completion = body(
+    v2, "static IOReturn postTahoeWclProtectedRunCompletionGated(",
+    "protected RUN completion")
+ordered(protected_completion,
+        "protected completion exact RUN owner before publication",
+        "ic->ic_state != IEEE80211_S_RUN",
+        "IEEE80211_F_RSNON",
+        "ieee80211_pae_selected_bss_copyout_current",
+        "tahoeWclProtectedJoinCompletionMatchesOwner",
+        "owner = &registry.publicAssociation",
+        "owner->connectCompletionPublished = true",
+        "owner->joinTerminalObserved = true",
         "postTahoeWclLinkUpInd",
         "postTahoeWclConnectCompleteEvent")
-rsn_terminal = body(
-    v2, "static void markTahoeWclJoinTerminalObserved(",
-    "RSN join terminal owner matcher")
-for token in (
-        "ic->ic_state != IEEE80211_S_RUN",
-        "owner->selectedFromCandidate",
-        "owner->authAssocCompletionArmed",
-        "IEEE80211_ADDR_EQ(owner->selectedBssid, ic->ic_bss->ni_bssid)",
-        "owner = &registry.publicAssociation",
-        "owner->joinTerminalObserved = true",
-):
-    require(rsn_terminal, token, "exact RSN terminal owner")
 open_match = body(
     v2, "static bool tahoeWclOpenJoinCompletionMatchesOwner(",
     "open completion owner matcher")
@@ -309,6 +324,7 @@ for token in (
         "IEEE80211_EVT_STA_AUTH_DONE               18",
         "IEEE80211_EVT_STA_ASSOC_VALIDATED         19",
         "IEEE80211_EVT_STA_OPEN_RUN_DONE           20",
+        "IEEE80211_EVT_STA_RSN_RUN_DONE              22",
 ):
     require(net_var, token, "split net80211 completion event")
 ordered(net_input, "validated association after mandatory setup",
@@ -323,6 +339,31 @@ ordered(net_proto, "Open-System auth ledger before ASSOC",
 ordered(net_proto, "open RUN after real link state",
         "ieee80211_set_link_state(ic, LINK_STATE_UP)",
         "IEEE80211_EVT_STA_OPEN_RUN_DONE")
+ordered(net_proto, "protected completion after committed RUN and port-valid",
+        "case IEEE80211_S_RUN:",
+        "ni->ni_port_valid",
+        "IEEE80211_EVT_STA_RSN_RUN_DONE")
+
+rsn_case = between(v2,
+                   "case IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE:",
+                   "case IEEE80211_EVT_STA_RSN_RUN_DONE:",
+                   "STA_RSN_HANDSHAKE_DONE case")
+ordered(rsn_case, "PAE terminal permits synchronous RUN completion",
+        "postTahoeWclJoinCompletionGated",
+        "(void *)(uintptr_t)false")
+rsn_run_case = between(v2,
+                       "case IEEE80211_EVT_STA_RSN_RUN_DONE:",
+                       "case IEEE80211_EVT_STA_DEAUTH:",
+                       "STA_RSN_RUN_DONE case")
+ordered(rsn_run_case, "delayed RUN resumes without key-done",
+        "postTahoeWclJoinCompletionGated",
+        "(void *)(uintptr_t)true")
+for token in (
+        "postRsnHandshakeDoneGated",
+        "APPLE80211_M_RSN_HANDSHAKE_DONE",
+        "handleKeyDone",
+):
+    forbid(rsn_run_case, token, "key terminal in delayed protected RUN")
 
 deauth_case = between(v2,
                       "case IEEE80211_EVT_STA_DEAUTH:",

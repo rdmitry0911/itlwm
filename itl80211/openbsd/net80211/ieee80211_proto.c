@@ -5476,6 +5476,20 @@ justcleanup:
 						    ic, IEEE80211_EVT_STA_OPEN_RUN_DONE, NULL);
 				}
 			}
+			/*
+			 * IWX may finish the in-kernel four-way handshake while its
+			 * asynchronous backend transition is still in S_ASSOC.  Key-done
+			 * remains owned by that real port-valid edge; once S_RUN commits,
+			 * publish a distinct fact so the controller can complete the WCL
+			 * join against a coherent current-BSS state without repeating the
+			 * key terminal.  Synchronous backends reach S_RUN before port-valid
+			 * and therefore continue to complete from RSN_HANDSHAKE_DONE alone.
+			 */
+			if (ic->ic_opmode == IEEE80211_M_STA &&
+			    (ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+			    ni->ni_port_valid && ic->ic_event_handler != NULL)
+				(*ic->ic_event_handler)(
+				    ic, IEEE80211_EVT_STA_RSN_RUN_DONE, NULL);
             ni->ni_fails = 0;
             ni = ieee80211_find_node(ic, ni->ni_macaddr);
             if (ni)
