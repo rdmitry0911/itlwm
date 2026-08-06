@@ -31,6 +31,13 @@ enum ItlApFirmwareResourceStage : uint8_t {
  * backends still clamp a lower hardware limit when required. */
 enum { kItlApFirmwareMaxClients = 5 };
 
+enum ItlApFirmwareDeferredBaState : uint8_t {
+    kItlApFirmwareDeferredBaIdle = 0,
+    kItlApFirmwareDeferredBaReserved,
+    kItlApFirmwareDeferredBaPublished,
+    kItlApFirmwareDeferredBaClaimed,
+};
+
 struct ItlApFirmwareClientRuntime {
     uint8_t staId;
     uint16_t queueId;
@@ -56,6 +63,14 @@ struct ItlApFirmwareClientRuntime {
     uint8_t clientHtMcs[2];
     uint16_t clientRxBaMask;
     struct ItlApRxBaRuntime clientRxBa[kItlApRxBaTidCount];
+    /*
+     * MVM host commands may be doorbelled before a synchronous caller on
+     * the RX completion path discovers that it cannot sleep.  Publishing BA
+     * management here lets the existing serial AP client task own both the
+     * firmware command and its dependent over-the-air response.
+     */
+    uint8_t clientDeferredBaState[kItlApRxBaTidCount];
+    struct ItlApBlockAckAction clientDeferredBa[kItlApRxBaTidCount];
     uint16_t clientTxBaMask;
     uint8_t clientTxDialogToken;
     uint16_t clientTxSequence[kItlApRxBaTidCount];
@@ -116,6 +131,59 @@ struct ItlApFirmwareClientRuntime {
     bool timSet;
     bool inUse;
 };
+
+static inline int
+itl_ap_firmware_defer_ba(
+    struct ItlApFirmwareClientRuntime *client,
+    const struct ItlApBlockAckAction *action)
+{
+    if (client == NULL || action == NULL ||
+        action->tid >= kItlApRxBaTidCount ||
+        action->kind < kItlApBlockAckAddRequest ||
+        action->kind > kItlApBlockAckDelete)
+        return EINVAL;
+    uint8_t expected = kItlApFirmwareDeferredBaIdle;
+    if (!__atomic_compare_exchange_n(
+            &client->clientDeferredBaState[action->tid], &expected,
+            static_cast<uint8_t>(kItlApFirmwareDeferredBaReserved), false,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return EBUSY;
+    client->clientDeferredBa[action->tid] = *action;
+    __atomic_store_n(&client->clientDeferredBaState[action->tid],
+        static_cast<uint8_t>(kItlApFirmwareDeferredBaPublished),
+        __ATOMIC_RELEASE);
+    return 0;
+}
+
+static inline bool
+itl_ap_firmware_take_deferred_ba(
+    struct ItlApFirmwareClientRuntime *client, uint8_t tid,
+    struct ItlApBlockAckAction *action)
+{
+    if (client == NULL || action == NULL || tid >= kItlApRxBaTidCount)
+        return false;
+    uint8_t expected = kItlApFirmwareDeferredBaPublished;
+    if (!__atomic_compare_exchange_n(
+            &client->clientDeferredBaState[tid], &expected,
+            static_cast<uint8_t>(kItlApFirmwareDeferredBaClaimed), false,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return false;
+    *action = client->clientDeferredBa[tid];
+    return true;
+}
+
+static inline void
+itl_ap_firmware_complete_deferred_ba(
+    struct ItlApFirmwareClientRuntime *client, uint8_t tid)
+{
+    if (client == NULL || tid >= kItlApRxBaTidCount)
+        return;
+    bzero(&client->clientDeferredBa[tid],
+          sizeof(client->clientDeferredBa[tid]));
+    __atomic_store_n(&client->clientDeferredBaState[tid],
+        static_cast<uint8_t>(kItlApFirmwareDeferredBaIdle),
+        __ATOMIC_RELEASE);
+}
 
 struct ItlApFirmwareRuntime {
     struct ItlHalApConfig config;

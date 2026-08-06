@@ -1423,6 +1423,35 @@ itl_ap_open_build_tx_delba(
 }
 
 static inline int
+itl_ap_open_build_deferred_addba_response(
+    const struct ItlApFirmwareRuntime *runtime,
+    const struct ItlApFirmwareClientRuntime *client,
+    const struct ItlApBlockAckAction *action, uint16_t status,
+    mbuf_t *packet)
+{
+    if (!itl_ap_open_is_running(runtime) || client == NULL || action == NULL ||
+        packet == NULL || !client->inUse || !client->clientAssociated ||
+        action->kind != kItlApBlockAckAddRequest ||
+        action->tid >= kItlApRxBaTidCount)
+        return EINVAL;
+    const size_t frameLength = sizeof(struct ieee80211_frame) + 9;
+    int error = itl_ap_open_alloc_block_ack_frame(frameLength, packet);
+    if (error != 0)
+        return error;
+    const size_t built = itl_ap_block_ack_build_response(
+        mtod(*packet, uint8_t *), frameLength, runtime->config.bssid,
+        client->clientMac, action->token, action->tid, status,
+        action->window, action->timeout,
+        itl_ap_client_uses_local_sae(runtime) && client->clientAuthorized);
+    if (built != frameLength) {
+        mbuf_freem(*packet);
+        *packet = NULL;
+        return EINVAL;
+    }
+    return 0;
+}
+
+static inline int
 itl_ap_local_eapol_packet(const struct ItlApFirmwareRuntime *runtime,
                           const struct ItlApFirmwareClientRuntime *client,
                           const void *eapol, size_t eapolLength,

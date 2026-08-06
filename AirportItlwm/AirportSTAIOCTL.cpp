@@ -1112,7 +1112,7 @@ getOP_MODE(OSObject *object,
 {
     if (!TahoeOpModeContracts::initializePrimaryCarrier(od))
         return static_cast<IOReturn>(TahoeOpModeContracts::kInvalidArgumentStatus);
-    if (isHostApRunning()) {
+    if (isHostApPrimaryCarrierConfirmed()) {
         AirportItlwmAPSTAOpModeDataLayout apstaMode{};
         if (getAPSTA_OP_MODE(object, &apstaMode) == kIOReturnSuccess)
             TahoeOpModeContracts::publishAPSTAMode(od, apstaMode.mode04);
@@ -1936,6 +1936,11 @@ bool AirportItlwm::isHostApRunning() const
      * return success", so a structurally-false AP-up gate yields
      * the truthful no-backend-call return-success branch.
      */
+    return false;
+}
+
+bool AirportItlwm::isHostApPrimaryCarrierConfirmed() const
+{
     return false;
 }
 

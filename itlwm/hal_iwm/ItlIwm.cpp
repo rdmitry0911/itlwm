@@ -965,6 +965,12 @@ supportsAPMode() const
 #endif
 }
 
+bool ItlIwm::
+isAPScanFenceActive() const
+{
+    return apRuntime.stage != kItlApFirmwareResourceIdle;
+}
+
 IOReturn ItlIwm::
 startAPMode(const struct ItlHalApConfig *config)
 {
@@ -986,8 +992,12 @@ startAPMode(const struct ItlHalApConfig *config)
         return kIOReturnBadArgument;
     }
     error = iwm_start_ap_resources(&com, &apRuntime);
-    resumePrimaryStaRecoveryScanAfterAPHandoff();
     if (error != 0) {
+        /* A failed AP admission no longer owns the radio.  Return the exact
+         * yielded foreground scan only after firmware has rejected the AP
+         * resource transaction.  A successful HostAP keeps that scan policy
+         * suspended until stopAPMode() reaches its lower terminal. */
+        resumePrimaryStaRecoveryScanAfterAPHandoff();
         itl_ap_firmware_runtime_reset(&apRuntime);
         if (error == EOPNOTSUPP)
             return kIOReturnUnsupported;
@@ -1001,13 +1011,17 @@ startAPMode(const struct ItlHalApConfig *config)
 IOReturn ItlIwm::
 stopAPMode()
 {
-    resumePrimaryStaRecoveryScanAfterAPHandoff();
     if (apCsaTimerInitialized)
         timeout_del(&apCsaTimeout);
-    if (apRuntime.stage == kItlApFirmwareResourceIdle)
+    if (apRuntime.stage == kItlApFirmwareResourceIdle) {
+        resumePrimaryStaRecoveryScanAfterAPHandoff();
         return kIOReturnSuccess;
-    return iwm_stop_ap_resources(&com, &apRuntime) == 0 ?
-        kIOReturnSuccess : kIOReturnError;
+    }
+    const int error = iwm_stop_ap_resources(&com, &apRuntime);
+    if (error != 0)
+        return kIOReturnError;
+    resumePrimaryStaRecoveryScanAfterAPHandoff();
+    return kIOReturnSuccess;
 }
 
 IOReturn ItlIwm::
@@ -1075,9 +1089,12 @@ transmitAPData(mbuf_t packet)
         int requestError = itl_ap_open_build_tx_addba_request(
             &apRuntime, client, 0, &request);
         if (requestError == 0)
+            /* Management action frames use the AP management queue/station;
+             * the per-client queue remains a QoS data-TID owner. */
             requestError = iwm_ap_send_raw_frame(
-                &com, request, static_cast<uint8_t>(client->queueId),
-                client->staId);
+                &com, request,
+                static_cast<uint8_t>(apRuntime.broadcastQueueId),
+                apRuntime.broadcastStaId);
         if (requestError != 0) {
             if (request != NULL)
                 mbuf_freem(request);
@@ -1815,6 +1832,8 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
     if (generation == 0 || outBackendGeneration == NULL)
         return kIOReturnBadArgument;
     *outBackendGeneration = 0;
+    if (isAPScanFenceActive())
+        return kIOReturnBusy;
     if (wclScanLock == NULL || ic->ic_state != IEEE80211_S_SCAN ||
         ic->ic_opmode != IEEE80211_M_STA ||
         (ic->ic_if.if_flags & IFF_RUNNING) == 0 ||
@@ -1865,6 +1884,8 @@ beginWclBackgroundScan(uint64_t generation,
     if (generation == 0 || outBackendGeneration == NULL)
         return kIOReturnBadArgument;
     *outBackendGeneration = 0;
+    if (isAPScanFenceActive())
+        return kIOReturnBusy;
     if (wclScanLock == NULL || ic->ic_state != IEEE80211_S_RUN ||
         ic->ic_bss == NULL || ic->ic_mgt_timer != 0 ||
         (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||

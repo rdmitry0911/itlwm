@@ -7605,7 +7605,7 @@ bool ItlIwn::iwn_handle_ap_block_ack(
         if (!itl_ap_tx_ba_response_matches(txBa, &action)) {
             error = EINVAL;
         } else if (action.status != IEEE80211_STATUS_SUCCESS) {
-            itl_ap_tx_ba_reset(txBa);
+            itl_ap_tx_ba_block(txBa);
         } else {
             error = iwn_set_ap_client_tx_ba(
                 action.tid, txBa->ssn, true);

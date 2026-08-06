@@ -863,6 +863,18 @@ iwm_scan(struct iwm_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     int err;
+
+    /* Match the IWX AP-lifetime scan fence.  The foreground scan displaced
+     * by HostAP remains an upper policy owner, but no firmware scan command
+     * may overlap the live GO/link-station resource epoch. */
+    if (isAPScanFenceActive()) {
+        noteWclInitialScanCommandRejected();
+        XYLog("%s: IWM STA scan deferred by live AP radio fence state=%u "
+              "flags=0x%x\n", DEVNAME(sc),
+              static_cast<unsigned>(ic->ic_state),
+              static_cast<unsigned>(sc->sc_flags));
+        return 0;
+    }
     
     if (sc->sc_flags & IWM_FLAG_BGSCAN) {
         err = iwm_scan_abort(sc);
@@ -913,6 +925,12 @@ iwm_bgscan(struct ieee80211com *ic)
     struct iwm_softc *sc = (struct iwm_softc *)IC2IFP(ic)->if_softc;
     ItlIwm *that = container_of(sc, ItlIwm, com);
     int err;
+
+    if (that->isAPScanFenceActive()) {
+        XYLog("%s: IWM STA background scan rejected by live AP radio "
+              "fence\n", DEVNAME(sc));
+        return EBUSY;
+    }
     
     if (sc->sc_flags & IWM_FLAG_SCANNING)
         return 0;

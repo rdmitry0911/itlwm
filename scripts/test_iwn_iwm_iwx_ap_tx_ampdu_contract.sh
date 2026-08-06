@@ -43,6 +43,9 @@ for needle, label in (
     ("kItlApTxBaStartThreshold", "bounded start threshold"),
     ("kItlApTxBaRequestPacketTimeout", "bounded request retry"),
     ("kItlApTxBaBlocked", "per-association fallback state"),
+    ("itl_ap_tx_ba_block", "per-association fallback transition"),
+    ("itl_ap_tx_ba_block(runtime);\n        return false;",
+     "unanswered ADDBA timeout fallback"),
     ("itl_ap_tx_ba_advance_sequence", "firmware sequence mirror"),
     ("itl_ap_tx_ba_response_matches", "token/TID response fence"),
     ("itl_ap_tx_ba_accept_completion", "out-of-order completion fence"),
@@ -124,6 +127,7 @@ for needle, label in (
     ("airportItlwmRequestAPTxDequeue", "IWN Skywalk wake"),
     ("IWN AP TX ADDBA request", "IWN request witness"),
     ("IWN AP TX ADDBA response", "IWN response witness"),
+    ("itl_ap_tx_ba_block(txBa);", "IWN explicit refusal fallback"),
     ("keeping BA session", "IWN per-MPDU retry failure lifetime witness"),
     ("iwn_send_ap_compressed_bar", "IWN failed-MPDU compressed BAR"),
     ("compressedBar ? IWN_IPAN_BE_QUEUE", "IWN PAN AC queue BAR transport"),
@@ -185,6 +189,9 @@ require(iwm_h, "iwm_ap_set_client_tx_ba", "IWM TX BA API")
 for needle, label in (
     ("itl_ap_tx_ba_note_data(&client->clientTxBa[0])", "IWM traffic trigger"),
     ("iwm_ap_send_raw_frame", "IWM request transport"),
+    ("static_cast<uint8_t>(apRuntime.broadcastQueueId)",
+     "IWM action management queue owner"),
+    ("apRuntime.broadcastStaId", "IWM action management station owner"),
 ):
     require(iwm_owner, needle, label)
 for needle, label in (
@@ -198,7 +205,9 @@ for needle, label in (
     ("ba_notif->sta_id == apClient->staId", "IWM AP BA owner"),
     ("apRunning", "IWM AP-only BA completion admission"),
     ("itl_ap_tx_ba_advance_sequence", "IWM firmware sequence mirror"),
-    ("IWM AP TX ADDBA response", "IWM response witness"),
+    ("IWM AP deferred TX ADDBA response", "IWM response witness"),
+    ("iwm_ap_process_deferred_ba", "IWM deferred response owner"),
+    ("itl_ap_tx_ba_block(txBa);", "IWM explicit refusal fallback"),
 ):
     require(iwm, needle, label)
 ordered(iwm, "itl_ap_tx_ba_response_matches(txBa, &action)",
@@ -207,6 +216,8 @@ ordered(iwm, "itl_ap_tx_ba_response_matches(txBa, &action)",
 require(iwx_h, "iwx_ap_set_client_tx_ba", "IWX TX BA API")
 for needle, label in (
     ("itl_ap_tx_ba_note_data(&client->clientTxBa[0])", "IWX traffic trigger"),
+    ("&com, request, apRuntime.broadcastQueueId",
+     "IWX action management queue owner"),
     ("TX_FLAGS_BITS_API_S_VER_3", "IWX modern TX flag ABI"),
     ("Sequence ownership for a TVQM queue is already",
      "IWX TVQM firmware sequence owner"),
@@ -219,11 +230,34 @@ for needle, label in (
     ("apRunning", "IWX AP-only BA completion admission"),
     ("itl_ap_tx_ba_advance_sequence", "IWX firmware sequence mirror"),
     ("airportItlwmRequestAPTxDequeue", "IWX Skywalk wake"),
-    ("IWX AP TX ADDBA response", "IWX response witness"),
+    ("IWX AP deferred TX ADDBA response", "IWX response witness"),
+    ("iwx_ap_process_deferred_ba", "IWX deferred response owner"),
+    ("itl_ap_tx_ba_block(txBa);", "IWX explicit refusal fallback"),
+    ("IWX AP aggregation using legacy-safe fallback",
+     "IWX legacy firmware TX fallback witness"),
+    ("client->clientQos = false;",
+     "IWX legacy firmware non-QoS fallback"),
+    ("client->clientHt = false;",
+     "IWX legacy firmware non-HT fallback"),
+    ("client->clientHtNss = 0;",
+     "IWX legacy firmware zero NSS fallback"),
+    ("client->clientHtCapabilities = 0;",
+     "IWX legacy firmware zero HT capabilities"),
+    ("client->clientHtAmpduParams = 0;",
+     "IWX legacy firmware zero A-MPDU parameters"),
+    ("memset(client->clientHtMcs, 0, sizeof(client->clientHtMcs))",
+     "IWX legacy firmware zero HT MCS map"),
+    ("IWX AP legacy-safe non-HT client fallback",
+     "IWX legacy firmware station downgrade witness"),
+    ("itl_ap_tx_ba_block(&client->clientTxBa[tid])",
+     "IWX per-client legacy TX fallback"),
 ):
     require(iwx, needle, label)
 ordered(iwx, "itl_ap_tx_ba_response_matches(txBa, &action)",
         "iwx_ap_set_client_tx_ba(", "IWX validate before agreement transition")
+ordered(iwx, "client->clientQos = false;",
+        "iwx_ap_add_internal_sta(sc, runtime,",
+        "IWX station downgrade before ADD_STA")
 
 print("PASS: IWN/IWM/IWX AP transmit A-MPDU ADDBA/DELBA contract")
 PY

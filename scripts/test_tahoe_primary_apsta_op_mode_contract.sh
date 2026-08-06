@@ -22,7 +22,7 @@ skywalk_get = skywalk[skywalk.index(
     skywalk.index("getPOWER_DEBUG_INFO", skywalk.index(
         "AirportItlwmSkywalkInterface::\ngetOP_MODE(struct apple80211_opmode_data *od)"))]
 for needle in (
-    "instance != nullptr && instance->isHostApRunning()",
+    "instance->isHostApPrimaryCarrierConfirmed()",
     "instance->getAPSTA_OP_MODE(this, &apstaMode)",
     "publishAPSTAMode(od,",
     "publishAssociatedBssMode(od,",
@@ -36,7 +36,7 @@ legacy_get = legacy[legacy.index(
     legacy.index("AirportItlwm::\ngetRSSI", legacy.index(
         "AirportItlwm::\ngetOP_MODE(OSObject *object,"))]
 for needle in (
-    "isHostApRunning()",
+    "isHostApPrimaryCarrierConfirmed()",
     "getAPSTA_OP_MODE(object, &apstaMode)",
     "publishAPSTAMode(od, apstaMode.mode04)",
     "publishAssociatedBssMode(od,",

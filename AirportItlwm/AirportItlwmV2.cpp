@@ -15954,6 +15954,12 @@ bool AirportItlwm::isHostApRunning() const
     return fAPSTAOwner->isApRunning();
 }
 
+bool AirportItlwm::isHostApPrimaryCarrierConfirmed() const
+{
+    return fAPSTAOwner != nullptr &&
+        fAPSTAOwner->shouldPublishPrimaryOpMode();
+}
+
 bool AirportItlwm::isAPSTACoreFeatureFlagSet(uint32_t bit) const
 {
     if (bit >= kAirportItlwmAPSTACoreFeatureFlagMaxExclusive) {

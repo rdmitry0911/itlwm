@@ -995,6 +995,15 @@ struct iwx_softc {
 
 	/* TX/RX rings. */
 	struct iwx_tx_ring txq[IWX_MAX_TVQM_QUEUES];
+	/*
+	 * Firmware completion and Tahoe AP/Skywalk producers run on different
+	 * threads.  Keep queue ownership outside iwx_tx_ring itself: TVQM first
+	 * builds a temporary ring and then transfers its DMA carrier into the
+	 * firmware-selected txq slot.  A lock embedded in that carrier would be
+	 * copied and could be freed twice; this stable array follows the hardware
+	 * queue number instead.
+	 */
+	IOSimpleLock *sc_txq_locks[IWX_MAX_TVQM_QUEUES];
 	struct iwx_rx_ring rxq;
 	int qfullmsk;
     struct iwx_tx_ring sc_tvqm_ring;

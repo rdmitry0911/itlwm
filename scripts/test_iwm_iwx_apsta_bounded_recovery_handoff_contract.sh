@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prove that a retained AP receives the radio after a bounded untagged STA
-# scan, and that its credential generation or ordinary census resumes only
-# after AP materializes.
+# scan, and that its credential generation or ordinary census remains yielded
+# for the AP lifetime and resumes only after lower teardown.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -49,6 +49,7 @@ owner = (root / "AirportItlwm/AirportItlwmAPSTAOwner.cpp").read_text()
 owner_h = (root / "AirportItlwm/AirportItlwmAPSTAOwner.hpp").read_text()
 iwm = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
 iwm_mac = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
+iwm_scan = (root / "itlwm/hal_iwm/scan.cpp").read_text()
 iwm_h = (root / "itlwm/hal_iwm/ItlIwm.hpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 iwx_h = (root / "itlwm/hal_iwx/ItlIwx.hpp").read_text()
@@ -59,13 +60,22 @@ bridge = "airportItlwmHandoffPrimaryStaRecoveryScanToAP"
 assert f'extern "C" IOReturn {bridge}(' in hal
 assert f"virtual IOReturn {bridge}" not in hal, "handoff must not shift HAL vtable"
 assert "radioResetPrimaryStaScanHandoff" in owner_h
+assert "bool initialHostAPAdmissionPending;" in owner_h
+assert "bool confirmedHostAPStartPending;" in owner_h
+assert "isApRunning() && !initialHostAPAdmissionPending &&" in owner_h
+assert "!confirmedHostAPStartPending" in owner_h
 
 resume = body(owner, "IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset")
 ordered(
     resume,
     "isPrimaryStaRecoveryScanPending()",
+    "const bool publicHostAPStartPending =",
+    "initialHostAPAdmissionPending ||",
+    "confirmedHostAPStartPending",
+    "const bool waitForRetainedPrimary =",
+    "!publicHostAPStartPending",
     "kAirportItlwmAPSTARadioResetPrimaryStaWaitTicks",
-    "const bool foregroundScanTimedOut =",
+    "const bool foregroundScanShouldYield =",
     f"{bridge}(",
     "radioResetPrimaryStaScanHandoff =",
     "const IOReturn result = startLowerIfReady();",
@@ -73,6 +83,39 @@ ordered(
 assert "handoffResult != kIOReturnSuccess" in resume
 assert "handoffResult != kIOReturnUnsupported" in resume
 assert "!radioResetPrimaryStaScanHandoff" in resume
+assert "initialHostAPAdmissionPending ||" in resume
+assert "if (confirmedHostAPStartPending)" in resume
+assert "confirmed asynchronous HostAP replacement" in resume
+
+hostap = body(owner, "IOReturn AirportItlwmAPSTAOwner::setHostAPMode")
+ordered(
+    hostap,
+    "const IOReturn stopResult = stopLower();",
+    "apsta_lower_stop_pending(stopResult)",
+    "accepted asynchronous HostAP stop pending lower",
+    "if (isApRunning())",
+)
+ordered(
+    hostap,
+    "if (isApRunning())",
+    "initialHostAPAdmissionPending = false;",
+    "confirmedHostAPStartPending = true;",
+    "if (lowerStopPending)",
+    "driveLowerStopToTerminal()",
+    "const IOReturn result = startLowerIfReady();",
+    "radioResetResumePending = true;",
+    "initialHostAPAdmissionPending = !confirmedHostAPStartPending;",
+)
+assert "repeated HostAP selector confirmed" in hostap
+assert "queued confirmed HostAP replacement behind" in hostap
+assert "lower stop result=" in hostap
+
+retained = body(
+    owner,
+    "void AirportItlwmAPSTAOwner::prepareRetainedLowerReset",
+)
+assert "initialHostAPAdmissionPending = false;" in retained
+assert "confirmedHostAPStartPending = false;" in retained
 
 assert "IEEE80211_SCAN_COMPLETION_AP_HANDOFF" in node_h
 
@@ -133,15 +176,80 @@ for family, source, header, flags, phase, abort in (
         f"{flags}_FLAG_SCANNING",
         "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1)",
     )
+    assert "bool isAPScanFenceActive() const;" in header
+
+iwm_scan_owner = body(iwm_scan, "int ItlIwm::\niwm_scan")
+ordered(
+    iwm_scan_owner,
+    "if (isAPScanFenceActive())",
+    "noteWclInitialScanCommandRejected()",
+    "IWM STA scan deferred by live AP radio fence",
+    "return 0",
+    "iwm_umac_scan",
+)
+iwm_bgscan_owner = body(iwm_scan, "int ItlIwm::\niwm_bgscan")
+ordered(
+    iwm_bgscan_owner,
+    "that->isAPScanFenceActive()",
+    "return EBUSY",
+    "iwm_umac_scan",
+)
+iwx_scan_owner = body(iwx, "int ItlIwx::\niwx_scan")
+ordered(
+    iwx_scan_owner,
+    "if (isAPScanFenceActive())",
+    "noteWclInitialScanCommandRejected()",
+    "IWX STA scan deferred by live AP radio fence",
+    "return 0",
+    "iwx_umac_scan",
+)
+iwx_bgscan_owner = body(iwx, "int ItlIwx::\niwx_bgscan")
+ordered(
+    iwx_bgscan_owner,
+    "that->isAPScanFenceActive()",
+    "return EBUSY",
+    "iwx_umac_scan",
+)
+
+for source, family in ((iwm, "Iwm"), (iwx, "Iwx")):
+    initial = body(source, f"IOReturn Itl{family}::\nbeginWclInitialScan")
+    background = body(source, f"IOReturn Itl{family}::\nbeginWclBackgroundScan")
+    assert "if (isAPScanFenceActive())" in initial
+    assert "if (isAPScanFenceActive())" in background
 
 iwm_start = body(iwm, "IOReturn ItlIwm::\nstartAPMode")
-ordered(iwm_start, "iwm_start_ap_resources", "resumePrimaryStaRecoveryScanAfterAPHandoff")
+ordered(
+    iwm_start,
+    "iwm_start_ap_resources",
+    "if (error != 0)",
+    "resumePrimaryStaRecoveryScanAfterAPHandoff",
+)
+assert iwm_start.count("resumePrimaryStaRecoveryScanAfterAPHandoff") == 5
+iwm_stop = body(iwm, "IOReturn ItlIwm::\nstopAPMode")
+ordered(
+    iwm_stop,
+    "iwm_stop_ap_resources",
+    "if (error != 0)",
+    "resumePrimaryStaRecoveryScanAfterAPHandoff",
+)
 iwm_lower = body(iwm_mac, "int ItlIwm::\niwm_start_ap_resources")
 assert "ic_state == IEEE80211_S_SCAN" in iwm_lower
 assert "apPrimaryStaRecoveryScanYielded" in iwm_lower
 
 iwx_worker = body(iwx, "static void\niwx_ap_start_task")
 ordered(iwx_worker, "iwx_start_ap_mode", "resumePrimaryStaRecoveryScanAfterAPHandoff")
+iwx_restart = body(
+    iwx,
+    "void ItlIwx::\nresumePrimaryStaRecoveryScanAfterAPHandoff",
+)
+ordered(iwx_restart, "if (apLowerRunning)", "apPrimaryStaRecoveryScanYielded")
+iwx_stop_worker = body(iwx, "static void\niwx_ap_stop_task")
+ordered(
+    iwx_stop_worker,
+    "apLowerRunning = false",
+    "IWX AP lower stop worker complete",
+    "resumePrimaryStaRecoveryScanAfterAPHandoff",
+)
 iwx_handoff = body(iwx, "IOReturn ItlIwx::\nhandoffPrimaryStaRecoveryScanToAP")
 ordered(
     iwx_handoff,
@@ -162,5 +270,5 @@ dispatch = body(iwn, f'extern "C" IOReturn\n{bridge}')
 assert "airportItlwmHandoffIwmPrimaryStaRecoveryScanToAP" in dispatch
 assert "airportItlwmHandoffIwxPrimaryStaRecoveryScanToAP" in dispatch
 
-print("PASS: IWM/IWX bounded foreground-scan handoff starts AP then resumes STA")
+print("PASS: IWM/IWX bounded foreground-scan handoff owns AP lifetime then resumes STA")
 PY

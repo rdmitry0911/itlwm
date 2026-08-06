@@ -71,23 +71,15 @@ require(firmware, "clientRxBa[kItlApRxBaTidCount]",
 require(firmware, "itl_ap_rx_ba_stop(&client->clientRxBa[tid])",
         "buffer purge before client reset")
 
-for header, source, prefix, status_mask, baid_mask, label in (
-    (iwm_h, iwm, "iwm", "IWM_ADD_STA_STATUS_MASK",
-     "IWM_ADD_STA_BAID_VALID_MASK", "IWM"),
-    (iwx_h, iwx, "iwx", "IWX_ADD_STA_STATUS_MASK",
-     "IWX_ADD_STA_BAID_VALID_MASK", "IWX"),
+for header, source, prefix, label in (
+    (iwm_h, iwm, "iwm", "IWM"),
+    (iwx_h, iwx, "iwx", "IWX"),
 ):
     require(header, f"{prefix}_ap_set_client_rx_ba", f"{label} BA API")
     require(source, "command.sta_id = client->staId;",
             f"{label} AP station identity")
     require(source, "runtime->macId, runtime->macColor",
             f"{label} AP MAC context identity")
-    require(source, status_mask, f"{label} ADD_STA status validation")
-    require(source, baid_mask, f"{label} firmware BAID validation")
-    require(source, "rollbackStatus", f"{label} invalid-BAID rollback")
-    require(source,
-            f"command.modify_mask = {label}_STA_MODIFY_REMOVE_BA_TID;",
-            f"{label} firmware REMOVE_BA rollback")
     require(source, "rxba->sta_id = client->staId;",
             f"{label} reorder owner")
     require(source, "client->clientRxBaMask", f"{label} BA lifetime mask")
@@ -107,6 +99,61 @@ for header, source, prefix, status_mask, baid_mask, label in (
             f"{label} DELBA direction")
     ordered(source, "client->clientRxBaMask", f"{prefix}_ap_remove_internal_sta",
             f"{label} BA teardown before station removal")
+
+for needle, label in (
+    ("IWM_ADD_STA_STATUS_MASK", "IWM ADD_STA status validation"),
+    ("IWM_ADD_STA_BAID_VALID_MASK", "IWM firmware BAID validation"),
+    ("rollbackStatus", "IWM invalid-BAID rollback"),
+    ("command.modify_mask = IWM_STA_MODIFY_REMOVE_BA_TID;",
+     "IWM firmware REMOVE_BA rollback"),
+):
+    require(iwm, needle, label)
+
+iwx_reg = read("itlwm/hal_iwx/if_iwxreg.h")
+for needle, label in (
+    ("IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT", "IWX BAID-ML capability"),
+    ("IWX_RX_BAID_ALLOCATION_CONFIG_CMD", "IWX BAID allocation opcode"),
+    ("struct iwx_rx_baid_cfg_cmd", "IWX BAID command ABI"),
+):
+    require(iwx_reg, needle, label)
+for needle, label in (
+    ("iwx_rx_baid_cfg_cmd", "IWX BAID command helper"),
+    ("const bool baidMl = isset(", "IWX capability-selected BAID API"),
+    ("IWX_WIDE_ID(IWX_DATA_PATH_GROUP,\n                        IWX_RX_BAID_ALLOCATION_CONFIG_CMD)",
+     "IWX wide DATA_PATH command"),
+    ("sc, client->staId, tid, ssn, window, start, &baid",
+     "IWX AP-client BAID owner"),
+    ("IWX AP RX BA refused on legacy BAID firmware",
+     "IWX legacy firmware fail-closed witness"),
+    ("if (!baidMl)", "IWX AP legacy BAID refusal gate"),
+    ("IWX AP RX BA firmware start=%u", "IWX runtime BAID witness"),
+    ("case IWX_WIDE_ID(IWX_DATA_PATH_GROUP,\n                             IWX_RX_BAID_ALLOCATION_CONFIG_CMD):",
+     "IWX BAID response completion dispatch"),
+):
+    require(iwx, needle, label)
+ordered(iwx, "if (!baidMl)", "iwx_rx_baid_cfg_cmd(\n        sc, client->staId",
+        "IWX legacy refusal before AP BAID command")
+
+for source, prefix, label in (
+    (iwm, "iwm", "IWM"),
+    (iwx, "iwx", "IWX"),
+):
+    require(source, "itl_ap_firmware_defer_ba(client, &action)",
+            f"{label} RX-completion publication")
+    require(source, f"{prefix}_ap_process_deferred_ba",
+            f"{label} client-task BA owner")
+    require(source, f"{label} AP deferred RX ADDBA",
+            f"{label} deferred command witness")
+    ordered(source, f"{prefix}_ap_process_deferred_ba(",
+            f"{prefix}_ap_set_client_rx_ba(",
+            f"{label} client-task command ownership")
+
+require(iwm,
+        "static_cast<uint8_t>(runtime->broadcastQueueId),\n"
+        "                    runtime->broadcastStaId",
+        "IWM RX ADDBA response management queue owner")
+require(iwx, "sc, response, runtime->broadcastQueueId",
+        "IWX RX ADDBA response management queue owner")
 
 for source, prefix, label in (
     (iwm_rx, "IWM", "IWM"),

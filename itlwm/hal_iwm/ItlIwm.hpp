@@ -91,6 +91,7 @@ public:
     IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) override;
     uint16_t getAPCurrentChannel() const override;
     bool isPrimaryStaRecoveryScanPending() const override;
+    bool isAPScanFenceActive() const;
     IOReturn handoffPrimaryStaRecoveryScanToAP();
     bool completePrimaryStaRecoveryScanAPHandoff();
     void resumePrimaryStaRecoveryScanAfterAPHandoff();
@@ -515,6 +516,9 @@ public:
                                    struct ItlApFirmwareRuntime *,
                                    struct ItlApFirmwareClientRuntime *,
                                    uint8_t, uint16_t, bool);
+    void   iwm_ap_process_deferred_ba(struct iwm_softc *,
+                                      struct ItlApFirmwareRuntime *,
+                                      struct ItlApFirmwareClientRuntime *);
     int    iwm_ap_remove_client_sta(struct iwm_softc *,
                                     struct ItlApFirmwareRuntime *,
                                     struct ItlApFirmwareClientRuntime *);

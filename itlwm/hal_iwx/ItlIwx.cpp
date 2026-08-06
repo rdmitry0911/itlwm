@@ -736,6 +736,12 @@ detach(IOPCIDevice *device)
 
     for (int txq_i = 0; txq_i < nitems(sc->txq); txq_i++)
         iwx_free_tx_ring(sc, &sc->txq[txq_i]);
+    for (int txq_i = 0; txq_i < nitems(sc->sc_txq_locks); txq_i++) {
+        if (sc->sc_txq_locks[txq_i] != NULL) {
+            IOSimpleLockFree(sc->sc_txq_locks[txq_i]);
+            sc->sc_txq_locks[txq_i] = NULL;
+        }
+    }
     iwx_free_rx_ring(sc, &sc->rxq);
     iwx_dma_contig_free(&sc->ict_dma);
     iwx_dma_contig_free(&com.ctxt_info_dma);
@@ -967,6 +973,8 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
     if (generation == 0 || outBackendGeneration == NULL)
         return kIOReturnBadArgument;
     *outBackendGeneration = 0;
+    if (isAPScanFenceActive())
+        return kIOReturnBusy;
     if (wclScanLock == NULL || ic->ic_event_handler == NULL ||
         ic->ic_state != IEEE80211_S_SCAN ||
         ic->ic_opmode != IEEE80211_M_STA ||
@@ -1017,6 +1025,8 @@ beginWclBackgroundScan(uint64_t generation,
     if (generation == 0 || outBackendGeneration == NULL)
         return kIOReturnBadArgument;
     *outBackendGeneration = 0;
+    if (isAPScanFenceActive())
+        return kIOReturnBusy;
     if (wclScanLock == NULL || ic->ic_state != IEEE80211_S_RUN ||
         ic->ic_bss == NULL || ic->ic_mgt_timer != 0 ||
         (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
@@ -1419,6 +1429,19 @@ supportsAPMode() const
     return iwx_softc_supports_ap_go(&com);
 }
 
+bool ItlIwx::
+isAPScanFenceActive() const
+{
+    if (apLifecycleLock == NULL)
+        return false;
+    IOLockLock(apLifecycleLock);
+    const bool active = !apLifecycleDetached &&
+        (apStartPending || apLowerRunning || apStopPending ||
+         apStopRequested);
+    IOLockUnlock(apLifecycleLock);
+    return active;
+}
+
 static IOReturn
 iwx_ap_start_result_from_errno(int error)
 {
@@ -1573,6 +1596,8 @@ iwx_ap_stop_task(void *argument)
     IOLockUnlock(that->apLifecycleLock);
     XYLog("%s: IWX AP lower stop worker complete error=%d\n",
           DEVNAME(sc), error);
+    if (error == 0)
+        that->resumePrimaryStaRecoveryScanAfterAPHandoff();
 }
 
 static void
@@ -1703,6 +1728,7 @@ stopAPMode()
         apStopRequested = false;
         itl_ap_firmware_runtime_reset(&apRuntime);
         IOLockUnlock(apLifecycleLock);
+        resumePrimaryStaRecoveryScanAfterAPHandoff();
         return kIOReturnSuccess;
     }
     if (apStopPending) {
@@ -1789,8 +1815,14 @@ transmitAPData(mbuf_t packet)
         int requestError = itl_ap_open_build_tx_addba_request(
             &apRuntime, client, 0, &request);
         if (requestError == 0)
+            /* TVQM binds the client queue to QoS TID 0.  BlockAck action
+             * frames are non-QoS management traffic and therefore belong
+             * to the AP management/broadcast station queue, just like the
+             * unicast association response.  Mixing the two queue contracts
+             * makes core-66 firmware assert once data is pending behind the
+             * action frame. */
             requestError = iwx_ap_send_raw_frame(
-                &com, request, client->queueId);
+                &com, request, apRuntime.broadcastQueueId);
         if (requestError != 0) {
             if (request != NULL)
                 mbuf_freem(request);
@@ -2176,6 +2208,15 @@ resumePrimaryStaRecoveryScanAfterAPHandoff()
     if (apLifecycleLock == NULL)
         return;
     IOLockLock(apLifecycleLock);
+    /* The yielded scan is the foreground policy displaced by HostAP, not a
+     * temporary prerequisite which should restart as soon as MAC_CONTEXT is
+     * programmed.  Keep its generation owned while the lower AP is live;
+     * the authoritative stop worker calls us again after clearing the
+     * firmware-running state. */
+    if (apLowerRunning) {
+        IOLockUnlock(apLifecycleLock);
+        return;
+    }
     if (apPrimaryStaRecoveryScanYielded) {
         generation = apPrimaryStaRecoveryScanGeneration;
         generic = apPrimaryStaRecoveryScanGeneric;
@@ -2646,6 +2687,18 @@ static int iwx_set_sta_igtk_v2(struct iwx_softc *,
                                 struct ieee80211_node *,
                                 struct ieee80211_key *, bool, bool);
 void iwx_clear_tx_desc(struct iwx_softc *, struct iwx_tx_ring *, int);
+
+static IOSimpleLock *
+iwx_txq_lock_for_ring(struct iwx_softc *sc, const struct iwx_tx_ring *ring)
+{
+    if (sc == NULL || ring == NULL)
+        return NULL;
+    for (size_t qid = 0; qid < nitems(sc->txq); qid++) {
+        if (ring == &sc->txq[qid])
+            return sc->sc_txq_locks[qid];
+    }
+    return NULL;
+}
 
 static bool
 iwx_sae_wcl_credential_runtime_opted_in(void)
@@ -5565,10 +5618,12 @@ iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t staId, int tid,
           static_cast<unsigned>(le16toh(resp->flags)));
     ring->cur = wr_idx;
     ring->qid = fwqid;
+    IOSimpleLockLock(sc->sc_txq_locks[fwqid]);
     iwx_reset_tx_ring(sc, &sc->txq[fwqid]);
     iwx_free_tx_ring(sc, &sc->txq[fwqid]);
     memcpy(&sc->txq[fwqid], ring, sizeof(*ring));
     memset(ring, 0, sizeof(*ring));
+    IOSimpleLockUnlock(sc->sc_txq_locks[fwqid]);
     iwx_free_resp(sc, &hcmd);
     return fwqid;
 fail:
@@ -6201,17 +6256,77 @@ iwx_setup_he_rates(struct iwx_softc *sc)
 
 #define IWX_MAX_RX_BA_SESSIONS 16
 
+static struct iwx_rxba_data *
+iwx_find_rxba_data(struct iwx_softc *sc, uint8_t staId, uint8_t tid)
+{
+    if (sc == NULL)
+        return NULL;
+    for (size_t index = 0; index < nitems(sc->sc_rxba_data); index++) {
+        struct iwx_rxba_data *rxba = &sc->sc_rxba_data[index];
+        if (rxba->baid == IWX_RX_REORDER_DATA_INVALID_BAID)
+            continue;
+        if (rxba->sta_id == staId && rxba->tid == tid)
+            return rxba;
+    }
+    return NULL;
+}
+
+int ItlIwx::
+iwx_rx_baid_cfg_cmd(struct iwx_softc *sc, uint8_t staId, uint8_t tid,
+                    uint16_t ssn, uint16_t window, bool start,
+                    uint8_t *baid)
+{
+    if (sc == NULL || baid == NULL || staId >= 32 ||
+        tid >= IWX_MAX_TID_COUNT)
+        return EINVAL;
+
+    struct iwx_rx_baid_cfg_cmd command;
+    memset(&command, 0, sizeof(command));
+    if (start) {
+        command.action = htole32(IWX_RX_BAID_ACTION_ADD);
+        command.alloc.sta_id_mask = htole32(1U << staId);
+        command.alloc.tid = tid;
+        command.alloc.ssn = htole16(ssn);
+        command.alloc.win_size = htole16(window);
+    } else {
+        if (*baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
+            *baid >= nitems(sc->sc_rxba_data))
+            return ENOENT;
+        command.action = htole32(IWX_RX_BAID_ACTION_REMOVE);
+        if (iwx_lookup_cmd_ver(
+                sc, IWX_DATA_PATH_GROUP,
+                IWX_RX_BAID_ALLOCATION_CONFIG_CMD) == 1) {
+            command.remove_v1.baid = htole32(*baid);
+        } else {
+            command.remove.sta_id_mask = htole32(1U << staId);
+            command.remove.tid = htole32(tid);
+        }
+    }
+
+    uint32_t newBaid = 0;
+    const int error = iwx_send_cmd_pdu_status(
+        sc, IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
+                        IWX_RX_BAID_ALLOCATION_CONFIG_CMD),
+        sizeof(command), &command, &newBaid);
+    if (error != 0)
+        return error;
+    if (start) {
+        if (newBaid >= nitems(sc->sc_rxba_data))
+            return ERANGE;
+        *baid = static_cast<uint8_t>(newBaid);
+    }
+    return 0;
+}
+
 void ItlIwx::
 iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
                uint16_t ssn, uint16_t winsize, int timeout_val, int start)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    struct iwx_add_sta_cmd cmd;
     struct iwx_node *in = (struct iwx_node *)ni;
     int err, s;
-    uint32_t status;
     struct iwx_rxba_data *rxba = NULL;
-    uint8_t baid = 0;
+    uint8_t baid = IWX_RX_REORDER_DATA_INVALID_BAID;
     
     s = splnet();
     
@@ -6221,50 +6336,66 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         return;
     }
     
-    memset(&cmd, 0, sizeof(cmd));
-    
-    cmd.sta_id = IWX_STATION_ID;
-    cmd.mac_id_n_color
-    = htole32(IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color));
-    cmd.add_modify = IWX_STA_MODE_MODIFY;
-    
-    if (start) {
-        cmd.add_immediate_ba_tid = (uint8_t)tid;
-        cmd.add_immediate_ba_ssn = htole16(ssn);
-        cmd.rx_ba_window = htole16(winsize);
-    } else {
-        cmd.remove_immediate_ba_tid = (uint8_t)tid;
+    const bool baidMl = isset(
+        sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT);
+    if (!start) {
+        rxba = iwx_find_rxba_data(sc, IWX_STATION_ID, tid);
+        if (rxba == NULL) {
+            splx(s);
+            return;
+        }
+        baid = rxba->baid;
     }
-    cmd.modify_mask = start ? IWX_STA_MODIFY_ADD_BA_TID :
-    IWX_STA_MODIFY_REMOVE_BA_TID;
-    
-    status = IWX_ADD_STA_SUCCESS;
-    err = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA, sizeof(cmd), &cmd,
-                                  &status);
-    
-    if (err || (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS) {
+
+    if (baidMl) {
+        err = iwx_rx_baid_cfg_cmd(
+            sc, IWX_STATION_ID, tid, ssn, winsize, start != 0, &baid);
+    } else {
+        struct iwx_add_sta_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.sta_id = IWX_STATION_ID;
+        cmd.mac_id_n_color = htole32(
+            IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color));
+        cmd.add_modify = IWX_STA_MODE_MODIFY;
+        if (start) {
+            cmd.add_immediate_ba_tid = tid;
+            cmd.add_immediate_ba_ssn = htole16(ssn);
+            cmd.rx_ba_window = htole16(winsize);
+        } else {
+            cmd.remove_immediate_ba_tid = tid;
+        }
+        cmd.modify_mask = start ? IWX_STA_MODIFY_ADD_BA_TID :
+                                  IWX_STA_MODIFY_REMOVE_BA_TID;
+        uint32_t status = IWX_ADD_STA_SUCCESS;
+        err = iwx_send_cmd_pdu_status(
+            sc, IWX_ADD_STA, sizeof(cmd), &cmd, &status);
+        if (err == 0 &&
+            (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
+            err = EIO;
+        if (err == 0 && start) {
+            if ((status & IWX_ADD_STA_BAID_VALID_MASK) == 0) {
+                err = EINVAL;
+            } else {
+                baid = static_cast<uint8_t>(
+                    (status & IWX_ADD_STA_BAID_MASK) >>
+                    IWX_ADD_STA_BAID_SHIFT);
+                if (baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
+                    baid >= nitems(sc->sc_rxba_data))
+                    err = ERANGE;
+            }
+        }
+    }
+
+    if (err != 0) {
         if (start)
             ieee80211_addba_req_refuse(ic, ni, tid);
         splx(s);
         return;
     }
-    
+
+    rxba = &sc->sc_rxba_data[baid];
     /* Deaggregation is done in hardware. */
     if (start) {
-        if (!(status & IWX_ADD_STA_BAID_VALID_MASK)) {
-            ieee80211_addba_req_refuse(ic, ni, tid);
-            splx(s);
-            return;
-        }
-        baid = (status & IWX_ADD_STA_BAID_MASK) >>
-        IWX_ADD_STA_BAID_SHIFT;
-        if (baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
-            baid >= nitems(sc->sc_rxba_data)) {
-            ieee80211_addba_req_refuse(ic, ni, tid);
-            splx(s);
-            return;
-        }
-        rxba = &sc->sc_rxba_data[baid];
         if (rxba->baid != IWX_RX_REORDER_DATA_INVALID_BAID) {
             ieee80211_addba_req_refuse(ic, ni, tid);
             splx(s);
@@ -6285,19 +6416,8 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
             ba = &ni->ni_rx_ba[tid];
             ba->ba_timeout_val = 0;
         }
-    } else {
-        int i;
-        for (i = 0; i < nitems(sc->sc_rxba_data); i++) {
-            rxba = &sc->sc_rxba_data[i];
-            if (rxba->baid ==
-                IWX_RX_REORDER_DATA_INVALID_BAID)
-                continue;
-            if (rxba->tid != tid)
-                continue;
-            iwx_clear_reorder_buffer(sc, rxba);
-            break;
-        }
-    }
+    } else
+        iwx_clear_reorder_buffer(sc, rxba);
     
     if (start) {
         sc->sc_rx_ba_sessions++;
@@ -7881,7 +8001,7 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
 
 bool ItlIwx::
 iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
-                     struct iwx_tx_ring *ring, int idx)
+                     struct iwx_tx_ring *ring, int ssn)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = IC2IFP(ic);
@@ -7891,8 +8011,21 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
         status != IWX_TX_STATUS_DIRECT_DONE;
     unsigned int reclaimed = 0;
     bool was_ap_frame = false;
+    bool ap_assoc_complete_pending = false;
+    bool ap_assoc_acknowledged = false;
+    uint8_t ap_assoc_peer[IEEE80211_ADDR_LEN] = {};
+    IOSimpleLock *txqLock = iwx_txq_lock_for_ring(sc, ring);
     
     KASSERT(tx_resp->frame_count == 1, "tx_resp->frame_count == 1");
+
+    if (txqLock == NULL)
+        return false;
+    IOSimpleLockLock(txqLock);
+    if (ring->ring_count == 0) {
+        IOSimpleLockUnlock(txqLock);
+        return false;
+    }
+    const int idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count);
 
     /*
      * Firmware reports the SCD SSN as the first descriptor it has not
@@ -7911,9 +8044,11 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
                 (txd->diag_subtype == IEEE80211_FC0_SUBTYPE_ASSOC_RESP ||
                  txd->diag_subtype ==
                     IEEE80211_FC0_SUBTYPE_REASSOC_RESP);
-            uint8_t ap_assoc_peer[IEEE80211_ADDR_LEN];
-            if (ap_assoc_response)
+            if (ap_assoc_response) {
                 IEEE80211_ADDR_COPY(ap_assoc_peer, txd->diag_peer);
+                ap_assoc_complete_pending = true;
+                ap_assoc_acknowledged = !frame_failed;
+            }
 
             reclaimed++;
             was_ap_frame |= txd->ap_frame;
@@ -7966,12 +8101,15 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
             iwx_txd_done(sc, txd);
             iwx_clear_tx_desc(sc, ring, ring->tail);
             ring->queued--;
-            if (ap_assoc_response)
-                iwx_ap_assoc_tx_complete(
-                    sc, ap_assoc_peer, !frame_failed);
         }
         ring->tail = (ring->tail + 1) % ring->ring_count;
     }
+
+    IOSimpleLockUnlock(txqLock);
+    /* Local RSN may immediately enqueue EAPOL M1 on this same queue. */
+    if (ap_assoc_complete_pending)
+        iwx_ap_assoc_tx_complete(sc, ap_assoc_peer,
+                                 ap_assoc_acknowledged);
 
     return was_ap_frame;
 }
@@ -8026,20 +8164,32 @@ iwx_clear_oactive(struct iwx_softc *sc, struct iwx_tx_ring *ring)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = &ic->ic_if;
+    IOSimpleLock *txqLock = iwx_txq_lock_for_ring(sc, ring);
+    bool cleared = false;
+    bool restart = false;
 
+    if (txqLock == NULL)
+        return;
+    IOSimpleLockLock(txqLock);
     if (ring->queued < ring->low_mark) {
         ring->ap_queue_full = false;
         if (ring->qid >= 0 &&
             ring->qid < (int)(sizeof(sc->qfullmsk) * NBBY))
             sc->qfullmsk &= ~(1U << ring->qid);
-        if (sc->qfullmsk == 0 && ifq_is_oactive(&ifp->if_snd)) {
+        restart = sc->qfullmsk == 0 && ifq_is_oactive(&ifp->if_snd);
+        if (restart)
             ifq_clr_oactive(&ifp->if_snd);
-            (*ifp->if_start)(ifp);
-        }
-#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
-        ifp->iface->signalOutputThread();
-#endif
+        cleared = true;
     }
+    IOSimpleLockUnlock(txqLock);
+    if (restart)
+        (*ifp->if_start)(ifp);
+#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
+    if (cleared)
+        ifp->iface->signalOutputThread();
+#else
+    (void)cleared;
+#endif
 }
 
 void ItlIwx::
@@ -8099,7 +8249,7 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
 
         sc->sc_tx_timer = 0;
 
-        iwx_ampdu_txq_advance(sc, ring, IWX_AGG_SSN_TO_TXQ_IDX(le16toh(ba_tfd->tfd_index), ring->ring_count));
+        iwx_ampdu_txq_advance(sc, ring, le16toh(ba_tfd->tfd_index));
         if (apQueue) {
             iwx_clear_oactive(sc, ring);
 #if __IO80211_TARGET >= __MAC_26_0
@@ -8112,10 +8262,19 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
 }
 
 void ItlIwx::
-iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int idx)
+iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int ssn)
 {
     struct iwx_tx_data *txd;
+    IOSimpleLock *txqLock = iwx_txq_lock_for_ring(sc, ring);
 
+    if (txqLock == NULL)
+        return;
+    IOSimpleLockLock(txqLock);
+    if (ring->ring_count == 0) {
+        IOSimpleLockUnlock(txqLock);
+        return;
+    }
+    const int idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count);
     while (ring->tail != idx) {
         txd = &ring->data[ring->tail];
         if (txd->m != NULL) {
@@ -8125,6 +8284,7 @@ iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int idx)
         }
         ring->tail = (ring->tail + 1) % ring->ring_count;
     }
+    IOSimpleLockUnlock(txqLock);
 }
 
 #define IWX_AGG_TX_STATE_(x) case IWX_AGG_TX_STATE_ ## x: return #x
@@ -8154,7 +8314,6 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
               struct iwx_rx_data *data)
 {
     uint32_t ssn;
-    int idx;
     struct iwx_tx_resp *tx_resp = (struct iwx_tx_resp *)pkt->data;
     int qid = tx_resp->tx_queue;
     struct iwx_tx_ring *ring;
@@ -8168,14 +8327,10 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
         qid >= (int)nitems(sc->txq))
         return;
     ring = &sc->txq[qid];
-    if (ring->ring_count == 0)
-        return;
-
     if (tx_resp->frame_count <= 1) {
         memcpy(&ssn, &tx_resp->status + tx_resp->frame_count, sizeof(ssn));
         ssn = le32toh(ssn) & 0xfff;
-        idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count);
-        const bool wasApFrame = iwx_rx_tx_cmd_single(sc, pkt, ring, idx);
+        const bool wasApFrame = iwx_rx_tx_cmd_single(sc, pkt, ring, ssn);
         if (wasApFrame) {
             iwx_clear_oactive(sc, ring);
 #if __IO80211_TARGET >= __MAC_26_0
@@ -9974,16 +10129,30 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
     if (headerLength < sizeof(*wh) || headerLength > frameLength)
         return EINVAL;
 
+    IOSimpleLock *txqLock = sc->sc_txq_locks[queueId];
+    if (txqLock == NULL)
+        return ENXIO;
+    IOSimpleLockLock(txqLock);
+    if (apRuntime.stage != kItlApFirmwareResourceRunning) {
+        IOSimpleLockUnlock(txqLock);
+        return ENXIO;
+    }
     struct iwx_tx_ring *ring = &sc->txq[queueId];
     if (ring->ring_count == 0 ||
         ring->ap_queue_full ||
         ring->queued > ring->hi_mark ||
-        ring->queued >= ring->ring_count - 1)
+        ring->queued >= ring->ring_count - 1) {
+        IOSimpleLockUnlock(txqLock);
         return ENOBUFS;
+    }
     const int index = ring->cur & (ring->ring_count - 1);
     struct iwx_tfh_tfd *descriptor = &ring->desc[index];
     struct iwx_tx_data *data = &ring->data[index];
     struct iwx_device_cmd *deviceCommand = &ring->cmd[index];
+    if (data->m != NULL) {
+        IOSimpleLockUnlock(txqLock);
+        return ENOBUFS;
+    }
     memset(descriptor, 0, sizeof(*descriptor));
     memset(deviceCommand, 0, sizeof(*deviceCommand));
     deviceCommand->hdr.cmd = IWX_TX_CMD;
@@ -10020,7 +10189,11 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
         (firmwareRate ? 0 : IWX_TX_FLAGS_CMD_RATE) |
         (protectedFrame ? 0 : IWX_TX_FLAGS_ENCRYPT_DIS);
     uint16_t commandSize;
-    uint16_t offloadAssist = 0;
+    /* The 22000/new-TX ABI requires the MAC-header length in 16-bit
+     * words even when checksum offload is otherwise unused.  Firmware uses
+     * it to locate the payload (and the IV it inserts for a hardware key). */
+    uint16_t offloadAssist =
+        IWX_TX_CMD_OFFLD_MH_SIZE(headerLength / 2);
     if (headerLength % 4)
         offloadAssist |= IWX_TX_CMD_OFFLD_PAD;
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
@@ -10051,8 +10224,10 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
     IOPhysicalSegment segments[IWX_TFH_NUM_TBS - 2];
     const int segmentCount = data->map->cursor->getPhysicalSegmentsWithCoalesce(
         m, segments, IWX_TFH_NUM_TBS - 2);
-    if (segmentCount == 0)
+    if (segmentCount == 0) {
+        IOSimpleLockUnlock(txqLock);
         return ENOMEM;
+    }
     data->m = m;
     data->in = NULL;
     data->ap_frame = true;
@@ -10086,13 +10261,26 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
         if (*packetNumber < 0xffffffffffffULL)
             ++*packetNumber;
     }
-    ring->cur = (ring->cur + 1) % ring->ring_count;
+    /*
+     * AX210 TVQM exposes a 16-bit hardware write pointer even though this
+     * driver keeps only 256 reusable descriptor slots.  The descriptor
+     * carrier therefore wraps at ring_count (via the index mask above), but
+     * the doorbell pointer must keep advancing across that wrap.  Publishing
+     * zero after descriptor 255 makes firmware interpret the queue as empty;
+     * descriptors submitted in the next physical lap then accumulate until
+     * the LMAC queue invariant asserts.  This is the same split used by the
+     * reference transport's physical cur and cur_hw cursors; our existing
+     * ring->cur already carries the hardware-domain cursor on every other
+     * IWX TX path.
+     */
+    ring->cur = (ring->cur + 1) % getTxQueueSize();
     IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
     if (++ring->queued > ring->hi_mark)
         ring->ap_queue_full = true;
     sc->sc_tx_timer = 15;
     if (client != NULL && type == IEEE80211_FC0_TYPE_DATA && txTid < 8)
         itl_ap_tx_ba_advance_sequence(&client->clientTxSequence[txTid]);
+    IOSimpleLockUnlock(txqLock);
     return 0;
 }
 
@@ -11940,10 +12128,12 @@ iwx_ap_remove_internal_sta(struct iwx_softc *sc, uint8_t staId,
      * whose station owner has already disappeared.
      */
     struct iwx_tx_ring *ring = &sc->txq[queueId];
+    IOSimpleLockLock(sc->sc_txq_locks[queueId]);
     iwx_reset_tx_ring(sc, ring);
     iwx_free_tx_ring(sc, ring);
     memset(ring, 0, sizeof(*ring));
     ring->qid = IWX_INVALID_QUEUE;
+    IOSimpleLockUnlock(sc->sc_txq_locks[queueId]);
 
     struct iwx_rm_sta_cmd command;
     memset(&command, 0, sizeof(command));
@@ -11960,6 +12150,26 @@ iwx_ap_add_client_sta(struct iwx_softc *sc,
     if (runtime == NULL || client == NULL ||
         client->clientStationInstalled)
         return EINVAL;
+
+    /* Core-66/API-68 firmware has no independent BAID allocation API.  An
+     * AP link station advertised as HT/QoS still drives the peer through an
+     * ADDBA/DELBA exchange even when the driver refuses aggregation, and the
+     * firmware asserts while that TVQM TID queue is active.  Downgrade the
+     * association before ADD_STA so firmware, the association response, and
+     * the data path all agree on the stable non-QoS single-MPDU contract.
+     * Firmware with BAID_ML support keeps the full HT/QoS path. */
+    if (!isset(sc->sc_enabled_capa,
+               IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT)) {
+        client->clientQos = false;
+        client->clientHt = false;
+        client->clientHtNss = 0;
+        client->clientHtCapabilities = 0;
+        client->clientHtAmpduParams = 0;
+        memset(client->clientHtMcs, 0, sizeof(client->clientHtMcs));
+        XYLog("%s: IWX AP legacy-safe non-HT client fallback sta=%u\n",
+              DEVNAME(sc), static_cast<unsigned>(client->staId));
+    }
+
     int error = iwx_ap_add_internal_sta(sc, runtime,
         client->staId, IWX_STA_LINK, client->clientMac,
         client->clientAid, &client->queueId,
@@ -11971,6 +12181,16 @@ iwx_ap_add_client_sta(struct iwx_softc *sc,
     client->clientStationHt = client->clientHt;
     client->clientStationHtNss = client->clientHtNss;
     IEEE80211_ADDR_COPY(client->clientStationMac, client->clientMac);
+    /* Keep transmit aggregation explicitly blocked as a second guard for
+     * legacy firmware.  A later association starts with fresh per-client
+     * state and modern firmware can use aggregation normally. */
+    if (!isset(sc->sc_enabled_capa,
+               IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT)) {
+        for (uint8_t tid = 0; tid < kItlApRxBaTidCount; tid++)
+            itl_ap_tx_ba_block(&client->clientTxBa[tid]);
+        XYLog("%s: IWX AP aggregation using legacy-safe fallback sta=%u\n",
+              DEVNAME(sc), static_cast<unsigned>(client->staId));
+    }
     return 0;
 }
 
@@ -12059,36 +12279,31 @@ iwx_ap_set_client_rx_ba(struct iwx_softc *sc,
     if (start && sc->sc_rx_ba_sessions >= IWX_MAX_RX_BA_SESSIONS)
         return ENOSPC;
 
-    struct iwx_add_sta_cmd command;
-    memset(&command, 0, sizeof(command));
-    command.sta_id = client->staId;
-    command.mac_id_n_color = htole32(IWX_FW_CMD_ID_AND_COLOR(
-        runtime->macId, runtime->macColor));
-    command.add_modify = IWX_STA_MODE_MODIFY;
-    command.modify_mask = start ? IWX_STA_MODIFY_ADD_BA_TID :
-                                  IWX_STA_MODIFY_REMOVE_BA_TID;
-    if (start) {
-        command.add_immediate_ba_tid = tid;
-        command.add_immediate_ba_ssn = htole16(ssn);
-        command.rx_ba_window = htole16(window);
-    } else {
-        command.remove_immediate_ba_tid = tid;
+    const bool baidMl = isset(
+        sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT);
+    if (!baidMl) {
+        XYLog("%s: IWX AP RX BA refused on legacy BAID firmware "
+              "sta=%u tid=%u\n", DEVNAME(sc),
+              static_cast<unsigned>(client->staId),
+              static_cast<unsigned>(tid));
+        return EOPNOTSUPP;
     }
-    uint32_t status = IWX_ADD_STA_SUCCESS;
-    int error = iwx_send_cmd_pdu_status(
-        sc, IWX_ADD_STA, sizeof(command), &command, &status);
-    if (error == 0 &&
-        (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
-        error = EIO;
+    struct iwx_rxba_data *rxba = NULL;
+    uint8_t baid = IWX_RX_REORDER_DATA_INVALID_BAID;
+    if (!start) {
+        rxba = iwx_find_rxba_data(sc, client->staId, tid);
+        if (rxba == NULL)
+            return ENOENT;
+        baid = rxba->baid;
+    }
+
+    const int error = iwx_rx_baid_cfg_cmd(
+        sc, client->staId, tid, ssn, window, start, &baid);
     if (error != 0)
         return error;
 
     if (start) {
-        const uint8_t baid = static_cast<uint8_t>(
-            (status & IWX_ADD_STA_BAID_MASK) >>
-            IWX_ADD_STA_BAID_SHIFT);
-        if ((status & IWX_ADD_STA_BAID_VALID_MASK) == 0 ||
-            baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
+        if (baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
             baid >= nitems(sc->sc_rxba_data) ||
             sc->sc_rxba_data[baid].baid !=
                 IWX_RX_REORDER_DATA_INVALID_BAID) {
@@ -12096,21 +12311,11 @@ iwx_ap_set_client_rx_ba(struct iwx_softc *sc,
              * BAID cannot be installed locally.  Leaving the successful
              * firmware command behind makes the next peer retry collide
              * with an aggregation session the host cannot service. */
-            memset(&command, 0, sizeof(command));
-            command.sta_id = client->staId;
-            command.mac_id_n_color = htole32(
-                IWX_FW_CMD_ID_AND_COLOR(
-                    runtime->macId, runtime->macColor));
-            command.add_modify = IWX_STA_MODE_MODIFY;
-            command.modify_mask = IWX_STA_MODIFY_REMOVE_BA_TID;
-            command.remove_immediate_ba_tid = tid;
-            uint32_t rollbackStatus = IWX_ADD_STA_SUCCESS;
-            (void)iwx_send_cmd_pdu_status(
-                sc, IWX_ADD_STA, sizeof(command), &command,
-                &rollbackStatus);
+            (void)iwx_rx_baid_cfg_cmd(
+                sc, client->staId, tid, 0, 0, false, &baid);
             return EIO;
         }
-        struct iwx_rxba_data *rxba = &sc->sc_rxba_data[baid];
+        rxba = &sc->sc_rxba_data[baid];
         rxba->sta_id = client->staId;
         rxba->tid = tid;
         rxba->baid = baid;
@@ -12118,14 +12323,7 @@ iwx_ap_set_client_rx_ba(struct iwx_softc *sc,
         getmicrouptime(&rxba->last_rx);
         iwx_init_reorder_buffer(&rxba->reorder_buf, ssn, window);
     } else {
-        for (size_t index = 0; index < nitems(sc->sc_rxba_data); index++) {
-            struct iwx_rxba_data *rxba = &sc->sc_rxba_data[index];
-            if (rxba->baid != IWX_RX_REORDER_DATA_INVALID_BAID &&
-                rxba->sta_id == client->staId && rxba->tid == tid) {
-                iwx_clear_reorder_buffer(sc, rxba);
-                break;
-            }
-        }
+        iwx_clear_reorder_buffer(sc, rxba);
     }
     if (start) {
         itl_ap_rx_ba_start(&client->clientRxBa[tid], ssn, window,
@@ -12138,6 +12336,11 @@ iwx_ap_set_client_rx_ba(struct iwx_softc *sc,
         if (sc->sc_rx_ba_sessions > 0)
             sc->sc_rx_ba_sessions--;
     }
+    XYLog("%s: IWX AP RX BA firmware start=%u sta=%u tid=%u "
+          "baid=%u baid_ml=%u\n", DEVNAME(sc), start ? 1U : 0U,
+          static_cast<unsigned>(client->staId),
+          static_cast<unsigned>(tid), static_cast<unsigned>(baid),
+          baidMl ? 1U : 0U);
     return 0;
 }
 
@@ -12167,6 +12370,94 @@ iwx_ap_set_client_tx_ba(struct iwx_softc *sc,
         client->clientTxBaMask &= static_cast<uint16_t>(~bit);
     }
     return 0;
+}
+
+void ItlIwx::
+iwx_ap_process_deferred_ba(
+    struct iwx_softc *sc, struct ItlApFirmwareRuntime *runtime,
+    struct ItlApFirmwareClientRuntime *client)
+{
+    if (sc == NULL || runtime == NULL || client == NULL)
+        return;
+    for (uint8_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
+        struct ItlApBlockAckAction action;
+        bzero(&action, sizeof(action));
+        if (!itl_ap_firmware_take_deferred_ba(client, tid, &action))
+            continue;
+
+        int commandError = 0;
+        int responseError = 0;
+        if (action.tid != tid) {
+            commandError = EINVAL;
+        } else if (action.kind == kItlApBlockAckAddRequest) {
+            commandError = iwx_ap_set_client_rx_ba(
+                sc, runtime, client, tid, action.ssn,
+                action.window, true);
+            mbuf_t response = NULL;
+            responseError = itl_ap_open_build_deferred_addba_response(
+                runtime, client, &action,
+                commandError == 0 ? IEEE80211_STATUS_SUCCESS :
+                                    IEEE80211_STATUS_REFUSED,
+                &response);
+            if (responseError == 0)
+                responseError = iwx_ap_send_raw_frame(
+                    sc, response, runtime->broadcastQueueId);
+            if (responseError != 0 && response != NULL)
+                mbuf_freem(response);
+            XYLog("%s: IWX AP deferred RX ADDBA tid=%u ssn=%u "
+                  "win=%u command=%d response=%d\n", DEVNAME(sc),
+                  static_cast<unsigned>(tid),
+                  static_cast<unsigned>(action.ssn),
+                  static_cast<unsigned>(action.window),
+                  commandError, responseError);
+        } else if (action.kind == kItlApBlockAckAddResponse) {
+            struct ItlApTxBaRuntime *txBa = &client->clientTxBa[tid];
+            if (!itl_ap_tx_ba_response_matches(txBa, &action)) {
+                commandError = EINVAL;
+            } else if (action.status != IEEE80211_STATUS_SUCCESS) {
+                itl_ap_tx_ba_block(txBa);
+            } else {
+                commandError = iwx_ap_set_client_tx_ba(
+                    sc, runtime, client, tid, txBa->ssn, true);
+                if (commandError == 0) {
+                    itl_ap_tx_ba_accept(txBa, &action);
+                } else {
+                    mbuf_t delba = NULL;
+                    if (itl_ap_open_build_tx_delba(
+                            runtime, client, tid,
+                            IEEE80211_REASON_SETUP_REQUIRED, &delba) == 0) {
+                        responseError = iwx_ap_send_raw_frame(
+                            sc, delba, runtime->broadcastQueueId);
+                        if (responseError != 0)
+                            mbuf_freem(delba);
+                    }
+                    itl_ap_tx_ba_reset(txBa);
+                }
+            }
+            XYLog("%s: IWX AP deferred TX ADDBA response tid=%u "
+                  "status=%u command=%d response=%d\n", DEVNAME(sc),
+                  static_cast<unsigned>(tid),
+                  static_cast<unsigned>(action.status),
+                  commandError, responseError);
+        } else if (action.kind == kItlApBlockAckDelete) {
+            if (action.peerInitiator) {
+                commandError = iwx_ap_set_client_rx_ba(
+                    sc, runtime, client, tid, 0, 0, false);
+            } else {
+                commandError = iwx_ap_set_client_tx_ba(
+                    sc, runtime, client, tid,
+                    client->clientTxSequence[tid], false);
+                itl_ap_tx_ba_reset(&client->clientTxBa[tid]);
+            }
+            XYLog("%s: IWX AP deferred DELBA tid=%u "
+                  "peer_initiator=%u command=%d\n", DEVNAME(sc),
+                  static_cast<unsigned>(tid),
+                  action.peerInitiator ? 1U : 0U, commandError);
+        } else {
+            commandError = EINVAL;
+        }
+        itl_ap_firmware_complete_deferred_ba(client, tid);
+    }
 }
 
 void ItlIwx::iwx_ap_rx_ba_deliver(void *owner,
@@ -12719,6 +13010,7 @@ iwx_ap_client_task(void *arg)
             &runtime->clients[index];
         if (!client->inUse)
             continue;
+        that->iwx_ap_process_deferred_ba(sc, runtime, client);
         const enum ItlApLocalEapolAction action =
             itl_ap_local_rsn_take_deferred_action(client);
         if (action != kItlApLocalEapolConsumed) {
@@ -12827,82 +13119,31 @@ iwx_ap_handle_rx(struct iwx_softc *sc, mbuf_t packet, size_t frameLength,
         }
     }
     if (error == 0 &&
-        result.disposition == kItlApOpenRxAddBaRequest) {
-        const int baError = client == NULL ? EINVAL :
-            iwx_ap_set_client_rx_ba(sc, &apRuntime, client,
-                result.baTid, result.baSsn, result.baWindow, true);
-        error = itl_ap_open_build_addba_response(
-            &apRuntime, &result, baError == 0 ?
-                IEEE80211_STATUS_SUCCESS : IEEE80211_STATUS_REFUSED);
-        mbuf_t response = NULL;
-        if (error == 0)
-            error = iwx_ap_reply_to_mbuf(&result, &response);
-        if (error == 0 && client != NULL)
-            error = iwx_ap_send_raw_frame(
-                sc, response, client->queueId);
-        if (error != 0 && response != NULL)
-            mbuf_freem(response);
-        XYLog("%s: IWX AP RX ADDBA tid=%u ssn=%u win=%u "
-              "firmware=%d response=%d\n", DEVNAME(sc),
-              static_cast<unsigned>(result.baTid),
-              static_cast<unsigned>(result.baSsn),
-              static_cast<unsigned>(result.baWindow), baError, error);
-        result.disposition = kItlApOpenRxConsumed;
-    } else if (error == 0 &&
-               result.disposition == kItlApOpenRxAddBaResponse) {
+        (result.disposition == kItlApOpenRxAddBaRequest ||
+         result.disposition == kItlApOpenRxAddBaResponse ||
+         result.disposition == kItlApOpenRxDelBa)) {
         struct ItlApBlockAckAction action;
         bzero(&action, sizeof(action));
-        action.kind = kItlApBlockAckAddResponse;
+        action.kind = result.disposition == kItlApOpenRxAddBaRequest ?
+            kItlApBlockAckAddRequest :
+            (result.disposition == kItlApOpenRxAddBaResponse ?
+                kItlApBlockAckAddResponse : kItlApBlockAckDelete);
         action.token = result.baToken;
         action.tid = result.baTid;
+        action.ssn = result.baSsn;
         action.status = result.baStatus;
         action.window = result.baWindow;
         action.timeout = result.baTimeout;
-        struct ItlApTxBaRuntime *txBa = client == NULL ? NULL :
-            &client->clientTxBa[result.baTid];
-        if (!itl_ap_tx_ba_response_matches(txBa, &action)) {
-            error = EINVAL;
-        } else if (action.status != IEEE80211_STATUS_SUCCESS) {
-            itl_ap_tx_ba_reset(txBa);
-        } else {
-            const int baError = iwx_ap_set_client_tx_ba(
-                sc, &apRuntime, client, action.tid, txBa->ssn, true);
-            if (baError == 0) {
-                itl_ap_tx_ba_accept(txBa, &action);
-            } else {
-                mbuf_t delba = NULL;
-                if (itl_ap_open_build_tx_delba(
-                        &apRuntime, client, action.tid,
-                        IEEE80211_REASON_SETUP_REQUIRED, &delba) == 0) {
-                    const int delbaError = iwx_ap_send_raw_frame(
-                        sc, delba, client->queueId);
-                    if (delbaError != 0)
-                        mbuf_freem(delba);
-                }
-                itl_ap_tx_ba_reset(txBa);
-                error = baError;
-            }
-        }
-        XYLog("%s: IWX AP TX ADDBA response tid=%u status=%u error=%d\n",
-              DEVNAME(sc), static_cast<unsigned>(result.baTid),
-              static_cast<unsigned>(result.baStatus), error);
+        action.peerInitiator = result.baPeerInitiator;
+        const int deferError = client == NULL ? EINVAL :
+            itl_ap_firmware_defer_ba(client, &action);
+        if (deferError == 0)
+            iwx_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
+        XYLog("%s: IWX AP RX BA action=%u tid=%u deferred=%d\n",
+              DEVNAME(sc), static_cast<unsigned>(action.kind),
+              static_cast<unsigned>(result.baTid), deferError);
+        error = deferError == EBUSY ? 0 : deferError;
         result.disposition = kItlApOpenRxConsumed;
-    } else if (error == 0 &&
-               result.disposition == kItlApOpenRxDelBa) {
-        if (client != NULL) {
-            if (result.baPeerInitiator) {
-                error = iwx_ap_set_client_rx_ba(sc, &apRuntime, client,
-                    result.baTid, 0, 0, false);
-            } else {
-                error = iwx_ap_set_client_tx_ba(
-                    sc, &apRuntime, client, result.baTid,
-                    client->clientTxSequence[result.baTid], false);
-                itl_ap_tx_ba_reset(&client->clientTxBa[result.baTid]);
-            }
-        }
-        XYLog("%s: IWX AP RX DELBA tid=%u peer_initiator=%u error=%d\n",
-              DEVNAME(sc), static_cast<unsigned>(result.baTid),
-              result.baPeerInitiator ? 1U : 0U, error);
     }
     if (error == 0 && result.disposition == kItlApOpenRxReply) {
         const struct ieee80211_frame *reply =
@@ -13094,7 +13335,7 @@ iwx_start_ap_mode(struct iwx_softc *sc,
      * A bounded foreground-scan handoff is the one additional AP-only
      * boundary: its exact scan owner has already observed the native abort
      * terminal, and its retained credential or ordinary census is restarted
-     * only after this transaction.
+     * only after the resulting AP lifetime reaches its lower stop terminal.
      * Every other SCAN/AUTH/ASSOC transition remains a retryable owner.
      */
     if (sc->sc_ic.ic_state != IEEE80211_S_INIT &&
@@ -14282,6 +14523,21 @@ iwx_scan(struct iwx_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     int err;
+
+    /* The foreground SCAN state yielded during HostAP admission can still
+     * have one already-queued newstate task.  Core-66 firmware accepts its
+     * SCAN_REQ_UMAC while the GO and link station are live, then asserts as
+     * soon as AP traffic arrives.  Preserve the yielded policy owner without
+     * submitting a second radio lease; the authoritative AP stop edge calls
+     * resumePrimaryStaRecoveryScanAfterAPHandoff() and queues it again. */
+    if (isAPScanFenceActive()) {
+        noteWclInitialScanCommandRejected();
+        XYLog("%s: IWX STA scan deferred by live AP radio fence state=%u "
+              "flags=0x%x\n", DEVNAME(sc),
+              static_cast<unsigned>(ic->ic_state),
+              static_cast<unsigned>(sc->sc_flags));
+        return 0;
+    }
     
     if (sc->sc_flags & IWX_FLAG_BGSCAN) {
         err = iwx_scan_abort(sc);
@@ -14328,6 +14584,12 @@ iwx_bgscan(struct ieee80211com *ic)
     struct iwx_softc *sc = (struct iwx_softc *)IC2IFP(ic)->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     int err;
+
+    if (that->isAPScanFenceActive()) {
+        XYLog("%s: IWX STA background scan rejected by live AP radio "
+              "fence\n", DEVNAME(sc));
+        return EBUSY;
+    }
     
     if (sc->sc_flags & IWX_FLAG_SCANNING)
         return 0;
@@ -17190,6 +17452,10 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data,
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_RX_NO_DATA_NOTIF):
                 break; /* happens in monitor mode; ignore for now */
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_TLC_MNG_CONFIG_CMD):
+                break;
+
+            case IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
+                             IWX_RX_BAID_ALLOCATION_CONFIG_CMD):
                 break;
                 
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
@@ -20139,6 +20405,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_cfg_params = NULL;
     sc->sc_cfg = NULL;
     memset(sc->txq, 0, sizeof(sc->txq));
+    memset(sc->sc_txq_locks, 0, sizeof(sc->sc_txq_locks));
     memset(&sc->rxq, 0, sizeof(sc->rxq));
     memset(&sc->ict_dma, 0, sizeof(sc->ict_dma));
     memset(&sc->ctxt_info_dma, 0, sizeof(sc->ctxt_info_dma));
@@ -20437,6 +20704,15 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         goto fail;
     }
     
+    for (txq_i = 0; txq_i < nitems(sc->sc_txq_locks); txq_i++) {
+        sc->sc_txq_locks[txq_i] = IOSimpleLockAlloc();
+        if (sc->sc_txq_locks[txq_i] == NULL) {
+            XYLog("%s: could not allocate TX queue lock %d\n",
+                  DEVNAME(sc), txq_i);
+            goto fail;
+        }
+    }
+
     for (txq_i = 0; txq_i < nitems(sc->txq); txq_i++) {
         err = iwx_alloc_tx_ring(sc, &sc->txq[txq_i], txq_i);
         if (err) {

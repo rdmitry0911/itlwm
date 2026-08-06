@@ -56,6 +56,8 @@ public:
     void *getController() override;
     bool isCommandProhibited(int) override;
     IOReturn processBSDCommand(ifnet_t, UInt, void *) override;
+    IOReturn enable(UInt) override;
+    IOReturn disable(UInt) override;
 
     UInt64 getTxQueueDepth() override;
     UInt64 getRxQueueCapacity() override;

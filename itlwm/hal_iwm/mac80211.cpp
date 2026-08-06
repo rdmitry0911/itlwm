@@ -3013,6 +3013,98 @@ iwm_ap_set_client_tx_ba(struct iwm_softc *sc,
     return 0;
 }
 
+void ItlIwm::
+iwm_ap_process_deferred_ba(
+    struct iwm_softc *sc, struct ItlApFirmwareRuntime *runtime,
+    struct ItlApFirmwareClientRuntime *client)
+{
+    if (sc == NULL || runtime == NULL || client == NULL)
+        return;
+    for (uint8_t tid = 0; tid < kItlApRxBaTidCount; tid++) {
+        struct ItlApBlockAckAction action;
+        bzero(&action, sizeof(action));
+        if (!itl_ap_firmware_take_deferred_ba(client, tid, &action))
+            continue;
+
+        int commandError = 0;
+        int responseError = 0;
+        if (action.tid != tid) {
+            commandError = EINVAL;
+        } else if (action.kind == kItlApBlockAckAddRequest) {
+            commandError = iwm_ap_set_client_rx_ba(
+                sc, runtime, client, tid, action.ssn,
+                action.window, true);
+            mbuf_t response = NULL;
+            responseError = itl_ap_open_build_deferred_addba_response(
+                runtime, client, &action,
+                commandError == 0 ? IEEE80211_STATUS_SUCCESS :
+                                    IEEE80211_STATUS_REFUSED,
+                &response);
+            if (responseError == 0)
+                responseError = iwm_ap_send_raw_frame(
+                    sc, response,
+                    static_cast<uint8_t>(runtime->broadcastQueueId),
+                    runtime->broadcastStaId);
+            if (responseError != 0 && response != NULL)
+                mbuf_freem(response);
+            XYLog("%s: IWM AP deferred RX ADDBA tid=%u ssn=%u "
+                  "win=%u command=%d response=%d\n", DEVNAME(sc),
+                  static_cast<unsigned>(tid),
+                  static_cast<unsigned>(action.ssn),
+                  static_cast<unsigned>(action.window),
+                  commandError, responseError);
+        } else if (action.kind == kItlApBlockAckAddResponse) {
+            struct ItlApTxBaRuntime *txBa = &client->clientTxBa[tid];
+            if (!itl_ap_tx_ba_response_matches(txBa, &action)) {
+                commandError = EINVAL;
+            } else if (action.status != IEEE80211_STATUS_SUCCESS) {
+                itl_ap_tx_ba_block(txBa);
+            } else {
+                commandError = iwm_ap_set_client_tx_ba(
+                    sc, runtime, client, tid, txBa->ssn, true);
+                if (commandError == 0) {
+                    itl_ap_tx_ba_accept(txBa, &action);
+                } else {
+                    mbuf_t delba = NULL;
+                    if (itl_ap_open_build_tx_delba(
+                            runtime, client, tid,
+                            IEEE80211_REASON_SETUP_REQUIRED, &delba) == 0) {
+                        responseError = iwm_ap_send_raw_frame(
+                            sc, delba,
+                            static_cast<uint8_t>(runtime->broadcastQueueId),
+                            runtime->broadcastStaId);
+                        if (responseError != 0)
+                            mbuf_freem(delba);
+                    }
+                    itl_ap_tx_ba_reset(txBa);
+                }
+            }
+            XYLog("%s: IWM AP deferred TX ADDBA response tid=%u "
+                  "status=%u command=%d response=%d\n", DEVNAME(sc),
+                  static_cast<unsigned>(tid),
+                  static_cast<unsigned>(action.status),
+                  commandError, responseError);
+        } else if (action.kind == kItlApBlockAckDelete) {
+            if (action.peerInitiator) {
+                commandError = iwm_ap_set_client_rx_ba(
+                    sc, runtime, client, tid, 0, 0, false);
+            } else {
+                commandError = iwm_ap_set_client_tx_ba(
+                    sc, runtime, client, tid,
+                    client->clientTxSequence[tid], false);
+                itl_ap_tx_ba_reset(&client->clientTxBa[tid]);
+            }
+            XYLog("%s: IWM AP deferred DELBA tid=%u "
+                  "peer_initiator=%u command=%d\n", DEVNAME(sc),
+                  static_cast<unsigned>(tid),
+                  action.peerInitiator ? 1U : 0U, commandError);
+        } else {
+            commandError = EINVAL;
+        }
+        itl_ap_firmware_complete_deferred_ba(client, tid);
+    }
+}
+
 void ItlIwm::iwm_ap_rx_ba_deliver(void *owner,
                                   struct ItlApRxBaReady *ready)
 {
@@ -3565,6 +3657,7 @@ iwm_ap_client_task(void *arg)
             &runtime->clients[index];
         if (!client->inUse)
             continue;
+        that->iwm_ap_process_deferred_ba(sc, runtime, client);
         const enum ItlApLocalEapolAction action =
             itl_ap_local_rsn_take_deferred_action(client);
         if (action != kItlApLocalEapolConsumed) {
@@ -3655,83 +3748,31 @@ iwm_ap_handle_rx(struct iwm_softc *sc, mbuf_t packet, size_t frameLength,
         }
     }
     if (error == 0 &&
-        result.disposition == kItlApOpenRxAddBaRequest) {
-        const int baError = client == NULL ? EINVAL :
-            iwm_ap_set_client_rx_ba(sc, &apRuntime, client,
-                result.baTid, result.baSsn, result.baWindow, true);
-        error = itl_ap_open_build_addba_response(
-            &apRuntime, &result, baError == 0 ?
-                IEEE80211_STATUS_SUCCESS : IEEE80211_STATUS_REFUSED);
-        mbuf_t response = NULL;
-        if (error == 0)
-            error = iwm_ap_reply_to_mbuf(&result, &response);
-        if (error == 0 && client != NULL)
-            error = iwm_ap_send_raw_frame(sc, response,
-                static_cast<uint8_t>(client->queueId), client->staId);
-        if (error != 0 && response != NULL)
-            mbuf_freem(response);
-        XYLog("%s: IWM AP RX ADDBA tid=%u ssn=%u win=%u "
-              "firmware=%d response=%d\n", DEVNAME(sc),
-              static_cast<unsigned>(result.baTid),
-              static_cast<unsigned>(result.baSsn),
-              static_cast<unsigned>(result.baWindow), baError, error);
-        result.disposition = kItlApOpenRxConsumed;
-    } else if (error == 0 &&
-               result.disposition == kItlApOpenRxAddBaResponse) {
+        (result.disposition == kItlApOpenRxAddBaRequest ||
+         result.disposition == kItlApOpenRxAddBaResponse ||
+         result.disposition == kItlApOpenRxDelBa)) {
         struct ItlApBlockAckAction action;
         bzero(&action, sizeof(action));
-        action.kind = kItlApBlockAckAddResponse;
+        action.kind = result.disposition == kItlApOpenRxAddBaRequest ?
+            kItlApBlockAckAddRequest :
+            (result.disposition == kItlApOpenRxAddBaResponse ?
+                kItlApBlockAckAddResponse : kItlApBlockAckDelete);
         action.token = result.baToken;
         action.tid = result.baTid;
+        action.ssn = result.baSsn;
         action.status = result.baStatus;
         action.window = result.baWindow;
         action.timeout = result.baTimeout;
-        struct ItlApTxBaRuntime *txBa = client == NULL ? NULL :
-            &client->clientTxBa[result.baTid];
-        if (!itl_ap_tx_ba_response_matches(txBa, &action)) {
-            error = EINVAL;
-        } else if (action.status != IEEE80211_STATUS_SUCCESS) {
-            itl_ap_tx_ba_reset(txBa);
-        } else {
-            const int baError = iwm_ap_set_client_tx_ba(
-                sc, &apRuntime, client, action.tid, txBa->ssn, true);
-            if (baError == 0) {
-                itl_ap_tx_ba_accept(txBa, &action);
-            } else {
-                mbuf_t delba = NULL;
-                if (itl_ap_open_build_tx_delba(
-                        &apRuntime, client, action.tid,
-                        IEEE80211_REASON_SETUP_REQUIRED, &delba) == 0) {
-                    const int delbaError = iwm_ap_send_raw_frame(
-                        sc, delba, static_cast<uint8_t>(client->queueId),
-                        client->staId);
-                    if (delbaError != 0)
-                        mbuf_freem(delba);
-                }
-                itl_ap_tx_ba_reset(txBa);
-                error = baError;
-            }
-        }
-        XYLog("%s: IWM AP TX ADDBA response tid=%u status=%u error=%d\n",
-              DEVNAME(sc), static_cast<unsigned>(result.baTid),
-              static_cast<unsigned>(result.baStatus), error);
+        action.peerInitiator = result.baPeerInitiator;
+        const int deferError = client == NULL ? EINVAL :
+            itl_ap_firmware_defer_ba(client, &action);
+        if (deferError == 0)
+            iwm_add_task(sc, sc->sc_nswq, &sc->ap_client_task);
+        XYLog("%s: IWM AP RX BA action=%u tid=%u deferred=%d\n",
+              DEVNAME(sc), static_cast<unsigned>(action.kind),
+              static_cast<unsigned>(result.baTid), deferError);
+        error = deferError == EBUSY ? 0 : deferError;
         result.disposition = kItlApOpenRxConsumed;
-    } else if (error == 0 &&
-               result.disposition == kItlApOpenRxDelBa) {
-        if (client != NULL) {
-            if (result.baPeerInitiator) {
-                error = iwm_ap_set_client_rx_ba(sc, &apRuntime, client,
-                    result.baTid, 0, 0, false);
-            } else {
-                error = iwm_ap_set_client_tx_ba(
-                    sc, &apRuntime, client, result.baTid,
-                    client->clientTxSequence[result.baTid], false);
-                itl_ap_tx_ba_reset(&client->clientTxBa[result.baTid]);
-            }
-        }
-        XYLog("%s: IWM AP RX DELBA tid=%u peer_initiator=%u error=%d\n",
-              DEVNAME(sc), static_cast<unsigned>(result.baTid),
-              result.baPeerInitiator ? 1U : 0U, error);
     }
     if (error == 0 && result.disposition == kItlApOpenRxReply) {
         const struct ieee80211_frame *reply =
@@ -3925,7 +3966,7 @@ iwm_start_ap_resources(struct iwm_softc *sc,
      * The sole SCAN exception is a bounded foreground handoff whose exact
      * firmware scan reached its native abort terminal; it creates AP-only
      * resources and restarts the retained credential or ordinary census
-     * after this transaction. */
+     * after the resulting AP reaches its lower stop terminal. */
     if (sc->sc_ic.ic_state != IEEE80211_S_INIT &&
         sc->sc_ic.ic_state != IEEE80211_S_RUN &&
         !(sc->sc_ic.ic_state == IEEE80211_S_SCAN &&

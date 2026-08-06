@@ -194,6 +194,7 @@ public:
      */
     bool supportsAPMode() const override;
     bool isPrimaryStaRecoveryScanPending() const override;
+    bool isAPScanFenceActive() const;
     IOReturn handoffPrimaryStaRecoveryScanToAP();
     bool completePrimaryStaRecoveryScanAPHandoff();
     void resumePrimaryStaRecoveryScanAfterAPHandoff();
@@ -411,6 +412,8 @@ public:
     static void    iwx_update_chw(struct ieee80211com *);
     void    iwx_sta_rx_agg(struct iwx_softc *, struct ieee80211_node *, uint8_t,
                            uint16_t, uint16_t, int, int);
+    int     iwx_rx_baid_cfg_cmd(struct iwx_softc *, uint8_t, uint8_t,
+                                uint16_t, uint16_t, bool, uint8_t *);
     static int    iwx_ampdu_tx_start(struct ieee80211com *, struct ieee80211_node *,
             uint8_t);
     static void    iwx_ampdu_tx_stop(struct ieee80211com *, struct ieee80211_node *,
@@ -577,6 +580,9 @@ public:
                                    struct ItlApFirmwareRuntime *,
                                    struct ItlApFirmwareClientRuntime *,
                                    uint8_t, uint16_t, bool);
+    void   iwx_ap_process_deferred_ba(struct iwx_softc *,
+                                      struct ItlApFirmwareRuntime *,
+                                      struct ItlApFirmwareClientRuntime *);
     int    iwx_ap_remove_client_sta(struct iwx_softc *,
                                     struct ItlApFirmwareRuntime *,
                                     struct ItlApFirmwareClientRuntime *);

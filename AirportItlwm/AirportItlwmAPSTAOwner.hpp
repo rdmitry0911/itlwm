@@ -57,6 +57,10 @@ public:
                                     lifecycle < kAirportItlwmAPSTAOwnerTerminal; }
     bool isApRunning() const { return lifecycle == kAirportItlwmAPSTAOwnerRunning &&
                                       state.resetState26c != 0; }
+    bool shouldPublishPrimaryOpMode() const {
+        return isApRunning() && !initialHostAPAdmissionPending &&
+            !confirmedHostAPStartPending;
+    }
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;
     void copyMacAddress(uint8_t *address) const;
@@ -139,6 +143,8 @@ private:
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
     bool radioResetPrimaryStaScanHandoff;
+    bool initialHostAPAdmissionPending;
+    bool confirmedHostAPStartPending;
     uint16_t radioResetResumeWaitTicks;
     uint8_t lowerAssociatedStaCount;
     uint8_t lowerAssociatedStaMacs[kAirportItlwmAPSTAStationTableEntryCount]

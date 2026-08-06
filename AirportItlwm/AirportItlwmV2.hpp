@@ -939,6 +939,7 @@ public:
     IOReturn setSOFTAP_WIFI_NETWORK_INFO_IE(OSObject *object,
         AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *data);
     bool isHostApRunning() const;
+    bool isHostApPrimaryCarrierConfirmed() const;
 
 #if __IO80211_TARGET >= __MAC_26_0
     IOReturn setBssBlacklistOwner(const uint8_t *request);

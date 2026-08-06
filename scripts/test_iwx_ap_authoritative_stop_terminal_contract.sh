@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prove that HostAP NULL remains authoritative until the asynchronous IWX
-# firmware teardown, rather than queue admission, reaches a terminal.
+# firmware teardown reaches a terminal, while Tahoe's immediate replacement
+# carrier is retained and serialized behind that terminal.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -51,6 +52,7 @@ reference = (
 ).read_text()
 
 assert "bool lowerStopPending;" in owner_h
+assert "bool confirmedHostAPStartPending;" in owner_h
 assert "call `setHostApModeInternal(NULL)`" in reference
 assert "return the internal call result" in reference
 
@@ -81,17 +83,27 @@ resume = body(owner, "IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset")
 ordered(
     resume,
     "if (lowerStopPending)",
-    "return driveLowerStopToTerminal()",
+    "const IOReturn stopResult = driveLowerStopToTerminal()",
+    "if (stopResult != kIOReturnSuccess)",
+    "if (!confirmedHostAPStartPending)",
+    "APSTA confirmed HostAP replacement crossed lower stop",
     "if (!radioResetResumePending)",
 )
 
 hostap = body(owner, "IOReturn AirportItlwmAPSTAOwner::setHostAPMode")
-assert "isApRunning() || radioResetResumePending || lowerStopPending" in hostap
+assert "!isApRunning() && !radioResetResumePending &&" in hostap
+assert "!lowerStopPending" in hostap
 ordered(
     hostap,
-    "if (lowerStopPending)",
-    "const IOReturn stopResult = driveLowerStopToTerminal()",
+    "const IOReturn stopResult = stopLower()",
+    "apsta_lower_stop_pending(stopResult)",
+    "accepted asynchronous HostAP stop pending lower",
     "state.softapSsidLength274 = in->ssidLength1c",
+    "if (lowerStopPending)",
+    "confirmedHostAPStartPending = true",
+    "const IOReturn stopResult = driveLowerStopToTerminal()",
+    "queued confirmed HostAP replacement behind",
+    "const IOReturn result = startLowerIfReady()",
 )
 
 stop_api = body(iwx, "IOReturn ItlIwx::\nstopAPMode")
@@ -146,5 +158,5 @@ assert "taskq_barrier(sc->sc_nswq)" not in lower_stop, (
     "the sc_nswq AP-stop worker must not barrier on its own task queue"
 )
 
-print("PASS: IWX HostAP NULL waits for authoritative lower stop terminal")
+print("PASS: IWX HostAP stop/restart is acknowledged then serialized at the lower terminal")
 PY

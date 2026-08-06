@@ -1399,6 +1399,7 @@ enum iwx_msix_ivar_for_cause {
 #define IWX_UCODE_TLV_CAPA_SET_LTR_GEN2             50
 #define IWX_UCODE_TLV_CAPA_SET_PPAG                 52
 #define IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD         54
+#define IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT          63
 #define IWX_UCODE_TLV_CAPA_EXTENDED_DTS_MEASURE        64
 #define IWX_UCODE_TLV_CAPA_SHORT_PM_TIMEOUTS        65
 #define IWX_UCODE_TLV_CAPA_BT_MPLUT_SUPPORT        67
@@ -1823,6 +1824,46 @@ enum iwx_gen2_tx_fifo {
 #define IWX_CMD_QUEUE_SIZE_GEN3 128
 #define IWX_MIN_256_BA_QUEUE_SIZE_GEN3 1024
 
+/* Modern multi-link-capable firmware allocates RX BAIDs through a dedicated
+ * DATA_PATH command rather than ADD_STA.  AX210/AX211 API-68 images already
+ * advertise this capability even when the active link itself is non-MLO. */
+#define IWX_RX_BAID_ACTION_ADD       0
+#define IWX_RX_BAID_ACTION_MODIFY    1
+#define IWX_RX_BAID_ACTION_REMOVE    2
+
+struct iwx_rx_baid_cfg_cmd_alloc {
+    uint32_t sta_id_mask;
+    uint8_t tid;
+    uint8_t reserved[3];
+    uint16_t ssn;
+    uint16_t win_size;
+} __packed; /* RX_BAID_ALLOCATION_ADD_CMD_API_S_VER_1 */
+
+struct iwx_rx_baid_cfg_cmd_modify {
+    uint32_t old_sta_id_mask;
+    uint32_t new_sta_id_mask;
+    uint32_t tid;
+} __packed; /* RX_BAID_ALLOCATION_MODIFY_CMD_API_S_VER_2 */
+
+struct iwx_rx_baid_cfg_cmd_remove_v1 {
+    uint32_t baid;
+} __packed; /* RX_BAID_ALLOCATION_REMOVE_CMD_API_S_VER_1 */
+
+struct iwx_rx_baid_cfg_cmd_remove {
+    uint32_t sta_id_mask;
+    uint32_t tid;
+} __packed; /* RX_BAID_ALLOCATION_REMOVE_CMD_API_S_VER_2 */
+
+struct iwx_rx_baid_cfg_cmd {
+    uint32_t action;
+    union {
+        struct iwx_rx_baid_cfg_cmd_alloc alloc;
+        struct iwx_rx_baid_cfg_cmd_modify modify;
+        struct iwx_rx_baid_cfg_cmd_remove_v1 remove_v1;
+        struct iwx_rx_baid_cfg_cmd_remove remove;
+    };
+} __packed; /* RX_BAID_ALLOCATION_CONFIG_CMD_API_S_VER_2 */
+
 /**
  * struct iwx_tx_queue_cfg_cmd - txq hw scheduler config command
  * @sta_id: station id
@@ -2021,6 +2062,7 @@ struct iwx_tx_queue_cfg_rsp {
 /* DATA_PATH group subcommand IDs */
 #define IWX_DQA_ENABLE_CMD    0x00
 #define IWX_TLC_MNG_CONFIG_CMD    0x0f
+#define IWX_RX_BAID_ALLOCATION_CONFIG_CMD 0x16
 #define IWX_RX_NO_DATA_NOTIF    0xf5
 #define IWX_TLC_MNG_UPDATE_NOTIF 0xf7
 

@@ -68,6 +68,20 @@ itl_ap_tx_ba_reset(struct ItlApTxBaRuntime *runtime)
         bzero(runtime, sizeof(*runtime));
 }
 
+/* A peer which refuses or never answers ADDBA must remain on the reliable
+ * single-MPDU path for the rest of this association.  Retrying the action
+ * against the same firmware station is both pointless and, on some TVQM
+ * firmware, unsafe.  Client teardown/reset creates a fresh association and
+ * clears this state through itl_ap_tx_ba_reset(). */
+static inline void
+itl_ap_tx_ba_block(struct ItlApTxBaRuntime *runtime)
+{
+    if (runtime == NULL)
+        return;
+    itl_ap_tx_ba_reset(runtime);
+    runtime->state = kItlApTxBaBlocked;
+}
+
 static inline bool
 itl_ap_tx_ba_note_data(struct ItlApTxBaRuntime *runtime)
 {
@@ -81,7 +95,8 @@ itl_ap_tx_ba_note_data(struct ItlApTxBaRuntime *runtime)
         if (++runtime->packetsSinceRequest <
                 kItlApTxBaRequestPacketTimeout)
             return false;
-        itl_ap_tx_ba_reset(runtime);
+        itl_ap_tx_ba_block(runtime);
+        return false;
     }
     if (runtime->packetsSinceRequest < kItlApTxBaStartThreshold)
         runtime->packetsSinceRequest++;

@@ -1640,6 +1640,42 @@ void *AirportItlwmAPSTASkywalkInterface::getController()
     return controller;
 }
 
+IOReturn AirportItlwmAPSTASkywalkInterface::enable(UInt options)
+{
+    /*
+     * AppleBCMWLANIO80211APSTAInterface::enable() first gates the BSD
+     * enable edge on its inherited AP association state, then calls the
+     * IO80211VirtualInterface implementation and the concrete APSTA
+     * enableDatapath slot.  Standard Internet Sharing drives this method
+     * independently of the lower HostAP command; accepting it before the AP
+     * link has been published makes ap1 appear usable while IWX is still
+     * materializing its firmware contexts.
+     */
+    if (getAssocState() == 0) {
+        XYLog("APSTA interface enable rejected before AP link options=0x%x\n",
+              static_cast<unsigned>(options));
+        return static_cast<IOReturn>(
+            kAirportItlwmAPSTAEnableNotRunningReturn);
+    }
+
+    const IOReturn result = IO80211VirtualInterface::enable(options);
+    enableDatapath();
+    XYLog("APSTA interface enable options=0x%x result=0x%x\n",
+          static_cast<unsigned>(options), static_cast<unsigned>(result));
+    return result;
+}
+
+IOReturn AirportItlwmAPSTASkywalkInterface::disable(UInt options)
+{
+    /* Reference order is concrete APSTA disableDatapath first, followed by
+     * the IO80211SkywalkInterface superclass disable slot. */
+    disableDatapath();
+    const IOReturn result = IO80211SkywalkInterface::disable(options);
+    XYLog("APSTA interface disable options=0x%x result=0x%x\n",
+          static_cast<unsigned>(options), static_cast<unsigned>(result));
+    return result;
+}
+
 bool AirportItlwmAPSTASkywalkInterface::isCommandProhibited(int)
 {
     return false;
@@ -5098,7 +5134,8 @@ getOP_MODE(struct apple80211_opmode_data *od)
     // lifecycle, so publishing SoftAP only on ap1 is insufficient.
     if (!TahoeOpModeContracts::initializePrimaryCarrier(od))
         return static_cast<IOReturn>(TahoeOpModeContracts::kInvalidArgumentStatus);
-    if (instance != nullptr && instance->isHostApRunning()) {
+    if (instance != nullptr &&
+        instance->isHostApPrimaryCarrierConfirmed()) {
         AirportItlwmAPSTAOpModeDataLayout apstaMode{};
         if (instance->getAPSTA_OP_MODE(this, &apstaMode) ==
             kIOReturnSuccess) {

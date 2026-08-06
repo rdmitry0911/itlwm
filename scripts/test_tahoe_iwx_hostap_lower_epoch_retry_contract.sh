@@ -39,7 +39,9 @@ for status in (
 
 hostap = body(owner, "IOReturn AirportItlwmAPSTAOwner::setHostAPMode(")
 for needle in (
-    "isApRunning() || radioResetResumePending",
+    "!isApRunning() && !radioResetResumePending",
+    "apsta_lower_stop_pending(stopResult)",
+    "confirmedHostAPStartPending = true;",
     "const IOReturn result = startLowerIfReady();",
     "state.resetState26c = 0;",
     "state.hostApTransitionState270 = 1;",

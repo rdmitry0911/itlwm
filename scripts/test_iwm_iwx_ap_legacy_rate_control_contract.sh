@@ -114,6 +114,10 @@ if "IWX_TX_CMD_FLG_SEQ_CTL" in iwx_tx:
         "FAIL: IWX Gen2/Gen3 AP TX must not carry the legacy sequence flag")
 require(iwx_tx, "TX_FLAGS_BITS_API_S_VER_3",
         "IWX modern AP TX flag ABI boundary")
+require(iwx_tx, "IWX_TX_CMD_OFFLD_MH_SIZE(headerLength / 2)",
+        "IWX modern AP TX MAC-header boundary")
+require(iwx_tx, "offloadAssist |= IWX_TX_CMD_OFFLD_PAD",
+        "IWX modern AP TX alignment boundary")
 
 for family, source, task_signature, configure in (
     ("IWM", iwm, "iwm_ap_client_task(void *arg)",

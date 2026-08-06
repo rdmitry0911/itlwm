@@ -34,6 +34,14 @@ static bool apsta_lower_start_retryable(IOReturn result)
         result == kIOReturnAborted;
 }
 
+static bool apsta_lower_stop_pending(IOReturn result)
+{
+    return result == kIOReturnBusy ||
+        result == kIOReturnNotReady ||
+        result == kIOReturnTimeout ||
+        result == kIOReturnAborted;
+}
+
 enum {
     kAirportItlwmAPSTAAuthUpperOpen = 0,
     kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8,
@@ -508,6 +516,8 @@ bool AirportItlwmAPSTAOwner::initWithController(
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
+    initialHostAPAdmissionPending = false;
+    confirmedHostAPStartPending = false;
     radioResetResumeWaitTicks = 0;
     lowerAssociatedStaCount = 0;
     bzero(lowerAssociatedStaMacs, sizeof(lowerAssociatedStaMacs));
@@ -573,6 +583,8 @@ void AirportItlwmAPSTAOwner::free()
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
+    initialHostAPAdmissionPending = false;
+    confirmedHostAPStartPending = false;
     radioResetResumeWaitTicks = 0;
     clearLowerAssociatedStations();
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
@@ -806,6 +818,8 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
+    initialHostAPAdmissionPending = false;
+    confirmedHostAPStartPending = false;
     radioResetResumeWaitTicks = 0;
     if (owner != nullptr)
         owner->setAPSTADatapathEnabled(false);
@@ -866,6 +880,8 @@ void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
+    initialHostAPAdmissionPending = false;
+    confirmedHostAPStartPending = false;
     radioResetResumeWaitTicks = 0;
     lowerStopPending = false;
     if (owner != nullptr)
@@ -919,6 +935,8 @@ void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(
         XYLog("APSTA radio-reset primary recovery scan owns radio\n");
     radioResetResumeWaitTicks = 0;
     radioResetPrimaryStaScanHandoff = false;
+    initialHostAPAdmissionPending = false;
+    confirmedHostAPStartPending = false;
     if (owner != nullptr)
         owner->setAPSTADatapathEnabled(false);
     for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++)
@@ -985,9 +1003,23 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
 {
     /* An explicit HostAP NULL outranks every retained-profile replay.  Drive
      * its asynchronous IWX teardown from the same once-per-second command-
-     * gated census until the HAL reports the actual lower terminal. */
-    if (lowerStopPending)
-        return driveLowerStopToTerminal();
+     * gated census until the HAL reports the actual lower terminal.  Tahoe
+     * can submit the replacement non-NULL carrier immediately after that
+     * accepted stop.  In that case the profile is already confirmed, so
+     * cross the stop terminal and continue into the ordinary lower-start
+     * arbitration instead of dropping the replacement request. */
+    if (lowerStopPending) {
+        const IOReturn stopResult = driveLowerStopToTerminal();
+        if (stopResult != kIOReturnSuccess)
+            return stopResult;
+        if (!confirmedHostAPStartPending)
+            return kIOReturnSuccess;
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        state.hostApTransitionState270 = 1;
+        radioResetResumePending = true;
+        XYLog("APSTA confirmed HostAP replacement crossed lower stop "
+              "terminal\n");
+    }
 
     if (!radioResetResumePending) {
         /*
@@ -1056,8 +1088,10 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
             radioResetWaitForPrimaryStaRun = true;
             radioResetResumeWaitTicks = 0;
             XYLog("APSTA radio-reset late primary foreground scan owns "
-                  "radio retained_recovery=%u\n",
-                  retainedRecovery ? 1U : 0U);
+                  "radio retained_recovery=%u public_hostap=%u\n",
+                  retainedRecovery ? 1U : 0U,
+                  (initialHostAPAdmissionPending ||
+                   confirmedHostAPStartPending) ? 1U : 0U);
         }
     }
 
@@ -1067,23 +1101,40 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
                 ? owner->fHalService->get80211Controller() : nullptr;
         if (ic == nullptr)
             return kIOReturnNotReady;
+        /*
+         * A public HostAP request is an explicit radio-ownership decision.
+         * Tahoe's recovered FullMAC path disables its foreground/background
+         * scan policy before configuring HostAP, so do not spend the
+         * retained-STA recovery budget on the initial admission.  The lower
+         * IWM/IWX owner still performs a native scan abort and waits for its
+         * terminal before submitting AP firmware commands.  A destructive
+         * radio-reset replay keeps the full bounded STA-first interval.
+         */
+        const bool publicHostAPStartPending =
+            initialHostAPAdmissionPending ||
+            confirmedHostAPStartPending;
+        const bool waitForRetainedPrimary =
+            !publicHostAPStartPending;
         if (ic->ic_state != IEEE80211_S_RUN &&
+            waitForRetainedPrimary &&
             radioResetResumeWaitTicks <
                 kAirportItlwmAPSTARadioResetPrimaryStaWaitTicks) {
             radioResetResumeWaitTicks++;
             return kIOReturnNotReady;
         }
-        const bool foregroundScanTimedOut =
+        const bool foregroundScanShouldYield =
             ic->ic_state == IEEE80211_S_SCAN &&
-            radioResetResumeWaitTicks >=
-                kAirportItlwmAPSTARadioResetPrimaryStaWaitTicks;
-        if (foregroundScanTimedOut) {
+            (publicHostAPStartPending ||
+             radioResetResumeWaitTicks >=
+                 kAirportItlwmAPSTARadioResetPrimaryStaWaitTicks);
+        if (foregroundScanShouldYield) {
             const IOReturn handoffResult =
                 airportItlwmHandoffPrimaryStaRecoveryScanToAP(
                     owner->fHalService);
             XYLog("APSTA bounded primary foreground scan handoff "
-                  "wait_ticks=%u result=0x%x\n",
+                  "wait_ticks=%u public_hostap=%u result=0x%x\n",
                   static_cast<unsigned>(radioResetResumeWaitTicks),
+                  publicHostAPStartPending ? 1U : 0U,
                   static_cast<unsigned>(handoffResult));
             if (handoffResult != kIOReturnSuccess &&
                 handoffResult != kIOReturnUnsupported)
@@ -1136,6 +1187,11 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         radioResetResumePending = false;
         radioResetPrimaryStaScanHandoff = false;
         radioResetResumeWaitTicks = 0;
+        if (confirmedHostAPStartPending) {
+            confirmedHostAPStartPending = false;
+            XYLog("APSTA confirmed asynchronous HostAP replacement "
+                  "reached lower running\n");
+        }
         setSoftAPPowerSaveState(
             kAirportItlwmAPSTAHostApPowerOnRestoreState,
             kAirportItlwmAPSTAHostApPowerOnRestoreReason);
@@ -1143,6 +1199,8 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         radioResetResumePending = false;
         radioResetWaitForPrimaryStaRun = false;
         radioResetPrimaryStaScanHandoff = false;
+        initialHostAPAdmissionPending = false;
+        confirmedHostAPStartPending = false;
         radioResetResumeWaitTicks = 0;
         state.hostApTransitionState270 = 0;
     } else if (radioResetPrimaryStaScanHandoff &&
@@ -1292,18 +1350,25 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
         /* A stop carrier is also terminal for an accepted initial HostAP
          * transition which has not crossed the replacement firmware epoch
          * yet.  Otherwise the watchdog could start a profile after
-         * userspace had already withdrawn it. */
-        return isApRunning() || radioResetResumePending || lowerStopPending ?
-            stopLower() : kIOReturnSuccess;
-    }
-
-    /* Do not let a rapid replacement profile race an old asynchronous MVM
-     * MAC-context removal.  A completed lower stop can fall through and
-     * start this carrier; any pending/error terminal remains authoritative. */
-    if (lowerStopPending) {
-        const IOReturn stopResult = driveLowerStopToTerminal();
-        if (stopResult != kIOReturnSuccess)
-            return stopResult;
+         * userspace had already withdrawn it.  Broadcom reaches its lower
+         * terminal synchronously and returns success to selector 25.  IWX
+         * must issue MAC/PHY removals on sc_nswq, so acknowledge ownership of
+         * that accepted stop while lowerStopPending remains the authoritative
+         * private terminal fence.  A later non-NULL carrier can then queue a
+         * replacement without racing the old firmware context. */
+        if (!isApRunning() && !radioResetResumePending &&
+            !lowerStopPending)
+            return kIOReturnSuccess;
+        const IOReturn stopResult = stopLower();
+        if (stopResult == kIOReturnSuccess)
+            return kIOReturnSuccess;
+        if (lowerStopPending && apsta_lower_stop_pending(stopResult)) {
+            XYLog("APSTA accepted asynchronous HostAP stop pending lower "
+                  "terminal result=0x%x\n",
+                  static_cast<unsigned>(stopResult));
+            return kIOReturnSuccess;
+        }
+        return stopResult;
     }
 
     if (in->authUpper0c != kAirportItlwmAPSTAAuthUpperOpen &&
@@ -1351,11 +1416,90 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     if (apCredentialLength != 0) {
         memcpy(apCredential, in->credential50, apCredentialLength);
     }
-    if (isApRunning())
+
+    if (isApRunning()) {
+        if (initialHostAPAdmissionPending) {
+            /*
+             * IWX materializes HostAP outside the synchronous Apple command
+             * gate.  Standard Internet Sharing necessarily repeats its
+             * HostAP selector after attaching ap1 to bridge100.  Keep the
+             * primary OP_MODE carrier out of SWAP during that bridge-owned
+             * confirmation window, then make this idempotent second selector
+             * the public AP-up edge.  Lower beacons and role-7 state remain
+             * owned throughout; this is not a delayed or repeated firmware
+             * start.
+            */
+            initialHostAPAdmissionPending = false;
+            XYLog("APSTA repeated HostAP selector confirmed asynchronous "
+                  "lower AP carrier\n");
+        }
         return kIOReturnSuccess;
+    }
+
+    /* A repeated non-NULL carrier can arrive before the watchdog has
+     * published an accepted initial lower start.  It is already the public
+     * confirmation, so remember that fact instead of requiring a third
+     * selector after the asynchronous worker reaches RUNNING. */
+    if (initialHostAPAdmissionPending) {
+        initialHostAPAdmissionPending = false;
+        confirmedHostAPStartPending = true;
+        XYLog("APSTA repeated HostAP selector confirmed pending lower "
+              "start\n");
+    }
+
+    /* Standard Tahoe Internet Sharing sends NULL followed immediately by
+     * the replacement carrier.  Keep the new validated profile behind the
+     * old lower terminal, acknowledge it to airportd, and let the command-
+     * gated census perform the actual stop->start serialization. */
+    if (lowerStopPending) {
+        confirmedHostAPStartPending = true;
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        state.hostApTransitionState270 = 1;
+        radioResetResumePending = true;
+        radioResetWaitForPrimaryStaRun = false;
+        radioResetPrimaryStaScanHandoff = false;
+        radioResetResumeWaitTicks = 0;
+        const IOReturn stopResult = driveLowerStopToTerminal();
+        if (stopResult != kIOReturnSuccess) {
+            if (apsta_lower_stop_pending(stopResult)) {
+                XYLog("APSTA queued confirmed HostAP replacement behind "
+                      "lower stop result=0x%x\n",
+                      static_cast<unsigned>(stopResult));
+                return kIOReturnSuccess;
+            }
+            confirmedHostAPStartPending = false;
+            radioResetResumePending = false;
+            return stopResult;
+        }
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        state.hostApTransitionState270 = 1;
+        XYLog("APSTA confirmed HostAP replacement observed immediate lower "
+              "stop terminal\n");
+    }
+
     const IOReturn result = startLowerIfReady();
-    if (!apsta_lower_start_retryable(result))
+    if (result == kIOReturnSuccess) {
+        radioResetResumePending = false;
+        radioResetWaitForPrimaryStaRun = false;
+        radioResetPrimaryStaScanHandoff = false;
+        radioResetResumeWaitTicks = 0;
+        if (confirmedHostAPStartPending) {
+            confirmedHostAPStartPending = false;
+            XYLog("APSTA confirmed HostAP replacement reached lower "
+                  "running synchronously\n");
+        }
+        return kIOReturnSuccess;
+    }
+    if (!apsta_lower_start_retryable(result)) {
+        radioResetResumePending = false;
+        radioResetWaitForPrimaryStaRun = false;
+        radioResetPrimaryStaScanHandoff = false;
+        initialHostAPAdmissionPending = false;
+        confirmedHostAPStartPending = false;
+        radioResetResumeWaitTicks = 0;
+        state.hostApTransitionState270 = 0;
         return result;
+    }
 
     /*
      * Tahoe's normal CoreWLAN HostAP sequence can retire the primary Intel
@@ -1377,9 +1521,11 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     radioResetResumePending = true;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
+    initialHostAPAdmissionPending = !confirmedHostAPStartPending;
     radioResetResumeWaitTicks = 0;
-    XYLog("APSTA initial lower start deferred result=0x%x channel=%u\n",
-          result, static_cast<unsigned>(apChannel));
+    XYLog("APSTA lower start deferred result=0x%x channel=%u confirmed=%u\n",
+          result, static_cast<unsigned>(apChannel),
+          confirmedHostAPStartPending ? 1U : 0U);
     return kIOReturnSuccess;
 }
 
