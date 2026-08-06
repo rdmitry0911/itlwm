@@ -277,6 +277,8 @@ for token in (
         "tahoeWclSelectedBssMatchesOwner",
         "owner.authUpper != APPLE80211_AUTHTYPE_NONE",
         "owner.rsnIeLength != 0",
+        "bss->ni_rsnakms == IEEE80211_AKM_SAE",
+        "TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential",
         "owner.authSuccessRecorded",
         "owner.authSuccessEpoch == selected.epoch",
         "owner.authSuccessBssid",
@@ -284,6 +286,11 @@ for token in (
         "!owner.connectCompletionPublished",
 ):
     require(protected_match, token, "protected completion owner fence")
+ordered(protected_match,
+        "owner.rsnIeLength != 0",
+        "bss->ni_rsnakms == IEEE80211_AKM_SAE",
+        "TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential",
+        "tahoeWclSelectedBssMatchesOwner")
 protected_completion = body(
     v2, "static IOReturn postTahoeWclProtectedRunCompletionGated(",
     "protected RUN completion")

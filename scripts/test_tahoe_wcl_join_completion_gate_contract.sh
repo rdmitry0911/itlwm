@@ -82,6 +82,16 @@ ordered(
 if "setLinkState(" in protected:
     fail("protected RUN terminal must not force parent link state")
 
+protected_match = body(
+    "static bool tahoeWclProtectedJoinCompletionMatchesOwner(")
+for token in (
+    "owner.rsnIeLength != 0",
+    "bss->ni_rsnakms == IEEE80211_AKM_SAE",
+    "TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential",
+):
+    if token not in protected_match:
+        fail(f"missing request-RSN/current-BSS security fence: {token}")
+
 parent_action = body("IOReturn AirportItlwm::\nsetLinkStateGated(")
 for token in (
         "AppleBCMWLANNetAdapter::handleLink is the",

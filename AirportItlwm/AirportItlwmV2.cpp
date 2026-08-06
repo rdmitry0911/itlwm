@@ -6062,9 +6062,19 @@ static bool tahoeWclProtectedJoinCompletionMatchesOwner(
     const struct ieee80211_pae_selected_bss &selected,
     const struct ieee80211_node *bss)
 {
+    /* Tahoe JoinAdapter accepts an empty setAssocRSNIE value and makes its
+     * connect-complete decision from the current BSS/AKM returned by
+     * getBSSInfoAsyncCallback.  A driver-resident SAE CIPHER_PWD join has
+     * exactly that shape: there is no request-owned RSN IE, while net80211
+     * has selected SAE on the current BSS before the real key terminal. */
+    const bool protectedSecurityOwner =
+        owner.rsnIeLength != 0 ||
+        (bss != nullptr && bss->ni_rsnakms == IEEE80211_AKM_SAE &&
+         TahoeAssociationAuthContracts::mayUseDirectSaeWclCredential(
+             owner.authUpper));
     return tahoeWclSelectedBssMatchesOwner(owner, selected, bss) &&
            owner.authUpper != APPLE80211_AUTHTYPE_NONE &&
-           owner.rsnIeLength != 0 &&
+           protectedSecurityOwner &&
            owner.authSuccessRecorded &&
            owner.authSuccessEpoch == selected.epoch &&
            IEEE80211_ADDR_EQ(owner.authSuccessBssid, selected.bssid) &&
