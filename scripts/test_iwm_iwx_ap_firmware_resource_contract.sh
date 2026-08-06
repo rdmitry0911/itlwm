@@ -205,10 +205,11 @@ require(iwx_start, "&runtime->broadcastQueueId", "IWX broadcast TVQM queue")
 
 iwx_remove = body(iwx_hal, "iwx_ap_remove_internal_sta(struct iwx_softc *sc,")
 require_order(iwx_remove, [
-    "iwx_reset_tx_ring(sc, ring)",
-    "iwx_free_tx_ring(sc, ring)",
+    "iwx_ap_exchange_tx_ring_carrier(",
+    "iwx_reset_tx_ring(sc, detached)",
+    "iwx_free_tx_ring(sc, detached)",
     "iwx_send_cmd_pdu(sc, IWX_REMOVE_STA",
-], "IWX queue-before-station teardown")
+], "IWX detach-and-reclaim-before-station teardown")
 if "iwx_alloc_tx_ring" in iwx_remove:
     raise SystemExit("FAIL: dynamic IWX AP queue must not become a static ring")
 

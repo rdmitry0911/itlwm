@@ -2700,6 +2700,45 @@ iwx_txq_lock_for_ring(struct iwx_softc *sc, const struct iwx_tx_ring *ring)
     return NULL;
 }
 
+/*
+ * Publish a dynamic TVQM carrier replacement while the interrupt-side TX
+ * completion owner is excluded. IOSimpleLock disables preemption on XNU;
+ * IOBufferMemoryDescriptor::release() can take a sleeping VM-map lock and
+ * must therefore never run inside this critical section.
+ *
+ * Linux's new-TX owner makes the same split in iwl_mvm_disable_txq(): the
+ * queue identity is invalidated under its fast-path locks, while
+ * iwl_trans_txq_free() reclaims the transport carrier afterwards. Move the
+ * complete old carrier to caller-owned storage here so every potentially
+ * blocking reset/DMA/map release happens in the surrounding taskq context.
+ */
+static int
+iwx_ap_exchange_tx_ring_carrier(struct iwx_softc *sc, uint16_t queueId,
+                                struct iwx_tx_ring *replacement,
+                                struct iwx_tx_ring *displaced)
+{
+    if (sc == NULL || displaced == NULL ||
+        queueId == IWX_DQA_CMD_QUEUE || queueId >= nitems(sc->txq) ||
+        sc->sc_txq_locks[queueId] == NULL)
+        return EINVAL;
+
+    struct iwx_tx_ring *published = &sc->txq[queueId];
+    IOSimpleLockLock(sc->sc_txq_locks[queueId]);
+    memcpy(displaced, published, sizeof(*displaced));
+    if (published->qid >= 0 &&
+        published->qid < static_cast<int>(sizeof(sc->qfullmsk) * NBBY))
+        sc->qfullmsk &= ~(1U << published->qid);
+    if (replacement != NULL) {
+        memcpy(published, replacement, sizeof(*published));
+        memset(replacement, 0, sizeof(*replacement));
+    } else {
+        memset(published, 0, sizeof(*published));
+        published->qid = IWX_INVALID_QUEUE;
+    }
+    IOSimpleLockUnlock(sc->sc_txq_locks[queueId]);
+    return 0;
+}
+
 static bool
 iwx_sae_wcl_credential_runtime_opted_in(void)
 {
@@ -5517,6 +5556,11 @@ iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t staId, int tid,
         .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
     };
     struct iwx_tx_ring *ring = &sc->sc_tvqm_ring;
+    struct iwx_tx_ring *displaced = static_cast<struct iwx_tx_ring *>(
+        malloc(sizeof(*displaced), 0, M_NOWAIT | M_ZERO));
+
+    if (displaced == NULL)
+        return -ENOMEM;
 
     XYLog("IWX AP TVQM begin sta=%u tid=%d size=%u\n",
           static_cast<unsigned>(staId), tid, size);
@@ -5618,18 +5662,24 @@ iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t staId, int tid,
           static_cast<unsigned>(le16toh(resp->flags)));
     ring->cur = wr_idx;
     ring->qid = fwqid;
-    IOSimpleLockLock(sc->sc_txq_locks[fwqid]);
-    iwx_reset_tx_ring(sc, &sc->txq[fwqid]);
-    iwx_free_tx_ring(sc, &sc->txq[fwqid]);
-    memcpy(&sc->txq[fwqid], ring, sizeof(*ring));
-    memset(ring, 0, sizeof(*ring));
-    IOSimpleLockUnlock(sc->sc_txq_locks[fwqid]);
+    err = iwx_ap_exchange_tx_ring_carrier(
+        sc, static_cast<uint16_t>(fwqid), ring, displaced);
+    if (err != 0) {
+        err = -err;
+        goto fail;
+    }
+    /* The interrupt path can now observe only the new carrier. Reclaim the
+     * displaced one after the preemption-disabled publication lock is gone. */
+    iwx_reset_tx_ring(sc, displaced);
+    iwx_free_tx_ring(sc, displaced);
+    ::free(displaced);
     iwx_free_resp(sc, &hcmd);
     return fwqid;
 fail:
     iwx_free_resp(sc, &hcmd);
     iwx_reset_tx_ring(sc, ring);
     iwx_free_tx_ring(sc, ring);
+    ::free(displaced);
     return err;
 }
 
@@ -12120,20 +12170,28 @@ iwx_ap_remove_internal_sta(struct iwx_softc *sc, uint8_t staId,
     if (queueId >= nitems(sc->txq) || queueId == IWX_DQA_CMD_QUEUE)
         return EINVAL;
 
+    struct iwx_tx_ring *detached = static_cast<struct iwx_tx_ring *>(
+        malloc(sizeof(*detached), 0, M_NOWAIT | M_ZERO));
+    if (detached == NULL)
+        return ENOMEM;
+
     /*
      * SCD_QUEUE_CFG v2 assigns a dynamic queue but has no remove operation.
-     * Linux iwlwifi therefore tears the transport queue down before
-     * REMOVE_STA.  Reclaim the local DMA carrier in that same order; leaving
-     * it live until after station removal lets firmware complete into storage
-     * whose station owner has already disappeared.
+     * Linux iwlwifi therefore invalidates and frees the transport queue before
+     * REMOVE_STA. Detach the published carrier under the interrupt-safe lock,
+     * then perform every mbuf, DMA-map, and IOBuffer release in this taskq
+     * context. A late completion sees ring_count == 0 in the published slot
+     * and cannot follow the detached storage.
      */
-    struct iwx_tx_ring *ring = &sc->txq[queueId];
-    IOSimpleLockLock(sc->sc_txq_locks[queueId]);
-    iwx_reset_tx_ring(sc, ring);
-    iwx_free_tx_ring(sc, ring);
-    memset(ring, 0, sizeof(*ring));
-    ring->qid = IWX_INVALID_QUEUE;
-    IOSimpleLockUnlock(sc->sc_txq_locks[queueId]);
+    const int detachError = iwx_ap_exchange_tx_ring_carrier(
+        sc, queueId, NULL, detached);
+    if (detachError != 0) {
+        ::free(detached);
+        return detachError;
+    }
+    iwx_reset_tx_ring(sc, detached);
+    iwx_free_tx_ring(sc, detached);
+    ::free(detached);
 
     struct iwx_rm_sta_cmd command;
     memset(&command, 0, sizeof(command));
