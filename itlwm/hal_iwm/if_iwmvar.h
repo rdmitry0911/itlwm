@@ -632,6 +632,7 @@ struct iwm_softc {
 	struct task		sae_tx_task;
 	struct task		sae_engine_task;
 	struct task		mfp_pae_task;
+	struct task		assoc_comeback_task;
 //	struct refcnt		task_refs;
 	struct task		newstate_task;
 	enum ieee80211_state	ns_nstate;
@@ -772,6 +773,10 @@ struct iwm_softc {
     bool          sc_sae_tx_lifecycle_closed;
     bool          sc_sae_tx_detaching;
     bool          sc_sae_tx_task_ready;
+    struct ieee80211_assoc_comeback_retry sc_assoc_comeback_retry;
+    int           sc_assoc_comeback_generation;
+    bool          sc_assoc_comeback_queued;
+    bool          sc_assoc_comeback_task_ready;
     IOSimpleLock *sc_sae_tx_lock;
     bool          sc_sae_tx_active;
     bool          sc_sae_tx_doorbelled;

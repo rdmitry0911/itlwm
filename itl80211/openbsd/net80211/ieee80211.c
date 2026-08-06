@@ -1348,12 +1348,29 @@ ieee80211_watchdog(struct _ifnet *ifp)
             int subtype = ic->ic_assoc_comeback_reassoc ?
                 IEEE80211_FC0_SUBTYPE_REASSOC_REQ :
                 IEEE80211_FC0_SUBTYPE_ASSOC_REQ;
+			struct ieee80211_assoc_comeback_retry retry;
 
-            ic->ic_assoc_comeback_pending = 0;
-            ic->ic_assoc_comeback_tu = 0;
-            ic->ic_assoc_status = 0xffff;
-            if (IEEE80211_SEND_MGMT(ic, ic->ic_bss, subtype, 0) == 0)
-                goto done;
+			explicit_bzero(&retry, sizeof(retry));
+			retry.association_epoch =
+			    ieee80211_pae_assoc_epoch_current(ic);
+			retry.timeout_tu = ic->ic_assoc_comeback_tu;
+			IEEE80211_ADDR_COPY(retry.bssid, ic->ic_bss->ni_bssid);
+			retry.subtype = (u_int8_t)subtype;
+			retry.retry = ic->ic_assoc_comeback_retries;
+			if (ic->ic_assoc_comeback_retry != NULL) {
+				int prepare_error =
+				    (*ic->ic_assoc_comeback_retry)(ic, &retry);
+				explicit_bzero(&retry, sizeof(retry));
+				if (prepare_error == 0)
+					goto done;
+			} else {
+				explicit_bzero(&retry, sizeof(retry));
+				ic->ic_assoc_comeback_pending = 0;
+				ic->ic_assoc_comeback_tu = 0;
+				ic->ic_assoc_status = 0xffff;
+				if (IEEE80211_SEND_MGMT(ic, ic->ic_bss, subtype, 0) == 0)
+					goto done;
+			}
         }
 
         /* Capture ownership before the association fence below revokes the
@@ -1412,6 +1429,73 @@ ieee80211_watchdog(struct _ifnet *ifp)
 done:
     if (ic->ic_mgt_timer != 0)
         ifp->if_timer = 1;
+}
+
+static int
+ieee80211_assoc_comeback_retry_current(struct ieee80211com *ic,
+    const struct ieee80211_assoc_comeback_retry *retry)
+{
+	int reassoc;
+
+	if (ic == NULL || retry == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    !ic->ic_assoc_comeback_pending || ic->ic_bss == NULL ||
+	    retry->association_epoch == 0 ||
+	    ieee80211_pae_assoc_epoch_current(ic) != retry->association_epoch ||
+	    retry->timeout_tu == 0 ||
+	    retry->timeout_tu != ic->ic_assoc_comeback_tu ||
+	    retry->retry == 0 || retry->retry != ic->ic_assoc_comeback_retries ||
+	    !IEEE80211_ADDR_EQ(retry->bssid, ic->ic_bss->ni_bssid))
+		return 0;
+	reassoc = retry->subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ;
+	if ((!reassoc && retry->subtype != IEEE80211_FC0_SUBTYPE_ASSOC_REQ) ||
+	    reassoc != (ic->ic_assoc_comeback_reassoc != 0))
+		return 0;
+	if (!reassoc)
+		return ic->ic_state == IEEE80211_S_ASSOC;
+	return ic->ic_state == IEEE80211_S_RUN &&
+	    ic->ic_wcl_reassoc_owner_active;
+}
+
+int
+ieee80211_assoc_comeback_retry_abort(struct ieee80211com *ic,
+    const struct ieee80211_assoc_comeback_retry *retry, int error)
+{
+	if (!ieee80211_assoc_comeback_retry_current(ic, retry))
+		return 0;
+
+	ic->ic_assoc_comeback_pending = 0;
+	ic->ic_assoc_comeback_tu = 0;
+	ic->ic_assoc_status = 0xffff;
+	if (retry->subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ)
+		ieee80211_wcl_reassoc_post_failure(ic,
+		    (u_int32_t)(error != 0 ? error : EIO));
+	(void)ieee80211_pae_assoc_epoch_begin(ic);
+	ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+	return 1;
+}
+
+int
+ieee80211_assoc_comeback_retry_complete(struct ieee80211com *ic,
+    const struct ieee80211_assoc_comeback_retry *retry)
+{
+	int error;
+
+	if (!ieee80211_assoc_comeback_retry_current(ic, retry))
+		return ENOENT;
+
+	/* The lower lease is live now.  Publish the management descriptor only
+	 * after the immutable association identity has been revalidated. */
+	ic->ic_assoc_comeback_pending = 0;
+	ic->ic_assoc_comeback_tu = 0;
+	ic->ic_assoc_status = 0xffff;
+	error = IEEE80211_SEND_MGMT(ic, ic->ic_bss, retry->subtype, 0);
+	if (error != 0) {
+		/* Restore only the values required by abort()'s exact identity gate. */
+		ic->ic_assoc_comeback_pending = 1;
+		ic->ic_assoc_comeback_tu = retry->timeout_tu;
+		(void)ieee80211_assoc_comeback_retry_abort(ic, retry, error);
+	}
+	return error;
 }
 
 const struct ieee80211_rateset ieee80211_std_rateset_11a =

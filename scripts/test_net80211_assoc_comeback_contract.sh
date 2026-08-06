@@ -24,6 +24,7 @@ root = Path(sys.argv[1])
 input_c = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 ieee_c = (root / "itl80211/openbsd/net80211/ieee80211.c").read_text()
 proto_c = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
+var_h = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 
 
 def fail(message):
@@ -75,15 +76,62 @@ watchdog = body(ieee_c, "void\nieee80211_watchdog(",
                 "management watchdog")
 ordered(
     watchdog,
-    "comeback resend precedes timeout cancellation",
+    "immutable lower retry handoff precedes timeout cancellation",
     "ic->ic_assoc_comeback_pending",
     "IEEE80211_FC0_SUBTYPE_REASSOC_REQ",
     "IEEE80211_FC0_SUBTYPE_ASSOC_REQ",
-    "IEEE80211_SEND_MGMT(ic, ic->ic_bss, subtype, 0)",
+    "retry.association_epoch",
+    "retry.timeout_tu",
+    "IEEE80211_ADDR_COPY(retry.bssid",
+    "retry.subtype",
+    "retry.retry",
+    "ic->ic_assoc_comeback_retry != NULL",
+    "(*ic->ic_assoc_comeback_retry)(ic, &retry)",
     "goto done;",
     "ieee80211_pae_assoc_epoch_begin(ic)",
     "ieee80211_wcl_reassoc_post_failure",
 )
+
+complete = body(
+    ieee_c,
+    "int\nieee80211_assoc_comeback_retry_complete(",
+    "lower association retry completion",
+)
+ordered(
+    complete,
+    "exact identity validation precedes delayed descriptor publication",
+    "ieee80211_assoc_comeback_retry_current(ic, retry)",
+    "ic->ic_assoc_comeback_pending = 0",
+    "ic->ic_assoc_comeback_tu = 0",
+    "IEEE80211_SEND_MGMT(ic, ic->ic_bss, retry->subtype, 0)",
+)
+
+abort = body(
+    ieee_c,
+    "int\nieee80211_assoc_comeback_retry_abort(",
+    "lower association retry abort",
+)
+ordered(
+    abort,
+    "exact identity validation precedes terminal association fence",
+    "ieee80211_assoc_comeback_retry_current(ic, retry)",
+    "ic->ic_assoc_comeback_pending = 0",
+    "ieee80211_pae_assoc_epoch_begin(ic)",
+    "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1)",
+)
+
+retry_record = body(
+    var_h,
+    "struct ieee80211_assoc_comeback_retry ",
+    "immutable association retry record",
+)
+for token in (
+    "association_epoch", "timeout_tu", "bssid", "subtype", "retry"
+):
+    if token not in retry_record:
+        fail(f"immutable retry record missing {token}")
+if "ieee80211_node" in retry_record or "*" in retry_record:
+    fail("immutable retry record retains a pointer")
 
 newstate_start = proto_c.find("int\nieee80211_newstate(")
 newstate_end = proto_c.find("\nvoid\nieee80211_set_link_state(", newstate_start)
@@ -100,5 +148,5 @@ ordered(
     "ic->ic_state = nstate",
 )
 
-print("PASS: bounded association comeback preserves SAE owner before retry")
+print("PASS: bounded association comeback uses exact lower prepare/retry ownership")
 PY

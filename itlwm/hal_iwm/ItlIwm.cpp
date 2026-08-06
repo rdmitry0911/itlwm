@@ -761,6 +761,137 @@ iwm_sae_tx_detach_begin(struct iwm_softc *sc)
     }
 }
 
+int ItlIwm::
+iwm_assoc_comeback_retry(struct ieee80211com *ic,
+    const struct ieee80211_assoc_comeback_retry *retry)
+{
+    struct iwm_softc *sc;
+    bool queued = false;
+
+    if (ic == NULL || retry == NULL)
+        return EINVAL;
+    sc = (struct iwm_softc *)ic->ic_softc;
+    if (sc == NULL || sc->sc_nswq == NULL ||
+        !iwm_sae_tx_lifecycle_enter(sc, false))
+        return ENXIO;
+
+    /* Publish only an immutable association identity.  In particular, no
+     * node pointer survives until the process-context firmware command. */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching &&
+        sc->sc_assoc_comeback_task_ready &&
+        (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
+        !sc->sc_assoc_comeback_queued) {
+        sc->sc_assoc_comeback_retry = *retry;
+        sc->sc_assoc_comeback_generation = sc->sc_generation;
+        sc->sc_assoc_comeback_queued = true;
+        queued = task_add(sc->sc_nswq, &sc->assoc_comeback_task) != 0;
+        if (!queued) {
+            sc->sc_assoc_comeback_queued = false;
+            explicit_bzero(&sc->sc_assoc_comeback_retry,
+                sizeof(sc->sc_assoc_comeback_retry));
+            sc->sc_assoc_comeback_generation = 0;
+        }
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    iwm_sae_tx_lifecycle_leave(sc);
+    return queued ? 0 : EBUSY;
+}
+
+void ItlIwm::
+iwm_assoc_comeback_task(void *arg)
+{
+    struct iwm_softc *sc = (struct iwm_softc *)arg;
+    ItlIwm *that;
+    struct ieee80211com *ic;
+    struct ieee80211_assoc_comeback_retry retry;
+    struct iwm_node *in;
+    uint32_t duration_tu;
+    int error = ENOENT;
+    int generation = 0;
+    int s;
+    bool have_work = false;
+
+    if (sc == NULL || !iwm_sae_tx_lifecycle_enter(sc, false))
+        return;
+    that = container_of(sc, ItlIwm, com);
+    ic = &sc->sc_ic;
+    explicit_bzero(&retry, sizeof(retry));
+
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (sc->sc_assoc_comeback_task_ready &&
+        sc->sc_assoc_comeback_queued) {
+        retry = sc->sc_assoc_comeback_retry;
+        generation = sc->sc_assoc_comeback_generation;
+        have_work = true;
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+
+    s = splnet();
+    if (have_work && generation == sc->sc_generation &&
+        (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
+        ic->ic_assoc_comeback_pending && ic->ic_bss != NULL &&
+        ieee80211_pae_assoc_epoch_current(ic) == retry.association_epoch &&
+        IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, retry.bssid)) {
+        in = (struct iwm_node *)ic->ic_bss;
+        duration_tu = in->in_ni.ni_intval != 0 ?
+            in->in_ni.ni_intval * 9U : 900U;
+        duration_tu = MAX(duration_tu, 900U);
+
+        /* mac80211 mgd_prepare_tx -> iwl_mvm_protect_assoc: renew the
+         * firmware lease before publishing the delayed q1 descriptor. */
+        if (sc->sc_flags & IWM_FLAG_TE_ACTIVE)
+            that->iwm_unprotect_session(sc, in);
+        if (sc->sc_flags & IWM_FLAG_TE_ACTIVE) {
+            error = EBUSY;
+        } else {
+            that->iwm_protect_session(sc, in, duration_tu,
+                in->in_ni.ni_intval / 2);
+            error = (sc->sc_flags & IWM_FLAG_TE_ACTIVE) != 0 ? 0 : EIO;
+        }
+
+        if (error == 0) {
+            error = ieee80211_assoc_comeback_retry_complete(ic, &retry);
+            if (error == 0) {
+                IOCommandGate *gate = that->getMainCommandGate();
+                const IOReturn drain = gate != NULL ?
+                    gate->runAction(_iwm_start_task, &ic->ic_ac.ac_if) :
+                    kIOReturnNotReady;
+                if (drain != kIOReturnSuccess)
+                    error = EIO;
+            }
+        } else {
+            (void)ieee80211_assoc_comeback_retry_abort(ic, &retry, error);
+        }
+
+        XYLog("IWM assoc comeback lower retry=%u protection=%d state=%u\n",
+            (unsigned)retry.retry, error, (unsigned)ic->ic_state);
+    }
+    splx(s);
+
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    sc->sc_assoc_comeback_queued = false;
+    explicit_bzero(&sc->sc_assoc_comeback_retry,
+        sizeof(sc->sc_assoc_comeback_retry));
+    sc->sc_assoc_comeback_generation = 0;
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    explicit_bzero(&retry, sizeof(retry));
+    iwm_sae_tx_lifecycle_leave(sc);
+}
+
+void ItlIwm::
+iwm_assoc_comeback_cancel(struct iwm_softc *sc)
+{
+    if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL)
+        return;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    sc->sc_assoc_comeback_queued = false;
+    explicit_bzero(&sc->sc_assoc_comeback_retry,
+        sizeof(sc->sc_assoc_comeback_retry));
+    sc->sc_assoc_comeback_generation = 0;
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
 #include "IwmMfpPae.inc"
 #include "IwmSaeEngine.inc"
 
@@ -772,8 +903,15 @@ detach(IOPCIDevice *device)
 
     /* No submitter, deferred terminal, or retained private gate may outlive
      * the descriptor rings and net80211 event sink below. */
+    sc->sc_ic.ic_assoc_comeback_retry = NULL;
     iwm_sae_engine_detach_begin(sc);
     iwm_sae_tx_detach_begin(sc);
+    if (sc->sc_assoc_comeback_task_ready && sc->sc_nswq != NULL) {
+        (void)task_del(sc->sc_nswq, &sc->assoc_comeback_task);
+        taskq_barrier(sc->sc_nswq);
+    }
+    sc->sc_assoc_comeback_task_ready = false;
+    iwm_assoc_comeback_cancel(sc);
     iwm_sae_wcl_detach_begin(sc);
     iwm_mfp_pae_detach_begin(sc);
     iwm_sae_engine_callback_close(sc);

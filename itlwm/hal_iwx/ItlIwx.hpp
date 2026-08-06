@@ -385,6 +385,9 @@ public:
     int    iwx_schedule_protect_session(struct iwx_softc *, struct iwx_node *, uint32_t);
     int     iwx_cancel_session_protection(struct iwx_softc *, struct iwx_node *);
     void    iwx_unprotect_session(struct iwx_softc *, struct iwx_node *);
+    static int iwx_assoc_comeback_retry(struct ieee80211com *,
+            const struct ieee80211_assoc_comeback_retry *);
+    static void iwx_assoc_comeback_task_dispatch(void *);
     uint8_t iwx_fw_valid_tx_ant(struct iwx_softc *sc);
     uint8_t iwx_fw_valid_rx_ant(struct iwx_softc *sc);
     void    iwx_init_channel_map(struct iwx_softc *, uint16_t *, uint32_t *, int);

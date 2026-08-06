@@ -5762,6 +5762,8 @@ iwm_stop(struct _ifnet *ifp)
     task_del(systq, &sc->init_task);
     iwm_del_task(sc, sc->sc_nswq, &sc->newstate_task);
     iwm_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
+    iwm_del_task(sc, sc->sc_nswq, &sc->assoc_comeback_task);
+    that->iwm_assoc_comeback_cancel(sc);
     iwm_del_task(sc, systq, &sc->ba_task);
     iwm_del_task(sc, systq, &sc->mac_ctxt_task);
     iwm_del_task(sc, systq, &sc->chan_ctxt_task);
@@ -6929,6 +6931,11 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_tx_lifecycle_closed = true;
     sc->sc_sae_tx_detaching = false;
     sc->sc_sae_tx_task_ready = false;
+    sc->sc_assoc_comeback_task_ready = false;
+    sc->sc_assoc_comeback_queued = false;
+    sc->sc_assoc_comeback_generation = 0;
+    explicit_bzero(&sc->sc_assoc_comeback_retry,
+        sizeof(sc->sc_assoc_comeback_retry));
     sc->sc_sae_tx_lock = IOSimpleLockAlloc();
     if (sc->sc_sae_tx_lock == NULL) {
         XYLog("%s: SAE TX owner unavailable\n", DEVNAME(sc));
@@ -7109,6 +7116,9 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     task_set(&sc->mfp_pae_task, iwm_mfp_pae_task, sc,
         "iwm_mfp_pae_task");
     sc->sc_mfp_pae_task_ready = sc->sc_mfp_pae_lock != NULL;
+    task_set(&sc->assoc_comeback_task, iwm_assoc_comeback_task, sc,
+        "iwm_assoc_comeback_task");
+    sc->sc_assoc_comeback_task_ready = true;
     task_set(&sc->newstate_task, iwm_newstate_task, sc, "newstate_task");
     task_set(&sc->ba_task, iwm_ba_task, sc, "ba_task");
     task_set(&sc->ap_client_task, iwm_ap_client_task, sc,
@@ -7120,6 +7130,7 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     ic->ic_bgscan_start = iwm_bgscan;
     ic->ic_set_key = iwm_set_key;
     ic->ic_delete_key = iwm_delete_key;
+    ic->ic_assoc_comeback_retry = iwm_assoc_comeback_retry;
     
     /* Override 802.11 state transition machine. */
     sc->sc_newstate = ic->ic_newstate;

@@ -686,6 +686,20 @@ struct ieee80211_sae_wcl_bound_request {
 
 struct ItlSaeAuthPeerEventV1;
 
+/*
+ * Immutable identity for one delayed status-30 association retry.  A lower
+ * driver may copy this value into process-context work, renew its firmware
+ * channel/session lease, and then hand the same value back to net80211.  No
+ * node pointer or credential crosses that deferred boundary.
+ */
+struct ieee80211_assoc_comeback_retry {
+	u_int64_t	association_epoch;
+	u_int32_t	timeout_tu;
+	u_int8_t	bssid[IEEE80211_ADDR_LEN];
+	u_int8_t	subtype;
+	u_int8_t	retry;
+};
+
 struct ieee80211com {
 	struct arpcom		ic_ac;
 	LIST_ENTRY(ieee80211com) ic_list;	/* chain of all ieee80211com */
@@ -694,6 +708,14 @@ struct ieee80211com {
 				    struct ieee80211_rxinfo *, int);
 	int			(*ic_send_mgmt)(struct ieee80211com *,
 				    struct ieee80211_node *, int, int, int);
+	/*
+	 * Optional process-context bridge corresponding to mac80211's
+	 * mgd_prepare_tx.  Returning zero transfers exactly one status-30 retry
+	 * to the lower driver; it must later call retry_complete() or
+	 * retry_abort() with the copied immutable identity.
+	 */
+	int			(*ic_assoc_comeback_retry)(struct ieee80211com *,
+				    const struct ieee80211_assoc_comeback_retry *);
 	int			(*ic_newstate)(struct ieee80211com *,
 				    enum ieee80211_state, int);
 	int			(*ic_newauth)(struct ieee80211com *,

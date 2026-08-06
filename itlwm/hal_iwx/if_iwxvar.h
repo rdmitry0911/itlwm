@@ -861,6 +861,11 @@ struct iwx_softc {
 	struct task sae_tx_task;
 	struct task sae_engine_task;
 	struct task mfp_pae_task;
+	/* Serialized lower renewal for one status-30 association retry. */
+	struct task assoc_comeback_task;
+	struct ieee80211_assoc_comeback_retry sc_assoc_comeback_retry;
+	int sc_assoc_comeback_generation;
+	bool sc_assoc_comeback_queued;
 	/*
 	 * AP firmware resource creation/removal must run outside AirportItlwm's
 	 * command gate.  Synchronous q0 completions are delivered by the IWX

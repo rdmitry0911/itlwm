@@ -249,6 +249,7 @@ ordered(commit, "atomic final SAE doorbell",
 # span is reclaimed; data[SSN] is the first uncompleted descriptor.
 rx_single = iwx_method("iwx_rx_tx_cmd_single")
 for token in ("IWX_TX_STATUS_SUCCESS", "IWX_TX_STATUS_DIRECT_DONE",
+              "idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count)",
               "while (ring->tail != idx)",
               "struct iwx_tx_data *txd = &ring->data[ring->tail]",
               "const bool frame_failed = txfail && reclaimed == 0",
@@ -260,8 +261,8 @@ ordered(rx_single, "IWX SAE result-before-reclaim",
         "iwx_sae_tx_report_terminal", "iwx_txd_done(sc, txd)",
         "iwx_clear_tx_desc(sc, ring, ring->tail)")
 rx_cmd = iwx_method("iwx_rx_tx_cmd")
-for token in ("idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count)",
-              "iwx_rx_tx_cmd_single(sc, pkt, ring, idx)"):
+for token in ("ssn = le32toh(ssn) & 0xfff",
+              "iwx_rx_tx_cmd_single(sc, pkt, ring, ssn)"):
     require(rx_cmd, token, "non-inclusive IWX completion route")
 forbid(rx_cmd, "&ring->data[idx]", "inclusive SSN descriptor lookup")
 forbid(rx_cmd, "iwx_ampdu_txq_advance(sc, ring, idx)",

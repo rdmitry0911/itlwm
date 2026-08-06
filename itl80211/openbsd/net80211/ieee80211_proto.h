@@ -70,8 +70,14 @@ extern	const char * const ieee80211_mgt_subtype_name[];
 extern	const char * const ieee80211_state_name[IEEE80211_S_MAX];
 extern	const char * const ieee80211_phymode_name[];
 
+struct ieee80211_assoc_comeback_retry;
+
 extern	void ieee80211_proto_attach(struct _ifnet *);
 extern	void ieee80211_proto_detach(struct _ifnet *);
+extern	int ieee80211_assoc_comeback_retry_complete(struct ieee80211com *,
+	    const struct ieee80211_assoc_comeback_retry *);
+extern	int ieee80211_assoc_comeback_retry_abort(struct ieee80211com *,
+	    const struct ieee80211_assoc_comeback_retry *, int);
 
 struct ieee80211_node;
 struct ieee80211_rxinfo;

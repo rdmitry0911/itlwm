@@ -642,6 +642,8 @@ detach(IOPCIDevice *device)
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
         if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->assoc_comeback_task);
+        if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->ap_start_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->ap_stop_task);
@@ -658,6 +660,14 @@ detach(IOPCIDevice *device)
         taskq_barrier(systq);
     }
     iwx_task_gate_drain(sc, 0, 0, 0);
+    if (sc->sc_task_gate_lock != NULL) {
+        IOLockLock(sc->sc_task_gate_lock);
+        sc->sc_assoc_comeback_queued = false;
+        explicit_bzero(&sc->sc_assoc_comeback_retry,
+            sizeof(sc->sc_assoc_comeback_retry));
+        sc->sc_assoc_comeback_generation = 0;
+        IOLockUnlock(sc->sc_task_gate_lock);
+    }
     iwx_ap_lifecycle_reset(this, true);
     /*
      * task_gate_drain() covers both already-running gate actions and callers
@@ -709,6 +719,7 @@ detach(IOPCIDevice *device)
         sc->sc_ic.ic_pae_mfp_txn_submit = NULL;
         sc->sc_ic.ic_pae_mfp_txn_cancel = NULL;
         sc->sc_ic.ic_pae_mfp_txn_finish = NULL;
+        sc->sc_ic.ic_assoc_comeback_retry = NULL;
         ieee80211_ifdetach(ifp);
         sc->sc_if_attached = false;
     }
@@ -5800,6 +5811,129 @@ iwx_schedule_protect_session(struct iwx_softc *sc, struct iwx_node *in,
     if (err)
         XYLog("Couldn't send the SESSION_PROTECTION_CMD %d\n", err);
     return err;
+}
+
+int ItlIwx::
+iwx_assoc_comeback_retry(struct ieee80211com *ic,
+    const struct ieee80211_assoc_comeback_retry *retry)
+{
+    struct iwx_softc *sc;
+    bool queued = false;
+
+    if (ic == NULL || retry == NULL)
+        return EINVAL;
+    sc = (struct iwx_softc *)ic->ic_softc;
+    if (sc == NULL || sc->sc_task_gate_lock == NULL ||
+        !sc->sc_task_callbacks_ready || sc->sc_nswq == NULL)
+        return ENXIO;
+
+    /* Gate-close and publication of the immutable work identity are one
+     * operation.  The worker retains no node pointer across this boundary. */
+    IOLockLock(sc->sc_task_gate_lock);
+    if (!sc->sc_task_gate_closed && !sc->sc_task_gate_detaching &&
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        !sc->sc_assoc_comeback_queued) {
+        sc->sc_assoc_comeback_retry = *retry;
+        sc->sc_assoc_comeback_generation = sc->sc_generation;
+        sc->sc_assoc_comeback_queued = true;
+        queued = task_add(sc->sc_nswq, &sc->assoc_comeback_task) != 0;
+        if (!queued) {
+            sc->sc_assoc_comeback_queued = false;
+            explicit_bzero(&sc->sc_assoc_comeback_retry,
+                sizeof(sc->sc_assoc_comeback_retry));
+            sc->sc_assoc_comeback_generation = 0;
+        }
+    }
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return queued ? 0 : EBUSY;
+}
+
+void ItlIwx::
+iwx_assoc_comeback_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_assoc_comeback_retry retry;
+    struct iwx_node *in;
+    uint32_t duration_tu;
+    int error = ENOENT;
+    int generation = 0;
+    int s;
+    bool have_work = false;
+
+    explicit_bzero(&retry, sizeof(retry));
+    if (!that->iwx_task_gate_enter(sc, false)) {
+        if (sc->sc_task_gate_lock != NULL) {
+            IOLockLock(sc->sc_task_gate_lock);
+            sc->sc_assoc_comeback_queued = false;
+            explicit_bzero(&sc->sc_assoc_comeback_retry,
+                sizeof(sc->sc_assoc_comeback_retry));
+            sc->sc_assoc_comeback_generation = 0;
+            IOLockUnlock(sc->sc_task_gate_lock);
+        }
+        return;
+    }
+
+    IOLockLock(sc->sc_task_gate_lock);
+    if (sc->sc_assoc_comeback_queued) {
+        retry = sc->sc_assoc_comeback_retry;
+        generation = sc->sc_assoc_comeback_generation;
+        have_work = true;
+    }
+    IOLockUnlock(sc->sc_task_gate_lock);
+
+    s = splnet();
+    if (have_work && generation == sc->sc_generation &&
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        ic->ic_assoc_comeback_pending && ic->ic_bss != NULL &&
+        ieee80211_pae_assoc_epoch_current(ic) == retry.association_epoch &&
+        IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, retry.bssid)) {
+        in = (struct iwx_node *)ic->ic_bss;
+        duration_tu = in->in_ni.ni_intval != 0 ?
+            in->in_ni.ni_intval * 9U : 900U;
+        duration_tu = MAX(duration_tu, 900U);
+
+        /* Linux iwlwifi's mgd_prepare_tx -> iwl_mvm_protect_assoc ordering:
+         * renew synchronously in process context before q1 publication. */
+        if (isset(sc->sc_enabled_capa,
+            IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD)) {
+            error = that->iwx_schedule_protect_session(sc, in, duration_tu);
+        } else {
+            if (sc->sc_flags & IWX_FLAG_TE_ACTIVE)
+                that->iwx_unprotect_session(sc, in);
+            that->iwx_protect_session(sc, in, duration_tu,
+                in->in_ni.ni_intval / 2);
+            error = (sc->sc_flags & IWX_FLAG_TE_ACTIVE) != 0 ? 0 : EIO;
+        }
+
+        if (error == 0) {
+            error = ieee80211_assoc_comeback_retry_complete(ic, &retry);
+            if (error == 0) {
+                IOCommandGate *gate = that->getMainCommandGate();
+                const IOReturn drain = gate != NULL ?
+                    gate->runAction(_iwx_start_task, &ic->ic_ac.ac_if) :
+                    kIOReturnNotReady;
+                if (drain != kIOReturnSuccess)
+                    error = EIO;
+            }
+        } else {
+            (void)ieee80211_assoc_comeback_retry_abort(ic, &retry, error);
+        }
+
+        XYLog("IWX assoc comeback lower retry=%u protection=%d state=%u\n",
+            (unsigned)retry.retry, error, (unsigned)ic->ic_state);
+    }
+    splx(s);
+
+    IOLockLock(sc->sc_task_gate_lock);
+    sc->sc_assoc_comeback_queued = false;
+    explicit_bzero(&sc->sc_assoc_comeback_retry,
+        sizeof(sc->sc_assoc_comeback_retry));
+    sc->sc_assoc_comeback_generation = 0;
+    IOLockUnlock(sc->sc_task_gate_lock);
+    explicit_bzero(&retry, sizeof(retry));
+    that->iwx_task_gate_leave(sc);
 }
 
 int ItlIwx::
@@ -16695,6 +16829,8 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
         if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->assoc_comeback_task);
+        if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->ap_start_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->ap_stop_task);
@@ -16722,6 +16858,14 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     /* The barrier closes dequeue-to-prologue; this asserts body exit too. */
     that->iwx_task_gate_drain(sc, caller_is_init_task ? 1 : 0,
                               caller_is_init_epoch ? 1 : 0, 1);
+    if (sc->sc_task_gate_lock != NULL) {
+        IOLockLock(sc->sc_task_gate_lock);
+        sc->sc_assoc_comeback_queued = false;
+        explicit_bzero(&sc->sc_assoc_comeback_retry,
+            sizeof(sc->sc_assoc_comeback_retry));
+        sc->sc_assoc_comeback_generation = 0;
+        IOLockUnlock(sc->sc_task_gate_lock);
+    }
     that->iwx_security_rx_purge(sc);
 
     /*
@@ -20947,6 +21091,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_engine_task_ready = true;
     task_set(&sc->mfp_pae_task, iwx_mfp_pae_task_dispatch, sc,
              "iwx_mfp_pae_task");
+    task_set(&sc->assoc_comeback_task, iwx_assoc_comeback_task_dispatch, sc,
+             "iwx_assoc_comeback_task");
     task_set(&sc->ap_start_task, iwx_ap_start_task_dispatch, sc,
              "iwx_ap_start_task");
     task_set(&sc->ap_stop_task, iwx_ap_stop_task_dispatch, sc,
@@ -20969,6 +21115,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_pae_mfp_txn_submit = NULL;
     ic->ic_pae_mfp_txn_cancel = NULL;
     ic->ic_pae_mfp_txn_finish = NULL;
+    ic->ic_assoc_comeback_retry = iwx_assoc_comeback_retry;
     
     /* Override 802.11 state transition machine. */
     sc->sc_newstate = ic->ic_newstate;

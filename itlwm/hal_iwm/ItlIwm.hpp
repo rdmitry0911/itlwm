@@ -264,6 +264,10 @@ public:
     void    iwm_protect_session(struct iwm_softc *, struct iwm_node *, uint32_t,
                                 uint32_t);
     void    iwm_unprotect_session(struct iwm_softc *, struct iwm_node *);
+    static int iwm_assoc_comeback_retry(struct ieee80211com *,
+        const struct ieee80211_assoc_comeback_retry *);
+    static void iwm_assoc_comeback_task(void *);
+    void iwm_assoc_comeback_cancel(struct iwm_softc *);
     int    iwm_nvm_read_chunk(struct iwm_softc *, uint16_t, uint16_t, uint16_t,
                               uint8_t *, uint16_t *);
     int    iwm_nvm_read_section(struct iwm_softc *, uint16_t, uint8_t *,
