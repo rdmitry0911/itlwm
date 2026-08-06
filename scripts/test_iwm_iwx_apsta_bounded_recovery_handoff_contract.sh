@@ -62,8 +62,12 @@ assert f"virtual IOReturn {bridge}" not in hal, "handoff must not shift HAL vtab
 assert "radioResetPrimaryStaScanHandoff" in owner_h
 assert "bool initialHostAPAdmissionPending;" in owner_h
 assert "bool confirmedHostAPStartPending;" in owner_h
-assert "isApRunning() && !initialHostAPAdmissionPending &&" in owner_h
-assert "!confirmedHostAPStartPending" in owner_h
+publish_start = owner_h.index("bool shouldPublishPrimaryOpMode() const")
+publish_end = owner_h.index("const char *bsdName()", publish_start)
+publish = owner_h[publish_start:publish_end]
+assert "return isApRunning();" in publish
+assert "initialHostAPAdmissionPending" not in publish
+assert "confirmedHostAPStartPending" not in publish
 
 resume = body(owner, "IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset")
 ordered(
@@ -84,8 +88,13 @@ assert "handoffResult != kIOReturnSuccess" in resume
 assert "handoffResult != kIOReturnUnsupported" in resume
 assert "!radioResetPrimaryStaScanHandoff" in resume
 assert "initialHostAPAdmissionPending ||" in resume
-assert "if (confirmedHostAPStartPending)" in resume
-assert "confirmed asynchronous HostAP replacement" in resume
+ordered(
+    resume,
+    "const bool asynchronousPublicStart =",
+    "initialHostAPAdmissionPending = false;",
+    "confirmedHostAPStartPending = false;",
+    "APSTA asynchronous public HostAP start reached lower",
+)
 
 hostap = body(owner, "IOReturn AirportItlwmAPSTAOwner::setHostAPMode")
 ordered(
@@ -98,7 +107,6 @@ ordered(
 ordered(
     hostap,
     "if (isApRunning())",
-    "initialHostAPAdmissionPending = false;",
     "confirmedHostAPStartPending = true;",
     "if (lowerStopPending)",
     "driveLowerStopToTerminal()",
@@ -106,7 +114,7 @@ ordered(
     "radioResetResumePending = true;",
     "initialHostAPAdmissionPending = !confirmedHostAPStartPending;",
 )
-assert "repeated HostAP selector confirmed" in hostap
+assert "not require that repetition to publish SWAP" in hostap
 assert "queued confirmed HostAP replacement behind" in hostap
 assert "lower stop result=" in hostap
 

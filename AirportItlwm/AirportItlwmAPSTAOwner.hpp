@@ -58,8 +58,11 @@ public:
     bool isApRunning() const { return lifecycle == kAirportItlwmAPSTAOwnerRunning &&
                                       state.resetState26c != 0; }
     bool shouldPublishPrimaryOpMode() const {
-        return isApRunning() && !initialHostAPAdmissionPending &&
-            !confirmedHostAPStartPending;
+        /* AppleBCMWLANCore::getOP_MODE gates the APSTA vtable call only on
+         * the owner's AP-up word at state +0x26c.  Once the lower AP has
+         * reached RUNNING, the primary carrier must immediately advertise
+         * SWAP so CoreWLAN can route the matching stop lifecycle. */
+        return isApRunning();
     }
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;

@@ -12,10 +12,17 @@ root = Path(sys.argv[1])
 contract = (root / "AirportItlwm/TahoeOpModeContracts.hpp").read_text()
 skywalk = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 legacy = (root / "AirportItlwm/AirportSTAIOCTL.cpp").read_text()
+owner_h = (root / "AirportItlwm/AirportItlwmAPSTAOwner.hpp").read_text()
 probe = (root / "AirportItlwmLabCoreWLANAP/airport_itlwm_lab_corewlan_ap.m").read_text()
 
 assert "kSoftAPMode = 0x08" in contract
 assert "publishAPSTAMode" in contract
+publish_start = owner_h.index("bool shouldPublishPrimaryOpMode() const")
+publish_end = owner_h.index("const char *bsdName()", publish_start)
+publish = owner_h[publish_start:publish_end]
+assert "return isApRunning();" in publish
+assert "initialHostAPAdmissionPending" not in publish
+assert "confirmedHostAPStartPending" not in publish
 
 skywalk_get = skywalk[skywalk.index(
     "AirportItlwmSkywalkInterface::\ngetOP_MODE(struct apple80211_opmode_data *od)"):

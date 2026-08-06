@@ -1187,11 +1187,13 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         radioResetResumePending = false;
         radioResetPrimaryStaScanHandoff = false;
         radioResetResumeWaitTicks = 0;
-        if (confirmedHostAPStartPending) {
-            confirmedHostAPStartPending = false;
-            XYLog("APSTA confirmed asynchronous HostAP replacement "
-                  "reached lower running\n");
-        }
+        const bool asynchronousPublicStart =
+            initialHostAPAdmissionPending || confirmedHostAPStartPending;
+        initialHostAPAdmissionPending = false;
+        confirmedHostAPStartPending = false;
+        if (asynchronousPublicStart)
+            XYLog("APSTA asynchronous public HostAP start reached lower "
+                  "running\n");
         setSoftAPPowerSaveState(
             kAirportItlwmAPSTAHostApPowerOnRestoreState,
             kAirportItlwmAPSTAHostApPowerOnRestoreReason);
@@ -1418,21 +1420,9 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     }
 
     if (isApRunning()) {
-        if (initialHostAPAdmissionPending) {
-            /*
-             * IWX materializes HostAP outside the synchronous Apple command
-             * gate.  Standard Internet Sharing necessarily repeats its
-             * HostAP selector after attaching ap1 to bridge100.  Keep the
-             * primary OP_MODE carrier out of SWAP during that bridge-owned
-             * confirmation window, then make this idempotent second selector
-             * the public AP-up edge.  Lower beacons and role-7 state remain
-             * owned throughout; this is not a delayed or repeated firmware
-             * start.
-            */
-            initialHostAPAdmissionPending = false;
-            XYLog("APSTA repeated HostAP selector confirmed asynchronous "
-                  "lower AP carrier\n");
-        }
+        /* CoreWLAN may repeat an identical start request, but Broadcom does
+         * not require that repetition to publish SWAP.  The actual lower
+         * RUNNING edge and state +0x26c are the public AP-up boundary. */
         return kIOReturnSuccess;
     }
 

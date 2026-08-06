@@ -71,7 +71,8 @@ boot = controller[
 assert "publishDefaultAPSTAInterface();" not in boot, (
     "APSTA capability must not be queried before asynchronous IWN init")
 
-for family, source, scan_source, attach_start, attach_end, scan_marker in (
+for (family, source, scan_source, attach_start, attach_end, scan_marker,
+     scan_end_marker) in (
     (
         "IWM",
         iwm,
@@ -79,6 +80,7 @@ for family, source, scan_source, attach_start, attach_end, scan_marker in (
         "bool ItlIwm::\nattach(IOPCIDevice *device)",
         "void ItlIwm::\nfree()",
         "iwm_scan(struct iwm_softc *sc)",
+        "int ItlIwm::\niwm_bgscan(",
     ),
     (
         "IWX",
@@ -87,6 +89,7 @@ for family, source, scan_source, attach_start, attach_end, scan_marker in (
         "bool ItlIwx::attach(IOPCIDevice *device)",
         "void ItlIwx::\ndetach(IOPCIDevice *device)",
         "iwx_scan(struct iwx_softc *sc)",
+        "int ItlIwx::\niwx_bgscan(",
     ),
 ):
     attach = source[source.index(attach_start):source.index(attach_end)]
@@ -107,7 +110,9 @@ for family, source, scan_source, attach_start, attach_end, scan_marker in (
             f"{family} one-shot lower-radio-ready edge missing: {needle}")
 
     scan_start = scan_source.index(scan_marker)
-    scan = scan_source[scan_start:scan_source.index("return 0;", scan_start)]
+    scan = scan_source[
+        scan_start:scan_source.index(scan_end_marker, scan_start)
+    ]
     assert scan.index("ic->ic_state = IEEE80211_S_SCAN") < scan.index(
         "noteWclScanRadioReady()"), (
             f"{family} must publish only after committing SCAN")
