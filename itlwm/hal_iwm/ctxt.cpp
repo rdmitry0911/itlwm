@@ -137,7 +137,10 @@ static uint8_t
 iwm_get_channel_width(struct ieee80211com *ic, struct ieee80211_channel *c)
 {
     uint8_t ret = IWM_PHY_VHT_CHANNEL_MODE20;
-    if (ic->ic_bss == NULL || ic->ic_state < IEEE80211_S_ASSOC) {
+    /* Width is owned by a PHY context, not by the controller globally. */
+    if (c == NULL || ic->ic_bss == NULL ||
+        ic->ic_state < IEEE80211_S_ASSOC ||
+        ic->ic_bss->ni_chan != c) {
         return ret;
     }
     switch (ic->ic_bss->ni_chw) {
@@ -159,10 +162,13 @@ iwm_get_channel_width(struct ieee80211com *ic, struct ieee80211_channel *c)
 static uint8_t
 iwm_get_ctrl_pos(struct ieee80211com *ic, struct ieee80211_channel *c)
 {
-    if (ic->ic_bss == NULL || ic->ic_state < IEEE80211_S_ASSOC || iwm_get_channel_width(ic, c) == IWM_PHY_VHT_CHANNEL_MODE20)
+    if (c == NULL || ic->ic_bss == NULL ||
+        ic->ic_state < IEEE80211_S_ASSOC ||
+        ic->ic_bss->ni_chan != c ||
+        iwm_get_channel_width(ic, c) == IWM_PHY_VHT_CHANNEL_MODE20)
         return IWM_PHY_VHT_CTRL_POS_1_BELOW;
     
-    signed int offset = ic->ic_bss->ni_chan->ic_freq - ic->ic_bss->ni_chan->ic_center_freq1;
+    signed int offset = c->ic_freq - c->ic_center_freq1;
     switch (offset) {
         case -70:
             return IWM_PHY_VHT_CTRL_POS_4_BELOW;
@@ -181,7 +187,8 @@ iwm_get_ctrl_pos(struct ieee80211com *ic, struct ieee80211_channel *c)
         case  70:
             return IWM_PHY_VHT_CTRL_POS_4_ABOVE;
         default:
-            XYLog("Invalid channel definition freq=%d %d\n", ic->ic_bss->ni_chan->ic_freq, offset);
+            XYLog("Invalid channel definition freq=%d %d\n", c->ic_freq,
+                  offset);
             /* fall through */
         case 0:
             /*

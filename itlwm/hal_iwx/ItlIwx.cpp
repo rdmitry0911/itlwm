@@ -8500,7 +8500,22 @@ static uint8_t
 iwx_get_channel_width(struct ieee80211com *ic, struct ieee80211_channel *c)
 {
     uint8_t ret = IWX_PHY_VHT_CHANNEL_MODE20;
-    if (ic->ic_bss == NULL || ic->ic_state < IEEE80211_S_ASSOC) {
+    /*
+     * The negotiated width belongs to the primary STA PHY only.  A second
+     * AP/scan PHY has its own channel definition and, until an explicit
+     * per-PHY wide-channel carrier is supplied, is HT20.  Reusing the
+     * primary BSS width for a different channel can otherwise encode an
+     * impossible command such as channel 11/80 MHz and make API-68 firmware
+     * assert while starting a concurrent AP.
+     *
+     * Linux MVM passes a chandef to each PHY_CONTEXT_CMD and current OpenBSD
+     * iwx carries width/SCO in each iwx_phy_ctxt.  Keep the older local ABI,
+     * but preserve that same ownership boundary by consulting ic_bss only
+     * when this command actually targets the primary BSS channel.
+     */
+    if (c == NULL || ic->ic_bss == NULL ||
+        ic->ic_state < IEEE80211_S_ASSOC ||
+        ic->ic_bss->ni_chan != c) {
         return ret;
     }
     switch (ic->ic_bss->ni_chw) {
@@ -8522,10 +8537,13 @@ iwx_get_channel_width(struct ieee80211com *ic, struct ieee80211_channel *c)
 static uint8_t
 iwx_get_ctrl_pos(struct ieee80211com *ic, struct ieee80211_channel *c)
 {
-    if (ic->ic_bss == NULL || ic->ic_state < IEEE80211_S_ASSOC || iwx_get_channel_width(ic, c) == IWX_PHY_VHT_CHANNEL_MODE20)
+    if (c == NULL || ic->ic_bss == NULL ||
+        ic->ic_state < IEEE80211_S_ASSOC ||
+        ic->ic_bss->ni_chan != c ||
+        iwx_get_channel_width(ic, c) == IWX_PHY_VHT_CHANNEL_MODE20)
         return IWX_PHY_VHT_CTRL_POS_1_BELOW;
 
-    signed int offset = ic->ic_bss->ni_chan->ic_freq - ic->ic_bss->ni_chan->ic_center_freq1;
+    signed int offset = c->ic_freq - c->ic_center_freq1;
     switch (offset) {
         case -70:
             return IWX_PHY_VHT_CTRL_POS_4_BELOW;
@@ -8544,7 +8562,8 @@ iwx_get_ctrl_pos(struct ieee80211com *ic, struct ieee80211_channel *c)
         case  70:
             return IWX_PHY_VHT_CTRL_POS_4_ABOVE;
         default:
-            XYLog("Invalid channel definition freq=%d %d\n", ic->ic_bss->ni_chan->ic_freq, offset);
+            XYLog("Invalid channel definition freq=%d %d\n", c->ic_freq,
+                  offset);
             /* fall through */
         case 0:
             /*
