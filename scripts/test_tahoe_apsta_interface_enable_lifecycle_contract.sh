@@ -10,6 +10,8 @@ import sys
 root = Path(sys.argv[1])
 header = (root / "AirportItlwm/AirportItlwmSkywalkInterface.hpp").read_text()
 source = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
+controller_h = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
+controller = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 assert "IOReturn enable(UInt) override;" in header
 assert "IOReturn disable(UInt) override;" in header
 
@@ -25,6 +27,8 @@ for needle in (
     "getAssocState() == 0",
     "kAirportItlwmAPSTAEnableNotRunningReturn",
     "IO80211VirtualInterface::enable(options)",
+    "result == kIOReturnSuccess && controller != nullptr",
+    "controller->noteAPSTAInterfaceEnableDuringPendingHostAPStart();",
     "enableDatapath();",
 ):
     assert needle in enable, f"missing APSTA enable contract: {needle}"
@@ -32,8 +36,24 @@ assert enable.index("getAssocState() == 0") < enable.index(
     "IO80211VirtualInterface::enable(options)"
 )
 assert enable.index("IO80211VirtualInterface::enable(options)") < enable.index(
+    "controller->noteAPSTAInterfaceEnableDuringPendingHostAPStart();"
+)
+assert enable.index(
+    "controller->noteAPSTAInterfaceEnableDuringPendingHostAPStart();"
+) < enable.index(
     "enableDatapath();"
 )
+
+assert "void noteAPSTAInterfaceEnableDuringPendingHostAPStart();" in controller_h
+bridge_start = controller.index(
+    "void AirportItlwm::noteAPSTAInterfaceEnableDuringPendingHostAPStart()"
+)
+bridge_end = controller.index(
+    "void AirportItlwm::teardownAPSTAInterface()", bridge_start
+)
+bridge = controller[bridge_start:bridge_end]
+assert "fAPSTAOwner != nullptr" in bridge
+assert "fAPSTAOwner->noteInterfaceEnableDuringPendingHostAPStart();" in bridge
 
 disable = body(
     "IOReturn AirportItlwmAPSTASkywalkInterface::disable(UInt options)",

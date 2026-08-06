@@ -62,10 +62,12 @@ assert f"virtual IOReturn {bridge}" not in hal, "handoff must not shift HAL vtab
 assert "radioResetPrimaryStaScanHandoff" in owner_h
 assert "bool initialHostAPAdmissionPending;" in owner_h
 assert "bool confirmedHostAPStartPending;" in owner_h
+assert "bool interfaceDrivenHostAPConfirmationPending;" in owner_h
 publish_start = owner_h.index("bool shouldPublishPrimaryOpMode() const")
 publish_end = owner_h.index("const char *bsdName()", publish_start)
 publish = owner_h[publish_start:publish_end]
-assert "return isApRunning();" in publish
+assert "return isApRunning() &&" in publish
+assert "!interfaceDrivenHostAPConfirmationPending" in publish
 assert "initialHostAPAdmissionPending" not in publish
 assert "confirmedHostAPStartPending" not in publish
 
@@ -114,7 +116,9 @@ ordered(
     "radioResetResumePending = true;",
     "initialHostAPAdmissionPending = !confirmedHostAPStartPending;",
 )
-assert "not require that repetition to publish SWAP" in hostap
+assert "A direct start" in hostap
+assert "does not require it" in hostap
+assert "interfaceDrivenHostAPConfirmationPending = false;" in hostap
 assert "queued confirmed HostAP replacement behind" in hostap
 assert "lower stop result=" in hostap
 
@@ -124,6 +128,7 @@ retained = body(
 )
 assert "initialHostAPAdmissionPending = false;" in retained
 assert "confirmedHostAPStartPending = false;" in retained
+assert "interfaceDrivenHostAPConfirmationPending = false;" in retained
 
 assert "IEEE80211_SCAN_COMPLETION_AP_HANDOFF" in node_h
 

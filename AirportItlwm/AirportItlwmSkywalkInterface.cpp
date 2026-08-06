@@ -1659,6 +1659,8 @@ IOReturn AirportItlwmAPSTASkywalkInterface::enable(UInt options)
     }
 
     const IOReturn result = IO80211VirtualInterface::enable(options);
+    if (result == kIOReturnSuccess && controller != nullptr)
+        controller->noteAPSTAInterfaceEnableDuringPendingHostAPStart();
     enableDatapath();
     XYLog("APSTA interface enable options=0x%x result=0x%x\n",
           static_cast<unsigned>(options), static_cast<unsigned>(result));

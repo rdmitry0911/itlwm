@@ -518,6 +518,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     radioResetPrimaryStaScanHandoff = false;
     initialHostAPAdmissionPending = false;
     confirmedHostAPStartPending = false;
+    interfaceDrivenHostAPConfirmationPending = false;
     radioResetResumeWaitTicks = 0;
     lowerAssociatedStaCount = 0;
     bzero(lowerAssociatedStaMacs, sizeof(lowerAssociatedStaMacs));
@@ -585,6 +586,7 @@ void AirportItlwmAPSTAOwner::free()
     radioResetPrimaryStaScanHandoff = false;
     initialHostAPAdmissionPending = false;
     confirmedHostAPStartPending = false;
+    interfaceDrivenHostAPConfirmationPending = false;
     radioResetResumeWaitTicks = 0;
     clearLowerAssociatedStations();
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
@@ -820,6 +822,7 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
     radioResetPrimaryStaScanHandoff = false;
     initialHostAPAdmissionPending = false;
     confirmedHostAPStartPending = false;
+    interfaceDrivenHostAPConfirmationPending = false;
     radioResetResumeWaitTicks = 0;
     if (owner != nullptr)
         owner->setAPSTADatapathEnabled(false);
@@ -882,6 +885,7 @@ void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()
     radioResetPrimaryStaScanHandoff = false;
     initialHostAPAdmissionPending = false;
     confirmedHostAPStartPending = false;
+    interfaceDrivenHostAPConfirmationPending = false;
     radioResetResumeWaitTicks = 0;
     lowerStopPending = false;
     if (owner != nullptr)
@@ -937,6 +941,7 @@ void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(
     radioResetPrimaryStaScanHandoff = false;
     initialHostAPAdmissionPending = false;
     confirmedHostAPStartPending = false;
+    interfaceDrivenHostAPConfirmationPending = false;
     if (owner != nullptr)
         owner->setAPSTADatapathEnabled(false);
     for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++)
@@ -1203,6 +1208,7 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         radioResetPrimaryStaScanHandoff = false;
         initialHostAPAdmissionPending = false;
         confirmedHostAPStartPending = false;
+        interfaceDrivenHostAPConfirmationPending = false;
         radioResetResumeWaitTicks = 0;
         state.hostApTransitionState270 = 0;
     } else if (radioResetPrimaryStaScanHandoff &&
@@ -1222,6 +1228,31 @@ void AirportItlwmAPSTAOwner::teardown()
         (void)stopLower();
     }
     owner = nullptr;
+}
+
+void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()
+{
+    /*
+     * Standard Tahoe Internet Sharing enables the role-7 BSD interface
+     * after the first accepted HOST_AP_MODE request, then repeats the same
+     * selector to complete its transaction.  Broadcom finishes the lower
+     * start synchronously, so +0x26c cannot become observable between those
+     * two consumer events.  IWX cannot wait synchronously without starving
+     * the workloop which delivers its firmware completion.  Preserve the
+     * same public ordering by remembering this exact interface event until
+     * the repeated selector reaches setHostAPMode().
+     *
+     * A direct CoreWLAN HostAP start has no role-7 interface-enable event in
+     * this interval.  It therefore keeps the immediate RUNNING -> SWAP edge
+     * needed to route a direct stop back into the driver.
+     */
+    if (!initialHostAPAdmissionPending ||
+        confirmedHostAPStartPending ||
+        interfaceDrivenHostAPConfirmationPending)
+        return;
+
+    interfaceDrivenHostAPConfirmationPending = true;
+    XYLog("APSTA interface-driven HostAP confirmation pending\n");
 }
 
 bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const
@@ -1420,9 +1451,15 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     }
 
     if (isApRunning()) {
-        /* CoreWLAN may repeat an identical start request, but Broadcom does
-         * not require that repetition to publish SWAP.  The actual lower
-         * RUNNING edge and state +0x26c are the public AP-up boundary. */
+        /* CoreWLAN may repeat an identical start request.  A direct start
+         * does not require it, but standard Internet Sharing marks its open
+         * transaction with the role-7 interface-enable event above.  This
+         * repeat is the exact event which closes that transaction. */
+        if (interfaceDrivenHostAPConfirmationPending) {
+            interfaceDrivenHostAPConfirmationPending = false;
+            XYLog("APSTA interface-driven HostAP selector reached lower "
+                  "running\n");
+        }
         return kIOReturnSuccess;
     }
 
@@ -1433,6 +1470,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     if (initialHostAPAdmissionPending) {
         initialHostAPAdmissionPending = false;
         confirmedHostAPStartPending = true;
+        interfaceDrivenHostAPConfirmationPending = false;
         XYLog("APSTA repeated HostAP selector confirmed pending lower "
               "start\n");
     }
@@ -1458,6 +1496,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
                 return kIOReturnSuccess;
             }
             confirmedHostAPStartPending = false;
+            interfaceDrivenHostAPConfirmationPending = false;
             radioResetResumePending = false;
             return stopResult;
         }
@@ -1475,6 +1514,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
         radioResetResumeWaitTicks = 0;
         if (confirmedHostAPStartPending) {
             confirmedHostAPStartPending = false;
+            interfaceDrivenHostAPConfirmationPending = false;
             XYLog("APSTA confirmed HostAP replacement reached lower "
                   "running synchronously\n");
         }
@@ -1486,6 +1526,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
         radioResetPrimaryStaScanHandoff = false;
         initialHostAPAdmissionPending = false;
         confirmedHostAPStartPending = false;
+        interfaceDrivenHostAPConfirmationPending = false;
         radioResetResumeWaitTicks = 0;
         state.hostApTransitionState270 = 0;
         return result;

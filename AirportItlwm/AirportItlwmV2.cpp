@@ -16284,6 +16284,12 @@ void AirportItlwm::setAPSTADatapathEnabled(bool enable)
               fAPSTATxCompQueue->isEnabled() ? 1U : 0U);
 }
 
+void AirportItlwm::noteAPSTAInterfaceEnableDuringPendingHostAPStart()
+{
+    if (fAPSTAOwner != nullptr)
+        fAPSTAOwner->noteInterfaceEnableDuringPendingHostAPStart();
+}
+
 void AirportItlwm::teardownAPSTAInterface()
 {
     if (_fWorkloop != nullptr) {

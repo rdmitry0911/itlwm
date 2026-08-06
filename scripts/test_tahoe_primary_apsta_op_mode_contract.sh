@@ -13,6 +13,7 @@ contract = (root / "AirportItlwm/TahoeOpModeContracts.hpp").read_text()
 skywalk = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 legacy = (root / "AirportItlwm/AirportSTAIOCTL.cpp").read_text()
 owner_h = (root / "AirportItlwm/AirportItlwmAPSTAOwner.hpp").read_text()
+owner = (root / "AirportItlwm/AirportItlwmAPSTAOwner.cpp").read_text()
 probe = (root / "AirportItlwmLabCoreWLANAP/airport_itlwm_lab_corewlan_ap.m").read_text()
 
 assert "kSoftAPMode = 0x08" in contract
@@ -20,9 +21,33 @@ assert "publishAPSTAMode" in contract
 publish_start = owner_h.index("bool shouldPublishPrimaryOpMode() const")
 publish_end = owner_h.index("const char *bsdName()", publish_start)
 publish = owner_h[publish_start:publish_end]
-assert "return isApRunning();" in publish
+assert "return isApRunning() &&" in publish
+assert "!interfaceDrivenHostAPConfirmationPending" in publish
 assert "initialHostAPAdmissionPending" not in publish
 assert "confirmedHostAPStartPending" not in publish
+
+note_start = owner.index(
+    "void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()"
+)
+note_end = owner.index(
+    "bool AirportItlwmAPSTAOwner::matchesBSDName", note_start
+)
+note = owner[note_start:note_end]
+for needle in (
+    "initialHostAPAdmissionPending",
+    "confirmedHostAPStartPending",
+    "interfaceDrivenHostAPConfirmationPending = true;",
+):
+    assert needle in note, f"missing interface-driven OP_MODE gate: {needle}"
+
+hostap_start = owner.index("IOReturn AirportItlwmAPSTAOwner::setHostAPMode(")
+hostap_end = owner.index(
+    "IOReturn AirportItlwmAPSTAOwner::setCipherKey", hostap_start
+)
+hostap = owner[hostap_start:hostap_end]
+running = hostap[hostap.index("if (isApRunning())"):]
+assert "if (interfaceDrivenHostAPConfirmationPending)" in running
+assert "interfaceDrivenHostAPConfirmationPending = false;" in running
 
 skywalk_get = skywalk[skywalk.index(
     "AirportItlwmSkywalkInterface::\ngetOP_MODE(struct apple80211_opmode_data *od)"):

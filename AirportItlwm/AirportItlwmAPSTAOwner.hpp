@@ -58,12 +58,20 @@ public:
     bool isApRunning() const { return lifecycle == kAirportItlwmAPSTAOwnerRunning &&
                                       state.resetState26c != 0; }
     bool shouldPublishPrimaryOpMode() const {
-        /* AppleBCMWLANCore::getOP_MODE gates the APSTA vtable call only on
-         * the owner's AP-up word at state +0x26c.  Once the lower AP has
-         * reached RUNNING, the primary carrier must immediately advertise
-         * SWAP so CoreWLAN can route the matching stop lifecycle. */
-        return isApRunning();
+        /* AppleBCMWLANCore::getOP_MODE normally gates the APSTA vtable call
+         * only on the owner's AP-up word at state +0x26c.  IWX has to finish
+         * its lower start asynchronously, however, while standard Internet
+         * Sharing identifies its still-open public transaction by enabling
+         * the APSTA interface and repeating HOST_AP_MODE.  Do not expose
+         * SWAP in that one event-delimited interval: airportd treats SWAP as
+         * a completed transaction and rejects its required repeat before it
+         * can reach this owner.  Direct CoreWLAN starts never drive that
+         * interface-enable edge and therefore still publish immediately at
+         * the real lower RUNNING boundary. */
+        return isApRunning() &&
+            !interfaceDrivenHostAPConfirmationPending;
     }
+    void noteInterfaceEnableDuringPendingHostAPStart();
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;
     void copyMacAddress(uint8_t *address) const;
@@ -148,6 +156,7 @@ private:
     bool radioResetPrimaryStaScanHandoff;
     bool initialHostAPAdmissionPending;
     bool confirmedHostAPStartPending;
+    bool interfaceDrivenHostAPConfirmationPending;
     uint16_t radioResetResumeWaitTicks;
     uint8_t lowerAssociatedStaCount;
     uint8_t lowerAssociatedStaMacs[kAirportItlwmAPSTAStationTableEntryCount]
