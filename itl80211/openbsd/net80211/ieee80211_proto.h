@@ -338,6 +338,16 @@ extern	int ieee80211_sae_wcl_request_admit_cached_wcl_candidate(
 extern	int ieee80211_sae_wcl_request_admit_cached_roam_candidate(
 	    struct ieee80211com *, u_int64_t,
 	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int);
+/* Retarget a completed direct-SAE RUN owner without first destroying its
+ * source link.  The returned generation is an accepted lower handoff which
+ * node_join_bss() may bind through exactly one controlled replacement.
+ * rollback_run_retarget() is valid only before that replacement begins. */
+extern	u_int64_t ieee80211_sae_wcl_request_retarget_run(
+	    struct ieee80211com *, const struct ieee80211_node *, u_int64_t,
+	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int, int);
+extern	int ieee80211_sae_wcl_request_rollback_run_retarget(
+	    struct ieee80211com *, u_int64_t, u_int64_t,
+	    const struct ieee80211_node *);
 extern	int ieee80211_sae_wcl_request_admit_bss_loss_candidate(
 	    struct ieee80211com *, u_int64_t,
 	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int);

@@ -182,14 +182,18 @@ order(iwn, "driver-resident SAE targeted owner",
       "iwn_sae_engine_callback_enter(sc)",
       "sc->sc_sae_wcl_credential_active",
       "credential = sc->sc_sae_wcl_credential;",
-      "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD",
-      "ieee80211_sae_wcl_request_begin(ic, target_bssid,",
-      "that->stageSaeWclCredential(&credential)",
-      "ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(",
+      "source_generation = credential.request_generation",
+      "ieee80211_sae_wcl_request_retarget_run(ic, source,",
       "ieee80211_match_bss(ic, candidate, 0)",
+      "that->stageSaeWclCredential(&credential)",
+      "LOWER_RETARGET_ACCEPTED",
       "ieee80211_node_join_bss(ic, candidate)",
       "ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss)",
       "ieee80211_wnm_bss_transition_consume(ic, source_ssid,")
+if "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD" in iwn[iwn.find(
+        "iwn_sae_targeted_roam_start(struct ieee80211com *ic,"):
+        iwn.find("iwn_sae_wnm_roam_start(struct ieee80211com *ic,")]:
+    fail("targeted SAE owner must preserve RUN until lower retarget acceptance")
 order(iwn, "driver-resident SAE BTM target wrapper",
       "iwn_sae_wnm_roam_start(struct ieee80211com *ic,",
       "ieee80211_wnm_bss_transition_copy_retarget(ic, source_ssid,",

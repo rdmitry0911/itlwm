@@ -90,9 +90,13 @@ ordered(tx, "pre-trim/final ASSOC ownership",
 roam = body(engine, "iwm_sae_targeted_roam_start")
 ordered(roam, "active ESS retarget", "sc->sc_sae_wcl_credential_active",
         "credential = sc->sc_sae_wcl_credential",
-        "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD",
-        "ieee80211_sae_wcl_request_begin", "stageSaeWclCredential(&credential)",
+        "source_generation = credential.request_generation",
+        "ieee80211_sae_wcl_request_retarget_run",
+        "ieee80211_match_bss(ic, candidate, 0)",
+        "stageSaeWclCredential(&credential)", "LOWER_RETARGET_ACCEPTED",
         "ieee80211_node_join_bss", "ieee80211_sae_wcl_request_bound_current")
+if "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD" in roam:
+    fail("active ESS retarget queues a destructive RUN-to-SCAN edge")
 for token in ("ic->ic_sae_wnm_roam_start = ItlIwm::iwm_sae_wnm_roam_start",
               "ic->ic_sae_wcl_roam_start = ItlIwm::iwm_sae_wcl_roam_start"):
     need(engine, token, "multi-AP hook")

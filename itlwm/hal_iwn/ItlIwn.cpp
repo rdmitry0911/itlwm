@@ -2965,8 +2965,8 @@ iwn_sae_targeted_roam_start(struct ieee80211com *ic,
     u_int8_t source_ssid[IEEE80211_NWID_LEN];
     u_int8_t source_ssid_len = 0;
     u_int64_t generation = 0;
+    u_int64_t source_generation = 0;
     bool active_copied = false;
-    bool transitioned = false;
     int started = 0;
 
     explicit_bzero(&credential, sizeof(credential));
@@ -3020,45 +3020,36 @@ iwn_sae_targeted_roam_start(struct ieee80211com *ic,
     IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
     if (!active_copied)
         goto leave;
+    source_generation = credential.request_generation;
 
     /*
-     * The source response/deauth descriptors have completed.  Cross the
-     * ordinary association epoch boundary first, while retaining only the
-     * freshly confirmed target node; begin() then installs a new pure-SAE
-     * request identity for that target without a second physical scan.
+     * The reference submits its lower reassociation command while the source
+     * remains associated and restores the roam parameters on synchronous
+     * failure.  Prepare the matching public target without queuing RUN->SCAN;
+     * private staging below is our lower acceptance point, and only its
+     * success may enter node_join_bss()'s controlled RUN->AUTH replacement.
      */
-    ieee80211_new_state(ic, IEEE80211_S_SCAN,
-        IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD);
-    transitioned = ic->ic_state == IEEE80211_S_SCAN;
-    if (!transitioned)
-        goto leave;
-
-    generation = ieee80211_sae_wcl_request_begin(ic, target_bssid,
-        source_ssid, source_ssid_len);
+    generation = ieee80211_sae_wcl_request_retarget_run(ic, source,
+        source_generation,
+        target_bssid, source_ssid, source_ssid_len, consume_wnm ? 1 : 0);
     if (generation == 0)
         goto leave;
     credential.request_generation = generation;
     IEEE80211_ADDR_COPY(credential.bssid, target_bssid);
     if (!itl_sae_wcl_credential_is_well_formed(&credential) ||
-        that->stageSaeWclCredential(&credential) != kIOReturnSuccess ||
-        !(consume_wnm ?
-          ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
-              ic, generation) :
-          ieee80211_sae_wcl_request_admit_cached_roam_candidate(
-              ic, generation, target_bssid, source_ssid,
-              source_ssid_len)))
-        goto leave;
-
-    candidate = ieee80211_find_node(ic, target_bssid);
-    if (candidate == NULL || candidate == ic->ic_bss ||
-        candidate->ni_fails != 0 ||
-        candidate->ni_chan == IEEE80211_CHAN_ANYC ||
         candidate->ni_esslen != ic->ic_des_esslen ||
         memcmp(candidate->ni_essid, ic->ic_des_essid,
             ic->ic_des_esslen) != 0 ||
-        ieee80211_match_bss(ic, candidate, 0) != 0)
+        ieee80211_match_bss(ic, candidate, 0) != 0 ||
+        that->stageSaeWclCredential(&credential) != kIOReturnSuccess) {
+        if (ieee80211_sae_wcl_request_rollback_run_retarget(ic,
+            generation, source_generation, source))
+            generation = 0;
         goto leave;
+    }
 
+    XYLog("iwn_sae_roam LOWER_RETARGET_ACCEPTED generation=%llu owner=%s\n",
+        generation, consume_wnm ? "BTM" : "WCL");
     ieee80211_node_join_bss(ic, candidate);
     if (!ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss))
         goto leave;
@@ -3079,7 +3070,6 @@ leave:
 out:
     explicit_bzero(&credential, sizeof(credential));
     explicit_bzero(source_ssid, sizeof(source_ssid));
-    (void)transitioned;
     return started;
 }
 
@@ -3185,6 +3175,20 @@ iwn_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
 
     IOSimpleLockLock(sc->sc_sae_engine_lock);
     owner = &sc->sc_sae_engine_owner;
+    /* A queued lower SCAN may outlive the failed worker which retained this
+     * cancelled S_AUTH tombstone.  A strictly newer selected request/epoch
+     * is a fresh reference-style reassociation owner, but may supersede the
+     * tombstone only after every old producer and frame is empty. */
+    if (!sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        owner->active && owner->cancelled &&
+        sc->sc_sae_engine == NULL && owner->in_flight_ticket == 0 &&
+        !owner->start_pending && !owner->submit_retry_pending &&
+        !owner->terminal_valid && owner->peer_count == 0 &&
+        !owner->completion_claimed && !owner->assoc_tx_pending &&
+        !owner->assoc_tx_accepted &&
+        selected.request_generation > owner->request_generation &&
+        selected.association_epoch != owner->association_epoch)
+        iwn_sae_engine_owner_clear_locked(sc);
     if (!sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
         !owner->active && sc->sc_sae_engine == NULL &&
         sc->sc_sae_engine_next_relay_generation != (u_int64_t)-1) {

@@ -156,12 +156,38 @@ replacement = body(proto_c,
                    "u_int64_t\nieee80211_pae_assoc_epoch_begin_replacement",
                    "controlled replacement")
 for token in ("ic->ic_pae_selected_bss_lock", "lock == NULL",
+              "ieee80211_sae_wcl_pmk_claim_retire_replacement_locked(ic, prior_epoch)",
               "ieee80211_pae_assoc_epoch_advance_locked(ic)",
               "ic->ic_pae_assoc_replace_epoch, epoch",
               "ieee80211_pae_selected_bss_invalidate(ic)",
               "ieee80211_sae_peer_rx_admission_clear_locked(ic)",
               "IOSimpleLockUnlockEnableInterrupt"):
     require(replacement, token, "controlled replacement semantics")
+ordered(replacement, "source PMK retirement at accepted BSS replacement",
+        "prior_epoch = __atomic_load_n",
+        "ieee80211_sae_wcl_pmk_claim_retire_replacement_locked(ic, prior_epoch)",
+        "ieee80211_pae_assoc_epoch_advance_locked(ic)")
+
+claim_retire = body(proto_c,
+    "static void\nieee80211_sae_wcl_pmk_claim_retire_replacement_locked",
+    "source direct-SAE PMK retirement")
+for token in (
+    "claim->active == 0", "claim->association_epoch == source_epoch",
+    "IEEE80211_ADDR_EQ(claim->bssid, ni->ni_bssid)",
+    "IEEE80211_ADDR_EQ(claim->sta, ic->ic_myaddr)",
+    "explicit_bzero(ni->ni_pmk, sizeof(ni->ni_pmk))",
+    "explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid))",
+    "IEEE80211_NODE_PMK | IEEE80211_NODE_PMKID",
+    "explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk))",
+    "ic->ic_flags &= ~IEEE80211_F_PSK",
+    "ic->ic_external_pmk_owner = 0",
+    "explicit_bzero(claim, sizeof(*claim))",
+):
+    require(claim_retire, token, "source direct-SAE PMK retirement semantics")
+for token in ("ieee80211_new_state", "ic_newstate", "ic_event_handler",
+              "ic_sae_wcl_request_clear_locked"):
+    forbid(claim_retire, token,
+           "callback or public-policy mutation during source PMK retirement")
 
 destroy = body(proto_c, "void\nieee80211_pae_selected_bss_lock_destroy",
                "terminal selected-BSS lock destroy")
@@ -224,11 +250,11 @@ for token in (
 
 # The selected-BSS copyout has two source-level production consumers: the
 # bounded Algorithm-3 RX leaf and the separately contract-tested Tahoe WCL
-# completion bridge.  The bridge has four serialized reads: edge capture,
-# auth-ledger revalidation, validated-association revalidation, and open-RUN
-# revalidation.  All must remain exact value-only identity checks; a new source
-# file or another call in the controller is a lifecycle expansion and must fail
-# this gate.
+# completion bridge.  The bridge has five serialized reads: edge capture,
+# auth-ledger revalidation, validated-association revalidation, protected-RUN
+# revalidation, and open-RUN revalidation.  All must remain exact value-only
+# identity checks; a new source file or another call in the controller is a
+# lifecycle expansion and must fail this gate.
 copyout_references = []
 for directory in (root / "itl80211", root / "AirportItlwm"):
 	for suffix in ("*.c", "*.h", "*.cpp", "*.hpp"):
@@ -242,12 +268,13 @@ if sorted(copyout_references) != [
 	"itl80211/openbsd/net80211/ieee80211_proto.h",
 ]:
 	fail("selected BSS copyout must have only the bounded peer-RX and gated WCL completion consumers")
-if v2_cpp.count("ieee80211_pae_selected_bss_copyout_current(") != 4:
-	fail("WCL completion must keep exactly four serialized selected-BSS copyouts")
+if v2_cpp.count("ieee80211_pae_selected_bss_copyout_current(") != 5:
+	fail("WCL completion must keep exactly five serialized selected-BSS copyouts")
 for marker in (
 	"static bool captureTahoeWclSelectedBssRequest(",
 	"static IOReturn recordTahoeWclAuthSuccessGated(",
 	"static IOReturn postTahoeWclAuthAssocCompleteGated(",
+	"static IOReturn postTahoeWclProtectedRunCompletionGated(",
 	"static IOReturn postTahoeWclOpenJoinCompletionGated(",
 ):
 	require(body(v2_cpp, marker, "gated WCL completion copyout owner"),

@@ -976,11 +976,11 @@ ordered(controlled_end, "initial hardware census publishes but never joins",
 require(i80211, "ic->ic_initial_scan_census_only = 0;",
         "initial census one-shot initialization")
 ordered(iwn, "IWN checked hardware-enable census arm",
-        "__atomic_store_n(&ic->ic_initial_scan_census_only, 1",
-        "ieee80211_begin_scan_with_result(ifp)")
+		"driver_reset_reconnect ? 0 : 1",
+		"ieee80211_begin_scan_with_result(ifp)")
 for source, label in ((iwm_mac, "IWM"), (iwx, "IWX")):
     ordered(source, f"{label} hardware-enable census arm",
-            "__atomic_store_n(&ic->ic_initial_scan_census_only, 1",
+            "driver_reset_reconnect ? 0 : 1",
             "ieee80211_begin_scan(ifp)")
 for source, label in ((iwn, "IWN"), (iwm_mac, "IWM"), (iwx, "IWX")):
     ordered(source, f"{label} stop clears census owner",

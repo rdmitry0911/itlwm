@@ -162,12 +162,15 @@ targeted = method(engine, "iwx_sae_targeted_roam_start")
 ordered(targeted, "active-ESS SAE retarget",
         "sc->sc_sae_wcl_credential_active",
         "credential = sc->sc_sae_wcl_credential",
-        "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD",
-        "ieee80211_sae_wcl_request_begin",
+        "source_generation = credential.request_generation",
+        "ieee80211_sae_wcl_request_retarget_run",
+        "ieee80211_match_bss(ic, candidate, 0)",
         "that->stageSaeWclCredential(&credential)",
-        "ieee80211_sae_wcl_request_admit_cached_roam_candidate",
+        "LOWER_RETARGET_ACCEPTED",
         "ieee80211_node_join_bss",
         "ieee80211_sae_wcl_request_bound_current")
+forbid(targeted, "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD",
+       "asynchronous destructive RUN-to-SCAN retarget")
 for token in (
         "ic->ic_sae_wnm_roam_start = ItlIwx::iwx_sae_wnm_roam_start",
         "ic->ic_sae_wcl_roam_start = ItlIwx::iwx_sae_wcl_roam_start",

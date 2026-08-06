@@ -1698,6 +1698,7 @@ ieee80211_sae_wcl_request_phase_is_active(u_int8_t phase)
 	return phase == IEEE80211_SAE_WCL_REQUEST_PENDING ||
 	    phase == IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING ||
 	    phase == IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED ||
+	    phase == IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED ||
 	    phase == IEEE80211_SAE_WCL_REQUEST_BOUND;
 }
 
@@ -1737,6 +1738,44 @@ struct ieee80211_sae_wcl_request_revocation {
 	void		(*callback)(struct ieee80211com *, u_int64_t);
 	u_int64_t	generation;
 };
+
+/*
+ * Retire the completed direct-SAE material of the BSS that is about to be
+ * replaced.  A RUN retarget deliberately keeps this claim while the lower
+ * credential owner may still reject the reassociation command and restore
+ * the source BSS.  Once node_join_bss() begins its controlled replacement,
+ * however, the source claim is no longer a rollback owner and must not block
+ * the target exchange from claiming its independently derived PMK.
+ *
+ * Caller holds ic_pae_selected_bss_lock and has not copied the target BSS
+ * over ic_bss yet.  Keep the operation value-only and callback-free.
+ */
+static void
+ieee80211_sae_wcl_pmk_claim_retire_replacement_locked(
+    struct ieee80211com *ic, u_int64_t source_epoch)
+{
+	struct ieee80211_sae_wcl_pmk_claim *claim;
+	struct ieee80211_node *ni;
+
+	if (ic == NULL)
+		return;
+	claim = &ic->ic_sae_wcl_pmk_claim;
+	if (claim->active == 0)
+		return;
+	ni = ic->ic_bss;
+	if (ni != NULL && source_epoch != 0 &&
+	    claim->association_epoch == source_epoch &&
+	    IEEE80211_ADDR_EQ(claim->bssid, ni->ni_bssid) &&
+	    IEEE80211_ADDR_EQ(claim->sta, ic->ic_myaddr)) {
+		explicit_bzero(ni->ni_pmk, sizeof(ni->ni_pmk));
+		explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
+		ni->ni_flags &= ~(IEEE80211_NODE_PMK | IEEE80211_NODE_PMKID);
+	}
+	explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
+	ic->ic_flags &= ~IEEE80211_F_PSK;
+	ic->ic_external_pmk_owner = 0;
+	explicit_bzero(claim, sizeof(*claim));
+}
 
 static void
 ieee80211_sae_wcl_request_revocation_deliver(struct ieee80211com *ic,
@@ -1867,6 +1906,25 @@ ieee80211_sae_wcl_request_scan_issued_locked(struct ieee80211com *ic,
 		return 0;
 	request = &ic->ic_sae_wcl_request;
 	return request->phase == IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED &&
+	    request->generation == generation &&
+	    request->association_epoch == 0 &&
+	    ieee80211_sae_wcl_request_identity_is_valid_locked(request);
+}
+
+/* Caller holds ic_pae_selected_bss_lock.  Unlike SCAN_ISSUED, this phase
+ * leaves the established association epoch and selected BSS intact until the
+ * lower credential owner accepts the target and calls node_join_bss(). */
+static int
+ieee80211_sae_wcl_request_run_retarget_issued_locked(
+    struct ieee80211com *ic, u_int64_t generation)
+{
+	const struct ieee80211_sae_wcl_request *request;
+
+	if (ic == NULL || generation == 0)
+		return 0;
+	request = &ic->ic_sae_wcl_request;
+	return request->phase ==
+	    IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED &&
 	    request->generation == generation &&
 	    request->association_epoch == 0 &&
 	    ieee80211_sae_wcl_request_identity_is_valid_locked(request);
@@ -2311,6 +2369,9 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	prior_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch,
 	    __ATOMIC_ACQUIRE);
+	/* Lower reassociation staging has succeeded and node_join_bss() has now
+	 * crossed the reference-style source-preserving rollback boundary. */
+	ieee80211_sae_wcl_pmk_claim_retire_replacement_locked(ic, prior_epoch);
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, epoch,
 	    __ATOMIC_RELEASE);
@@ -2330,13 +2391,17 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	ic->ic_sae_wcl_request_policy_starting = 0;
 	/* The direct WCL resume has exactly one permitted bind handoff: its
 	 * SCAN_ISSUED request survives this post-scan replacement long enough to
-	 * bind the BSS copied below.  A PENDING request is retained only through
-	 * this replacement so bind_selected_bss() can reject the old scan result
-	 * before it reaches the historical Open/PSK path; it is never bindable.
-	 * STARTING is never retained here: end_scan() holds it before this point,
-	 * while every lifecycle replacement must fail it closed.  BOUND, malformed,
-	 * and every other phase are ordinary cancellation state. */
+	 * bind the BSS copied below.  RUN_RETARGET_ISSUED has the same one-shot
+	 * survival right after the lower credential owner accepted a target while
+	 * preserving RUN.  A PENDING request is retained only through this
+	 * replacement so bind_selected_bss() can reject the old scan result before
+	 * it reaches the historical Open/PSK path; it is never bindable.  STARTING
+	 * is never retained here: end_scan() holds it before this point, while every
+	 * lifecycle replacement must fail it closed.  BOUND, malformed, and every
+	 * other phase are ordinary cancellation state. */
 	if (ieee80211_sae_wcl_request_scan_issued_locked(ic,
+	    ic->ic_sae_wcl_request.generation) ||
+	    ieee80211_sae_wcl_request_run_retarget_issued_locked(ic,
 	    ic->ic_sae_wcl_request.generation) ||
 	    ic->ic_sae_wcl_request.phase == IEEE80211_SAE_WCL_REQUEST_PENDING)
 		ic->ic_sae_wcl_request.association_epoch = 0;
@@ -3277,10 +3342,163 @@ ieee80211_sae_wcl_request_matches_current_locked(struct ieee80211com *ic,
 }
 
 /*
- * Consume the sole controlled SCAN_ISSUED handoff after node_join_bss copied
- * its choice and selected-BSS capture published the same epoch.  Anything
- * other than an exact selected pure/transition profile clears the live
- * request and makes the caller return to SCAN before generic Open auth.
+ * Retarget one completed direct-SAE association after WCL/BTM has already
+ * selected a fresh cached BSS.  AppleBCMWLAN changes its roam parameters,
+ * asks the lower firmware owner to accept the reassociation command, and
+ * restores those parameters if submission fails.  Mirror that transaction
+ * boundary here: do not queue a destructive RUN -> SCAN edge.  Instead,
+ * replace only the public request identity while the source epoch remains
+ * valid; the driver's private stage is the lower acceptance point and the
+ * immediately following node_join_bss() owns the sole destructive change.
+ *
+ * No revocation callback is delivered for the old generation.  Its private
+ * credential remains the driver's rollback source until stage succeeds; a
+ * newer successful stage replaces that slot atomically.
+ */
+u_int64_t
+ieee80211_sae_wcl_request_retarget_run(struct ieee80211com *ic,
+    const struct ieee80211_node *source, u_int64_t source_generation,
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN], const u_int8_t *ssid,
+    u_int ssid_len, int confirmed_wnm)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request *request;
+	const struct ieee80211_wnm_bss_transition *transition;
+	u_int64_t epoch;
+	u_int64_t generation = 0;
+	int target_owned;
+
+	if (ic == NULL || source == NULL || source_generation == 0 ||
+	    target_bssid == NULL || ssid == NULL ||
+	    ssid_len == 0 || ssid_len > IEEE80211_NWID_LEN ||
+	    !ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(target_bssid) ||
+	    ic->ic_opmode != IEEE80211_M_STA || ic->ic_state != IEEE80211_S_RUN ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	request = &ic->ic_sae_wcl_request;
+	transition = &ic->ic_wnm_bss_transition;
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	target_owned = confirmed_wnm ?
+	    (transition->active != 0 && transition->candidate_confirmed != 0 &&
+	    transition->fresh_scan_pending == 0 &&
+	    transition->scan_starting == 0 &&
+	    IEEE80211_ADDR_EQ(transition->target_bssid, target_bssid) &&
+	    transition->ssid_len == ssid_len &&
+	    memcmp(transition->ssid, ssid, ssid_len) == 0) :
+	    (ic->ic_wcl_reassoc_owner_active != 0 &&
+	    ic->ic_wcl_reassoc_owner_last_leaf ==
+	        IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED &&
+	    IEEE80211_ADDR_EQ(ic->ic_wcl_reassoc_target_bssid, target_bssid));
+
+	if (!target_owned || !ieee80211_sae_wcl_request_run_is_stable_locked(ic) ||
+	    !ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) ||
+	    ic->ic_sae_wcl_request_policy_starting != 0 ||
+	    ieee80211_sae_wcl_request_join_active_locked(ic) ||
+	    ic->ic_sae_wcl_request_next_generation == (u_int64_t)-1 ||
+	    source != ic->ic_bss || source->ni_port_valid == 0 ||
+	    IEEE80211_ADDR_EQ(source->ni_bssid, target_bssid) ||
+	    source->ni_esslen != ssid_len ||
+	    memcmp(source->ni_essid, ssid, ssid_len) != 0 ||
+	    request->phase != IEEE80211_SAE_WCL_REQUEST_BOUND ||
+	    request->generation != source_generation ||
+	    request->association_epoch != epoch ||
+	    !ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request) ||
+	    !ieee80211_sae_wcl_request_matches_current_locked(ic, request,
+	    source, epoch))
+		goto out;
+
+	generation = ++ic->ic_sae_wcl_request_next_generation;
+	_KASSERT(generation != 0);
+	explicit_bzero(request, sizeof(*request));
+	request->generation = generation;
+	IEEE80211_ADDR_COPY(request->bssid, target_bssid);
+	request->ssid_len = (u_int8_t)ssid_len;
+	memcpy(request->ssid, ssid, ssid_len);
+	request->phase = IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED;
+
+	/* The complete SAE/MFP policy is unchanged; move only its generation and
+	 * explicit target identity.  The current PTK/PMK claim remains usable until
+	 * lower staging succeeds and node_join_bss() begins the replacement. */
+	ic->ic_sae_wcl_policy_generation = generation;
+	ic->ic_des_esslen = (u_int8_t)ssid_len;
+	explicit_bzero(ic->ic_des_essid, sizeof(ic->ic_des_essid));
+	memcpy(ic->ic_des_essid, ssid, ssid_len);
+	IEEE80211_ADDR_COPY(ic->ic_des_bssid, target_bssid);
+	ic->ic_flags |= IEEE80211_F_DESBSSID;
+	ic->ic_sae_wcl_fresh_carrier_required = 0;
+out:
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (generation != 0)
+		XYLog("sae_wcl RUN_RETARGET_PREPARED generation=%llu owner=%s\n",
+		    generation, confirmed_wnm ? "BTM" : "WCL");
+	return generation;
+}
+
+/* Restore the public half of a RUN retarget only while the original source
+ * association is still the exact selected, port-valid BSS.  A successful
+ * lower stage never calls this; after replacement begins, failure belongs to
+ * the new association lifecycle instead of the source-preserving rollback. */
+int
+ieee80211_sae_wcl_request_rollback_run_retarget(struct ieee80211com *ic,
+    u_int64_t generation, u_int64_t source_generation,
+    const struct ieee80211_node *source)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_wcl_request *request;
+	u_int64_t epoch;
+	int rolled_back = 0;
+
+	if (ic == NULL || generation == 0 || source_generation == 0 ||
+	    source == NULL || source_generation >= generation ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	request = &ic->ic_sae_wcl_request;
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (ieee80211_sae_wcl_request_run_is_stable_locked(ic) &&
+	    source == ic->ic_bss && source->ni_port_valid != 0 &&
+	    source->ni_esslen != 0 &&
+	    source->ni_esslen <= IEEE80211_NWID_LEN &&
+	    request->generation == generation &&
+	    ieee80211_sae_wcl_request_run_retarget_issued_locked(ic,
+	    generation) && ic->ic_sae_wcl_policy_generation == generation &&
+	    ieee80211_pae_selected_bss_identity_matches(
+	    &ic->ic_pae_selected_bss, epoch, source->ni_bssid,
+	    source->ni_essid, source->ni_esslen)) {
+		explicit_bzero(request, sizeof(*request));
+		request->generation = source_generation;
+		request->association_epoch = epoch;
+		IEEE80211_ADDR_COPY(request->bssid, source->ni_bssid);
+		request->ssid_len = source->ni_esslen;
+		memcpy(request->ssid, source->ni_essid, source->ni_esslen);
+		request->phase = IEEE80211_SAE_WCL_REQUEST_BOUND;
+		ic->ic_sae_wcl_policy_generation = source_generation;
+		ic->ic_des_esslen = source->ni_esslen;
+		explicit_bzero(ic->ic_des_essid, sizeof(ic->ic_des_essid));
+		memcpy(ic->ic_des_essid, source->ni_essid,
+		    source->ni_esslen);
+		IEEE80211_ADDR_COPY(ic->ic_des_bssid, source->ni_bssid);
+		ic->ic_flags |= IEEE80211_F_DESBSSID;
+		rolled_back = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (rolled_back)
+		XYLog("sae_wcl RUN_RETARGET_ROLLED_BACK generation=%llu\n",
+		    generation);
+	return rolled_back;
+}
+
+/*
+ * Consume the sole controlled SCAN_ISSUED or RUN_RETARGET_ISSUED handoff
+ * after node_join_bss copied its choice and selected-BSS capture published
+ * the same epoch.  Anything other than an exact selected pure/transition
+ * profile clears the live request and makes the caller return to SCAN before
+ * generic Open auth.
  */
 int
 ieee80211_sae_wcl_request_bind_selected_bss(struct ieee80211com *ic,
@@ -3306,10 +3524,14 @@ ieee80211_sae_wcl_request_bind_selected_bss(struct ieee80211com *ic,
 		}
 		goto out;
 	}
-	if (ic->ic_state == IEEE80211_S_SCAN &&
+	if (((ic->ic_state == IEEE80211_S_SCAN &&
 	    ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
 	    ieee80211_sae_wcl_request_scan_issued_locked(ic,
-	    ic->ic_sae_wcl_request.generation) &&
+	    ic->ic_sae_wcl_request.generation)) ||
+	    (ic->ic_state == IEEE80211_S_RUN &&
+	    ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic) &&
+	    ieee80211_sae_wcl_request_run_retarget_issued_locked(ic,
+	    ic->ic_sae_wcl_request.generation))) &&
 	    ieee80211_sae_wcl_request_matches_current_locked(ic,
 	    &ic->ic_sae_wcl_request, ni, expected_epoch)) {
 		ic->ic_sae_wcl_request.association_epoch = expected_epoch;
@@ -5135,12 +5357,14 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 	enum ieee80211_state ostate;
 	int sae_auth_hold;
 	int sae_wcl_owner;
+	int sae_wcl_defer_link_up;
 #ifndef IEEE80211_STA_ONLY
 	int s;
 #endif
 
 	ostate = ic->ic_state;
 	explicit_bzero(&sae_hooks, sizeof(sae_hooks));
+	sae_wcl_defer_link_up = 0;
 	/* A real state-machine transition supersedes any delayed status-30
 	 * association request.  The watchdog retry deliberately sends directly
 	 * and therefore retains its retry count until success or failure. */
@@ -5448,12 +5672,18 @@ justcleanup:
 				panic("%s: bogus xmit rate %u setup",
 				    __FUNCTION__, ni->ni_txrate);
 #ifdef USE_APPLE_SUPPLICANT
-            /* Tahoe's non-public paths retain their historical S_RUN link
-             * publication.  Only the exact public initial-BSS marker waits
-             * for port-valid, so it cannot expose DESBSSID before release. */
+			/* Tahoe's WCL connect-complete consumer is the protected link-up
+			 * owner after current-BSS materialization.  The ordinary Apple
+			 * supplicant path still needs its historical pre-key S_RUN link,
+			 * but a bound driver-resident SAE request owns its PAE locally and
+			 * must not publish the target while that target's port is closed. */
+			sae_wcl_defer_link_up =
+			    (ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+			    ni->ni_port_valid == 0 &&
+			    ieee80211_sae_wcl_request_bound_current(ic, ni);
 			if ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
-			    !ieee80211_public_initial_bssid_pin_should_defer_link_up(
-			    ic, ni)) {
+			    (!ieee80211_public_initial_bssid_pin_should_defer_link_up(
+			    ic, ni) && !sae_wcl_defer_link_up)) {
 #elif (defined IO80211FAMILY_V2)
             if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms) ||
                 !(ic->ic_flags & IEEE80211_F_RSNON)) {
@@ -5476,6 +5706,11 @@ justcleanup:
 						    ic, IEEE80211_EVT_STA_OPEN_RUN_DONE, NULL);
 				}
 			}
+#ifdef USE_APPLE_SUPPLICANT
+			else if (sae_wcl_defer_link_up) {
+				XYLog("sae_wcl LINK_UP_DEFERRED_UNTIL_PORT_VALID\n");
+			}
+#endif
 			/*
 			 * IWX may finish the in-kernel four-way handshake while its
 			 * asynchronous backend transition is still in S_ASSOC.  Key-done

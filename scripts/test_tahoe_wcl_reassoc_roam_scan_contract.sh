@@ -12,8 +12,10 @@ sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 core = (root / "itl80211/openbsd/net80211/ieee80211.c").read_text()
 node = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 proto = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
+pae = (root / "itl80211/openbsd/net80211/ieee80211_pae_input.c").read_text()
 var = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
+iwm = (root / "itlwm/hal_iwm/IwmSaeEngine.inc").read_text()
 iwx = (root / "itlwm/hal_iwx/IwxSaeEngine.inc").read_text()
 
 
@@ -47,6 +49,16 @@ def body(text, marker, label):
             if depth == 0:
                 return text[opening + 1:pos]
     fail(f"unterminated {label}")
+
+
+def section(text, marker, end_marker, label):
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing {label}")
+    end = text.find(end_marker, start + len(marker))
+    if end < 0:
+        fail(f"unterminated {label}")
+    return text[start:end]
 
 
 carrier = body(sky, "struct apple80211_reassoc\n", "Apple reassoc carrier")
@@ -153,33 +165,120 @@ targeted = body(iwn, "iwn_sae_targeted_roam_start(",
                 "IWN targeted SAE roam")
 for token in (
     "sc_sae_wcl_credential_active",
-    "ieee80211_sae_wcl_request_begin",
+    "ieee80211_sae_wcl_request_retarget_run",
+    "ieee80211_sae_wcl_request_rollback_run_retarget",
     "stageSaeWclCredential",
-    "ieee80211_sae_wcl_request_admit_cached_roam_candidate",
+    "LOWER_RETARGET_ACCEPTED",
     "ieee80211_node_join_bss",
     'consume_wnm ? "BTM" : "WCL"',
 ):
     require(targeted, token, "driver-resident SAE retarget")
+forbid(targeted, "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD",
+       "speculative IWN RUN-to-SCAN retarget")
 require(iwn, "ic->ic_sae_wcl_roam_start = ItlIwn::iwn_sae_wcl_roam_start",
         "IWN hook publication")
 require(iwn, "ic->ic_sae_wcl_roam_start = NULL",
         "IWN hook teardown")
+targeted_iwm = body(iwm, "iwm_sae_targeted_roam_start(",
+                    "IWM targeted SAE roam")
+for token in (
+    "sc_sae_wcl_credential_active",
+    "ieee80211_sae_wcl_request_retarget_run",
+    "ieee80211_sae_wcl_request_rollback_run_retarget",
+    "stageSaeWclCredential",
+    "LOWER_RETARGET_ACCEPTED",
+    "ieee80211_node_join_bss",
+    'consume_wnm ? "BTM" : "WCL"',
+):
+    require(targeted_iwm, token, "IWM driver-resident SAE retarget")
+forbid(targeted_iwm, "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD",
+       "speculative IWM RUN-to-SCAN retarget")
+require(iwm, "ic->ic_sae_wcl_roam_start = ItlIwm::iwm_sae_wcl_roam_start",
+        "IWM hook publication")
+require(iwm, "ic->ic_sae_wcl_roam_start = NULL",
+        "IWM hook teardown")
 targeted_iwx = body(iwx, "iwx_sae_targeted_roam_start(",
                     "IWX targeted SAE roam")
 for token in (
     "sc_sae_wcl_credential_active",
-    "ieee80211_sae_wcl_request_begin",
+    "ieee80211_sae_wcl_request_retarget_run",
+    "ieee80211_sae_wcl_request_rollback_run_retarget",
     "stageSaeWclCredential",
-    "ieee80211_sae_wcl_request_admit_cached_roam_candidate",
+    "LOWER_RETARGET_ACCEPTED",
     "ieee80211_node_join_bss",
     'consume_wnm ? "BTM" : "WCL"',
 ):
     require(targeted_iwx, token, "IWX driver-resident SAE retarget")
+forbid(targeted_iwx, "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD",
+       "speculative asynchronous IWX RUN-to-SCAN retarget")
 require(iwx, "ic->ic_sae_wcl_roam_start = ItlIwx::iwx_sae_wcl_roam_start",
         "IWX hook publication")
 require(iwx, "ic->ic_sae_wcl_roam_start = NULL",
         "IWX hook teardown")
 require(var, "ic_sae_wcl_roam_start", "common optional SAE roam hook")
 
-print("PASS: Tahoe WCL reassoc uses a real bounded roam scan and IWN/IWX SAE retarget")
+run_retarget = body(proto,
+    "ieee80211_sae_wcl_request_retarget_run(",
+    "source-preserving SAE RUN retarget")
+for token in (
+    "ieee80211_sae_wcl_request_run_is_stable_locked",
+    "request->generation != source_generation",
+    "IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED",
+    "transition->candidate_confirmed",
+    "IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED",
+    "ic->ic_sae_wcl_policy_generation = generation",
+    "IEEE80211_ADDR_COPY(ic->ic_des_bssid, target_bssid)",
+):
+    require(run_retarget, token, "transactional RUN retarget")
+forbid(run_retarget, "ieee80211_new_state(",
+       "state transition before lower retarget acceptance")
+
+rollback = body(proto,
+    "ieee80211_sae_wcl_request_rollback_run_retarget(",
+    "source-preserving SAE RUN rollback")
+for token in (
+    "source_generation >= generation",
+    "ieee80211_sae_wcl_request_run_is_stable_locked",
+    "request->phase = IEEE80211_SAE_WCL_REQUEST_BOUND",
+    "ic->ic_sae_wcl_policy_generation = source_generation",
+    "IEEE80211_ADDR_COPY(ic->ic_des_bssid, source->ni_bssid)",
+):
+    require(rollback, token, "failed lower retarget rollback")
+
+bind = body(proto, "ieee80211_sae_wcl_request_bind_selected_bss(",
+            "selected-BSS request bind")
+for token in ("ic->ic_state == IEEE80211_S_RUN",
+              "ieee80211_sae_wcl_request_run_retarget_issued_locked"):
+    require(bind, token, "RUN retarget controlled replacement bind")
+
+replacement = body(proto,
+    "ieee80211_pae_assoc_epoch_begin_replacement(",
+    "accepted reassociation BSS replacement")
+require(replacement,
+    "ieee80211_sae_wcl_pmk_claim_retire_replacement_locked(ic, prior_epoch)",
+    "source PMK claim retirement after lower retarget acceptance")
+
+newstate = section(proto, "int\nieee80211_newstate(",
+                   "\nvoid\nieee80211_set_link_state(",
+                   "generic net80211 state transition")
+for token in (
+    "sae_wcl_defer_link_up =",
+    "ni->ni_port_valid == 0",
+    "ieee80211_sae_wcl_request_bound_current(ic, ni)",
+    "ieee80211_public_initial_bssid_pin_should_defer_link_up(",
+    "!sae_wcl_defer_link_up",
+    "sae_wcl LINK_UP_DEFERRED_UNTIL_PORT_VALID",
+):
+    require(newstate, token, "direct-SAE pre-port link-up fence")
+
+msg3 = body(pae, "void\nieee80211_recv_4way_msg3(",
+            "STA four-way Msg3 terminal")
+for token in (
+    "ni->ni_port_valid = 1;",
+    "ieee80211_set_link_state(ic, LINK_STATE_UP);",
+    "IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE",
+):
+    require(msg3, token, "port-valid link release")
+
+print("PASS: Tahoe WCL reassoc uses a real bounded roam scan, paired IWN/IWM/IWX SAE retarget, and port-valid target link publication")
 PY

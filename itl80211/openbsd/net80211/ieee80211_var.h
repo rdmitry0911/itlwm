@@ -602,16 +602,20 @@ struct ieee80211_wnm_bss_transition {
  * a BSS.  SCAN_STARTING holds historical scan completion while the driver
  * decides whether it can submit a new scan.  Only SCAN_ISSUED is the single
  * controlled fresh-SCAN handoff that may survive the immediately following
- * selected-BSS replacement.  BOUND is valid only for the exact post-copy BSS
- * and association epoch; every ordinary epoch cancellation erases it.  No
- * generic transition infers SAE from this record: it merely makes an
- * explicit request observable at its exact BSS.
+ * selected-BSS replacement.  RUN_RETARGET_ISSUED is the corresponding
+ * source-preserving handoff after a completed roam scan: the lower SAE owner
+ * has accepted a newer credential generation, but node_join_bss() has not yet
+ * replaced the live BSS.  BOUND is valid only for the exact post-copy BSS and
+ * association epoch; every ordinary epoch cancellation erases it.  No generic
+ * transition infers SAE from this record: it merely makes an explicit request
+ * observable at its exact BSS.
  */
 enum ieee80211_sae_wcl_request_phase {
 	IEEE80211_SAE_WCL_REQUEST_NONE = 0,
 	IEEE80211_SAE_WCL_REQUEST_PENDING,
 	IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING,
 	IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED,
+	IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED,
 	IEEE80211_SAE_WCL_REQUEST_BOUND,
 };
 
