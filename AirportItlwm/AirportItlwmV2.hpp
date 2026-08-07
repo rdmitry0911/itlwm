@@ -945,6 +945,10 @@ public:
     IOReturn setBssBlacklistOwner(const uint8_t *request);
     IOReturn queryBssBlacklistOwner();
     bool postTahoeWclInternalLinkDownInd();
+    void noteTahoeWclTxPackets(uint32_t packets);
+    void noteTahoeWclRxPackets(uint32_t packets);
+    void snapshotTahoeWclTrafficPackets(uint64_t *txPackets,
+                                        uint64_t *rxPackets);
 #endif
 
     /*
@@ -981,6 +985,13 @@ public:
     bool fTahoeLqmAssociated;
     bool fTahoeLqmHasPreviousSnapshot;
     TahoeLqmContracts::CounterSnapshot fTahoeLqmPreviousSnapshot;
+    /*
+     * Per-controller, delivered STA traffic totals for WCL selector 0x1b2.
+     * OSAddAtomic64 protects queue producers against WCL's independent read
+     * context; these counters intentionally survive radio on/off and reset.
+     */
+    volatile SInt64 fTahoeWclTxPackets;
+    volatile SInt64 fTahoeWclRxPackets;
 #endif
     IOPCIDevice *pciNub;
     IONetworkStats *fpNetStats;
@@ -1033,6 +1044,9 @@ public:
     IOLock *fTxCompletionPendingLock;
     IOSkywalkPacket *fTxCompletionPendingPackets[kAirportItlwmTxCompletionPendingCapacity];
     bool fTxCompletionPendingAPSTA[kAirportItlwmTxCompletionPendingCapacity];
+    UInt64 fTxCompletionPendingSubmitTime[kAirportItlwmTxCompletionPendingCapacity];
+    SInt32 fTxCompletionPendingStatus[kAirportItlwmTxCompletionPendingCapacity];
+    bool fTxCompletionPendingPeerInput[kAirportItlwmTxCompletionPendingCapacity];
     UInt32 fTxCompletionPendingHead;
     UInt32 fTxCompletionPendingTail;
     UInt32 fTxCompletionPendingCount;

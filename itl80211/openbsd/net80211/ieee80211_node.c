@@ -1597,6 +1597,23 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
         return;
     }
 
+    /*
+     * A foreground scan may finish after its explicit JoinAdapter owner has
+     * already brought the station to RUN.  AppleBCMWLANCore::scanComplete()
+     * only publishes that late census; JoinAdapter::performJoin() is the
+     * sole consumer which may select and join a BSS.  Re-entering the
+     * OpenBSD selector here starts an ownerless second AUTH/ASSOC and tears
+     * down the working link.  A real association-directed terminal still
+     * arrives in SCAN, while an intentional roam is marked as a bgscan.
+     */
+    if (ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_RUN && !bgscan) {
+        ieee80211_reset_scan(ifp);
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventSelectionHeld);
+        return;
+    }
+
     /* begin() may be between its short policy reservation and the explicit
      * replacement scan, or the request may be PENDING while its private
      * driver credential is staged.  This completed result belongs to the

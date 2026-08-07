@@ -973,6 +973,12 @@ ordered(controlled_end, "initial hardware census publishes but never joins",
         "if (initial_scan_census_only)",
         "kAirportItlwmPostPltiTraceEventSelectionHeld",
         "return;")
+ordered(controlled_end, "late foreground terminal publishes but never rejoins RUN",
+        "IEEE80211_EVT_SCAN_DONE",
+        "ic->ic_state == IEEE80211_S_RUN && !bgscan",
+        "ieee80211_reset_scan(ifp)",
+        "kAirportItlwmPostPltiTraceEventSelectionHeld",
+        "ieee80211_node_choose_bss")
 require(i80211, "ic->ic_initial_scan_census_only = 0;",
         "initial census one-shot initialization")
 ordered(iwn, "IWN checked hardware-enable census arm",

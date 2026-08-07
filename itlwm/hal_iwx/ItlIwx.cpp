@@ -901,6 +901,9 @@ void ItlIwx::
 clearScanningFlags()
 {
     com.sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
+    if (__atomic_exchange_n(&com.sc_scan_abort_pending, 0,
+                            __ATOMIC_ACQ_REL) != 0)
+        wakeupOn(&com.sc_scan_abort_pending);
 }
 
 static void
@@ -8649,6 +8652,21 @@ iwx_rx_bmiss(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
     
     missed = le32toh(mbn->consec_missed_beacons_since_last_rx);
     if (missed > ic->ic_bmissthres && ic->ic_mgt_timer == 0) {
+        struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
+        XYLog("%s: IWX_BMISS mac=0x%x current=0x%x since_rx=%u "
+              "consecutive=%u expected=%u received=%u state=%u "
+              "ic_flags=0x%x sc_flags=0x%x associd=0x%x dtim=%u/%u\n",
+              DEVNAME(sc), le32toh(mbn->mac_id),
+              in != NULL ? IWX_FW_CMD_ID_AND_COLOR(in->in_id,
+                                                    in->in_color) : 0xffffffffU,
+              missed, le32toh(mbn->consec_missed_beacons),
+              le32toh(mbn->num_expected_beacons),
+              le32toh(mbn->num_recvd_beacons),
+              (unsigned)ic->ic_state, (unsigned)ic->ic_flags,
+              (unsigned)sc->sc_flags,
+              in != NULL ? (unsigned)in->in_ni.ni_associd : 0,
+              in != NULL ? (unsigned)in->in_ni.ni_dtimcount : 0,
+              in != NULL ? (unsigned)in->in_ni.ni_dtimperiod : 0);
         if (ic->ic_if.if_flags & IFF_DEBUG) {
             XYLog("%s: receiving no beacons from %s; leaving the "
                   "lost BSS\n",
@@ -14882,7 +14900,14 @@ iwx_scan(struct iwx_softc *sc)
     }
     
     if (sc->sc_flags & IWX_FLAG_BGSCAN) {
-        err = iwx_scan_abort(sc);
+        /* A foreground replacement retires both halves of a host-owned WCL
+         * reassociation census.  Closing only the firmware scan leaves the
+         * upper BGSCAN owner behind; JoinAdapter then sees a phantom busy
+         * roam after this new scan has already started. */
+        if (ic->ic_wcl_reassoc_owner_active)
+            err = ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED);
+        else
+            err = iwx_scan_abort(sc);
         if (err) {
             XYLog("%s: could not abort background scan\n",
                   DEVNAME(sc));
@@ -14948,24 +14973,98 @@ iwx_bgscan(struct ieee80211com *ic)
 }
 
 int ItlIwx::
-iwx_umac_scan_abort(struct iwx_softc *sc)
+iwx_bgscan_abort(struct ieee80211com *ic)
+{
+    struct iwx_softc *sc;
+    ItlIwx *that;
+
+    if (ic == NULL || (sc = (struct iwx_softc *)ic->ic_softc) == NULL)
+        return EINVAL;
+    /* A RUN->SCAN replacement can retire the lower background lease before
+     * the upper reassociation owner reaches its cancellation hook.  The old
+     * lower half is already quiescent; do not mistake the unrelated new
+     * foreground scan for a still-busy roam. */
+    if ((sc->sc_flags & IWX_FLAG_BGSCAN) == 0)
+        return 0;
+    that = container_of(sc, ItlIwx, com);
+
+    /* The command ACK is not the terminal.  iwx_scan_abort() follows Intel's
+     * native STOPPING contract: suppress the old upper completion and wait
+     * for SCAN_COMPLETE_UMAC before replacement JoinAdapter work may start. */
+    return that->iwx_scan_abort(sc);
+}
+
+int ItlIwx::
+iwx_umac_scan_abort_status(struct iwx_softc *sc, uint32_t *status)
 {
     struct iwx_umac_scan_abort cmd = { 0 };
-    
-    return iwx_send_cmd_pdu(sc,
-                            IWX_WIDE_ID(IWX_LONG_GROUP, IWX_SCAN_ABORT_UMAC),
-                            0, sizeof(cmd), &cmd);
+
+    if (status == NULL)
+        return EINVAL;
+    *status = IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
+    return iwx_send_cmd_pdu_status(
+        sc, IWX_WIDE_ID(IWX_LONG_GROUP, IWX_SCAN_ABORT_UMAC),
+        sizeof(cmd), &cmd, status);
+}
+
+int ItlIwx::
+iwx_umac_scan_abort(struct iwx_softc *sc)
+{
+    uint32_t status;
+    int err = iwx_umac_scan_abort_status(sc, &status);
+
+    if (err != 0)
+        return err;
+    if (status != IWX_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
+        status != IWX_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
+        status != IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)
+        return EIO;
+    return 0;
 }
 
 int ItlIwx::
 iwx_scan_abort(struct iwx_softc *sc)
 {
+    uint32_t status = IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
     int err;
-    
-    err = iwx_umac_scan_abort(sc);
-    if (err == 0)
-        sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
-    return err;
+
+    if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
+        return 0;
+    if (!__sync_bool_compare_and_swap(&sc->sc_scan_abort_pending, 0, 1))
+        return EBUSY;
+
+    err = iwx_umac_scan_abort_status(sc, &status);
+    if (err != 0 ||
+        (status != IWX_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
+         status != IWX_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
+         status != IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)) {
+        if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                                __ATOMIC_ACQ_REL) != 0)
+            wakeupOn(&sc->sc_scan_abort_pending);
+        return err != 0 ? err : EIO;
+    }
+
+    /* Linux iwlwifi marks the UID STOPPING and waits up to one second for
+     * SCAN_COMPLETE_UMAC.  Do the same for this port's single UID.  The
+     * completion path clears the pending word before waking us; a lost wake
+     * can therefore cost at most this bounded wait, never admit a new scan
+     * or AUTH epoch early. */
+    if (__atomic_load_n(&sc->sc_scan_abort_pending,
+                        __ATOMIC_ACQUIRE) != 0)
+        err = tsleep_nsec(&sc->sc_scan_abort_pending, 0, "iwxscab",
+                          SEC_TO_NSEC(1));
+    if (__atomic_load_n(&sc->sc_scan_abort_pending,
+                        __ATOMIC_ACQUIRE) == 0)
+        return 0;
+
+    (void)__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                              __ATOMIC_ACQ_REL);
+    /* NOT_FOUND means firmware has already retired the lease.  It is safe
+     * only when the host has also observed that no lower scan is active. */
+    if (status == IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND &&
+        (sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
+        return 0;
+    return err != 0 ? err : ETIMEDOUT;
 }
 
 int ItlIwx::
@@ -15665,6 +15764,15 @@ iwx_run(struct iwx_softc *sc)
     int chains = iwx_mimo_enabled(sc) ? 2 : 1;
     
     splassert(IPL_NET);
+
+    XYLog("%s: IWX_RUN_CONTEXT associd=0x%x dtim=%u/%u intval=%u "
+          "rstamp=%u flags=0x%x sc_flags=0x%x\n",
+          DEVNAME(sc), (unsigned)in->in_ni.ni_associd,
+          (unsigned)in->in_ni.ni_dtimcount,
+          (unsigned)in->in_ni.ni_dtimperiod,
+          (unsigned)in->in_ni.ni_intval,
+          (unsigned)in->in_ni.ni_rstamp,
+          (unsigned)ic->ic_flags, (unsigned)sc->sc_flags);
     
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         /* Add a MAC context and a sniffing STA. */
@@ -16255,6 +16363,21 @@ iwx_endscan(struct iwx_softc *sc)
 //        XYLog("%s scan_result ssid=%s, bssid=%s, ni_rsnciphers=%d, ni_rsncipher=%d, ni_rsngroupmgmtcipher=%d, ni_rsngroupcipher=%d, ni_rssi=%d,  ni_capinfo=%d, ni_intval=%d, ni_rsnakms=%d, ni_supported_rsnakms=%d, ni_rsnprotos=%d, ni_supported_rsnprotos=%d, ni_rstamp=%d\n", __FUNCTION__, ni->ni_essid, ether_sprintf(ni->ni_bssid), ni->ni_rsnciphers, ni->ni_rsncipher, ni->ni_rsngroupmgmtcipher, ni->ni_rsngroupcipher, ni->ni_rssi, ni->ni_capinfo, ni->ni_intval, ni->ni_rsnakms, ni->ni_supported_rsnakms, ni->ni_rsnprotos, ni->ni_supported_rsnprotos, ni->ni_rstamp);
 //    }
     
+    /* A command response merely accepted the abort.  Only this final UMAC
+     * notification retires its old UID.  Do not publish it into net80211:
+     * the aborting owner performs its own exact upper reconciliation after
+     * this wait edge, just as iwlwifi suppresses mac80211 notification for a
+     * STOPPING UID. */
+    if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                            __ATOMIC_ACQ_REL) != 0) {
+        sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
+        XYLog("%s: IWX_SCAN_ABORT_TERMINAL state=%u flags=0x%x\n",
+              DEVNAME(sc), (unsigned)ic->ic_state,
+              (unsigned)sc->sc_flags);
+        wakeupOn(&sc->sc_scan_abort_pending);
+        return;
+    }
+
     if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
         return;
 
@@ -16264,11 +16387,20 @@ iwx_endscan(struct iwx_softc *sc)
     explicit_bzero(&terminal, sizeof(terminal));
     const ItlIwxWclScanTerminalKind wclTerminal =
         that->claimWclScanTerminal(&terminal);
+    XYLog("%s: IWX_SCAN_TERMINAL kind=%u ic_state=%u ic_flags=0x%x "
+          "sc_flags=0x%x upper=%llu backend=%u publish=%u\n",
+          DEVNAME(sc), (unsigned)wclTerminal, (unsigned)ic->ic_state,
+          (unsigned)ic->ic_flags, (unsigned)sc->sc_flags,
+          terminal.upperGeneration, terminal.backendGeneration,
+          terminal.publish ? 1U : 0U);
     sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
     if (wclTerminal == ItlIwxWclScanTerminalKind::ReplayInitial) {
         ieee80211_end_scan_controlled(
             &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_HANDOFF);
         ieee80211_begin_scan(&ic->ic_if);
+        if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                                __ATOMIC_ACQ_REL) != 0)
+            wakeupOn(&sc->sc_scan_abort_pending);
         return;
     }
     if (wclTerminal == ItlIwxWclScanTerminalKind::Foreground) {
@@ -16288,6 +16420,11 @@ iwx_endscan(struct iwx_softc *sc)
         that->publishWclScanTerminal(
             &terminal,
             IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE);
+    /* If abort admission raced after the entry check, its caller must not
+     * proceed until all normal upper completion work above has finished. */
+    if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                            __ATOMIC_ACQ_REL) != 0)
+        wakeupOn(&sc->sc_scan_abort_pending);
 }
 
 /*
@@ -17065,6 +17202,9 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     }
     
     sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
+    if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                            __ATOMIC_ACQ_REL) != 0)
+        that->wakeupOn(&sc->sc_scan_abort_pending);
     sc->sc_flags &= ~IWX_FLAG_MAC_ACTIVE;
     sc->sc_flags &= ~IWX_FLAG_BINDING_ACTIVE;
     sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
@@ -17761,7 +17901,11 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data,
             case IWX_SCAN_ITERATION_COMPLETE_UMAC: {
                 struct iwx_umac_scan_iter_complete_notif *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwx_umac_scan_iter_complete_notif *);
-                iwx_endscan(sc);
+                /* This is progress telemetry, not the scan lease terminal.
+                 * Firmware follows it with SCAN_COMPLETE_UMAC; ending here
+                 * consumes one scan twice and lets the delayed final event
+                 * collide with a replacement association. */
+                (void)notif;
                 break;
             }
                 
@@ -20781,6 +20925,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_nswq = NULL;
     sc->sc_msix = 0;
     sc->sc_flags = 0;
+    sc->sc_scan_abort_pending = 0;
     sc->sc_cfg_params = NULL;
     sc->sc_cfg = NULL;
     memset(sc->txq, 0, sizeof(sc->txq));
@@ -21266,6 +21411,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     
     ic->ic_node_alloc = iwx_node_alloc;
     ic->ic_bgscan_start = iwx_bgscan;
+    ic->ic_bgscan_abort = iwx_bgscan_abort;
     ic->ic_set_key = iwx_set_key;
     ic->ic_set_key_wait = NULL;
     ic->ic_delete_key = iwx_delete_key;

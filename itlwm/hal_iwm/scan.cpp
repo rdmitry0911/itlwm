@@ -877,7 +877,12 @@ iwm_scan(struct iwm_softc *sc)
     }
     
     if (sc->sc_flags & IWM_FLAG_BGSCAN) {
-        err = iwm_scan_abort(sc);
+        /* Pair firmware STOPPING with the host WCL reassociation terminal
+         * before admitting the replacement foreground command. */
+        if (ic->ic_wcl_reassoc_owner_active)
+            err = ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED);
+        else
+            err = iwm_scan_abort(sc);
         if (err) {
             XYLog("%s: could not abort background scan\n",
                   DEVNAME(sc));
@@ -950,13 +955,48 @@ iwm_bgscan(struct ieee80211com *ic)
 }
 
 int ItlIwm::
-iwm_umac_scan_abort(struct iwm_softc *sc)
+iwm_bgscan_abort(struct ieee80211com *ic)
+{
+    struct iwm_softc *sc;
+    ItlIwm *that;
+
+    if (ic == NULL || (sc = (struct iwm_softc *)ic->ic_softc) == NULL)
+        return EINVAL;
+    /* The lower background lease may already have been retired by the
+     * RUN->SCAN replacement.  In that ordering only the upper WCL owner is
+     * left to close; a new foreground scan is not part of the old roam. */
+    if ((sc->sc_flags & IWM_FLAG_BGSCAN) == 0)
+        return 0;
+    that = container_of(sc, ItlIwm, com);
+    return that->iwm_scan_abort(sc);
+}
+
+int ItlIwm::
+iwm_umac_scan_abort_status(struct iwm_softc *sc, uint32_t *status)
 {
     struct iwm_umac_scan_abort cmd = { 0 };
-    
-    return iwm_send_cmd_pdu(sc,
-                            IWM_WIDE_ID(IWM_LONG_GROUP, IWM_SCAN_ABORT_UMAC),
-                            0, sizeof(cmd), &cmd);
+
+    if (status == NULL)
+        return EINVAL;
+    *status = IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
+    return iwm_send_cmd_pdu_status(
+        sc, IWM_WIDE_ID(IWM_LONG_GROUP, IWM_SCAN_ABORT_UMAC),
+        sizeof(cmd), &cmd, status);
+}
+
+int ItlIwm::
+iwm_umac_scan_abort(struct iwm_softc *sc)
+{
+    uint32_t status;
+    int err = iwm_umac_scan_abort_status(sc, &status);
+
+    if (err != 0)
+        return err;
+    if (status != IWM_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
+        status != IWM_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
+        status != IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)
+        return EIO;
+    return 0;
 }
 
 int ItlIwm::
@@ -989,14 +1029,44 @@ iwm_lmac_scan_abort(struct iwm_softc *sc)
 int ItlIwm::
 iwm_scan_abort(struct iwm_softc *sc)
 {
+    uint32_t status = IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
+    const bool umac = isset(sc->sc_enabled_capa,
+                            IWM_UCODE_TLV_CAPA_UMAC_SCAN);
     int err;
-    
-    if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN))
-        err = iwm_umac_scan_abort(sc);
+
+    if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
+        return 0;
+    if (!__sync_bool_compare_and_swap(&sc->sc_scan_abort_pending, 0, 1))
+        return EBUSY;
+
+    if (umac)
+        err = iwm_umac_scan_abort_status(sc, &status);
     else
         err = iwm_lmac_scan_abort(sc);
-    
-    if (err == 0)
-        sc->sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN);
-    return err;
+    if (err != 0 ||
+        (umac && status != IWM_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
+         status != IWM_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
+         status != IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)) {
+        if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                                __ATOMIC_ACQ_REL) != 0)
+            wakeupOn(&sc->sc_scan_abort_pending);
+        return err != 0 ? err : EIO;
+    }
+
+    /* Intel's native stop contract waits for the final complete notification,
+     * not an iteration notification or the abort command response. */
+    if (__atomic_load_n(&sc->sc_scan_abort_pending,
+                        __ATOMIC_ACQUIRE) != 0)
+        err = tsleep_nsec(&sc->sc_scan_abort_pending, 0, "iwmscab",
+                          SEC_TO_NSEC(1));
+    if (__atomic_load_n(&sc->sc_scan_abort_pending,
+                        __ATOMIC_ACQUIRE) == 0)
+        return 0;
+
+    (void)__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                              __ATOMIC_ACQ_REL);
+    if (umac && status == IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND &&
+        (sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
+        return 0;
+    return err != 0 ? err : ETIMEDOUT;
 }

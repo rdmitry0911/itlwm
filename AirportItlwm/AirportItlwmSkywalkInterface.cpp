@@ -25,6 +25,7 @@
 #include "TahoeScanContracts.hpp"
 #include "TahoeSkywalkIoctlRoutes.hpp"
 #include "TahoeTxRxChainContracts.hpp"
+#include "TahoeWclTrafficCountersContracts.hpp"
 #include "TahoeWclOpenScanResumeContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
@@ -40,6 +41,10 @@
 #include <net80211/ieee80211_ioctl.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_proto.h>
+
+#if __IO80211_TARGET >= __MAC_26_0
+extern "C" uint64_t mach_continuous_time(void);
+#endif
 
 #define super IO80211InfraProtocol
 OSDefineMetaClassAndStructors(AirportItlwmSkywalkInterface, IO80211InfraProtocol);
@@ -6128,12 +6133,20 @@ getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Tahoe Core derives these seven counters from traffic owners, Core
-    // counters, the real-time NAN TX reader, and continuous time. The Intel
-    // port has none of those WCL sources behind this getter, so a zeroed
-    // snapshot would acknowledge telemetry that was never collected.
-    (void)data;
-    return kIOReturnUnsupported;
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+
+    uint64_t txPackets = 0;
+    uint64_t rxPackets = 0;
+    instance->snapshotTahoeWclTrafficPackets(&txPackets, &rxPackets);
+
+    uint64_t continuousNanoseconds = 0;
+    absolutetime_to_nanoseconds(mach_continuous_time(),
+                                &continuousNanoseconds);
+    const TahoeWclTrafficCountersContracts::Carrier carrier =
+        TahoeWclTrafficCountersContracts::build(
+            txPackets, rxPackets, continuousNanoseconds);
+    memcpy(data, &carrier, sizeof(carrier));
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -7763,6 +7776,8 @@ tahoeFindJoinableCachedWclCandidate(
     if (ic == nullptr || bssid == nullptr || !scanOwnersIdle ||
         ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_SCAN ||
+        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
+        ic->ic_wcl_reassoc_owner_active != 0 ||
         __atomic_load_n(&ic->ic_wcl_scan_active, __ATOMIC_ACQUIRE) != 0)
         return nullptr;
 
@@ -7958,6 +7973,25 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
             reinterpret_cast<const uint8_t *>(bssid), auth_lower,
             auth_upper, rsn_ie_len, kIOReturnNotReady);
         return kIOReturnNotReady;
+    }
+
+    /* A CoreWLAN same-network selection can consume its cached candidate
+     * while the immediately preceding WCL reassociation census is still on
+     * air.  Broadcom's JoinAdapter supersedes that firmware roam owner.  Do
+     * the same before Intel enters AUTH; otherwise the delayed scan terminal
+     * can start a second ownerless join after the first one reached RUN. */
+    if (ic->ic_wcl_reassoc_owner_active) {
+        const int cancelResult = ieee80211_cancel_wcl_reassoc_bgscan(
+            ic, static_cast<uint32_t>(ECANCELED));
+        if (cancelResult != 0) {
+            XYLog("wcl_assoc REASSOC_SUPERSEDE_BUSY error=%d\n",
+                  cancelResult);
+            airportItlwmRegDiagRecordAssoc(
+                kAirportItlwmRegDiagPathHiddenAssoc, ssid, ssid_len,
+                reinterpret_cast<const uint8_t *>(bssid), auth_lower,
+                auth_upper, rsn_ie_len, kIOReturnNotReady);
+            return kIOReturnNotReady;
+        }
     }
 
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS

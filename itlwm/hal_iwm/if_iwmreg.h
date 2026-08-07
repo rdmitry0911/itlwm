@@ -5718,6 +5718,12 @@ struct iwm_umac_scan_abort {
     uint32_t flags;
 } __packed; /* SCAN_ABORT_CMD_UMAC_API_S_VER_1 */
 
+/* Firmware response to SCAN_ABORT_UMAC.  Command success only moves the
+ * single local UID to STOPPING; SCAN_COMPLETE_UMAC retires it. */
+#define IWM_UMAC_SCAN_ABORT_STATUS_SUCCESS       0
+#define IWM_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS   1
+#define IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND     2
+
 /**
  * struct iwm_umac_scan_complete
  * @uid: scan id, &enum iwm_umac_scan_uid_offsets

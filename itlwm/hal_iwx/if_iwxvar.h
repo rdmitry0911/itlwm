@@ -1077,6 +1077,9 @@ struct iwx_softc {
 
 	int sc_intmask;
 	int sc_flags;
+	/* Set before SCAN_ABORT_UMAC and retired only by the matching final scan
+	 * notification.  The iteration notification is never a terminal. */
+	uint32_t sc_scan_abort_pending;
 
 	uint32_t sc_fh_init_mask;
 	uint32_t sc_hw_init_mask;

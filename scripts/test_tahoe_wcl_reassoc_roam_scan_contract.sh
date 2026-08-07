@@ -16,7 +16,14 @@ pae = (root / "itl80211/openbsd/net80211/ieee80211_pae_input.c").read_text()
 var = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 iwm = (root / "itlwm/hal_iwm/IwmSaeEngine.inc").read_text()
+iwm_hal = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
+iwm_mac = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
+iwm_scan = (root / "itlwm/hal_iwm/scan.cpp").read_text()
+iwm_rx = (root / "itlwm/hal_iwm/rx.cpp").read_text()
+iwm_reg = (root / "itlwm/hal_iwm/if_iwmreg.h").read_text()
+iwm_var = (root / "itlwm/hal_iwm/if_iwmvar.h").read_text()
 iwx = (root / "itlwm/hal_iwx/IwxSaeEngine.inc").read_text()
+iwx_hal = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 
 
 def fail(message):
@@ -103,6 +110,107 @@ for token in (
     require(scan, token, "real HAL scan ownership")
 forbid(scan, "airportItlwmIsRoamLocked",
        "explicit request blocked by autonomous-roam preference")
+
+supersede = body(core, "ieee80211_cancel_wcl_reassoc_bgscan(",
+                 "join supersession of reassoc scan")
+for token in (
+    "ic->ic_bgscan_abort",
+    "IEEE80211_F_DISABLE_BG_AUTO_CONNECT",
+    "IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED",
+    "ieee80211_wcl_reassoc_post_failure",
+):
+    require(supersede, token, "paired lower/upper reassoc cancellation")
+
+join = body(sky, "setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)",
+            "WCL join producer")
+require(join, "ieee80211_cancel_wcl_reassoc_bgscan",
+        "JoinAdapter supersession before replacement AUTH")
+cached = body(sky, "tahoeFindJoinableCachedWclCandidate(\n    struct ieee80211com *ic,",
+              "cached WCL candidate predicate")
+for token in ("IEEE80211_F_BGSCAN", "ic_wcl_reassoc_owner_active"):
+    require(cached, token, "scan-owner fence on cached direct join")
+
+iwx_abort = body(iwx_hal, "iwx_bgscan_abort(struct ieee80211com *ic)",
+                 "IWX reassoc scan abort")
+for token in ("IWX_FLAG_BGSCAN) == 0", "return 0", "iwx_scan_abort(sc)"):
+    require(iwx_abort, token, "IWX lower abort ownership")
+require(iwx_hal, "ic->ic_bgscan_abort = iwx_bgscan_abort",
+        "IWX lower abort hook publication")
+iwx_replace = body(iwx_hal, "iwx_scan(struct iwx_softc *sc)",
+                   "IWX foreground replacement")
+for token in ("ic_wcl_reassoc_owner_active",
+              "ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED)",
+              "iwx_umac_scan(sc, 0)"):
+    require(iwx_replace, token, "IWX paired replacement owner")
+
+iwx_stop = body(iwx_hal, "iwx_scan_abort(struct iwx_softc *sc)",
+                "IWX native stopping UID wait")
+for token in (
+    "sc_scan_abort_pending",
+    "iwx_umac_scan_abort_status",
+    "IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND",
+    "tsleep_nsec",
+    "SEC_TO_NSEC(1)",
+):
+    require(iwx_stop, token, "IWX final scan-terminal serialization")
+
+iwx_rx = body(iwx_hal, "iwx_rx_pkt(struct iwx_softc *sc,",
+              "IWX notification reducer")
+iteration = body(iwx_rx, "case IWX_SCAN_ITERATION_COMPLETE_UMAC:",
+                 "IWX iteration notification")
+forbid(iteration, "iwx_endscan(sc)",
+       "iteration progress treated as a final scan terminal")
+complete = body(iwx_rx, "case IWX_SCAN_COMPLETE_UMAC:",
+                "IWX final scan notification")
+require(complete, "iwx_endscan(sc)",
+        "final UMAC notification owns scan completion")
+
+iwm_abort = body(iwm_scan, "iwm_bgscan_abort(struct ieee80211com *ic)",
+                 "IWM reassoc scan abort")
+for token in ("IWM_FLAG_BGSCAN) == 0", "return 0", "iwm_scan_abort(sc)"):
+    require(iwm_abort, token, "IWM lower abort ownership")
+require(iwm_mac, "ic->ic_bgscan_abort = iwm_bgscan_abort",
+        "IWM lower abort hook publication")
+iwm_replace = body(iwm_scan, "iwm_scan(struct iwm_softc *sc)",
+                   "IWM foreground replacement")
+for token in ("ic_wcl_reassoc_owner_active",
+              "ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED)",
+              "iwm_umac_scan(sc, 0)"):
+    require(iwm_replace, token, "IWM paired replacement owner")
+
+iwm_stop = body(iwm_scan, "iwm_scan_abort(struct iwm_softc *sc)",
+                "IWM native stopping UID wait")
+for token in (
+    "sc_scan_abort_pending",
+    "iwm_umac_scan_abort_status",
+    "IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND",
+    "tsleep_nsec",
+    "SEC_TO_NSEC(1)",
+):
+    require(iwm_stop, token, "IWM final scan-terminal serialization")
+require(iwm_var, "sc_scan_abort_pending", "IWM STOPPING owner storage")
+for token in ("IWM_UMAC_SCAN_ABORT_STATUS_SUCCESS",
+              "IWM_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS",
+              "IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND"):
+    require(iwm_reg, token, "IWM abort response status")
+iwm_terminal = body(iwm_mac, "iwm_endscan(struct iwm_softc *sc)",
+                    "IWM final terminal reducer")
+for token in ("sc_scan_abort_pending", "IWM_SCAN_ABORT_TERMINAL",
+              "IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN"):
+    require(iwm_terminal, token, "IWM STOPPING terminal suppression")
+
+iwm_reduce = body(iwm_rx, "iwm_rx_pkt(struct iwm_softc *sc,",
+                  "IWM notification reducer")
+for marker in ("case IWM_SCAN_ITERATION_COMPLETE:",
+               "case IWM_SCAN_ITERATION_COMPLETE_UMAC:"):
+    iteration = body(iwm_reduce, marker, "IWM iteration notification")
+    forbid(iteration, "iwm_endscan(sc)",
+           "IWM iteration progress treated as final")
+for marker in ("case IWM_SCAN_OFFLOAD_COMPLETE:",
+               "case IWM_SCAN_COMPLETE_UMAC:"):
+    complete = body(iwm_reduce, marker, "IWM final scan notification")
+    require(complete, "iwm_endscan(sc)",
+            "IWM final notification owns scan completion")
 
 selector = body(core, "ieee80211_wcl_reassoc_candidate_disposition(",
                 "WCL candidate filter")

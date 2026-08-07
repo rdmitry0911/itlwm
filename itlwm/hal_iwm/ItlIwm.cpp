@@ -1887,6 +1887,9 @@ void ItlIwm::
 clearScanningFlags()
 {
     com.sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN);
+    if (__atomic_exchange_n(&com.sc_scan_abort_pending, 0,
+                            __ATOMIC_ACQ_REL) != 0)
+        wakeupOn(&com.sc_scan_abort_pending);
 }
 
 static void

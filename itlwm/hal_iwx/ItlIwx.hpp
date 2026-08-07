@@ -616,7 +616,9 @@ public:
     void    iwx_del_task(struct iwx_softc *, struct taskq *, struct task *);
     int    iwx_scan(struct iwx_softc *);
     static int    iwx_bgscan(struct ieee80211com *);
+    static int    iwx_bgscan_abort(struct ieee80211com *);
     int    iwx_umac_scan_abort(struct iwx_softc *);
+    int    iwx_umac_scan_abort_status(struct iwx_softc *, uint32_t *);
     int    iwx_scan_abort(struct iwx_softc *);
     int    iwx_rs_rval2idx(uint8_t);
     uint16_t iwx_rs_ht_rates(struct iwx_softc *, struct ieee80211_node *, int);

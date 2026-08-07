@@ -1278,13 +1278,14 @@ iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data,
             case IWM_SCAN_OFFLOAD_COMPLETE: {
                 struct iwm_periodic_scan_complete *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwm_periodic_scan_complete *);
+                iwm_endscan(sc);
                 break;
             }
                 
             case IWM_SCAN_ITERATION_COMPLETE: {
                 struct iwm_lmac_scan_complete_notif *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwm_lmac_scan_complete_notif *);
-                iwm_endscan(sc);
+                /* Iteration telemetry is not the LMAC lease terminal. */
                 break;
             }
                 
@@ -1298,7 +1299,7 @@ iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data,
             case IWM_SCAN_ITERATION_COMPLETE_UMAC: {
                 struct iwm_umac_scan_iter_complete_notif *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwm_umac_scan_iter_complete_notif *);
-                iwm_endscan(sc);
+                /* Iteration telemetry is not the UMAC lease terminal. */
                 break;
             }
                 

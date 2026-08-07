@@ -5218,7 +5218,20 @@ iwm_endscan(struct iwm_softc *sc)
 //        nextbs = RB_NEXT(ieee80211_tree, &ic->ic_tree, ni);
 //        XYLog("%s scan_result ssid=%s, bssid=%s, ni_rsnciphers=%d, ni_rsncipher=%d, ni_rsngroupmgmtcipher=%d, ni_rsngroupcipher=%d, ni_rssi=%d,  ni_capinfo=%d, ni_intval=%d, ni_rsnakms=%d, ni_supported_rsnakms=%d, ni_rsnprotos=%d, ni_supported_rsnprotos=%d, ni_rstamp=%d\n", __FUNCTION__, ni->ni_essid, ether_sprintf(ni->ni_bssid), ni->ni_rsnciphers, ni->ni_rsncipher, ni->ni_rsngroupmgmtcipher, ni->ni_rsngroupcipher, ni->ni_rssi, ni->ni_capinfo, ni->ni_intval, ni->ni_rsnakms, ni->ni_supported_rsnakms, ni->ni_rsnprotos, ni->ni_supported_rsnprotos, ni->ni_rstamp);
 //    }
-    
+
+    /* A STOPPING UID is retired by this final notification without generic
+     * net80211 publication.  Its caller closes the exact superseded owner
+     * after the bounded wait returns. */
+    if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                            __ATOMIC_ACQ_REL) != 0) {
+        sc->sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN);
+        XYLog("%s: IWM_SCAN_ABORT_TERMINAL state=%u flags=0x%x\n",
+              DEVNAME(sc), (unsigned)ic->ic_state,
+              (unsigned)sc->sc_flags);
+        wakeupOn(&sc->sc_scan_abort_pending);
+        return;
+    }
+
     if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
         return;
 
@@ -5237,6 +5250,9 @@ iwm_endscan(struct iwm_softc *sc)
         ieee80211_end_scan_controlled(
             &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_HANDOFF);
         ieee80211_begin_scan(&ic->ic_if);
+        if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                                __ATOMIC_ACQ_REL) != 0)
+            wakeupOn(&sc->sc_scan_abort_pending);
         return;
     }
     if (wclTerminal == ItlIwmWclScanTerminalKind::Foreground) {
@@ -5256,6 +5272,11 @@ iwm_endscan(struct iwm_softc *sc)
         that->publishWclScanTerminal(
             &terminal,
             IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE);
+    /* An abort can reserve STOPPING after the entry check.  Finish all normal
+     * upper terminal work before releasing that waiter. */
+    if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                            __ATOMIC_ACQ_REL) != 0)
+        wakeupOn(&sc->sc_scan_abort_pending);
 }
 
 /*
@@ -5824,6 +5845,9 @@ iwm_stop(struct _ifnet *ifp)
     IEEE80211_ADDR_COPY(in->in_macaddr, etheranyaddr);
     
     sc->sc_flags &= ~(IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN);
+    if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
+                            __ATOMIC_ACQ_REL) != 0)
+        that->wakeupOn(&sc->sc_scan_abort_pending);
     sc->sc_flags &= ~IWM_FLAG_MAC_ACTIVE;
     sc->sc_flags &= ~IWM_FLAG_BINDING_ACTIVE;
     sc->sc_flags &= ~IWM_FLAG_STA_ACTIVE;
@@ -6626,6 +6650,8 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     struct _ifnet *ifp = &ic->ic_if;
     int err;
     int txq_i, i, j;
+
+    sc->sc_scan_abort_pending = 0;
     
     sc->sc_pct = pa->pa_pc;
     sc->sc_pcitag = pa->pa_tag;
@@ -7147,6 +7173,7 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     
     ic->ic_node_alloc = iwm_node_alloc;
     ic->ic_bgscan_start = iwm_bgscan;
+    ic->ic_bgscan_abort = iwm_bgscan_abort;
     ic->ic_set_key = iwm_set_key;
     ic->ic_delete_key = iwm_delete_key;
     ic->ic_assoc_comeback_retry = iwm_assoc_comeback_retry;

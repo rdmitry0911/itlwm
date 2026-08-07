@@ -86,6 +86,31 @@ AirportItlwm_IO80211BSSBeacon_setBeaconDataFromMsg(
 
 #endif
 
+#if __IO80211_TARGET >= __MAC_26_0
+void AirportItlwm::noteTahoeWclTxPackets(uint32_t packets)
+{
+    if (packets != 0)
+        OSAddAtomic64(static_cast<SInt64>(packets), &fTahoeWclTxPackets);
+}
+
+void AirportItlwm::noteTahoeWclRxPackets(uint32_t packets)
+{
+    if (packets != 0)
+        OSAddAtomic64(static_cast<SInt64>(packets), &fTahoeWclRxPackets);
+}
+
+void AirportItlwm::snapshotTahoeWclTrafficPackets(uint64_t *txPackets,
+                                                   uint64_t *rxPackets)
+{
+    if (txPackets != nullptr)
+        *txPackets = static_cast<uint64_t>(
+            OSAddAtomic64(0, &fTahoeWclTxPackets));
+    if (rxPackets != nullptr)
+        *rxPackets = static_cast<uint64_t>(
+            OSAddAtomic64(0, &fTahoeWclRxPackets));
+}
+#endif
+
 // Build identification must print the actual source revision in load logs so the
 // running kext can be matched 1:1 against the workspace and installed binary.
 // Tahoe originally relied on an external script-only ITLWM_COMMIT_HASH define,
@@ -106,10 +131,14 @@ AirportItlwm_IO80211BSSBeacon_setBeaconDataFromMsg(
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "Airport/IO80211BSSBeacon.h"
 #include "Airport/IO80211NetworkPacket.h"
+#include "Airport/IO80211Peer.h"
+#include "Airport/IO80211PeerManager.h"
+#include "Airport/IO80211PeerMonitor.h"
 #include "IOPCIEDeviceWrapper.hpp"
 #include <IOKit/skywalk/IOSkywalkPacketBuffer.h>
 #if __IO80211_TARGET >= __MAC_26_0
 #include <IOKit/IOUserClient.h>
+extern "C" uint64_t mach_continuous_time(void);
 #endif
 
 /*
@@ -6750,7 +6779,7 @@ copyUInt32Property(IORegistryEntry *entry, const char *name, uint32_t *value)
 // entries are const, but the packets themselves are mutable.
 static bool
 skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt,
-                               bool apsta)
+                               bool apsta, UInt64 submitTime)
 {
     if (that == nullptr || that->fTxCompletionPendingLock == nullptr ||
         pkt == nullptr)
@@ -6764,6 +6793,12 @@ skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt,
             pkt;
         that->fTxCompletionPendingAPSTA[that->fTxCompletionPendingTail] =
             apsta;
+        that->fTxCompletionPendingSubmitTime[
+            that->fTxCompletionPendingTail] = submitTime;
+        that->fTxCompletionPendingStatus[
+            that->fTxCompletionPendingTail] = kIOReturnOutputDropped;
+        that->fTxCompletionPendingPeerInput[
+            that->fTxCompletionPendingTail] = false;
         that->fTxCompletionPendingTail =
             (that->fTxCompletionPendingTail + 1) %
             kAirportItlwmTxCompletionPendingCapacity;
@@ -6772,6 +6807,33 @@ skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt,
     }
     IOLockUnlock(that->fTxCompletionPendingLock);
     return staged;
+}
+
+static bool
+skywalkTxUpdateLastCompletionMetadata(AirportItlwm *that,
+                                      IOSkywalkPacket *pkt, bool apsta,
+                                      SInt32 status, bool peerInput)
+{
+    if (that == nullptr || that->fTxCompletionPendingLock == nullptr ||
+        pkt == nullptr)
+        return false;
+
+    IOLockLock(that->fTxCompletionPendingLock);
+    bool updated = false;
+    if (that->fTxCompletionPendingCount != 0) {
+        const UInt32 tail =
+            (that->fTxCompletionPendingTail +
+             kAirportItlwmTxCompletionPendingCapacity - 1) %
+            kAirportItlwmTxCompletionPendingCapacity;
+        if (that->fTxCompletionPendingPackets[tail] == pkt &&
+            that->fTxCompletionPendingAPSTA[tail] == apsta) {
+            that->fTxCompletionPendingStatus[tail] = status;
+            that->fTxCompletionPendingPeerInput[tail] = peerInput;
+            updated = true;
+        }
+    }
+    IOLockUnlock(that->fTxCompletionPendingLock);
+    return updated;
 }
 
 static bool
@@ -6793,6 +6855,9 @@ skywalkTxUnstageLastCompletionPacket(AirportItlwm *that,
             that->fTxCompletionPendingAPSTA[tail] == apsta) {
             that->fTxCompletionPendingPackets[tail] = nullptr;
             that->fTxCompletionPendingAPSTA[tail] = false;
+            that->fTxCompletionPendingSubmitTime[tail] = 0;
+            that->fTxCompletionPendingStatus[tail] = 0;
+            that->fTxCompletionPendingPeerInput[tail] = false;
             that->fTxCompletionPendingTail = tail;
             that->fTxCompletionPendingCount--;
             unstaged = true;
@@ -6804,7 +6869,9 @@ skywalkTxUnstageLastCompletionPacket(AirportItlwm *that,
 
 static IOSkywalkPacket *
 skywalkTxPopCompletionPacket(AirportItlwm *that, bool matchRole,
-                             bool requestedAPSTA, bool *packetAPSTA)
+                             bool requestedAPSTA, bool *packetAPSTA,
+                             UInt64 *submitTime, SInt32 *status,
+                             bool *peerInput)
 {
     if (that == nullptr || that->fTxCompletionPendingLock == nullptr)
         return nullptr;
@@ -6819,8 +6886,17 @@ skywalkTxPopCompletionPacket(AirportItlwm *that, bool matchRole,
             that->fTxCompletionPendingPackets[read];
         const bool savedAPSTA =
             that->fTxCompletionPendingAPSTA[read];
+        const UInt64 savedSubmitTime =
+            that->fTxCompletionPendingSubmitTime[read];
+        const SInt32 savedStatus =
+            that->fTxCompletionPendingStatus[read];
+        const bool savedPeerInput =
+            that->fTxCompletionPendingPeerInput[read];
         that->fTxCompletionPendingPackets[read] = nullptr;
         that->fTxCompletionPendingAPSTA[read] = false;
+        that->fTxCompletionPendingSubmitTime[read] = 0;
+        that->fTxCompletionPendingStatus[read] = 0;
+        that->fTxCompletionPendingPeerInput[read] = false;
         read = (read + 1) %
             kAirportItlwmTxCompletionPendingCapacity;
 
@@ -6829,11 +6905,20 @@ skywalkTxPopCompletionPacket(AirportItlwm *that, bool matchRole,
             pkt = saved;
             if (packetAPSTA != nullptr)
                 *packetAPSTA = savedAPSTA;
+            if (submitTime != nullptr)
+                *submitTime = savedSubmitTime;
+            if (status != nullptr)
+                *status = savedStatus;
+            if (peerInput != nullptr)
+                *peerInput = savedPeerInput;
             continue;
         }
 
         that->fTxCompletionPendingPackets[write] = saved;
         that->fTxCompletionPendingAPSTA[write] = savedAPSTA;
+        that->fTxCompletionPendingSubmitTime[write] = savedSubmitTime;
+        that->fTxCompletionPendingStatus[write] = savedStatus;
+        that->fTxCompletionPendingPeerInput[write] = savedPeerInput;
         write = (write + 1) %
             kAirportItlwmTxCompletionPendingCapacity;
     }
@@ -6842,6 +6927,9 @@ skywalkTxPopCompletionPacket(AirportItlwm *that, bool matchRole,
         that->fTxCompletionPendingCount = count - 1;
         that->fTxCompletionPendingPackets[write] = nullptr;
         that->fTxCompletionPendingAPSTA[write] = false;
+        that->fTxCompletionPendingSubmitTime[write] = 0;
+        that->fTxCompletionPendingStatus[write] = 0;
+        that->fTxCompletionPendingPeerInput[write] = false;
     }
     IOLockUnlock(that->fTxCompletionPendingLock);
     return pkt;
@@ -6877,9 +6965,26 @@ skywalkTxDrainCompletionPackets(AirportItlwm *that)
 
     bool apsta = false;
     while (IOSkywalkPacket *pkt = skywalkTxPopCompletionPacket(
-               that, false, false, &apsta))
+               that, false, false, &apsta, nullptr, nullptr, nullptr))
         skywalkTxReleaseCompletedPacket(that, pkt, apsta);
 }
+
+#if __IO80211_TARGET >= __MAC_26_0
+static IO80211PeerMonitor *
+skywalkPrimaryPeerMonitor(AirportItlwm *that)
+{
+    if (that == nullptr || that->fNetIf == nullptr)
+        return nullptr;
+    IO80211PeerManager *manager = that->fNetIf->getPeerManager();
+    if (manager == nullptr)
+        return nullptr;
+    IO80211Peer *peer = manager->getUnicastPeer();
+    if (peer == nullptr)
+        return nullptr;
+    return static_cast<IO80211PeerMonitor *>(
+        that->fNetIf->getPeerMonitor(peer));
+}
+#endif
 
 static unsigned int
 skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
@@ -6925,7 +7030,13 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
             sRT.txPktDrop++;
             continue;
         }
-        if (!skywalkTxStageCompletionPacket(that, pkt, apstaQueue)) {
+        UInt64 submitTime = 0;
+#if __IO80211_TARGET >= __MAC_26_0
+        if (!apstaQueue)
+            submitTime = mach_continuous_time();
+#endif
+        if (!skywalkTxStageCompletionPacket(that, pkt, apstaQueue,
+                                            submitTime)) {
             sRT.txPktDrop++;
             if (sRT.txCbCnt <= 3)
                 XYLog("skywalkTxAction: completion stage failed pkt %u/%u "
@@ -6935,6 +7046,21 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
         }
         stagedCompletions++;
         consumed++;
+
+        bool peerInputRecorded = false;
+#if __IO80211_TARGET >= __MAC_26_0
+        if (!apstaQueue) {
+            IO80211PeerMonitor *peerMonitor =
+                skywalkPrimaryPeerMonitor(that);
+            if (peerMonitor != nullptr) {
+                peerInputRecorded = peerMonitor->incrementTxInput(
+                    APPLE80211_WME_AC_BE);
+            }
+        }
+#endif
+        (void)skywalkTxUpdateLastCompletionMetadata(
+            that, pkt, apstaQueue, kIOReturnOutputDropped,
+            peerInputRecorded);
 
         // Confirm that prepareWithQueue populated at least one packet buffer.
         IOSkywalkPacketBuffer *bufs[1] = { NULL };
@@ -7005,6 +7131,9 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
         if (txEapol)
             airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathTx, "output",
                                       dataLen, outRet);
+        (void)skywalkTxUpdateLastCompletionMetadata(
+            that, pkt, apstaQueue, static_cast<SInt32>(outRet),
+            peerInputRecorded);
         if (apstaQueue && outRet == kIOReturnNoResources) {
             /*
              * Apple limits dequeuePackets() by getRingFreeSpace() and
@@ -7031,6 +7160,10 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
     }
 
     sRT.txPktSent += delivered;
+#if __IO80211_TARGET >= __MAC_26_0
+    if (!apstaQueue)
+        that->noteTahoeWclTxPackets(delivered);
+#endif
     if (delivered != 0 && networkInterface != nullptr) {
         apple80211_wme_ac ac = { APPLE80211_WME_AC_BE };
         networkInterface->recordOutputPacket(
@@ -7518,10 +7651,34 @@ skywalkTxCompletionAction(OSObject *owner,
 
     UInt32 produced = 0;
     for (; produced < count; produced++) {
+        UInt64 submitTime = 0;
+        SInt32 status = kIOReturnOutputDropped;
+        bool peerInputRecorded = false;
         IOSkywalkPacket *pkt = skywalkTxPopCompletionPacket(
-            that, true, apstaQueue, nullptr);
+            that, true, apstaQueue, nullptr, &submitTime, &status,
+            &peerInputRecorded);
         if (pkt == nullptr)
             break;
+#if __IO80211_TARGET >= __MAC_26_0
+        if (!apstaQueue && peerInputRecorded && submitTime != 0) {
+            IO80211PeerMonitor *peerMonitor =
+                skywalkPrimaryPeerMonitor(that);
+            if (peerMonitor != nullptr) {
+                const UInt64 completedTime = mach_continuous_time();
+                const UInt64 elapsedAbsolute =
+                    completedTime >= submitTime ?
+                        completedTime - submitTime : 0;
+                UInt64 elapsedNanoseconds = 0;
+                absolutetime_to_nanoseconds(elapsedAbsolute,
+                                            &elapsedNanoseconds);
+                peerMonitor->txLatency(APPLE80211_WME_AC_BE,
+                                       elapsedNanoseconds);
+                (void)peerMonitor->incrementTxStatusForDps(
+                    static_cast<int>(status), APPLE80211_WME_AC_BE,
+                    submitTime, 1);
+            }
+        }
+#endif
         packets[produced] = pkt;
     }
     return produced;
@@ -7735,6 +7892,10 @@ skywalkRxInputForRole(struct _ifnet *ifp, mbuf_t m, bool apsta)
     }
 
     sRT.rxPktOK++;
+#if __IO80211_TARGET >= __MAC_26_0
+    if (!apsta)
+        that->noteTahoeWclRxPackets(1);
+#endif
     airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                   diagEapol, kIOReturnSuccess);
     if (diagEapol)
@@ -10087,6 +10248,12 @@ bool AirportItlwm::init(OSDictionary *properties)
     memset(fTxCompletionPendingPackets, 0, sizeof(fTxCompletionPendingPackets));
     memset(fTxCompletionPendingAPSTA, 0,
            sizeof(fTxCompletionPendingAPSTA));
+    memset(fTxCompletionPendingSubmitTime, 0,
+           sizeof(fTxCompletionPendingSubmitTime));
+    memset(fTxCompletionPendingStatus, 0,
+           sizeof(fTxCompletionPendingStatus));
+    memset(fTxCompletionPendingPeerInput, 0,
+           sizeof(fTxCompletionPendingPeerInput));
     fTxCompletionPendingHead = 0;
     fTxCompletionPendingTail = 0;
     fTxCompletionPendingCount = 0;
@@ -10643,6 +10810,8 @@ bool AirportItlwm::start(IOService *provider)
     fAssocGenCounter       = 0;
     fAssocTargetCanceled   = false;
     fAssocTargetTerminating = false;
+    fTahoeWclTxPackets = 0;
+    fTahoeWclRxPackets = 0;
     AirportItlwmSaeRelayFsmV1Clear(&fSaeRelay);
     explicit_bzero(&fSaePendingTxReply, sizeof(fSaePendingTxReply));
     explicit_bzero(&fSaePendingTxRequest, sizeof(fSaePendingTxRequest));

@@ -552,6 +552,8 @@ public:
     void    iwm_del_task(struct iwm_softc *, struct taskq *, struct task *);
     int    iwm_scan(struct iwm_softc *);
     static int    iwm_bgscan(struct ieee80211com *);
+    static int    iwm_bgscan_abort(struct ieee80211com *);
+    int    iwm_umac_scan_abort_status(struct iwm_softc *, uint32_t *);
     int    iwm_umac_scan_abort(struct iwm_softc *);
     int    iwm_lmac_scan_abort(struct iwm_softc *);
     int    iwm_scan_abort(struct iwm_softc *);

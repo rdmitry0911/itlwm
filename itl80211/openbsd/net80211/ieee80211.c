@@ -431,6 +431,60 @@ ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
 	return 0;
 }
 
+/*
+ * A new JoinAdapter transaction supersedes an accepted firmware roam scan.
+ * Broadcom's join command owns that replacement inside firmware.  Intel's
+ * reassociation census is host-owned, so perform the equivalent replacement
+ * explicitly: retire the lower scan before a cached candidate can enter AUTH,
+ * then close the already-sent reassociation owner exactly once.
+ *
+ * Do not cancel a roam after target switching or an OTA reassociation has
+ * started.  At that point the source association is no longer a stable join
+ * cache and the caller must retry after its ordinary terminal event.
+ */
+int
+ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *ic,
+    u_int32_t result)
+{
+	int error;
+
+	if (ic == NULL)
+		return EINVAL;
+	if (!ic->ic_wcl_reassoc_owner_active)
+		return 0;
+	if (ic->ic_wcl_reassoc_owner_last_leaf !=
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+	    ic->ic_wcl_reassoc_owner_last_leaf !=
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED)
+		return EBUSY;
+
+	if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0) {
+		if (ic->ic_bgscan_abort == NULL)
+			return EOPNOTSUPP;
+		error = (*ic->ic_bgscan_abort)(ic);
+		if (error != 0)
+			return error;
+		/* The final scan event can win before the abort reservation.  In
+		 * that ordering it owns the reassociation terminal; never overwrite
+		 * a selected target or post the same failure twice. */
+		if (!ic->ic_wcl_reassoc_owner_active)
+			return 0;
+		if (ic->ic_wcl_reassoc_owner_last_leaf !=
+		    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+		    ic->ic_wcl_reassoc_owner_last_leaf !=
+		    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED)
+			return EBUSY;
+	}
+	ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+	    IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+	ic->ic_wcl_reassoc_owner_last_leaf =
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+	XYLog("wcl_reassoc SUPERSEDED_BY_JOIN\n");
+	ieee80211_wcl_reassoc_post_failure(ic,
+	    result != 0 ? result : (u_int32_t)ECANCELED);
+	return 0;
+}
+
 void
 ieee80211_begin_cache_bgscan(struct _ifnet *ifp)
 {

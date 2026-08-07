@@ -713,6 +713,9 @@ struct iwm_softc {
 
 	int sc_intmask;
 	int sc_flags;
+	/* Set before a native scan-abort command and retired only by the final
+	 * UMAC/LMAC scan-complete notification. */
+	uint32_t sc_scan_abort_pending;
     
     uint32_t sc_fh_init_mask;
     uint32_t sc_hw_init_mask;
