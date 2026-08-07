@@ -1897,6 +1897,35 @@ struct iwx_tx_queue_cfg_rsp {
     uint16_t reserved;
 } __packed; /* TX_QUEUE_CFG_RSP_API_S_VER_2 */
 
+/* SCD_QUEUE_CONFIG_CMD_API_S_VER_3 operations. */
+#define IWX_SCD_QUEUE_ADD       0
+#define IWX_SCD_QUEUE_REMOVE    1
+#define IWX_SCD_QUEUE_MODIFY    2
+
+struct iwx_scd_queue_cfg_cmd {
+    uint32_t operation;
+    union {
+        struct {
+            uint32_t sta_mask;
+            uint8_t tid;
+            uint8_t reserved[3];
+            uint32_t flags;
+            uint32_t cb_size;
+            uint64_t bc_dram_addr;
+            uint64_t tfdq_dram_addr;
+        } __packed add;
+        struct {
+            uint32_t sta_mask;
+            uint32_t tid;
+        } __packed remove;
+        struct {
+            uint32_t old_sta_mask;
+            uint32_t tid;
+            uint32_t new_sta_mask;
+        } __packed modify;
+    } __packed u;
+} __packed; /* TX_QUEUE_CFG_CMD_API_S_VER_3 */
+
 
 /*
  * Commands
@@ -2063,6 +2092,7 @@ struct iwx_tx_queue_cfg_rsp {
 #define IWX_DQA_ENABLE_CMD    0x00
 #define IWX_TLC_MNG_CONFIG_CMD    0x0f
 #define IWX_RX_BAID_ALLOCATION_CONFIG_CMD 0x16
+#define IWX_SCD_QUEUE_CONFIG_CMD 0x17
 #define IWX_RX_NO_DATA_NOTIF    0xf5
 #define IWX_TLC_MNG_UPDATE_NOTIF 0xf7
 

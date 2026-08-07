@@ -5442,17 +5442,16 @@ int ItlIwx::
 iwx_enable_txq(struct iwx_softc *sc, int sta_id, int qid, int tid,
                int num_slots)
 {
-    
-    struct iwx_tx_queue_cfg_cmd cmd;
+    struct iwx_tx_queue_cfg_cmd cmd_v0;
+    struct iwx_scd_queue_cfg_cmd cmd_v3;
     struct iwx_rx_packet *pkt;
     struct iwx_tx_queue_cfg_rsp *resp;
     struct iwx_host_cmd hcmd = {
-        .id = IWX_SCD_QUEUE_CFG,
         .flags = IWX_CMD_WANT_RESP,
         .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
     };
     struct iwx_tx_ring *ring;
-    int err, fwqid;
+    int err, fwqid, cmd_ver;
     uint32_t wr_idx;
     size_t resp_len;
     
@@ -5463,17 +5462,37 @@ iwx_enable_txq(struct iwx_softc *sc, int sta_id, int qid, int tid,
 
     iwx_reset_tx_ring(sc, ring);
     
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.sta_id = sta_id;
-    cmd.tid = tid;
-    cmd.flags = htole16(IWX_TX_QUEUE_CFG_ENABLE_QUEUE);
-    cmd.cb_size = htole32(IWX_TFD_QUEUE_CB_SIZE(num_slots));
-    cmd.byte_cnt_addr = htole64(ring->bc_tbl.paddr);
-    cmd.tfdq_addr = htole64(ring->desc_dma.paddr);
-    
-    hcmd.data[0] = &cmd;
-    hcmd.len[0] = sizeof(cmd);
-    
+    cmd_ver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
+                                 IWX_SCD_QUEUE_CONFIG_CMD);
+    if (cmd_ver == 0 || cmd_ver == IWX_FW_CMD_VER_UNKNOWN) {
+        memset(&cmd_v0, 0, sizeof(cmd_v0));
+        cmd_v0.sta_id = sta_id;
+        cmd_v0.tid = tid;
+        cmd_v0.flags = htole16(IWX_TX_QUEUE_CFG_ENABLE_QUEUE);
+        cmd_v0.cb_size = htole32(IWX_TFD_QUEUE_CB_SIZE(num_slots));
+        cmd_v0.byte_cnt_addr = htole64(ring->bc_tbl.paddr);
+        cmd_v0.tfdq_addr = htole64(ring->desc_dma.paddr);
+        hcmd.id = IWX_SCD_QUEUE_CFG;
+        hcmd.data[0] = &cmd_v0;
+        hcmd.len[0] = sizeof(cmd_v0);
+    } else if (cmd_ver == 3) {
+        memset(&cmd_v3, 0, sizeof(cmd_v3));
+        cmd_v3.operation = htole32(IWX_SCD_QUEUE_ADD);
+        cmd_v3.u.add.tfdq_dram_addr = htole64(ring->desc_dma.paddr);
+        cmd_v3.u.add.bc_dram_addr = htole64(ring->bc_tbl.paddr);
+        cmd_v3.u.add.cb_size = htole32(IWX_TFD_QUEUE_CB_SIZE(num_slots));
+        cmd_v3.u.add.sta_mask = htole32(1U << sta_id);
+        cmd_v3.u.add.tid = tid;
+        hcmd.id = IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
+                              IWX_SCD_QUEUE_CONFIG_CMD);
+        hcmd.data[0] = &cmd_v3;
+        hcmd.len[0] = sizeof(cmd_v3);
+    } else {
+        XYLog("%s: unsupported SCD_QUEUE_CONFIG command version %d\n",
+              DEVNAME(sc), cmd_ver);
+        return ENOTSUP;
+    }
+
     err = iwx_send_cmd(sc, &hcmd);
     if (err)
         return err;
@@ -5508,6 +5527,91 @@ iwx_enable_txq(struct iwx_softc *sc, int sta_id, int qid, int tid,
         err = EIO;
         goto out;
     }
+
+    /* sc_tid_data has one host-side slot after the QoS TIDs for the
+     * firmware's sparse management TID (15).  Record that translation so a
+     * later TXPATH_FLUSH response can reclaim this queue without indexing
+     * sc_tid_data[15] out of bounds. */
+    if (sta_id == IWX_STATION_ID && tid == IWX_MGMT_TID)
+        sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = qid;
+out:
+    iwx_free_resp(sc, &hcmd);
+    return err;
+}
+
+int ItlIwx::
+iwx_disable_txq(struct iwx_softc *sc, int sta_id, int qid, uint8_t tid)
+{
+    struct iwx_tx_queue_cfg_cmd cmd_v0;
+    struct iwx_scd_queue_cfg_cmd cmd_v3;
+    struct iwx_rx_packet *pkt;
+    struct iwx_tx_queue_cfg_rsp *resp;
+    struct iwx_host_cmd hcmd = {
+        .id = IWX_SCD_QUEUE_CFG,
+        .flags = IWX_CMD_WANT_RESP,
+        .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
+    };
+    struct iwx_tx_ring *ring;
+    IOSimpleLock *txq_lock;
+    int err = 0, cmd_ver;
+
+    if (qid == IWX_DQA_CMD_QUEUE || qid < 0 ||
+        qid >= (int)nitems(sc->txq))
+        return EINVAL;
+    ring = &sc->txq[qid];
+    txq_lock = iwx_txq_lock_for_ring(sc, ring);
+    if (txq_lock == NULL)
+        return ENXIO;
+
+    /* TXPATH_FLUSH must have reclaimed every transport descriptor before
+     * the firmware queue can lose its STA owner. */
+    IOSimpleLockLock(txq_lock);
+    const bool empty = ring->queued == 0 && ring->tail == ring->cur;
+    IOSimpleLockUnlock(txq_lock);
+    if (!empty)
+        return EBUSY;
+
+    cmd_ver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
+                                 IWX_SCD_QUEUE_CONFIG_CMD);
+    if (cmd_ver == 0 || cmd_ver == IWX_FW_CMD_VER_UNKNOWN) {
+        memset(&cmd_v0, 0, sizeof(cmd_v0));
+        cmd_v0.sta_id = sta_id;
+        cmd_v0.tid = tid;
+        /* Clearing ENABLE_QUEUE is the legacy scheduler removal operation. */
+        hcmd.id = IWX_SCD_QUEUE_CFG;
+        hcmd.data[0] = &cmd_v0;
+        hcmd.len[0] = sizeof(cmd_v0);
+    } else if (cmd_ver == 3) {
+        memset(&cmd_v3, 0, sizeof(cmd_v3));
+        cmd_v3.operation = htole32(IWX_SCD_QUEUE_REMOVE);
+        cmd_v3.u.remove.sta_mask = htole32(1U << sta_id);
+        cmd_v3.u.remove.tid = htole32(tid);
+        hcmd.id = IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
+                              IWX_SCD_QUEUE_CONFIG_CMD);
+        hcmd.data[0] = &cmd_v3;
+        hcmd.len[0] = sizeof(cmd_v3);
+    } else {
+        XYLog("%s: unsupported SCD_QUEUE_CONFIG command version %d\n",
+              DEVNAME(sc), cmd_ver);
+        return ENOTSUP;
+    }
+
+    err = iwx_send_cmd(sc, &hcmd);
+    if (err)
+        return err;
+
+    pkt = hcmd.resp_pkt;
+    if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
+        err = EIO;
+        goto out;
+    }
+
+    /* The firmware response orders queue removal after TXPATH_FLUSH.  Packet
+     * producers remain fenced by IWX_FLAG_TXFLUSH, so teardown can safely
+     * free mbufs and node references outside the non-sleepable queue lock. */
+    iwx_reset_tx_ring(sc, ring);
+    if (sta_id == IWX_STATION_ID && tid == IWX_MGMT_TID)
+        sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = IWX_INVALID_QUEUE;
 out:
     iwx_free_resp(sc, &hcmd);
     return err;
@@ -10547,7 +10651,11 @@ iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids)
         if (qid >= nitems(sc->txq))
             continue;
 
-        if (sc->sc_tid_data[tid].qid != qid)
+        /* Firmware numbers the management TID as 15 while sc_tid_data[]
+         * stores it in the extra host slot at IWX_MAX_TID_COUNT. */
+        const int tid_slot = tid == IWX_MGMT_TID ? IWX_MAX_TID_COUNT : tid;
+        if (tid_slot < 0 || tid_slot >= (int)nitems(sc->sc_tid_data) ||
+            sc->sc_tid_data[tid_slot].qid != qid)
             continue;
         txq = &sc->txq[qid];
         
@@ -10562,6 +10670,8 @@ int ItlIwx::
 iwx_flush_sta(struct iwx_softc *sc, struct iwx_node *in)
 {
     int err;
+    const bool inherited_flush =
+        (sc->sc_flags & IWX_FLAG_TXFLUSH) != 0;
     
     splassert(IPL_NET);
     
@@ -10585,7 +10695,8 @@ iwx_flush_sta(struct iwx_softc *sc, struct iwx_node *in)
     else
         err = 0;
 done:
-    sc->sc_flags &= ~IWX_FLAG_TXFLUSH;
+    if (!inherited_flush)
+        sc->sc_flags &= ~IWX_FLAG_TXFLUSH;
     return err;
 }
 
@@ -10941,19 +11052,36 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_node *ni = &in->in_ni;
-    int err, i;
+    int err = 0, i;
+    const bool inherited_flush =
+        (sc->sc_flags & IWX_FLAG_TXFLUSH) != 0;
+
+    /* Keep all producers fenced from the flush response through scheduler
+     * queue removal and REMOVE_STA.  Reopening the producer between those
+     * operations recreates a queue whose firmware owner is disappearing. */
+    sc->sc_flags |= IWX_FLAG_TXFLUSH;
 
     err = iwx_flush_sta(sc, in);
     if (err) {
         XYLog("%s: could not flush Tx path (error %d)\n",
             __FUNCTION__, err);
-        return err;
+        goto out;
+    }
+
+    if (ic->ic_opmode != IEEE80211_M_MONITOR) {
+        err = iwx_disable_txq(sc, IWX_STATION_ID,
+                              sc->first_data_qid, IWX_MGMT_TID);
+        if (err) {
+            XYLog("%s: could not disable management Tx queue %d "
+                  "(error %d)\n", DEVNAME(sc), sc->first_data_qid, err);
+            goto out;
+        }
     }
     err = iwx_rm_sta_cmd(sc, in);
     if (err) {
         printf("%s: could not remove STA (error %d)\n",
             DEVNAME(sc), err);
-        return err;
+        goto out;
     }
 
     sc->sc_rx_ba_sessions = 0;
@@ -10968,7 +11096,10 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
         ieee80211_delba_request(ic, ni, 0, 1, i);
     }
 
-    return 0;
+out:
+    if (!inherited_flush)
+        sc->sc_flags &= ~IWX_FLAG_TXFLUSH;
+    return err;
 }
 
 uint8_t ItlIwx::
@@ -15355,7 +15486,7 @@ iwx_auth(struct iwx_softc *sc)
     int generation = sc->sc_generation, err = 0;
     
     splassert(IPL_NET);
-    
+
     in->in_ni.ni_chw = IEEE80211_CHAN_WIDTH_20_NOHT;
     in->in_ni.ni_flags &= ~(IEEE80211_NODE_HT |
                             IEEE80211_NODE_QOS |
@@ -15475,7 +15606,7 @@ iwx_deauth(struct iwx_softc *sc)
     int err;
     
     splassert(IPL_NET);
-    
+
     if (!isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD))
         iwx_unprotect_session(sc, in);
     else
@@ -15922,7 +16053,7 @@ iwx_newstate_task(void *psc)
     int arg = sc->ns_arg;
     int err = 0, s = splnet();
     ItlIwx *that = container_of(sc, ItlIwx, com);
-    
+
     if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
         /* iwx_stop() is waiting for us. */
         //        refcnt_rele_wake(&sc->task_refs);
@@ -16005,8 +16136,31 @@ out:
     if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
         if (err)
             that->iwx_add_task(sc, systq, &sc->init_task);
-        else
-            sc->sc_newstate(ic, nstate, arg);
+        else {
+            const int state_result = sc->sc_newstate(ic, nstate, arg);
+
+            /* SCAN -> AUTH and AUTH -> AUTH enqueue the sole Authentication
+             * frame from this asynchronous worker.  The generic enqueue's
+             * if_start() uses non-blocking attemptAction(); a concurrent WCL
+             * command-gate owner can therefore reject that one kick and
+             * leave the frame in ic_mgtq until the authentication timer
+             * expires.  Drain synchronously after publication, just as the
+             * existing AUTH -> ASSOC and MFP completion paths do for their
+             * only management/EAPOL frame. */
+            if (state_result == 0 && nstate == IEEE80211_S_AUTH) {
+                IOCommandGate *gate = that->getMainCommandGate();
+                const IOReturn drain = gate != NULL ?
+                    gate->runAction(_iwx_start_task, &ic->ic_ac.ac_if) :
+                    kIOReturnNotReady;
+                if (drain != kIOReturnSuccess) {
+                    XYLog("%s: could not drain AUTH management frame "
+                          "(0x%x)\n", DEVNAME(sc), drain);
+                    that->iwx_add_task(sc, systq, &sc->init_task);
+                }
+            } else if (state_result != 0) {
+                that->iwx_add_task(sc, systq, &sc->init_task);
+            }
+        }
     }
     //    refcnt_rele_wake(&sc->task_refs);
     splx(s);
@@ -17677,6 +17831,10 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data,
 
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
                              IWX_RX_BAID_ALLOCATION_CONFIG_CMD):
+                break;
+
+            case IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
+                             IWX_SCD_QUEUE_CONFIG_CMD):
                 break;
                 
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP,

@@ -507,6 +507,7 @@ public:
             int, int);
     int    iwx_tx(struct iwx_softc *, mbuf_t, struct ieee80211_node *, int,
                   const struct ItlSaeAuthTxRequestV1 * = nullptr);
+    int    iwx_disable_txq(struct iwx_softc *, int, int, uint8_t);
     int    iwx_flush_sta_tids(struct iwx_softc *, int, uint16_t);
     int    iwx_flush_sta(struct iwx_softc *, struct iwx_node *);
     int    iwx_drain_sta(struct iwx_softc *sc, struct iwx_node *, int);

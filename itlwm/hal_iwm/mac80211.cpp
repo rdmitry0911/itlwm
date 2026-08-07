@@ -5107,6 +5107,25 @@ out:
             task_add(systq, &sc->init_task);
         else {
             const int stateResult = sc->sc_newstate(ic, nstate, arg);
+            /* The asynchronous SCAN/AUTH -> AUTH worker can enqueue the
+             * only Authentication frame while a WCL caller still owns the
+             * main command gate.  iwm_start() deliberately uses
+             * attemptAction(), so that kick is allowed to fail.  Re-enter
+             * synchronously after generic state publication and drain the
+             * retained ic_mgtq frame. */
+            if (stateResult == 0 && nstate == IEEE80211_S_AUTH) {
+                IOCommandGate *gate = that->getMainCommandGate();
+                const IOReturn drain = gate != NULL ?
+                    gate->runAction(_iwm_start_task, &ic->ic_ac.ac_if) :
+                    kIOReturnNotReady;
+                if (drain != kIOReturnSuccess) {
+                    XYLog("%s: could not drain AUTH management frame "
+                          "(0x%x)\n", DEVNAME(sc), drain);
+                    task_add(systq, &sc->init_task);
+                }
+            } else if (stateResult != 0) {
+                task_add(systq, &sc->init_task);
+            }
             if (nstate == IEEE80211_S_RUN)
                 IWX_AUTH_DIAG(
                     "iwm_newstate_task: RUN state_commit result=%d "
