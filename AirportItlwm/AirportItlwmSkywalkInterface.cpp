@@ -2411,14 +2411,31 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
         if (isApple80211GetIoctl(cmd) &&
             req->req_type == APPLE80211_IOC_CURRENT_NETWORK) {
             /*
-             * CURRENT_NETWORK uses the same 0x8d8 result shape as
-             * SCAN_RESULT.  The Tahoe controller card-specific route owns
-             * its kernel carrier, but this BSD callback has only the outer
-             * apple80211req marshalled by ioctl.  Do not let an external
-             * nested pointer reach the local serializer; delegate the BSD
-             * request to the family transport instead.
+             * The BSD layer has copied only the outer apple80211req.  Its
+             * nested result address remains caller-owned, so never let the
+             * local serializer write through req_data directly.  Tahoe's
+             * IO80211Controller::copyOut is the corresponding safe user-copy
+             * boundary: assemble a kernel-local result, then copy it out.
              */
-            return super::processBSDCommand(interface, cmd, data);
+            if (req->req_len != sizeof(apple80211_scan_result) ||
+                req->req_data == NULL)
+                return static_cast<IOReturn>(0x16);
+
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    if (fHalService == NULL)
+                        return kIOReturnNotReady;
+
+                    apple80211_scan_result result{};
+                    const IOReturn status = getCURRENT_NETWORK(&result);
+                    if (status != kIOReturnSuccess)
+                        return status;
+
+                    return static_cast<IOReturn>(controller->copyOut(
+                        &result,
+                        reinterpret_cast<unsigned long long>(req->req_data),
+                        sizeof(result)));
+                });
         }
         if (isApple80211GetIoctl(cmd) &&
             (req->req_type == APPLE80211_IOC_BGSCAN_CACHE_RESULTS ||

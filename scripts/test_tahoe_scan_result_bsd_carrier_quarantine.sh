@@ -6,6 +6,7 @@ source="$root/AirportItlwm/AirportItlwmSkywalkInterface.cpp"
 header="$root/include/Airport/apple80211_ioctl.h"
 routes="$root/AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
 v2="$root/AirportItlwm/AirportItlwmV2.cpp"
+controller_v3="$root/include/Airport/IO80211ControllerV3.h"
 
 fail() {
     echo "Tahoe SCAN_RESULT BSD carrier quarantine: $1" >&2
@@ -62,8 +63,36 @@ bridge_dispatch_line=$(printf '%s\n' "$bsd_bridge" |
     fail 'CURRENT_NETWORK gate runs after the local dispatcher'
 printf '%s\n' "$bsd_bridge" | grep -Fq '#if __IO80211_TARGET >= __MAC_26_0' ||
     fail 'CURRENT_NETWORK Tahoe guard is missing'
-printf '%s\n' "$bsd_bridge" | grep -Fq 'return super::processBSDCommand(interface, cmd, data);' ||
-    fail 'CURRENT_NETWORK BSD gate no longer delegates to IO80211Family'
+current_network_gate=$(printf '%s\n' "$bsd_bridge" |
+    sed -n '/req->req_type == APPLE80211_IOC_CURRENT_NETWORK/,/req->req_type == APPLE80211_IOC_BGSCAN_CACHE_RESULTS/p')
+printf '%s\n' "$current_network_gate" |
+    grep -Fq 'req->req_len != sizeof(apple80211_scan_result)' ||
+    fail 'CURRENT_NETWORK exact public-carrier length gate is missing'
+printf '%s\n' "$current_network_gate" | grep -Fq 'req->req_data == NULL' ||
+    fail 'CURRENT_NETWORK null public-carrier gate is missing'
+printf '%s\n' "$current_network_gate" |
+    grep -Fq 'apple80211_scan_result result{};' ||
+    fail 'CURRENT_NETWORK kernel-local carrier is missing'
+printf '%s\n' "$current_network_gate" |
+    grep -Fq 'getCURRENT_NETWORK(&result)' ||
+    fail 'CURRENT_NETWORK local producer no longer fills the kernel carrier'
+printf '%s\n' "$current_network_gate" |
+    grep -Fq 'airportItlwmRunDispatchLive(' ||
+    fail 'CURRENT_NETWORK live-controller lifecycle gate is missing'
+printf '%s\n' "$current_network_gate" |
+    grep -Fq 'controller->copyOut(' ||
+    fail 'CURRENT_NETWORK safe controller copyout is missing'
+grep -Fq 'int copyOut(void const*,unsigned long long,unsigned long);' \
+    "$controller_v3" ||
+    fail 'Tahoe IO80211Controller copyOut declaration is missing'
+if printf '%s\n' "$current_network_gate" |
+    grep -Fq 'getCURRENT_NETWORK((apple80211_scan_result *)req->req_data)'; then
+    fail 'CURRENT_NETWORK gate again writes through the caller-owned pointer'
+fi
+if printf '%s\n' "$current_network_gate" |
+    grep -Fq 'super::processBSDCommand(interface, cmd, data)'; then
+    fail 'CURRENT_NETWORK regressed to an unsupported family-only producer'
+fi
 printf '%s\n' "$bsd_bridge" | grep -Fq 'if (ret != kIOReturnUnsupported)' ||
     fail 'BSD bridge no longer recognizes local fallthrough'
 printf '%s\n' "$bsd_bridge" | grep -Fq 'return super::processBSDCommand(interface, cmd, data);' ||

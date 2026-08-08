@@ -306,6 +306,7 @@ public:
 
 public:
     // Non-virtual public methods (resolved at link time, not in vtable)
+    int copyOut(void const*,unsigned long long,unsigned long);
     IOReturn addReporterLegend(IOService *,IOReporter *,char const*,char const*);
     IOReturn removeReporterFromLegend(IOService *,IOReporter *,char const*,char const*);
     void setLeakyAPStats(apple80211_leaky_ap_event *);
