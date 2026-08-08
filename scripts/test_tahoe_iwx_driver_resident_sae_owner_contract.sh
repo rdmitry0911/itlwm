@@ -203,6 +203,12 @@ require(start_upper, "!fHalService->supportsDriverResidentSae()",
         "backend-neutral WCL admission")
 require(start_upper, "OSDynamicCast(ItlIwn, fHalService) == nullptr",
         "IWN-only diagnostic stimulus")
+ordered(start_upper, "backend-owned SAE trace episode",
+        "iwnHal = OSDynamicCast(ItlIwn, fHalService)",
+        "if (iwnHal != nullptr)",
+        "AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic)",
+        "else",
+        "AirportItlwmPostPltiTraceBeginEpisode(ic)")
 
 print("PASS: selected API-68 IWX owns SAE credential, crypto, PMK, native ASSOC doorbell and multi-AP retarget")
 PY

@@ -7728,8 +7728,14 @@ startIwnDirectSaeCredential(
 
     /* The trace is identity-free.  It is deliberately armed after private
      * stage and before the raw scan handoff, which may synchronously enter
-     * the IWN Commit path. */
-    AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic);
+     * the driver's Commit path.  IWN owns the complete direct-SAE trace
+     * vocabulary.  IWX instead owns the firmware PMF/BIP classifier: using
+     * the IWN-only initial event there would be rejected by the recorder and
+     * silently leave every real q0/IGTK fact without an active episode. */
+    if (iwnHal != nullptr)
+        AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic);
+    else
+        AirportItlwmPostPltiTraceBeginEpisode(ic);
     if (request->confirmedWnmCandidate &&
         !lowerAdmissionRequiresFreshScan) {
         const bool admitted =
