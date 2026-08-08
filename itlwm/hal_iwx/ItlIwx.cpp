@@ -5555,24 +5555,12 @@ iwx_disable_txq(struct iwx_softc *sc, int sta_id, int qid, uint8_t tid)
         .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
     };
     struct iwx_tx_ring *ring;
-    IOSimpleLock *txq_lock;
     int err = 0, cmd_ver;
 
     if (qid == IWX_DQA_CMD_QUEUE || qid < 0 ||
         qid >= (int)nitems(sc->txq))
         return EINVAL;
     ring = &sc->txq[qid];
-    txq_lock = iwx_txq_lock_for_ring(sc, ring);
-    if (txq_lock == NULL)
-        return ENXIO;
-
-    /* TXPATH_FLUSH must have reclaimed every transport descriptor before
-     * the firmware queue can lose its STA owner. */
-    IOSimpleLockLock(txq_lock);
-    const bool empty = ring->queued == 0 && ring->tail == ring->cur;
-    IOSimpleLockUnlock(txq_lock);
-    if (!empty)
-        return EBUSY;
 
     cmd_ver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
                                  IWX_SCD_QUEUE_CONFIG_CMD);
@@ -5609,9 +5597,12 @@ iwx_disable_txq(struct iwx_softc *sc, int sta_id, int qid, uint8_t tid)
         goto out;
     }
 
-    /* The firmware response orders queue removal after TXPATH_FLUSH.  Packet
-     * producers remain fenced by IWX_FLAG_TXFLUSH, so teardown can safely
-     * free mbufs and node references outside the non-sleepable queue lock. */
+    /* Some AX210-family firmware acknowledges TXPATH_FLUSH without returning
+     * per-queue read pointers, so the host ring can still look occupied here.
+     * The synchronous queue-removal response is the authoritative terminal:
+     * it orders removal after the flush while IWX_FLAG_TXFLUSH keeps packet
+     * producers fenced.  Reclaim only after that response, matching the
+     * reference IWX teardown rather than forcing a full firmware reset. */
     iwx_reset_tx_ring(sc, ring);
     if (sta_id == IWX_STATION_ID && tid == IWX_MGMT_TID)
         sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = IWX_INVALID_QUEUE;

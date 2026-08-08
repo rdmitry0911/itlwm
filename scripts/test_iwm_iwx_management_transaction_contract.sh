@@ -84,7 +84,6 @@ for token in (
 
 disable = body(iwx, "iwx_disable_txq(struct iwx_softc", "IWX TXQ disable")
 for token in (
-    "ring->queued == 0 && ring->tail == ring->cur",
     "cmd_ver == 0 || cmd_ver == IWX_FW_CMD_VER_UNKNOWN",
     "IWX_SCD_QUEUE_REMOVE",
     "iwx_send_cmd(sc, &hcmd)",
@@ -93,13 +92,18 @@ for token in (
 ):
     require(disable, token, "IWX TXQ disable")
 ordered(disable, (
-    "IOSimpleLockUnlock(txq_lock)",
     "iwx_send_cmd(sc, &hcmd)",
+    "pkt = hcmd.resp_pkt",
+    "if (!pkt ||",
     "iwx_reset_tx_ring(sc, ring)",
-), "IWX non-sleeping TXQ teardown")
-reset_tail = disable[disable.find("iwx_reset_tx_ring(sc, ring)") - 80:]
-if "IOSimpleLockLock(txq_lock)" in reset_tail:
-    fail("TX ring reset must not run under the queue spinlock")
+), "IWX acknowledged TXQ teardown")
+for forbidden in (
+    "ring->queued == 0 && ring->tail == ring->cur",
+    "return EBUSY",
+    "IOSimpleLockLock(txq_lock)",
+):
+    if forbidden in disable:
+        fail(f"TXQ removal must accept flush completion without read pointers: {forbidden}")
 
 flush_tids = body(iwx, "iwx_flush_sta_tids(struct iwx_softc", "IWX flush response")
 for token in (
