@@ -3343,6 +3343,9 @@ void AirportItlwm::invalidateWclPhysicalScan()
     release = takeWclPhysicalScanSnapshotScrubIfIdleLocked(lifecycle);
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
     releaseWclPhysicalScanSnapshot(release);
+    if (fHalService != nullptr)
+        ieee80211_wcl_scan_plan_clear(
+            fHalService->get80211Controller(), 0);
     if (cancelCachedTerminal) {
         IOTimerEventSource *source = NULL;
         if (acquireScanSource(this, &source)) {
@@ -3364,10 +3367,12 @@ void AirportItlwm::invalidateWclPhysicalScan(uint64_t generation,
         return;
 
     TahoeWclPhysicalScanSnapshotRelease release = { nullptr, 0 };
+    bool invalidated = false;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     if (TahoeWclPhysicalScanContracts::invalidate(&lifecycle.state,
                                                    generation,
                                                    backendGeneration)) {
+        invalidated = true;
         lifecycle.snapshotInProgress = false;
         lifecycle.snapshotReady = false;
         lifecycle.terminalPublicationRequested = false;
@@ -3378,6 +3383,9 @@ void AirportItlwm::invalidateWclPhysicalScan(uint64_t generation,
     }
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
     releaseWclPhysicalScanSnapshot(release);
+    if (invalidated && fHalService != nullptr)
+        ieee80211_wcl_scan_plan_clear(
+            fHalService->get80211Controller(), generation);
 }
 
 void AirportItlwm::reopenWclPhysicalScanAfterRadioReset()
@@ -9640,6 +9648,7 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
                 *(const struct ieee80211_wcl_scan_start_rejected *)data;
             that->rejectWclInitialPhysicalScanStart(rejected.generation,
                                                     rejected.backend_generation);
+            ieee80211_wcl_scan_plan_clear(ic, rejected.generation);
         }
         return;
     }
@@ -9653,6 +9662,10 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             that->claimWclPhysicalScanCompletion(terminal.generation,
                                                  terminal.backend_generation,
                                                  terminal.status);
+        /* The completion claim has copied the terminal BSS census.  No lower
+         * continuation may consume this immutable request after its exact
+         * terminal edge. */
+        ieee80211_wcl_scan_plan_clear(ic, terminal.generation);
         if (disposition ==
             TahoeWclPhysicalScanContracts::CompletionDisposition::Publish) {
             if (!that->queueWclPhysicalScanTerminalPublication(

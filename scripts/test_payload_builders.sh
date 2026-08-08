@@ -89,3 +89,4 @@ esac
 "$tmpdir/wcl_physical_scan_trace_contract_test"
 
 "$(dirname "$0")/test_tahoe_wcl_auth_assoc_completion_contract.sh"
+"$(dirname "$0")/test_tahoe_wcl_exact_scan_plan_contract.sh"

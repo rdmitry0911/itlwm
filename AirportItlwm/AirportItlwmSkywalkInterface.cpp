@@ -7206,6 +7206,102 @@ completePendingWclPhysicalScanTerminal(uint64_t generation,
     return kIOReturnSuccess;
 }
 
+/* Recovered Tahoe apple80211ScanRequest prefix.  The complete carrier is
+ * 0x1598 bytes; only the reference-proven ScanAdapter fields are named here.
+ * Its 400 apple80211_channel entries occupy +0x58..+0x1317. */
+struct __attribute__((packed)) TahoeWclScanRequestPrefix {
+    uint8_t opaque00[0x1c];
+    uint32_t ssidLength;
+    uint8_t ssid[IEEE80211_NWID_LEN];
+    uint32_t scanType;
+    uint32_t scanFlags;
+    uint32_t activeTime;
+    uint32_t passiveTime;
+    uint32_t homeTime;
+    uint32_t channelCount;
+};
+
+static_assert(sizeof(TahoeWclScanRequestPrefix) == 0x58,
+              "Tahoe WCL scan prefix must end at channel array +0x58");
+static_assert(__offsetof(TahoeWclScanRequestPrefix, ssidLength) == 0x1c,
+              "Tahoe WCL scan SSID length offset changed");
+static_assert(__offsetof(TahoeWclScanRequestPrefix, ssid) == 0x20,
+              "Tahoe WCL scan SSID offset changed");
+static_assert(__offsetof(TahoeWclScanRequestPrefix, scanType) == 0x40,
+              "Tahoe WCL scan type offset changed");
+static_assert(__offsetof(TahoeWclScanRequestPrefix, activeTime) == 0x48,
+              "Tahoe WCL active dwell offset changed");
+static_assert(__offsetof(TahoeWclScanRequestPrefix, passiveTime) == 0x4c,
+              "Tahoe WCL passive dwell offset changed");
+static_assert(__offsetof(TahoeWclScanRequestPrefix, homeTime) == 0x50,
+              "Tahoe WCL home dwell offset changed");
+static_assert(__offsetof(TahoeWclScanRequestPrefix, channelCount) == 0x54,
+              "Tahoe WCL scan channel count offset changed");
+static_assert(sizeof(struct apple80211_channel) == 0x0c,
+              "Tahoe WCL Apple channel stride changed");
+
+static IOReturn
+tahoeBuildWclScanPlan(const apple80211ScanRequest *request,
+                      struct ieee80211_wcl_scan_plan *plan)
+{
+    TahoeWclScanRequestPrefix prefix;
+    uint32_t admittedChannels = 0;
+
+    if (request == nullptr || plan == nullptr)
+        return kIOReturnBadArgument;
+    memcpy(&prefix, request, sizeof(prefix));
+    if (prefix.ssidLength > IEEE80211_NWID_LEN ||
+        prefix.channelCount > IEEE80211_WCL_SCAN_REQUEST_MAX_CHANNELS ||
+        (prefix.activeTime != 0 && prefix.activeTime != UINT32_MAX &&
+         prefix.activeTime > IEEE80211_WCL_SCAN_DWELL_MAX_MS) ||
+        (prefix.passiveTime != 0 && prefix.passiveTime != UINT32_MAX &&
+         prefix.passiveTime > IEEE80211_WCL_SCAN_DWELL_MAX_MS) ||
+        (prefix.homeTime != 0 && prefix.homeTime != UINT32_MAX &&
+         prefix.homeTime > IEEE80211_WCL_SCAN_HOME_MAX_MS))
+        return kIOReturnBadArgument;
+
+    explicit_bzero(plan, sizeof(*plan));
+    plan->ssid_len = static_cast<uint8_t>(prefix.ssidLength);
+    plan->scan_type = static_cast<uint8_t>(prefix.scanType);
+    plan->requested_channel_count = prefix.channelCount;
+    /* AppleBCMWLAN fillScanParams2/4 copies these three dwords verbatim into
+     * Broadcom active_time, passive_time, and home_time.  Zero/UINT32_MAX are
+     * firmware-default sentinels; the Intel HALs retain their native default
+     * for those shapes and consume every explicitly representable value. */
+    plan->active_dwell_ms = prefix.activeTime;
+    plan->passive_dwell_ms = prefix.passiveTime;
+    plan->home_dwell_ms = prefix.homeTime;
+    if (plan->ssid_len != 0)
+        memcpy(plan->ssid, prefix.ssid, plan->ssid_len);
+
+    if (prefix.channelCount == 0)
+        return kIOReturnSuccess;
+    plan->channel_filter = 1;
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(request) +
+        sizeof(prefix);
+    for (uint32_t index = 0; index < prefix.channelCount; ++index) {
+        struct apple80211_channel channel;
+        memcpy(&channel, raw + index * sizeof(channel), sizeof(channel));
+        if (channel.channel == 0 || channel.channel > IEEE80211_CHAN_MAX)
+            continue;
+
+        const bool band2 =
+            (channel.flags & APPLE80211_C_FLAG_2GHZ) != 0;
+        const bool band5 =
+            (channel.flags & APPLE80211_C_FLAG_5GHZ) != 0;
+        if (band2)
+            setbit(plan->channel_2ghz, channel.channel);
+        if (band5)
+            setbit(plan->channel_5ghz, channel.channel);
+        if (!band2 && !band5)
+            setbit(plan->channel_any, channel.channel);
+        ++admittedChannels;
+    }
+    /* AppleBCMWLAN's getChanSpec path rejects a non-empty request whose
+     * complete channel list cannot be represented; never widen it to all. */
+    return admittedChannels != 0 ? kIOReturnSuccess : kIOReturnBadArgument;
+}
+
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_REQ(apple80211ScanRequest *req)
 {
@@ -7229,6 +7325,22 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
      * foreground command. */
     bool initialForeground = false;
     if (ic->ic_state == IEEE80211_S_RUN) {
+        if (ic->ic_mgt_timer != 0)
+            return kIOReturnNotReady;
+
+        /* AppleBCMWLAN sends a fresh escan without fencing an accepted
+         * firmware WLC_REASSOC roam scan.  Intel represents that roam scan
+         * with the same physical engine as WCL discovery, so retire only its
+         * still-cancellable census before testing the generic BGSCAN fence.
+         * Once target switching has started the cancel helper returns EBUSY
+         * and the public request remains retryable without disturbing the
+         * live roam owner. */
+        if (ic->ic_wcl_reassoc_owner_active) {
+            const int cancelResult = ieee80211_cancel_wcl_reassoc_bgscan(
+                ic, static_cast<uint32_t>(ECANCELED));
+            if (cancelResult != 0)
+                return kIOReturnNotReady;
+        }
         if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
             ic->ic_mgt_timer != 0)
             return kIOReturnNotReady;
@@ -7252,11 +7364,23 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
         return kIOReturnNotReady;
     }
 
+    struct ieee80211_wcl_scan_plan scanPlan;
+    const IOReturn planResult = tahoeBuildWclScanPlan(req, &scanPlan);
+    if (planResult != kIOReturnSuccess)
+        return planResult;
+
     uint64_t generation = 0;
     const IOReturn reserveResult = instance->reserveWclPhysicalScan(
         &generation);
     if (reserveResult != kIOReturnSuccess)
         return reserveResult;
+    scanPlan.generation = generation;
+    const int stageResult = ieee80211_wcl_scan_plan_stage(ic, &scanPlan);
+    explicit_bzero(&scanPlan, sizeof(scanPlan));
+    if (stageResult != 0) {
+        (void)instance->failWclPhysicalScanStart(generation);
+        return stageResult == EBUSY ? kIOReturnBusy : kIOReturnBadArgument;
+    }
 
     /* The upper WCL owner has admitted one physical-scan request.  Lower
      * lease/final publication facts are recorded by their respective exact
@@ -7287,11 +7411,13 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
          * must suppress the pending lower publication, not borrow its
          * generic terminal as success. */
         fHalService->invalidateWclBackgroundScan();
+        ieee80211_wcl_scan_plan_clear(ic, generation);
         return kIOReturnNotReady;
     }
     if (beginResult != kIOReturnSuccess || backendGeneration == 0) {
         const TahoeWclPhysicalScanContracts::StartDisposition failed =
             instance->failWclPhysicalScanStart(generation);
+        ieee80211_wcl_scan_plan_clear(ic, generation);
         if (failed ==
             TahoeWclPhysicalScanContracts::StartDisposition::TerminalPending)
             return completePendingWclPhysicalScanTerminal(
@@ -7312,6 +7438,7 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
     }
     fHalService->invalidateWclBackgroundScan();
     (void)instance->failWclPhysicalScanStart(generation);
+    ieee80211_wcl_scan_plan_clear(ic, generation);
     return kIOReturnNotReady;
 }
 

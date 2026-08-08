@@ -11126,6 +11126,13 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_channel *c;
+    struct ieee80211_wcl_scan_plan wclPlan;
+    const bool exactWclPlan =
+        wclScanPhase != ItlIwxWclScanPhase::Idle &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const bool activeProbe = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        (n_ssids != 0 && !bgscan);
     uint8_t nchan;
     
     for (nchan = 0, c = &ic->ic_channels[1];
@@ -11135,6 +11142,9 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
         uint8_t channel_num;
         
         if (c->ic_flags == 0)
+            continue;
+        if (exactWclPlan &&
+            !ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c))
             continue;
         
         channel_num = ieee80211_mhz2ieee(c->ic_freq, 0);
@@ -11153,7 +11163,7 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
             chan->v1.iter_interval = htole16(0);
         }
         
-        if (n_ssids != 0 && !bgscan)
+        if (activeProbe)
             chan->flags = htole32(1 << 0); /* select SSID 0 */
         chan++;
         nchan++;
@@ -11488,6 +11498,30 @@ int ItlIwx::
 iwx_umac_scan(struct iwx_softc *sc, int bgscan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_wcl_scan_plan wclPlan;
+    const bool exactWclPlan =
+        wclScanPhase != ItlIwxWclScanPhase::Idle &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const uint8_t scanSsidLength = exactWclPlan ?
+        wclPlan.ssid_len : ic->ic_des_esslen;
+    const uint8_t *scanSsid = exactWclPlan ?
+        wclPlan.ssid : ic->ic_des_essid;
+    /* AppleBCMWLAN's scan type owns active/passive mode independently of
+     * the optional SSID.  An active carrier with a zero-length SSID sends a
+     * wildcard probe; only the SSID-selection and pre-connect hints remain
+     * conditional on a directed selector. */
+    const bool activeScan = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        (scanSsidLength != 0 && !bgscan);
+    const bool directedSsid = activeScan && scanSsidLength != 0;
+    const uint8_t activeDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.active_dwell_ms : 0,
+            IWL_SCAN_DWELL_ACTIVE));
+    const uint8_t passiveDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.passive_dwell_ms : 0,
+            IWL_SCAN_DWELL_PASSIVE));
     struct iwx_host_cmd hcmd = {
         .id = iwx_cmd_id(IWX_SCAN_REQ_UMAC, IWX_LONG_GROUP, 0),
         .len = { 0, },
@@ -11505,7 +11539,11 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
     const uint32_t homeAwayMs =
         airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
             configuredHomeAwayMs : 120U;
-    const uint32_t timeout = bgscan ? htole32(homeAwayMs) : htole32(0);
+    const uint32_t maxOutTime = bgscan ? htole32(homeAwayMs) : htole32(0);
+    const uint32_t suspendTime = bgscan ? htole32(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.home_dwell_ms : 0, homeAwayMs)) :
+        htole32(0);
     uint8_t scan_ver = iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_SCAN_REQ_UMAC);
     
     if (scan_ver == 12)
@@ -11536,7 +11574,7 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
         if (isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_ADWELL_HB_DEF_N_AP))
             req->v9.adwell_default_hb_n_aps = IWX_SCAN_ADWELL_DEFAULT_HB_N_APS;
         
-        if (ic->ic_des_esslen != 0 && !bgscan)
+        if (directedSsid)
             req->v7.adwell_max_budget =
             htole16(IWX_SCAN_ADWELL_MAX_BUDGET_DIRECTED_SCAN);
         else
@@ -11544,51 +11582,51 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
             htole16(IWX_SCAN_ADWELL_MAX_BUDGET_FULL_SCAN);
         
         req->v7.scan_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
-        req->v7.max_out_time[IWX_SCAN_LB_LMAC_IDX] = timeout;
-        req->v7.suspend_time[IWX_SCAN_LB_LMAC_IDX] = timeout;
+        req->v7.max_out_time[IWX_SCAN_LB_LMAC_IDX] = maxOutTime;
+        req->v7.suspend_time[IWX_SCAN_LB_LMAC_IDX] = suspendTime;
         
         if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT)) {
             req->v7.max_out_time[IWX_SCAN_HB_LMAC_IDX] =
-                timeout;
+                maxOutTime;
             req->v7.suspend_time[IWX_SCAN_HB_LMAC_IDX] =
-                timeout;
+                suspendTime;
         }
         
         if (isset(sc->sc_ucode_api,
                   IWX_UCODE_TLV_API_ADAPTIVE_DWELL_V2)) {
-            req->v8.active_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
-            req->v8.passive_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
+            req->v8.active_dwell[IWX_SCAN_LB_LMAC_IDX] = activeDwell;
+            req->v8.passive_dwell[IWX_SCAN_LB_LMAC_IDX] = passiveDwell;
             if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT)) {
                 req->v8.active_dwell[IWX_SCAN_HB_LMAC_IDX] =
-                    IWL_SCAN_DWELL_ACTIVE;
+                    activeDwell;
                 req->v8.passive_dwell[IWX_SCAN_HB_LMAC_IDX] =
-                    IWL_SCAN_DWELL_PASSIVE;
+                    passiveDwell;
             }
         } else {
-            req->v7.active_dwell = IWL_SCAN_DWELL_ACTIVE;
-            req->v7.passive_dwell = IWL_SCAN_DWELL_PASSIVE;
+            req->v7.active_dwell = activeDwell;
+            req->v7.passive_dwell = passiveDwell;
             req->v7.fragmented_dwell = IWL_SCAN_DWELL_FRAGMENTED;
         }
     } else {
         /* These timings correspond to iwlwifi's UNASSOC scan. */
-        req->v1.active_dwell = IWL_SCAN_DWELL_ACTIVE;
-        req->v1.passive_dwell = IWL_SCAN_DWELL_PASSIVE;
+        req->v1.active_dwell = activeDwell;
+        req->v1.passive_dwell = passiveDwell;
         req->v1.fragmented_dwell = IWL_SCAN_DWELL_FRAGMENTED;
         req->v1.extended_dwell = IWL_SCAN_DWELL_EXTENDED;
         
         if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT)) {
             req->v6.max_out_time[IWX_SCAN_HB_LMAC_IDX] =
-                timeout;
+                maxOutTime;
             req->v6.suspend_time[IWX_SCAN_HB_LMAC_IDX] =
-                timeout;
+                suspendTime;
         }
         
         req->v6.scan_priority =
             htole32(IWX_SCAN_PRIORITY_EXT_6);
         req->v6.max_out_time[IWX_SCAN_LB_LMAC_IDX] =
-            timeout;
+            maxOutTime;
         req->v6.suspend_time[IWX_SCAN_LB_LMAC_IDX] =
-            timeout;
+            suspendTime;
     }
     
     req->ooc_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
@@ -11597,7 +11635,11 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
     chanparam = iwx_get_scan_req_umac_chan_param(sc, req);
     chanparam->count = iwx_umac_scan_fill_channels(sc,
                                                    (struct iwx_scan_channel_cfg_umac *)cmd_data,
-                                                   ic->ic_des_esslen != 0, bgscan);
+                                                   activeScan ? 1 : 0, bgscan);
+    if (chanparam->count == 0) {
+        ::free(req);
+        return EINVAL;
+    }
     chanparam->flags = 0;
     
     tail_data = (uint8_t*)cmd_data + sizeof(struct iwx_scan_channel_cfg_umac) *
@@ -11613,22 +11655,27 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
         IWX_UMAC_SCAN_GEN_FLAGS2_ALLOW_CHNL_REORDER;
     }
     
-    /* Check if we're doing an active directed scan. */
-    if (ic->ic_des_esslen != 0 && !bgscan) {
+    /* Intel firmware represents active wildcard scan as one selected,
+     * zero-length SSID.  No selected SSID means passive scan. */
+    if (activeScan) {
         if (isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_SCAN_EXT_CHAN_VER)) {
             tail->direct_scan[0].id = IEEE80211_ELEMID_SSID;
-            tail->direct_scan[0].len = ic->ic_des_esslen;
-            memcpy(tail->direct_scan[0].ssid, ic->ic_des_essid,
-                   ic->ic_des_esslen);
+            tail->direct_scan[0].len = scanSsidLength;
+            if (scanSsidLength != 0)
+                memcpy(tail->direct_scan[0].ssid, scanSsid,
+                       scanSsidLength);
         } else {
             tailv1->direct_scan[0].id = IEEE80211_ELEMID_SSID;
-            tailv1->direct_scan[0].len = ic->ic_des_esslen;
-            memcpy(tailv1->direct_scan[0].ssid, ic->ic_des_essid,
-                   ic->ic_des_esslen);
+            tailv1->direct_scan[0].len = scanSsidLength;
+            if (scanSsidLength != 0)
+                memcpy(tailv1->direct_scan[0].ssid, scanSsid,
+                       scanSsidLength);
         }
+    }
+    if (directedSsid)
         req->general_flags |=
-        htole32(IWX_UMAC_SCAN_GEN_FLAGS_PRE_CONNECT);
-    } else
+            htole32(IWX_UMAC_SCAN_GEN_FLAGS_PRE_CONNECT);
+    if (!activeScan)
         req->general_flags |= htole32(IWX_UMAC_SCAN_GEN_FLAGS_PASSIVE);
     
     if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_DS_PARAM_SET_IE_SUPPORT) &&
@@ -11666,6 +11713,26 @@ int ItlIwx::
 iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_wcl_scan_plan wclPlan;
+    const bool exactWclPlan =
+        wclScanPhase != ItlIwxWclScanPhase::Idle &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const uint8_t scanSsidLength = exactWclPlan ?
+        wclPlan.ssid_len : ic->ic_des_esslen;
+    const uint8_t *scanSsid = exactWclPlan ?
+        wclPlan.ssid : ic->ic_des_essid;
+    const bool activeScan = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        (scanSsidLength != 0 && !bgscan);
+    const bool directedSsid = activeScan && scanSsidLength != 0;
+    const uint8_t activeDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.active_dwell_ms : 0,
+            IWL_SCAN_DWELL_ACTIVE));
+    const uint8_t passiveDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.passive_dwell_ms : 0,
+            IWL_SCAN_DWELL_PASSIVE));
     int err = 0, async = bgscan;
     struct iwx_scan_req_umac_v12 *req;
     size_t req_len;
@@ -11674,7 +11741,11 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     const uint32_t homeAwayMs =
         airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
             configuredHomeAwayMs : 120U;
-    const uint32_t timeout = bgscan ? htole32(homeAwayMs) : htole32(0);
+    const uint32_t maxOutTime = bgscan ? htole32(homeAwayMs) : htole32(0);
+    const uint32_t suspendTime = bgscan ? htole32(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.home_dwell_ms : 0, homeAwayMs)) :
+        htole32(0);
     struct iwx_scan_general_params_v10 *general_params;
     struct iwx_scan_channel_params_v4 *cp;
     struct iwx_host_cmd hcmd = {
@@ -11698,7 +11769,7 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     
     req->ooc_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
     
-    if (ic->ic_des_esslen == 0 || bgscan)
+    if (!activeScan)
         gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_FORCE_PASSIVE;
     
     gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_PASS_ALL |
@@ -11711,7 +11782,7 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     general_params->adwell_default_2g = IWX_SCAN_ADWELL_DEFAULT_LB_N_APS;
     general_params->adwell_default_5g = IWX_SCAN_ADWELL_DEFAULT_HB_N_APS;
 
-    if (ic->ic_des_esslen != 0 && !bgscan)
+    if (directedSsid)
         general_params->adwell_max_budget =
             cpu_to_le16(IWX_SCAN_ADWELL_MAX_BUDGET_DIRECTED_SCAN);
     else
@@ -11720,19 +11791,19 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     
     general_params->scan_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
     general_params->max_out_of_time[IWX_SCAN_LB_LMAC_IDX] =
-        timeout;
+        maxOutTime;
     general_params->suspend_time[IWX_SCAN_LB_LMAC_IDX] =
-        timeout;
+        suspendTime;
     
     general_params->max_out_of_time[IWX_SCAN_HB_LMAC_IDX] =
-        timeout;
+        maxOutTime;
     general_params->suspend_time[IWX_SCAN_HB_LMAC_IDX] =
-        timeout;
+        suspendTime;
 
-    general_params->active_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
-    general_params->passive_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
-    general_params->active_dwell[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
-    general_params->passive_dwell[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
+    general_params->active_dwell[IWX_SCAN_LB_LMAC_IDX] = activeDwell;
+    general_params->passive_dwell[IWX_SCAN_LB_LMAC_IDX] = passiveDwell;
+    general_params->active_dwell[IWX_SCAN_HB_LMAC_IDX] = activeDwell;
+    general_params->passive_dwell[IWX_SCAN_HB_LMAC_IDX] = passiveDwell;
     
     /* Specify the scan plan: We'll do one iteration. */
     req->scan_params.periodic_params.schedule[0].interval = 0;
@@ -11742,12 +11813,13 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     if (err)
         return err;
 
-    if (ic->ic_des_esslen != 0 && !bgscan) {
+    if (activeScan) {
         req->scan_params.probe_params.ssid_num = 1;
         req->scan_params.probe_params.direct_scan[0].id = IEEE80211_ELEMID_SSID;
-        req->scan_params.probe_params.direct_scan[0].len = ic->ic_des_esslen;
-        memcpy(req->scan_params.probe_params.direct_scan[0].ssid, ic->ic_des_essid,
-               ic->ic_des_esslen);
+        req->scan_params.probe_params.direct_scan[0].len = scanSsidLength;
+        if (scanSsidLength != 0)
+            memcpy(req->scan_params.probe_params.direct_scan[0].ssid,
+                   scanSsid, scanSsidLength);
     } else
         req->scan_params.probe_params.ssid_num = 0;
     
@@ -11756,7 +11828,11 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     cp->flags = IWX_SCAN_CHANNEL_FLAG_ENABLE_CHAN_ORDER;
     cp->count = iwx_umac_scan_fill_channels(sc,
                                             (struct iwx_scan_channel_cfg_umac *)cp->channel_config,
-                                            ic->ic_des_esslen != 0, bgscan);
+                                            activeScan ? 1 : 0, bgscan);
+    if (cp->count == 0) {
+        ::free(req);
+        return EINVAL;
+    }
     cp->num_of_aps_override = IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY;
     
     err = iwx_send_cmd(sc, &hcmd);
@@ -11768,6 +11844,26 @@ int ItlIwx::
 iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_wcl_scan_plan wclPlan;
+    const bool exactWclPlan =
+        wclScanPhase != ItlIwxWclScanPhase::Idle &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const uint8_t scanSsidLength = exactWclPlan ?
+        wclPlan.ssid_len : ic->ic_des_esslen;
+    const uint8_t *scanSsid = exactWclPlan ?
+        wclPlan.ssid : ic->ic_des_essid;
+    const bool activeScan = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        (scanSsidLength != 0 && !bgscan);
+    const bool directedSsid = activeScan && scanSsidLength != 0;
+    const uint8_t activeDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.active_dwell_ms : 0,
+            IWL_SCAN_DWELL_ACTIVE));
+    const uint8_t passiveDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.passive_dwell_ms : 0,
+            IWL_SCAN_DWELL_PASSIVE));
     int err = 0, async = bgscan;
     struct iwx_scan_req_umac_v14 *req;
     size_t req_len;
@@ -11778,7 +11874,11 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     const uint32_t homeAwayMs =
         airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
             configuredHomeAwayMs : 120U;
-    const uint32_t timeout = bgscan ? htole32(homeAwayMs) : htole32(0);
+    const uint32_t maxOutTime = bgscan ? htole32(homeAwayMs) : htole32(0);
+    const uint32_t suspendTime = bgscan ? htole32(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.home_dwell_ms : 0, homeAwayMs)) :
+        htole32(0);
     struct iwx_host_cmd hcmd = {
         .id = iwx_cmd_id(IWX_SCAN_REQ_UMAC, IWX_LONG_GROUP, 0),
         .len = { 0, },
@@ -11800,7 +11900,7 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     
     req->ooc_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
     
-    if (ic->ic_des_esslen == 0 || bgscan)
+    if (!activeScan)
         gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_FORCE_PASSIVE;
     
     gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_PASS_ALL |
@@ -11812,7 +11912,7 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
         IWX_SCAN_ADWELL_DEFAULT_N_APS_SOCIAL;
     general_params->adwell_default_2g = IWX_SCAN_ADWELL_DEFAULT_LB_N_APS;
     general_params->adwell_default_5g = IWX_SCAN_ADWELL_DEFAULT_HB_N_APS;
-    if (ic->ic_des_esslen != 0 && !bgscan)
+    if (directedSsid)
         general_params->adwell_max_budget =
             cpu_to_le16(IWX_SCAN_ADWELL_MAX_BUDGET_DIRECTED_SCAN);
     else
@@ -11821,19 +11921,19 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     
     general_params->scan_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
     general_params->max_out_of_time[IWX_SCAN_LB_LMAC_IDX] =
-        timeout;
+        maxOutTime;
     general_params->suspend_time[IWX_SCAN_LB_LMAC_IDX] =
-        timeout;
+        suspendTime;
     
     general_params->max_out_of_time[IWX_SCAN_HB_LMAC_IDX] =
-        timeout;
+        maxOutTime;
     general_params->suspend_time[IWX_SCAN_HB_LMAC_IDX] =
-        timeout;
+        suspendTime;
 
-    general_params->active_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
-    general_params->passive_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
-    general_params->active_dwell[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
-    general_params->passive_dwell[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
+    general_params->active_dwell[IWX_SCAN_LB_LMAC_IDX] = activeDwell;
+    general_params->passive_dwell[IWX_SCAN_LB_LMAC_IDX] = passiveDwell;
+    general_params->active_dwell[IWX_SCAN_HB_LMAC_IDX] = activeDwell;
+    general_params->passive_dwell[IWX_SCAN_HB_LMAC_IDX] = passiveDwell;
     
     /* Specify the scan plan: We'll do one iteration. */
     req->scan_params.periodic_params.schedule[0].interval = 0;
@@ -11842,11 +11942,12 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     err = iwx_fill_probe_req(sc, &req->scan_params.probe_params.preq);
     if (err)
         return err;
-    if (ic->ic_des_esslen != 0 && !bgscan) {
+    if (activeScan) {
         req->scan_params.probe_params.direct_scan[0].id = IEEE80211_ELEMID_SSID;
-        req->scan_params.probe_params.direct_scan[0].len = ic->ic_des_esslen;
-        memcpy(req->scan_params.probe_params.direct_scan[0].ssid, ic->ic_des_essid,
-               ic->ic_des_esslen);
+        req->scan_params.probe_params.direct_scan[0].len = scanSsidLength;
+        if (scanSsidLength != 0)
+            memcpy(req->scan_params.probe_params.direct_scan[0].ssid,
+                   scanSsid, scanSsidLength);
     }
     
     cp = &req->scan_params.channel_params;
@@ -11854,7 +11955,11 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     cp->flags = IWX_SCAN_CHANNEL_FLAG_ENABLE_CHAN_ORDER;
     cp->count = iwx_umac_scan_fill_channels(sc,
                                             (struct iwx_scan_channel_cfg_umac *)cp->channel_config,
-                                            ic->ic_des_esslen != 0, bgscan);
+                                            activeScan ? 1 : 0, bgscan);
+    if (cp->count == 0) {
+        ::free(req);
+        return EINVAL;
+    }
     cp->n_aps_override[0] = IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY;
     cp->n_aps_override[1] = IWX_SCAN_ADWELL_N_APS_SOCIAL_CHS;
     

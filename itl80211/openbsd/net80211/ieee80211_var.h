@@ -308,6 +308,51 @@ struct ieee80211_wcl_reassoc_request {
 	int8_t		prune_rssi_dbm;
 };
 
+/*
+ * One exact Tahoe WCL ScanAdapter request, normalized before any lower HAL
+ * owns the radio.  AppleBCMWLAN consumes the SSID at carrier +0x1c/+0x20
+ * and the channel array at +0x54/+0x58 (400 twelve-byte Apple channels),
+ * instead of expanding each request into a full-band scan.  Keep the same
+ * bounded public facts in common net80211 so IWN, IWM, and IWX consume one
+ * identical immutable plan while their physical owner is live.
+ *
+ * A zero carrier channel count deliberately leaves channel_filter clear.
+ * Current Apple firmware may interpret that form itself; a non-zero count
+ * is exact and must never silently widen to other channels.  The three
+ * bitmaps preserve an explicitly supplied band where Apple provided one
+ * while retaining older band-neutral carriers.
+ */
+#define IEEE80211_WCL_SCAN_REQUEST_MAX_CHANNELS 400
+#define IEEE80211_WCL_SCAN_BITMAP_BYTES \
+	howmany(IEEE80211_CHAN_MAX + 1, NBBY)
+#define IEEE80211_WCL_SCAN_TYPE_PASSIVE 2
+#define IEEE80211_WCL_SCAN_DWELL_MAX_MS 255
+#define IEEE80211_WCL_SCAN_HOME_MAX_MS 1000
+
+struct ieee80211_wcl_scan_plan {
+	u_int64_t	generation;
+	u_int32_t	requested_channel_count;
+	u_int32_t	active_dwell_ms;
+	u_int32_t	passive_dwell_ms;
+	u_int32_t	home_dwell_ms;
+	u_int8_t	ssid_len;
+	u_int8_t	scan_type;
+	u_int8_t	channel_filter;
+	u_int8_t	active;
+	u_int8_t	ssid[IEEE80211_NWID_LEN];
+	u_char		channel_any[IEEE80211_WCL_SCAN_BITMAP_BYTES];
+	u_char		channel_2ghz[IEEE80211_WCL_SCAN_BITMAP_BYTES];
+	u_char		channel_5ghz[IEEE80211_WCL_SCAN_BITMAP_BYTES];
+};
+
+static inline u_int32_t
+ieee80211_wcl_scan_time_or_default(u_int32_t requested,
+    u_int32_t fallback)
+{
+	return requested == 0 || requested == 0xffffffffU ?
+	    fallback : requested;
+}
+
 #define IEEE80211_BGSCAN_FAIL_MAX		360	/* units of 500 msec */
 
 /*
@@ -803,6 +848,9 @@ struct ieee80211com {
     volatile u_int32_t ic_wcl_scan_suppress_scan_done_once;
     /* True only while an exact lower WCL lease owns an associated bgscan. */
     volatile u_int32_t ic_wcl_scan_active;
+    /* Immutable exact ScanAdapter plan; active is published last and
+     * cleared only after the matching upper generation loses ownership. */
+    struct ieee80211_wcl_scan_plan ic_wcl_scan_plan;
     /*
      * Tahoe WCL roaming policy, published by the Airport interface and
      * consumed by the common autonomous STA scan/candidate path.  generation
@@ -1454,6 +1502,14 @@ int	ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *,
 int	ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *, u_int32_t);
 int	ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *,
     const struct ieee80211_node *, u_int32_t *);
+int	ieee80211_wcl_scan_plan_stage(struct ieee80211com *,
+    const struct ieee80211_wcl_scan_plan *);
+int	ieee80211_wcl_scan_plan_snapshot(struct ieee80211com *,
+    struct ieee80211_wcl_scan_plan *);
+int	ieee80211_wcl_scan_plan_channel_allowed(struct ieee80211com *,
+    const struct ieee80211_wcl_scan_plan *,
+    const struct ieee80211_channel *);
+void	ieee80211_wcl_scan_plan_clear(struct ieee80211com *, u_int64_t);
 
 /*
  * Net80211 AP station-event producer bridge.

@@ -166,6 +166,13 @@ iwm_lmac_scan_fill_channels(struct iwm_softc *sc,
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_channel *c;
+    struct ieee80211_wcl_scan_plan wclPlan;
+    const bool exactWclPlan =
+        wclScanPhase != ItlIwmWclScanPhase::Idle &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const bool activeProbe = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        (n_ssids != 0 && !bgscan);
     uint8_t nchan;
     
     for (nchan = 0, c = &ic->ic_channels[1];
@@ -174,12 +181,15 @@ iwm_lmac_scan_fill_channels(struct iwm_softc *sc,
          c++) {
         if (c->ic_flags == 0)
             continue;
+        if (exactWclPlan &&
+            !ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c))
+            continue;
         
         chan->channel_num = htole16(ieee80211_mhz2ieee(c->ic_freq, 0));
         chan->iter_count = htole16(1);
         chan->iter_interval = 0;
         chan->flags = htole32(IWM_UNIFIED_SCAN_CHANNEL_PARTIAL);
-        if (n_ssids != 0 && !bgscan)
+        if (activeProbe)
             chan->flags |= htole32(1 << 1); /* select SSID 0 */
         chan++;
         nchan++;
@@ -194,6 +204,13 @@ iwm_umac_scan_fill_channels(struct iwm_softc *sc,
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_channel *c;
+    struct ieee80211_wcl_scan_plan wclPlan;
+    const bool exactWclPlan =
+        wclScanPhase != ItlIwmWclScanPhase::Idle &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const bool activeProbe = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        (n_ssids != 0 && !bgscan);
     uint8_t nchan;
     
     for (nchan = 0, c = &ic->ic_channels[1];
@@ -202,11 +219,14 @@ iwm_umac_scan_fill_channels(struct iwm_softc *sc,
          c++) {
         if (c->ic_flags == 0)
             continue;
+        if (exactWclPlan &&
+            !ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c))
+            continue;
         
         chan->channel_num = ieee80211_mhz2ieee(c->ic_freq, 0);
         chan->iter_count = 1;
         chan->iter_interval = htole16(0);
-        if (n_ssids != 0 && !bgscan)
+        if (activeProbe)
             chan->flags = htole32(1 << 0); /* select SSID 0 */
         chan++;
         nchan++;
@@ -339,10 +359,33 @@ int ItlIwm::
 iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_wcl_scan_plan wclPlan;
+    const bool exactWclPlan =
+        wclScanPhase != ItlIwmWclScanPhase::Idle &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const uint8_t scanSsidLength = exactWclPlan ?
+        wclPlan.ssid_len : ic->ic_des_esslen;
+    const uint8_t *scanSsid = exactWclPlan ?
+        wclPlan.ssid : ic->ic_des_essid;
+    /* A Tahoe type-1 scan with no SSID is an active wildcard scan.  Keep
+     * that transmission mode separate from the optional directed-SSID and
+     * pre-connection hints consumed by Intel firmware. */
+    const bool activeScan = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        scanSsidLength != 0;
+    const bool directedSsid = activeScan && scanSsidLength != 0;
+    const uint8_t activeDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.active_dwell_ms : 0, 10));
+    const uint8_t passiveDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.passive_dwell_ms : 0, 110));
     uint32_t configuredHomeAwayMs = 0;
     const uint32_t homeAwayMs =
         airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
             configuredHomeAwayMs : 120U;
+    const uint32_t suspendMs = ieee80211_wcl_scan_time_or_default(
+        exactWclPlan ? wclPlan.home_dwell_ms : 0, homeAwayMs);
     struct iwm_host_cmd hcmd = {
         .id = IWM_SCAN_OFFLOAD_REQUEST_CMD,
         .len = { 0, },
@@ -369,13 +412,13 @@ iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
     hcmd.flags |= async ? IWM_CMD_ASYNC : 0;
     
     /* These timings correspond to iwlwifi's UNASSOC scan. */
-    req->active_dwell = 10;
-    req->passive_dwell = 110;
+    req->active_dwell = activeDwell;
+    req->passive_dwell = passiveDwell;
     req->fragmented_dwell = 44;
     req->extended_dwell = 90;
     if (bgscan) {
         req->max_out_time = htole32(homeAwayMs);
-        req->suspend_time = htole32(homeAwayMs);
+        req->suspend_time = htole32(suspendMs);
     } else {
         req->max_out_time = htole32(0);
         req->suspend_time = htole32(0);
@@ -388,9 +431,9 @@ iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
     req->scan_flags = htole32(IWM_LMAC_SCAN_FLAG_PASS_ALL |
                               IWM_LMAC_SCAN_FLAG_ITER_COMPLETE |
                               IWM_LMAC_SCAN_FLAG_EXTENDED_DWELL);
-    if (ic->ic_des_esslen == 0)
+    if (!activeScan)
         req->scan_flags |= htole32(IWM_LMAC_SCAN_FLAG_PASSIVE);
-    else
+    else if (directedSsid)
         req->scan_flags |=
         htole32(IWM_LMAC_SCAN_FLAG_PRE_CONNECTION);
     if (isset(sc->sc_enabled_capa,
@@ -419,17 +462,23 @@ iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
     iwm_scan_rate_n_flags(sc, IEEE80211_CHAN_5GHZ, 1/*XXX*/);
     req->tx_cmd[1].sta_id = IWM_AUX_STA_ID;
     
-    /* Check if we're doing an active directed scan. */
-    if (ic->ic_des_esslen != 0) {
+    /* One selected zero-length SSID is Intel firmware's active wildcard
+     * representation; an empty selector list is passive. */
+    if (activeScan) {
         req->direct_scan[0].id = IEEE80211_ELEMID_SSID;
-        req->direct_scan[0].len = ic->ic_des_esslen;
-        memcpy(req->direct_scan[0].ssid, ic->ic_des_essid,
-               ic->ic_des_esslen);
+        req->direct_scan[0].len = scanSsidLength;
+        if (scanSsidLength != 0)
+            memcpy(req->direct_scan[0].ssid, scanSsid,
+                   scanSsidLength);
     }
     
     req->n_channels = iwm_lmac_scan_fill_channels(sc,
                                                   (struct iwm_scan_channel_cfg_lmac *)req->data,
-                                                  ic->ic_des_esslen != 0, bgscan);
+                                                  activeScan ? 1 : 0, bgscan);
+    if (req->n_channels == 0) {
+        ::free(req);
+        return EINVAL;
+    }
     
     preq = (struct iwm_scan_probe_req_v1 *)(req->data +
                                             (sizeof(struct iwm_scan_channel_cfg_lmac) *
@@ -585,10 +634,30 @@ int ItlIwm::
 iwm_umac_scan(struct iwm_softc *sc, int bgscan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_wcl_scan_plan wclPlan;
+    const bool exactWclPlan =
+        wclScanPhase != ItlIwmWclScanPhase::Idle &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const uint8_t scanSsidLength = exactWclPlan ?
+        wclPlan.ssid_len : ic->ic_des_esslen;
+    const uint8_t *scanSsid = exactWclPlan ?
+        wclPlan.ssid : ic->ic_des_essid;
+    const bool activeScan = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        scanSsidLength != 0;
+    const bool directedSsid = activeScan && scanSsidLength != 0;
+    const uint8_t activeDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.active_dwell_ms : 0, 10));
+    const uint8_t passiveDwell = static_cast<uint8_t>(
+        ieee80211_wcl_scan_time_or_default(
+            exactWclPlan ? wclPlan.passive_dwell_ms : 0, 110));
     uint32_t configuredHomeAwayMs = 0;
     const uint32_t homeAwayMs =
         airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
             configuredHomeAwayMs : 120U;
+    const uint32_t suspendMs = ieee80211_wcl_scan_time_or_default(
+        exactWclPlan ? wclPlan.home_dwell_ms : 0, homeAwayMs);
     struct iwm_host_cmd hcmd = {
         .id = iwm_cmd_id(IWM_SCAN_REQ_UMAC, IWM_LONG_GROUP, 0),
         .len = { 0, },
@@ -623,7 +692,7 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
         req->v7.adwell_default_n_aps =
         IWM_SCAN_ADWELL_DEFAULT_LB_N_APS;
         
-        if (ic->ic_des_esslen != 0)
+        if (directedSsid)
             req->v7.adwell_max_budget =
             htole16(IWM_SCAN_ADWELL_MAX_BUDGET_DIRECTED_SCAN);
         else
@@ -636,17 +705,17 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
         
         if (isset(sc->sc_ucode_api,
                   IWM_UCODE_TLV_API_ADAPTIVE_DWELL_V2)) {
-            req->v8.active_dwell[IWM_SCAN_LB_LMAC_IDX] = 10;
-            req->v8.passive_dwell[IWM_SCAN_LB_LMAC_IDX] = 110;
+            req->v8.active_dwell[IWM_SCAN_LB_LMAC_IDX] = activeDwell;
+            req->v8.passive_dwell[IWM_SCAN_LB_LMAC_IDX] = passiveDwell;
         } else {
-            req->v7.active_dwell = 10;
-            req->v7.passive_dwell = 110;
+            req->v7.active_dwell = activeDwell;
+            req->v7.passive_dwell = passiveDwell;
             req->v7.fragmented_dwell = 44;
         }
     } else {
         /* These timings correspond to iwlwifi's UNASSOC scan. */
-        req->v1.active_dwell = 10;
-        req->v1.passive_dwell = 110;
+        req->v1.active_dwell = activeDwell;
+        req->v1.passive_dwell = passiveDwell;
         req->v1.fragmented_dwell = 44;
         req->v1.extended_dwell = 90;
 
@@ -654,18 +723,19 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
     }
     
     if (bgscan) {
-        const uint32_t timeout = htole32(homeAwayMs);
+        const uint32_t maxOutTime = htole32(homeAwayMs);
+        const uint32_t suspendTime = htole32(suspendMs);
         if (isset(sc->sc_ucode_api,
                   IWM_UCODE_TLV_API_ADAPTIVE_DWELL_V2)) {
-            req->v8.max_out_time[IWM_SCAN_LB_LMAC_IDX] = timeout;
-            req->v8.suspend_time[IWM_SCAN_LB_LMAC_IDX] = timeout;
+            req->v8.max_out_time[IWM_SCAN_LB_LMAC_IDX] = maxOutTime;
+            req->v8.suspend_time[IWM_SCAN_LB_LMAC_IDX] = suspendTime;
         } else if (isset(sc->sc_ucode_api,
                          IWM_UCODE_TLV_API_ADAPTIVE_DWELL)) {
-            req->v7.max_out_time[IWM_SCAN_LB_LMAC_IDX] = timeout;
-            req->v7.suspend_time[IWM_SCAN_LB_LMAC_IDX] = timeout;
+            req->v7.max_out_time[IWM_SCAN_LB_LMAC_IDX] = maxOutTime;
+            req->v7.suspend_time[IWM_SCAN_LB_LMAC_IDX] = suspendTime;
         } else {
-            req->v1.max_out_time = timeout;
-            req->v1.suspend_time = timeout;
+            req->v1.max_out_time = maxOutTime;
+            req->v1.suspend_time = suspendTime;
         }
     }
 
@@ -675,7 +745,11 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
     chanparam = iwm_get_scan_req_umac_chan_param(sc, req);
     chanparam->count = iwm_umac_scan_fill_channels(sc,
                                                    (struct iwm_scan_channel_cfg_umac *)cmd_data,
-                                                   ic->ic_des_esslen != 0, bgscan);
+                                                   activeScan ? 1 : 0, bgscan);
+    if (chanparam->count == 0) {
+        ::free(req);
+        return EINVAL;
+    }
     chanparam->flags = 0;
     
     tail_data = (uint8_t*)cmd_data + sizeof(struct iwm_scan_channel_cfg_umac) *
@@ -691,22 +765,26 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
         IWM_UMAC_SCAN_GEN_FLAGS2_ALLOW_CHNL_REORDER;
     }
     
-    /* Check if we're doing an active directed scan. */
-    if (ic->ic_des_esslen != 0) {
+    /* Select SSID zero for both directed and wildcard active scans. */
+    if (activeScan) {
         if (isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_SCAN_EXT_CHAN_VER)) {
             tail->direct_scan[0].id = IEEE80211_ELEMID_SSID;
-            tail->direct_scan[0].len = ic->ic_des_esslen;
-            memcpy(tail->direct_scan[0].ssid, ic->ic_des_essid,
-                   ic->ic_des_esslen);
+            tail->direct_scan[0].len = scanSsidLength;
+            if (scanSsidLength != 0)
+                memcpy(tail->direct_scan[0].ssid, scanSsid,
+                       scanSsidLength);
         } else {
             tailv1->direct_scan[0].id = IEEE80211_ELEMID_SSID;
-            tailv1->direct_scan[0].len = ic->ic_des_esslen;
-            memcpy(tailv1->direct_scan[0].ssid, ic->ic_des_essid,
-                   ic->ic_des_esslen);
+            tailv1->direct_scan[0].len = scanSsidLength;
+            if (scanSsidLength != 0)
+                memcpy(tailv1->direct_scan[0].ssid, scanSsid,
+                       scanSsidLength);
         }
+    }
+    if (directedSsid)
         req->general_flags |=
-        htole32(IWM_UMAC_SCAN_GEN_FLAGS_PRE_CONNECT);
-    } else
+            htole32(IWM_UMAC_SCAN_GEN_FLAGS_PRE_CONNECT);
+    if (!activeScan)
         req->general_flags |= htole32(IWM_UMAC_SCAN_GEN_FLAGS_PASSIVE);
     
     if (isset(sc->sc_enabled_capa,

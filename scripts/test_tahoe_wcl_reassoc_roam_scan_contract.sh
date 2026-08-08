@@ -40,6 +40,15 @@ def forbid(text, needle, label):
         fail(f"unexpected {label}: {needle}")
 
 
+def ordered(text, label, *needles):
+    cursor = 0
+    for needle in needles:
+        pos = text.find(needle, cursor)
+        if pos < 0:
+            fail(f"{label} missing ordered token: {needle}")
+        cursor = pos + len(needle)
+
+
 def body(text, marker, label):
     start = text.find(marker)
     if start < 0:
@@ -112,7 +121,7 @@ forbid(scan, "airportItlwmIsRoamLocked",
        "explicit request blocked by autonomous-roam preference")
 
 supersede = body(core, "ieee80211_cancel_wcl_reassoc_bgscan(",
-                 "join supersession of reassoc scan")
+                 "foreground WCL supersession of reassoc scan")
 for token in (
     "ic->ic_bgscan_abort",
     "IEEE80211_F_DISABLE_BG_AUTO_CONNECT",
@@ -125,6 +134,12 @@ join = body(sky, "setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)",
             "WCL join producer")
 require(join, "ieee80211_cancel_wcl_reassoc_bgscan",
         "JoinAdapter supersession before replacement AUTH")
+public_scan = body(sky, "setWCL_SCAN_REQ(apple80211ScanRequest *req)",
+                   "WCL scan producer")
+ordered(public_scan, "ScanAdapter supersession before BGSCAN admission",
+        "if (ic->ic_wcl_reassoc_owner_active)",
+        "ieee80211_cancel_wcl_reassoc_bgscan(",
+        "if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0")
 cached = body(sky, "tahoeFindJoinableCachedWclCandidate(\n    struct ieee80211com *ic,",
               "cached WCL candidate predicate")
 for token in ("IEEE80211_F_BGSCAN", "ic_wcl_reassoc_owner_active"):

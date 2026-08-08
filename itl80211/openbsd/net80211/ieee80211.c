@@ -102,6 +102,92 @@ airportItlwmIsRoamLocked(void)
         __ATOMIC_ACQUIRE) != 0;
 }
 
+int
+ieee80211_wcl_scan_plan_stage(struct ieee80211com *ic,
+    const struct ieee80211_wcl_scan_plan *source)
+{
+	struct ieee80211_wcl_scan_plan *plan;
+
+	if (ic == NULL || source == NULL || source->generation == 0 ||
+	    source->ssid_len > IEEE80211_NWID_LEN ||
+	    source->requested_channel_count >
+	    IEEE80211_WCL_SCAN_REQUEST_MAX_CHANNELS)
+		return EINVAL;
+	plan = &ic->ic_wcl_scan_plan;
+	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) != 0)
+		return EBUSY;
+
+	/* The upper WCL lifecycle serializes producers.  Publish active only
+	 * after the complete fixed plan is visible; every lower reader retains
+	 * the plan until that exact generation reaches terminal/invalidation. */
+	memcpy(plan, source, sizeof(*plan));
+	plan->active = 0;
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	__atomic_store_n(&plan->active, 1, __ATOMIC_RELEASE);
+	return 0;
+}
+
+int
+ieee80211_wcl_scan_plan_snapshot(struct ieee80211com *ic,
+    struct ieee80211_wcl_scan_plan *snapshot)
+{
+	struct ieee80211_wcl_scan_plan *plan;
+	u_int64_t generation;
+
+	if (ic == NULL || snapshot == NULL)
+		return 0;
+	plan = &ic->ic_wcl_scan_plan;
+	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) == 0)
+		return 0;
+	generation = plan->generation;
+	memcpy(snapshot, plan, sizeof(*snapshot));
+	__atomic_thread_fence(__ATOMIC_ACQUIRE);
+	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) == 0 ||
+	    plan->generation != generation || generation == 0) {
+		explicit_bzero(snapshot, sizeof(*snapshot));
+		return 0;
+	}
+	snapshot->active = 1;
+	return 1;
+}
+
+int
+ieee80211_wcl_scan_plan_channel_allowed(struct ieee80211com *ic,
+    const struct ieee80211_wcl_scan_plan *plan,
+    const struct ieee80211_channel *channel)
+{
+	u_int channel_number;
+
+	if (ic == NULL || plan == NULL || channel == NULL ||
+	    plan->active == 0 || plan->channel_filter == 0)
+		return 1;
+	channel_number = ieee80211_chan2ieee(ic, channel);
+	if (channel_number > IEEE80211_CHAN_MAX)
+		return 0;
+	if (isset(plan->channel_any, channel_number))
+		return 1;
+	if (IEEE80211_IS_CHAN_2GHZ(channel))
+		return isset(plan->channel_2ghz, channel_number) != 0;
+	if (IEEE80211_IS_CHAN_5GHZ(channel))
+		return isset(plan->channel_5ghz, channel_number) != 0;
+	return 0;
+}
+
+void
+ieee80211_wcl_scan_plan_clear(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	struct ieee80211_wcl_scan_plan *plan;
+
+	if (ic == NULL)
+		return;
+	plan = &ic->ic_wcl_scan_plan;
+	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) == 0 ||
+	    (generation != 0 && plan->generation != generation))
+		return;
+	__atomic_store_n(&plan->active, 0, __ATOMIC_RELEASE);
+}
+
 void
 ieee80211_set_roam_profile_policy(struct ieee80211com *ic,
     const struct ieee80211_roam_profile_policy *policy)
@@ -432,11 +518,12 @@ ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
 }
 
 /*
- * A new JoinAdapter transaction supersedes an accepted firmware roam scan.
- * Broadcom's join command owns that replacement inside firmware.  Intel's
- * reassociation census is host-owned, so perform the equivalent replacement
- * explicitly: retire the lower scan before a cached candidate can enter AUTH,
- * then close the already-sent reassociation owner exactly once.
+ * A new foreground WCL transaction supersedes an accepted firmware roam
+ * scan.  Broadcom sends JoinAdapter and ScanAdapter commands to firmware
+ * without a host-side WLC_REASSOC busy fence.  Intel's reassociation census
+ * is host-owned, so perform the equivalent replacement explicitly: retire
+ * the lower scan before the foreground request claims the radio, then close
+ * the already-sent reassociation owner exactly once.
  *
  * Do not cancel a roam after target switching or an OTA reassociation has
  * started.  At that point the source association is no longer a stable join
@@ -479,7 +566,7 @@ ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *ic,
 	    IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
 	ic->ic_wcl_reassoc_owner_last_leaf =
 	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
-	XYLog("wcl_reassoc SUPERSEDED_BY_JOIN\n");
+	XYLog("wcl_reassoc SUPERSEDED_BY_WCL_REQUEST\n");
 	ieee80211_wcl_reassoc_post_failure(ic,
 	    result != 0 ? result : (u_int32_t)ECANCELED);
 	return 0;
@@ -643,6 +730,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     ic->ic_newstate_preflight = NULL;
     ic->ic_wcl_scan_suppress_scan_done_once = 0;
     ic->ic_wcl_scan_active = 0;
+    memset(&ic->ic_wcl_scan_plan, 0, sizeof(ic->ic_wcl_scan_plan));
     ic->ic_initial_scan_census_only = 0;
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
@@ -736,6 +824,7 @@ ieee80211_ifdetach(struct _ifnet *ifp)
     /* Close future async STA owners before queues, crypto, and nodes vanish. */
     ieee80211_public_initial_bssid_pin_disarm(ic);
     ieee80211_wnm_bss_transition_clear(ic);
+    ieee80211_wcl_scan_plan_clear(ic, 0);
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;

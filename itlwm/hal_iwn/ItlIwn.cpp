@@ -19624,6 +19624,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     struct ieee80211_frame *wh;
     struct ieee80211_rateset *rs;
     struct ieee80211_channel *c;
+    struct ieee80211_wcl_scan_plan wclPlan;
     uint8_t *buf, *frm;
     u_int8_t wnm_target_channel = 0;
     uint16_t rxchain, dwell_active, dwell_passive;
@@ -19636,6 +19637,16 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     bool wcl_background_5ghz_directed_dwell = false;
     bool foreground_5ghz_directed_dwell = false;
     bool ap_sta_pan_priority_changed = false;
+    const bool exactWclPlan = wcl_scan &&
+        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const u_int8_t scanSsidLength = exactWclPlan ?
+        wclPlan.ssid_len : ic->ic_des_esslen;
+    const u_int8_t *scanSsid = exactWclPlan ?
+        wclPlan.ssid : ic->ic_des_essid;
+    const bool activeScan = exactWclPlan ?
+        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        scanSsidLength != 0;
+    const bool directedSsid = activeScan && scanSsidLength != 0;
 
     if (out_command_attempted != NULL)
         *out_command_attempted = false;
@@ -19672,8 +19683,12 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
             airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs);
         const u_int32_t maxOutMs = hasConfiguredHomeAway ?
             configuredHomeAwayMs : 200U;
-        const u_int32_t pauseMs = hasConfiguredHomeAway ?
+        const u_int32_t defaultPauseMs = hasConfiguredHomeAway ?
             configuredHomeAwayMs : 100U;
+        const u_int32_t pauseMs =
+            ieee80211_wcl_scan_time_or_default(
+                exactWclPlan ? wclPlan.home_dwell_ms : 0,
+                defaultPauseMs);
 
         /*
          * DVM applies associated-scan home/away scheduling whenever any
@@ -19763,20 +19778,20 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
         (le32toh(sc->rxon.filter) & IWN_FILTER_BSS) == 0 &&
         (flags & IEEE80211_CHAN_5GHZ) != 0;
 
-    /* Only do active scanning if we're announcing a probe request for a
-     * given SSID (or more, if we ever add it to the driver.) */
-    is_active = 0;
+    /* AppleBCMWLAN treats scan type 1 as active even when the SSID selector
+     * is empty.  DVM already builds a wildcard probe template below, so keep
+     * active transmission independent of the optional directed ESSID. */
+    is_active = activeScan ? 1 : 0;
 
     /*
      * If we're scanning for a specific SSID, add it to the command.
      */
     essid = (struct iwn_scan_essid *)(tx + 1);
-    if (ic->ic_des_esslen != 0) {
+    if (scanSsidLength != 0) {
         essid[0].id = IEEE80211_ELEMID_SSID;
-        essid[0].len = ic->ic_des_esslen;
-        memcpy(essid[0].data, ic->ic_des_essid, ic->ic_des_esslen);
+        essid[0].len = scanSsidLength;
+        memcpy(essid[0].data, scanSsid, scanSsidLength);
 
-        is_active = 1;
     }
     /* An associated WCL scan for a selected SSID is an actual directed
      * active scan.  Its 24 ms 5 GHz dwell is too short to reliably collect
@@ -19790,7 +19805,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
      * channels, raise only the active portion below the existing budget.
      * Undirected, foreground, and non-WCL scans keep their prior behavior. */
     wcl_background_5ghz_directed_dwell = wcl_scan && bgscan != 0 &&
-        is_active != 0 && (flags & IEEE80211_CHAN_5GHZ) != 0;
+        directedSsid && (flags & IEEE80211_CHAN_5GHZ) != 0;
     /* A public ASSOCIATE can replace an undirected discovery command with a
      * foreground directed scan.  On an NVM-passive non-DFS channel, the
      * legacy 110 ms budget is only 7.6 ms above a normal 100-TU beacon
@@ -19798,7 +19813,7 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
      * the permitted directed probe.  Give every foreground directed 5 GHz
      * join one bounded full-beacon margin.  The channel remains passive and
      * DFS remains excluded, so this does not authorize a new transmission. */
-    foreground_5ghz_directed_dwell = bgscan == 0 && is_active != 0 &&
+    foreground_5ghz_directed_dwell = bgscan == 0 && directedSsid &&
         (flags & IEEE80211_CHAN_5GHZ) != 0;
     /*
      * Build a probe request frame.  Most of the following code is a
@@ -19865,13 +19880,16 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
          c <= &ic->ic_channels[IEEE80211_CHAN_MAX]; c++) {
         if ((c->ic_flags & flags) != flags)
             continue;
+        if (exactWclPlan &&
+            !ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c))
+            continue;
         if (wnm_exact_channel &&
             ieee80211_chan2ieee(ic, c) != wnm_target_channel)
             continue;
 
         chan->chan = htole16(ieee80211_chan2ieee(ic, c));
         chan->flags = 0;
-        if (ic->ic_des_esslen != 0)
+        if (is_active != 0)
             chan->flags |= htole32(IWN_CHAN_NPBREQS(1));
 
         if (c->ic_flags & IEEE80211_CHAN_PASSIVE)
@@ -19885,17 +19903,26 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
 
         dwell_active = iwn_get_active_dwell_time(sc, flags, is_active);
         dwell_passive = iwn_get_passive_dwell_time(sc, flags);
-        if (foreground_5ghz_directed_dwell &&
+        if (exactWclPlan) {
+            dwell_active = static_cast<uint16_t>(
+                ieee80211_wcl_scan_time_or_default(
+                    wclPlan.active_dwell_ms, dwell_active));
+            dwell_passive = static_cast<uint16_t>(
+                ieee80211_wcl_scan_time_or_default(
+                    wclPlan.passive_dwell_ms, dwell_passive));
+        }
+        if (!exactWclPlan && foreground_5ghz_directed_dwell &&
             (c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0 &&
             (c->ic_flags & IEEE80211_CHAN_DFS) == 0)
             dwell_passive = MAX(dwell_passive, 130);
-        if ((wcl_foreground_5ghz_extended_dwell ||
+        if (!exactWclPlan &&
+            (wcl_foreground_5ghz_extended_dwell ||
              wcl_background_5ghz_unassociated_dwell ||
              (wcl_background_5ghz_directed_dwell &&
               (c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0)) &&
             (c->ic_flags & IEEE80211_CHAN_DFS) == 0)
             dwell_passive = MAX(dwell_passive, 130);
-        if (wcl_background_5ghz_directed_dwell &&
+        if (!exactWclPlan && wcl_background_5ghz_directed_dwell &&
             (c->ic_flags & (IEEE80211_CHAN_PASSIVE |
                             IEEE80211_CHAN_DFS)) == 0 &&
             dwell_passive > dwell_active)
