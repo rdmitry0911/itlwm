@@ -795,17 +795,24 @@ struct ieee80211com {
 				    struct ieee80211_key *);
 	/*
 	 * Optional ownership-taking EAPOL-Key ingress hook. A non-NULL callback
-	 * consumes m on every return. It lets a driver defer a negotiated
-	 * protected-management handshake out of its RX action before issuing a
-	 * wait-aware key command; the default remains ieee80211_eapol_key_input.
+	 * consumes m on every return. It lets a driver defer a key handshake out
+	 * of its RX action before entering a serial asynchronous key owner; the
+	 * default remains ieee80211_eapol_key_input.
 	 */
 	void			(*ic_eapol_key_input)(struct ieee80211com *, mbuf_t,
 				    struct ieee80211_node *);
 	/*
-	 * Optional owner for an asynchronous MFP PAE key transaction. Submission
-	 * copies one staged key into the backend and returns without sleeping;
-	 * completion reaches ieee80211_pae_mfp_txn_complete() only from the
-	 * backend's serial worker.
+	 * A driver sets this only when its asynchronous PAE transaction owner can
+	 * wait for ordinary CCMP PTK/GTK firmware acknowledgements.  MFP remains
+	 * independently gated by IEEE80211_C_MFP and per-node negotiation.
+	 */
+	int			ic_pae_data_key_txn;
+	/*
+	 * Optional owner for an asynchronous PAE key transaction. Submission
+	 * copies one staged PTK/GTK/IGTK into the backend and returns without
+	 * sleeping; completion reaches ieee80211_pae_mfp_txn_complete() only from
+	 * the backend's serial worker.  The historical mfp name is retained for
+	 * source and ABI stability.
 	 */
 	int			(*ic_pae_mfp_txn_submit)(struct ieee80211com *,
 				    u_int64_t, u_int64_t, struct ieee80211_node *,

@@ -342,10 +342,9 @@ for token in (
 ):
     require(source["mfp_contract"], token,
             "new-format API-68 carrier contract")
-runtime = body(cpp, "static bool\niwx_mfp_runtime_enabled",
-               "selected API-68 PMF runtime gate")
+data_runtime = body(cpp, "static bool\niwx_pae_key_runtime_enabled",
+                    "IWX PAE data-key runtime gate")
 for token in (
-    "iwx_api68_igtk_v2_ok(sc)",
     "sc->sc_mfp_pae_lock != NULL",
     "sc->sc_cmdq_lock != NULL",
     "sc->sc_task_gate_lock != NULL",
@@ -354,7 +353,14 @@ for token in (
     "sc->sc_nswq != NULL",
     "sc->sc_ic.ic_pae_selected_bss_lock != NULL",
 ):
-    require(runtime, token, "runtime prerequisite")
+    require(data_runtime, token, "data-key runtime prerequisite")
+runtime = body(cpp, "static bool\niwx_mfp_runtime_enabled",
+               "selected API-68 PMF runtime gate")
+for token in (
+    "iwx_pae_key_runtime_enabled(sc)",
+    "iwx_api68_igtk_v2_ok(sc)",
+):
+    require(runtime, token, "MFP runtime prerequisite")
 publish = body(cpp, "static void\niwx_publish_mfp_capability",
                "PMF capability publication")
 for token in (
@@ -363,6 +369,7 @@ for token in (
     "ic->ic_pae_mfp_txn_submit = NULL;",
     "ic->ic_pae_mfp_txn_cancel = NULL;",
     "ic->ic_pae_mfp_txn_finish = NULL;",
+    "ic->ic_pae_data_key_txn = 1;",
     "ic->ic_caps |= IEEE80211_C_MFP;",
     "ItlIwx::iwx_security_rx_eapol_input",
     "ItlIwx::iwx_pae_mfp_txn_submit",
@@ -406,7 +413,7 @@ order(msg3, "initial PMF IGTK requirement",
       "goto deauth")
 order(msg3, "Msg3 owner-before-commit",
       "ieee80211_pae_mfp_msg3_begin", "if (mfp_error == 0 || mfp_error == EBUSY)",
-      "return;", "Historical non-MFP/retransmit path commits TPTK synchronously.",
+      "return;", "Historical non-transaction/retransmit path commits TPTK directly.",
       "memcpy(&ni->ni_ptk", "ieee80211_send_4way_msg4")
 group = body(pae, "void\nieee80211_recv_rsn_group_msg1", "group Msg1")
 order(group, "group owner-before-commit", "ieee80211_pae_mfp_group_begin",

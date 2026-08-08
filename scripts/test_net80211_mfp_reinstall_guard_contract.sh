@@ -76,10 +76,12 @@ for text, label, kid in ((msg3, "Msg3", "gtk_kid"),
             "if (bip_update)",
             "have_igtk = 1;")
 
-# A new PTK needs KDE validation, but an already-live equal GTK/IGTK must not
-# be reinstalled simply to satisfy the builder's old have_* bookkeeping.
-require(msg3, "(!have_ptk || gtk == NULL || igtk == NULL)",
-        "fresh-PTK KDE-presence validation")
+# A new MFP PTK needs both KDEs, but ordinary WPA2 may use the same builder
+# without an IGTK.  An already-live equal GTK/IGTK must not be reinstalled
+# simply to satisfy the builder's old have_* bookkeeping.
+ordered(msg3, "fresh-MFP-PTK KDE-presence validation",
+        "!have_ptk", "IEEE80211_NODE_MFP",
+        "gtk == NULL || igtk == NULL")
 if "(!have_ptk || !have_gtk || !have_igtk)" in msg3:
     fail("fresh PTK still forces equal GTK/IGTK reinstallation")
 

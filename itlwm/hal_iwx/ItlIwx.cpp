@@ -715,6 +715,7 @@ detach(IOPCIDevice *device)
          * tombstone before generic ifdetach destroys selected-BSS state. */
         (void)iwx_sae_engine_publish_hooks(sc, false, false, 0);
         sc->sc_ic.ic_eapol_key_input = NULL;
+        sc->sc_ic.ic_pae_data_key_txn = 0;
         sc->sc_ic.ic_set_key_wait = NULL;
         sc->sc_ic.ic_pae_mfp_txn_submit = NULL;
         sc->sc_ic.ic_pae_mfp_txn_cancel = NULL;
@@ -2695,6 +2696,7 @@ void    iwx_radiotap_attach(struct iwx_softc *);
 #endif
 
 static bool iwx_api68_igtk_v2_ok(const struct iwx_softc *);
+static bool iwx_pae_key_runtime_enabled(const struct iwx_softc *);
 static bool iwx_mfp_runtime_enabled(const struct iwx_softc *);
 static void iwx_publish_mfp_capability(struct iwx_softc *);
 static int iwx_set_sta_igtk_v2(struct iwx_softc *,
@@ -14976,8 +14978,10 @@ iwx_security_rx_eapol_input(struct ieee80211com *ic, mbuf_t m,
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
 
-    if (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
-        iwx_mfp_runtime_enabled(sc)) {
+    if (ni != NULL && iwx_pae_key_runtime_enabled(sc) &&
+        (((ni->ni_flags & IEEE80211_NODE_MFP) != 0) ||
+         (ni->ni_rsncipher == IEEE80211_CIPHER_CCMP &&
+          ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP))) {
         if (that->iwx_security_rx_enqueue(sc, m, ni))
             return;
 
@@ -18593,52 +18597,58 @@ const struct iwl_cfg iwlax211_2ax_cfg_so_gf_a0_long = {
     .num_rbds = IWL_NUM_RBDS_AX210_HE,
 };
 
-/*
- * An exact selected-AX210-family/API-68 firmware match is necessary, but not
- * sufficient for MFP. The PAE Msg3 key transaction must be an asynchronous,
- * generation-
- * checked continuation back on the RX workloop. Until that state machine
- * exists, fail closed rather than expose a key lifecycle that can race a
- * deauth/roam callback on the same notification batch.
- */
+/* Ordinary CCMP needs the serial q0/epoch owner on every IWX generation.
+ * MFP adds a separate exact API-68 IGTK requirement below. */
 static bool
-iwx_mfp_runtime_enabled(const struct iwx_softc *sc)
+iwx_pae_key_runtime_enabled(const struct iwx_softc *sc)
 {
-    return sc != NULL && iwx_api68_igtk_v2_ok(sc) &&
-        sc->sc_mfp_pae_lock != NULL && sc->sc_cmdq_lock != NULL &&
+    return sc != NULL && sc->sc_mfp_pae_lock != NULL &&
+        sc->sc_cmdq_lock != NULL &&
         sc->sc_task_gate_lock != NULL && sc->sc_taskq_initialized &&
         sc->sc_task_callbacks_ready && sc->sc_nswq != NULL &&
         sc->sc_ic.ic_pae_selected_bss_lock != NULL;
 }
 
-/*
- * Firmware eligibility is necessary but intentionally not sufficient for a
- * connection: WCL must set ic_pae_mfp_requested for each exact audited PSK
- * association.  This publishes only the completed async owner, never a
- * global "turn PMF on for every AP" policy.
- */
+static bool
+iwx_mfp_runtime_enabled(const struct iwx_softc *sc)
+{
+    return iwx_pae_key_runtime_enabled(sc) && iwx_api68_igtk_v2_ok(sc);
+}
+
+/* Publish the data-key owner whenever its lifecycle is complete.  Firmware
+ * eligibility remains independently necessary for MFP, and WCL must still
+ * request MFP for each exact audited association. */
 static void
 iwx_publish_mfp_capability(struct iwx_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
 
-    if (!iwx_mfp_runtime_enabled(sc)) {
+    if (!iwx_pae_key_runtime_enabled(sc)) {
         sc->sc_sae_engine_runtime_enabled = false;
         ic->ic_caps &= ~IEEE80211_C_MFP;
         ic->ic_eapol_key_input = NULL;
+        ic->ic_pae_data_key_txn = 0;
         ic->ic_pae_mfp_txn_submit = NULL;
         ic->ic_pae_mfp_txn_cancel = NULL;
         ic->ic_pae_mfp_txn_finish = NULL;
         return;
     }
 
-    sc->sc_sae_engine_runtime_enabled = true;
-    ic->ic_caps |= IEEE80211_C_MFP;
     ic->ic_eapol_key_input = ItlIwx::iwx_security_rx_eapol_input;
+    ic->ic_pae_data_key_txn = 1;
     ic->ic_set_key_wait = NULL;
     ic->ic_pae_mfp_txn_submit = ItlIwx::iwx_pae_mfp_txn_submit;
     ic->ic_pae_mfp_txn_cancel = ItlIwx::iwx_pae_mfp_txn_cancel;
     ic->ic_pae_mfp_txn_finish = ItlIwx::iwx_pae_mfp_txn_finish;
+
+    if (!iwx_mfp_runtime_enabled(sc)) {
+        sc->sc_sae_engine_runtime_enabled = false;
+        ic->ic_caps &= ~IEEE80211_C_MFP;
+        return;
+    }
+
+    sc->sc_sae_engine_runtime_enabled = true;
+    ic->ic_caps |= IEEE80211_C_MFP;
 }
 
 static int
@@ -19609,13 +19619,14 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
         assoc_epoch == 0 || !iwx_mfp_pae_stage_valid(stage))
         return EINVAL;
     sc = (struct iwx_softc *)ic->ic_softc;
-    if (sc == NULL || sc->sc_mfp_pae_lock == NULL ||
-        !iwx_api68_igtk_v2_ok(sc) ||
+    if (sc == NULL || !iwx_pae_key_runtime_enabled(sc) ||
         ieee80211_pae_assoc_epoch_current(ic) != assoc_epoch ||
         ic->ic_bss != ni)
         return EOPNOTSUPP;
     if (stage == IEEE80211_PAE_MFP_STAGE_IGTK) {
-        if (key->k_cipher != IEEE80211_CIPHER_BIP ||
+        if (!iwx_mfp_runtime_enabled(sc) ||
+            (ni->ni_flags & IEEE80211_NODE_MFP) == 0 ||
+            key->k_cipher != IEEE80211_CIPHER_BIP ||
             (key->k_flags & IEEE80211_KEY_IGTK) == 0 ||
             !IwxMfpIgtkContracts::hasValidIgtkShape(key->k_id,
                                                      key->k_len))
@@ -19721,8 +19732,13 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
             sta_cmd.common.key_flags |= htole16(IWX_STA_KEY_MULTICAST);
         } else {
             sta_cmd.common.key_offset = 0;
-            sta_cmd.common.key_flags |= htole16(IWX_STA_KEY_MFP);
+            if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0)
+                sta_cmd.common.key_flags |= htole16(IWX_STA_KEY_MFP);
         }
+        XYLog("%s: PAE firmware key txn=%llu stage=%u mfp=%u\n",
+              DEVNAME(sc), (unsigned long long)txn_id,
+              (unsigned)stage,
+              (unsigned)((ni->ni_flags & IEEE80211_NODE_MFP) != 0));
         memcpy(sta_cmd.common.key, key_copy.k_key,
                MIN(sizeof(sta_cmd.common.key), key_copy.k_len));
         sta_cmd.common.sta_id = IWX_STATION_ID;
@@ -21528,6 +21544,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_set_key_wait = NULL;
     ic->ic_delete_key = iwx_delete_key;
     ic->ic_eapol_key_input = NULL;
+    ic->ic_pae_data_key_txn = 0;
     ic->ic_pae_mfp_txn_submit = NULL;
     ic->ic_pae_mfp_txn_cancel = NULL;
     ic->ic_pae_mfp_txn_finish = NULL;

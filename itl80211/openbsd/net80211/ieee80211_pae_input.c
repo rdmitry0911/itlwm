@@ -134,7 +134,7 @@ ieee80211_pae_install_igtk(struct ieee80211com *ic,
     return error;
 }
 
-/* The async MFP ingress must not inspect a live GTK descriptor directly.
+/* The async PAE ingress must not inspect a live GTK descriptor directly.
  * Keep the legacy group-key reinstall comparison under the selected-BSS
  * fence, matching the BIP helper used for IGTK below. */
 static int
@@ -157,7 +157,28 @@ ieee80211_pae_mfp_gtk_needs_update(struct ieee80211com *ic, u_int8_t kid,
 }
 
 /*
- * Build a value-only PMF Msg3 plan.  The raw EAPOL frame remains owned by
+ * MFP always needs the atomic PTK -> GTK -> IGTK owner.  A backend may also
+ * opt ordinary WPA2-CCMP into the same transaction so protected data cannot
+ * overtake its firmware key acknowledgements.  Keep TKIP and mixed-cipher
+ * associations on their historical path.
+ */
+static int
+ieee80211_pae_key_txn_enabled(struct ieee80211com *ic,
+    struct ieee80211_node *ni)
+{
+    if (ic == NULL || ni == NULL || ic->ic_pae_mfp_txn_submit == NULL ||
+        ic->ic_pae_mfp_txn_cancel == NULL ||
+        ic->ic_pae_mfp_txn_finish == NULL)
+        return 0;
+    if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0)
+        return 1;
+    return ic->ic_pae_data_key_txn != 0 &&
+        ni->ni_rsncipher == IEEE80211_CIPHER_CCMP &&
+        ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP;
+}
+
+/*
+ * Build a value-only Msg3 plan.  The raw EAPOL frame remains owned by
  * this ingress worker; the asynchronous owner receives only freshly-built
  * kernel key values with no crypto-private pointer.  A retransmit with no
  * new keys returns ENOENT so the historical Msg4 retry path remains intact.
@@ -234,7 +255,9 @@ ieee80211_pae_mfp_msg3_begin(struct ieee80211com *ic,
         }
     }
     if ((ni->ni_flags & IEEE80211_NODE_RSN_NEW_PTK) &&
-        (!have_ptk || gtk == NULL || igtk == NULL))
+        (!have_ptk ||
+         ((ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+          (gtk == NULL || igtk == NULL))))
         return EINVAL;
     if (!have_ptk && !have_gtk && !have_igtk)
         return ENOENT;
@@ -254,7 +277,9 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
     u_int16_t kid;
     int keylen, gtk_update, bip_update, have_gtk = 0, have_igtk = 0;
 
-    if (gtk == NULL || ni->ni_rsngroupmgmtcipher != IEEE80211_CIPHER_BIP)
+    if (gtk == NULL ||
+        ((ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+         ni->ni_rsngroupmgmtcipher != IEEE80211_CIPHER_BIP))
         return EINVAL;
     memset(&gtk_key, 0, sizeof(gtk_key));
     memset(&igtk_key, 0, sizeof(igtk_key));
@@ -297,7 +322,7 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
             memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
             have_igtk = 1;
         }
-    } else {
+    } else if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0) {
         /* A rekey may omit IGTK only after either retained RX IGTK slot is
          * live.  Do not observe descriptor fields or k_priv outside its
          * selected-BSS lock. */
@@ -827,12 +852,11 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     }
 
     /*
-     * A negotiated MFP Msg3 is the only path that may enter the async owner.
-     * Do not publish replay state, Msg4, key material, protection flags, or
-     * link state until PTK -> GTK -> IGTK firmware ACKs have committed.
+     * MFP and an explicitly opted-in ordinary CCMP association enter the
+     * async owner here.  Do not publish replay state, Msg4, key material,
+     * protection flags, or link state until its firmware ACKs have committed.
      */
-    if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
-        ic->ic_pae_mfp_txn_submit != NULL) {
+    if (ieee80211_pae_key_txn_enabled(ic, ni)) {
         int mfp_error;
 
         mfp_error = ieee80211_pae_mfp_msg3_begin(ic, ni, &tptk, key,
@@ -850,7 +874,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         }
     }
 
-    /* Historical non-MFP/retransmit path commits TPTK synchronously. */
+    /* Historical non-transaction/retransmit path commits TPTK directly. */
     memcpy(&ni->ni_ptk, &tptk, sizeof(tptk));
     
     /* update the last seen value of the key replay counter field */
@@ -1226,8 +1250,7 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         return;
     }
 
-    if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
-        ic->ic_pae_mfp_txn_submit != NULL) {
+    if (ieee80211_pae_key_txn_enabled(ic, ni)) {
         int mfp_error;
 
         mfp_error = ieee80211_pae_mfp_group_begin(ic, ni, key, gtk,
