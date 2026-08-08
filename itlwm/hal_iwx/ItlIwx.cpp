@@ -10246,7 +10246,16 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
     //    totlen = m->m_pkthdr.len;
     totlen = mbuf_pkthdr_len(m);
     
-    if (hdrlen % 4)
+    /*
+     * The 22000/new-TX firmware ABI does not infer the 802.11 header
+     * boundary from the frame type.  Publish it explicitly, exactly as the
+     * reference IWX path does, so firmware can locate the payload (and the
+     * IV it inserts for a hardware key) after reconnect/radio recovery too.
+     */
+    offload_assist |= IWX_TX_CMD_OFFLD_MH_SIZE(
+        (hdrlen / 2) & IWX_TX_CMD_OFFLD_MH_MASK);
+    const uint16_t header_pad = hdrlen & 3 ? 4 - (hdrlen & 3) : 0;
+    if (header_pad != 0)
         offload_assist |= IWX_TX_CMD_OFFLD_PAD;
     
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
@@ -10257,6 +10266,9 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
         
         tx_gen3->len = htole16(totlen);
         tx_gen3->offload_assist = htole32(offload_assist);
+        /* Clear the bytes covered by the advertised alignment pad too. */
+        memset(((uint8_t *)tx_gen3) + sizeof(*tx_gen3), 0,
+               hdrlen + header_pad);
         /* Copy 802.11 header in TX command. */
         memcpy(((uint8_t *)tx_gen3) + sizeof(*tx_gen3), wh, hdrlen);
         tx_gen3->flags = htole16(flags);
@@ -10268,6 +10280,9 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
         memset(tx_gen2, 0, cmd_size);
         tx_gen2->len = htole16(totlen);
         tx_gen2->offload_assist = htole16(offload_assist);
+        /* Clear the bytes covered by the advertised alignment pad too. */
+        memset(((uint8_t *)tx_gen2) + sizeof(*tx_gen2), 0,
+               hdrlen + header_pad);
         /* Copy 802.11 header in TX command. */
         memcpy(((uint8_t *)tx_gen2) + sizeof(*tx_gen2), wh, hdrlen);
         tx_gen2->flags = htole32(flags);
@@ -10327,8 +10342,9 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
     memcpy(&desc->tbs[0].addr, &paddr, sizeof(paddr));
     if (data->cmd_paddr >> 32 != (data->cmd_paddr + le32toh(desc->tbs[0].tb_len)) >> 32)
         DPRINTF(("%s: TB0 crosses 32bit boundary\n", __func__));
-    desc->tbs[1].tb_len = htole16(_ALIGN(sizeof(struct iwx_cmd_header) +
-                                  cmd_size + hdrlen - IWX_FIRST_TB_SIZE, 4));
+    desc->tbs[1].tb_len = htole16(sizeof(struct iwx_cmd_header) +
+                                  cmd_size + hdrlen + header_pad -
+                                  IWX_FIRST_TB_SIZE);
     paddr = htole64(data->cmd_paddr + IWX_FIRST_TB_SIZE);
     memcpy(&desc->tbs[1].addr, &paddr, sizeof(paddr));
     
