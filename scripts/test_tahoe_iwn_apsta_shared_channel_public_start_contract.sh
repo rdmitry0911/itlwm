@@ -283,13 +283,13 @@ stop_lower = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::stopLower()"):
                    owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()")]
 for token in (
     "primaryStaCarrierHoldPending = false;",
-    "primary->ic_opmode == IEEE80211_M_STA",
     "primary->ic_state == IEEE80211_S_RUN",
     "primary->ic_bss->ni_port_valid",
     "primaryStaCarrierHoldPending = true;",
     "lowerStopPending = true;",
 ):
     assert token in stop_lower, f"missing pre-stop carrier reservation: {token}"
+assert "primary->ic_opmode == IEEE80211_M_STA" not in stop_lower
 terminal = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()"):
                  owner.index("void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()")]
 assert (terminal.index("restoreRetainedPrimaryStaLinkAfterStop();") <

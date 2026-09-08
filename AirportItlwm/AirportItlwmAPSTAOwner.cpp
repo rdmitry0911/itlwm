@@ -840,8 +840,13 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
     struct ieee80211com *primary =
         owner != nullptr && owner->fHalService != nullptr
             ? owner->fHalService->get80211Controller() : nullptr;
-    if (primary != nullptr && primary->ic_opmode == IEEE80211_M_STA &&
-        primary->ic_state == IEEE80211_S_RUN && primary->ic_bss != nullptr &&
+    /* IWN can already expose HOSTAP here although this controller's
+     * controlled primary BSS remains the retained STA context.  The lower
+     * terminal restores the externally visible STA opmode, so opmode is not
+     * a stable discriminator at this pre-stop boundary; RUN plus the open
+     * BSS port is. */
+    if (primary != nullptr && primary->ic_state == IEEE80211_S_RUN &&
+        primary->ic_bss != nullptr &&
         primary->ic_bss->ni_port_valid)
         primaryStaCarrierHoldPending = true;
 
