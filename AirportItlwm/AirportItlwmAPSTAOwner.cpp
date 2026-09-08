@@ -514,6 +514,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     apCredentialLength = 0;
     lowerStopPending = false;
     primaryStaCarrierHoldPending = false;
+    primaryStaPostStopWclAssociationPending = false;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -584,6 +585,7 @@ void AirportItlwmAPSTAOwner::free()
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     lowerStopPending = false;
     primaryStaCarrierHoldPending = false;
+    primaryStaPostStopWclAssociationPending = false;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -838,6 +840,7 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
      * it after the normal retained-link reconciliation.
      */
     primaryStaCarrierHoldPending = false;
+    primaryStaPostStopWclAssociationPending = false;
     struct ieee80211com *primary =
         owner != nullptr && owner->fHalService != nullptr
             ? owner->fHalService->get80211Controller() : nullptr;
@@ -915,6 +918,13 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
             }
         }
     }
+    /* WCL queues one cached candidate replay after the lower PAN terminal.
+     * Capture that exact post-terminal edge before the regular retained-link
+     * reconciliation clears the carrier reservation.  The consumer also
+     * verifies that the candidate BSSID still equals the authorized RUN BSS,
+     * so a later new-network request is never classified as this replay. */
+    primaryStaPostStopWclAssociationPending =
+        shouldRetainPrimaryStaCarrier();
     restoreRetainedPrimaryStaLinkAfterStop();
     primaryStaCarrierHoldPending = false;
     XYLog("APSTA lower stop reached terminal\n");
@@ -1452,6 +1462,25 @@ bool AirportItlwmAPSTAOwner::consumePrimaryStaCarrierHold()
      * not turn an active AP into a general carrier-down suppression window. */
     primaryStaCarrierHoldPending = false;
     return true;
+}
+
+bool AirportItlwmAPSTAOwner::consumePrimaryStaPostStopWclAssociation(
+    const uint8_t *bssid)
+{
+    if (!primaryStaPostStopWclAssociationPending)
+        return false;
+
+    /* This is a one-carrier reservation.  A malformed or different next
+     * request retires it too, rather than leaving a stale exemption for a
+     * later user-driven association. */
+    primaryStaPostStopWclAssociationPending = false;
+    if (owner == nullptr || owner->fHalService == nullptr || bssid == nullptr)
+        return false;
+
+    struct ieee80211com *ic = owner->fHalService->get80211Controller();
+    return ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
+        ic->ic_bss != nullptr && ic->ic_bss->ni_port_valid &&
+        memcmp(ic->ic_bss->ni_bssid, bssid, IEEE80211_ADDR_LEN) == 0;
 }
 
 bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const

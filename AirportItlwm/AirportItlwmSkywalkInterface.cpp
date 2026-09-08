@@ -7547,10 +7547,31 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
      * holds this bounded reservation from the exact handoff census through
      * the matching carrier/stop boundary; all ordinary WCL association
      * requests reach the existing path below. */
-    if (instance != nullptr && instance->fAPSTAOwner != nullptr &&
+    if (candidates != nullptr && instance != nullptr &&
+        instance->fAPSTAOwner != nullptr &&
         instance->fAPSTAOwner->shouldRetainPrimaryStaCarrier()) {
         XYLog("APSTA retaining primary BSS across WCL handoff association\n");
         return kIOReturnSuccess;
+    }
+    if (candidates != nullptr && instance != nullptr &&
+        instance->fAPSTAOwner != nullptr) {
+        /* Do not let WCL's one delayed cached-carrier replay turn an already
+         * RUNning retained BSS into a second join.  The AP owner consumes the
+         * reservation only for the current primary BSSID; a different target
+         * falls through to the normal association path. */
+        const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
+        uint32_t candidateCount = 0;
+        memcpy(&candidateCount,
+               raw + TahoeAssociationContracts::kCandidateCountOffset,
+               sizeof(candidateCount));
+        const uint8_t *bssid = candidateCount > 0
+            ? raw + TahoeAssociationContracts::kFirstCandidateBssidOffset
+            : raw + TahoeAssociationContracts::kContextBssidOffset;
+        if (instance->fAPSTAOwner->
+                consumePrimaryStaPostStopWclAssociation(bssid)) {
+            XYLog("APSTA retaining primary BSS across post-stop WCL replay\n");
+            return kIOReturnSuccess;
+        }
     }
     /* WCL uses an explicit BSSID owner; it must never inherit a preceding
      * public-CoreWLAN initial-candidate marker, including malformed carriers. */

@@ -342,6 +342,13 @@ assert "APSTA retaining primary BSS across WCL handoff association" in wcl_assoc
 assert "instance->fAPSTAOwner->shouldRetainPrimaryStaCarrier()" in wcl_associate
 assert (wcl_associate.index("APSTA retaining primary BSS across WCL handoff association") <
         wcl_associate.index("ieee80211_public_initial_bssid_pin_disarm"))
+assert "consumePrimaryStaPostStopWclAssociation(bssid)" in wcl_associate
+assert "APSTA retaining primary BSS across post-stop WCL replay" in wcl_associate
+assert (wcl_associate.index("APSTA retaining primary BSS across post-stop WCL replay") <
+        wcl_associate.index("ieee80211_public_initial_bssid_pin_disarm"))
+assert "primaryStaPostStopWclAssociationPending" in owner
+assert "consumePrimaryStaPostStopWclAssociation" in owner
+assert "primaryStaPostStopWclAssociationPending" in owner_hpp
 preflight = iwn[iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
                 iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")]
 handoff = preflight.index("airportItlwmConsumeAPSTAPrimaryStaHandoffScan(\n            that->getController(), ic, arg)")

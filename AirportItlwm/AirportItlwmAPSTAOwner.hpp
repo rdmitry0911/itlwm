@@ -85,6 +85,11 @@ public:
      * out of that state. */
     bool shouldRetainPrimaryStaCarrier() const;
     bool consumePrimaryStaCarrierHold();
+    /* The ordinary AP stop terminal causes WCL to replay one cached
+     * association carrier for the BSS which stayed RUN throughout the PAN
+     * removal.  Consume only that same-BSSID replay; an actual new target
+     * must retain the normal WCL association path. */
+    bool consumePrimaryStaPostStopWclAssociation(const uint8_t *bssid);
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;
     void copyMacAddress(uint8_t *address) const;
@@ -169,6 +174,9 @@ private:
     // primary controller carrier. Keep exactly one pre-transition,
     // authorized STA observation and consume it on that carrier edge.
     bool primaryStaCarrierHoldPending;
+    // One deferred cached-WCL replay follows a successful IWN PAN stop.
+    // It is accepted only when it names the still-authorized primary BSS.
+    bool primaryStaPostStopWclAssociationPending;
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
     bool radioResetPrimaryStaScanHandoff;
