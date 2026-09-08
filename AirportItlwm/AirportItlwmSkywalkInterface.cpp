@@ -9383,6 +9383,15 @@ setWCL_REASSOC(apple80211_reassoc *data)
      * RXON just before HostAP creates the PAN context.
      */
     if (request.candidate_count == 0) {
+        /* The public Internet Sharing preamble submits WCL_REASSOC before
+         * HOST_AP_MODE.  On a single-channel DVM it commonly names only
+         * off-channel roam candidates; after filtering, no physical roam is
+         * admissible and the following generic RUN -> SCAN is solely the
+         * role-7 handoff.  Reserve that one state edge while the current BSS
+         * is known live.  A real same-channel candidate takes the normal
+         * reassociation path and never arms this AP handoff reservation. */
+        if (instance != nullptr)
+            instance->noteAPSTASharedChannelFilteredWclReassoc(ic);
         XYLog("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS "
               "channels=%u\n",
               static_cast<unsigned>(request.channel_count));

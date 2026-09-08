@@ -71,6 +71,7 @@ assert "rejecting off-channel AP CSA" in csa
 # consumes only its observed generic RUN -> SCAN(-1) handoff, and disarms on
 # every first attempt so it cannot become a general scan veto.
 assert "bool consumePrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in owner_hpp
+assert "bool armPrimaryStaHandoffScan(struct ieee80211com *ic);" in owner_hpp
 assert "bool primaryStaHandoffScanArmed;" in owner_hpp
 note = owner[owner.index("void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()"):
              owner.index("bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan(")]
@@ -81,9 +82,19 @@ for token in (
     "ic->ic_opmode == IEEE80211_M_STA",
     "ic->ic_bss != nullptr",
     "ic->ic_bss->ni_port_valid",
-    "primaryStaHandoffScanArmed = !lowerStopPending",
+    "(void)armPrimaryStaHandoffScan(ic);",
 ):
     assert token in note, f"missing public APSTA handoff arm: {token}"
+arm = owner[owner.index("bool AirportItlwmAPSTAOwner::armPrimaryStaHandoffScan("):
+            owner.index("bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan(")]
+for token in (
+    "owner->fHalService->get80211Controller() == ic",
+    "!lowerStopPending", "!isApRunning()",
+    "ic->ic_state == IEEE80211_S_RUN",
+    "ic->ic_opmode == IEEE80211_M_STA",
+    "ic->ic_bss->ni_port_valid",
+):
+    assert token in arm, f"missing handoff live-BSS arm fence: {token}"
 consume = owner[owner.index("bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan("):
                 owner.index("bool AirportItlwmAPSTAOwner::matchesBSDName")]
 clear = consume.index("primaryStaHandoffScanArmed = false;")
@@ -100,6 +111,8 @@ assert "primaryStaHandoffScanArmed = false;" in owner[
     owner.index("void AirportItlwmAPSTAOwner::setSoftAPPowerSaveState(")]
 
 assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
+assert "void noteAPSTASharedChannelFilteredWclReassoc(struct ieee80211com *ic);" in v2_hpp
+assert "fAPSTAOwner->armPrimaryStaHandoffScan(ic)" in v2
 bridge = v2[v2.index("extern \"C\" bool\nairportItlwmConsumeAPSTAPrimaryStaHandoffScan("):
             v2.index("void AirportItlwm::teardownAPSTAInterface()")]
 assert "OSDynamicCast(AirportItlwm, controller)" in bridge
@@ -111,6 +124,11 @@ rsn = preflight.index("iwn_rsn_join_scan_blocked(ic)")
 scan_lease = preflight.index("iwn_scan_lease_defer_scan")
 assert handoff < rsn < scan_lease, \
     "public APSTA handoff must stop RUN->SCAN before BSS teardown or scan ownership"
+reassoc = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
+filtered = reassoc[reassoc.index("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS") - 1200:
+                   reassoc.index("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS") + 500]
+assert "instance->noteAPSTASharedChannelFilteredWclReassoc(ic);" in filtered
+assert "off-channel roam candidates" in filtered
 
 print("PASS: Tahoe IWN public AP start and CSA cannot create split-channel APSTA")
 PY

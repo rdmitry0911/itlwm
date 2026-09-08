@@ -76,6 +76,7 @@ public:
      * interface-enable edge and the repeated HOST_AP_MODE carrier.  This
      * protects the already-associated primary BSS from a synthetic generic
      * RUN -> SCAN transition; it is not a general scan suppression gate. */
+    bool armPrimaryStaHandoffScan(struct ieee80211com *ic);
     bool consumePrimaryStaHandoffScan(struct ieee80211com *ic, int arg);
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;

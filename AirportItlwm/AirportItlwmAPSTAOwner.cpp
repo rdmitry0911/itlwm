@@ -1263,11 +1263,21 @@ void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()
      * state request, an unassociated primary, or an AP stop consumes nothing
      * and cannot turn this into a general scan veto.
      */
-    primaryStaHandoffScanArmed = !lowerStopPending && !isApRunning() &&
+    (void)armPrimaryStaHandoffScan(ic);
+    XYLog("APSTA interface-driven HostAP confirmation pending\n");
+}
+
+bool AirportItlwmAPSTAOwner::armPrimaryStaHandoffScan(
+    struct ieee80211com *ic)
+{
+    primaryStaHandoffScanArmed = owner != nullptr &&
+        owner->fHalService != nullptr &&
+        owner->fHalService->get80211Controller() == ic &&
+        !lowerStopPending && !isApRunning() &&
         ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
         ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss != nullptr &&
         ic->ic_bss->ni_port_valid;
-    XYLog("APSTA interface-driven HostAP confirmation pending\n");
+    return primaryStaHandoffScanArmed;
 }
 
 bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan(
