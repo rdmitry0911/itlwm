@@ -175,7 +175,6 @@ assert retire < restore
 for required in (
     "ic->ic_state == IEEE80211_S_RUN",
     "(ic->ic_flags & IEEE80211_F_RSNON) != 0",
-    "!ic->ic_bss->ni_port_valid",
     "association.hasCarrier && !association.publicCarrier",
     "association.selectedFromCandidate",
     "association.authAssocCompletionArmed",
@@ -189,6 +188,8 @@ for forbidden in (
 ):
     assert forbidden not in lease, \
         f"AP PAN lease retirement must not synthesize {forbidden}"
+assert "ni_port_valid" not in lease, \
+    "WCL can withdraw the port only after this lower terminal; it is not a lease fence"
 
 # A retained STA BSS does not perform another four-way handshake after the
 # asynchronous DVM PAN stop.  If Tahoe consumed a link-down during that
