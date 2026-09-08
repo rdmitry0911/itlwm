@@ -4547,6 +4547,29 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
         const bool isLinkDown = (state != kIO80211NetworkLinkUp);
         if (!isLinkDown) {
             /*
+             * The normal net80211 association path reaches this accepted
+             * parent link-up without necessarily receiving WCL's later
+             * LINK_STATE_UPDATE IOC.  IO80211BssManager is nevertheless the
+             * association authority observed by the reference HostAP path:
+             * setHostApModeInternal preserves the primary BSS precisely when
+             * isAssociated() is true.  Leaving it empty made a live STA
+             * appear unassociated to CoreWLAN; starting a same-channel AP
+             * then drove the primary context through its non-associated
+             * power/scan transition before the DVM PAN context was created.
+             *
+             * Publish the current BSS only after the parent accepted link-up
+             * (the same boundary that owns the identity events below).  The
+             * WCL-specific update may refresh this state later, but is not a
+             * prerequisite for an ordinary saved-network association.
+             */
+            TahoeBssManagerContracts::BeaconPayload currentBss{};
+            if (buildTahoeCurrentBssPayload(fHalService, &currentBss) &&
+                instance->setTahoeCurrentBss(currentBss.meta, currentBss.ie)) {
+                updateDriverBssManagerRateAndMcs();
+            } else {
+                XYLog("Tahoe link-up current-BSS publication unavailable\n");
+            }
+            /*
              * Accepted SET_SSID-equivalent identity events must run after the
              * inherited parent link-up transition accepts, not on the earlier
              * RSN key-done edge. The accepted-join identity publisher is the
@@ -4555,6 +4578,12 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
              */
             instance->publishTahoeAcceptedJoinIdentityEvents(
                 "setLinkStateInternal");
+        } else {
+            /* Keep the BssManager's association predicate coherent with the
+             * accepted parent teardown.  This is also the normal counterpart
+             * of WCL_LINK_STATE_UPDATE(linkUp=false) for non-WCL joins. */
+            instance->stopTahoeLqmStatsTimer();
+            instance->clearTahoeCurrentBss();
         }
         ed.isLinkDown = isLinkDown ? 1 : 0;
         if (isLinkDown) {
