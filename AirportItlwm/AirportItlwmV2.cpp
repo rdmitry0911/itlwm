@@ -16482,6 +16482,25 @@ void AirportItlwm::noteAPSTAInterfaceEnableDuringPendingHostAPStart()
         fAPSTAOwner->noteInterfaceEnableDuringPendingHostAPStart();
 }
 
+bool AirportItlwm::consumeAPSTAPrimaryStaHandoffScan(
+    struct ieee80211com *ic, int arg)
+{
+    return fAPSTAOwner != nullptr &&
+        fAPSTAOwner->consumePrimaryStaHandoffScan(ic, arg);
+}
+
+extern "C" bool
+airportItlwmConsumeAPSTAPrimaryStaHandoffScan(
+    ItlHalService *service, struct ieee80211com *ic, int arg)
+{
+    if (service == nullptr || service->get80211Controller() != ic)
+        return false;
+    AirportItlwm *controller =
+        OSDynamicCast(AirportItlwm, service->getController());
+    return controller != nullptr &&
+        controller->consumeAPSTAPrimaryStaHandoffScan(ic, arg);
+}
+
 void AirportItlwm::teardownAPSTAInterface()
 {
     if (_fWorkloop != nullptr) {

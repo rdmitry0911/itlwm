@@ -72,6 +72,8 @@ extern "C" bool airportItlwmHandoffIwmPrimaryStaRecoveryScanToAP(
     ItlHalService *, IOReturn *);
 extern "C" bool airportItlwmHandoffIwxPrimaryStaRecoveryScanToAP(
     ItlHalService *, IOReturn *);
+extern "C" bool airportItlwmConsumeAPSTAPrimaryStaHandoffScan(
+    ItlHalService *, struct ieee80211com *, int);
 
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwn, ItlHalService)
@@ -13478,6 +13480,14 @@ iwn_newstate_preflight(struct ieee80211com *ic,
     sc = (struct iwn_softc *)ic->ic_if.if_softc;
     if (sc == NULL)
         return 0;
+    that = container_of(sc, ItlIwn, com);
+    /* Tahoe's public role-7 AP transaction injects precisely one generic
+     * RUN -> SCAN(-1) after enabling ap1 and before its HOST_AP_MODE carrier.
+     * Let the APSTA owner consume only that one confirmed handoff while the
+     * primary BSS is still fully associated.  Returning here is before
+     * net80211 advances its association epoch or clears RXON/BSS state. */
+    if (airportItlwmConsumeAPSTAPrimaryStaHandoffScan(that, ic, arg))
+        return 1;
     /* Reject before net80211 advances the association epoch or tears down
      * the current BSS.  A scanner-internal hop belongs to a command which
      * was admitted before RUN and must still be allowed to complete. */
@@ -13501,7 +13511,6 @@ iwn_newstate_preflight(struct ieee80211com *ic,
         !(ic->ic_state == IEEE80211_S_SCAN &&
           public_associate_restart))
         return 0;
-    that = container_of(sc, ItlIwn, com);
     if (!iwn_scan_lease_defer_scan(sc, nstate, arg, 0, &serial,
                                    &submit_abort))
         return 0;

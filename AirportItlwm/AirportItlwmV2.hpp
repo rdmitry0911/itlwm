@@ -969,6 +969,7 @@ public:
     void requestAPTxDequeue();
     void setAPSTADatapathEnabled(bool enable);
     void noteAPSTAInterfaceEnableDuringPendingHostAPStart();
+    bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);
     void teardownAPSTAInterface();
     IOReturn deleteAPSTAOwnerForBSDName(const uint8_t *bsdName);
     void deleteAPSTAOwner();

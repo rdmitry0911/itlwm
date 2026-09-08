@@ -72,6 +72,11 @@ public:
             !interfaceDrivenHostAPConfirmationPending;
     }
     void noteInterfaceEnableDuringPendingHostAPStart();
+    /* Consume exactly the public role-7 handoff scan observed between its
+     * interface-enable edge and the repeated HOST_AP_MODE carrier.  This
+     * protects the already-associated primary BSS from a synthetic generic
+     * RUN -> SCAN transition; it is not a general scan suppression gate. */
+    bool consumePrimaryStaHandoffScan(struct ieee80211com *ic, int arg);
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;
     void copyMacAddress(uint8_t *address) const;
@@ -157,6 +162,7 @@ private:
     bool initialHostAPAdmissionPending;
     bool confirmedHostAPStartPending;
     bool interfaceDrivenHostAPConfirmationPending;
+    bool primaryStaHandoffScanArmed;
     uint16_t radioResetResumeWaitTicks;
     uint8_t lowerAssociatedStaCount;
     uint8_t lowerAssociatedStaMacs[kAirportItlwmAPSTAStationTableEntryCount]

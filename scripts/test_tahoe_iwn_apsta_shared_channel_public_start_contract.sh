@@ -9,7 +9,10 @@ import sys
 
 root = Path(sys.argv[1])
 owner = (root / "AirportItlwm/AirportItlwmAPSTAOwner.cpp").read_text()
+owner_hpp = (root / "AirportItlwm/AirportItlwmAPSTAOwner.hpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
+v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
+v2_hpp = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
 hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 iwm_hpp = (root / "itlwm/hal_iwm/ItlIwm.hpp").read_text()
 iwx_hpp = (root / "itlwm/hal_iwx/ItlIwx.hpp").read_text()
@@ -61,6 +64,53 @@ csa_reject = csa.index("return kIOReturnBusy;", csa_guard)
 csa_same = csa.index("csa->channel == apFirmwareConfig.channel", csa_reject)
 assert csa_query < csa_guard < csa_reject < csa_same
 assert "rejecting off-channel AP CSA" in csa
+
+# A public role-7 AP start must not destroy an already-associated STA before
+# the lower HostAP carrier can share that same radio channel.  The reservation
+# is armed only by the exact existing Internet Sharing interface-enable event,
+# consumes only its observed generic RUN -> SCAN(-1) handoff, and disarms on
+# every first attempt so it cannot become a general scan veto.
+assert "bool consumePrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in owner_hpp
+assert "bool primaryStaHandoffScanArmed;" in owner_hpp
+note = owner[owner.index("void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()"):
+             owner.index("bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan(")]
+for token in (
+    "initialHostAPAdmissionPending",
+    "interfaceDrivenHostAPConfirmationPending = true;",
+    "ic->ic_state == IEEE80211_S_RUN",
+    "ic->ic_opmode == IEEE80211_M_STA",
+    "ic->ic_bss != nullptr",
+    "ic->ic_bss->ni_port_valid",
+    "primaryStaHandoffScanArmed = !lowerStopPending",
+):
+    assert token in note, f"missing public APSTA handoff arm: {token}"
+consume = owner[owner.index("bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan("):
+                owner.index("bool AirportItlwmAPSTAOwner::matchesBSDName")]
+clear = consume.index("primaryStaHandoffScanArmed = false;")
+generic = consume.index("arg != -1")
+live = consume.index("ic->ic_bss->ni_port_valid")
+assert clear < generic < live
+assert "return true;" in consume
+stop = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::setHostAPMode("):
+             owner.index("IOReturn AirportItlwmAPSTAOwner::setCipherKey(")]
+null_carrier = stop.index("if (in == nullptr || in->ssidLength1c == 0)")
+assert stop.index("primaryStaHandoffScanArmed = false;", null_carrier) > null_carrier
+assert "primaryStaHandoffScanArmed = false;" in owner[
+    owner.index("void AirportItlwmAPSTAOwner::resetRuntimeState()"):
+    owner.index("void AirportItlwmAPSTAOwner::setSoftAPPowerSaveState(")]
+
+assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
+bridge = v2[v2.index("extern \"C\" bool\nairportItlwmConsumeAPSTAPrimaryStaHandoffScan("):
+            v2.index("void AirportItlwm::teardownAPSTAInterface()")]
+assert "service->get80211Controller() != ic" in bridge
+assert "controller->consumeAPSTAPrimaryStaHandoffScan(ic, arg)" in bridge
+preflight = iwn[iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
+                iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")]
+handoff = preflight.index("airportItlwmConsumeAPSTAPrimaryStaHandoffScan(that, ic, arg)")
+rsn = preflight.index("iwn_rsn_join_scan_blocked(ic)")
+scan_lease = preflight.index("iwn_scan_lease_defer_scan")
+assert handoff < rsn < scan_lease, \
+    "public APSTA handoff must stop RUN->SCAN before BSS teardown or scan ownership"
 
 print("PASS: Tahoe IWN public AP start and CSA cannot create split-channel APSTA")
 PY

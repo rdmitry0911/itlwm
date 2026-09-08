@@ -519,6 +519,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     initialHostAPAdmissionPending = false;
     confirmedHostAPStartPending = false;
     interfaceDrivenHostAPConfirmationPending = false;
+    primaryStaHandoffScanArmed = false;
     radioResetResumeWaitTicks = 0;
     lowerAssociatedStaCount = 0;
     bzero(lowerAssociatedStaMacs, sizeof(lowerAssociatedStaMacs));
@@ -587,6 +588,7 @@ void AirportItlwmAPSTAOwner::free()
     initialHostAPAdmissionPending = false;
     confirmedHostAPStartPending = false;
     interfaceDrivenHostAPConfirmationPending = false;
+    primaryStaHandoffScanArmed = false;
     radioResetResumeWaitTicks = 0;
     clearLowerAssociatedStations();
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
@@ -616,6 +618,7 @@ void AirportItlwmAPSTAOwner::initSoftAPParameters()
 
 void AirportItlwmAPSTAOwner::resetRuntimeState()
 {
+    primaryStaHandoffScanArmed = false;
     state.resetState26c = 0;
     state.resetFlag329 = 0;
     state.hostApTransitionState270 = 0;
@@ -1248,7 +1251,46 @@ void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()
         return;
 
     interfaceDrivenHostAPConfirmationPending = true;
+    struct ieee80211com *ic = owner != nullptr && owner->fHalService != nullptr
+        ? owner->fHalService->get80211Controller() : nullptr;
+    /*
+     * On the reference path setHostApModeInternal first asks BssManager
+     * whether the primary is associated and leaves that BSS intact while it
+     * configures the virtual interface.  Tahoe's public role-7 transaction
+     * instead emits one generic RUN -> SCAN(-1) between this enable edge and
+     * its repeated HOST_AP_MODE carrier.  Arm a one-shot only when there is
+     * a fully live infrastructure BSS to preserve.  A later non-generic
+     * state request, an unassociated primary, or an AP stop consumes nothing
+     * and cannot turn this into a general scan veto.
+     */
+    primaryStaHandoffScanArmed = !lowerStopPending && !isApRunning() &&
+        ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
+        ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss != nullptr &&
+        ic->ic_bss->ni_port_valid;
     XYLog("APSTA interface-driven HostAP confirmation pending\n");
+}
+
+bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan(
+    struct ieee80211com *ic, int arg)
+{
+    if (!primaryStaHandoffScanArmed)
+        return false;
+
+    /* This is intentionally a one-attempt reservation.  If Tahoe changes
+     * the observed public transaction shape, fall back to ordinary net80211
+     * behavior rather than retaining a stale scan veto. */
+    primaryStaHandoffScanArmed = false;
+    if (owner == nullptr || owner->fHalService == nullptr ||
+        owner->fHalService->get80211Controller() != ic || arg != -1 ||
+        lowerStopPending || isApRunning() || ic == nullptr ||
+        ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_opmode != IEEE80211_M_STA || ic->ic_bss == nullptr ||
+        !ic->ic_bss->ni_port_valid)
+        return false;
+
+    XYLog("APSTA preserving associated primary BSS across public role-7 "
+          "HostAP handoff scan\n");
+    return true;
 }
 
 bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const
@@ -1376,6 +1418,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     }
 
     if (in == nullptr || in->ssidLength1c == 0) {
+        primaryStaHandoffScanArmed = false;
         /* A stop carrier is also terminal for an accepted initial HostAP
          * transition which has not crossed the replacement firmware epoch
          * yet.  Otherwise the watchdog could start a profile after
@@ -1456,6 +1499,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
             XYLog("APSTA interface-driven HostAP selector reached lower "
                   "running\n");
         }
+        primaryStaHandoffScanArmed = false;
         return kIOReturnSuccess;
     }
 
@@ -1467,6 +1511,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
         initialHostAPAdmissionPending = false;
         confirmedHostAPStartPending = true;
         interfaceDrivenHostAPConfirmationPending = false;
+        primaryStaHandoffScanArmed = false;
         XYLog("APSTA repeated HostAP selector confirmed pending lower "
               "start\n");
     }
