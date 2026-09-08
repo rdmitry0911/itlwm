@@ -114,15 +114,6 @@ struct ItlSaePmkContinuationIdentityV1;
  * below; no generic backend callback may observe this private value. */
 #define IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD (-4)
 /*
- * IWN DVM removes its PAN context only at the WIPAN_PARAMS terminal. A
- * protected primary BSS can still be logically RUN at that edge although the
- * radio has just returned from the AP scheduler. This one terminal-owned
- * marker authorizes the ordinary STA scan/rejoin before the following WCL
- * carrier is admitted. It is neither an on-air subtype nor a completion,
- * and lower callbacks receive the historic -1 argument.
- */
-#define IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN (-5)
-/*
  * The four direct-SAE hook fields are published and withdrawn under the
  * selected-BSS leaf.  Readers must take one coherent value snapshot before
  * dropping that leaf: a separate NULL check followed by a second field load
@@ -452,8 +443,7 @@ extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 	(((_nstate) == IEEE80211_S_SCAN && \
 	  ((_arg) == IEEE80211_NEWSTATE_ARG_SCAN_HOP || \
 	   (_arg) == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE || \
-	   (_arg) == IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD || \
-	   (_arg) == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN)) ? -1 : (_arg))
+	   (_arg) == IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD)) ? -1 : (_arg))
 #define    ieee80211_new_state(_ic, _nstate, _arg) \
 do {    \
 if ((_ic)->ic_newstate_preflight == NULL || \

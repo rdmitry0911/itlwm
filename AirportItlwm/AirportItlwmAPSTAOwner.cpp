@@ -860,6 +860,35 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
     state.hostApTransitionState270 = 0;
     if (lifecycle != kAirportItlwmAPSTAOwnerFreed)
         lifecycle = kAirportItlwmAPSTAOwnerTerminal;
+
+    /*
+     * The DVM PAN terminal proves the HostAP scheduler has released the
+     * radio.  A WPA2/WPA3 primary BSS may still read RUN here while Tahoe's
+     * previous WCL completion lease has no authorized controlled port.  That
+     * lease is no longer a live JoinAdapter transaction: retaining it makes
+     * the next real WCL carrier fail with NotReady before it can start its
+     * own exact candidate path.  Retire only that stale, non-public WCL
+     * ledger.  This is bookkeeping cleanup, not a WCL terminal, link edge,
+     * key event, reassociation, or on-air state transition.
+     */
+    if (owner != nullptr && owner->fHalService != nullptr) {
+        struct ieee80211com *ic =
+            owner->fHalService->get80211Controller();
+        if (ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
+            ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
+            (ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+            !ic->ic_bss->ni_port_valid) {
+            TahoeOwnerRegistry::AssociationOwner &association =
+                owner->getTahoeOwnerRegistry().association;
+            if (association.hasCarrier && !association.publicCarrier &&
+                association.selectedFromCandidate &&
+                association.authAssocCompletionArmed &&
+                !association.joinTerminalObserved) {
+                association = TahoeOwnerRegistry::AssociationOwner{};
+                XYLog("APSTA lower stop retired stale protected WCL lease\n");
+            }
+        }
+    }
     restoreRetainedPrimaryStaLinkAfterStop();
     XYLog("APSTA lower stop reached terminal\n");
     return kIOReturnSuccess;

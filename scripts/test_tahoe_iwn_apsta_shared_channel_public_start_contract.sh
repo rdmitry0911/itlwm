@@ -154,32 +154,41 @@ resume = stop_terminal.index("iwn_set_ap_primary_tx_quiesced(false, true);")
 assert reset < resume
 assert "AP PAN stop terminal resumed primary STA output" in stop_terminal
 for forbidden in (
-    "ieee80211_set_link_state", "handleKeyDone", "postMessage",
+    "ieee80211_new_state", "ieee80211_set_link_state", "handleKeyDone",
+    "postMessage",
 ):
     assert forbidden not in stop_terminal, \
         f"AP PAN stop output recovery must not synthesize {forbidden}"
 
-# DVM can leave a protected STA in logical RUN while the now-terminal PAN
-# scheduler has returned the radio. The exact lower terminal, not APSTA
-# userspace or a WCL completion, starts one normal STA rejoin before WCL's
-# following carrier sees that stale RUN. The marker is backend-private and
-# is normalized before a lower callback; it bypasses no other scan fence.
-assert "#define IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN (-5)" in proto_h
-assert "(_arg) == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN" in proto_h
-rejoin = stop_terminal.index("struct ieee80211com *ic = &com.sc_ic;")
-request = stop_terminal.index("IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN", rejoin)
-assert reset < resume < rejoin < request
-assert "AP PAN stop terminal requesting primary STA " in stop_terminal
-assert '"rejoin\\n"' in stop_terminal
-assert "ieee80211_set_link_state" not in stop_terminal[rejoin:]
-preflight = iwn[iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
-                iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")]
-assert "arg == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN" in preflight
-assert preflight.count("!apstaStopRejoin") == 2
-backend = iwn[iwn.index("int ItlIwn::\niwn_newstate("):
-              iwn.index("int ItlIwn::\niwn_scan_start(")]
-assert "arg == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN" in backend
-assert "!apsta_stop_rejoin" in backend
+# DVM can leave a protected STA in logical RUN although the now-terminal PAN
+# scheduler has returned the radio. The AP terminal must retire only an
+# unconsumed protected WCL completion lease so the next real WCL carrier owns
+# the exact candidate path. It must not force a generic scan or publish any
+# connection completion itself.
+assert "IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN" not in proto_h
+lease = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()"):
+              owner.index("void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()")]
+assert "lifecycle = kAirportItlwmAPSTAOwnerTerminal;" in lease
+retire = lease.index("APSTA lower stop retired stale protected WCL lease")
+restore = lease.index("restoreRetainedPrimaryStaLinkAfterStop();")
+assert retire < restore
+for required in (
+    "ic->ic_state == IEEE80211_S_RUN",
+    "(ic->ic_flags & IEEE80211_F_RSNON) != 0",
+    "!ic->ic_bss->ni_port_valid",
+    "association.hasCarrier && !association.publicCarrier",
+    "association.selectedFromCandidate",
+    "association.authAssocCompletionArmed",
+    "!association.joinTerminalObserved",
+    "association = TahoeOwnerRegistry::AssociationOwner{};",
+):
+    assert required in lease
+for forbidden in (
+    "ieee80211_new_state", "ieee80211_set_link_state", "handleKeyDone",
+    "postMessage",
+):
+    assert forbidden not in lease, \
+        f"AP PAN lease retirement must not synthesize {forbidden}"
 
 # A retained STA BSS does not perform another four-way handshake after the
 # asynchronous DVM PAN stop.  If Tahoe consumed a link-down during that
