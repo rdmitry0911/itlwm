@@ -696,6 +696,7 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
         return kIOReturnUnsupported;
     }
 
+    struct ieee80211com *ic = owner->fHalService->get80211Controller();
     /*
      * AppleBCMWLAN can hand the requested chanspec to its FullMAC AP
      * context.  Intel DVM instead publishes STA+AP with exactly one
