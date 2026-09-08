@@ -9532,6 +9532,25 @@ void ItlIwn::iwn_note_ap_firmware_event(
             iwn_set_ap_primary_tx_quiesced(false, true);
             XYLog("%s: AP PAN stop terminal resumed primary STA output\n",
                   com.sc_dev.dv_xname);
+
+            /*
+             * The DVM PAN scheduler's terminal is the last point at which a
+             * stale protected RUN can still reject WCL's next real carrier.
+             * Enter the ordinary STA scan/rejoin before that carrier reaches
+             * JoinAdapter emulation. The private marker bypasses only the
+             * in-flight-RSN scan fence for this already-complete lower AP
+             * terminal; net80211 still owns BSS teardown, scanning, AUTH,
+             * RSN, and every link/completion notification.
+             */
+            struct ieee80211com *ic = &com.sc_ic;
+            if (ic->ic_opmode == IEEE80211_M_STA &&
+                ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL) {
+                XYLog("%s: AP PAN stop terminal requesting primary STA "
+                      "rejoin\n", com.sc_dev.dv_xname);
+                ieee80211_new_state(
+                    ic, IEEE80211_S_SCAN,
+                    IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN);
+            }
         }
         return;
     }
@@ -13523,6 +13542,8 @@ iwn_newstate_preflight(struct ieee80211com *ic,
     if (sc == NULL)
         return 0;
     that = container_of(sc, ItlIwn, com);
+    const bool apstaStopRejoin =
+        arg == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN;
     /* Tahoe's public role-7 AP transaction injects precisely one generic
      * RUN -> SCAN(-1) after enabling ap1 and before its HOST_AP_MODE carrier.
      * Let the APSTA owner consume only that one confirmed handoff while the
@@ -13534,13 +13555,13 @@ iwn_newstate_preflight(struct ieee80211com *ic,
     /* Reject before net80211 advances the association epoch or tears down
      * the current BSS.  A scanner-internal hop belongs to a command which
      * was admitted before RUN and must still be allowed to complete. */
-    if (arg != IEEE80211_NEWSTATE_ARG_SCAN_HOP &&
+    if (arg != IEEE80211_NEWSTATE_ARG_SCAN_HOP && !apstaStopRejoin &&
         iwn_rsn_join_scan_blocked(ic))
         return 1;
     /* Do not let an ordinary state-machine scan tear down the BSS/epoch
      * owned by an in-progress direct SAE + PMF join.  Scanner-internal hops
      * remain part of the already admitted physical command. */
-    if (arg != IEEE80211_NEWSTATE_ARG_SCAN_HOP &&
+    if (arg != IEEE80211_NEWSTATE_ARG_SCAN_HOP && !apstaStopRejoin &&
         iwn_sae_join_scan_blocked(sc))
         return 1;
     if (iwn_wcl_initial_scan_pending_blocks_generic(sc))
@@ -13840,6 +13861,9 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     const bool wnm_reconnect_hold = nstate == IEEE80211_S_SCAN &&
         ic->ic_state == IEEE80211_S_RUN &&
         arg == IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD;
+    const bool apsta_stop_rejoin = nstate == IEEE80211_S_SCAN &&
+        ic->ic_state == IEEE80211_S_RUN &&
+        arg == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN;
     int error;
 
     /* The tagged net80211 channel hop reaches this exact callback so its
@@ -13851,6 +13875,7 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
      * already consumed a conflicting RUN->SCAN request before epoch change.
      * Keep the same fence for the few raw backend callers. */
     if (nstate == IEEE80211_S_SCAN && ic->ic_state == IEEE80211_S_RUN &&
+        !apsta_stop_rejoin &&
         iwn_newstate_preflight(ic, nstate, arg) != 0)
         return 0;
     if (nstate == IEEE80211_S_SCAN &&

@@ -17,6 +17,7 @@ infra = (root / "include/Airport/IO80211InfraInterface.h").read_text()
 hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 iwm_hpp = (root / "itlwm/hal_iwm/ItlIwm.hpp").read_text()
 iwx_hpp = (root / "itlwm/hal_iwx/ItlIwx.hpp").read_text()
+proto_h = (root / "itl80211/openbsd/net80211/ieee80211_proto.h").read_text()
 
 start = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()"):
               owner.index("IOReturn AirportItlwmAPSTAOwner::stopLower()")]
@@ -153,11 +154,32 @@ resume = stop_terminal.index("iwn_set_ap_primary_tx_quiesced(false, true);")
 assert reset < resume
 assert "AP PAN stop terminal resumed primary STA output" in stop_terminal
 for forbidden in (
-    "ieee80211_new_state", "ieee80211_set_link_state", "handleKeyDone",
-    "postMessage",
+    "ieee80211_set_link_state", "handleKeyDone", "postMessage",
 ):
     assert forbidden not in stop_terminal, \
         f"AP PAN stop output recovery must not synthesize {forbidden}"
+
+# DVM can leave a protected STA in logical RUN while the now-terminal PAN
+# scheduler has returned the radio. The exact lower terminal, not APSTA
+# userspace or a WCL completion, starts one normal STA rejoin before WCL's
+# following carrier sees that stale RUN. The marker is backend-private and
+# is normalized before a lower callback; it bypasses no other scan fence.
+assert "#define IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN (-5)" in proto_h
+assert "(_arg) == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN" in proto_h
+rejoin = stop_terminal.index("struct ieee80211com *ic = &com.sc_ic;")
+request = stop_terminal.index("IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN", rejoin)
+assert reset < resume < rejoin < request
+assert "AP PAN stop terminal requesting primary STA " in stop_terminal
+assert '"rejoin\\n"' in stop_terminal
+assert "ieee80211_set_link_state" not in stop_terminal[rejoin:]
+preflight = iwn[iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
+                iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")]
+assert "arg == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN" in preflight
+assert preflight.count("!apstaStopRejoin") == 2
+backend = iwn[iwn.index("int ItlIwn::\niwn_newstate("):
+              iwn.index("int ItlIwn::\niwn_scan_start(")]
+assert "arg == IEEE80211_NEWSTATE_ARG_APSTA_STOP_REJOIN" in backend
+assert "!apsta_stop_rejoin" in backend
 
 # A retained STA BSS does not perform another four-way handshake after the
 # asynchronous DVM PAN stop.  If Tahoe consumed a link-down during that
