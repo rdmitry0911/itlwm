@@ -141,7 +141,6 @@ assert "iwn_reset_ap_runtime_state();\n        return kIOReturnSuccess;" in iwn_
 # transition, restore only through the normal net80211 bridge and only after
 # the lower terminal, never by writing controller or Skywalk state directly.
 assert "void restoreRetainedPrimaryStaLinkAfterStop();" in owner_hpp
-assert "bool primaryStaRsnStateRestorePending;" in owner_hpp
 terminal = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()"):
                  owner.index("void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()")]
 restore_call = terminal.index("restoreRetainedPrimaryStaLinkAfterStop();")
@@ -182,11 +181,11 @@ assert "restoreRetainedPrimaryStaRsnStateGated" in v2_hpp
 rsn_restore = v2[v2.index("restoreRetainedPrimaryStaRsnStateGated("):
                  v2.index("postWclScanResultsGated(")]
 for token in (
-    "(uintptr_t)arg0 == 0",
     "ic->ic_opmode != IEEE80211_M_STA",
     "ic->ic_state != IEEE80211_S_RUN",
     "ic->ic_bss == nullptr",
     "!ic->ic_bss->ni_port_valid",
+    "ic->ic_bss->ni_rsnakms == IEEE80211_AKM_NONE",
     "handleKeyDone(true, false);",
 ):
     assert token in rsn_restore, f"missing retained RSN restore fence: {token}"
@@ -196,38 +195,14 @@ for forbidden in (
 ):
     assert forbidden not in rsn_restore, \
         f"retained RSN restore must not republish authentication: {forbidden}"
-start_lower = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()"):
-                    owner.index("IOReturn AirportItlwmAPSTAOwner::stopLower()")]
-snapshot = start_lower.index("primaryStaRsnStateRestorePending =")
-lower_start = start_lower.index("owner->fHalService->startAPMode(&cfg);")
-for token in (
-    "ic->ic_opmode == IEEE80211_M_STA",
-    "ic->ic_state == IEEE80211_S_RUN",
-    "ic->ic_bss != nullptr",
-    "ic->ic_bss->ni_port_valid",
-    "apsta_primary_sta_rsn_state_is_done(owner)",
-):
-    assert token in start_lower[snapshot:lower_start], \
-        f"missing pre-HostAP protected STA witness: {token}"
-assert snapshot < lower_start
-state_witness = owner[owner.index("static bool apsta_primary_sta_rsn_state_is_done("):
-                      owner.index("IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()")]
-for token in (
-    'getProperty("IO80211RSNDone")',
-    "OSDynamicCast(",
-    "OSBoolean",
-    "done->isTrue()",
-):
-    assert token in state_witness, \
-        f"missing type-correct pre-HostAP key-complete witness: {token}"
-assert "primaryStaRsnStateRestorePending = false;" in restore
+assert "ic->ic_bss->ni_rsnakms == IEEE80211_AKM_NONE" in restore
 rsn_gate = restore.index("IOCommandGate *gate = owner->getCommandGate();")
 rsn_action = restore.index(
     "gate->runAction(AirportItlwm::restoreRetainedPrimaryStaRsnStateGated,",
     rsn_gate)
 assert controller_up < rsn_gate < rsn_action
-assert "restoreRsnState && gate != nullptr" in restore
-assert "(void *)(uintptr_t)true" in restore[rsn_action:]
+assert "if (gate != nullptr &&" in restore
+assert "nullptr) == kIOReturnSuccess" in restore[rsn_action:]
 assert "APSTA lower stop restored retained primary RSN state" in restore
 assert "postRsnHandshakeDoneGated" not in restore
 

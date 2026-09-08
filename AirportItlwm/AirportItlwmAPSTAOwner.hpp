@@ -165,7 +165,6 @@ private:
     bool confirmedHostAPStartPending;
     bool interfaceDrivenHostAPConfirmationPending;
     bool primaryStaHandoffScanArmed;
-    bool primaryStaRsnStateRestorePending;
     uint16_t radioResetResumeWaitTicks;
     uint8_t lowerAssociatedStaCount;
     uint8_t lowerAssociatedStaMacs[kAirportItlwmAPSTAStationTableEntryCount]

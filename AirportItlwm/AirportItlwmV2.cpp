@@ -9330,7 +9330,7 @@ restoreRetainedPrimaryStaRsnStateGated(
     OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
-    if ((uintptr_t)arg0 == 0 || that == nullptr || that->fNetIf == nullptr ||
+    if (that == nullptr || that->fNetIf == nullptr ||
         that->fHalService == nullptr)
         return kIOReturnNotReady;
 
@@ -9338,16 +9338,15 @@ restoreRetainedPrimaryStaRsnStateGated(
      * IO80211RSNDone while IWN's retained STA BSS is still authorized.  This
      * restores only the recovered key-complete property after the lower
      * terminal and never republishes an authentication or WCL association
-     * event. IWN can discard its lower security flag while HostAP owns the
-     * radio, so the caller supplies a one-terminal witness sampled from the
-     * type-correct IO80211 key-complete state before that transition. Repeat
-     * every remaining live-BSS/authorized-port fence under the controller
-     * gate so a late disconnect cannot make a stale retained BSS appear
-     * secured. */
+     * event. IWN can discard an interface-wide security flag while HostAP
+     * owns the radio, but the retained BSS keeps its selected RSN AKM.
+     * Repeat the live-BSS/authorized-port/RSN-AKM fences under the controller
+     * gate so a late disconnect or open BSS cannot appear secured. */
     struct ieee80211com *ic = that->fHalService->get80211Controller();
     if (ic == nullptr || ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr ||
-        !ic->ic_bss->ni_port_valid)
+        !ic->ic_bss->ni_port_valid ||
+        ic->ic_bss->ni_rsnakms == IEEE80211_AKM_NONE)
         return kIOReturnNotReady;
 
 #if __IO80211_TARGET >= __MAC_26_0

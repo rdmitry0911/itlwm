@@ -42,15 +42,6 @@ static bool apsta_lower_stop_pending(IOReturn result)
         result == kIOReturnAborted;
 }
 
-static bool apsta_primary_sta_rsn_state_is_done(const AirportItlwm *owner)
-{
-    if (owner == nullptr || owner->fNetIf == nullptr)
-        return false;
-    OSBoolean *done = OSDynamicCast(
-        OSBoolean, owner->fNetIf->getProperty("IO80211RSNDone"));
-    return done != nullptr && done->isTrue();
-}
-
 enum {
     kAirportItlwmAPSTAAuthUpperOpen = 0,
     kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8,
@@ -529,7 +520,6 @@ bool AirportItlwmAPSTAOwner::initWithController(
     confirmedHostAPStartPending = false;
     interfaceDrivenHostAPConfirmationPending = false;
     primaryStaHandoffScanArmed = false;
-    primaryStaRsnStateRestorePending = false;
     radioResetResumeWaitTicks = 0;
     lowerAssociatedStaCount = 0;
     bzero(lowerAssociatedStaMacs, sizeof(lowerAssociatedStaMacs));
@@ -599,7 +589,6 @@ void AirportItlwmAPSTAOwner::free()
     confirmedHostAPStartPending = false;
     interfaceDrivenHostAPConfirmationPending = false;
     primaryStaHandoffScanArmed = false;
-    primaryStaRsnStateRestorePending = false;
     radioResetResumeWaitTicks = 0;
     clearLowerAssociatedStations();
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
@@ -788,19 +777,6 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
         return kIOReturnBadArgument;
     }
     cfg.beaconTemplate = beaconTemplate;
-
-    /* IWN's HostAP PAN transition repurposes the lower security flags for
-     * the AP role.  They are therefore not a reliable late proof that the
-     * retained STA had completed its keys. Snapshot the type-correct public
-     * IO80211 key-complete state at the only reliable boundary: immediately
-     * before this AP takes the radio. The one-terminal witness is consumed at
-     * the matching lower stop and never lets an open retained STA publish a
-     * key-complete property. */
-    primaryStaRsnStateRestorePending =
-        ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
-        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
-        ic->ic_bss->ni_port_valid &&
-        apsta_primary_sta_rsn_state_is_done(owner);
     IOReturn ret = owner->fHalService->startAPMode(&cfg);
     if (ret == kIOReturnSuccess && state.hiddenNetworkFlag0d != 0) {
         /*
@@ -904,13 +880,6 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
      * controller/Skywalk transition and is a no-op when that edge is already
      * up.
      */
-    /* Consume the protected-STA witness regardless of which later fence
-     * rejects restoration. A subsequent HostAP start obtains a fresh witness
-     * at its own lower admission boundary; a stale one must never survive a
-     * terminal stop or teardown. */
-    const bool restoreRsnState = primaryStaRsnStateRestorePending;
-    primaryStaRsnStateRestorePending = false;
-
     if (owner == nullptr || owner->fHalService == nullptr)
         return;
 
@@ -919,7 +888,8 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
         return;
     if (ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr ||
-        !ic->ic_bss->ni_port_valid)
+        !ic->ic_bss->ni_port_valid ||
+        ic->ic_bss->ni_rsnakms == IEEE80211_AKM_NONE)
         return;
 
     XYLog("APSTA lower stop restoring retained primary STA link\n");
@@ -944,15 +914,15 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
     }
 
     /* setWCL_LINK_STATE_UPDATE() clears IO80211RSNDone as it consumes the
-     * transient HostAP link-down.  The retained protected STA did not lose
-     * its keys or authorized port, so replay only that property through the
-     * reference IO80211 helper after the DVM terminal.  The gated helper
-     * repeats the live-BSS/port/RSN fences and deliberately emits neither a
-     * second RSN handshake event nor any EAPOL or association work. */
+     * transient HostAP link-down. The retained BSS still identifies an RSN
+     * AKM and its port is authorized, so replay only that property through
+     * the reference IO80211 helper after the DVM terminal. The gated helper
+     * repeats those fences and deliberately emits neither a second RSN
+     * handshake event nor any EAPOL or association work. */
     IOCommandGate *gate = owner->getCommandGate();
-    if (restoreRsnState && gate != nullptr &&
+    if (gate != nullptr &&
         gate->runAction(AirportItlwm::restoreRetainedPrimaryStaRsnStateGated,
-                        (void *)(uintptr_t)true) == kIOReturnSuccess)
+                        nullptr) == kIOReturnSuccess)
         XYLog("APSTA lower stop restored retained primary RSN state\n");
 }
 
