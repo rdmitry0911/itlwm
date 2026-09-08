@@ -123,6 +123,15 @@ assert "primaryStaHandoffScanArmed = false;" in owner[
     owner.index("void AirportItlwmAPSTAOwner::resetRuntimeState()"):
     owner.index("void AirportItlwmAPSTAOwner::setSoftAPPowerSaveState(")]
 
+iwn_stop = iwn[iwn.index("IOReturn ItlIwn::stopAPMode()"):
+               iwn.index("IOReturn ItlIwn::setAPMaxStations(")]
+assert "apFirmwareStage == IWN_AP_STAGE_STOP_RXON" in iwn_stop
+assert "apFirmwareStage == IWN_AP_STAGE_STOP_PAN_PARAMS" in iwn_stop
+assert iwn_stop.count("return kIOReturnNotReady;") >= 2, \
+    "IWN HostAP stop must remain pending until its firmware terminal"
+assert "iwn_reset_ap_runtime_state();\n        return kIOReturnSuccess;" in iwn_stop, \
+    "IWN HostAP stop may report terminal only after its AP runtime is gone"
+
 assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
 assert "void noteAPSTASharedChannelFilteredWclReassoc(struct ieee80211com *ic);" in v2_hpp
 assert "fAPSTAOwner->armPrimaryStaHandoffScan(ic)" in v2

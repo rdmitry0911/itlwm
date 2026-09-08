@@ -10147,7 +10147,17 @@ IOReturn ItlIwn::stopAPMode()
     }
     if (apFirmwareStage == IWN_AP_STAGE_STOP_RXON ||
         apFirmwareStage == IWN_AP_STAGE_STOP_PAN_PARAMS) {
-        return kIOReturnSuccess;
+        /*
+         * The corresponding command reply only proves that DVM accepted
+         * the teardown request.  The AP context remains owned until the
+         * terminal WIPAN_PARAMS reply retires it through
+         * iwn_reset_ap_runtime_state().  Treating this interval as a
+         * completed stop lets a following CoreWLAN HostAP request submit a
+         * second PAN transition over the old one.  APSTAOwner recognizes
+         * NotReady as an asynchronous lower-stop fence and retries from its
+         * command-gated census.
+         */
+        return kIOReturnNotReady;
     }
     if (apFirmwareStage != IWN_AP_STAGE_RUNNING) {
         return kIOReturnBusy;
@@ -10170,7 +10180,10 @@ IOReturn ItlIwn::stopAPMode()
         iwn_set_ap_scan_transition_blocked(false);
         return kIOReturnError;
     }
-    return kIOReturnSuccess;
+    /* The WIPAN_RXON deactivation was queued, not completed.  Do not expose
+     * a lower terminal until its notification/reply chain has removed the
+     * PAN context. */
+    return kIOReturnNotReady;
 }
 
 IOReturn ItlIwn::setAPMaxStations(uint32_t maxStations)
