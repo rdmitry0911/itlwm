@@ -28,7 +28,10 @@ beacon = start.index("apsta_build_beacon(", config)
 lower = start.index("startAPMode(&cfg)", beacon)
 assert shared < primary < align < config < beacon < lower
 assert "APSTA public start shared channel follows primary" in start
-assert "ic->ic_opmode" not in start
+# Shared-channel selection is based solely on the HAL's authoritative primary
+# channel. A later protected-STA witness is allowed immediately before the
+# AP firmware handoff, but must not influence this channel choice.
+assert "ic->ic_opmode" not in start[shared:start.index("ItlHalApConfig cfg")]
 assert "num_different_channels == 1" in iwn[
     iwn.index("bool ItlIwn::requiresAPSTASharedChannel() const"):
     iwn.index("bool ItlIwn::isPrimaryStaRecoveryScanPending() const")]
@@ -138,6 +141,7 @@ assert "iwn_reset_ap_runtime_state();\n        return kIOReturnSuccess;" in iwn_
 # transition, restore only through the normal net80211 bridge and only after
 # the lower terminal, never by writing controller or Skywalk state directly.
 assert "void restoreRetainedPrimaryStaLinkAfterStop();" in owner_hpp
+assert "bool primaryStaRsnStateRestorePending;" in owner_hpp
 terminal = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()"):
                  owner.index("void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()")]
 restore_call = terminal.index("restoreRetainedPrimaryStaLinkAfterStop();")
@@ -178,11 +182,11 @@ assert "restoreRetainedPrimaryStaRsnStateGated" in v2_hpp
 rsn_restore = v2[v2.index("restoreRetainedPrimaryStaRsnStateGated("):
                  v2.index("postWclScanResultsGated(")]
 for token in (
+    "(uintptr_t)arg0 == 0",
     "ic->ic_opmode != IEEE80211_M_STA",
     "ic->ic_state != IEEE80211_S_RUN",
     "ic->ic_bss == nullptr",
     "!ic->ic_bss->ni_port_valid",
-    "(ic->ic_flags & IEEE80211_F_RSNON) == 0",
     "handleKeyDone(true, false);",
 ):
     assert token in rsn_restore, f"missing retained RSN restore fence: {token}"
@@ -192,11 +196,28 @@ for forbidden in (
 ):
     assert forbidden not in rsn_restore, \
         f"retained RSN restore must not republish authentication: {forbidden}"
+start_lower = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()"):
+                    owner.index("IOReturn AirportItlwmAPSTAOwner::stopLower()")]
+snapshot = start_lower.index("primaryStaRsnStateRestorePending =")
+lower_start = start_lower.index("owner->fHalService->startAPMode(&cfg);")
+for token in (
+    "ic->ic_opmode == IEEE80211_M_STA",
+    "ic->ic_state == IEEE80211_S_RUN",
+    "ic->ic_bss != nullptr",
+    "ic->ic_bss->ni_port_valid",
+    "(ic->ic_flags & IEEE80211_F_RSNON) != 0",
+):
+    assert token in start_lower[snapshot:lower_start], \
+        f"missing pre-HostAP protected STA witness: {token}"
+assert snapshot < lower_start
+assert "primaryStaRsnStateRestorePending = false;" in restore
 rsn_gate = restore.index("IOCommandGate *gate = owner->getCommandGate();")
 rsn_action = restore.index(
     "gate->runAction(AirportItlwm::restoreRetainedPrimaryStaRsnStateGated,",
     rsn_gate)
 assert controller_up < rsn_gate < rsn_action
+assert "restoreRsnState && gate != nullptr" in restore
+assert "(void *)(uintptr_t)true" in restore[rsn_action:]
 assert "APSTA lower stop restored retained primary RSN state" in restore
 assert "postRsnHandshakeDoneGated" not in restore
 

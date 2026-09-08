@@ -520,6 +520,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     confirmedHostAPStartPending = false;
     interfaceDrivenHostAPConfirmationPending = false;
     primaryStaHandoffScanArmed = false;
+    primaryStaRsnStateRestorePending = false;
     radioResetResumeWaitTicks = 0;
     lowerAssociatedStaCount = 0;
     bzero(lowerAssociatedStaMacs, sizeof(lowerAssociatedStaMacs));
@@ -589,6 +590,7 @@ void AirportItlwmAPSTAOwner::free()
     confirmedHostAPStartPending = false;
     interfaceDrivenHostAPConfirmationPending = false;
     primaryStaHandoffScanArmed = false;
+    primaryStaRsnStateRestorePending = false;
     radioResetResumeWaitTicks = 0;
     clearLowerAssociatedStations();
     lifecycle = kAirportItlwmAPSTAOwnerFreed;
@@ -777,6 +779,18 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
         return kIOReturnBadArgument;
     }
     cfg.beaconTemplate = beaconTemplate;
+
+    /* IWN's HostAP PAN transition repurposes ic_flags for the AP role and
+     * can therefore clear IEEE80211_F_RSNON before its asynchronous lower
+     * stop is terminal.  Snapshot the protected, authorized primary BSS at
+     * the only reliable boundary: immediately before this AP takes the
+     * radio.  The bit is consumed at the matching terminal and never lets an
+     * open retained STA publish a key-complete property. */
+    primaryStaRsnStateRestorePending =
+        ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
+        ic->ic_bss->ni_port_valid &&
+        (ic->ic_flags & IEEE80211_F_RSNON) != 0;
     IOReturn ret = owner->fHalService->startAPMode(&cfg);
     if (ret == kIOReturnSuccess && state.hiddenNetworkFlag0d != 0) {
         /*
@@ -880,6 +894,13 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
      * controller/Skywalk transition and is a no-op when that edge is already
      * up.
      */
+    /* Consume the protected-STA witness regardless of which later fence
+     * rejects restoration. A subsequent HostAP start obtains a fresh witness
+     * at its own lower admission boundary; a stale one must never survive a
+     * terminal stop or teardown. */
+    const bool restoreRsnState = primaryStaRsnStateRestorePending;
+    primaryStaRsnStateRestorePending = false;
+
     if (owner == nullptr || owner->fHalService == nullptr)
         return;
 
@@ -919,9 +940,9 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
      * repeats the live-BSS/port/RSN fences and deliberately emits neither a
      * second RSN handshake event nor any EAPOL or association work. */
     IOCommandGate *gate = owner->getCommandGate();
-    if (gate != nullptr &&
+    if (restoreRsnState && gate != nullptr &&
         gate->runAction(AirportItlwm::restoreRetainedPrimaryStaRsnStateGated,
-                        owner) == kIOReturnSuccess)
+                        (void *)(uintptr_t)true) == kIOReturnSuccess)
         XYLog("APSTA lower stop restored retained primary RSN state\n");
 }
 
