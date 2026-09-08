@@ -923,8 +923,16 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
      * reconciliation clears the carrier reservation.  The consumer also
      * verifies that the candidate BSSID still equals the authorized RUN BSS,
      * so a later new-network request is never classified as this replay. */
-    primaryStaPostStopWclAssociationPending =
-        shouldRetainPrimaryStaCarrier();
+    struct ieee80211com *retainedPrimary =
+        owner != nullptr && owner->fHalService != nullptr
+            ? owner->fHalService->get80211Controller() : nullptr;
+    /* The preceding carrier token can already have been consumed by the
+     * controller's down-edge.  This is nevertheless the AP owner's exact
+     * lower-stop terminal, so establish the deferred WCL reservation from
+     * the authoritative retained BSS rather than from that earlier token. */
+    primaryStaPostStopWclAssociationPending = retainedPrimary != nullptr &&
+        retainedPrimary->ic_state == IEEE80211_S_RUN &&
+        retainedPrimary->ic_bss != nullptr;
     restoreRetainedPrimaryStaLinkAfterStop();
     primaryStaCarrierHoldPending = false;
     XYLog("APSTA lower stop reached terminal\n");
