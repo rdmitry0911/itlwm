@@ -73,7 +73,7 @@ extern "C" bool airportItlwmHandoffIwmPrimaryStaRecoveryScanToAP(
 extern "C" bool airportItlwmHandoffIwxPrimaryStaRecoveryScanToAP(
     ItlHalService *, IOReturn *);
 extern "C" bool airportItlwmConsumeAPSTAPrimaryStaHandoffScan(
-    ItlHalService *, struct ieee80211com *, int);
+    IOEthernetController *, struct ieee80211com *, int);
 
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwn, ItlHalService)
@@ -13486,7 +13486,8 @@ iwn_newstate_preflight(struct ieee80211com *ic,
      * Let the APSTA owner consume only that one confirmed handoff while the
      * primary BSS is still fully associated.  Returning here is before
      * net80211 advances its association epoch or clears RXON/BSS state. */
-    if (airportItlwmConsumeAPSTAPrimaryStaHandoffScan(that, ic, arg))
+    if (airportItlwmConsumeAPSTAPrimaryStaHandoffScan(
+            that->getController(), ic, arg))
         return 1;
     /* Reject before net80211 advances the association epoch or tears down
      * the current BSS.  A scanner-internal hop belongs to a command which

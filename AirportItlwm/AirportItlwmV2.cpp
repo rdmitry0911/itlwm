@@ -16491,14 +16491,11 @@ bool AirportItlwm::consumeAPSTAPrimaryStaHandoffScan(
 
 extern "C" bool
 airportItlwmConsumeAPSTAPrimaryStaHandoffScan(
-    ItlHalService *service, struct ieee80211com *ic, int arg)
+    IOEthernetController *controller, struct ieee80211com *ic, int arg)
 {
-    if (service == nullptr || service->get80211Controller() != ic)
-        return false;
-    AirportItlwm *controller =
-        OSDynamicCast(AirportItlwm, service->getController());
-    return controller != nullptr &&
-        controller->consumeAPSTAPrimaryStaHandoffScan(ic, arg);
+    AirportItlwm *airport = OSDynamicCast(AirportItlwm, controller);
+    return airport != nullptr &&
+        airport->consumeAPSTAPrimaryStaHandoffScan(ic, arg);
 }
 
 void AirportItlwm::teardownAPSTAInterface()

@@ -102,11 +102,11 @@ assert "primaryStaHandoffScanArmed = false;" in owner[
 assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
 bridge = v2[v2.index("extern \"C\" bool\nairportItlwmConsumeAPSTAPrimaryStaHandoffScan("):
             v2.index("void AirportItlwm::teardownAPSTAInterface()")]
-assert "service->get80211Controller() != ic" in bridge
-assert "controller->consumeAPSTAPrimaryStaHandoffScan(ic, arg)" in bridge
+assert "OSDynamicCast(AirportItlwm, controller)" in bridge
+assert "airport->consumeAPSTAPrimaryStaHandoffScan(ic, arg)" in bridge
 preflight = iwn[iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
                 iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")]
-handoff = preflight.index("airportItlwmConsumeAPSTAPrimaryStaHandoffScan(that, ic, arg)")
+handoff = preflight.index("airportItlwmConsumeAPSTAPrimaryStaHandoffScan(\n            that->getController(), ic, arg)")
 rsn = preflight.index("iwn_rsn_join_scan_blocked(ic)")
 scan_lease = preflight.index("iwn_scan_lease_defer_scan")
 assert handoff < rsn < scan_lease, \
