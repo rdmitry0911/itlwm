@@ -884,16 +884,18 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
         return;
 
     struct ieee80211com *ic = owner->fHalService->get80211Controller();
-    if (ic == nullptr || ic->ic_opmode != IEEE80211_M_STA ||
+    if (ic == nullptr)
+        return;
+    if (ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr ||
         !ic->ic_bss->ni_port_valid)
         return;
 
-    struct _ifnet *ifp = &ic->ic_if;
-    if (ifp->if_link_state == LINK_STATE_UP)
-        return;
-
     XYLog("APSTA lower stop restoring retained primary STA link\n");
+    /* ieee80211_set_link_state owns the compare-and-publish edge.  Checking
+     * if_link_state here first races WCL's dispatch thread: it can change the
+     * cached BSD value between our read and the actual call, leaving Tahoe's
+     * controller carrier down although the retained BSS remains usable. */
     ieee80211_set_link_state(ic, LINK_STATE_UP);
 }
 

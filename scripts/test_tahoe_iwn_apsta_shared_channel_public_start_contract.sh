@@ -149,10 +149,12 @@ for token in (
     "ic->ic_state != IEEE80211_S_RUN",
     "ic->ic_bss == nullptr",
     "!ic->ic_bss->ni_port_valid",
-    "ifp->if_link_state == LINK_STATE_UP",
     "ieee80211_set_link_state(ic, LINK_STATE_UP);",
 ):
     assert token in restore, f"missing retained STA link restore fence: {token}"
+assert "ifp->if_link_state == LINK_STATE_UP" not in restore, \
+    "the AP-stop owner must not race net80211's compare-and-publish edge"
+assert "ieee80211_set_link_state owns the compare-and-publish edge" in restore
 assert "setLinkStatus(" not in restore
 assert "reportLinkStatus(" not in restore
 
