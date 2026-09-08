@@ -132,6 +132,30 @@ assert iwn_stop.count("return kIOReturnNotReady;") >= 2, \
 assert "iwn_reset_ap_runtime_state();\n        return kIOReturnSuccess;" in iwn_stop, \
     "IWN HostAP stop may report terminal only after its AP runtime is gone"
 
+# A retained STA BSS does not perform another four-way handshake after the
+# asynchronous DVM PAN stop.  If Tahoe consumed a link-down during that
+# transition, restore only through the normal net80211 bridge and only after
+# the lower terminal, never by writing controller or Skywalk state directly.
+assert "void restoreRetainedPrimaryStaLinkAfterStop();" in owner_hpp
+terminal = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()"):
+                 owner.index("void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()")]
+restore_call = terminal.index("restoreRetainedPrimaryStaLinkAfterStop();")
+terminal_state = terminal.index("lifecycle = kAirportItlwmAPSTAOwnerTerminal;")
+assert terminal_state < restore_call
+restore = owner[owner.index("void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()"):
+                owner.index("void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()")]
+for token in (
+    "ic->ic_opmode != IEEE80211_M_STA",
+    "ic->ic_state != IEEE80211_S_RUN",
+    "ic->ic_bss == nullptr",
+    "!ic->ic_bss->ni_port_valid",
+    "ifp->if_link_state == LINK_STATE_UP",
+    "ieee80211_set_link_state(ic, LINK_STATE_UP);",
+):
+    assert token in restore, f"missing retained STA link restore fence: {token}"
+assert "setLinkStatus(" not in restore
+assert "reportLinkStatus(" not in restore
+
 assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
 assert "void noteAPSTASharedChannelFilteredWclReassoc(struct ieee80211com *ic);" in v2_hpp
 assert "fAPSTAOwner->armPrimaryStaHandoffScan(ic)" in v2

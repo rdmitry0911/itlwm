@@ -860,8 +860,41 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
     state.hostApTransitionState270 = 0;
     if (lifecycle != kAirportItlwmAPSTAOwnerFreed)
         lifecycle = kAirportItlwmAPSTAOwnerTerminal;
+    restoreRetainedPrimaryStaLinkAfterStop();
     XYLog("APSTA lower stop reached terminal\n");
     return kIOReturnSuccess;
+}
+
+void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
+{
+    /*
+     * Apple keeps the associated primary BSS live across an ordinary
+     * setHostApModeInternal(NULL) transaction, so it does not need a second
+     * association-complete edge when HostAP becomes terminal.  IWN's DVM PAN
+     * teardown is asynchronous and Tahoe may have already observed a
+     * LINK_STATE_DOWN while that terminal was pending.  Do not manufacture a
+     * carrier in response: replay the existing net80211 bridge edge only
+     * when its authoritative STA BSS is still RUNning with its controlled
+     * port open, and only after DVM has confirmed that the PAN runtime is
+     * gone.  ieee80211_set_link_state() remains the sole publisher of the
+     * controller/Skywalk transition and is a no-op when that edge is already
+     * up.
+     */
+    if (owner == nullptr || owner->fHalService == nullptr)
+        return;
+
+    struct ieee80211com *ic = owner->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr ||
+        !ic->ic_bss->ni_port_valid)
+        return;
+
+    struct _ifnet *ifp = &ic->ic_if;
+    if (ifp->if_link_state == LINK_STATE_UP)
+        return;
+
+    XYLog("APSTA lower stop restoring retained primary STA link\n");
+    ieee80211_set_link_state(ic, LINK_STATE_UP);
 }
 
 void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()

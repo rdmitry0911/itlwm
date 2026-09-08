@@ -132,6 +132,7 @@ private:
     void initSoftAPParameters();
     void resetRuntimeState();
     IOReturn driveLowerStopToTerminal();
+    void restoreRetainedPrimaryStaLinkAfterStop();
     void prepareEmptyAPForRadioReset();
     void prepareRetainedLowerReset(uint16_t lowerChannel);
     void setSoftAPPowerSaveState(uint8_t newState, uint8_t reason);
