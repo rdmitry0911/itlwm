@@ -9253,19 +9253,6 @@ setWCL_REASSOC(apple80211_reassoc *data)
         ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    /* WCL reassociation owns its current-BSS policy independently. */
-    ieee80211_public_initial_bssid_pin_disarm(ic);
-
-    /* A steady-state reassociation has its own WCL terminal owner.  Retire
-     * any join-completion lease unconditionally, including the PSK-present
-     * path that intentionally retains the current PMK. */
-    if (instance != nullptr) {
-        instance->getTahoeOwnerRegistry().association =
-            TahoeOwnerRegistry::AssociationOwner{};
-        instance->getTahoeOwnerRegistry().publicAssociation =
-            TahoeOwnerRegistry::AssociationOwner{};
-    }
-
     memcpy(cachedReassocRequest, data, sizeof(*data));
     hasCachedReassocRequest = true;
 
@@ -9286,6 +9273,44 @@ setWCL_REASSOC(apple80211_reassoc *data)
         request.candidate[i].score = data->candidates[i].score;
         request.candidate[i].channel_spec =
             data->candidates[i].channel_spec;
+    }
+
+    /*
+     * Our host-owned WCL implementation requires an explicit candidate
+     * descriptor before a newly scanned BSS can become a reassociation
+     * target (see ieee80211_wcl_reassoc_candidate_disposition()).  A zero-
+     * candidate carrier therefore cannot possibly switch BSS.  Starting a
+     * physical background scan in that case nevertheless retires IWN's
+     * associated RXON context when the scan completes with no target.  That
+     * was especially visible in the public HostAP sequence: the empty WCL
+     * carrier dropped an otherwise healthy shared-channel STA just before
+     * the AP context was materialised.
+     *
+     * Keep the request snapshot for observability and acknowledge the
+     * already-satisfied no-target transition, but preserve the current BSS,
+     * its public initial-BSSID pin, and its association owner.  A request
+     * with one or more candidates retains the normal real-scan/reassociation
+     * path below unchanged.
+     */
+    if (request.candidate_count == 0) {
+        XYLog("wcl_reassoc EMPTY_CANDIDATE_RETAIN_CURRENT_BSS channels=%u "
+              "flags=0x%x prune=%d\n",
+              static_cast<unsigned>(request.channel_count),
+              request.feature_flags, request.prune_rssi_dbm);
+        return kIOReturnSuccess;
+    }
+
+    /* WCL reassociation owns its current-BSS policy independently. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
+
+    /* A steady-state reassociation has its own WCL terminal owner.  Retire
+     * any join-completion lease unconditionally, including the PSK-present
+     * path that intentionally retains the current PMK. */
+    if (instance != nullptr) {
+        instance->getTahoeOwnerRegistry().association =
+            TahoeOwnerRegistry::AssociationOwner{};
+        instance->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
     }
 
     /* DVM exposes two RXON contexts but its published STA+AP combination is
