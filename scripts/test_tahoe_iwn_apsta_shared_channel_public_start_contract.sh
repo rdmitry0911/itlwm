@@ -205,11 +205,21 @@ for token in (
     "ic->ic_state == IEEE80211_S_RUN",
     "ic->ic_bss != nullptr",
     "ic->ic_bss->ni_port_valid",
-    "(ic->ic_flags & IEEE80211_F_RSNON) != 0",
+    "apsta_primary_sta_rsn_state_is_done(owner)",
 ):
     assert token in start_lower[snapshot:lower_start], \
         f"missing pre-HostAP protected STA witness: {token}"
 assert snapshot < lower_start
+state_witness = owner[owner.index("static bool apsta_primary_sta_rsn_state_is_done("):
+                      owner.index("IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()")]
+for token in (
+    'getProperty("IO80211RSNDone")',
+    "OSDynamicCast(",
+    "OSBoolean",
+    "done->isTrue()",
+):
+    assert token in state_witness, \
+        f"missing type-correct pre-HostAP key-complete witness: {token}"
 assert "primaryStaRsnStateRestorePending = false;" in restore
 rsn_gate = restore.index("IOCommandGate *gate = owner->getCommandGate();")
 rsn_action = restore.index(

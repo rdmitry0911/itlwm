@@ -9338,11 +9338,12 @@ restoreRetainedPrimaryStaRsnStateGated(
      * IO80211RSNDone while IWN's retained STA BSS is still authorized.  This
      * restores only the recovered key-complete property after the lower
      * terminal and never republishes an authentication or WCL association
-     * event.  IWN legitimately clears IEEE80211_F_RSNON while HostAP owns
-     * the radio, so the caller supplies a one-terminal witness sampled
-     * before that transition. Repeat every remaining live-BSS/authorized
-     * port fence under the controller gate so a late disconnect cannot make
-     * a stale retained BSS appear secured. */
+     * event. IWN can discard its lower security flag while HostAP owns the
+     * radio, so the caller supplies a one-terminal witness sampled from the
+     * type-correct IO80211 key-complete state before that transition. Repeat
+     * every remaining live-BSS/authorized-port fence under the controller
+     * gate so a late disconnect cannot make a stale retained BSS appear
+     * secured. */
     struct ieee80211com *ic = that->fHalService->get80211Controller();
     if (ic == nullptr || ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr ||

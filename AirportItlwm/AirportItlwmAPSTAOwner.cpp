@@ -42,6 +42,15 @@ static bool apsta_lower_stop_pending(IOReturn result)
         result == kIOReturnAborted;
 }
 
+static bool apsta_primary_sta_rsn_state_is_done(const AirportItlwm *owner)
+{
+    if (owner == nullptr || owner->fNetIf == nullptr)
+        return false;
+    OSBoolean *done = OSDynamicCast(
+        OSBoolean, owner->fNetIf->getProperty("IO80211RSNDone"));
+    return done != nullptr && done->isTrue();
+}
+
 enum {
     kAirportItlwmAPSTAAuthUpperOpen = 0,
     kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8,
@@ -780,17 +789,18 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     }
     cfg.beaconTemplate = beaconTemplate;
 
-    /* IWN's HostAP PAN transition repurposes ic_flags for the AP role and
-     * can therefore clear IEEE80211_F_RSNON before its asynchronous lower
-     * stop is terminal.  Snapshot the protected, authorized primary BSS at
-     * the only reliable boundary: immediately before this AP takes the
-     * radio.  The bit is consumed at the matching terminal and never lets an
-     * open retained STA publish a key-complete property. */
+    /* IWN's HostAP PAN transition repurposes the lower security flags for
+     * the AP role.  They are therefore not a reliable late proof that the
+     * retained STA had completed its keys. Snapshot the type-correct public
+     * IO80211 key-complete state at the only reliable boundary: immediately
+     * before this AP takes the radio. The one-terminal witness is consumed at
+     * the matching lower stop and never lets an open retained STA publish a
+     * key-complete property. */
     primaryStaRsnStateRestorePending =
         ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
         ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
         ic->ic_bss->ni_port_valid &&
-        (ic->ic_flags & IEEE80211_F_RSNON) != 0;
+        apsta_primary_sta_rsn_state_is_done(owner);
     IOReturn ret = owner->fHalService->startAPMode(&cfg);
     if (ret == kIOReturnSuccess && state.hiddenNetworkFlag0d != 0) {
         /*
