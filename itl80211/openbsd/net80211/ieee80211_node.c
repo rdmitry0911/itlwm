@@ -1754,8 +1754,18 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
      * Apple's BCM scanComplete() posts APPLE80211_M_SCAN_DONE and
      * returns — no BSS selection or auto-join at the driver level.
      */
+    /*
+     * A normal Tahoe AUTO_JOIN census with no desired ESS is published for
+     * the UI and must not become an implicit connection.  An already-issued
+     * direct WCL SAE request is different: it carries one exact BSSID/SSID
+     * policy outside the legacy desired-ESS fields.  Its replacement scan
+     * has to select that exact cached BSS here, otherwise the generic
+     * empty-ESS hold strands the JoinAdapter request after a successful
+     * physical refresh and AUTH never starts.
+     */
     if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
-        ic->ic_des_esslen == 0) {
+        ic->ic_des_esslen == 0 &&
+        !ieee80211_sae_wcl_request_scan_selection_owned(ic)) {
         if (bgscan)
             ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
                               IEEE80211_F_DISABLE_BG_AUTO_CONNECT);

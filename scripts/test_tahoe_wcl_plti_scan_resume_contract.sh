@@ -260,7 +260,9 @@ require(resume, "PMK_READY_SCAN_RESUME", "credential-safe local progress marker"
 # Preserve the lower-layer semantics that make SCAN->SCAN safe. IWX and the
 # actual Tahoe-QEMU legacy IWN backend both coalesce an active scan and restart
 # an inactive one; net80211 still holds an empty AUTO_JOIN scan for airportd
-# instead of selecting a random BSS.
+# instead of selecting a random BSS. The one exception is an already-issued,
+# exact direct-SAE policy: it is the JoinAdapter owner and must select its
+# matching refreshed BSS rather than be stranded by the generic hold.
 iwx_newstate = body(iwx, "void ItlIwx::\niwx_newstate_task(void *psc)", "IWX newstate task")
 ordered(iwx_newstate, "IWX SCAN->SCAN preservation",
         "if (ostate == IEEE80211_S_SCAN)",
@@ -276,6 +278,10 @@ end_scan = body(node, "void\nieee80211_end_scan", "net80211 end_scan")
 ordered(end_scan, "Apple AUTO_JOIN empty-ESS hold",
         "IEEE80211_F_AUTO_JOIN", "ic->ic_des_esslen == 0", "return;",
         "ieee80211_node_choose_bss")
+require(end_scan,
+        "ic->ic_des_esslen == 0 &&\n"
+        "        !ieee80211_sae_wcl_request_scan_selection_owned(ic)",
+        "direct SAE JoinAdapter exception to empty-ESS AUTO_JOIN hold")
 
 # Ordinary builds and the audited PLTI path retain pure-SAE rejection.  The
 # resume predicate only consumes the pre-existing exact PSK policy, so the

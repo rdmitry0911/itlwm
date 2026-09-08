@@ -770,6 +770,10 @@ ordered(end_scan, "scan HOLD returns before consuming a historical result",
 ordered(end_scan, "issued scan alone suppresses legacy ESS overwrite",
         "!ieee80211_sae_wcl_request_scan_selection_owned(ic)",
         "ieee80211_switch_ess(ic)")
+require(end_scan,
+        "ic->ic_des_esslen == 0 &&\n"
+        "        !ieee80211_sae_wcl_request_scan_selection_owned(ic)",
+        "ordinary AUTO_JOIN hold must exempt only an issued exact SAE scan")
 
 
 class RequestModel:
