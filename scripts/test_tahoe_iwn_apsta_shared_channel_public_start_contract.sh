@@ -261,24 +261,28 @@ assert "nullptr) == kIOReturnSuccess" in restore[rsn_action:]
 assert "APSTA lower stop restored retained primary RSN state" in restore
 assert "postRsnHandshakeDoneGated" not in restore
 
-# The standard primary HostAP lifecycle can ask IWN's controller to drop its
-# carrier although its AP-stop firmware terminal explicitly preserves the
-# primary STA RXON. Do not let that transient edge enter WCL: WCL would start
-# a duplicate cached SAE join while net80211 is still RUN. The owner predicate
+# The standard primary HostAP handoff or stop can ask IWN's controller to drop
+# its carrier although the matching firmware transition preserves the primary
+# STA RXON. Do not let that one transient edge enter WCL: WCL would start a
+# duplicate cached SAE join while net80211 is still RUN. The owner predicate
 # must remain narrow enough that an actual leave/loss (which has left RUN) is
 # still delivered normally.
 assert "bool shouldRetainPrimaryStaCarrier() const;" in owner_hpp
+assert "bool consumePrimaryStaCarrierHold();" in owner_hpp
 carrier_start = owner.index(
     "bool AirportItlwmAPSTAOwner::shouldRetainPrimaryStaCarrier() const")
 carrier = owner[carrier_start:owner.index(
     "bool AirportItlwmAPSTAOwner::matchesBSDName", carrier_start)]
 for token in (
-    "!lowerStopPending || !primaryStaCarrierHoldPending",
+    "!primaryStaCarrierHoldPending",
     "ic->ic_state == IEEE80211_S_RUN",
     "ic->ic_bss != nullptr",
     "ic->ic_bss->ni_port_valid",
 ):
     assert token in carrier, f"missing retained-carrier fence: {token}"
+assert "!lowerStopPending" not in carrier
+assert "bool AirportItlwmAPSTAOwner::consumePrimaryStaCarrierHold()" in carrier
+assert "primaryStaCarrierHoldPending = false;" in carrier
 stop_lower = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::stopLower()"):
                    owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()")]
 for token in (
@@ -290,6 +294,10 @@ for token in (
 ):
     assert token in stop_lower, f"missing pre-stop carrier reservation: {token}"
 assert "primary->ic_opmode == IEEE80211_M_STA" not in stop_lower
+handoff = owner[owner.index("bool AirportItlwmAPSTAOwner::armPrimaryStaHandoffScan"):
+                owner.index("bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan")]
+assert "primaryStaHandoffScanArmed = retainPrimary;" in handoff
+assert "primaryStaCarrierHoldPending = retainPrimary;" in handoff
 terminal = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()"):
                  owner.index("void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()")]
 assert (terminal.index("restoreRetainedPrimaryStaLinkAfterStop();") <
@@ -305,7 +313,7 @@ for token in (
     "(status & kIONetworkLinkActive) == 0",
     "(status & kIONetworkLinkNoNetworkChange) == 0",
     "fAPSTAOwner != nullptr",
-    "fAPSTAOwner->shouldRetainPrimaryStaCarrier()",
+    "fAPSTAOwner->consumePrimaryStaCarrierHold()",
     "return true;",
 ):
     assert token in preserve, f"missing APSTA transient-carrier guard: {token}"

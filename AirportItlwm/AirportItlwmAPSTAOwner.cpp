@@ -583,6 +583,7 @@ void AirportItlwmAPSTAOwner::free()
     apCredentialLength = 0;
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     lowerStopPending = false;
+    primaryStaCarrierHoldPending = false;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -1387,13 +1388,19 @@ void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()
 bool AirportItlwmAPSTAOwner::armPrimaryStaHandoffScan(
     struct ieee80211com *ic)
 {
-    primaryStaHandoffScanArmed = owner != nullptr &&
+    const bool retainPrimary = owner != nullptr &&
         owner->fHalService != nullptr &&
         owner->fHalService->get80211Controller() == ic &&
         !lowerStopPending && !isApRunning() &&
         ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
         ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss != nullptr &&
         ic->ic_bss->ni_port_valid;
+    /* The public STA -> AP handoff has both a synthetic generic RUN -> SCAN
+     * request and, later, one DVM primary-carrier withdrawal. They are
+     * separate callbacks: consuming the scan reservation must not discard
+     * the carrier reservation before the latter arrives. */
+    primaryStaHandoffScanArmed = retainPrimary;
+    primaryStaCarrierHoldPending = retainPrimary;
     return primaryStaHandoffScanArmed;
 }
 
@@ -1424,16 +1431,27 @@ bool AirportItlwmAPSTAOwner::shouldRetainPrimaryStaCarrier() const
 {
     /* A real loss or user-requested leave advances net80211 out of RUN
      * before its controller carrier drains. Conversely IWN's ordinary PAN
-     * stop deliberately preserves the existing STA RXON/BSS while only the
-     * HostAP context is removed. The AP owner state makes that otherwise
-     * indistinguishable controller down-edge specific to HostAP. */
+     * handoff/stop preserves the existing STA RXON/BSS while only a HostAP
+     * context changes. The one-shot AP-owner reservation makes that
+     * otherwise indistinguishable controller down-edge specific to HostAP. */
     if (owner == nullptr || owner->fHalService == nullptr ||
-        !lowerStopPending || !primaryStaCarrierHoldPending)
+        !primaryStaCarrierHoldPending)
         return false;
 
     struct ieee80211com *ic = owner->fHalService->get80211Controller();
     return ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
         ic->ic_bss != nullptr && ic->ic_bss->ni_port_valid;
+}
+
+bool AirportItlwmAPSTAOwner::consumePrimaryStaCarrierHold()
+{
+    if (!shouldRetainPrimaryStaCarrier())
+        return false;
+
+    /* A start and a later stop can each provide their own reservation. Do
+     * not turn an active AP into a general carrier-down suppression window. */
+    primaryStaCarrierHoldPending = false;
+    return true;
 }
 
 bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const

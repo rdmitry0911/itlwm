@@ -78,11 +78,13 @@ public:
      * RUN -> SCAN transition; it is not a general scan suppression gate. */
     bool armPrimaryStaHandoffScan(struct ieee80211com *ic);
     bool consumePrimaryStaHandoffScan(struct ieee80211com *ic, int arg);
-    /* The lower IWN PAN transition has a short, AP-owned carrier withdrawal
-     * on the primary interface. Preserve that carrier only while the
-     * original STA BSS is still the authoritative, authorized RUN context;
-     * ordinary deauthentication has already moved it out of that state. */
+    /* The IWN PAN start/stop transitions can each have one AP-owned carrier
+     * withdrawal on the primary interface. Preserve only a pre-reserved
+     * withdrawal while the original STA BSS is still the authoritative,
+     * authorized RUN context; ordinary deauthentication has already moved it
+     * out of that state. */
     bool shouldRetainPrimaryStaCarrier() const;
+    bool consumePrimaryStaCarrierHold();
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;
     void copyMacAddress(uint8_t *address) const;
@@ -163,10 +165,9 @@ private:
     uint8_t apCredential[0x40];
     uint32_t apCredentialLength;
     bool lowerStopPending;
-    // A public HostAP stop can transiently withdraw the primary controller
-    // carrier after the AP profile has been reset but before DVM reports its
-    // lower terminal.  Keep the pre-stop, authorized STA observation for
-    // just that terminal interval.
+    // A public HostAP handoff or stop can each transiently withdraw the
+    // primary controller carrier. Keep exactly one pre-transition,
+    // authorized STA observation and consume it on that carrier edge.
     bool primaryStaCarrierHoldPending;
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
