@@ -256,16 +256,25 @@ for token in (
 ):
     require(completion, token, "real target switch path")
 
-success = body(core, "ieee80211_wcl_reassoc_target_port_valid(",
+success = body(core, "ieee80211_wcl_reassoc_target_running(",
                "target completion gate")
 for token in (
     "IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED",
     "ic->ic_state != IEEE80211_S_RUN",
-    "ni->ni_port_valid",
     "ic_wcl_reassoc_target_bssid",
     "ieee80211_wcl_reassoc_post_success(ic)",
 ):
-    require(success, token, "post-roam RUN/port-valid completion")
+    require(success, token, "post-roam target-RUN completion")
+forbid(success, "ni->ni_port_valid",
+       "reassociation terminal delayed behind RSN port validity")
+newstate_target = section(proto, "int\nieee80211_newstate(",
+                          "\nvoid\nieee80211_set_link_state(",
+                          "generic net80211 state transition")
+run_terminal = newstate_target.find(
+    "ieee80211_wcl_reassoc_target_running(ic, ni);")
+run_pae = newstate_target.find("sae_wcl_defer_link_up =", run_terminal)
+if run_terminal < 0 or run_pae < 0 or run_terminal >= run_pae:
+    fail("reassociation terminal must precede local PAE link policy")
 
 failure = body(core, "void\nieee80211_wcl_reassoc_post_failure(",
                "WCL async failure")
@@ -403,5 +412,5 @@ for token in (
 ):
     require(msg3, token, "port-valid link release")
 
-print("PASS: Tahoe WCL reassoc uses a real bounded roam scan, paired IWN/IWM/IWX SAE retarget, and port-valid target link publication")
+print("PASS: Tahoe WCL reassoc uses a real bounded roam scan, paired IWN/IWM/IWX SAE retarget, and target-RUN reassociation publication before RSN key completion")
 PY

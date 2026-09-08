@@ -2383,7 +2383,7 @@ ieee80211_wcl_reassoc_post_failure(struct ieee80211com *ic, u_int32_t result)
 }
 
 void
-ieee80211_wcl_reassoc_target_port_valid(struct ieee80211com *ic,
+ieee80211_wcl_reassoc_target_running(struct ieee80211com *ic,
     const struct ieee80211_node *ni)
 {
     if (ic == NULL || ni == NULL || !ic->ic_wcl_reassoc_owner_active ||
@@ -2391,11 +2391,30 @@ ieee80211_wcl_reassoc_target_port_valid(struct ieee80211com *ic,
             IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED ||
         ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_RUN || ic->ic_bss != ni ||
-        ((ic->ic_flags & IEEE80211_F_RSNON) != 0 && !ni->ni_port_valid) ||
         !IEEE80211_ADDR_EQ(ni->ni_bssid,
             ic->ic_wcl_reassoc_target_bssid))
         return;
-    XYLog("wcl_reassoc TARGET_PORT_VALID bssid=%s\n",
+    /*
+     * AppleBCMWLANCore::handleReassocEvent publishes the WCL 0x49 terminal
+     * when firmware accepts the target reassociation, then enables its
+     * supplicant-event stream.  For an RSN target that is S_RUN before the
+     * four-way handshake opens the port.  Delay only the key-done fact until
+     * port-valid; delaying 0x49 leaves WCLRoamManager in its pre-reassoc
+     * state while those events arrive.
+     */
+    XYLog("wcl_reassoc TARGET_RUNNING bssid=%s\n",
           ether_sprintf(ni->ni_bssid));
     ieee80211_wcl_reassoc_post_success(ic);
+}
+
+void
+ieee80211_wcl_reassoc_target_port_valid(struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+    /* Kept as a safe late edge for callers outside ieee80211_newstate().
+     * The RUN edge above normally consumes the one-shot reassociation owner. */
+    if (ic == NULL || ni == NULL ||
+        ((ic->ic_flags & IEEE80211_F_RSNON) != 0 && !ni->ni_port_valid))
+        return;
+    ieee80211_wcl_reassoc_target_running(ic, ni);
 }

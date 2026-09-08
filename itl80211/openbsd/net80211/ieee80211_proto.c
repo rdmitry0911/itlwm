@@ -5671,6 +5671,11 @@ justcleanup:
 			if (ni->ni_txrate >= ni->ni_rates.rs_nrates)
 				panic("%s: bogus xmit rate %u setup",
 				    __FUNCTION__, ni->ni_txrate);
+			/* The WCL reassociation terminal is the accepted target-RUN
+			 * edge, not the later RSN port-valid edge.  This mirrors the
+			 * reference firmware reassoc event, which precedes its
+			 * supplicant-event stream. */
+			ieee80211_wcl_reassoc_target_running(ic, ni);
 #ifdef USE_APPLE_SUPPLICANT
 			/* Tahoe's WCL connect-complete consumer is the protected link-up
 			 * owner after current-BSS materialization.  The ordinary Apple

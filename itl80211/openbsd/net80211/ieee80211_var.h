@@ -1502,6 +1502,8 @@ ieee80211_wcl_reassoc_leaf_is_post_send(u_int32_t leaf)
 
 void	ieee80211_wcl_reassoc_post_failure(struct ieee80211com *, u_int32_t);
 void	ieee80211_wcl_reassoc_post_success(struct ieee80211com *);
+void	ieee80211_wcl_reassoc_target_running(struct ieee80211com *,
+    const struct ieee80211_node *);
 void	ieee80211_wcl_reassoc_target_port_valid(struct ieee80211com *,
     const struct ieee80211_node *);
 int	ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *,
