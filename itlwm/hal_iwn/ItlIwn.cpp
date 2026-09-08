@@ -9518,6 +9518,20 @@ void ItlIwn::iwn_note_ap_firmware_event(
             XYLog("%s: AP PAN context stopped; STA context preserved\n",
                   com.sc_dev.dv_xname);
             iwn_reset_ap_runtime_state();
+            /*
+             * The primary STA output queue was fenced before the PAN RXON
+             * transition.  The reset helper deliberately only clears that
+             * fence: it is also used by power-off and fatal-reset paths,
+             * where invoking if_start would be wrong.  This is the one
+             * ordinary HostAP-stop terminal where the BSS RXON remains live,
+             * however.  Wake the already-queued primary DHCP/ARP/data work
+             * only after the WIPAN scheduler has acknowledged WLAN-only
+             * service.  Do not manufacture a link, key, or association edge;
+             * the existing authorized BSS remains its sole owner.
+             */
+            iwn_set_ap_primary_tx_quiesced(false, true);
+            XYLog("%s: AP PAN stop terminal resumed primary STA output\n",
+                  com.sc_dev.dv_xname);
         }
         return;
     }

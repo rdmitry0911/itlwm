@@ -136,6 +136,29 @@ assert iwn_stop.count("return kIOReturnNotReady;") >= 2, \
 assert "iwn_reset_ap_runtime_state();\n        return kIOReturnSuccess;" in iwn_stop, \
     "IWN HostAP stop may report terminal only after its AP runtime is gone"
 
+# The DVM AP start fences the primary STA output queue while its PAN RXON is
+# transitioned.  The generic AP reset helper intentionally does not invoke
+# if_start because it also serves destructive radio-reset paths.  The native
+# WIPAN_PARAMS stop terminal is the non-destructive boundary: it must resume
+# that existing queue after reset, without starting a new association or
+# publishing a synthetic link/key event.
+iwn_events = iwn[iwn.index("void ItlIwn::iwn_note_ap_firmware_event("):
+                 iwn.index("static uint16_t\niwn_apsta_primary_channel(")]
+stop_terminal = iwn_events[iwn_events.index(
+    "if (apFirmwareStage == IWN_AP_STAGE_STOP_PAN_PARAMS)"):
+    iwn_events.index("const int ridx =", iwn_events.index(
+        "if (apFirmwareStage == IWN_AP_STAGE_STOP_PAN_PARAMS)"))]
+reset = stop_terminal.index("iwn_reset_ap_runtime_state();")
+resume = stop_terminal.index("iwn_set_ap_primary_tx_quiesced(false, true);")
+assert reset < resume
+assert "AP PAN stop terminal resumed primary STA output" in stop_terminal
+for forbidden in (
+    "ieee80211_new_state", "ieee80211_set_link_state", "handleKeyDone",
+    "postMessage",
+):
+    assert forbidden not in stop_terminal, \
+        f"AP PAN stop output recovery must not synthesize {forbidden}"
+
 # A retained STA BSS does not perform another four-way handshake after the
 # asynchronous DVM PAN stop.  If Tahoe consumed a link-down during that
 # transition, restore only through the normal net80211 bridge and only after
