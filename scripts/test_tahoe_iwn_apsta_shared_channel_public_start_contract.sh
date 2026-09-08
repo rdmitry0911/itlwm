@@ -346,9 +346,9 @@ assert "consumePrimaryStaPostStopWclAssociation(bssid)" in wcl_associate
 assert "APSTA retaining primary BSS across post-stop WCL replay" in wcl_associate
 assert (wcl_associate.index("APSTA retaining primary BSS across post-stop WCL replay") <
         wcl_associate.index("ieee80211_public_initial_bssid_pin_disarm"))
-assert "primaryStaPostStopWclAssociationPending" in owner
+assert "primaryStaPostStopWclAssociationBudget" in owner
 assert "consumePrimaryStaPostStopWclAssociation" in owner
-assert "primaryStaPostStopWclAssociationPending" in owner_hpp
+assert "primaryStaPostStopWclAssociationBudget" in owner_hpp
 assert "authoritative retained BSS rather than from that earlier token" in terminal
 preflight = iwn[iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
                 iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")]

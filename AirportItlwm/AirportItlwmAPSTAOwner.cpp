@@ -514,7 +514,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     apCredentialLength = 0;
     lowerStopPending = false;
     primaryStaCarrierHoldPending = false;
-    primaryStaPostStopWclAssociationPending = false;
+    primaryStaPostStopWclAssociationBudget = 0;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -585,7 +585,7 @@ void AirportItlwmAPSTAOwner::free()
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     lowerStopPending = false;
     primaryStaCarrierHoldPending = false;
-    primaryStaPostStopWclAssociationPending = false;
+    primaryStaPostStopWclAssociationBudget = 0;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -840,7 +840,7 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
      * it after the normal retained-link reconciliation.
      */
     primaryStaCarrierHoldPending = false;
-    primaryStaPostStopWclAssociationPending = false;
+    primaryStaPostStopWclAssociationBudget = 0;
     struct ieee80211com *primary =
         owner != nullptr && owner->fHalService != nullptr
             ? owner->fHalService->get80211Controller() : nullptr;
@@ -918,8 +918,8 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
             }
         }
     }
-    /* WCL queues one cached candidate replay after the lower PAN terminal.
-     * Capture that exact post-terminal edge before the regular retained-link
+    /* WCL queues a bounded cached-candidate replay pair after the lower PAN
+     * terminal. Capture that exact post-terminal edge before the retained-link
      * reconciliation clears the carrier reservation.  The consumer also
      * verifies that the candidate BSSID still equals the authorized RUN BSS,
      * so a later new-network request is never classified as this replay. */
@@ -930,9 +930,9 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
      * controller's down-edge.  This is nevertheless the AP owner's exact
      * lower-stop terminal, so establish the deferred WCL reservation from
      * the authoritative retained BSS rather than from that earlier token. */
-    primaryStaPostStopWclAssociationPending = retainedPrimary != nullptr &&
+    primaryStaPostStopWclAssociationBudget = retainedPrimary != nullptr &&
         retainedPrimary->ic_state == IEEE80211_S_RUN &&
-        retainedPrimary->ic_bss != nullptr;
+        retainedPrimary->ic_bss != nullptr ? 2 : 0;
     restoreRetainedPrimaryStaLinkAfterStop();
     primaryStaCarrierHoldPending = false;
     XYLog("APSTA lower stop reached terminal\n");
@@ -1475,20 +1475,28 @@ bool AirportItlwmAPSTAOwner::consumePrimaryStaCarrierHold()
 bool AirportItlwmAPSTAOwner::consumePrimaryStaPostStopWclAssociation(
     const uint8_t *bssid)
 {
-    if (!primaryStaPostStopWclAssociationPending)
+    if (primaryStaPostStopWclAssociationBudget == 0)
         return false;
 
-    /* This is a one-carrier reservation.  A malformed or different next
-     * request retires it too, rather than leaving a stale exemption for a
-     * later user-driven association. */
-    primaryStaPostStopWclAssociationPending = false;
-    if (owner == nullptr || owner->fHalService == nullptr || bssid == nullptr)
+    /* This is a two-carrier reservation, matching WCL's post-terminal
+     * cached-carrier pair.  A malformed or different next request retires
+     * the full budget rather than leaving a stale exemption for a later
+     * user-driven association. */
+    if (owner == nullptr || owner->fHalService == nullptr || bssid == nullptr) {
+        primaryStaPostStopWclAssociationBudget = 0;
         return false;
+    }
 
     struct ieee80211com *ic = owner->fHalService->get80211Controller();
-    return ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
-        ic->ic_bss != nullptr && ic->ic_bss->ni_port_valid &&
-        memcmp(ic->ic_bss->ni_bssid, bssid, IEEE80211_ADDR_LEN) == 0;
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr || !ic->ic_bss->ni_port_valid ||
+        memcmp(ic->ic_bss->ni_bssid, bssid, IEEE80211_ADDR_LEN) != 0) {
+        primaryStaPostStopWclAssociationBudget = 0;
+        return false;
+    }
+
+    --primaryStaPostStopWclAssociationBudget;
+    return true;
 }
 
 bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const
