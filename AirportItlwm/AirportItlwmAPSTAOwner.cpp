@@ -1395,6 +1395,23 @@ bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan(
     return true;
 }
 
+bool AirportItlwmAPSTAOwner::shouldRetainPrimaryStaCarrier() const
+{
+    /* A real loss or user-requested leave advances net80211 out of RUN
+     * before its controller carrier drains. Conversely IWN's ordinary PAN
+     * stop deliberately preserves the existing STA RXON/BSS while only the
+     * HostAP context is removed. The AP owner state makes that otherwise
+     * indistinguishable controller down-edge specific to HostAP. */
+    if (owner == nullptr || owner->fHalService == nullptr ||
+        (!isApRunning() && !lowerStopPending))
+        return false;
+
+    struct ieee80211com *ic = owner->fHalService->get80211Controller();
+    return ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
+        ic->ic_bss->ni_port_valid;
+}
+
 bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const
 {
     if (name == nullptr || name[0] == 0) {

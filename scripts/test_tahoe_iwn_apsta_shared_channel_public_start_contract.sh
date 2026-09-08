@@ -261,6 +261,41 @@ assert "nullptr) == kIOReturnSuccess" in restore[rsn_action:]
 assert "APSTA lower stop restored retained primary RSN state" in restore
 assert "postRsnHandshakeDoneGated" not in restore
 
+# The standard primary HostAP lifecycle can ask IWN's controller to drop its
+# carrier although its AP-stop firmware terminal explicitly preserves the
+# primary STA RXON. Do not let that transient edge enter WCL: WCL would start
+# a duplicate cached SAE join while net80211 is still RUN. The owner predicate
+# must remain narrow enough that an actual leave/loss (which has left RUN) is
+# still delivered normally.
+assert "bool shouldRetainPrimaryStaCarrier() const;" in owner_hpp
+carrier_start = owner.index(
+    "bool AirportItlwmAPSTAOwner::shouldRetainPrimaryStaCarrier() const")
+carrier = owner[carrier_start:owner.index(
+    "bool AirportItlwmAPSTAOwner::matchesBSDName", carrier_start)]
+for token in (
+    "(!isApRunning() && !lowerStopPending)",
+    "ic->ic_opmode == IEEE80211_M_STA",
+    "ic->ic_state == IEEE80211_S_RUN",
+    "ic->ic_bss != nullptr",
+    "ic->ic_bss->ni_port_valid",
+):
+    assert token in carrier, f"missing retained-carrier fence: {token}"
+link_status = v2[v2.index("bool AirportItlwm::\nsetLinkStatus("):
+                 v2.index("IOReturn AirportItlwm::\nsetLinkStateGated(")]
+preserve_marker = link_status.index(
+    "APSTA preserving retained primary STA controller carrier")
+preserve_start = link_status.rfind("#if __IO80211_TARGET", 0, preserve_marker)
+preserve = link_status[preserve_start:link_status.index(
+    "// Base status handling may itself consult", preserve_marker)]
+for token in (
+    "(status & kIONetworkLinkActive) == 0",
+    "(status & kIONetworkLinkNoNetworkChange) == 0",
+    "fAPSTAOwner != nullptr",
+    "fAPSTAOwner->shouldRetainPrimaryStaCarrier()",
+    "return true;",
+):
+    assert token in preserve, f"missing APSTA transient-carrier guard: {token}"
+
 assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
 assert "void noteAPSTASharedChannelFilteredWclReassoc(struct ieee80211com *ic);" in v2_hpp
 assert "fAPSTAOwner->armPrimaryStaHandoffScan(ic)" in v2

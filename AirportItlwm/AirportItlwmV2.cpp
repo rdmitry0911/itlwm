@@ -11928,6 +11928,26 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
         return true;
     }
 
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * The IWN DVM HostAP scheduler momentarily asks the primary controller
+     * to withdraw its carrier while tearing down the AP PAN context. Its
+     * associated STA RXON remains live, so forwarding that down-edge to WCL
+     * makes WCL start a second cached SAE join against a controller which is
+     * intentionally still RUN. Apple keeps this retained primary BSS live
+     * across the matching HostAP terminal. Hold only this AP-owned edge;
+     * shouldRetainPrimaryStaCarrier() rejects a real loss after net80211 has
+     * left RUN, an unauthorized protected BSS, and every non-AP path.
+     */
+    if ((status & kIONetworkLinkActive) == 0 &&
+        (status & kIONetworkLinkNoNetworkChange) == 0 &&
+        fAPSTAOwner != nullptr &&
+        fAPSTAOwner->shouldRetainPrimaryStaCarrier()) {
+        XYLog("APSTA preserving retained primary STA controller carrier\n");
+        return true;
+    }
+#endif
+
     // Base status handling may itself consult the bound interface. Admit a
     // normal Starting|Live callback before entering it. The one lifecycle
     // drain owner is allowed to complete that base transition for stop(), but

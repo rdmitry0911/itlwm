@@ -78,6 +78,11 @@ public:
      * RUN -> SCAN transition; it is not a general scan suppression gate. */
     bool armPrimaryStaHandoffScan(struct ieee80211com *ic);
     bool consumePrimaryStaHandoffScan(struct ieee80211com *ic, int arg);
+    /* The lower IWN PAN transition has a short, AP-owned carrier withdrawal
+     * on the primary interface. Preserve that carrier only while the
+     * original STA BSS is still the authoritative, authorized RUN context;
+     * ordinary deauthentication has already moved it out of that state. */
+    bool shouldRetainPrimaryStaCarrier() const;
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;
     void copyMacAddress(uint8_t *address) const;
