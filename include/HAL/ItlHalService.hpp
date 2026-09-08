@@ -321,10 +321,13 @@ public:
         return kIOReturnUnsupported;
     }
     /*
-     * Return the lower runtime's committed AP channel, or zero when there
-     * is no running AP context.  A firmware backend owns CSA completion;
-     * upper APSTA replay must therefore snapshot this value instead of the
-     * original userspace profile before a destructive radio reset.
+     * Return the lower runtime's active, or already accepted in-flight, AP
+     * channel; return zero only when it has no AP context.  A firmware
+     * backend owns CSA completion; upper APSTA replay must therefore
+     * snapshot this value instead of the original userspace profile before
+     * a destructive radio reset.  In particular, an asynchronous lower AP
+     * start must not look like a zero-channel firmware loss to the owner's
+     * first watchdog census.
      */
     virtual uint16_t getAPCurrentChannel() const { return 0; }
     /*

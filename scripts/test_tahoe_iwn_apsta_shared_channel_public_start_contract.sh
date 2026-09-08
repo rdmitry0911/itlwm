@@ -65,6 +65,19 @@ csa_same = csa.index("csa->channel == apFirmwareConfig.channel", csa_reject)
 assert csa_query < csa_guard < csa_reject < csa_same
 assert "rejecting off-channel AP CSA" in csa
 
+# startAPMode() accepts an asynchronous DVM PAN transition before it reaches
+# RUNNING.  The APSTA watchdog uses getAPCurrentChannel()==0 as evidence of a
+# destructive lower reset, so the accepted in-flight profile must retain its
+# channel through that short interval.  A real terminal failure resets the
+# runtime and still reports zero.
+current_channel = iwn[iwn.index("uint16_t ItlIwn::getAPCurrentChannel() const"):
+                      iwn.index("bool ItlIwn::requiresAPSTASharedChannel() const")]
+assert "apFirmwareTransitionActive is set only after the profile" in current_channel
+assert "!apFirmwareTransitionActive || apFirmwareConfig.channel == 0" in current_channel
+assert "return apFirmwareConfig.channel;" in current_channel
+assert "apFirmwareStage != IWN_AP_STAGE_RUNNING" not in current_channel
+assert "iwn_reset_ap_runtime_state()" in current_channel
+
 # A public role-7 AP start must not destroy an already-associated STA before
 # the lower HostAP carrier can share that same radio channel.  The reservation
 # is armed only by the exact existing Internet Sharing interface-enable event,

@@ -10310,8 +10310,23 @@ IOReturn ItlIwn::triggerAPCSA(const struct ItlHalApCSA *csa)
 
 uint16_t ItlIwn::getAPCurrentChannel() const
 {
-    if (!apFirmwareTransitionActive ||
-        apFirmwareStage != IWN_AP_STAGE_RUNNING)
+    /*
+     * The APSTA owner uses this query as its lower-epoch liveness witness.
+     * IWN startAPMode() has accepted and queued the asynchronous DVM PAN
+     * transaction before the first watchdog census can run, whereas
+     * IWN_AP_STAGE_RUNNING is reached only after its command/notification
+     * chain completes.  Reporting zero during that accepted interval made
+     * the owner mistake normal AP materialisation for a firmware reset and
+     * tear down the still-associated primary STA itself.
+     *
+     * apFirmwareTransitionActive is set only after the profile and the
+     * first WIPAN_RXON command have been accepted.  Every terminal queue
+     * failure calls iwn_reset_ap_runtime_state(), so a real lower loss still
+     * becomes zero on the next census and retains the existing recovery
+     * behavior.  The configured channel is therefore a valid liveness
+     * witness from INITIAL_RXON through RUNNING, but never after teardown.
+     */
+    if (!apFirmwareTransitionActive || apFirmwareConfig.channel == 0)
         return 0;
     return apFirmwareConfig.channel;
 }
