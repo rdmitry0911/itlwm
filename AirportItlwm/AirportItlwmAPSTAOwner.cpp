@@ -513,6 +513,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     bzero(apCredential, sizeof(apCredential));
     apCredentialLength = 0;
     lowerStopPending = false;
+    primaryStaCarrierHoldPending = false;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -827,6 +828,24 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
         owner->setAPSTADatapathEnabled(false);
 
     /*
+     * The AP stop callback clears AP-owned runtime words before the lower
+     * DVM PAN removal reaches its terminal.  Snapshot the authoritative
+     * primary STA BSS before that bookkeeping so the matching, transient
+     * controller carrier withdrawal cannot be mistaken for a new WCL join.
+     * This is a one-stop reservation: shouldRetainPrimaryStaCarrier() still
+     * accepts it only while lowerStopPending is true, and the terminal clears
+     * it after the normal retained-link reconciliation.
+     */
+    primaryStaCarrierHoldPending = false;
+    struct ieee80211com *primary =
+        owner != nullptr && owner->fHalService != nullptr
+            ? owner->fHalService->get80211Controller() : nullptr;
+    if (primary != nullptr && primary->ic_opmode == IEEE80211_M_STA &&
+        primary->ic_state == IEEE80211_S_RUN && primary->ic_bss != nullptr &&
+        primary->ic_bss->ni_port_valid)
+        primaryStaCarrierHoldPending = true;
+
+    /*
      * Apple setHostApModeInternal(NULL) returns the lower stop result and
      * does not turn a failed teardown into a completed public transition.
      * IWX must submit its firmware removals outside the upper command gate,
@@ -891,6 +910,7 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
         }
     }
     restoreRetainedPrimaryStaLinkAfterStop();
+    primaryStaCarrierHoldPending = false;
     XYLog("APSTA lower stop reached terminal\n");
     return kIOReturnSuccess;
 }
@@ -1403,13 +1423,12 @@ bool AirportItlwmAPSTAOwner::shouldRetainPrimaryStaCarrier() const
      * HostAP context is removed. The AP owner state makes that otherwise
      * indistinguishable controller down-edge specific to HostAP. */
     if (owner == nullptr || owner->fHalService == nullptr ||
-        (!isApRunning() && !lowerStopPending))
+        !lowerStopPending || !primaryStaCarrierHoldPending)
         return false;
 
     struct ieee80211com *ic = owner->fHalService->get80211Controller();
-    return ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
-        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
-        ic->ic_bss->ni_port_valid;
+    return ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
+        ic->ic_bss != nullptr && ic->ic_bss->ni_port_valid;
 }
 
 bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const

@@ -273,13 +273,27 @@ carrier_start = owner.index(
 carrier = owner[carrier_start:owner.index(
     "bool AirportItlwmAPSTAOwner::matchesBSDName", carrier_start)]
 for token in (
-    "(!isApRunning() && !lowerStopPending)",
-    "ic->ic_opmode == IEEE80211_M_STA",
+    "!lowerStopPending || !primaryStaCarrierHoldPending",
     "ic->ic_state == IEEE80211_S_RUN",
     "ic->ic_bss != nullptr",
     "ic->ic_bss->ni_port_valid",
 ):
     assert token in carrier, f"missing retained-carrier fence: {token}"
+stop_lower = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::stopLower()"):
+                   owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()")]
+for token in (
+    "primaryStaCarrierHoldPending = false;",
+    "primary->ic_opmode == IEEE80211_M_STA",
+    "primary->ic_state == IEEE80211_S_RUN",
+    "primary->ic_bss->ni_port_valid",
+    "primaryStaCarrierHoldPending = true;",
+    "lowerStopPending = true;",
+):
+    assert token in stop_lower, f"missing pre-stop carrier reservation: {token}"
+terminal = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()"):
+                 owner.index("void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()")]
+assert (terminal.index("restoreRetainedPrimaryStaLinkAfterStop();") <
+        terminal.index("primaryStaCarrierHoldPending = false;"))
 link_status = v2[v2.index("bool AirportItlwm::\nsetLinkStatus("):
                  v2.index("IOReturn AirportItlwm::\nsetLinkStateGated(")]
 preserve_marker = link_status.index(

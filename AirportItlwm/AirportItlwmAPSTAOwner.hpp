@@ -163,6 +163,11 @@ private:
     uint8_t apCredential[0x40];
     uint32_t apCredentialLength;
     bool lowerStopPending;
+    // A public HostAP stop can transiently withdraw the primary controller
+    // carrier after the AP profile has been reset but before DVM reports its
+    // lower terminal.  Keep the pre-stop, authorized STA observation for
+    // just that terminal interval.
+    bool primaryStaCarrierHoldPending;
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
     bool radioResetPrimaryStaScanHandoff;
