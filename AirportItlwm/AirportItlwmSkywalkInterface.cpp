@@ -552,16 +552,41 @@ tahoePublicAssociationOwnerMatchesWclIdentity(
  * completion lease intact until that terminal or an explicit lifecycle abort.
  * This is a JoinAdapter invariant shared by open, WPA2 and SAE, independent of
  * the lower HAL and of SAE's shorter credential generation.
+ *
+ * The lease is an admission fence, not a second interpretation of the radio
+ * protocol.  Once net80211 has committed STA RUN, an open BSS has reached its
+ * terminal and a protected BSS reaches it when its controlled port is valid.
+ * A delayed or rejected upper HostAP transaction can leave the WCL bookkeeping
+ * waiting for a notification which it has itself invalidated.  Do not let that
+ * stale bookkeeping reject the following public reconnect: the new public
+ * carrier is the real lifecycle owner and will either retain the live link or
+ * drive a new on-air association.  In particular, this helper does not forge a
+ * WCL completion, carrier edge, key-done notification, or EAPOL result.
  */
 static bool
 tahoeHasActiveWclAssociationOwner(
     const TahoeOwnerRegistry::AssociationOwner &owner,
     struct ieee80211com *ic)
 {
-    return ic != nullptr && ic->ic_bss != nullptr &&
-        (ic->ic_state == IEEE80211_S_AUTH ||
-         ic->ic_state == IEEE80211_S_ASSOC ||
-         ic->ic_state == IEEE80211_S_RUN) &&
+    if (ic == nullptr || ic->ic_bss == nullptr)
+        return false;
+
+    const bool associationInProgress =
+        ic->ic_state == IEEE80211_S_AUTH ||
+        ic->ic_state == IEEE80211_S_ASSOC ||
+        ic->ic_state == IEEE80211_S_RUN;
+    if (!associationInProgress)
+        return false;
+
+    /* The lower protocol terminal is authoritative over an unconsumed upper
+     * completion lease.  Protected RUN remains active only until its real
+     * controlled-port transition; a RUNning open network has no such delay. */
+    if (ic->ic_state == IEEE80211_S_RUN &&
+        ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
+         ic->ic_bss->ni_port_valid))
+        return false;
+
+    return
         owner.hasCarrier && !owner.publicCarrier &&
         owner.selectedFromCandidate && owner.authAssocCompletionArmed &&
         !owner.joinTerminalObserved;

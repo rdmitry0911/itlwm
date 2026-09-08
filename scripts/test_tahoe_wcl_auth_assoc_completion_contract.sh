@@ -454,11 +454,17 @@ for token in (
         "ic->ic_state == IEEE80211_S_AUTH",
         "ic->ic_state == IEEE80211_S_ASSOC",
         "ic->ic_state == IEEE80211_S_RUN",
+        "IEEE80211_F_RSNON",
+        "ic->ic_bss->ni_port_valid",
         "owner.hasCarrier", "!owner.publicCarrier",
         "owner.authAssocCompletionArmed",
         "!owner.joinTerminalObserved",
 ):
     require(active_join_owner, token, "active JoinAdapter lease fence")
+if "lower protocol terminal is authoritative over an unconsumed upper" not in active_join_owner:
+    fail("active JoinAdapter lease must yield after a real lower protocol terminal")
+if "return false;" not in active_join_owner:
+    fail("active JoinAdapter lease must reject stale RUN bookkeeping")
 if "ieee80211_sae_wcl_request_bound_current" in active_join_owner:
     fail("active JoinAdapter lease must outlive SAE credential generation")
 for token in (
