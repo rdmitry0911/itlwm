@@ -85,9 +85,9 @@ public:
      * out of that state. */
     bool shouldRetainPrimaryStaCarrier() const;
     bool consumePrimaryStaCarrierHold();
-    /* The ordinary AP stop terminal causes WCL to replay a bounded pair of
-     * cached association carriers for the BSS which stayed RUN throughout
-     * the PAN removal. Consume only those same-BSSID replays; a new target
+    /* The ordinary AP stop terminal causes WCL to replay one cached
+     * association carrier for the BSS which stayed RUN throughout the PAN
+     * removal.  Consume only that same-BSSID replay; an actual new target
      * must retain the normal WCL association path. */
     bool consumePrimaryStaPostStopWclAssociation(const uint8_t *bssid);
     const char *bsdName() const { return bsdNameStorage; }
@@ -174,10 +174,9 @@ private:
     // primary controller carrier. Keep exactly one pre-transition,
     // authorized STA observation and consume it on that carrier edge.
     bool primaryStaCarrierHoldPending;
-    // Tahoe sends a bounded pair of deferred cached-WCL replays after a
-    // successful IWN PAN stop.  Each is accepted only for the still-
-    // authorized primary BSS; a different request retires the budget.
-    uint8_t primaryStaPostStopWclAssociationBudget;
+    // One deferred cached-WCL replay follows a successful IWN PAN stop.
+    // It is accepted only when it names the still-authorized primary BSS.
+    bool primaryStaPostStopWclAssociationPending;
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
     bool radioResetPrimaryStaScanHandoff;
