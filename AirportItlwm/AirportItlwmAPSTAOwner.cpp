@@ -911,6 +911,18 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
         (void)owner->setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive,
                                    owner->getCurrentMedium());
     }
+
+    /* setWCL_LINK_STATE_UPDATE() clears IO80211RSNDone as it consumes the
+     * transient HostAP link-down.  The retained protected STA did not lose
+     * its keys or authorized port, so replay only that property through the
+     * reference IO80211 helper after the DVM terminal.  The gated helper
+     * repeats the live-BSS/port/RSN fences and deliberately emits neither a
+     * second RSN handshake event nor any EAPOL or association work. */
+    IOCommandGate *gate = owner->getCommandGate();
+    if (gate != nullptr &&
+        gate->runAction(AirportItlwm::restoreRetainedPrimaryStaRsnStateGated,
+                        owner) == kIOReturnSuccess)
+        XYLog("APSTA lower stop restored retained primary RSN state\n");
 }
 
 void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()

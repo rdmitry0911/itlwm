@@ -609,6 +609,8 @@ public:
                                 int32_t onDispatchQueue);
 #endif
     static IOReturn postRsnHandshakeDoneGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn restoreRetainedPrimaryStaRsnStateGated(
+        OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn handlePowerStateChangeGated(
         OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);

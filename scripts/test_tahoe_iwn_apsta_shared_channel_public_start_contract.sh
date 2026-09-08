@@ -13,6 +13,7 @@ owner_hpp = (root / "AirportItlwm/AirportItlwmAPSTAOwner.hpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 v2_hpp = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
+infra = (root / "include/Airport/IO80211InfraInterface.h").read_text()
 hal = (root / "include/HAL/ItlHalService.hpp").read_text()
 iwm_hpp = (root / "itlwm/hal_iwm/ItlIwm.hpp").read_text()
 iwx_hpp = (root / "itlwm/hal_iwx/ItlIwx.hpp").read_text()
@@ -166,6 +167,38 @@ assert "AirportItlwm's existing publisher" in restore
 assert "IORegistry" in restore
 assert "fNetIf->" not in restore
 assert "reportLinkStatus(" not in restore
+
+# The inherited WCL link-reset consumes HostAP's transient down edge by
+# clearing IO80211RSNDone.  Once IWN has reached the lower terminal, restore
+# only that public key-complete property for an already-authorized protected
+# retained STA.  A duplicate RSN handshake, WCL association edge, EAPOL, or
+# direct IORegistry write would be unsafe here.
+assert "void handleKeyDone(bool, bool);" in infra
+assert "restoreRetainedPrimaryStaRsnStateGated" in v2_hpp
+rsn_restore = v2[v2.index("restoreRetainedPrimaryStaRsnStateGated("):
+                 v2.index("postWclScanResultsGated(")]
+for token in (
+    "ic->ic_opmode != IEEE80211_M_STA",
+    "ic->ic_state != IEEE80211_S_RUN",
+    "ic->ic_bss == nullptr",
+    "!ic->ic_bss->ni_port_valid",
+    "(ic->ic_flags & IEEE80211_F_RSNON) == 0",
+    "handleKeyDone(true, false);",
+):
+    assert token in rsn_restore, f"missing retained RSN restore fence: {token}"
+for forbidden in (
+    "postMessage", "setLinkState", "setLinkStatus", "EAPOL",
+    "IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE", "postRsnHandshakeDoneGated",
+):
+    assert forbidden not in rsn_restore, \
+        f"retained RSN restore must not republish authentication: {forbidden}"
+rsn_gate = restore.index("IOCommandGate *gate = owner->getCommandGate();")
+rsn_action = restore.index(
+    "gate->runAction(AirportItlwm::restoreRetainedPrimaryStaRsnStateGated,",
+    rsn_gate)
+assert controller_up < rsn_gate < rsn_action
+assert "APSTA lower stop restored retained primary RSN state" in restore
+assert "postRsnHandshakeDoneGated" not in restore
 
 assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
 assert "void noteAPSTASharedChannelFilteredWclReassoc(struct ieee80211com *ic);" in v2_hpp
