@@ -9,6 +9,8 @@
 #include <unistd.h>
 
 #define SIOCSA80211 2150656456UL
+#define SIOCGA80211 3224398281UL
+#define APPLE80211_IOC_CARD_CAPABILITIES 12
 #define APPLE80211_IOC_CHANNEL 4
 #define APPLE80211_IOC_POWER 19
 #define APPLE80211_IOC_HOST_AP_MODE 25
@@ -58,6 +60,11 @@ struct apple80211_power_data {
     uint32_t version;
     uint32_t num_radios;
     uint32_t power_state[APPLE80211_MAX_RADIO];
+};
+
+struct apple80211_capability_data {
+    uint32_t version;
+    uint8_t capabilities[24];
 };
 
 struct airport_itlwm_host_ap_mode {
@@ -115,6 +122,31 @@ set_apple80211(int fd, const char *ifname, int selector, int value,
 }
 
 static int
+get_card_capabilities(int fd, const char *ifname)
+{
+    struct apple80211req request;
+    struct apple80211_capability_data capabilities;
+
+    memset(&request, 0, sizeof(request));
+    memset(&capabilities, 0, sizeof(capabilities));
+    snprintf(request.req_if_name, sizeof(request.req_if_name), "%s", ifname);
+    request.req_type = APPLE80211_IOC_CARD_CAPABILITIES;
+    request.req_len = sizeof(capabilities);
+    request.req_data = &capabilities;
+    errno = 0;
+    const int result = ioctl(fd, SIOCGA80211, &request);
+    const int saved_errno = errno;
+    printf("selector=%d interface=%s result=%d errno=%d (%s) version=%u caps=",
+           APPLE80211_IOC_CARD_CAPABILITIES, ifname, result, saved_errno,
+           strerror(saved_errno), capabilities.version);
+    for (size_t i = 0; i < sizeof(capabilities.capabilities); i++)
+        printf("%02x", capabilities.capabilities[i]);
+    printf("\n");
+    errno = saved_errno;
+    return result;
+}
+
+static int
 bring_interface_up(int fd, const char *ifname)
 {
     struct ifreq request;
@@ -144,6 +176,18 @@ bring_interface_up(int fd, const char *ifname)
 int
 main(int argc, char **argv)
 {
+    if (argc > 1 && strcmp(argv[1], "--card-capabilities") == 0) {
+        const char *ifname = argc > 2 ? argv[2] : "en1";
+        const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            perror("socket");
+            return 2;
+        }
+        const int result = get_card_capabilities(fd, ifname);
+        close(fd);
+        return result == 0 ? 0 : 1;
+    }
+
     const char *station_ifname = argc > 1 ? argv[1] : "en1";
     const char *ssid = argc > 2 ? argv[2] : "AIAMap6235";
     const unsigned long requested_channel =
