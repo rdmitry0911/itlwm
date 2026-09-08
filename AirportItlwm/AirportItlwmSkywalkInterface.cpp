@@ -7540,6 +7540,18 @@ IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    /* The standard STA -> HostAP handoff can make WCL submit the retained
+     * candidate again even though DVM has kept that BSS authorized and RUN.
+     * This is not a new join intent: consuming it would replace the live
+     * association owner and drive performJoin() into NotReady. The AP owner
+     * holds this bounded reservation from the exact handoff census through
+     * the matching carrier/stop boundary; all ordinary WCL association
+     * requests reach the existing path below. */
+    if (instance != nullptr && instance->fAPSTAOwner != nullptr &&
+        instance->fAPSTAOwner->shouldRetainPrimaryStaCarrier()) {
+        XYLog("APSTA retaining primary BSS across WCL handoff association\n");
+        return kIOReturnSuccess;
+    }
     /* WCL uses an explicit BSSID owner; it must never inherit a preceding
      * public-CoreWLAN initial-candidate marker, including malformed carriers. */
     ieee80211_public_initial_bssid_pin_disarm(

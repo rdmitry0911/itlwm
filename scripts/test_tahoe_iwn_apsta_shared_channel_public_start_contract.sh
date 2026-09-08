@@ -336,6 +336,12 @@ assert "instance->fAPSTAOwner->shouldRetainPrimaryStaCarrier()" in wcl_guard
 assert "return kIOReturnSuccess;" in wcl_guard
 base_wcl_update = "(void)IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);"
 assert wcl_guard.index("return kIOReturnSuccess;") < wcl_update.index(base_wcl_update)
+wcl_associate = skywalk[skywalk.index("IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATE("):
+                        skywalk.index("#if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS")]
+assert "APSTA retaining primary BSS across WCL handoff association" in wcl_associate
+assert "instance->fAPSTAOwner->shouldRetainPrimaryStaCarrier()" in wcl_associate
+assert (wcl_associate.index("APSTA retaining primary BSS across WCL handoff association") <
+        wcl_associate.index("ieee80211_public_initial_bssid_pin_disarm"))
 preflight = iwn[iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
                 iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")]
 handoff = preflight.index("airportItlwmConsumeAPSTAPrimaryStaHandoffScan(\n            that->getController(), ic, arg)")
