@@ -9329,19 +9329,6 @@ setWCL_REASSOC(apple80211_reassoc *data)
         return kIOReturnSuccess;
     }
 
-    /* WCL reassociation owns its current-BSS policy independently. */
-    ieee80211_public_initial_bssid_pin_disarm(ic);
-
-    /* A steady-state reassociation has its own WCL terminal owner.  Retire
-     * any join-completion lease unconditionally, including the PSK-present
-     * path that intentionally retains the current PMK. */
-    if (instance != nullptr) {
-        instance->getTahoeOwnerRegistry().association =
-            TahoeOwnerRegistry::AssociationOwner{};
-        instance->getTahoeOwnerRegistry().publicAssociation =
-            TahoeOwnerRegistry::AssociationOwner{};
-    }
-
     /* DVM exposes two RXON contexts but its published STA+AP combination is
      * single-channel.  Keep the physical WCL census intact (it is also useful
      * to CoreWLAN), while constraining only the target admitted from that
@@ -9383,6 +9370,37 @@ setWCL_REASSOC(apple80211_reassoc *data)
               static_cast<unsigned>(requiredSharedChannel),
               static_cast<unsigned>(request.channel_count),
               static_cast<unsigned>(request.candidate_count));
+    }
+
+    /*
+     * The original request may name only off-channel roam targets.  Filtering
+     * that list to the single DVM STA+AP channel can therefore produce the
+     * same no-target carrier as the literal-empty case above.  It is not a
+     * real reassociation request after the hardware admission boundary, so
+     * it must retain the BSS before either the public BSSID pin or the
+     * association owner is retired.  Otherwise begin_wcl_reassoc_bgscan()
+     * performs a scan with no selectable target and tears down the healthy
+     * RXON just before HostAP creates the PAN context.
+     */
+    if (request.candidate_count == 0) {
+        XYLog("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS "
+              "channels=%u\n",
+              static_cast<unsigned>(request.channel_count));
+        return kIOReturnSuccess;
+    }
+
+    /* WCL reassociation owns its current-BSS policy only after an admitted
+     * target remains. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
+
+    /* A steady-state reassociation has its own WCL terminal owner.  Retire
+     * any join-completion lease unconditionally, including the PSK-present
+     * path that intentionally retains the current PMK. */
+    if (instance != nullptr) {
+        instance->getTahoeOwnerRegistry().association =
+            TahoeOwnerRegistry::AssociationOwner{};
+        instance->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
     }
 
     /* Apple sends these arrays to WLC_REASSOC and starts a firmware roam
