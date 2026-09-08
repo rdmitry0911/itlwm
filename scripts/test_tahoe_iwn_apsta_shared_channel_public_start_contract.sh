@@ -325,6 +325,17 @@ bridge = v2[v2.index("extern \"C\" bool\nairportItlwmConsumeAPSTAPrimaryStaHando
             v2.index("void AirportItlwm::teardownAPSTAInterface()")]
 assert "OSDynamicCast(AirportItlwm, controller)" in bridge
 assert "airport->consumeAPSTAPrimaryStaHandoffScan(ic, arg)" in bridge
+skywalk = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
+wcl_update = skywalk[skywalk.index("IOReturn AirportItlwmSkywalkInterface::\nsetWCL_LINK_STATE_UPDATE"):
+                     skywalk.index("SInt32 AirportItlwmSkywalkInterface::\nsetInterfaceEnable")]
+wcl_marker = "APSTA preserving retained primary WCL carrier update"
+wcl_guard = wcl_update[wcl_update.index(wcl_marker) - 1200:
+                       wcl_update.index(wcl_marker) + 700]
+assert "!linkUp" in wcl_guard
+assert "instance->fAPSTAOwner->shouldRetainPrimaryStaCarrier()" in wcl_guard
+assert "return kIOReturnSuccess;" in wcl_guard
+base_wcl_update = "(void)IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);"
+assert wcl_guard.index("return kIOReturnSuccess;") < wcl_update.index(base_wcl_update)
 preflight = iwn[iwn.index("iwn_newstate_preflight(struct ieee80211com *ic"):
                 iwn.index("void ItlIwn::\niwn_scan_lease_replay_task")]
 handoff = preflight.index("airportItlwmConsumeAPSTAPrimaryStaHandoffScan(\n            that->getController(), ic, arg)")

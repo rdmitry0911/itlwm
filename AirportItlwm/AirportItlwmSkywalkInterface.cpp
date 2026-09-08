@@ -4686,7 +4686,6 @@ setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
         kIOReturnSuccess,
         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, onDispatchQueuePred);
 #endif
-    (void)IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
     if (data == nullptr) {
 #if __IO80211_TARGET >= __MAC_26_0
         airportItlwmLifecycleController->recordTahoeLinkContext(
@@ -4717,6 +4716,30 @@ setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
         kIOReturnSuccess,
         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, onDispatchQueuePred);
 #endif
+    /* The IWN AP handoff has a single synthetic primary-carrier down update
+     * before its matching controller callback consumes the owner reservation.
+     * The inherited WCL setter reacts immediately by clearing BSS ownership
+     * and attempting a cached reassociation, so it must not see that one
+     * transition. Keep the reservation intact here: setLinkStatus() consumes
+     * it when the matching controller edge arrives. */
+    if (!linkUp && instance != nullptr && instance->fAPSTAOwner != nullptr &&
+        instance->fAPSTAOwner->shouldRetainPrimaryStaCarrier()) {
+        XYLog("APSTA preserving retained primary WCL carrier update\n");
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmLifecycleController->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextWclUpdate,
+            kAirportItlwmRegDiagLinkContextWclReturn, contextLinkState,
+            refreshCurrentBss ? 1U : 0U,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+            kIOReturnSuccess,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+            onDispatchQueuePred);
+#endif
+        return kIOReturnSuccess;
+    }
+
+    (void)IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
     if (instance == nullptr || instance->getBssManager() == nullptr) {
 #if __IO80211_TARGET >= __MAC_26_0
         airportItlwmLifecycleController->recordTahoeLinkContext(
