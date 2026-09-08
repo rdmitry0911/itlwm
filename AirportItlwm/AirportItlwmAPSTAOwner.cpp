@@ -897,6 +897,20 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
      * cached BSD value between our read and the actual call, leaving Tahoe's
      * controller carrier down although the retained BSS remains usable. */
     ieee80211_set_link_state(ic, LINK_STATE_UP);
+
+    /* HostAP owns a distinct Skywalk carrier and can drop the controller's
+     * public link while the primary BSD cache remains UP.  In that case the
+     * net80211 call above has correctly become a no-op, yet Tahoe still needs
+     * its normal controller edge back.  Reconcile only the already-proven
+     * primary association through AirportItlwm's existing publisher; that
+     * path owns the standard lifecycle gate and deferred Skywalk/WCL work.
+     * This neither writes an IORegistry property nor invokes an AP interface
+     * setter directly. */
+    if ((owner->currentStatus & kIONetworkLinkActive) == 0) {
+        XYLog("APSTA lower stop restoring retained primary controller link\n");
+        (void)owner->setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive,
+                                   owner->getCurrentMedium());
+    }
 }
 
 void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()

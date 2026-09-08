@@ -155,7 +155,16 @@ for token in (
 assert "ifp->if_link_state == LINK_STATE_UP" not in restore, \
     "the AP-stop owner must not race net80211's compare-and-publish edge"
 assert "ieee80211_set_link_state owns the compare-and-publish edge" in restore
-assert "setLinkStatus(" not in restore
+bridge_up = restore.index("ieee80211_set_link_state(ic, LINK_STATE_UP);")
+controller_down = restore.index(
+    "(owner->currentStatus & kIONetworkLinkActive) == 0")
+controller_up = restore.index(
+    "owner->setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive,")
+assert bridge_up < controller_down < controller_up
+assert restore.count("setLinkStatus(") == 1
+assert "AirportItlwm's existing publisher" in restore
+assert "IORegistry" in restore
+assert "fNetIf->" not in restore
 assert "reportLinkStatus(" not in restore
 
 assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
