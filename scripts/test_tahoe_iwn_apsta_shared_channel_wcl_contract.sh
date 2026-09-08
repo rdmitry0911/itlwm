@@ -21,7 +21,8 @@ iwn_query = iwn[
     iwn.index("uint16_t ItlIwn::getAPSTARequiredSharedChannel() const"):
     iwn.index("bool ItlIwn::isPrimaryStaRecoveryScanPending() const")
 ]
-assert "return getAPCurrentChannel();" in iwn_query
+assert "iwn_apsta_primary_channel(" in iwn_query
+assert "primaryChannel != 0 ? primaryChannel : getAPCurrentChannel()" in iwn_query
 assert "num_different_channels == 1" in iwn_query
 
 wcl = sky[

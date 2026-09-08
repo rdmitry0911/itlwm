@@ -696,7 +696,6 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
         return kIOReturnUnsupported;
     }
 
-    struct ieee80211com *ic = owner->fHalService->get80211Controller();
     /*
      * AppleBCMWLAN can hand the requested chanspec to its FullMAC AP
      * context.  Intel DVM instead publishes STA+AP with exactly one
@@ -708,19 +707,15 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
      * otherwise both BSD interfaces report active while AP management TX is
      * attempted through the wrong radio context.
      */
-    if (owner->fHalService->requiresAPSTASharedChannel() &&
-        ic != nullptr && ic->ic_opmode == IEEE80211_M_STA &&
-        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
-        ic->ic_bss->ni_chan != nullptr) {
-        const int primaryChannel =
-            ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
-        if (primaryChannel > 0 && primaryChannel <= UINT16_MAX &&
-            static_cast<uint16_t>(primaryChannel) != apChannel) {
+    if (owner->fHalService->requiresAPSTASharedChannel()) {
+        const uint16_t primaryChannel =
+            owner->fHalService->getAPSTARequiredSharedChannel();
+        if (primaryChannel != 0 && primaryChannel != apChannel) {
             XYLog("APSTA public start shared channel follows primary "
                   "profile=%u primary=%u\n",
                   static_cast<unsigned>(apChannel),
                   static_cast<unsigned>(primaryChannel));
-            apChannel = static_cast<uint16_t>(primaryChannel);
+            apChannel = primaryChannel;
         }
     }
 

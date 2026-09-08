@@ -17,14 +17,14 @@ iwx_hpp = (root / "itlwm/hal_iwx/ItlIwx.hpp").read_text()
 start = owner[owner.index("IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()"):
               owner.index("IOReturn AirportItlwmAPSTAOwner::stopLower()")]
 shared = start.index("requiresAPSTASharedChannel()")
-run = start.index("ic->ic_state == IEEE80211_S_RUN", shared)
-primary = start.index("ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan)", run)
-align = start.index("apChannel = static_cast<uint16_t>(primaryChannel)", primary)
+primary = start.index("getAPSTARequiredSharedChannel()", shared)
+align = start.index("apChannel = primaryChannel", primary)
 config = start.index("cfg.channel = apChannel", align)
 beacon = start.index("apsta_build_beacon(", config)
 lower = start.index("startAPMode(&cfg)", beacon)
-assert shared < run < primary < align < config < beacon < lower
+assert shared < primary < align < config < beacon < lower
 assert "APSTA public start shared channel follows primary" in start
+assert "ic->ic_opmode" not in start
 assert "num_different_channels == 1" in iwn[
     iwn.index("bool ItlIwn::requiresAPSTASharedChannel() const"):
     iwn.index("bool ItlIwn::isPrimaryStaRecoveryScanPending() const")]
@@ -36,6 +36,7 @@ iwn_start = iwn[iwn.index("IOReturn ItlIwn::startAPMode("):
                 iwn.index("IOReturn ItlIwn::stopAPMode()")]
 helper = iwn[iwn.index("iwn_apsta_primary_channel(struct iwn_softc *sc)"):
              iwn.index("IOReturn ItlIwn::startAPMode(")]
+assert "ic->ic_opmode != IEEE80211_M_STA" not in helper
 steady = helper.index("ic->ic_state == IEEE80211_S_RUN")
 steady_channel = helper.index(
     "ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan)", steady)

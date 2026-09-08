@@ -9898,10 +9898,15 @@ iwn_apsta_primary_channel(struct iwn_softc *sc)
         return 0;
 
     struct ieee80211com *ic = &sc->sc_ic;
-    if (ic->ic_opmode != IEEE80211_M_STA)
-        return 0;
 
-    /* In steady RUN, net80211's committed BSS is authoritative. */
+    /*
+     * In steady RUN, net80211's committed BSS is authoritative.  Do not
+     * require ic_opmode to still say STA here: Tahoe creates the APSTA
+     * virtual interface before it calls the lower HostAP start, while the
+     * DVM BSS RXON remains associated and continues to own the physical
+     * radio channel.  Treating that transient public role change as loss of
+     * the BSS admits an impossible split-channel APSTA configuration.
+     */
     if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
         ic->ic_bss->ni_chan != NULL) {
         const int channel = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
@@ -10319,8 +10324,12 @@ uint16_t ItlIwn::getAPSTARequiredSharedChannel() const
 {
     /* Linux DVM advertises STA+AP with num_different_channels == 1.  PAN
      * scheduling permits two firmware contexts, not two simultaneous radio
-     * channels, so expose the running AP channel as a hard roam constraint. */
-    return getAPCurrentChannel();
+     * channels.  The query is consumed before startAPMode(), when there is
+     * no running PAN context yet, so the associated BSS carrier must take
+     * precedence over getAPCurrentChannel(). */
+    const uint16_t primaryChannel =
+        iwn_apsta_primary_channel(const_cast<struct iwn_softc *>(&com));
+    return primaryChannel != 0 ? primaryChannel : getAPCurrentChannel();
 }
 
 bool ItlIwn::isPrimaryStaRecoveryScanPending() const
