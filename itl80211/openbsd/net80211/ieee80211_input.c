@@ -1753,6 +1753,31 @@ ieee80211_save_ie_tlv(const u_int8_t *frm, u_int8_t **ie, uint32_t *accept_len, 
     return 0;
 }
 
+/* A scan-cache identity is refreshed by each non-hidden advertisement. A
+ * BSSID can survive an AP reconfiguration; retaining its first SSID while
+ * updating RSN/rates produces a result which describes no real network.
+ * Do not rewrite an association/peer owner's identity from an unprotected
+ * beacon, or erase a learned hidden SSID with a zero-filled advertisement. */
+static void
+ieee80211_refresh_scan_ssid(struct ieee80211com *ic,
+    struct ieee80211_node *ni, const u_int8_t *ssid)
+{
+    u_int8_t nonzero = 0;
+    u_int i;
+
+    if (ic == NULL || ni == NULL || ssid == NULL ||
+        ni == ic->ic_bss || ni->ni_state != IEEE80211_STA_CACHE ||
+        ssid[1] == 0 || ssid[1] > IEEE80211_NWID_LEN)
+        return;
+    for (i = 0; i < ssid[1]; i++)
+        nonzero |= ssid[2 + i];
+    if (nonzero == 0)
+        return;
+    ni->ni_esslen = ssid[1];
+    memset(ni->ni_essid, 0, sizeof(ni->ni_essid));
+    memcpy(ni->ni_essid, &ssid[2], ssid[1]);
+}
+
 /*-
  * Beacon/Probe response frame format:
  * [8]   Timestamp
@@ -2269,19 +2294,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
 		    ni->ni_sae_scan_flags);
     }
     
-    /*
-     * Set our SSID if we do not know it yet.
-     * If we are doing a directed scan for an AP with a hidden SSID
-     * we must collect the SSID from a probe response to override
-     * a non-zero-length SSID filled with zeroes that we may have
-     * received earlier in a beacon.
-     */
-    if (ssid[1] != 0 && ni->ni_essid[0] == '\0') {
-        ni->ni_esslen = ssid[1];
-        memset(ni->ni_essid, 0, sizeof(ni->ni_essid));
-        /* we know that ssid[1] <= IEEE80211_NWID_LEN */
-        memcpy(ni->ni_essid, &ssid[2], ssid[1]);
-    }
+    ieee80211_refresh_scan_ssid(ic, ni, ssid);
     IEEE80211_ADDR_COPY(ni->ni_bssid, wh->i_addr3);
     if (ic->ic_state == IEEE80211_S_SCAN &&
         IEEE80211_IS_CHAN_5GHZ(ni->ni_chan)) {
