@@ -337,6 +337,10 @@ struct AirportItlwmWclPhysicalScanLifecycle {
     uint32_t resultCount;
     bool resultOverflow;
     bool resultScrubPending;
+    /* Current request's RX window, reset at the physical STARTED edge for
+     * an initial scan queued behind a different foreground owner. */
+    uint64_t resultObservationFloorUs;
+    bool resultObservationStarted;
     /* Driver-availability PowerOn is a separate post-radio-ready edge.  It
      * shares this short admission lock with scan ownership only to make a
      * reset/off cancellation and a lower-ready notification unambiguous;
@@ -837,7 +841,8 @@ public:
     IOReturn reserveWclPhysicalScan(uint64_t *generation);
     TahoeWclPhysicalScanContracts::StartDisposition
         activateWclPhysicalScan(uint64_t generation,
-                                uint32_t backendGeneration);
+                                uint32_t backendGeneration,
+                                bool physicalStarted = false);
     TahoeWclPhysicalScanContracts::StartDisposition
         queueWclInitialPhysicalScan(uint64_t generation);
     TahoeWclPhysicalScanContracts::StartDisposition

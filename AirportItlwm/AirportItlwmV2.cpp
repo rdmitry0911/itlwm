@@ -2662,6 +2662,8 @@ static void markWclPhysicalScanSnapshotScrubPendingLocked(
 {
     state.resultCount = 0;
     state.resultOverflow = false;
+    state.resultObservationFloorUs = 0;
+    state.resultObservationStarted = false;
     state.resultScrubPending = state.resultEntries != nullptr &&
         state.resultEntryBytes != 0;
 }
@@ -2982,6 +2984,13 @@ static void teardownWclPhysicalScanTerminalSource(AirportItlwm *that,
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
 }
 
+static uint64_t tahoeScanObservationTime()
+{
+    struct timeval tv;
+    microuptime(&tv);
+    return static_cast<uint64_t>(tv.tv_sec) * 1000000 + tv.tv_usec;
+}
+
 IOReturn AirportItlwm::reserveWclPhysicalScan(uint64_t *generation)
 {
     if (generation == nullptr)
@@ -3005,6 +3014,7 @@ IOReturn AirportItlwm::reserveWclPhysicalScan(uint64_t *generation)
         return kIOReturnNotReady;
     }
 
+    const uint64_t observationFloor = tahoeScanObservationTime();
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     const bool unavailable = lifecycle.settingUp || lifecycle.stopping ||
         lifecycle.tearingDown || lifecycle.source == nullptr ||
@@ -3029,6 +3039,8 @@ IOReturn AirportItlwm::reserveWclPhysicalScan(uint64_t *generation)
             lifecycle.resultCount = 0;
             lifecycle.resultOverflow = false;
             lifecycle.resultScrubPending = false;
+            lifecycle.resultObservationFloorUs = observationFloor;
+            lifecycle.resultObservationStarted = false;
             entries = nullptr;
             entryBytes = 0;
         }
@@ -3042,7 +3054,8 @@ IOReturn AirportItlwm::reserveWclPhysicalScan(uint64_t *generation)
 
 TahoeWclPhysicalScanContracts::StartDisposition
 AirportItlwm::activateWclPhysicalScan(uint64_t generation,
-                                      uint32_t backendGeneration)
+                                      uint32_t backendGeneration,
+                                      bool physicalStarted)
 {
     AirportItlwmWclPhysicalScanLifecycle &lifecycle =
         fWclPhysicalScanLifecycle;
@@ -3050,10 +3063,23 @@ AirportItlwm::activateWclPhysicalScan(uint64_t generation,
     if (lock == nullptr)
         return TahoeWclPhysicalScanContracts::StartDisposition::Lost;
 
+    const uint64_t observationFloor = physicalStarted
+        ? tahoeScanObservationTime() : 0;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     const TahoeWclPhysicalScanContracts::StartDisposition disposition =
         TahoeWclPhysicalScanContracts::activate(&lifecycle.state, generation,
                                                 backendGeneration);
+    if (physicalStarted && disposition ==
+            TahoeWclPhysicalScanContracts::StartDisposition::Active &&
+        !lifecycle.resultObservationStarted &&
+        lifecycle.resultObservationFloorUs != 0 &&
+        observationFloor >= lifecycle.resultObservationFloorUs) {
+        /* The queued IWN predecessor's frames are not this scan's census.
+         * STARTED runs after WRPTR while the lower fence excludes terminal;
+         * a later setter acknowledgement or duplicate STARTED cannot age it. */
+        lifecycle.resultObservationFloorUs = observationFloor;
+        lifecycle.resultObservationStarted = true;
+    }
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
     return disposition;
 }
@@ -5719,6 +5745,8 @@ struct TahoeWclScanSnapshotCollector {
     uint32_t capacity;
     uint32_t count;
     bool overflow;
+    const struct ieee80211_wcl_scan_plan *plan;
+    uint64_t observationFloorUs;
 };
 
 /* net80211 holds splnet while it invokes this callback.  It copies only
@@ -5731,6 +5759,19 @@ static void collectTahoeWclScanResultSnapshot(void *arg,
         static_cast<TahoeWclScanSnapshotCollector *>(arg);
     if (collector == nullptr || collector->ic == nullptr ||
         collector->entries == nullptr || ni == nullptr)
+        return;
+    /* A physical completion reports this request's received records, not a
+     * census of every historical cache identity. Apple ScanAdapter consumes
+     * firmware BSS records here; its separate cache owner retains history.
+     * Receipt and RSSI validity are independent: a real frame without signal
+     * metadata is still a discovery result. */
+    if (collector->plan != nullptr &&
+        (collector->plan->active == 0 || collector->plan->generation == 0 ||
+         collector->observationFloorUs == 0 ||
+         ni->ni_scan_observation_stamp < collector->observationFloorUs ||
+         ni->ni_chan == nullptr || ni->ni_chan == IEEE80211_CHAN_ANYC ||
+         !ieee80211_wcl_scan_plan_channel_allowed(collector->ic,
+             collector->plan, ni->ni_chan)))
         return;
     if (collector->count >= collector->capacity) {
         collector->overflow = true;
@@ -6427,6 +6468,11 @@ static bool snapshotWclPhysicalScanTerminal(AirportItlwm *that,
     const TahoeWclSignalSnapshot signal =
         snapshotTahoeWclSignal(that->fHalService);
 
+    struct ieee80211com *ic = that->fHalService != nullptr
+        ? that->fHalService->get80211Controller() : nullptr;
+    struct ieee80211_wcl_scan_plan plan = {};
+    const bool hasPlan = ieee80211_wcl_scan_plan_snapshot(ic, &plan) != 0 &&
+        plan.generation == generation;
     AirportItlwmWclPhysicalScanLifecycle &state =
         that->fWclPhysicalScanLifecycle;
     IOSimpleLock *lock = state.admissionLock;
@@ -6445,12 +6491,14 @@ static bool snapshotWclPhysicalScanTerminal(AirportItlwm *that,
          * while it held this same lock.  That pins the preallocated values
          * across the off-lock net80211 traversal. */
         collector.signal = signal;
-        collector.ic = that->fHalService != nullptr
-            ? that->fHalService->get80211Controller() : nullptr;
+        collector.ic = ic;
+        collector.plan = &plan;
+        collector.observationFloorUs = state.resultObservationFloorUs;
         collector.entries = static_cast<TahoeWclScanResultSnapshot *>(
             state.resultEntries);
         collector.capacity = state.resultCapacity;
-        if (collector.ic == nullptr || collector.entries == nullptr ||
+        if (!hasPlan || collector.observationFloorUs == 0 ||
+            collector.ic == nullptr || collector.entries == nullptr ||
             collector.capacity == 0 || state.resultEntryBytes <
             static_cast<size_t>(collector.capacity) *
                 sizeof(TahoeWclScanResultSnapshot)) {
@@ -6468,6 +6516,7 @@ static bool snapshotWclPhysicalScanTerminal(AirportItlwm *that,
                                 collectTahoeWclScanResultSnapshot,
                                 &collector);
     }
+    explicit_bzero(&plan, sizeof(plan));
 
     IOInterruptEventSource *source = nullptr;
     irq = IOSimpleLockLockDisableInterrupt(lock);
@@ -9423,7 +9472,7 @@ postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, vo
         } else {
             bzero(snapshots, snapshotBytes);
             TahoeWclScanSnapshotCollector collector = {
-                signal, ic, snapshots, capacity, 0, false
+                signal, ic, snapshots, capacity, 0, false, nullptr, 0
             };
             ieee80211_iterate_nodes(ic, collectTahoeWclScanResultSnapshot,
                                     &collector);
@@ -9702,7 +9751,7 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             *(const struct ieee80211_wcl_scan_started *)data;
         const TahoeWclPhysicalScanContracts::StartDisposition disposition =
             that->activateWclPhysicalScan(started.generation,
-                                          started.backend_generation);
+                                          started.backend_generation, true);
         if (disposition ==
             TahoeWclPhysicalScanContracts::StartDisposition::TerminalPending) {
             if (!that->queueWclPhysicalScanTerminalPublication(

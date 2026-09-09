@@ -972,6 +972,7 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
     memcpy(ni->ni_essid, ic->ic_des_essid, ni->ni_esslen);
     ni->ni_rssi = 0;
 #ifdef AIRPORT
+    ni->ni_scan_observation_stamp = 0;
     ni->ni_scan_rssi_stamp = 0;
     ni->ni_scan_rssi_published_stamp = 0;
     ni->ni_scan_rssi = 0;

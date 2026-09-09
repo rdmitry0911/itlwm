@@ -14,6 +14,9 @@ def read(path):
 def function(text, marker):
     start = text.index(marker)
     opening = text.index('{', start)
+    while ';' in text[start:opening]:
+        start = text.index(marker, start + len(marker))
+        opening = text.index('{', start)
     depth = 0
     for end in range(opening, len(text)):
         depth += (text[end] == '{') - (text[end] == '}')
@@ -25,6 +28,8 @@ sky_path = 'AirportItlwm/AirportItlwmSkywalkInterface.cpp'
 v2, sky = read(v2_path), read(sky_path)
 rx = read('itl80211/openbsd/net80211/ieee80211_input.c')
 node = read('itl80211/openbsd/net80211/ieee80211_node.c')
+common = read('itl80211/openbsd/net80211/ieee80211.c')
+common_h = read('itl80211/openbsd/net80211/ieee80211_var.h')
 builders_v2, builders_sky = v2, sky
 # A negative control can compile the exact old producers with the new RX
 # fixture. It must fail at the missing measured-RSSI metadata assertion.
@@ -53,11 +58,28 @@ assert physical.index('if (!suppressResults)') < physical.index(
     'prepareTahoeWclScanRssiPublication(')
 collector = function(v2, 'static void collectTahoeWclScanResultSnapshot(')
 assert 'recordTahoeWclScanRssiPublication' not in collector
+old_collector = os.environ.get('SCAN_CENSUS_COLLECTOR_REF')
+if old_collector:
+    collector = function(subprocess.check_output(['git', '-C', str(root),
+        'show', old_collector + ':' + v2_path], text=True),
+        'static void collectTahoeWclScanResultSnapshot(')
+reserve = function(v2, 'IOReturn AirportItlwm::reserveWclPhysicalScan(')
+assert 'lifecycle.resultObservationFloorUs = observationFloor;' in reserve
+assert 'lifecycle.resultObservationStarted = false;' in reserve
+terminal = function(v2, 'static bool snapshotWclPhysicalScanTerminal(')
+assert 'plan.generation == generation' in terminal
+assert 'collector.observationFloorUs = state.resultObservationFloorUs;' in terminal
+assert 'collector.plan = &plan;' in terminal
+assert 'started.backend_generation, true)' in v2
 ibss = function(node, 'void\nieee80211_create_ibss(')
-for field in ('ni_scan_rssi_stamp', 'ni_scan_rssi_published_stamp',
+for field in ('ni_scan_observation_stamp', 'ni_scan_rssi_stamp', 'ni_scan_rssi_published_stamp',
               'ni_scan_rssi', 'ni_scan_rssi_chan'):
     assert field + ' = 0;' in ibss
 chunks = [
+    function(common_h, 'struct ieee80211_wcl_scan_plan {') + ';',
+    function(common, 'int\nieee80211_wcl_scan_plan_channel_allowed('),
+    function(v2, 'static uint64_t tahoeScanObservationTime('),
+    function(v2, 'TahoeWclPhysicalScanContracts::StartDisposition\nAirportItlwm::activateWclPhysicalScan('),
     function(rx, 'static void\nieee80211_record_scan_rssi('),
     function(node, 'int\nieee80211_scan_rssi_publication('),
     function(v2, 'static uint16_t buildTahoePrimaryChanSpec('),

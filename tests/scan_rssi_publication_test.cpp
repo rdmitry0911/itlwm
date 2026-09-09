@@ -8,11 +8,18 @@
 #include "AirportItlwm/TahoeScanContracts.hpp"
 #include "AirportItlwm/TahoeBssManagerContracts.hpp"
 #include "AirportItlwm/TahoeBeaconIeBuilder.hpp"
+#include "AirportItlwm/TahoeWclPhysicalScanContracts.hpp"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define IEEE80211_ADDR_EQ(a, b) (memcmp(a, b, 6) == 0)
 constexpr unsigned IEEE80211_ADDR_LEN = 6;
+constexpr unsigned IEEE80211_NWID_LEN = 32;
+constexpr unsigned IEEE80211_WCL_SCAN_BITMAP_BYTES = 32;
+constexpr unsigned IEEE80211_CHAN_MAX = 255;
 constexpr unsigned IEEE80211_CHAN_5GHZ = 1;
+#define IEEE80211_IS_CHAN_2GHZ(ch) (((ch)->ic_flags & IEEE80211_CHAN_5GHZ) == 0)
+#define IEEE80211_IS_CHAN_5GHZ(ch) (((ch)->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
+#define isset(bitmap, bit) (((bitmap)[(bit) / 8] & (1U << ((bit) % 8))) != 0)
 constexpr int IWM_MIN_DBM = -100;
 enum { IEEE80211_S_SCAN, IEEE80211_S_RUN };
 enum { IEEE80211_M_STA, IEEE80211_M_HOSTAP };
@@ -26,6 +33,7 @@ struct ieee80211_node {
     uint32_t ni_rsnie_tlv_len = 0;
     uint16_t ni_intval = 100, ni_capinfo = 0;
     uint64_t ni_scan_rssi_stamp = 0, ni_scan_rssi_published_stamp = 0;
+    uint64_t ni_scan_observation_stamp = 0;
     uint8_t ni_scan_rssi = 0, ni_scan_rssi_chan = 0;
 };
 struct ieee80211com {
@@ -46,6 +54,21 @@ static void splx(int previous)
     assert(lockDepth == static_cast<unsigned>(previous + 1));
     lockDepth = previous;
 }
+struct IOSimpleLock {};
+using IOInterruptState = int;
+static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *) { return splnet(); }
+static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *, IOInterruptState s) { splx(s); }
+struct AirportItlwmWclPhysicalScanLifecycle {
+    IOSimpleLock *admissionLock = nullptr;
+    TahoeWclPhysicalScanContracts::State state{};
+    uint64_t resultObservationFloorUs = 0;
+    bool resultObservationStarted = false;
+};
+struct AirportItlwm {
+    AirportItlwmWclPhysicalScanLifecycle fWclPhysicalScanLifecycle;
+    TahoeWclPhysicalScanContracts::StartDisposition activateWclPhysicalScan(
+        uint64_t, uint32_t, bool = false);
+};
 static ieee80211_node *ieee80211_find_node(ieee80211com *ic, const uint8_t *mac)
 {
     assert(lockDepth != 0);
@@ -86,7 +109,7 @@ static bool measured(const TahoeWclScanResultSnapshot &entry)
 static TahoeWclScanResultSnapshot snapshot(ieee80211com &ic)
 {
     TahoeWclScanResultSnapshot result{};
-    TahoeWclScanSnapshotCollector collector{{-95, true}, &ic, &result, 1, 0, false};
+    TahoeWclScanSnapshotCollector collector{{-95, true}, &ic, &result, 1, 0, false, nullptr, 0};
     const int level = splnet();
     collectTahoeWclScanResultSnapshot(&collector, ic.cache);
     splx(level);
@@ -94,8 +117,81 @@ static TahoeWclScanResultSnapshot snapshot(ieee80211com &ic)
     return result;
 }
 
+static void testPhysicalCensus()
+{
+    using namespace TahoeWclPhysicalScanContracts;
+    IOSimpleLock lock;
+    AirportItlwm driver;
+    auto &life = driver.fWclPhysicalScanLifecycle;
+    life.admissionLock = &lock;
+    uint64_t generation = 0;
+    assert(reserve(&life.state, &generation));
+    life.resultObservationFloorUs = 100;
+    assert(queueInitialStart(&life.state, generation) == StartDisposition::Active);
+    clockUs = 200;
+    assert(driver.activateWclPhysicalScan(generation + 1, 9, true) == StartDisposition::Lost);
+    assert(life.resultObservationFloorUs == 100);
+    assert(driver.activateWclPhysicalScan(generation, 9, true) == StartDisposition::Active);
+    assert(life.resultObservationFloorUs == 200 && life.resultObservationStarted);
+    clockUs = 300;
+    assert(driver.activateWclPhysicalScan(generation, 9, false) == StartDisposition::Active);
+    assert(driver.activateWclPhysicalScan(generation, 9, true) == StartDisposition::Active);
+    assert(driver.activateWclPhysicalScan(generation, 10, true) == StartDisposition::Lost);
+    assert(life.resultObservationFloorUs == 200);
+    life.state.phase = Phase::Completing;
+    life.state.terminalBackendGeneration = 9;
+    assert(driver.activateWclPhysicalScan(generation, 9, true) == StartDisposition::TerminalPending);
+    assert(life.resultObservationFloorUs == 200);
+    life.state.phase = Phase::Aborting;
+    assert(driver.activateWclPhysicalScan(generation, 9, true) == StartDisposition::Lost);
+    assert(life.resultObservationFloorUs == 200);
+
+    ieee80211_channel ch{9, 0}, five{153, IEEE80211_CHAN_5GHZ};
+    ieee80211_node ni;
+    ni.ni_chan = &ch; ni.ni_bssid[0] = ni.ni_macaddr[0] = 2;
+    ieee80211com ic{IEEE80211_S_RUN, IEEE80211_M_STA, nullptr, &ni};
+    ieee80211_wcl_scan_plan plan{};
+    plan.active = 1; plan.generation = generation;
+    plan.channel_filter = 1; plan.channel_2ghz[9 / 8] = 1U << (9 % 8);
+    TahoeWclScanResultSnapshot entry{};
+    TahoeWclScanSnapshotCollector collector{{0, false}, &ic, &entry, 1, 0, false,
+        &plan, life.resultObservationFloorUs};
+    ni.ni_scan_observation_stamp = 150; // Queued predecessor, not this scan.
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(collector.count == 0 && !collector.overflow);
+    ni.ni_scan_observation_stamp = 200;
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(collector.count == 1 && !collector.overflow);
+    // A genuine observation remains discoverable even without valid RSSI.
+    assert(!measured(entry) && entry.payload.meta.rssi == 0);
+    ni.ni_scan_observation_stamp = 150;
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(collector.count == 1 && !collector.overflow); // Filter before capacity.
+    ni.ni_scan_observation_stamp = 250; ni.ni_chan = &five;
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(!collector.overflow); // Other band's live traffic is not this plan.
+    collector.count = 0;
+    plan.channel_5ghz[153 / 8] = 1U << (153 % 8);
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(collector.count == 1);
+    collector.count = 0; plan.active = 0;
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(collector.count == 0);
+    plan.active = 1; collector.observationFloorUs = 0;
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(collector.count == 0);
+    collector.observationFloorUs = 200; ni.ni_scan_observation_stamp = 0;
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(collector.count == 0);
+    ni.ni_scan_observation_stamp = 300; ni.ni_chan = IEEE80211_CHAN_ANYC;
+    collectTahoeWclScanResultSnapshot(&collector, &ni);
+    assert(collector.count == 0);
+    clockUs = 1000001;
+}
+
 int main()
 {
+    testPhysicalCensus();
     ieee80211_channel ch{9, 0}, other{153, IEEE80211_CHAN_5GHZ};
     ieee80211_node node;
     node.ni_chan = &ch;
@@ -173,6 +269,7 @@ int main()
         rx.rxi_rssi = invalid;
         ieee80211_record_scan_rssi(&ic, &node, &rx, 9);
         assert(!measured(snapshot(ic)) && node.ni_scan_rssi_stamp == 0);
+        assert(node.ni_scan_observation_stamp == clockUs);
         assert(buildTahoeCurrentBssPayload(&hal, &bss));
         assert(bss.meta.rssi == 0 && !(bss.meta.flags & 0x4040));
     }
@@ -207,5 +304,5 @@ int main()
     assert(!ieee80211_scan_rssi_publication(nullptr, node.ni_macaddr,
         node.ni_bssid, clockUs, 22, 153, 1));
     assert(lockDepth == 0);
-    std::puts("PASS: production measured RSSI, Apple metadata, current-BSS isolation, cancelled/stale/duplicate publication and channel validity");
+    std::puts("PASS: production RSSI and fresh physical census, queued-doorbell window, channel plan, unavailable signal and cancelled/stale/duplicate publication");
 }

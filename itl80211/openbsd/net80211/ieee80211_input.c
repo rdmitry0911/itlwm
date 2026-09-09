@@ -1789,13 +1789,15 @@ ieee80211_record_scan_rssi(struct ieee80211com *ic, struct ieee80211_node *ni,
 {
     struct timeval tv;
 
+    microuptime(&tv);
+    ni->ni_scan_observation_stamp =
+        (u_int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
     ni->ni_scan_rssi_stamp = 0;
     ni->ni_scan_rssi = 0;
     ni->ni_scan_rssi_chan = 0;
     if (rxi->rxi_rssi > 0 && rxi->rxi_rssi < 100 &&
         channel != 0 && rxi->rxi_chan == channel) {
-        microuptime(&tv);
-        ni->ni_scan_rssi_stamp = (u_int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+        ni->ni_scan_rssi_stamp = ni->ni_scan_observation_stamp;
         ni->ni_scan_rssi = rxi->rxi_rssi;
         ni->ni_scan_rssi_chan = channel;
     }
@@ -1807,6 +1809,7 @@ ieee80211_record_scan_rssi(struct ieee80211com *ic, struct ieee80211_node *ni,
         ic->ic_bss->ni_chan != IEEE80211_CHAN_ANYC &&
         IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, ni->ni_bssid) &&
         ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan) == channel) {
+        ic->ic_bss->ni_scan_observation_stamp = ni->ni_scan_observation_stamp;
         ic->ic_bss->ni_scan_rssi_stamp = ni->ni_scan_rssi_stamp;
         ic->ic_bss->ni_scan_rssi = ni->ni_scan_rssi;
         ic->ic_bss->ni_scan_rssi_chan = ni->ni_scan_rssi_chan;

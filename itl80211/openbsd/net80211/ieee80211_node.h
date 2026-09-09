@@ -338,6 +338,8 @@ struct ieee80211_node {
 	u_int8_t		ni_erp;		/* 11g only */
 #ifdef AIRPORT
     u_int64_t       ni_age_ts;
+    /* Receipt of an accepted beacon/probe, even if RSSI is unavailable. */
+    u_int64_t       ni_scan_observation_stamp;
     /* Actual on-channel beacon/probe RSSI, separate from ni_rssi's scan
      * selection peak. Only an issued WCL publication consumes the sample. */
     u_int64_t       ni_scan_rssi_stamp;
