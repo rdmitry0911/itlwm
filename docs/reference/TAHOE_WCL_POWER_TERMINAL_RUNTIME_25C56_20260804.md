@@ -84,6 +84,30 @@ recover in about six seconds.  The same boot epoch and kext remained loaded,
 the DHCP address returned, another 10/10 1400-byte ICMP run passed, and HTTPS
 again returned 200 with 664 bytes.
 
+### Product-default replay (2026-09-09)
+
+The published default artifact from `6eb51401` (loaded UUID
+`F9E599B0-3FA4-3A9E-886C-BC3A31294DE3`, Mach-O SHA-256
+`91afd774a0fb51aeba21757423661e3147466cdce674ebc90dd7bbb2c9dcb11b`) was
+replayed with a newly saved pure-SAE/required-PMF LabAP profile.  A normal
+macOS radio off/on removed the wireless address, then restored its DHCP lease
+on the first one-second check.  Guest-to-gateway and physical-AX211-to-guest
+transfers each completed 20/20.
+
+With standard Internet Sharing disabled, `pmset sleepnow` took the owned
+Tahoe guest to QEMU's suspended state.  The owned monitor's `system_wakeup`
+returned it to running; physical AX211-to-guest ICMP then completed 12/12, and
+Wi-Fi SSH verified the retained lease plus a further 12/12 guest-to-gateway
+transfer.  `system_profiler` reported the WPA3 link as Connected after wake.
+The separate QEMU virtio user-NAT host-forward did not resume, while the
+direct physical Wi-Fi SSH route did; it is therefore recorded as a VM
+management-transport limitation rather than a wireless recovery failure.
+
+`networksetup -getairportnetwork` still rendered its historic false
+not-associated text although the system UI data consumer, IORegistry current
+BSS properties, DHCP and physical traffic were all live.  That narrow public
+wrapper discrepancy remains outside the completed radio recovery claim.
+
 No `Debugger called`, kernel panic, WCL invalid-state report, firmware fatal,
 command timeout, or driver watchdog appeared in the tested interval.  The
 serial log contains the known virtual-SMC `SMCWDT::setWatchdogTimer` platform
