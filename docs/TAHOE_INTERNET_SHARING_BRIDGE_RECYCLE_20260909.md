@@ -73,7 +73,14 @@ not a different SDK layout. No interface creation/destruction was requested
 during this short census; it remains a point-in-time observation, not a
 lock-held proof of the entire teardown sequence.
 
+A second census at 18:45:46 found the same object with 713 DLIL references.
+The reference-counter offset (+0x94c) was independently recovered from the
+matching `dlil_if_ref` increment and `dlil_if_free` decrement instructions in
+the bounded range `0xffffff80005e1050` through `0xffffff80005e1290`; its
+diagnostic-error file was empty. The retaining call sites remain unknown.
+The next live test must trace reference acquisition/release on a fresh
+standard bridge, rather than manually decrementing the old object's count.
+
 This identifies a retained in-use bridge object after ordinary removal from
-the public interface list. Its reference count and retaining owner still need
-to be established. The candidate release remains held. The physical user
-machine and other agents' virtual machines were not touched.
+the public interface list. The candidate release remains held. The physical
+user machine and other agents' virtual machines were not touched.
