@@ -48,10 +48,12 @@ for needle in (
     assert needle in bridge, f"missing layout-neutral home/away bridge rule: {needle}"
 
 extensions = submit.index("wcl_foreground_5ghz_extended_dwell")
-final_limit = submit.rindex("dwell_passive = iwn_limit_dwell(sc, dwell_passive)")
-validity = submit.index("if (dwell_passive <= dwell_active)", final_limit)
-assert extensions < final_limit < validity, \
-    "PAN dwell ceiling must dominate public-scan dwell extensions"
+final_limit = submit.rindex("iwn_bound_scan_dwell(iwn_limit_dwell(sc, UINT16_MAX)")
+publication = submit.index("chan->passive = htole16(dwell_passive)", final_limit)
+assert extensions < final_limit < publication, \
+    "STA/PAN and off-channel ceilings must dominate public-scan dwell extensions"
+assert "le32toh(hdr->max_out), &dwell_active, &dwell_passive" in submit
+assert "dwell_passive = dwell_active + 1" not in submit
 
 print("PASS: Tahoe IWN APSTA scan home/away contract")
 PY

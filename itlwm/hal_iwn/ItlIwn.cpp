@@ -36,6 +36,7 @@
 
 #include "ItlIwn.hpp"
 #include "IwnHt40Contracts.hpp"
+#include "IwnScanDwellBudget.hpp"
 #include <HAL/ItlApFirmwareRuntime.hpp>
 #include "../../AirportItlwm/TahoeNrateContracts.hpp"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
@@ -20056,14 +20057,22 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
             dwell_active = MAX(dwell_active,
                 MIN((uint16_t)40, (uint16_t)(dwell_passive - 1)));
 
-        /* The public-scan discovery extensions above must not override the
-         * active PAN context's TBTT budget. */
-        if (apContextRunning)
-            dwell_passive = iwn_limit_dwell(sc, dwell_passive);
-
-        /* Make sure they're valid */
-        if (dwell_passive <= dwell_active)
-            dwell_passive = dwell_active + 1;
+        /* Exact Apple dwell requests and discovery extensions are upper
+         * policy, not permission to exceed DVM's live STA/PAN TBTT or
+         * off-channel budget. In particular 110 TU passive with max_out of
+         * 110 * 1024 us violates firmware's strict inequality and can yield
+         * an empty passive scan despite an accepted command. Do not repair
+         * active/passive ordering by raising passive past that ceiling. */
+        uint16_t quietTime = le16toh(hdr->quiet_time);
+        if (!iwn_bound_scan_dwell(iwn_limit_dwell(sc, UINT16_MAX),
+                le32toh(hdr->max_out), &dwell_active, &dwell_passive,
+                &quietTime)) {
+            XYLog("%s: scan has no legal DVM dwell budget\n", DEVNAME(sc));
+            explicit_bzero(buf, IWN_SCAN_MAXSZ);
+            ::free(buf);
+            return EINVAL;
+        }
+        hdr->quiet_time = htole16(quietTime);
 
         chan->active = htole16(dwell_active);
         chan->passive = htole16(dwell_passive);
