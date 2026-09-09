@@ -146,3 +146,40 @@ restored. All experiments used the disposable guest and wired host management;
 the physical user machine was not changed. The temporary AP address and
 client profile were removed after the S3 regression; normal host management
 and its ordinary Wi-Fi profile were retained/restored.
+
+## Revalidation after SSID-cache correction
+
+Loaded `96eaf2e9` (UUID `0FE73C63-480B-39C3-A43E-53DB3D225366`) still
+reproduces the missing target. On 2026-09-09 at 15:31 UTC the physical command
+again contained 13 and 24 channels, active/passive dwell 20/85, max-out
+112640, and successful scan terminals. The target channel reported zero good
+CRC and probe status `0x81`; no target frame reached net80211. A directed
+CoreWLAN call returned only a 2.4-GHz ESS member.
+
+The first concurrent host STA+monitor capture saw only one probe response,
+not a continuous beacon stream. It is not used as proof of beacon delivery
+during that scan. The host was then put into standalone passive monitor mode
+on the target channel; wired host management and routed Wi-Fi SSH to the guest
+remained available. No regulatory/channel restriction was changed.
+
+A fully overlapping run at 15:35:17--21 UTC captured a real 13+24-channel
+scan and successful terminals. The target channel's dwell lasted 87071 us,
+with `good_crc=0`, no target at net80211, and this time probe status **zero**.
+The simultaneous host capture received target beacons around -60 dBm at
+24 Mbps, including a sequence across the target scan's wall-clock second.
+No probe from the guest appeared in that capture. This reproduces omission
+without the earlier probe-TX-failed bit, so that bit is not a sufficient
+explanation of every occurrence.
+
+A second immediate CoreWLAN call still returned the 2.4-GHz member but its
+observed physical command covered only 13 channels; it is not counted as a
+second full-band scan. Nor does an unidentified channel-153 entry in the
+broader, redacted CoreWLAN cache prove that this target was received.
+
+These results keep the defect below the result serializer and separate from
+the corrected first-seen-only SSID cache policy. They do not establish whether
+the remaining cause is scan scheduling, RF/rate/antenna behavior or another
+firmware constraint. Host/guest wall clocks were not calibrated at sub-beacon
+precision, so the capture does not prove that a particular beacon overlapped
+the entire firmware listening interval. The temporary monitor was removed
+and the original host managed profile restored after the run.
