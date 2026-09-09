@@ -288,3 +288,9 @@ automatic external-client continuity or equivalent IWM/IWX hardware coverage.
 The qualified ZIP is
 `f15e21c9d29c185c021f4c962512fada3f1dd9d05c66c85e0ecdb4a05ccc42d8`;
 its extracted Mach-O was rechecked against the loaded file and frozen image.
+
+The public `v2.4.0-alpha` Tahoe asset was replaced at 22:24:52 UTC and its
+notes updated at 22:24:53. A fresh GitHub download was byte-compared with
+the qualified ZIP and independently hashed to the value above. The previous
+asset was retained privately for rollback. Release notes distinguish this
+IWN runtime qualification from remaining GUI/roaming and IWM/IWX coverage.
