@@ -58,7 +58,53 @@ and failed association admission. The old `ad910bab` method fails the first
 carrier restoration assertion. Existing APSTA interface lifecycle,
 shared-channel admission and IWN multicast/queue-capacity tests pass.
 
-Build, loaded-image cold-neighbor delivery, repeated standard DHCP lifecycle
-and S3 qualification are pending. This change does not yet close the separate
-retained-INUSE bridge creation failure documented in
-`TAHOE_INTERNET_SHARING_BRIDGE_RECYCLE_20260909.md`.
+## Loaded-image qualification and remaining lifecycle failure
+
+Source `6433e0d3` built successfully with all 1083 BootKC symbols resolved.
+Private AuxKC admission and transactional activation passed. The disposable
+IWN/6235 guest loaded UUID `29FD701D-9A8E-3D53-997F-3E71612750BF`, matching
+frozen Mach-O SHA-256
+`f50f0cd9afb2a1c82b15b8fe6c28f2c6fc52e7949b2d6fed8031b6f93e29e8fa`.
+
+Standard Internet Sharing, through the real system producer and bootpd,
+successively admitted an external WPA3-SAE/required-PMF client, a WPA2-PSK
+client and an open client. Each obtained DHCP. Separate bridge-scoped cold
+ARP runs at 19:13:33, 19:14:50 and 19:15:44 UTC passed 10/10 source-bound
+1400-byte packets with client power save enabled. Captures show the bridge's
+broadcast ARP request reaching the client and its reply. The matching lower
+observer records successful queue-8 completions and no diagnostic errors.
+Independent client-to-gateway runs each passed 20/20. Both the AP member and
+bridge reported active media. There was no reboot between security modes.
+
+A normal sleep request while Internet Sharing was active was denied by the
+system sharing preference plugin; that is not an AP sleep qualification.
+After sharing was disabled, the pending request entered S3 before the
+intended concurrent roles were established. That first wake is not counted
+as an APSTA recovery result either. A public primary-STA selection initially
+reported network-not-found, then a retry restored the link without off/on;
+the public reconnect surface remains open.
+
+The valid subsequent role-7 WPA3 APSTA setup passed an isolated cold AP
+10/10 and simultaneous primary-to-gateway 5/5. Its 19:21:30 sleep request
+reached serial `ACPI SLEEP`; the owned QEMU monitor independently confirmed
+`paused (suspended)`. Wake at 19:28 UTC produced `ACPI S3 WAKE`, with unchanged
+boot epoch and kext UUID. Explicit external-client reselection completed SAE
+group 19/required PMF/BIP. The restored AP followed the recovered primary's
+shared channel. At 19:29:10, another isolated cold run passed 10/10, with the
+ARP request/reply in external capture and successful queue-8 completions.
+Client-to-AP then passed 20/20, primary traffic 5/5, and normal AP stop retained
+primary traffic at 10/10. This role-7 check uses static addressing and proves
+service recovery, not automatic client continuity.
+
+On that same boot, standard WPA3 sharing subsequently recreated the bridge,
+supplied DHCP and passed a bridge-scoped cold 10/10 at 19:31:36 followed by
+client-to-gateway 20/20. The cold script was detached before ARP removal, so
+no management SSH traffic crossed the test AP during the measured window.
+
+The next normal WPA3-to-WPA2 sharing change completed the external client's
+four-way handshake at 19:32:34 but did not supply DHCP. This is not a passed
+post-S3 security-mode matrix. The carrier fix closes the reproduced
+media-inactive broadcast omission, not the separate stop/start failure.
+The candidate release remains held while that failure is investigated in
+`TAHOE_INTERNET_SHARING_BRIDGE_RECYCLE_20260909.md`. Recent hardware coverage
+here is IWN; the shared carrier change is not equivalent IWM/IWX qualification.
