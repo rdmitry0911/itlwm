@@ -227,9 +227,10 @@ if start_begin < 0 or start_end < 0:
     fail("missing controller start region")
 start_region = v2[start_begin:start_end]
 ordered(start_region, "Skywalk-first WCL terminal-source setup",
-        "fNetIf->deferBSDAttach(false);",
+        "fNetIf->start(this);",
         "setupWclPhysicalScanTerminalSource(this, _fWorkloop)",
-        "markLifecycleLive()")
+        "markLifecycleLive()",
+        "publishInitialBSDInterfaces();")
 
 pending_terminal = body(sky, "completePendingWclPhysicalScanTerminal(",
                         "pending physical WCL terminal reconciler")

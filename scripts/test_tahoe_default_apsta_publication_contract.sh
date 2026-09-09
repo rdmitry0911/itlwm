@@ -16,10 +16,11 @@ iwm_scan = (root / "itlwm/hal_iwm/scan.cpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 
 assert "IOReturn publishDefaultAPSTAInterface();" in header
+assert "void publishInitialBSDInterfaces();" in header
 
 publish = controller[
     controller.index("IOReturn AirportItlwm::publishDefaultAPSTAInterface()"):
-    controller.index("IOReturn AirportItlwm::materializeAPSTAInterface(")
+    controller.index("void AirportItlwm::publishInitialBSDInterfaces()")
 ]
 for needle in (
     "fHalService->supportsAPMode()",
@@ -61,8 +62,16 @@ start = controller[
     controller.index("bool AirportItlwm::start(IOService *provider)"):
     controller.index("void AirportItlwm::stop(IOService *provider)")
 ]
-assert "publishDefaultAPSTAInterface();" not in start, (
-    "APSTA capability must not be queried before firmware setup")
+assert start.index("markLifecycleLive()") < start.index(
+    "publishInitialBSDInterfaces();") < start.index("\n    registerService();")
+assert "fNetIf->deferBSDAttach(false);" not in start
+initial = controller[controller.index("void AirportItlwm::publishInitialBSDInterfaces()"):
+    controller.index("IOReturn AirportItlwm::materializeAPSTAInterface(")]
+assert initial.index("publishDefaultAPSTAInterface();") < initial.index(
+    "fNetIf->deferBSDAttach(false);")
+assert "ifnet_find_by_name(name, &visible)" in initial
+assert "visible == fAPSTANetIf->getBSDInterface()" in initial
+assert "ifnet_release(visible)" in initial
 
 boot = controller[
     controller.index("void AirportItlwm::performTahoeBootChipImage()"):
@@ -117,5 +126,5 @@ for (family, source, scan_source, attach_start, attach_end, scan_marker,
         "noteWclScanRadioReady()"), (
             f"{family} must publish only after committing SCAN")
 
-print("PASS: Tahoe publishes capable APSTA role at backend-ready edge")
+print("PASS: Tahoe publishes firmware-admitted AP before primary BSD discovery and rechecks on lower ready")
 PY

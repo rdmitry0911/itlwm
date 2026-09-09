@@ -9696,14 +9696,10 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
          * CoreWiFi's Tahoe request proxy resolves HostAP requests by matching
          * an already cached APPLE80211_VIRT_IF_ROLE_APSTA interface; its miss
          * path refreshes the inventory but does not issue VIRTUAL_IF_CREATE.
-         * Publish the default role at this tagged post-init edge, after IWN
-         * has parsed the firmware TLVs and reached S_SCAN but before the
-         * PowerOn availability carrier exposes the new radio epoch.
-         *
-         * enableAdapter() is too early because IWN activation is asynchronous:
-         * live 6235 boots showed the PAN/TLV capability witnesses become valid
-         * only before REOPENED.  The same edge recurs after a radio reset, so
-         * the idempotent publication also verifies the role survived wake.
+         * Initial supported-role publication now precedes primary BSD
+         * discovery, using real firmware/NVM metadata parsed during HAL
+         * attach.  Keep this idempotent post-init check before PowerOn
+         * availability for radio reset/recovery and an early resource failure.
          * Only the idle Skywalk role is allocated here; CHANNEL/HOST_AP_MODE
          * remains the later and explicit radio-start boundary.
          */
@@ -11475,19 +11471,11 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 
-    // Trigger IOSkywalkNetworkBSDClient matching.
-    // deferBSDAttach(false) removes IODeferBSDAttach property and calls
-    // registerService() on fNetIf, causing IOKit to match BSDClient.
-    // BSDClient::start creates the nexus channel and BSD ifnet.
-    fNetIf->deferBSDAttach(false);
-
     /*
      * The physical-WCL terminal source is required before a WCL request can
-     * be admitted, but it is not part of Skywalk's interface construction.
-     * Keep its independent workloop registration out of the interval in which
-     * deferBSDAttach() starts the asynchronous nexus/BSD-client chain.  No
-     * external WCL selector is live until markLifecycleLive() below, so this
-     * still establishes the source before the first physical WCL scan can run.
+     * be admitted.  Finish its independent workloop registration before either
+     * AP or primary BSD matching begins below.  No external WCL selector is
+     * live until markLifecycleLive().
      */
     if (!setupWclPhysicalScanTerminalSource(this, _fWorkloop)) {
         XYLog("DEBUG %s [STEP 8f] FAIL: WCL physical-scan source\n",
@@ -11573,10 +11561,17 @@ bool AirportItlwm::start(IOService *provider)
         DISARM_PANIC_TIMER();
         return false;
     }
-    // registerService() makes the IO80211Controller visible to airportd and
-    // triggers IOKit matching for AirportItlwmBootNub.  The BSD ifnet (en0)
-    // is created asynchronously via the nexus callback chain triggered by
-    // deferBSDAttach(false) at STEP 8f.
+    /*
+     * The sharing preference plugin caches primary/AP names at the first
+     * Wi-Fi discovery and retains a same-name fallback if the AP is absent.
+     * Publish the genuinely supported, idle AP through its synchronous BSD
+     * registration before starting primary matching.  All bootstrap sources
+     * and lifecycle admission are ready, but neither radio is started here.
+     */
+    publishInitialBSDInterfaces();
+
+    // Publish the controller and match the boot nub only after both interface
+    // registration requests have been issued in the required order.
     registerService();
     RT_SET(18);
     DISARM_PANIC_TIMER();
@@ -16412,6 +16407,36 @@ IOReturn AirportItlwm::publishDefaultAPSTAInterface()
     if (result != kIOReturnSuccess)
         deleteAPSTAOwner();
     return result;
+}
+
+void AirportItlwm::publishInitialBSDInterfaces()
+{
+    const IOReturn result = publishDefaultAPSTAInterface();
+    if (result != kIOReturnSuccess && result != kIOReturnUnsupported) {
+        XYLog("APSTA initial publication failed 0x%x; continuing with primary STA\n",
+              result);
+    }
+    /*
+     * Do not release primary discovery from setBSDName: the exact 25C56
+     * BSDClient::start calls that slot BEFORE allocating its network nexus.
+     * materializeAPSTAInterface uses synchronous registerService(2), whose
+     * matching BSDClient start includes the net-provider allocation.  Observe
+     * the actual resulting ifnet, not merely a proposed name or service bit.
+     */
+    if (result == kIOReturnSuccess && fAPSTANetIf != nullptr) {
+        ifnet_t visible = nullptr;
+        const char *name = fAPSTANetIf->getBSDName();
+        const errno_t lookup = name != nullptr && name[0] != '\0'
+            ? ifnet_find_by_name(name, &visible) : EINVAL;
+        const bool attached = lookup == 0 && visible != nullptr &&
+            visible == fAPSTANetIf->getBSDInterface();
+        XYLog("APSTA initial BSD publication name=%s attached=%u before-primary=1\n",
+              name != nullptr ? name : "", attached ? 1U : 0U);
+        if (visible != nullptr)
+            ifnet_release(visible);
+    }
+    if (fNetIf != nullptr)
+        fNetIf->deferBSDAttach(false);
 }
 
 IOReturn AirportItlwm::materializeAPSTAInterface(

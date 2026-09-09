@@ -639,6 +639,8 @@ public:
     int        iwn_read_firmware_tlv(struct iwn_softc *,
                 struct iwn_fw_info *, uint16_t);
     int        iwn_read_firmware(struct iwn_softc *);
+    int        iwn_prepare_firmware_capabilities(struct iwn_softc *);
+    void       iwn_release_firmware(struct iwn_softc *);
     int        iwn_clock_wait(struct iwn_softc *);
     int        iwn_apm_init(struct iwn_softc *);
     void        iwn_apm_stop_master(struct iwn_softc *);

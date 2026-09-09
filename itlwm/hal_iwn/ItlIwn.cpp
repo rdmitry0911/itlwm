@@ -4914,6 +4914,17 @@ bool ItlIwn::attach(IOPCIDevice *device)
         releaseAll();
         return false;
     }
+    /*
+     * Tahoe must expose a supported AP identity before the primary BSD
+     * interface is discovered.  Reading the embedded image is sufficient to
+     * establish the real TLV capability; do not boot firmware or start radio
+     * service here.  IWM/IWX already discover firmware/NVM during attach.
+     * A failed preview leaves AP unsupported and preserves the ordinary STA
+     * power-on retry, whose normal firmware reader must succeed independently.
+     */
+    const int capabilityError = iwn_prepare_firmware_capabilities(&com);
+    XYLog("iwn: attach firmware capability result=%d PAN=%u\n",
+          capabilityError, supportsAPMode() ? 1U : 0U);
     return true;
 }
 
@@ -22303,7 +22314,7 @@ iwn_read_firmware_leg(struct iwn_softc *sc, struct iwn_fw_info *fw)
     fw->boot.textsz = letoh32(*ptr++);
 
     /* Check that all firmware sections fit. */
-    if (fw->size < hdrlen + fw->main.textsz + fw->main.datasz +
+    if (fw->size < (uint64_t)hdrlen + fw->main.textsz + fw->main.datasz +
         fw->init.textsz + fw->init.datasz + fw->boot.textsz) {
         XYLog("%s: firmware too short: %zu bytes\n",
             sc->sc_dev.dv_xname, fw->size);
@@ -22348,19 +22359,22 @@ iwn_read_firmware_tlv(struct iwn_softc *sc, struct iwn_fw_info *fw,
      * or equal to the specified one.
      */
     altmask = letoh64(hdr->altmask);
-    while (alt > 0 && !(altmask & (1ULL << alt)))
+    while (alt > 0 && (alt >= 64 || !(altmask & (1ULL << alt))))
         alt--;    /* Downgrade. */
 
     ptr = (const uint8_t *)(hdr + 1);
     end = (const uint8_t *)(fw->data + fw->size);
 
     /* Parse type-length-value fields. */
-    while (ptr + sizeof (*tlv) <= end) {
+    while (ptr != end) {
+        if ((size_t)(end - ptr) < sizeof (*tlv))
+            return EINVAL;
         tlv = (const struct iwn_fw_tlv *)ptr;
         len = letoh32(tlv->len);
 
         ptr += sizeof (*tlv);
-        if (ptr + len > end) {
+        const size_t paddedLength = ((size_t)len + 3U) & ~(size_t)3U;
+        if (paddedLength > (size_t)(end - ptr)) {
             XYLog("%s: firmware too short: %zu bytes\n",
                 sc->sc_dev.dv_xname, fw->size);
             return EINVAL;
@@ -22406,9 +22420,12 @@ iwn_read_firmware_tlv(struct iwn_softc *sc, struct iwn_fw_info *fw,
                     len);
                 goto next;
             }
-            if (letoh32(*ptr) <= IWN5000_PHY_CALIB_MAX) {
-                sc->reset_noise_gain = letoh32(*ptr);
-                sc->noise_gain = letoh32(*ptr) + 1;
+            uint32_t calibration;
+            memcpy(&calibration, ptr, sizeof(calibration));
+            calibration = letoh32(calibration);
+            if (calibration <= IWN5000_PHY_CALIB_MAX) {
+                sc->reset_noise_gain = calibration;
+                sc->noise_gain = calibration + 1;
             }
             break;
         case IWN_FW_TLV_FLAGS:
@@ -22416,13 +22433,15 @@ iwn_read_firmware_tlv(struct iwn_softc *sc, struct iwn_fw_info *fw,
                 break;
             if (len % sizeof(uint32_t))
                 break;
-            sc->tlv_feature_flags = letoh32(*ptr);
+            uint32_t flags;
+            memcpy(&flags, ptr, sizeof(flags));
+            sc->tlv_feature_flags = letoh32(flags);
             break;
         default:
             break;
         }
  next:        /* TLV fields are 32-bit aligned. */
-        ptr += (len + 3) & ~3;
+        ptr += paddedLength;
     }
     return 0;
 }
@@ -22433,6 +22452,11 @@ iwn_read_firmware(struct iwn_softc *sc)
     struct iwn_fw_info *fw = &sc->fw;
     int error = 0;
     OSData *fwData = NULL;
+    uint expandedSize = 0;
+
+    /* Do not replace a still-owned hardware upload buffer. */
+    if (fw->data != NULL)
+        return EBUSY;
 
     /*
      * Some PHY calibration commands are firmware-dependent; these
@@ -22441,31 +22465,42 @@ iwn_read_firmware(struct iwn_softc *sc)
      */
     sc->reset_noise_gain = IWN5000_PHY_CALIB_RESET_NOISE_GAIN;
     sc->noise_gain = IWN5000_PHY_CALIB_NOISE_GAIN;
+    sc->tlv_feature_flags = 0;
+    sc->sc_flags &= ~IWN_FLAG_ENH_SENS;
 
     memset(fw, 0, sizeof (*fw));
 
-    /* Read firmware image from filesystem. */
-//    if ((error = loadfirmware(sc->fwname, &fw->data, &fw->size)) != 0) {
-//        XYLog("%s: could not read firmware %s (error %d)\n",
-//            sc->sc_dev.dv_xname, sc->fwname, error);
-//        return error;
-//    }
+    /* Read the embedded compressed image, without activating hardware. */
     fwData = getFWDescByName(sc->fwname);
     if (fwData == NULL) {
         error = EINVAL;
         XYLog("%s resource load fail.\n", sc->fwname);
         return error;
     }
-    fw->size = fwData->getLength() * 4;
-    fw->data = (u_char *)malloc(fw->size, 1, 1);
-    uncompressFirmware((u_char *)fw->data, (uint *)&fw->size, (u_char *)fwData->getBytesNoCopy(), fwData->getLength());
+    if (fwData->getLength() == 0 ||
+        fwData->getLength() > UINT32_MAX / 4U) {
+        error = EINVAL;
+        goto fail;
+    }
+    expandedSize = fwData->getLength() * 4U;
+    fw->data = (u_char *)malloc(expandedSize, 1, 1);
+    if (fw->data == NULL) {
+        error = ENOMEM;
+        goto fail;
+    }
+    if (!uncompressFirmware(fw->data, &expandedSize,
+            (u_char *)fwData->getBytesNoCopy(), fwData->getLength())) {
+        error = EINVAL;
+        goto fail;
+    }
+    fw->size = expandedSize;
     OSSafeReleaseNULL(fwData);
     
     if (fw->size < sizeof (uint32_t)) {
         XYLog("%s: firmware too short: %zu bytes\n",
             sc->sc_dev.dv_xname, fw->size);
-        ::free(fw->data);
-        return EINVAL;
+        error = EINVAL;
+        goto fail;
     }
 
     /* Retrieve text and data sections. */
@@ -22476,12 +22511,15 @@ iwn_read_firmware(struct iwn_softc *sc)
     if (error != 0) {
         XYLog("%s: could not read firmware sections\n",
             sc->sc_dev.dv_xname);
-        ::free(fw->data);
-        return error;
+        goto fail;
     }
 
     /* Make sure text and data sections fit in hardware memory. */
-    if (fw->main.textsz > sc->fw_text_maxsz ||
+    if (fw->main.text == NULL || fw->main.textsz == 0 ||
+        fw->main.data == NULL || fw->main.datasz == 0 ||
+        fw->init.text == NULL || fw->init.textsz == 0 ||
+        fw->init.data == NULL || fw->init.datasz == 0 ||
+        fw->main.textsz > sc->fw_text_maxsz ||
         fw->main.datasz > sc->fw_data_maxsz ||
         fw->init.textsz > sc->fw_text_maxsz ||
         fw->init.datasz > sc->fw_data_maxsz ||
@@ -22489,12 +22527,35 @@ iwn_read_firmware(struct iwn_softc *sc)
         (fw->boot.textsz & 3) != 0) {
         XYLog("%s: firmware sections too large\n",
             sc->sc_dev.dv_xname);
-        ::free(fw->data);
-        return EINVAL;
+        error = EINVAL;
+        goto fail;
     }
   
     /* We can proceed with loading the firmware. */
     return 0;
+
+fail:
+    OSSafeReleaseNULL(fwData);
+    iwn_release_firmware(sc);
+    sc->tlv_feature_flags = 0;
+    sc->sc_flags &= ~IWN_FLAG_ENH_SENS;
+    sc->reset_noise_gain = IWN5000_PHY_CALIB_RESET_NOISE_GAIN;
+    sc->noise_gain = IWN5000_PHY_CALIB_NOISE_GAIN;
+    return error;
+}
+
+void ItlIwn::iwn_release_firmware(struct iwn_softc *sc)
+{
+    ::free(sc->fw.data);
+    bzero(&sc->fw, sizeof(sc->fw));
+}
+
+int ItlIwn::iwn_prepare_firmware_capabilities(struct iwn_softc *sc)
+{
+    const int error = iwn_read_firmware(sc);
+    if (error == 0)
+        iwn_release_firmware(sc);
+    return error;
 }
 
 int ItlIwn::
@@ -22965,7 +23026,7 @@ iwn_init(struct _ifnet *ifp)
 
     /* Initialize hardware and upload firmware. */
     error = iwn_hw_init(sc);
-    ::free(sc->fw.data);
+    iwn_release_firmware(sc);
     if (error != 0) {
         XYLog("%s: could not initialize hardware\n",
             sc->sc_dev.dv_xname);

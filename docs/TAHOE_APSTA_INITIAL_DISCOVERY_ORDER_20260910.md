@@ -88,3 +88,51 @@ Qualification must include cold boots with the consumer's first name lookup,
 real open/WPA2/WPA3 system sharing, DHCP, isolated cold-neighbor traffic,
 routed traffic, repeated stop/start and APSTA S3 recovery. The latest kext
 archive remains held, not promoted on the basis of role-7-only tests.
+
+## Initial publication implementation and exact BSD ordering
+
+The implementation now reads IWN's embedded firmware metadata after EEPROM
+attach, without starting the radio. It uses the normal complete image parser
+and discards its temporary upload buffer. A failed read clears partial TLV
+capabilities and preserves the ordinary STA power-on retry. The reader now
+checks allocation/decompression, complete section bounds and image ownership;
+both preview and normal upload release all section pointers with the buffer.
+IWM/IWX already perform firmware/NVM preinit during attach, and their existing
+family/capability admission predicates remain unchanged.
+
+The primary BSD matching request moves to the end of initialized controller
+startup. The firmware-admitted AP is materialized first through the existing
+reference `registerService(2)` path. Only then is primary `deferBSDAttach(false)`
+issued, followed by controller publication. Lower radio-ready publication
+remains an idempotent recovery check; neither identity publication starts AP
+radio service or reports an unconfirmed carrier. AP allocation failure does
+not disable an otherwise usable primary STA.
+
+The saved YAML's proposed `setBSDName` completion interpretation was rejected
+after inspection of the exact 25C56 binary. `IOSkywalkNetworkBSDClient::start`
+starts at `0xffffff8002a06574`; its call to the provider's `setBSDName` slot at
+`0xffffff8002a0682d` precedes the net-provider allocation call at
+`0xffffff8002a06bc7`. That allocation invokes
+`kern_nexus_controller_alloc_net_provider_instance` at `0xffffff8000987dd0`.
+The complete raw start range ends at `0xffffff8002a06cf8`. A callback at the
+name assignment would therefore release primary discovery too early.
+The IOKit option is genuinely
+[synchronous service matching](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/iokit/IOKit/IOService.h),
+not a fixed sleep. Startup additionally observes the actual AP ifnet through
+`ifnet_find_by_name`, compares it with the registered interface's ifnet and
+releases the lookup reference before requesting primary matching.
+
+All 12 shipped IWN images pass the production reader's metadata-preview and
+subsequent-upload tests under ASan/UBSan. Failure cases cover allocation,
+decompression, malformed/truncated images, partial-capability rollback,
+repeat calls and retained upload-buffer ownership. The old reader fails the
+negative-control ownership assertion. The production initial-publication
+methods are separately exercised for ordering, capability denial, allocation
+failure, failed BSD lookup and balanced references. Source checks preserve
+post-init readiness ordering across IWN/IWM/IWX.
+
+This change is not yet runtime-qualified. The first live boot must demonstrate
+the AP's actual BSD attachment before primary discovery and distinct cached
+names in the real sharing consumer, followed by the security/DHCP/traffic and
+S3 matrix above. A proposed name, a successful source test or merely earlier
+invocation is not substituted for that gate.
