@@ -3391,9 +3391,25 @@ ieee80211_recv_deauth(struct ieee80211com *ic, mbuf_t m,
                         (ic->ic_flags & IEEE80211_F_DISABLE_BG_AUTO_CONNECT) == 0;
             int stay_auth = ((ic->ic_userflags & IEEE80211_F_STAYAUTH) &&
                              ic->ic_state >= IEEE80211_S_AUTH);
-            if (!(roamscan || stay_auth))
-                ieee80211_new_state(ic, IEEE80211_S_AUTH,
-                                    IEEE80211_FC0_SUBTYPE_DEAUTH);
+            if (!(roamscan || stay_auth)) {
+                /*
+                 * A peer-originated deauthentication invalidates the RUN
+                 * BSS.  AppleBCMWLANCore publishes the event and its adapter
+                 * performs a clean leave; it does not start Open AUTH toward
+                 * the peer that just disappeared.  IWN DVM otherwise sends
+                 * that stale AUTH after an AP withdrawal and may report a
+                 * fatal firmware error.  A foreground scan retains the saved
+                 * AUTO_JOIN policy and selects a fresh observed BSS.
+                 *
+                 * Preserve the historical retry behavior while AUTH is still
+                 * in progress: there is no committed RUN link to leave yet.
+                 */
+                if (ic->ic_state == IEEE80211_S_RUN)
+                    ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+                else
+                    ieee80211_new_state(ic, IEEE80211_S_AUTH,
+                                        IEEE80211_FC0_SUBTYPE_DEAUTH);
+            }
         }
             break;
 #ifndef IEEE80211_STA_ONLY
@@ -3453,9 +3469,16 @@ ieee80211_recv_disassoc(struct ieee80211com *ic, mbuf_t m,
                           ic->ic_state == IEEE80211_S_RUN);
             int roamscan = bgscan &&
                         (ic->ic_flags & IEEE80211_F_DISABLE_BG_AUTO_CONNECT) == 0;
-            if (!roamscan) /* ignore disassoc during bgscan */
-                ieee80211_new_state(ic, IEEE80211_S_ASSOC,
-                                    IEEE80211_FC0_SUBTYPE_DISASSOC);
+            if (!roamscan) { /* ignore disassoc during bgscan */
+                /* See ieee80211_recv_deauth(): an established peer loss must
+                 * be retired through a fresh scan, not an immediate retry of
+                 * the invalidated BSS. */
+                if (ic->ic_state == IEEE80211_S_RUN)
+                    ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+                else
+                    ieee80211_new_state(ic, IEEE80211_S_ASSOC,
+                                        IEEE80211_FC0_SUBTYPE_DISASSOC);
+            }
         }
             break;
 #ifndef IEEE80211_STA_ONLY
