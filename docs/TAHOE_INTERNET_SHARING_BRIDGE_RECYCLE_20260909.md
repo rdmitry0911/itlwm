@@ -84,3 +84,40 @@ standard bridge, rather than manually decrementing the old object's count.
 This identifies a retained in-use bridge object after ordinary removal from
 the public interface list. The candidate release remains held. The physical
 user machine and other agents' virtual machines were not touched.
+
+## Fresh-boot control and separate carrier defect
+
+A fresh boot of the same `ad910bab` image loaded the same kext UUID. A bounded
+90-second reference/free observer covered standard WPA3 sharing creation at
+18:57:19 UTC, a real external SAE/PMF/DHCP client, traffic and ordinary stop
+at 18:58:02. The bridge initially held three references. Deleting only the
+client's scoped bridge ARP entry exposed failed neighbor resolution; its
+count reached 12 before stop. The post-detach object changed to `bridge?`,
+INUSE clear and raw detach byte zero. The remaining count reached 52, with
+the principal unmatched observed acquisition stack in `udp_send+0x7ae`.
+All diagnostic error files were empty. These stacks do not identify a driver
+packet-ownership leak or justify manual reference decrements.
+
+Crucially, the next ordinary start at 18:59:35 created `bridge100` successfully
+without reboot. Thus the older EBUSY case after APSTA/S3 is not reproduced by
+every stop/start, and a residual reference count alone is not proof of the
+in-use identity collision. The EBUSY/S3 matrix remains open.
+
+A separate isolated cold-neighbor test at 19:00:26 failed 0/10. Guest capture
+contains five ARP requests on the bridge; external capture contains none.
+The matching lower observer saw no `iwn_send_ap_data_frame` call for them.
+Both the AP member and bridge reported inactive media despite an associated
+SAE client. Apple's bridge broadcast path excludes media-inactive members,
+while its learned-unicast route can still carry traffic. This explains why
+client-originated DHCP and warm-neighbor traffic were insufficient coverage.
+
+At 19:05:10, stack tracing identified the lost carrier sequence: lower HostAP
+success published role-7 carrier/link-up; protocol removal then entered
+`IO80211VirtualInterface::setInterfaceEnable(false)` through BSD disable and
+`IOSkywalkNetworkInterface::disable` published status 1. Bridge protocol attach
+subsequently entered ordinary APSTA enable and restored virtual association
+state, but no status-3 carrier publication followed.
+
+The correction and its qualification are tracked in
+`TAHOE_APSTA_BSD_CARRIER_20260909.md`. It must not be described as a proven fix
+for the retained-INUSE EBUSY case until that sequence passes independently.

@@ -1688,8 +1688,22 @@ IOReturn AirportItlwmAPSTASkywalkInterface::enable(UInt options)
     }
 
     const IOReturn result = IO80211VirtualInterface::enable(options);
-    if (result == kIOReturnSuccess && controller != nullptr)
+    if (result == kIOReturnSuccess && controller != nullptr) {
         controller->noteAPSTAInterfaceEnableDuringPendingHostAPStart();
+        /*
+         * Internet Sharing removes the last standalone protocol before
+         * attaching ap1 to its bridge.  The inherited BSD disable edge
+         * withdraws Skywalk carrier even when the lower AP is still live;
+         * VirtualInterface::enable restores association state, not carrier.
+         * Reconcile that successful re-enable with the already-confirmed
+         * lower AP, using the same reportLinkStatus edge as Apple's HostAP
+         * success tail.  A pending/failed/stopped AP must not acquire link.
+         * Otherwise bridge_broadcast skips the media-inactive member while
+         * learned unicast and client-originated DHCP can appear to work.
+         */
+        if (controller->isHostApRunning())
+            (void)reportLinkStatus(3U, 0x80U);
+    }
     enableDatapath();
     XYLog("APSTA interface enable options=0x%x result=0x%x\n",
           static_cast<unsigned>(options), static_cast<unsigned>(result));
