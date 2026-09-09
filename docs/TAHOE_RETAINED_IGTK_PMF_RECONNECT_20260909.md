@@ -53,7 +53,33 @@ software-key bookkeeping and is not claimed to prove the fix.
   mismatched keys, invalid witnesses and unpublished/retired contexts.
 - Existing PAE epoch, reconnect, BIP/CCMP lifetime, anti-reinstallation and
   IWN BTM contract checks pass.
-- Candidate build, activation and repeated on-air PMF verification are pending.
+- Source commit `5b4929e3` built successfully; all 1083 BootKC symbols resolved.
+- Private AuxKC admission and transactional activation both passed. The guest
+  reboot loaded UUID `90A9F9AA-2E9A-302F-A4C7-4FA29A14730C`, matching the
+  candidate Mach-O SHA-256
+  `0602876224834e19ce16c6a220b6ab2fa47a9ad034ad3477714af1992ad4bca0`.
+- The exact on-air sequence was repeated: temporary 5 GHz WPA3 source,
+  protected BTM to the 2.4 GHz target, then saved-profile return to the
+  original source. The live rearm helper returned 0; observed PMF node flags
+  included both directions (`0x207fa`).
+- After return, the source AP received a protected SA Query response and a
+  protected BTM response. Another request to the 2.4 GHz target received
+  status 0 and completed SAE, DHCP and 8/8 source-bound ICMP exchanges.
+- The candidate entered true S3 (`ACPI SLEEP`, QEMU suspended) and resumed
+  through `ACPI S3 WAKE`. Wi-Fi became reachable on the seventh one-second
+  probe; subsequent source-bound runs passed 8/8 packets in each direction.
+  WPA3, the DHCP address and the loaded candidate UUID were retained.
+- The temporary host AP and DHCP processes were stopped by their recorded
+  PIDs, its virtual interface was removed, and the host's ordinary managed
+  connection remained active.
+
+The fix closes the reproduced retained-IGTK PMF loss after reconnect. It does
+not close the public selection error preceding eventual connection, the
+5 GHz targeted-scan issue below, or all IWM/IWX hardware coverage.
+
+Release archive SHA-256:
+`2659b255ca40407d7622566ccde701a92184cfcd11ab659e70c95b3694eb6d9f`.
+The archive's Mach-O matches the runtime-qualified candidate exactly.
 
 An initial BTM request for the visible 5 GHz target returned status 7 with no
 fresh candidate. A normal public directed scan subsequently saw that BSS.
