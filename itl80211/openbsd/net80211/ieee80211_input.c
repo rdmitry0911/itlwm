@@ -1778,6 +1778,42 @@ ieee80211_refresh_scan_ssid(struct ieee80211com *ic,
     memcpy(ni->ni_essid, &ssid[2], ssid[1]);
 }
 
+/* Keep the actual measured sample separate from the 5-GHz selection peak.
+ * The host monotonic timestamp identifies this received sample; replaying
+ * the cache cannot create another measurement. All Intel receive backends
+ * supply rxi_chan, and the caller has already rejected channel mismatch. */
+#ifdef AIRPORT
+static void
+ieee80211_record_scan_rssi(struct ieee80211com *ic, struct ieee80211_node *ni,
+    const struct ieee80211_rxinfo *rxi, u_int8_t channel)
+{
+    struct timeval tv;
+
+    ni->ni_scan_rssi_stamp = 0;
+    ni->ni_scan_rssi = 0;
+    ni->ni_scan_rssi_chan = 0;
+    if (rxi->rxi_rssi > 0 && rxi->rxi_rssi < 100 &&
+        channel != 0 && rxi->rxi_chan == channel) {
+        microuptime(&tv);
+        ni->ni_scan_rssi_stamp = (u_int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+        ni->ni_scan_rssi = rxi->rxi_rssi;
+        ni->ni_scan_rssi_chan = channel;
+    }
+    /* The associated node is a copy of the cache node. Refresh only its
+     * matching on-channel measurement, not its security/selection state. */
+    if (ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+        ic->ic_bss != ni && ic->ic_bss->ni_chan != NULL &&
+        ic->ic_bss->ni_chan != IEEE80211_CHAN_ANYC &&
+        IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, ni->ni_bssid) &&
+        ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan) == channel) {
+        ic->ic_bss->ni_scan_rssi_stamp = ni->ni_scan_rssi_stamp;
+        ic->ic_bss->ni_scan_rssi = ni->ni_scan_rssi;
+        ic->ic_bss->ni_scan_rssi_chan = ni->ni_scan_rssi_chan;
+    }
+}
+#endif
+
 /*-
  * Beacon/Probe response frame format:
  * [8]   Timestamp
@@ -2310,6 +2346,9 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
             ni->ni_rssi = rxi->rxi_rssi;
     } else
         ni->ni_rssi = rxi->rxi_rssi;
+#ifdef AIRPORT
+    ieee80211_record_scan_rssi(ic, ni, rxi, chan);
+#endif
     ni->ni_rstamp = rxi->rxi_tstamp;
     /* prepare_scan() raises every cached node's inactivity generation.  A
      * beacon or probe response received by this census is the matching

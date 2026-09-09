@@ -971,6 +971,12 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
     ni->ni_esslen = ic->ic_des_esslen;
     memcpy(ni->ni_essid, ic->ic_des_essid, ni->ni_esslen);
     ni->ni_rssi = 0;
+#ifdef AIRPORT
+    ni->ni_scan_rssi_stamp = 0;
+    ni->ni_scan_rssi_published_stamp = 0;
+    ni->ni_scan_rssi = 0;
+    ni->ni_scan_rssi_chan = 0;
+#endif
     ni->ni_rstamp = 0;
     memset(ni->ni_tstamp, 0, sizeof(ni->ni_tstamp));
     ni->ni_intval = ic->ic_lintval;
@@ -2366,6 +2372,34 @@ ieee80211_find_node(struct ieee80211com *ic, const u_int8_t *macaddr)
     }
     return ni;
 }
+
+#ifdef AIRPORT
+/* A terminal snapshot carries values, never a node pointer across the WCL
+ * gate. Consume only the exact still-live sample after issuing publication.
+ * Cancellation, a replacement node, or a newer RX cannot consume its successor. */
+int
+ieee80211_scan_rssi_publication(struct ieee80211com *ic,
+    const u_int8_t *macaddr, const u_int8_t *bssid, u_int64_t stamp,
+    u_int8_t rssi, u_int8_t channel, int issued)
+{
+    struct ieee80211_node *ni;
+    int pending, s;
+
+    if (ic == NULL || macaddr == NULL || bssid == NULL || stamp == 0 ||
+        rssi == 0 || rssi >= 100 || channel == 0)
+        return 0;
+    s = splnet();
+    ni = ieee80211_find_node(ic, macaddr);
+    pending = ni != NULL && IEEE80211_ADDR_EQ(ni->ni_bssid, bssid) &&
+        ni->ni_scan_rssi_stamp == stamp && ni->ni_scan_rssi == rssi &&
+        ni->ni_scan_rssi_chan == channel &&
+        stamp > ni->ni_scan_rssi_published_stamp;
+    if (pending && issued)
+        ni->ni_scan_rssi_published_stamp = stamp;
+    splx(s);
+    return pending;
+}
+#endif
 
 /*
  * Return a reference to the appropriate node for sending

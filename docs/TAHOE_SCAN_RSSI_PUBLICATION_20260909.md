@@ -69,6 +69,39 @@ shared net80211 parser, which rejects advertised/received-channel mismatch.
 The shared producer correction must preserve that evidence and include
 the current-BSS metadata path, not just the one IWN test call.
 
-No RSSI production correction is implemented or claimed qualified yet.
-The missing 5-GHz candidate and public `-3912` issues remain open; this
-observation alone does not establish that fixing metadata resolves them.
+## Production correction and verification boundary
+
+The shared beacon/probe-response parser now records the actual received
+RSSI and physical channel with a host-monotonic microsecond sample stamp.
+This is separate from the historical `ni_rssi` 5-GHz selection peak, which
+is not changed by this fix. A matching current STA node receives the same
+measurement; another BSSID/channel or a local AP owner does not inherit it.
+Creating a local IBSS/AP clears these received-measurement fields.
+
+The WCL metadata builder publishes measured RSSI with bit 14 and its verified
+on-channel provenance with bit 6. Missing, invalid and channel-mismatched
+measurements remain absent. The value-only terminal snapshot also carries
+an exact sample witness. Immediately before publication, a locked node lookup
+revalidates it; after the publication call, the still-matching sample is
+marked issued. Snapshot collection and a cancelled/suppressed terminal do
+not consume it. A duplicate or old snapshot cannot refresh the RSSI timestamp
+after its sample was issued or replaced by a newer RX. No node pointer is
+retained across the publication gate. As elsewhere, the void postMessage
+return proves only that publication was issued, not that the consumer accepted it.
+
+The current-BSS builder initializes a separate Apple beacon object and therefore
+includes its actual measured value independently of the scan-cache receipt.
+It does not fabricate a measurement from an uninitialized selection scalar.
+
+`scripts/test_scan_rssi_publication.sh` compiles the production RX recorder,
+locked publication witness, both metadata producers and terminal collector
+under ASan/UBSan. Cases cover fresh and repeated samples, cache replays,
+cancelled and duplicate snapshots, newer RX between collection/publication,
+removed/replaced identities, invalid RSSI, physical-channel mismatch, 2.4/5-GHz
+values and current-BSS/AP-owner isolation. The negative control compiles the
+old metadata producers and fails their missing measured-RSSI assertion.
+Existing physical-scan lifecycle, exact-plan and SSID-refresh checks also pass.
+
+The correction is not yet built or runtime-qualified. The missing 5-GHz
+candidate and public `-3912` issues remain open; metadata correction alone
+does not establish that either issue is resolved.

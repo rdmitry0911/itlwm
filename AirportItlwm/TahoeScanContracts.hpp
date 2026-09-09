@@ -17,14 +17,40 @@ static constexpr uint32_t kWclScanResultMetaFlags = 0x2;
 static constexpr uint32_t kWclScanResultSsidPresentFlag = 0x4;
 static constexpr uint32_t kWclScanResultNoisePresentFlag = 1U << 12;
 static constexpr uint32_t kWclScanResultSnrPresentFlag = 1U << 13;
+static constexpr uint32_t kWclScanResultRssiPresentFlag = 1U << 14;
+static constexpr uint32_t kWclScanResultRssiOnChannelFlag = 1U << 6;
 static constexpr uint32_t kWclScanResultSignalPresentFlags =
-    kWclScanResultNoisePresentFlag | kWclScanResultSnrPresentFlag;
+    kWclScanResultNoisePresentFlag | kWclScanResultSnrPresentFlag |
+    kWclScanResultRssiPresentFlag;
 static constexpr size_t kBssidLength = 6;
 
 inline uint32_t buildWclScanResultMetaFlags(uint8_t ssidLength)
 {
     return kWclScanResultMetaFlags |
         (ssidLength != 0 ? kWclScanResultSsidPresentFlag : 0);
+}
+
+inline bool hasMeasuredRssi(uint64_t sampleStamp, uint8_t normalizedRssi,
+                            uint16_t measuredChannel, uint16_t bssChannel)
+{
+    return sampleStamp != 0 && normalizedRssi > 0 && normalizedRssi < 100 &&
+        measuredChannel != 0 && measuredChannel == bssChannel;
+}
+
+/* Bit 14 gates the actual RSSI + timestamp write in Apple's BSS consumer.
+ * Bit 6 says the sample was received on the advertised channel. A cached
+ * replay keeps its provenance but must not refresh the RSSI timestamp. */
+inline uint32_t buildMeasuredRssiFlags(uint64_t sampleStamp,
+                                      uint64_t publishedStamp,
+                                      uint8_t normalizedRssi,
+                                      uint16_t measuredChannel,
+                                      uint16_t bssChannel)
+{
+    if (!hasMeasuredRssi(sampleStamp, normalizedRssi,
+                         measuredChannel, bssChannel))
+        return 0;
+    return kWclScanResultRssiOnChannelFlag |
+        (sampleStamp > publishedStamp ? kWclScanResultRssiPresentFlag : 0);
 }
 
 inline bool hasRenderableBssid(const uint8_t *bssid)

@@ -5654,7 +5654,13 @@ static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
         static_cast<uint16_t>(ieee80211_chan2ieee(ic, ni->ni_chan));
     payload->meta.primaryChannel = static_cast<uint8_t>(MIN(primaryChannel, 0xff));
     memcpy(payload->meta.bssid, ni->ni_bssid, sizeof(payload->meta.bssid));
-    payload->meta.rssi = -(0 - IWM_MIN_DBM - ni->ni_rssi);
+    if (TahoeScanContracts::hasMeasuredRssi(ni->ni_scan_rssi_stamp,
+            ni->ni_scan_rssi, ni->ni_scan_rssi_chan, primaryChannel)) {
+        payload->meta.rssi = IWM_MIN_DBM + ni->ni_scan_rssi;
+        payload->meta.flags |= TahoeScanContracts::buildMeasuredRssiFlags(
+            ni->ni_scan_rssi_stamp, ni->ni_scan_rssi_published_stamp,
+            ni->ni_scan_rssi, ni->ni_scan_rssi_chan, primaryChannel);
+    }
     if (signal.hasNoise) {
         int16_t noise = 0;
         /* Intel's scan node exposes measured RSSI and the HAL noise floor,
@@ -5679,7 +5685,32 @@ static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
 struct TahoeWclScanResultSnapshot {
     TahoeWclScanResultPayload payload;
     uint32_t payloadLen;
+    uint64_t rssiStamp;
+    uint8_t nodeMac[IEEE80211_ADDR_LEN];
+    uint8_t normalizedRssi;
+    uint8_t measuredChannel;
 };
+
+static void prepareTahoeWclScanRssiPublication(struct ieee80211com *ic,
+    TahoeWclScanResultSnapshot &entry)
+{
+    if (!ieee80211_scan_rssi_publication(ic, entry.nodeMac,
+            entry.payload.meta.bssid, entry.rssiStamp, entry.normalizedRssi,
+            entry.measuredChannel, 0))
+        entry.payload.meta.flags &=
+            ~TahoeScanContracts::kWclScanResultRssiPresentFlag;
+}
+
+static void recordTahoeWclScanRssiPublication(struct ieee80211com *ic,
+    const TahoeWclScanResultSnapshot &entry)
+{
+    if ((entry.payload.meta.flags &
+            TahoeScanContracts::kWclScanResultRssiPresentFlag) == 0)
+        return;
+    ieee80211_scan_rssi_publication(ic, entry.nodeMac,
+        entry.payload.meta.bssid, entry.rssiStamp, entry.normalizedRssi,
+        entry.measuredChannel, 1);
+}
 
 struct TahoeWclScanSnapshotCollector {
     TahoeWclSignalSnapshot signal;
@@ -5714,6 +5745,10 @@ static void collectTahoeWclScanResultSnapshot(void *arg,
                                         &payloadLen))
         return;
     entry->payloadLen = payloadLen;
+    entry->rssiStamp = ni->ni_scan_rssi_stamp;
+    memcpy(entry->nodeMac, ni->ni_macaddr, sizeof(entry->nodeMac));
+    entry->normalizedRssi = ni->ni_scan_rssi;
+    entry->measuredChannel = ni->ni_scan_rssi_chan;
     ++collector->count;
 }
 
@@ -9396,10 +9431,12 @@ postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, vo
             if (!collector.overflow) {
                 for (uint32_t index = 0; index < collector.count; ++index) {
                     TahoeWclScanResultSnapshot *entry = &snapshots[index];
+                    prepareTahoeWclScanRssiPublication(ic, *entry);
                     that->postMessage(that->fNetIf,
                                       APPLE80211_M_WCL_SCAN_RESULT,
                                       &entry->payload, entry->payloadLen,
                                       true);
+                    recordTahoeWclScanRssiPublication(ic, *entry);
                 }
             } else {
                 snapshotResult = kIOReturnNoSpace;
@@ -9499,9 +9536,11 @@ postWclPhysicalScanCompletionGated(OSObject *target, void *arg0, void *arg1,
                     suppressResults = true;
                     break;
                 }
+                prepareTahoeWclScanRssiPublication(traceIc, entries[index]);
                 that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_RESULT,
                                   &entries[index].payload,
                                   entries[index].payloadLen, true);
+                recordTahoeWclScanRssiPublication(traceIc, entries[index]);
                 /* postMessage() is void: this only establishes that one
                  * publication call was issued after the exact ownership
                  * check, never that a later consumer received it. */

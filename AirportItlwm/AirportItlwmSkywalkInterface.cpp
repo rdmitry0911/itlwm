@@ -10390,7 +10390,16 @@ static bool buildTahoeCurrentBssPayload(
     payload->meta.primaryChannel =
         static_cast<uint8_t>(MIN(primaryChannel, 0xff));
     memcpy(payload->meta.bssid, node->ni_bssid, sizeof(payload->meta.bssid));
-    payload->meta.rssi = -(0 - IWM_MIN_DBM - node->ni_rssi);
+    /* This carrier initializes a separate current-BSS object, not the WCL
+     * scan cache. Its measured value must remain available even when that
+     * sample has already been issued to the scan consumer. */
+    if (TahoeScanContracts::hasMeasuredRssi(node->ni_scan_rssi_stamp,
+            node->ni_scan_rssi, node->ni_scan_rssi_chan, primaryChannel)) {
+        payload->meta.rssi = IWM_MIN_DBM + node->ni_scan_rssi;
+        payload->meta.flags |= TahoeScanContracts::buildMeasuredRssiFlags(
+            node->ni_scan_rssi_stamp, 0, node->ni_scan_rssi,
+            node->ni_scan_rssi_chan, primaryChannel);
+    }
     payload->meta.beaconInterval = node->ni_intval;
     payload->meta.capability = node->ni_capinfo;
     return true;

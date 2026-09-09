@@ -338,6 +338,12 @@ struct ieee80211_node {
 	u_int8_t		ni_erp;		/* 11g only */
 #ifdef AIRPORT
     u_int64_t       ni_age_ts;
+    /* Actual on-channel beacon/probe RSSI, separate from ni_rssi's scan
+     * selection peak. Only an issued WCL publication consumes the sample. */
+    u_int64_t       ni_scan_rssi_stamp;
+    u_int64_t       ni_scan_rssi_published_stamp;
+    u_int8_t        ni_scan_rssi;
+    u_int8_t        ni_scan_rssi_chan;
 #endif
 
 	/* DTIM and contention free period (CFP) */
@@ -679,6 +685,11 @@ struct ieee80211_node *ieee80211_dup_bss(struct ieee80211com *,
 		const u_int8_t *);
 struct ieee80211_node *ieee80211_find_node(struct ieee80211com *,
 		const u_int8_t *);
+#ifdef AIRPORT
+/* Check a value-only publication witness; issued=1 also consumes it. */
+int ieee80211_scan_rssi_publication(struct ieee80211com *,
+    const u_int8_t *, const u_int8_t *, u_int64_t, u_int8_t, u_int8_t, int);
+#endif
 void ieee80211_ba_del(struct ieee80211_node *);
 void ieee80211_ba_free(struct ieee80211_node *ni);
 struct ieee80211_node *ieee80211_find_rxnode(struct ieee80211com *,
