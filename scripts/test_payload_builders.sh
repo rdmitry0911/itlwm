@@ -91,3 +91,4 @@ esac
 "$(dirname "$0")/test_tahoe_wcl_auth_assoc_completion_contract.sh"
 "$(dirname "$0")/test_tahoe_wcl_exact_scan_plan_contract.sh"
 bash "$(dirname "$0")/test_scan_rssi_publication.sh"
+bash "$(dirname "$0")/test_tahoe_lqm_cca_validity.sh"

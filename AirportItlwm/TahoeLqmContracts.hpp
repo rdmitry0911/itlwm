@@ -56,8 +56,8 @@ struct EventData {
     uint8_t hasNoise;                // 0x00e
     uint8_t reserved00f;
     int16_t noise;                   // 0x010
-    uint8_t hasCurrentBssRssi;       // 0x012
-    int8_t currentBssRssi;           // 0x013
+    uint8_t hasCca;                  // 0x012
+    int8_t ccaPercent;               // 0x013
     uint32_t txErrors;               // 0x014
     uint32_t rxErrors;               // 0x018
     uint32_t txFrames;               // 0x01c
@@ -87,6 +87,10 @@ static_assert(offsetof(EventData, hasNoise) == 0x0e,
               "Tahoe LQM noise validity offset mismatch");
 static_assert(offsetof(EventData, noise) == 0x10,
               "Tahoe LQM noise offset mismatch");
+static_assert(offsetof(EventData, hasCca) == 0x12,
+              "Tahoe LQM CCA validity offset mismatch");
+static_assert(offsetof(EventData, ccaPercent) == 0x13,
+              "Tahoe LQM CCA percentage offset mismatch");
 static_assert(offsetof(EventData, countersValid) == 0x30,
               "Tahoe LQM counter-valid offset mismatch");
 static_assert(offsetof(EventData, eventValid) == 0x1d8,
@@ -171,8 +175,10 @@ inline bool buildEventData(int32_t rssiDbm, int32_t noiseDbm,
     *event = EventData{};
     event->hasRssi = 1;
     event->rssi = rssiDbm;
-    event->hasCurrentBssRssi = 1;
-    event->currentBssRssi = static_cast<int8_t>(rssiDbm);
+    // +0x12/+0x13 are CCA validity/occupancy, not another RSSI sample.
+    // The backend snapshot has no independent CCA measurement. Leave it
+    // unavailable; publishing RSSI here makes airportd consume negative
+    // channel occupancy. Real RSSI remains valid at +0x00/+0x04.
 
     if (noiseDbm != kInvalidNoiseZero &&
         noiseDbm != kInvalidNoiseSentinel) {

@@ -1180,7 +1180,9 @@ void testTahoeLqmContracts()
             "LQM event carrier remains 0x1dc bytes");
     require(offsetof(EventData, rssi) == 0x04 &&
                 offsetof(EventData, snr) == 0x0c &&
-                offsetof(EventData, noise) == 0x10,
+                offsetof(EventData, noise) == 0x10 &&
+                offsetof(EventData, hasCca) == 0x12 &&
+                offsetof(EventData, ccaPercent) == 0x13,
             "LQM signal fields preserve recovered offsets");
     require(offsetof(EventData, countersValid) == 0x30 &&
                 offsetof(EventData, eventValid) == 0x1d8 &&
@@ -1192,10 +1194,10 @@ void testTahoeLqmContracts()
     EventData event{};
     require(buildEventData(-63, -95, current, &previous, &event),
             "LQM event builder accepts real signal and changed counters");
-    require(event.hasRssi == 1 && event.rssi == -63 &&
-                event.hasCurrentBssRssi == 1 &&
-                event.currentBssRssi == -63,
+    require(event.hasRssi == 1 && event.rssi == -63,
             "LQM event builder carries current BSS RSSI");
+    require(event.hasCca == 0 && event.ccaPercent == 0,
+            "LQM event builder does not invent CCA from RSSI");
     require(event.hasNoise == 1 && event.noise == -95 &&
                 event.hasSnr == 1 && event.snr == 32,
             "LQM event builder carries real noise and derived SNR");
@@ -1222,6 +1224,8 @@ void testTahoeLqmContracts()
             "LQM unchanged generation clears counter fields like Apple");
     require(event.eventValid == 1,
             "LQM signal event remains valid when counters are unchanged");
+    require(event.hasCca == 0 && event.ccaPercent == 0,
+            "LQM unchanged generation still has no independent CCA sample");
     require(!buildEventData(-101, -95, current, nullptr, &event) &&
                 !buildEventData(1, -95, current, nullptr, &event),
             "LQM event builder rejects RSSI outside the reference range");

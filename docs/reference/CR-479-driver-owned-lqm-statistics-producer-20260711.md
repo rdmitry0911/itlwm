@@ -55,8 +55,8 @@ The recovered fields used by this layer are:
 | `+0x00c` | 2 | SNR |
 | `+0x00e` | 1 | noise valid |
 | `+0x010` | 2 | noise |
-| `+0x012` | 1 | current-BSS RSSI valid |
-| `+0x013` | 1 | current-BSS RSSI |
+| `+0x012` | 1 | CCA valid (interpretation corrected 2026-09-10) |
+| `+0x013` | 1 | CCA occupancy percentage (corrected 2026-09-10) |
 | `+0x014` | 4 | TX errors |
 | `+0x018` | 4 | RX errors |
 | `+0x01c` | 4 | TX frames |
@@ -70,6 +70,21 @@ The counter fields and `+0x030/+0x1d9` are populated only when the current
 hardware snapshot differs from the preceding snapshot. Signal validity comes
 from actual RSSI/noise availability. No fixed counters, fixed one-second
 cadence, or fabricated per-antenna values are admitted.
+
+### 2026-09-10 correction: CCA is not a second RSSI
+
+The original labels for `+0x12/+0x13` were incorrect even in the cited 26.3
+reference. Complete `AppleBCMWLANLQM::updateLQM` at
+`0xffffff800155362e` calls a separate BSS-manager getter into `+0x13`, then
+prints that byte explicitly as `CCA:%d`. The loaded Intel image was instead
+copying RSSI there with validity set. Read-only observations at the real
+Infra `postMessage` endpoint and airportd confirmed negative channel occupancy.
+
+The correction preserves actual RSSI at `+0x04` and all existing independent
+signal/counter fields, but leaves CCA invalid until a real backend measurement
+exists. This removes false telemetry, not the remaining missing CCA producer
+or public LQM configuration-owner discrepancy. See
+[`TAHOE_LQM_CCA_VALIDITY_20260910.md`](../TAHOE_LQM_CCA_VALIDITY_20260910.md).
 
 ## Intel data sources
 
