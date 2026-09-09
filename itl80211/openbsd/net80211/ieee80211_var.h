@@ -286,7 +286,7 @@ struct ieee80211_roam_profile_policy {
 /*
  * Bounded host form of Tahoe's apple80211_reassoc carrier.  The public
  * carrier contains a 50-entry AppleChannelSpec scan list at +0x00 and up to
- * seven packed {score, channel} candidate preferences at +0x64.  Keep the
+ * seven six-byte BSSID entries at +0x64. Keep the
  * normalized request in common net80211 so IWN, IWM, and IWX all drive the
  * same real background-scan and BSS-selection path.
  */
@@ -294,8 +294,7 @@ struct ieee80211_roam_profile_policy {
 #define IEEE80211_WCL_REASSOC_MAX_CANDIDATES 7
 
 struct ieee80211_wcl_reassoc_candidate {
-	u_int32_t	score;
-	u_int16_t	channel_spec;
+	u_int8_t	bssid[IEEE80211_ADDR_LEN];
 };
 
 struct ieee80211_wcl_reassoc_request {
@@ -1512,7 +1511,7 @@ int	ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *,
     const struct ieee80211_wcl_reassoc_request *);
 int	ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *, u_int32_t);
 int	ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *,
-    const struct ieee80211_node *, u_int32_t *);
+    const struct ieee80211_node *);
 int	ieee80211_wcl_scan_plan_stage(struct ieee80211com *,
     const struct ieee80211_wcl_scan_plan *);
 int	ieee80211_wcl_scan_plan_snapshot(struct ieee80211com *,

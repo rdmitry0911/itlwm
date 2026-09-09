@@ -240,7 +240,7 @@ for token in (
 matcher = body(node, "ieee80211_match_bss(", "BSS admission")
 for token in (
     "wcl_target = bgscan && ic->ic_wcl_reassoc_owner_active",
-    "ieee80211_wcl_reassoc_candidate_disposition(ic, ni, NULL) >= 0",
+    "ieee80211_wcl_reassoc_candidate_disposition(ic, ni) > 0",
     "wnm_target != 1 && !wcl_target",
 ):
     require(matcher, token, "firmware-roam DESBSSID bypass")

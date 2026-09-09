@@ -1082,7 +1082,7 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
     wcl_target = bgscan && ic->ic_wcl_reassoc_owner_active &&
         ic->ic_wcl_reassoc_owner_last_leaf ==
             IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
-        ieee80211_wcl_reassoc_candidate_disposition(ic, ni, NULL) >= 0;
+        ieee80211_wcl_reassoc_candidate_disposition(ic, ni) > 0;
 
     /*
      * Apple/macOS: skip ALL BSS filtering when AUTO_JOIN && des_esslen==0.
@@ -1102,7 +1102,8 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
      * BootKernelExtensions.kc 25D125.
      *
      * The OpenBSD checks below remain active when des_esslen != 0
-     * (airportd issued a targeted ASSOCIATE and configured encryption).
+     * (airportd issued a targeted ASSOCIATE and configured encryption), or
+     * when a WCL roam is selecting a real target rather than exporting scans.
      *
      * History: V14 removed the ESSID rejection that blocked all nodes
      * (fail |= 0x10).  V15 removed the PRIVACY rejection that blocked
@@ -1111,14 +1112,14 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
      * mutating ni_rates during scan-time iteration.
      */
     if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
-        ic->ic_des_esslen == 0)
+        ic->ic_des_esslen == 0 && !wcl_target)
         return 0;
 
     if ((ic->ic_flags & IEEE80211_F_BGSCAN) == 0 &&
         isclr(ic->ic_chan_active, ieee80211_chan2ieee(ic, ni->ni_chan)))
         fail |= IEEE80211_NODE_ASSOCFAIL_CHAN;
     if (ic->ic_des_chan != IEEE80211_CHAN_ANYC &&
-        ni->ni_chan != ic->ic_des_chan)
+        ni->ni_chan != ic->ic_des_chan && !wcl_target)
         fail |= IEEE80211_NODE_ASSOCFAIL_CHAN;
 #ifndef IEEE80211_STA_ONLY
     if (ic->ic_opmode == IEEE80211_M_IBSS) {
@@ -1429,8 +1430,6 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
     struct ieee80211_node *ni, *nextbs, *selbs = NULL,
     *selbs2 = NULL, *selbs5 = NULL;
     uint8_t min_5ghz_rssi;
-    u_int32_t selected_wcl_score = 0;
-    int selected_wcl_scored = 0;
     int wcl_reassoc_scan = bgscan && ic->ic_wcl_reassoc_owner_active &&
         ic->ic_wcl_reassoc_owner_last_leaf ==
             IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
@@ -1462,10 +1461,8 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
         if (ieee80211_wnm_bss_transition_candidate_disposition(ic, ni) < 0)
             continue;
 
-        u_int32_t wcl_score = 0;
         int wcl_disposition =
-            ieee80211_wcl_reassoc_candidate_disposition(ic, ni,
-                &wcl_score);
+            ieee80211_wcl_reassoc_candidate_disposition(ic, ni);
         if (wcl_reassoc_scan && wcl_disposition < 0)
             continue;
 
@@ -1475,21 +1472,12 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
             continue;
         }
 
-        /* The explicit WCL command carries its own bounded channel and
-         * candidate preference arrays.  Do not replace that policy with the
-         * generic 5 GHz preference or periodic-roam RSSI delta. */
+        /* The explicit WCL command carries channel and BSSID allowlists,
+         * not per-channel scores. Rank only eligible BSS by observed RSSI;
+         * never reinterpret address bytes as a candidate preference. */
         if (wcl_reassoc_scan) {
-            int scored = wcl_disposition > 0;
-            if (selbs == NULL ||
-                (scored && !selected_wcl_scored) ||
-                (scored == selected_wcl_scored &&
-                 ((scored && wcl_score > selected_wcl_score) ||
-                  (wcl_score == selected_wcl_score &&
-                   ni->ni_rssi > selbs->ni_rssi)))) {
+            if (selbs == NULL || ni->ni_rssi > selbs->ni_rssi)
                 selbs = ni;
-                selected_wcl_score = wcl_score;
-                selected_wcl_scored = scored;
-            }
             continue;
         }
         

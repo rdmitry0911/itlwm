@@ -1087,8 +1087,7 @@ static_assert(sizeof(tahoeUsbHostNotification) == 0x10,
 
 struct apple80211_reassoc_candidate
 {
-    uint32_t score;
-    uint16_t channel_spec;
+    uint8_t bssid[IEEE80211_ADDR_LEN];
 } __attribute__((packed));
 
 struct apple80211_reassoc
@@ -9375,39 +9374,17 @@ setWCL_REASSOC(apple80211_reassoc *data)
         data->candidate_count < IEEE80211_WCL_REASSOC_MAX_CANDIDATES
             ? data->candidate_count
             : IEEE80211_WCL_REASSOC_MAX_CANDIDATES);
+    /* NetAdapter uses the first BSSID even when the public count is zero
+     * or one; only counts >= 2 select its trailing firmware BSSID list. */
+    if (request.candidate_count == 0)
+        request.candidate_count = 1;
     request.feature_flags = data->feature_flags;
     request.prune_rssi_dbm = data->prune_rssi_dbm;
     for (uint8_t i = 0; i < request.channel_count; ++i)
         request.channel_spec[i] = data->channel_specs[i];
     for (uint8_t i = 0; i < request.candidate_count; ++i) {
-        request.candidate[i].score = data->candidates[i].score;
-        request.candidate[i].channel_spec =
-            data->candidates[i].channel_spec;
-    }
-
-    /*
-     * Our host-owned WCL implementation requires an explicit candidate
-     * descriptor before a newly scanned BSS can become a reassociation
-     * target (see ieee80211_wcl_reassoc_candidate_disposition()).  A zero-
-     * candidate carrier therefore cannot possibly switch BSS.  Starting a
-     * physical background scan in that case nevertheless retires IWN's
-     * associated RXON context when the scan completes with no target.  That
-     * was especially visible in the public HostAP sequence: the empty WCL
-     * carrier dropped an otherwise healthy shared-channel STA just before
-     * the AP context was materialised.
-     *
-     * Keep the request snapshot for observability and acknowledge the
-     * already-satisfied no-target transition, but preserve the current BSS,
-     * its public initial-BSSID pin, and its association owner.  A request
-     * with one or more candidates retains the normal real-scan/reassociation
-     * path below unchanged.
-     */
-    if (request.candidate_count == 0) {
-        XYLog("wcl_reassoc EMPTY_CANDIDATE_RETAIN_CURRENT_BSS channels=%u "
-              "flags=0x%x prune=%d\n",
-              static_cast<unsigned>(request.channel_count),
-              request.feature_flags, request.prune_rssi_dbm);
-        return kIOReturnSuccess;
+        IEEE80211_ADDR_COPY(request.candidate[i].bssid,
+                           data->candidates[i].bssid);
     }
 
     /* DVM exposes two RXON contexts but its published STA+AP combination is
@@ -9426,7 +9403,6 @@ setWCL_REASSOC(apple80211_reassoc *data)
             instance->getAPSTAPrimaryRoamSharedChannel() : 0;
     if (requiredSharedChannel != 0) {
         uint8_t retainedChannels = 0;
-        uint8_t retainedCandidates = 0;
 
         if (request.channel_count == 0) {
             request.channel_spec[0] = requiredSharedChannel;
@@ -9444,13 +9420,8 @@ setWCL_REASSOC(apple80211_reassoc *data)
         }
         request.channel_count = retainedChannels;
 
-        for (uint8_t i = 0; i < request.candidate_count; ++i) {
-            if ((request.candidate[i].channel_spec & 0xffU) !=
-                requiredSharedChannel)
-                continue;
-            request.candidate[retainedCandidates++] = request.candidate[i];
-        }
-        request.candidate_count = retainedCandidates;
+        /* A BSSID contains no channel. Keep that allowlist intact and let
+         * the fresh scan match BSSID and the admitted channel separately. */
         XYLog("wcl_reassoc APSTA_SHARED_CHANNEL channel=%u channels=%u "
               "candidates=%u\n",
               static_cast<unsigned>(requiredSharedChannel),
@@ -9458,33 +9429,9 @@ setWCL_REASSOC(apple80211_reassoc *data)
               static_cast<unsigned>(request.candidate_count));
     }
 
-    /*
-     * The original request may name only off-channel roam targets.  Filtering
-     * that list to the single DVM STA+AP channel can therefore produce the
-     * same no-target carrier as the literal-empty case above.  It is not a
-     * real reassociation request after the hardware admission boundary, so
-     * it must retain the BSS before either the public BSSID pin or the
-     * association owner is retired.  Otherwise begin_wcl_reassoc_bgscan()
-     * performs a scan with no selectable target and tears down the healthy
-     * RXON just before HostAP creates the PAN context.
-     */
-    if (request.candidate_count == 0) {
-        /* During an accepted AP transition, off-channel roam candidates
-         * cannot replace the retained primary. The intent-gated filter
-         * above is essential: a standalone STA request must never create
-         * this reservation merely because it names another channel.
-         * Reserve the public role-7 handoff only for that AP-owned interval;
-         * a real same-channel candidate follows the normal path. */
-        if (instance != nullptr)
-            instance->noteAPSTASharedChannelFilteredWclReassoc(ic);
-        XYLog("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS "
-              "channels=%u\n",
-              static_cast<unsigned>(request.channel_count));
-        return kIOReturnSuccess;
-    }
-
-    /* WCL reassociation owns its current-BSS policy only after an admitted
-     * target remains. */
+    /* Wildcard and addressed requests both require a real scan. A missing
+     * eligible target is an asynchronous no-target result, never a fake
+     * success or evidence of an AP handoff. */
     ieee80211_public_initial_bssid_pin_disarm(ic);
 
     /* A steady-state reassociation has its own WCL terminal owner.  Retire

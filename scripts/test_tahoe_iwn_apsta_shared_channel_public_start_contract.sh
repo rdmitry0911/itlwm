@@ -319,8 +319,8 @@ for token in (
     assert token in preserve, f"missing APSTA transient-carrier guard: {token}"
 
 assert "bool consumeAPSTAPrimaryStaHandoffScan(struct ieee80211com *ic, int arg);" in v2_hpp
-assert "void noteAPSTASharedChannelFilteredWclReassoc(struct ieee80211com *ic);" in v2_hpp
-assert "fAPSTAOwner->armPrimaryStaHandoffScan(ic)" in v2
+assert "noteAPSTASharedChannelFilteredWclReassoc" not in v2_hpp
+assert "armPrimaryStaHandoffScan(ic)" in owner
 bridge = v2[v2.index("extern \"C\" bool\nairportItlwmConsumeAPSTAPrimaryStaHandoffScan("):
             v2.index("void AirportItlwm::teardownAPSTAInterface()")]
 assert "OSDynamicCast(AirportItlwm, controller)" in bridge
@@ -358,10 +358,8 @@ scan_lease = preflight.index("iwn_scan_lease_defer_scan")
 assert handoff < rsn < scan_lease, \
     "public APSTA handoff must stop RUN->SCAN before BSS teardown or scan ownership"
 reassoc = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
-filtered = reassoc[reassoc.index("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS") - 1200:
-                   reassoc.index("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS") + 500]
-assert "instance->noteAPSTASharedChannelFilteredWclReassoc(ic);" in filtered
-assert "off-channel roam candidates" in filtered
+assert "noteAPSTASharedChannelFilteredWclReassoc" not in reassoc
+assert "instance->getAPSTAPrimaryRoamSharedChannel()" in reassoc
 
 print("PASS: Tahoe IWN public AP start and CSA cannot create split-channel APSTA")
 PY

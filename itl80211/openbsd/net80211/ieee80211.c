@@ -406,17 +406,16 @@ ieee80211_wcl_reassoc_primary_channel(u_int16_t channel_spec)
 
 int
 ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *ic,
-    const struct ieee80211_node *ni, u_int32_t *score)
+    const struct ieee80211_node *ni)
 {
 	const struct ieee80211_wcl_reassoc_request *request;
 	u_int8_t channel;
-	u_int32_t best_score = 0;
 	int channel_allowed = 0;
-	int scored = 0;
+	static const u_int8_t unspecified[IEEE80211_ADDR_LEN] = { 0 };
+	static const u_int8_t broadcast[IEEE80211_ADDR_LEN] =
+	    { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 	u_int i;
 
-	if (score != NULL)
-		*score = 0;
 	if (ic == NULL || ni == NULL || !ic->ic_wcl_reassoc_owner_active ||
 	    (ic->ic_wcl_reassoc_owner_last_leaf !=
 	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
@@ -427,6 +426,12 @@ ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *ic,
 	/* A WCL roam request must demonstrate a different over-the-air BSS. */
 	if (IEEE80211_ADDR_EQ(ni->ni_bssid,
 	    ic->ic_wcl_reassoc_source_bssid))
+		return -1;
+	/* WLC_REASSOC roams within the associated ESS. A wildcard BSSID does
+	 * not authorize a switch to an unrelated SSID when the discovery-side
+	 * desired-SSID selector is empty. */
+	if (ic->ic_bss == NULL || ni->ni_esslen != ic->ic_bss->ni_esslen ||
+	    memcmp(ni->ni_essid, ic->ic_bss->ni_essid, ni->ni_esslen) != 0)
 		return -1;
 	channel = (u_int8_t)ieee80211_chan2ieee(ic, ni->ni_chan);
 	request = &ic->ic_wcl_reassoc_request;
@@ -449,17 +454,19 @@ ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *ic,
 	    (int)ni->ni_rssi - 100 < (int)request->prune_rssi_dbm)
 		return -1;
 
+	/* WCL setROAMWithBssid uses a broadcast BSSID for an unrestricted roam.
+	 * The firmware ABI also admits an all-zero unspecified BSSID. Neither
+	 * contains a score or a channel; exact addresses form an allowlist. */
+	if (request->candidate_count == 0)
+		return 1;
 	for (i = 0; i < request->candidate_count; i++) {
-		if (ieee80211_wcl_reassoc_primary_channel(
-		    request->candidate[i].channel_spec) != channel)
-			continue;
-		if (!scored || request->candidate[i].score > best_score)
-			best_score = request->candidate[i].score;
-		scored = 1;
+		const u_int8_t *bssid = request->candidate[i].bssid;
+		if (IEEE80211_ADDR_EQ(bssid, unspecified) ||
+		    IEEE80211_ADDR_EQ(bssid, broadcast) ||
+		    IEEE80211_ADDR_EQ(bssid, ni->ni_bssid))
+			return 1;
 	}
-	if (score != NULL)
-		*score = best_score;
-	return scored ? 1 : 0;
+	return -1;
 }
 
 int

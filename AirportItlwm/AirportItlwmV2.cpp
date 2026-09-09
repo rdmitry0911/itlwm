@@ -16546,16 +16546,6 @@ void AirportItlwm::noteAPSTAInterfaceEnableDuringPendingHostAPStart()
         fAPSTAOwner->noteInterfaceEnableDuringPendingHostAPStart();
 }
 
-void AirportItlwm::noteAPSTASharedChannelFilteredWclReassoc(
-    struct ieee80211com *ic)
-{
-    if (fAPSTAOwner != nullptr &&
-        fAPSTAOwner->armPrimaryStaHandoffScan(ic)) {
-        XYLog("APSTA shared-channel filtered WCL reassoc armed primary "
-              "HostAP handoff\n");
-    }
-}
-
 bool AirportItlwm::consumeAPSTAPrimaryStaHandoffScan(
     struct ieee80211com *ic, int arg)
 {

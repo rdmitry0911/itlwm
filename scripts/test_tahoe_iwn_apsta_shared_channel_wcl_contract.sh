@@ -30,34 +30,24 @@ wcl = sky[
     sky.index("IOReturn AirportItlwmSkywalkInterface::\nsetWCL_LEGACY_ROAM_PROFILE_CONFIG(")
 ]
 snapshot = wcl.index("memcpy(cachedReassocRequest, data, sizeof(*data));")
-empty_candidate = wcl.index("if (request.candidate_count == 0)")
-retain = wcl.index("wcl_reassoc EMPTY_CANDIDATE_RETAIN_CURRENT_BSS")
+single_bssid = wcl.index("if (request.candidate_count == 0)")
+decode = wcl.index("IEEE80211_ADDR_COPY(request.candidate[i].bssid,")
 pin_disarm = wcl.index("ieee80211_public_initial_bssid_pin_disarm(ic)")
 lease_retire = wcl.index("getTahoeOwnerRegistry().association =")
-assert snapshot < empty_candidate < retain
-
-# The existing net80211 candidate predicate deliberately requires an explicit
-# candidate before it can select a replacement BSS.  An empty carrier must
-# therefore retain the healthy source BSS rather than starting a scan that
-# can only terminate with NO_ELIGIBLE_TARGET; this is the shared-channel
-# APSTA precondition exercised by the on-air CoreWLAN HostAP sequence.
-assert "requires an explicit candidate" in wcl
-assert "preserve the current BSS" in wcl
+assert snapshot < single_bssid < decode
+assert "request.candidate_count = 1;" in wcl
+assert "EMPTY_CANDIDATE_RETAIN_CURRENT_BSS" not in wcl
+assert "APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS" not in wcl
+assert "noteAPSTASharedChannelFilteredWclReassoc" not in wcl
 
 query = wcl.index("instance->getAPSTAPrimaryRoamSharedChannel()")
 channel_filter = wcl.index("request.channel_spec[i] & 0xffU", query)
-candidate_filter = wcl.index(
-    "request.candidate[i].channel_spec & 0xffU", query)
-filtered_empty = wcl.index("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS")
 scan = wcl.index("ieee80211_begin_wcl_reassoc_bgscan", query)
-assert empty_candidate < query < channel_filter < candidate_filter < filtered_empty
-assert filtered_empty < pin_disarm < lease_retire < scan
-assert wcl.index("return kIOReturnSuccess;", filtered_empty) < pin_disarm
+assert decode < query < channel_filter < pin_disarm < lease_retire < scan
+assert "request.candidate[i].channel_spec" not in wcl
+assert "retainedCandidates" not in wcl
 assert "request.channel_spec[0] = requiredSharedChannel;" in wcl
 assert "if (retainedChannels == 0)\n                return kIOReturnBusy;" in wcl
 assert "wcl_reassoc APSTA_SHARED_CHANNEL" in wcl
-assert "same no-target carrier as the literal-empty case" in wcl
-
-print("PASS: Tahoe IWN APSTA retains a live BSS for literal and "
-      "shared-channel-filtered empty WCL reassoc carriers")
+print("PASS: Tahoe IWN APSTA constrains channels without corrupting BSSID roam intent")
 PY

@@ -85,3 +85,8 @@ shortcuts must be reconsidered against that real contract; they cannot be
 used as evidence of a functional roam. Only then should this candidate be
 rebuilt, activated and tested through the normal user path. The published
 and loaded artifact remains `35589ce0`; the physical user machine is unchanged.
+
+The subsequent source correction and updated production-method tests are
+documented in `TAHOE_WCL_REASSOC_BSSID_ABI_20260909.md`. They supersede the
+score/channel candidate fixtures and empty-request outcomes in the initial
+verification paragraph above; the initial candidate remains unactivated.
