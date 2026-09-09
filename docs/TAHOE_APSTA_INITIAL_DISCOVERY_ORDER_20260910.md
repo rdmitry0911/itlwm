@@ -227,3 +227,64 @@ The next control must repeat native sharing restart after S3 without an
 emulated Ethernet device present during sleep, while retaining the same
 loaded Intel image and using a fresh post-wake upstream. The release remains
 held until that full runtime gate completes.
+
+## Ethernet-free S3 control and completed native security matrix
+
+The old guest shut down normally. The same overlay and unchanged Intel image
+were then booted with the emulated VirtIO Ethernet device omitted entirely.
+This controlled fixture change does not modify Apple's Ethernet driver or
+claim to repair that unrelated transport. Wired host management and other
+VMs remained untouched. The new guest boot at 22:07:53 UTC retained loaded
+UUID `5455B34A-AA04-34EE-8CC5-82B373798841` and the frozen Mach-O hash above.
+
+This second cold boot independently verified initial AP discovery order:
+airportd saw AP attachment at 01:08:04.904 local time, primary at .911, and
+the sharing plugin first resolved Wi-Fi names at 01:08:05.663. Its remapped
+live cache again held distinct AP/primary objects. Native WPA3 sharing passed
+DHCP, 20/20 client traffic, isolated cold-neighbor 10/10 and routed HTTP.
+Normal stop retained primary traffic at 10/10; the bridge reached I/O zero
+and detached state, and the network work queue was empty.
+
+The first following APSTA test stopped before AP creation because its initial
+STA precondition lost three packets during a real background WCL BSS change.
+DHCP rebound at 22:11:04 UTC and a later check passed 5/5 without selection or
+off/on. This transient remains part of the non-seamless roaming surface; the
+failed precondition is not relabeled as a passed APSTA run. A fresh role-7
+run then passed SAE group 19/required PMF, 20/20 client traffic, isolated cold
+10/10 and concurrent primary 5/5.
+
+The temporary USB Ethernet was removed while awake. A delayed sleep guard
+verified both Ethernet interfaces absent and the work queue empty before
+`pmset sleepnow` at 22:13:40 UTC. Actual S3 was independently confirmed by
+serial `ACPI SLEEP` and QEMU's suspended state. Wake at 22:15:03 produced
+`ACPI S3 WAKE`; the boot epoch and loaded UUID did not change. A fresh USB
+upstream attached only after wake, obtained DHCP and passed HTTP. The network
+work queue remained empty. There was no Wi-Fi toggle or repeated AP start.
+
+Explicit external-client selection on the restored AP completed SAE group
+19, required PMF/BIP and power-save admission. Post-wake traffic passed
+20/20 client-to-AP, separately measured cold-neighbor 10/10 and concurrent
+STA 5/5. Normal AP stop retained primary traffic at 10/10. The temporary
+static AP address was removed before testing standard sharing.
+
+Native WPA3, WPA2 and open sharing then completed sequentially on this same
+post-S3 boot. Each obtained real DHCP, passed 20/20 1400-byte client packets,
+isolated bridge-scoped cold-neighbor 10/10 and routed HTTP to the fixed lab
+payload. The client state independently verified SAE/required PMF, WPA2-PSK
+and open admission respectively. Before the WPA2 and open starts the old
+bridge reached I/O zero and detached state; the new active bridge used the
+AP member. WPA2's live network work queue was empty. No manual bridge
+rewrite, reference decrement, userspace daemon restart or guest reboot was
+used between these security modes.
+
+Final native sharing disable again retired the bridge to I/O zero and
+detached state, with an empty network work queue. The host's ordinary
+wireless profile and wired default route were restored/preserved. The serial
+qualification interval contains no matched driver panic, device-timeout or
+firmware-fatal diagnostic. This closes the candidate's native post-S3
+security/DHCP/traffic gate, not all GUI profile sequences, lossless roaming,
+automatic external-client continuity or equivalent IWM/IWX hardware coverage.
+
+The qualified ZIP is
+`f15e21c9d29c185c021f4c962512fada3f1dd9d05c66c85e0ecdb4a05ccc42d8`;
+its extracted Mach-O was rechecked against the loaded file and frozen image.
