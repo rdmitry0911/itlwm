@@ -64,6 +64,52 @@ It checks preserved same-epoch handoff, one-shot consumption, old-epoch
 rejection with RUN/port-valid still set, same-BSSID successor rejection,
 different-target rejection, temporary DVM HOSTAP opmode, and invalid owners.
 
-Build, candidate activation and post-change on-air qualification are pending.
-This document does not yet claim that the full public reconnect failure or
-the independent idle-STA shared-channel roam restriction is closed.
+Source commit `98dc62ee` built successfully with all 1083 BootKC symbols
+resolved. Private AuxKC preflight and transactional activation passed. The
+disposable IWN/6235 guest loaded UUID
+`6E20810C-101D-313E-AD15-56ED0BD8E709`; the frozen candidate's Mach-O SHA-256
+is `948d79ae2f053b2d4315257d50f37d935f46577462fc40659f40f855ec28a159`.
+
+The first credentialed public selection completed in 10 seconds without an
+error and retained DHCP/data. A repeated selection still failed with `-3912`
+after 47 seconds, followed by background recovery. Crucially, FBT on that
+failed repeat showed the old handoff reservation being rejected after the
+leave/epoch advance, the real SCAN preflight being admitted, and the first
+`setWCL_ASSOCIATE` entering `setWCL_ASSOCIATEImpl` and the driver SAE owner.
+It no longer acknowledged that first association without executing it.
+Later authentication of a 5-GHz candidate timed out. Thus the stale-epoch
+defect is closed, but the full public reconnect failure and the independent
+idle-STA shared-channel roam restriction remain open.
+
+## APSTA and sleep regression on the same candidate
+
+The role-7 public create/up/POWER/CHANNEL/HOST_AP_MODE sequence started a
+pure-SAE AP while the primary held its WPA3 link. A requested channel 9 was
+correctly aligned to the live primary's channel 13. An external AX211
+completed SAE group 19, required PMF and BIP. With an isolated static test
+subnet, client-to-AP traffic passed 20/20, AP-to-client passed 5/5, and the
+simultaneous primary STA-to-gateway path passed 5/5.
+
+With both roles active, `pmset sleepnow` reached actual S3: the serial console
+recorded `ACPI SLEEP` and the owned QEMU monitor reported `paused (suspended)`.
+Only that monitor received `system_wakeup`; the guest recorded `ACPI S3 WAKE`
+and retained its boot epoch and loaded UUID. The driver restored its primary
+and replayed the AP PAN context. The external client's test profile was not
+set to autoconnect, so it selected its ordinary network during sleep; explicit
+reselection of the restored AP completed a fresh SAE/PMF handshake. Traffic
+again passed 20/20 client-to-AP, 5/5 AP-to-client and 5/5 primary-to-gateway.
+This proves AP service recovery, not uninterrupted or automatic client roam.
+
+A normal AP stop reached the lower PAN terminal and restored the retained
+primary link/RSN state; the primary passed 10/10 packets across that stop.
+No driver panic or firmware fatal appeared in this interval. The temporary
+client profile and static AP address were removed, and the host's ordinary
+managed connection was restored. The separate USB Ethernet diagnostic path
+also recovered after S3 and remains available for subsequent lab checks.
+
+This regression is IWN hardware coverage with static addressing on the
+role-7 AP. It does not re-prove the full Internet Sharing DHCP matrix or
+IWM/IWX hardware behavior for this candidate.
+
+Release archive SHA-256:
+`5691d848ca125fba4c32b864f458347293777d8f23523d2da2fa9201cfb71e30`.
