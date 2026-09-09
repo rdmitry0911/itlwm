@@ -21537,12 +21537,11 @@ iwn_ampdu_tx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwn_node *wn = (struct iwn_node *)ni;
     struct iwn_node_info node;
 
-    /* Discard all frames in the current window. */
-    that->iwn_ampdu_txq_advance(sc, &sc->txq[qid], qid,
-        IWN_AGG_SSN_TO_TXQ_IDX(ba->ba_winend));
-
     if (iwn_nic_lock(sc) != 0)
         return;
+    /* The backend stops the scheduler and drains the actual submitted
+     * descriptors before rebasing its cursors.  ba_winend is a logical
+     * admission limit, not an exclusive transport completion pointer. */
     ops->ampdu_tx_stop(sc, tid, ba->ba_winstart);
     iwn_nic_unlock(sc);
 
@@ -21604,12 +21603,18 @@ iwn4965_ampdu_tx_start(struct iwn_softc *sc, struct ieee80211_node *ni,
 void ItlIwn::
 iwn4965_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
 {
+    ItlIwn *that = container_of(sc, ItlIwn, com);
     int qid = IWN4965_FIRST_AGG_TXQUEUE + tid;
     uint16_t idx = IWN_AGG_SSN_TO_TXQ_IDX(ssn);
+    struct iwn_tx_ring *ring = &sc->txq[qid];
 
     /* Stop TX scheduler while we're changing its configuration. */
     iwn_prph_write(sc, IWN4965_SCHED_QUEUE_STATUS(qid),
         IWN4965_TXQ_STATUS_CHGACT);
+
+    /* As in Intel's transport queue-disable path, retain read/write
+     * ownership until every submitted descriptor has been released. */
+    that->iwn_ampdu_txq_advance(sc, ring, qid, ring->cur);
 
     /* Set starting sequence number from the ADDBA request. */
     sc->txq[qid].cur = sc->txq[qid].read = idx;
@@ -21676,8 +21681,10 @@ iwn5000_ampdu_tx_start(struct iwn_softc *sc, struct ieee80211_node *ni,
 void ItlIwn::
 iwn5000_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
 {
+    ItlIwn *that = container_of(sc, ItlIwn, com);
     int qid = IWN5000_FIRST_AGG_TXQUEUE + tid;
     int idx = IWN_AGG_SSN_TO_TXQ_IDX(ssn);
+    struct iwn_tx_ring *ring = &sc->txq[qid];
 
     /* Stop TX scheduler while we're changing its configuration. */
     iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
@@ -21685,6 +21692,10 @@ iwn5000_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
 
     /* Disable aggregation for the queue. */
     iwn_prph_clrbits(sc, IWN5000_SCHED_AGGR_SEL, 1 << qid);
+
+    /* A short queue need not extend to ba_winend.  Reclaim only the
+     * submitted interval, after deactivation but before cursor reset. */
+    that->iwn_ampdu_txq_advance(sc, ring, qid, ring->cur);
 
     /* Set starting sequence number from the ADDBA request. */
     sc->txq[qid].cur = sc->txq[qid].read = idx;

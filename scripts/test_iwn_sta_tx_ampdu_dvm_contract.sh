@@ -69,7 +69,7 @@ for needle, label in (
 if "IEEE80211_F_USEPROT" in linkq:
     raise SystemExit("FAIL: aggregate RTS remains tied to legacy USEPROT")
 
-ap_linkq = body("iwn_send_ap_client_link_quality()")
+ap_linkq = body("int ItlIwn::iwn_send_ap_client_link_quality()")
 require(ap_linkq, "iwn_dvm_use_rts_for_aggregation(&com)",
         "AP per-family TLC_RTS policy")
 require(ap_linkq, "IWN_LINK_QUAL_FLAGS_SET_STA_TLC_RTS",
