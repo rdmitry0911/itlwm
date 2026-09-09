@@ -337,7 +337,7 @@ for token in (
 ):
     require(iwn_band_eligible, token, "IWN exact-plan band eligibility")
 
-iwn_initial_band = body(iwn, "iwn_wcl_scan_initial_band(",
+iwn_initial_band = body(iwn, "static int\niwn_wcl_scan_initial_band(",
                         "IWN initial WCL band choice")
 ordered(iwn_initial_band, "IWN 5-GHz-only initial scan",
         "iwn_wcl_scan_plan_has_eligible_band(sc, IEEE80211_CHAN_2GHZ)",
@@ -356,6 +356,18 @@ for marker, label in (
             f"{label} exact initial-band choice")
     require(scan, "iwn_scan_start(&com, scan_flags",
             f"{label} chosen-band firmware submit")
+
+iwn_replay = body(iwn, "iwn_scan_lease_replay_task(void *arg)",
+                  "IWN queued initial WCL scan")
+ordered(iwn_replay, "IWN queued WCL band selection",
+        "if (launch_initial)",
+        "iwn_wcl_scan_initial_band(sc, &scan_flags)",
+        "if (error == 0)",
+        "iwn_scan_start(sc, scan_flags, 0",
+        "IWN_SCAN_LEASE_WCL_INITIAL", "initial_handoff_serial",
+        "reject_initial = error != 0 && !command_started")
+forbid(iwn_replay, "iwn_scan_start(sc, IEEE80211_CHAN_2GHZ",
+       "queued 5-GHz request must retain the exact band's admission")
 
 iwn_stop = body(iwn, "case IWN_STOP_SCAN:", "IWN STOP_SCAN continuation")
 require(iwn_stop,

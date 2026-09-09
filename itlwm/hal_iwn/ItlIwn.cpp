@@ -129,6 +129,7 @@ static enum iwn_scan_lease_owner iwn_scan_lease_begin_hardware_invalidation(
 static void iwn_scan_lease_retire_after_hardware_stop(struct iwn_softc *);
 static bool iwn_scan_lease_live_locked(const struct iwn_softc *);
 static bool iwn_scan_lease_owner_is_wcl(u_int8_t);
+static int iwn_wcl_scan_initial_band(struct iwn_softc *, uint16_t *);
 static bool iwn_sae_join_scan_block_promote(
     struct iwn_softc *, u_int64_t);
 static bool iwn_sae_bss_loss_join_handoff_arm(
@@ -13627,10 +13628,19 @@ iwn_scan_lease_replay_task(void *arg)
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     if (launch_initial) {
         ItlIwn *that = container_of(sc, ItlIwn, com);
-        const int error = that->iwn_scan_start(sc, IEEE80211_CHAN_2GHZ, 0,
-            IWN_SCAN_LEASE_WCL_INITIAL, initial_generation,
-            initial_handoff_serial,
-            &initial_backend_generation, false);
+        /* The queued ticket retains the same exact WCL plan as immediate
+         * admission. Select its first eligible band again at handoff; a
+         * 5-GHz-only request must not build an empty 2.4-GHz command after
+         * the preceding generic scan has released the hardware. The exact
+         * generation/serial reservation below still arbitrates cancellation. */
+        uint16_t scan_flags = 0;
+        int error = iwn_wcl_scan_initial_band(sc, &scan_flags);
+        if (error == 0) {
+            error = that->iwn_scan_start(sc, scan_flags, 0,
+                IWN_SCAN_LEASE_WCL_INITIAL, initial_generation,
+                initial_handoff_serial,
+                &initial_backend_generation, false);
+        }
 
         IOSimpleLockLock(sc->sc_scan_lease_lock);
         if (sc->sc_wcl_initial_scan_pending.queued &&
