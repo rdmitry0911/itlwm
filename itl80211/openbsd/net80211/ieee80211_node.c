@@ -1324,6 +1324,15 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
          memcmp(ic->ic_des_essid, selbs->ni_essid, selbs->ni_esslen) == 0))
         assoc_fail = ic->ic_bss->ni_assoc_fail;
     
+    /* Driver-resident SAE can replace a RUN BSS directly, without the
+     * legacy roam's DELBA/leave callback.  Retire its hardware TX agreements
+     * while the old node and keys still exist: node_copy() clears BA state,
+     * after which the driver can no longer discover and drain that owner.
+     * This is local teardown, not a new on-air leave or a RUN->SCAN edge. */
+    if (ic->ic_opmode == IEEE80211_M_STA &&
+        ic->ic_state == IEEE80211_S_RUN)
+        ieee80211_stop_ampdu_tx(ic, ic->ic_bss, -1);
+
     /* Own the cleanup nested in this exact controlled BSS replacement. */
     replacement_epoch = ieee80211_pae_assoc_epoch_begin_replacement(ic);
     (*ic->ic_node_copy)(ic, ic->ic_bss, selbs);

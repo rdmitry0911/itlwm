@@ -66,3 +66,34 @@ Build, loaded-image validation and on-air repeated APSTA/reconnect/S3 checks
 are still required. This source fix does not yet establish that the entire
 earlier watchdog reproduction, public reconnect matrix or IWM/IWX hardware
 surface is closed. Public release remains held.
+
+## Loaded stop fix and the separate direct-roam bypass
+
+`05b6ac3f` built with all 1083 symbols resolved, passed private five-member
+AuxKC admission and activated transactionally. The guest boot at 20:15:03 UTC
+loaded UUID `0C03295F-5A80-3DA0-8EBE-9E9BBFF2C1F8`, matching Mach-O SHA-256
+`63dda397cdd6902a1d4886f77f1c9e4e72b76d0d9c906abeff685086c6b138f4`.
+Saved WPA3 STA/DHCP returned. Role-7 SAE/PMF AP start retained primary traffic
+at 5/5. A separate cold AP ARP run at 20:16:39 passed 10/10 1400-byte packets,
+with the outgoing broadcast and client reply in external capture and queue-8
+completion. Normal AP stop retained primary traffic at 10/10. The attempted
+client-to-AP run overlapped that stop and is not used as a steady-state pass.
+
+Ordinary credentialed reconnect at 20:17:33 reached both TID-0 and TID-3 stop
+backends. Reclaim now used the submitted end and returned true, between
+backend entry and rebase. The command completed, but the immediate traffic
+check was 4/5; this is not a lossless or full GUI qualification.
+
+A separate five-minute observer exposed the remaining route under traffic:
+at 20:21:05 a real WCL/SAE retarget reached `ieee80211_node_copy` with queue 10
+`queued=11`, `cur=71`, `read=60`, without any intervening aggregate stop.
+At 20:21:08 the successor's aggregate start still saw those exact 11 pending
+descriptors. It rebased the cursors; the subsequent watchdog reported
+`queued=11`, `cur=46`, `read=46`, then driver-reset recovery. The boot epoch
+was unchanged and management remained available. Observer offsets matched
+this loaded build's DWARF and its diagnostic-error file was empty.
+
+Thus the lower DELBA fix is necessary but not sufficient: the direct SAE
+replacement can bypass DELBA altogether. That shared boundary is tracked in
+`TAHOE_BSS_REPLACEMENT_TX_TEARDOWN_20260909.md`. No S3 qualification or release
+promotion is claimed for this intermediate candidate.
