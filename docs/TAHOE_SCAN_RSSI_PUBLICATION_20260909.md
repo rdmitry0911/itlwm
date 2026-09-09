@@ -102,6 +102,65 @@ values and current-BSS/AP-owner isolation. The negative control compiles the
 old metadata producers and fails their missing measured-RSSI assertion.
 Existing physical-scan lifecycle, exact-plan and SSID-refresh checks also pass.
 
-The correction is not yet built or runtime-qualified. The missing 5-GHz
-candidate and public `-3912` issues remain open; metadata correction alone
-does not establish that either issue is resolved.
+## Matching-image runtime qualification
+
+Source `150d7e73` built with all 1083 BootKC symbols resolved. Private AuxKC
+admission passed; transactional activation retained the four companion
+members. The disposable IWN/6235 guest loaded UUID
+`431DFEA8-4B59-3A52-B4B9-91677A7619B1`, matching frozen Mach-O SHA-256
+`7bb7dbd33dadd02303891a7a11e3791670851a020c292bf4e86d45bf232f3c67`.
+Saved WPA3/DHCP recovered and passed 5/5 packets.
+
+At 17:07 UTC the actual Apple consumer received measured metadata with
+flags `0x4046`, and final `WCLScanManager::serveScanResult` results contained
+negative measured RSSI across both bands. The CoreWLAN dictionary/getter
+returned -44 dBm for a 2.4-GHz target rather than zero. The first directed
+request still returned no target, and 5-GHz target discovery remained
+intermittent; those are not claimed fixed.
+
+The first observer's raw inner-object RSSI/timestamp reads used the 26.3
+reference layout on the 25C56 guest. Those raw reads are invalid evidence;
+the fixed public carrier offsets and CoreWLAN result are independent of them.
+The matching guest BootKC symbols were then resolved and its saved 25C56
+project inspected read-only with a 40-CPU headless configuration. Its actual
+RSSI getter at `0xffffff8002230b6e` reads inner +0x27c; the bit-14 branch in
+`setBeaconDataFromMsg` at `0xffffff800222ed22` writes RSSI +0x27c and time
++0x2c0. These differ from the 26.3 private offsets, not from the metadata ABI.
+
+The corrected 17:14 UTC observer completed without diagnostic errors. A fresh
+5-GHz sample with `0x4046` initialized RSSI to -81 dBm and advanced its time
+from zero. Cached `0x46` messages retained already stored RSSI and exactly
+the same timestamp across the call. Current-BSS refreshes also carried the
+measured -44 dBm value. This verifies actual consumer admission and the
+non-refreshing cache-replay property, not just the producer's populated scalar.
+
+Three credentialed public network selections completed in 10, 9 and 9
+seconds without printed join errors. Each immediately following five-packet
+check lost its first packet, then passed four. This is recovery, not seamless
+reassociation or proof that the historical `-3912` surface is eliminated.
+
+Concurrent WPA3 STA plus role-7 SAE/required-PMF AP passed 20/20 client-to-AP,
+5/5 AP-to-client and 5/5 primary-to-gateway packets. `pmset sleepnow` at
+17:11:28 UTC reached actual S3 (QEMU suspended and serial `ACPI SLEEP`). The
+owned monitor woke it at 17:12:33; `ACPI S3 WAKE` followed, with unchanged
+boot epoch and loaded UUID. Explicit client reselection completed SAE group
+19, PMF and BIP; all three traffic checks passed again. The AP used static
+addresses: this does not requalify DHCP or automatic AP-client continuity.
+AP stop reached the real lower zero-result terminal at 17:13:41 and primary
+traffic passed 10/10. The temporary AP address and client profile were removed,
+and the ordinary host profile restored; wired management was unchanged.
+
+Frozen release ZIP SHA-256:
+`a8cf54d2499cd6f423876b3f8f3195466f5c8a3b1a3315d96bbea27017fb2443`.
+Its extracted Mach-O matches the loaded candidate.
+
+## Remaining adjacent surface
+
+The fresh measured-RSSI admission defect is corrected. Some older cache-only
+entries can still produce zero RSSI when an Apple BSS object has no previous
+measurement: replay correctly does not relabel an already-issued sample as
+fresh, but the broader terminal census still includes those cached identities.
+That producer/cache-lifetime boundary needs separate correction; this result
+does not claim every cached result now has valid signal data. Missing 5-GHz
+candidates, initial open discovery, public/UI reconnect and equivalent recent
+IWM/IWX hardware qualification also remain open.
