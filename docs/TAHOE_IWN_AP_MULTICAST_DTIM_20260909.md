@@ -70,7 +70,65 @@ check DMA provisioning, non-QoS group frames, all-peer power-save aggregation,
 More Data and the low-water wakeup path. The old production free-space method
 from `236f264e` fails the multicast-full negative control.
 
-The correction is not yet runtime-qualified. Required next checks are cold
-neighbor establishment with client power save enabled, real firmware queue-8
-completion, open/WPA2/WPA3 AP data and DHCP, then APSTA and true-S3 regression.
-No successful release or elimination of the observed failure is claimed here.
+## Loaded-image on-air qualification
+
+Source `ad910bab` passed the tests above and existing AP watermark,
+backpressure, A-MPDU, client-materialization and fresh-scan regressions. The
+Tahoe build resolved all 1083 BootKC symbols. Private AuxKC admission passed
+without canonical mutation, and transactional activation preserved the four
+companion members. The guest loaded UUID
+`5EBD9812-B43C-3720-8ADF-B3C85C68AE8B`, matching frozen Mach-O SHA-256
+`a1b1d27ac7ed5b9b386fa63e14d09e9fd024bc68814bc4219e8eed7edf8ff92f`.
+
+At 18:19:16 UTC, with the external SAE/PMF client in power-save mode, deleting
+the guest's isolated AP-interface ARP entry was followed by 10/10 source-bound
+1400-byte replies. No client-originated ping ran during this cold test. The
+external capture contains the AP's ARP request, the client's reply and all
+ten echo exchanges. The matching TX observer recorded queue 8, broadcast
+station 14, non-QoS TID 8 and a successful completion. Subsequent independent
+client-to-AP traffic passed 20/20, and the concurrent primary STA passed 5/5.
+
+The 18:20:10 sleep request reached actual S3: the owned QEMU was suspended
+and serial recorded `ACPI SLEEP`. Owned-monitor wake at 18:21:02 produced
+`ACPI S3 WAKE`. After explicit external-client reselection, SAE group 19,
+required PMF/BIP and power save remained enabled. A second isolated cold
+ARP run at 18:21:35 passed 10/10. Queue-8 completions included a More Data
+frame followed by a final frame without that bit. The primary passed 5/5;
+boot epoch and loaded UUID were unchanged. AP stop retained primary traffic
+at 10/10. This qualifies service recovery, not automatic client continuity.
+
+The emulated USB management path initially did not return after S3. The
+post-wake cold test therefore used the independent physical STA for SSH,
+not the AP/client data path. USB management became available later; its
+intermediate failure is not claimed fixed by this change.
+
+Standard Internet Sharing subsequently started a WPA3 AP on the same boot.
+The external client completed SAE/PMF, obtained a dynamic lease from system
+bootpd and passed 20/20 client-to-gateway and 10/10 reverse packets. This
+standard path uses `bridge100`: the initial diagnostic attempted ARP deletion
+on `ap1` and returned `No such process`. Therefore its 10/10 result is ordinary
+traffic, **not** an additional cold-neighbor proof.
+
+Changing standard sharing from WPA3 to WPA2 exposed a separate incomplete
+stop/start boundary: the daemon failed bridge creation with `EBUSY` before
+DHCP setup. That failure is documented in
+`TAHOE_INTERNET_SHARING_BRIDGE_RECYCLE_20260909.md` and remains under
+investigation, including whether the new TX lifetime changes contribute.
+
+With explicit isolated static addressing on the real AP interface, WPA2 and
+open APs each passed 20/20 client-to-AP packets. Separate cold runs, without
+concurrent client-originated traffic, passed 10/10 on open at 18:33:52 and
+WPA2 at 18:37:59. Both used enabled client power save and observed successful
+queue-8 completions; the open frame was unprotected and the WPA2 frame
+protected. Earlier overlapping ping runs are not used as isolated cold proofs.
+The first open attempt was invalidated by a host NetworkManager keyfile-writer
+assertion while changing a temporary profile's security type. The service
+automatically recovered; a separate open profile was then used for the valid
+runs. That fixture failure is not attributed to the guest driver.
+
+This closes the reproduced cold-neighbor power-save delivery defect on the
+loaded IWN image. It does not close DHCP across standard sharing stop/start,
+all AP sleep/client combinations, or equivalent IWM/IWX hardware coverage.
+The candidate archive is prepared but held pending bridge-lifecycle work.
+ZIP SHA-256:
+`383403c4697840a536328bbf00c7800ade5379f05f90dfeb0476ec478c80896e`.
