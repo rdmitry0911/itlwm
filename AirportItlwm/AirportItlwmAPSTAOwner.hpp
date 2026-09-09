@@ -57,6 +57,7 @@ public:
                                     lifecycle < kAirportItlwmAPSTAOwnerTerminal; }
     bool isApRunning() const { return lifecycle == kAirportItlwmAPSTAOwnerRunning &&
                                       state.resetState26c != 0; }
+    bool hasHostAPIntent() const;
     bool shouldPublishPrimaryOpMode() const {
         /* AppleBCMWLANCore::getOP_MODE normally gates the APSTA vtable call
          * only on the owner's AP-up word at state +0x26c.  IWX has to finish

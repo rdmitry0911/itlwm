@@ -1390,6 +1390,17 @@ void AirportItlwmAPSTAOwner::teardown()
     owner = nullptr;
 }
 
+bool AirportItlwmAPSTAOwner::hasHostAPIntent() const
+{
+    /* The default role-7 interface exists even during ordinary STA use.
+     * Neither its allocation, an old profile, nor a retained STA handoff
+     * token establishes that userspace currently wants an AP. Only the
+     * accepted start/recovery/stop lifecycle owns a concurrency constraint. */
+    return isCreated() &&
+        (isApRunning() || radioResetResumePending || lowerStopPending ||
+         initialHostAPAdmissionPending || confirmedHostAPStartPending);
+}
+
 void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()
 {
     /*

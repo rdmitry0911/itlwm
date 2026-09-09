@@ -89,6 +89,31 @@ after the call, but not the target on 153. Thus this is not a blanket 5-GHz
 receive failure. Reading an unfinished, buffered DTrace output had not been
 sufficient evidence of early completion.
 
+Further bounded RX observations at 13:38 UTC captured two real 13+24-channel
+scans. Neither the target's MPDU at entry to `iwn_rx_done` (before RX_PHY/FCS
+admission) nor its frame at net80211 appeared. Other 5-GHz RX_PHY/MPDU traffic
+did appear. The simultaneous external channel-153 monitor captured 534
+target/guest-filtered packets, with target beacons around -60 dBm, but no
+guest probe. This localizes that reproduction below net80211 rather than to
+the result serializer or SAE handling.
+
+The actual per-channel firmware reports were subsequently decoded using
+Intel's DVM `SCAN_START/RESULTS/COMPLETE_NOTIFICATION` layouts. Channel 153
+reported a second START after about 72.8 ms, then a result about 10.4 ms later
+with `probe_status=0x81`, `num_probe_not_sent=0` and `good_crc=0`. Bit 0 is
+Intel's documented probe-TX-failed flag; bit 7 is not assigned a meaning by
+that header and is not interpreted here. The complete terminal still reported
+all 24 channels and status 1. This does not prove why TX failed.
+
+A nearby AX211 control AP on the same channel was accepted only as a virtual
+AP concurrent with its ordinary managed connection; standalone hostapd was
+rejected by NO-IR and no regulatory override was attempted. Guest scans also
+omitted that control SSID. Its hostapd ENABLED status alone does not prove
+on-air beacon delivery, so this is not conclusive independent RF validation.
+The temporary AP was stopped by its verified PID and its interface removed.
+A guest radio off/on restored saved-profile WPA3/DHCP but did not eliminate
+the subsequent associated-scan omission.
+
 ## APSTA/S3 regression and release
 
 On the same loaded `35589ce0` image, a role-7 pure-SAE/required-PMF AP started

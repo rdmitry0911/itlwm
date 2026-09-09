@@ -16177,6 +16177,17 @@ deliverExternalPMK(const struct apple80211_key *key,
  * at selector dispatch + APSTA owner state mirror + admission-
  * limit plumbing; AP firmware enablement is residual scope.
  */
+uint16_t AirportItlwm::getAPSTAPrimaryRoamSharedChannel() const
+{
+    if (fHalService == nullptr)
+        return 0;
+    const bool acceptedAPIntent = fAPSTAOwner != nullptr &&
+        fAPSTAOwner->hasHostAPIntent();
+    if (!acceptedAPIntent && fHalService->getAPCurrentChannel() == 0)
+        return 0;
+    return fHalService->getAPSTARequiredSharedChannel();
+}
+
 bool AirportItlwm::isHostApRunning() const
 {
     /*

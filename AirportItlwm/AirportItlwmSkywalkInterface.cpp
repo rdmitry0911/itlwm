@@ -9415,10 +9415,15 @@ setWCL_REASSOC(apple80211_reassoc *data)
      * to CoreWLAN), while constraining only the target admitted from that
      * census.  This preserves a running PAN context instead of accepting an
      * impossible off-channel roam and presenting two dead-but-active BSD
-     * interfaces.  Backends with real multi-channel concurrency return zero
-     * and retain Apple's original request unchanged. */
+     * interfaces. This is an AP lifecycle constraint, not a restriction on
+     * an ordinary STA just because its default role-7 interface exists.
+     * Before an accepted HOST_AP_MODE start there is no AP intent witness:
+     * a WCL request must retain its real roam targets, even if userspace may
+     * subsequently start an AP. Backends with real multi-channel concurrency
+     * return zero and retain Apple's original request unchanged. */
     const uint16_t requiredSharedChannel =
-        fHalService->getAPSTARequiredSharedChannel();
+        instance != nullptr ?
+            instance->getAPSTAPrimaryRoamSharedChannel() : 0;
     if (requiredSharedChannel != 0) {
         uint8_t retainedChannels = 0;
         uint8_t retainedCandidates = 0;
@@ -9464,13 +9469,12 @@ setWCL_REASSOC(apple80211_reassoc *data)
      * RXON just before HostAP creates the PAN context.
      */
     if (request.candidate_count == 0) {
-        /* The public Internet Sharing preamble submits WCL_REASSOC before
-         * HOST_AP_MODE.  On a single-channel DVM it commonly names only
-         * off-channel roam candidates; after filtering, no physical roam is
-         * admissible and the following generic RUN -> SCAN is solely the
-         * role-7 handoff.  Reserve that one state edge while the current BSS
-         * is known live.  A real same-channel candidate takes the normal
-         * reassociation path and never arms this AP handoff reservation. */
+        /* During an accepted AP transition, off-channel roam candidates
+         * cannot replace the retained primary. The intent-gated filter
+         * above is essential: a standalone STA request must never create
+         * this reservation merely because it names another channel.
+         * Reserve the public role-7 handoff only for that AP-owned interval;
+         * a real same-channel candidate follows the normal path. */
         if (instance != nullptr)
             instance->noteAPSTASharedChannelFilteredWclReassoc(ic);
         XYLog("wcl_reassoc APSTA_FILTERED_EMPTY_RETAIN_CURRENT_BSS "

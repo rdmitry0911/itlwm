@@ -44,7 +44,7 @@ assert snapshot < empty_candidate < retain
 assert "requires an explicit candidate" in wcl
 assert "preserve the current BSS" in wcl
 
-query = wcl.index("fHalService->getAPSTARequiredSharedChannel()")
+query = wcl.index("instance->getAPSTAPrimaryRoamSharedChannel()")
 channel_filter = wcl.index("request.channel_spec[i] & 0xffU", query)
 candidate_filter = wcl.index(
     "request.candidate[i].channel_spec & 0xffU", query)
