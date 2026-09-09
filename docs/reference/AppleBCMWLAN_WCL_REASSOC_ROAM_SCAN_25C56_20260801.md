@@ -1,5 +1,14 @@
 # AppleBCMWLAN WCL_REASSOC roam-scan parity (25C56, 2026-08-01)
 
+> Correction, 2026-09-09: the `{score, channel_spec}` interpretation of the
+> six-byte entries at `+0x64` below is disproved by both the NetAdapter's
+> firmware BSSID construction and a live `WCLNetManager::setROAMWithBssid`
+> request carrying `ff:ff:ff:ff:ff:ff`. These are BSSID entries, not channel
+> scores. Historical successful traffic below does not establish correctness
+> of that decoding. See `../TAHOE_APSTA_ROAM_INTENT_20260909.md` for the
+> concrete failed request and pending correction. The original analysis is
+> retained below as provenance, not as a current ABI specification.
+
 ## Reference artifact
 
 - Tahoe 26.2 / build 25C56 DEXT:

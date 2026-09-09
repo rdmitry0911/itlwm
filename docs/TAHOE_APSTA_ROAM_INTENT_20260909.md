@@ -49,7 +49,39 @@ AP-only busy/filtered-empty outcomes, literal-empty input and null input.
 Existing APSTA shared-channel/start, association-epoch, WCL roam/terminal and
 public BSSID-pin tests pass.
 
-This change has not yet been built, activated or runtime-qualified. In
-particular, the standard AP producer and repeated public selection must be
-retested on the new artifact. It does not address the separate missing-BSS
-receive/scan issue or claim full GUI/IWM/IWX hardware parity.
+Source `3b14777c` built successfully with all 1083 BootKC symbols resolved.
+Its UUID is `CE496F64-EC13-3E93-AEEE-70388EFAD7CC`, Mach-O SHA-256
+`1153c53b389b283bae5728a3c885e43dd17518a537682aa79c5930819d8d57b1`.
+Private AuxKC admission passed with five members and no canonical mutation.
+It has deliberately not been activated or published because the following
+additional carrier defect was discovered before the canonical swap.
+
+## Live carrier contradicts the old candidate interpretation
+
+At 14:02:55 UTC, on the still-loaded `35589ce0`, FBT captured a real request
+with this call chain:
+
+`WCLNetManager::setROAMWithBssid -> sendReassocCommand -> sendReassocToDriver
+-> WCLGlue -> AirportItlwmSkywalkInterface::setWCL_REASSOC`.
+
+The first 100 bytes (channel list) were zero, bytes `+0x64..+0x69` were all
+`ff`, the count at `+0x90` was one, and the channel count at `+0x94` was zero.
+The driver then armed `armPrimaryStaHandoffScan` and returned success. There
+was no AP request active in that interval. This is a broadcast-BSSID roam
+request, not an explicit channel-255 preference. The existing producer reads
+those six bytes as `{score=0xffffffff, channel_spec=0xffff}`, filters it out
+against the current STA channel and acknowledges a no-op.
+
+The reference NetAdapter's legacy and V1/V3 builders copy those six-byte
+entries into the firmware BSSID fields/list. The older reference note and
+local tests' score/channel tuple interpretation at `+0x64` are therefore
+incorrect. The intent regression above tests its intended lifecycle gate,
+but its constructed candidate values do not validate the true carrier ABI.
+
+The next implementation must correct public/common BSSID representation,
+broadcast/unspecified-BSSID semantics and actual candidate matching, together
+with the AP-intent gate. The existing literal-empty and filtered-empty
+shortcuts must be reconsidered against that real contract; they cannot be
+used as evidence of a functional roam. Only then should this candidate be
+rebuilt, activated and tested through the normal user path. The published
+and loaded artifact remains `35589ce0`; the physical user machine is unchanged.
