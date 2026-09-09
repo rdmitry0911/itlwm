@@ -19,9 +19,11 @@ The requested connection subsequently reported `-3912`, but recovered the
 WPA3 data path and passed 5/5 packets without a reboot or radio toggle.
 
 These observations do not establish that every missing 5-GHz candidate or
-every reconnect error shares this cause. A second, more instrumented
-disassociation run lost network management; its results must be recovered
-before using it to make a more specific runtime claim.
+every reconnect error shares this cause. The second instrumented run's logs
+were recovered after guest-only management recovery: the queued replay stack
+selected 2.4 GHz, returned EINVAL without a firmware command, and rejected
+the initial upper scan. Its bounded observer and test script both completed;
+loss of network management was not evidence of a hung observer or a panic.
 
 ## Reference and correction
 
@@ -54,6 +56,41 @@ a missing terminal handoff, cancellation, pre-doorbell error, and an error
 after STARTED. Existing exact-plan, scan-lifecycle, physical-trace,
 dwell-budget and APSTA scheduler contracts also pass.
 
-Build, activation and matching-image hardware regression are still pending.
-The published release remains `96eaf2e9`; this source correction is not yet
-represented as a qualified new release.
+## Matching-image runtime qualification
+
+Source `549114c2` built successfully with all 1083 BootKC symbols resolved.
+Private AuxKC admission and transactional activation passed. The guest loaded
+UUID `13B4F696-F1E4-3FCC-82E4-3834DE4B4E76`, matching the frozen candidate's
+Mach-O SHA-256
+`351b094168d86f2c922cf59841f722ce9837f9f7309c35738fd837a0b9d0226c`.
+Its saved WPA3 STA recovered DHCP and passed 5/5 packets after loading.
+
+The same post-disassociation single-channel request was repeated. At
+16:11:22 UTC, the queued replay selected 5 GHz and submitted a real
+one-channel firmware command; the driver returned zero and received a
+successful scan terminal. There was no initial-scan rejection. The caller
+returned in 3 seconds instead of the previous 20-second timeout.
+
+That result set was still empty. A subsequent public network selection
+reported `-3912`; another selection also reported the error before DHCP/data
+recovered and passed 10/10 packets without off/on. The queued-band defect
+is closed, not the missing-candidate or overall reconnect surface.
+
+Concurrent WPA3 STA plus role-7 SAE/required-PMF AP passed 20/20
+client-to-AP, 5/5 AP-to-client and 5/5 primary-to-gateway packets. The guest
+entered actual S3 after `pmset sleepnow` at 16:19:11 UTC; the owned QEMU
+reported suspended and the serial console recorded `ACPI SLEEP`.
+Owned-monitor wake at 16:20:03 produced `ACPI S3 WAKE`. Boot epoch and loaded
+UUID were unchanged. Explicit external-client reselection completed SAE
+group 19, required PMF and BIP; all three traffic checks passed again.
+These AP checks use static addressing and establish service recovery, not
+automatic client continuity or a new Internet Sharing DHCP matrix.
+
+Normal AP stop reached both the lower firmware and AP owner zero-result
+terminals, then primary traffic passed 10/10. The temporary AP address and
+external-client profile were removed; the original managed host profile was
+restored without changing the Ethernet management default route.
+
+Frozen release ZIP SHA-256:
+`d9c6e543c08e93ef20610a66dccbd6013184a8169fb246faa98e1481ec3e34db`.
+The archive's extracted Mach-O hash matches the loaded candidate identity.
