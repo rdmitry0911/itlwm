@@ -80,9 +80,44 @@ read faults; only its corrected pointer-width run is used for this claim.
 Likewise a `tick-Nsec` probe is not a relative observation timeout: the
 bounded observers now compare monotonic time against their BEGIN timestamp.
 
-AP/S3 regression and publication of this newer candidate are pending. The
-published release remains the runtime-qualified APSTA epoch fix `98dc62ee`.
+A time-aligned CoreWLAN/firmware observation also rules out the initially
+suspected early public completion in that run: the directed call returned
+at 13:24:45 UTC, the same second as the 24-channel firmware terminal. Its
+results contained one 2.4-GHz ESS member. The broader CoreWLAN cache contained
+other 5-GHz BSS on channels 36, 56, 100 and 161 before and for eight seconds
+after the call, but not the target on 153. Thus this is not a blanket 5-GHz
+receive failure. Reading an unfinished, buffered DTrace output had not been
+sufficient evidence of early completion.
+
+## APSTA/S3 regression and release
+
+On the same loaded `35589ce0` image, a role-7 pure-SAE/required-PMF AP started
+alongside the live primary WPA3 STA. An external AX211 completed SAE group 19
+with BIP. Static-address traffic passed 20/20 client-to-AP, 5/5 AP-to-client
+and 5/5 primary-to-gateway. During directed CoreWLAN scan requests, AP traffic
+passed 100/100; those requests returned an empty set and the bounded observer
+saw no physical scan command. That interval does not qualify actual PAN
+off-channel scanning or its firmware dwell; the production-helper tests cover
+the PAN numerical limits, separately from this traffic regression.
+
+The guest entered actual S3 after `pmset sleepnow` at 13:31:55 UTC. The serial
+console recorded `ACPI SLEEP` and the owned QEMU monitor reported
+`paused (suspended)`. Only that monitor received `system_wakeup` at 13:32:46;
+`ACPI S3 WAKE` followed. At the next management check, the original boot epoch
+and kext UUID were unchanged and both roles were active. The client's
+non-autoconnect test profile was explicitly reselected, completed a fresh
+SAE/PMF handshake and again passed 20/20, 5/5 and 5/5 packets on the three
+paths. A normal AP stop preserved primary traffic at 10/10. This proves
+service recovery, not seamless client continuity or a new DHCP qualification.
+
+The candidate archive is made from the same frozen kext verified above.
+Release ZIP SHA-256:
+`42d65d772c248d82c1e2154aecedbb1857afb2f66446ea0382b4e8aa7e1c1365`.
+The release update retains the missing-BSS and repeated-public-join defects
+as known limitations; this timing fix does not close them.
 
 The temporary host monitor was removed and its original managed connection
 restored. All experiments used the disposable guest and wired host management;
-the physical user machine was not changed.
+the physical user machine was not changed. The temporary AP address and
+client profile were removed after the S3 regression; normal host management
+and its ordinary Wi-Fi profile were retained/restored.
