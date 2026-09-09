@@ -13,6 +13,17 @@
 
 OSDefineMetaClassAndStructors(AirportItlwmAPSTAOwner, OSObject)
 
+static uint64_t apsta_primary_association_epoch(const struct ieee80211com *ic)
+{
+    /* DVM can temporarily publish HOSTAP while its primary STA RXON is
+     * retained. The generic STA-only epoch accessor intentionally returns
+     * zero in that opmode; this AP-owner witness must still identify the
+     * retained association. Use the same acquire semantics, without
+     * changing the generic accessor's admission rule. */
+    return ic != nullptr
+        ? __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) : 0;
+}
+
 static bool apsta_mac_is_zero(const uint8_t *mac)
 {
     if (mac == nullptr) {
@@ -514,7 +525,9 @@ bool AirportItlwmAPSTAOwner::initWithController(
     apCredentialLength = 0;
     lowerStopPending = false;
     primaryStaCarrierHoldPending = false;
+    primaryStaHandoffAssociationEpoch = 0;
     primaryStaPostStopWclAssociationPending = false;
+    primaryStaPostStopAssociationEpoch = 0;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -585,7 +598,9 @@ void AirportItlwmAPSTAOwner::free()
     apAuthUpper = kAirportItlwmAPSTAAuthUpperOpen;
     lowerStopPending = false;
     primaryStaCarrierHoldPending = false;
+    primaryStaHandoffAssociationEpoch = 0;
     primaryStaPostStopWclAssociationPending = false;
+    primaryStaPostStopAssociationEpoch = 0;
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -835,12 +850,13 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
      * DVM PAN removal reaches its terminal.  Snapshot the authoritative
      * primary STA BSS before that bookkeeping so the matching, transient
      * controller carrier withdrawal cannot be mistaken for a new WCL join.
-     * This is a one-stop reservation: shouldRetainPrimaryStaCarrier() still
-     * accepts it only while lowerStopPending is true, and the terminal clears
-     * it after the normal retained-link reconciliation.
+     * This is a one-stop reservation for the exact association epoch, and
+     * the terminal clears it after the normal retained-link reconciliation.
      */
     primaryStaCarrierHoldPending = false;
+    primaryStaHandoffAssociationEpoch = 0;
     primaryStaPostStopWclAssociationPending = false;
+    primaryStaPostStopAssociationEpoch = 0;
     struct ieee80211com *primary =
         owner != nullptr && owner->fHalService != nullptr
             ? owner->fHalService->get80211Controller() : nullptr;
@@ -851,8 +867,11 @@ IOReturn AirportItlwmAPSTAOwner::stopLower()
      * BSS port is. */
     if (primary != nullptr && primary->ic_state == IEEE80211_S_RUN &&
         primary->ic_bss != nullptr &&
-        primary->ic_bss->ni_port_valid)
-        primaryStaCarrierHoldPending = true;
+        primary->ic_bss->ni_port_valid) {
+        primaryStaHandoffAssociationEpoch =
+            apsta_primary_association_epoch(primary);
+        primaryStaCarrierHoldPending = primaryStaHandoffAssociationEpoch != 0;
+    }
 
     /*
      * Apple setHostApModeInternal(NULL) returns the lower stop result and
@@ -933,8 +952,14 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
     primaryStaPostStopWclAssociationPending = retainedPrimary != nullptr &&
         retainedPrimary->ic_state == IEEE80211_S_RUN &&
         retainedPrimary->ic_bss != nullptr;
+    primaryStaPostStopAssociationEpoch = primaryStaPostStopWclAssociationPending
+        ? apsta_primary_association_epoch(retainedPrimary) : 0;
+    primaryStaPostStopWclAssociationPending =
+        primaryStaPostStopWclAssociationPending &&
+        primaryStaPostStopAssociationEpoch != 0;
     restoreRetainedPrimaryStaLinkAfterStop();
     primaryStaCarrierHoldPending = false;
+    primaryStaHandoffAssociationEpoch = 0;
     XYLog("APSTA lower stop reached terminal\n");
     return kIOReturnSuccess;
 }
@@ -1406,19 +1431,21 @@ void AirportItlwmAPSTAOwner::noteInterfaceEnableDuringPendingHostAPStart()
 bool AirportItlwmAPSTAOwner::armPrimaryStaHandoffScan(
     struct ieee80211com *ic)
 {
+    const uint64_t associationEpoch = apsta_primary_association_epoch(ic);
     const bool retainPrimary = owner != nullptr &&
         owner->fHalService != nullptr &&
         owner->fHalService->get80211Controller() == ic &&
         !lowerStopPending && !isApRunning() &&
         ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
         ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss != nullptr &&
-        ic->ic_bss->ni_port_valid;
+        ic->ic_bss->ni_port_valid && associationEpoch != 0;
     /* The public STA -> AP handoff has both a synthetic generic RUN -> SCAN
      * request and, later, one DVM primary-carrier withdrawal. They are
      * separate callbacks: consuming the scan reservation must not discard
      * the carrier reservation before the latter arrives. */
     primaryStaHandoffScanArmed = retainPrimary;
     primaryStaCarrierHoldPending = retainPrimary;
+    primaryStaHandoffAssociationEpoch = retainPrimary ? associationEpoch : 0;
     return primaryStaHandoffScanArmed;
 }
 
@@ -1437,7 +1464,9 @@ bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan(
         lowerStopPending || isApRunning() || ic == nullptr ||
         ic->ic_state != IEEE80211_S_RUN ||
         ic->ic_opmode != IEEE80211_M_STA || ic->ic_bss == nullptr ||
-        !ic->ic_bss->ni_port_valid)
+        !ic->ic_bss->ni_port_valid ||
+        primaryStaHandoffAssociationEpoch == 0 ||
+        primaryStaHandoffAssociationEpoch != apsta_primary_association_epoch(ic))
         return false;
 
     XYLog("APSTA preserving associated primary BSS across public role-7 "
@@ -1447,8 +1476,10 @@ bool AirportItlwmAPSTAOwner::consumePrimaryStaHandoffScan(
 
 bool AirportItlwmAPSTAOwner::shouldRetainPrimaryStaCarrier() const
 {
-    /* A real loss or user-requested leave advances net80211 out of RUN
-     * before its controller carrier drains. Conversely IWN's ordinary PAN
+    /* A real loss or user-requested leave retires the association epoch.
+     * RUN and port-valid may briefly remain set after disable_rsn() has
+     * already removed its keys, so those bits alone are not a liveness
+     * witness. Conversely IWN's ordinary PAN
      * handoff/stop preserves the existing STA RXON/BSS while only a HostAP
      * context changes. The one-shot AP-owner reservation makes that
      * otherwise indistinguishable controller down-edge specific to HostAP. */
@@ -1458,7 +1489,9 @@ bool AirportItlwmAPSTAOwner::shouldRetainPrimaryStaCarrier() const
 
     struct ieee80211com *ic = owner->fHalService->get80211Controller();
     return ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
-        ic->ic_bss != nullptr && ic->ic_bss->ni_port_valid;
+        ic->ic_bss != nullptr && ic->ic_bss->ni_port_valid &&
+        primaryStaHandoffAssociationEpoch != 0 &&
+        primaryStaHandoffAssociationEpoch == apsta_primary_association_epoch(ic);
 }
 
 bool AirportItlwmAPSTAOwner::consumePrimaryStaCarrierHold()
@@ -1482,12 +1515,16 @@ bool AirportItlwmAPSTAOwner::consumePrimaryStaPostStopWclAssociation(
      * request retires it too, rather than leaving a stale exemption for a
      * later user-driven association. */
     primaryStaPostStopWclAssociationPending = false;
+    const uint64_t associationEpoch = primaryStaPostStopAssociationEpoch;
+    primaryStaPostStopAssociationEpoch = 0;
     if (owner == nullptr || owner->fHalService == nullptr || bssid == nullptr)
         return false;
 
     struct ieee80211com *ic = owner->fHalService->get80211Controller();
     return ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
         ic->ic_bss != nullptr && ic->ic_bss->ni_port_valid &&
+        associationEpoch != 0 &&
+        associationEpoch == apsta_primary_association_epoch(ic) &&
         memcmp(ic->ic_bss->ni_bssid, bssid, IEEE80211_ADDR_LEN) == 0;
 }
 

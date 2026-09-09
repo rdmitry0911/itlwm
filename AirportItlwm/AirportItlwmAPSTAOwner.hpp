@@ -174,9 +174,13 @@ private:
     // primary controller carrier. Keep exactly one pre-transition,
     // authorized STA observation and consume it on that carrier edge.
     bool primaryStaCarrierHoldPending;
+    // RUN/port-valid can briefly outlive credential teardown. A reservation
+    // belongs to the exact pre-handoff association, never its successor.
+    uint64_t primaryStaHandoffAssociationEpoch;
     // One deferred cached-WCL replay follows a successful IWN PAN stop.
     // It is accepted only when it names the still-authorized primary BSS.
     bool primaryStaPostStopWclAssociationPending;
+    uint64_t primaryStaPostStopAssociationEpoch;
     bool radioResetResumePending;
     bool radioResetWaitForPrimaryStaRun;
     bool radioResetPrimaryStaScanHandoff;

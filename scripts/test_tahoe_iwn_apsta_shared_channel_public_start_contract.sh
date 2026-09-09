@@ -289,7 +289,7 @@ for token in (
     "primaryStaCarrierHoldPending = false;",
     "primary->ic_state == IEEE80211_S_RUN",
     "primary->ic_bss->ni_port_valid",
-    "primaryStaCarrierHoldPending = true;",
+    "primaryStaCarrierHoldPending = primaryStaHandoffAssociationEpoch != 0;",
     "lowerStopPending = true;",
 ):
     assert token in stop_lower, f"missing pre-stop carrier reservation: {token}"
