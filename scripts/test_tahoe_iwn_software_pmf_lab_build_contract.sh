@@ -50,7 +50,7 @@ ordered("lab flag selects isolated artifact",
         "if [ \"$IWN_SOFTWARE_PMF_LAB\" -eq 1 ]; then",
         "VARIANT_LABEL=\"Tahoe-IwnSoftwarePmfLab\"",
         "DERIVED_DATA=\"$PROJECT_DIR/DerivedData-iwn-software-pmf-lab\"",
-        "EXTRA_PP=\"$EXTRA_PP IWN_SOFTWARE_PMF_LAB_BUILD=1\"")
+        "EXTRA_PP=\" IWN_SOFTWARE_PMF_LAB_BUILD=1\"")
 ordered("AP exploration cannot opt in IWN PMF",
         "if [ \"$OPT_OUT_STA_ONLY\" -eq 1 ] && [ \"$IWN_SOFTWARE_PMF_LAB\" -eq 1 ]; then",
         "--opt-out cannot be combined with --iwn-software-pmf-lab",

@@ -11,6 +11,7 @@ import sys
 
 root = Path(sys.argv[1])
 project = (root / "itlwm.xcodeproj/project.pbxproj").read_text()
+build = (root / "scripts/build_tahoe.sh").read_text()
 
 configuration_ids = (
     "F8E94CF32B9ABFE20081A3C4",  # Tahoe Debug
@@ -42,6 +43,24 @@ assert "#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT" in iwn
 assert "#if !defined(IEEE80211_OPT_OUT_STA_ONLY)" in iwm
 assert "#if !defined(IEEE80211_OPT_OUT_STA_ONLY)" in iwx
 assert "#undef IEEE80211_STA_ONLY" in header
+
+# xcodebuild's command-line GCC_PREPROCESSOR_DEFINITIONS assignment replaces
+# the target-level list.  The ordinary packaged path must therefore repeat
+# the Tahoe product AP gates; otherwise only --opt-out receives them.
+product_branch = build[build.index('else\n    VARIANT_LABEL="Tahoe"'):
+                       build.index('if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]')]
+for definition in (
+    "IEEE80211_OPT_OUT_STA_ONLY",
+    "IEEE80211_APSTA_STATION_EVENT_OPT_OUT",
+):
+    assert definition in product_branch, (
+        f"default Tahoe build override drops {definition}"
+    )
+
+lab_branch = build[build.index('if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]'):]
+assert 'EXTRA_PP=" IWN_SOFTWARE_PMF_LAB_BUILD=1"' in lab_branch, (
+    "isolated IWN PMF lab must not inherit the product AP runtime gates"
+)
 
 print("PASS: Tahoe product admits the shared IWN/IWM/IWX AP runtime")
 PY

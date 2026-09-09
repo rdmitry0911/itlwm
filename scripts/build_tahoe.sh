@@ -4,8 +4,8 @@
 #  itlwm
 #
 #  Builds only AirportItlwm.kext for Tahoe and stages it into:
-#    Build/Debug/Tahoe/AirportItlwm.kext         (default STA-only build)
-#    Build/Debug/Tahoe-OptOut/AirportItlwm.kext  (IEEE80211_OPT_OUT_STA_ONLY build)
+#    Build/Debug/Tahoe/AirportItlwm.kext         (default AP-capable build)
+#    Build/Debug/Tahoe-OptOut/AirportItlwm.kext  (separately staged AP-capable build)
 #    Build/Debug/Tahoe-IwnSoftwarePmfLab/AirportItlwm.kext
 #                                               (physical-IWN PMF lab build)
 #  Then verifies all undefined symbols resolve against the target
@@ -16,9 +16,10 @@
 #    BUILD_OPT_OUT_STA_ONLY=1 ./scripts/build_tahoe.sh [BOOTKC_PATH]
 #    BUILD_IWN_SOFTWARE_PMF_LAB=1 ./scripts/build_tahoe.sh [BOOTKC_PATH]
 #
-#  --opt-out / BUILD_OPT_OUT_STA_ONLY=1 selects the AP-mode exploration
-#  build variant. The variant defines IEEE80211_OPT_OUT_STA_ONLY and
+#  The ordinary Tahoe product defines IEEE80211_OPT_OUT_STA_ONLY and
 #  IEEE80211_APSTA_STATION_EVENT_OPT_OUT in GCC_PREPROCESSOR_DEFINITIONS.
+#  --opt-out / BUILD_OPT_OUT_STA_ONLY=1 retains the separately staged
+#  AP-capable variant used by existing AP lab workflows.
 #  The header-level enabler in
 #  itl80211/openbsd/net80211/ieee80211_var.h admits only the APSTA
 #  station-event HostAP/net80211 exploration surface to suppress
@@ -28,7 +29,8 @@
 #  ieee80211_node_join and ieee80211_node_leave without modifying the
 #  Xcode project file. The opt-out variant uses a
 #  separate DerivedData directory and a separate staged output root,
-#  so opt-out builds never overwrite the default STA-only artifacts.
+#  so separately staged AP builds never overwrite the default product
+#  artifacts.
 #
 #  --iwn-software-pmf-lab / BUILD_IWN_SOFTWARE_PMF_LAB=1 creates a separate,
 #  STA-only artifact with IWN_SOFTWARE_PMF_LAB_BUILD=1.  This is the only
@@ -93,13 +95,18 @@ if [ "$OPT_OUT_STA_ONLY" -eq 1 ]; then
 else
     VARIANT_LABEL="Tahoe"
     DERIVED_DATA="$PROJECT_DIR/DerivedData"
-    EXTRA_PP=""
+    # The Tahoe target already carries these product definitions.  xcodebuild
+    # command-line assignment replaces that target setting, though, so repeat
+    # them here with the source identity override.  Otherwise the archived
+    # default kext silently regresses to IEEE80211_STA_ONLY while the isolated
+    # --opt-out artifact remains AP-capable.
+    EXTRA_PP=" IEEE80211_OPT_OUT_STA_ONLY IEEE80211_APSTA_STATION_EVENT_OPT_OUT"
 fi
 
 if [ "$IWN_SOFTWARE_PMF_LAB" -eq 1 ]; then
     VARIANT_LABEL="Tahoe-IwnSoftwarePmfLab"
     DERIVED_DATA="$PROJECT_DIR/DerivedData-iwn-software-pmf-lab"
-    EXTRA_PP="$EXTRA_PP IWN_SOFTWARE_PMF_LAB_BUILD=1"
+    EXTRA_PP=" IWN_SOFTWARE_PMF_LAB_BUILD=1"
 fi
 
 if [ -n "${ITLWM_DERIVED_DATA_OVERRIDE:-}" ]; then
