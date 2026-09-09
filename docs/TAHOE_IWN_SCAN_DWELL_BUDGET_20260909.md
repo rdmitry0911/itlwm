@@ -59,8 +59,29 @@ limits, an unrestricted foreground scan, zero/impossible budgets, integer
 boundaries and active/passive ordering across a parameter matrix. The exact
 WCL-plan and APSTA home/away integration contracts pass.
 
-Candidate build, loading and post-change on-air qualification are pending.
-The missing-BSS and public reconnect surfaces are not claimed closed yet.
+Source `35589ce0` built with all 1083 BootKC symbols resolved. Private AuxKC
+preflight and transactional activation passed. The guest reboot loaded UUID
+`990CB31C-373C-3CAB-B86F-F8C852342D58`, matching candidate Mach-O SHA-256
+`66cbd52411a11ecd9c0284a64892c2674e3268eb20704ce435850890138d6024`.
+Saved-profile WPA3/DHCP returned automatically and source-bound traffic
+passed 5/5.
+
+FBT confirmed the actual 24-channel 5-GHz command now uses passive=85 rather
+than 110, with active=20 and max_out=112640 unchanged. A separate observer
+captured the real `STOP_SCAN` descriptor at terminal claim: type 132,
+scanned channels 24, status 1, last channel 165. The 2.4-GHz terminal likewise
+reported all 13 requested channels with status 1.
+
+Nevertheless, repeated CoreWLAN directed results still omitted the 5-GHz
+target. The invalid firmware timing combination is corrected, but the
+missing-BSS surface is not closed and dwell was not its sole cause. The
+first terminal observer had a DTrace-inferred 32-bit pointer and generated
+read faults; only its corrected pointer-width run is used for this claim.
+Likewise a `tick-Nsec` probe is not a relative observation timeout: the
+bounded observers now compare monotonic time against their BEGIN timestamp.
+
+AP/S3 regression and publication of this newer candidate are pending. The
+published release remains the runtime-qualified APSTA epoch fix `98dc62ee`.
 
 The temporary host monitor was removed and its original managed connection
 restored. All experiments used the disposable guest and wired host management;
