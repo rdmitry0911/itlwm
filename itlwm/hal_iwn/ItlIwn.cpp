@@ -5877,6 +5877,17 @@ int ItlIwn::iwn_send_ap_raw_frame(const void *frameBytes,
     return 0;
 }
 
+static int iwn_ap_data_queue(bool multicast, uint16_t txBaMask,
+    int txBaQueue)
+{
+    /* mac80211 assigns the AP CAB queue before DVM submits a multicast
+     * frame. Firmware owns its release after DTIM, independently of the
+     * selected unicast peer's aggregation state. */
+    if (multicast)
+        return IWN_IPAN_MCAST_QUEUE;
+    return (txBaMask & 1U) != 0 ? txBaQueue : IWN_IPAN_BE_QUEUE;
+}
+
 int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     bool psDelivery)
 {
@@ -5912,17 +5923,19 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     }
     const bool multicast =
         IEEE80211_IS_MULTICAST(ethernetHeader.ether_dhost);
+    bool multicastPowerSave = false;
     struct IwnApClientRuntime *client = NULL;
     if (multicast) {
         for (size_t index = 0;
              index < kItlApFirmwareMaxClients; index++) {
             struct IwnApClientRuntime *candidate = &apClients[index];
-            if (candidate->inUse && candidate->associated &&
-                candidate->nodeInstalled &&
-                (apFirmwareConfig.rsnIELength == 0 ||
-                 candidate->authorized)) {
+            if (!candidate->inUse || !candidate->associated ||
+                !candidate->nodeInstalled)
+                continue;
+            multicastPowerSave |= candidate->powerSave;
+            if (client == NULL &&
+                (apFirmwareConfig.rsnIELength == 0 || candidate->authorized)) {
                 client = candidate;
-                break;
             }
         }
     } else {
@@ -5986,9 +5999,8 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         }
     }
 
-    const int dataQueueId = !multicast &&
-        (apClientTxBaMask & 1U) != 0 ? apClientTxBaQueue[0] :
-                                      IWN_IPAN_BE_QUEUE;
+    const int dataQueueId = iwn_ap_data_queue(multicast,
+        apClientTxBaMask, apClientTxBaQueue[0]);
     if (dataQueueId < 0 || dataQueueId >= com.ntxqs)
         return ENOSPC;
     struct iwn_tx_ring *ring = &com.txq[dataQueueId];
@@ -6013,7 +6025,9 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
         return ENXIO;
     }
 
-    const bool qosData = apClientQos;
+    /* Group frames have no per-RA QoS/BA agreement. Do not borrow an
+     * arbitrary client's TID sequence for the broadcast station. */
+    const bool qosData = !multicast && apClientQos;
     const size_t headerLength = qosData ?
         sizeof(struct ieee80211_qosframe) :
         sizeof(struct ieee80211_frame);
@@ -6088,7 +6102,10 @@ int ItlIwn::iwn_send_ap_data_frame(mbuf_t ethernetPacket, bool moreData,
     frame->i_fc[1] = IEEE80211_FC1_DIR_FROMDS;
     if (protectedFrame)
         frame->i_fc[1] |= IEEE80211_FC1_PROTECTED;
-    if (moreData)
+    /* DVM's SEND_AFTER_DTIM path marks the pending burst; firmware clears
+     * More Data on the last CAB frame. Do not wake a sleeping peer by
+     * sending its group traffic immediately on the ordinary BE queue. */
+    if (moreData || multicastPowerSave)
         frame->i_fc[1] |= IEEE80211_FC1_MORE_DATA;
     IEEE80211_ADDR_COPY(frame->i_addr1, ethernetHeader.ether_dhost);
     IEEE80211_ADDR_COPY(frame->i_addr2, apFirmwareConfig.bssid);
@@ -6298,7 +6315,7 @@ uint32_t ItlIwn::getAPTxFreeSpace() const
     if (!apFirmwareTransitionActive ||
         apFirmwareStage != IWN_AP_STAGE_RUNNING ||
         com.command_queue != IWN_IPAN_CMD_QUEUE ||
-        IWN_IPAN_BE_QUEUE >= com.ntxqs) {
+        IWN_IPAN_MCAST_QUEUE >= com.ntxqs) {
         return 0;
     }
 
@@ -6310,6 +6327,12 @@ uint32_t ItlIwn::getAPTxFreeSpace() const
         (com.qfullmsk & (1U << ring->qid)) != 0 ||
         ring->queued > IWN_TX_RING_HIMARK ? 0 :
         (ring->queued < usable ? usable - ring->queued : 0);
+    const struct iwn_tx_ring *multicast = &com.txq[IWN_IPAN_MCAST_QUEUE];
+    const uint32_t multicastFree =
+        (com.qfullmsk & (1U << multicast->qid)) != 0 ||
+        multicast->queued > IWN_TX_RING_HIMARK ? 0 :
+        (multicast->queued < usable ? usable - multicast->queued : 0);
+    freeSpace = MIN(freeSpace, multicastFree);
     bool found = false;
     for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
         const struct IwnApClientRuntime *client = &apClients[index];
@@ -12029,6 +12052,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
      * that allocation boundary explicit.
      */
     if (qid == IWN_IPAN_MGMT_QUEUE || qid == IWN_IPAN_BE_QUEUE ||
+        qid == IWN_IPAN_MCAST_QUEUE ||
         apAggregateQueue) {
         size = IWN_TX_RING_COUNT * IWN_TX_FIRST_TB_STRIDE;
         error = iwn_dma_contig_alloc(sc->sc_dmat, &ring->first_tb_dma,
@@ -12039,7 +12063,8 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
             goto fail;
         }
         const bus_size_t payloadStride =
-            (qid == IWN_IPAN_BE_QUEUE || apAggregateQueue) ?
+            (qid == IWN_IPAN_BE_QUEUE || qid == IWN_IPAN_MCAST_QUEUE ||
+             apAggregateQueue) ?
                 IWN_AP_DATA_PAYLOAD_SIZE : IWN_AP_MGMT_PAYLOAD_SIZE;
         size = IWN_TX_RING_COUNT * payloadStride;
         error = iwn_dma_contig_alloc(sc->sc_dmat, &ring->ap_payload_dma,
@@ -15594,7 +15619,8 @@ iwn_clear_oactive(struct iwn_softc *sc, struct iwn_tx_ring *ring)
     struct _ifnet *ifp = &ic->ic_if;
     ItlIwn *that = container_of(sc, ItlIwn, com);
 
-    bool apDataQueue = ring->qid == IWN_IPAN_BE_QUEUE;
+    bool apDataQueue = ring->qid == IWN_IPAN_BE_QUEUE ||
+        ring->qid == IWN_IPAN_MCAST_QUEUE;
     for (size_t index = 0;
          !apDataQueue && index < kItlApFirmwareMaxClients; index++) {
         const struct IwnApClientRuntime *client =

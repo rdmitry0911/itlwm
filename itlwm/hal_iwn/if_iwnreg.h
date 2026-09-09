@@ -661,6 +661,7 @@ struct iwn_node_info {
  */
 #define IWN_IPAN_MGMT_QUEUE      7
 #define IWN_IPAN_BE_QUEUE        5
+#define IWN_IPAN_MCAST_QUEUE     8
 #define IWN_IPAN_CMD_QUEUE       9
 #define IWN_IPAN_AUX_QUEUE       10
 #define IWN_IPAN_FIRST_AGG_QUEUE (IWN_IPAN_AUX_QUEUE + 1)
