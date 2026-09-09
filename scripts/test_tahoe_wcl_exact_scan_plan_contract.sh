@@ -326,6 +326,42 @@ ordered(iwn_scan, "IWN active-wildcard mode",
         "const bool directedSsid = activeScan && scanSsidLength != 0",
         "is_active = activeScan ? 1 : 0")
 
+iwn_band_eligible = body(iwn, "iwn_wcl_scan_plan_has_eligible_band(",
+                         "IWN exact-plan band selector")
+for token in (
+        "ieee80211_wcl_scan_plan_snapshot(ic, &plan)",
+        "plan.channel_filter == 0",
+        "(channel->ic_flags & flags) != flags",
+        "ieee80211_wcl_scan_plan_channel_allowed(ic, &plan, channel)",
+        "explicit_bzero(&plan, sizeof(plan))",
+):
+    require(iwn_band_eligible, token, "IWN exact-plan band eligibility")
+
+iwn_initial_band = body(iwn, "iwn_wcl_scan_initial_band(",
+                        "IWN initial WCL band choice")
+ordered(iwn_initial_band, "IWN 5-GHz-only initial scan",
+        "iwn_wcl_scan_plan_has_eligible_band(sc, IEEE80211_CHAN_2GHZ)",
+        "IWN_FLAG_HAS_5GHZ",
+        "iwn_wcl_scan_plan_has_eligible_band(sc, IEEE80211_CHAN_5GHZ)",
+        "return EINVAL")
+
+for marker, label in (
+        ("beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)",
+         "IWN initial WCL scan"),
+        ("beginWclBackgroundScan(uint64_t generation, uint32_t *outBackendGeneration)",
+         "IWN background WCL scan"),
+):
+    scan = body(iwn, marker, label)
+    require(scan, "iwn_wcl_scan_initial_band(&com, &scan_flags)",
+            f"{label} exact initial-band choice")
+    require(scan, "iwn_scan_start(&com, scan_flags",
+            f"{label} chosen-band firmware submit")
+
+iwn_stop = body(iwn, "case IWN_STOP_SCAN:", "IWN STOP_SCAN continuation")
+require(iwn_stop,
+        "iwn_wcl_scan_plan_has_eligible_band(\n                    sc, IEEE80211_CHAN_5GHZ)",
+        "IWN exact 2-GHz request must not submit an empty 5-GHz continuation")
+
 for text, label in ((iwx, "IWX"), (iwm, "IWM"), (iwn, "IWN")):
     forbid(text, "activeDirected",
            f"{label} conflating active scan with directed SSID")

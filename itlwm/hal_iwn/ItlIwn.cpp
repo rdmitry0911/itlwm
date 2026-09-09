@@ -13683,15 +13683,74 @@ iwn_scan_lease_replay_task(void *arg)
     }
 }
 
+/*
+ * DVM needs one firmware command per band. Tahoe's ScanAdapter, however,
+ * can split one public census into a 2.4-GHz and a 5-GHz carrier. Do not
+ * always submit the historical 2.4-GHz first command: an exact 5-GHz-only
+ * plan would then leave the command with no eligible channels and make
+ * IO80211 reject the public request before the radio sees it.
+ *
+ * With no exact plan (or an empty channel list), retain the established
+ * 2.4-GHz-first behaviour; STOP_SCAN will continue to 5 GHz. A non-empty
+ * exact plan must instead prove that this band has a locally supported
+ * channel.
+ */
+static bool
+iwn_wcl_scan_plan_has_eligible_band(struct iwn_softc *sc, uint16_t flags)
+{
+    struct ieee80211com *ic;
+    struct ieee80211_wcl_scan_plan plan;
+    struct ieee80211_channel *channel;
+
+    if (sc == NULL || (ic = &sc->sc_ic) == NULL)
+        return false;
+    if (ieee80211_wcl_scan_plan_snapshot(ic, &plan) == 0 ||
+        plan.channel_filter == 0)
+        return true;
+
+    for (channel = &ic->ic_channels[1];
+         channel <= &ic->ic_channels[IEEE80211_CHAN_MAX]; channel++) {
+        if ((channel->ic_flags & flags) != flags)
+            continue;
+        if (ieee80211_wcl_scan_plan_channel_allowed(ic, &plan, channel)) {
+            explicit_bzero(&plan, sizeof(plan));
+            return true;
+        }
+    }
+    explicit_bzero(&plan, sizeof(plan));
+    return false;
+}
+
+static int
+iwn_wcl_scan_initial_band(struct iwn_softc *sc, uint16_t *outFlags)
+{
+    if (sc == NULL || outFlags == NULL)
+        return EINVAL;
+
+    if (iwn_wcl_scan_plan_has_eligible_band(sc, IEEE80211_CHAN_2GHZ)) {
+        *outFlags = IEEE80211_CHAN_2GHZ;
+        return 0;
+    }
+    if ((sc->sc_flags & IWN_FLAG_HAS_5GHZ) != 0 &&
+        iwn_wcl_scan_plan_has_eligible_band(sc, IEEE80211_CHAN_5GHZ)) {
+        *outFlags = IEEE80211_CHAN_5GHZ;
+        return 0;
+    }
+    return EINVAL;
+}
+
 IOReturn ItlIwn::
 beginWclBackgroundScan(uint64_t generation, uint32_t *outBackendGeneration)
 {
     u_int32_t backend_generation = 0;
+    uint16_t scan_flags = 0;
 
     if (outBackendGeneration == NULL || generation == 0)
         return kIOReturnBadArgument;
     *outBackendGeneration = 0;
-    if (iwn_scan_start(&com, IEEE80211_CHAN_2GHZ, 1,
+    if (iwn_wcl_scan_initial_band(&com, &scan_flags) != 0)
+        return kIOReturnBadArgument;
+    if (iwn_scan_start(&com, scan_flags, 1,
                        IWN_SCAN_LEASE_WCL_BACKGROUND, generation,
                        0,
                        &backend_generation, false) != 0)
@@ -13707,6 +13766,7 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
 {
     struct ieee80211com *ic = &com.sc_ic;
     u_int32_t backend_generation = 0;
+    uint16_t scan_flags = 0;
     bool queued = false;
     int error;
 
@@ -13735,12 +13795,15 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
         ieee80211_sae_wcl_request_scan_selection_owned(ic))
         return kIOReturnBusy;
 
+    if (iwn_wcl_scan_initial_band(&com, &scan_flags) != 0)
+        return kIOReturnBadArgument;
+
     if (!iwn_wcl_initial_scan_queue(&com, generation, &queued))
         return kIOReturnBusy;
     if (queued)
         return kIOReturnSuccess;
 
-    error = iwn_scan_start(&com, IEEE80211_CHAN_2GHZ, 0,
+    error = iwn_scan_start(&com, scan_flags, 0,
                            IWN_SCAN_LEASE_WCL_INITIAL, generation, 0,
                            &backend_generation, false);
     /* WCL initial ownership becomes active only at the post-WRPTR STARTED
@@ -16112,7 +16175,9 @@ iwn_notif_intr(struct iwn_softc *sc)
 
             if (scan->status == 1 && scan->chan <= 14 &&
                 (sc->sc_flags & IWN_FLAG_HAS_5GHZ) &&
-                !wnm_exact_channel) {
+                !wnm_exact_channel &&
+                iwn_wcl_scan_plan_has_eligible_band(
+                    sc, IEEE80211_CHAN_5GHZ)) {
                 int error;
                 /*
                  * We just finished scanning 2GHz channels,
