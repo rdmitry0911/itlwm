@@ -108,6 +108,33 @@ not-associated text although the system UI data consumer, IORegistry current
 BSS properties, DHCP and physical traffic were all live.  That narrow public
 wrapper discrepancy remains outside the completed radio recovery claim.
 
+### Product-default controlled same-ESS BSS withdrawal (2026-09-09)
+
+The same published default artifact was then tested against a controlled
+same-SSID hard-loss fixture, rather than merely observing a background scan.
+The physical lab retained its saved WPA3/required-PMF LabAP BSSes on channels
+13 and 153.  The wired host's separate AX211 was temporarily converted to a
+pure-SAE/required-PMF AP on channel 1 with the same SSID, while preserving an
+independent Ethernet management route.  The temporary AP deliberately had no
+DHCP, NAT, or forwarding service: it was only an association and hard-loss
+source.
+
+The normal Network Settings producer (`networksetup`, and hence the system
+airportd/configuration path) joined the guest to that uniquely placed BSS.
+The independent hostapd record confirmed the association and completed RSN
+pairwise handshake.  The temporary AP was then withdrawn and its host adapter
+returned to managed mode.  Without a guest reboot or second explicit join,
+the saved profile automatically returned to the external channel-13 LabAP;
+the guest retained its DHCP address and passed 5/5 gateway ICMP packets.
+
+An ordinary unentitled direct CoreWLAN `associateToNetwork:` probe returned
+Apple80211 API error `-3900` before over-the-air authentication despite seeing
+one initial BSS and three alternate BSSes.  Historical runtime evidence shows
+the same public-wrapper result followed by a successful credentialed
+`networksetup` join.  It is therefore not classified as an IWN SAE, PMF, or
+roam failure, and the completed claim is intentionally limited to the real
+system configuration path above.
+
 No `Debugger called`, kernel panic, WCL invalid-state report, firmware fatal,
 command timeout, or driver watchdog appeared in the tested interval.  The
 serial log contains the known virtual-SMC `SMCWDT::setWatchdogTimer` platform
