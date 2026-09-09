@@ -193,7 +193,7 @@ ieee80211_pae_mfp_msg3_begin(struct ieee80211com *ic,
     u_int64_t prsc;
     u_int16_t kid;
     int keylen, gtk_update, bip_update, have_ptk = 0, have_gtk = 0,
-        have_igtk = 0;
+        have_igtk = 0, retain_igtk = 0;
 
     memset(&ptk_key, 0, sizeof(ptk_key));
     memset(&gtk_key, 0, sizeof(gtk_key));
@@ -244,15 +244,16 @@ ieee80211_pae_mfp_msg3_begin(struct ieee80211com *ic,
             IEEE80211_BIP_KEYLEN);
         if (bip_update < 0)
             return EINVAL;
+        igtk_key.k_id = kid;
+        igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+        igtk_key.k_flags = IEEE80211_KEY_IGTK;
+        igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
+        igtk_key.k_len = IEEE80211_BIP_KEYLEN;
+        memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
         if (bip_update) {
-            igtk_key.k_id = kid;
-            igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
-            igtk_key.k_flags = IEEE80211_KEY_IGTK;
-            igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
-            igtk_key.k_len = IEEE80211_BIP_KEYLEN;
-            memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
             have_igtk = 1;
-        }
+        } else
+            retain_igtk = 1;
     }
     if ((ni->ni_flags & IEEE80211_NODE_RSN_NEW_PTK) &&
         (!have_ptk ||
@@ -263,7 +264,7 @@ ieee80211_pae_mfp_msg3_begin(struct ieee80211com *ic,
         return ENOENT;
 
     return ieee80211_pae_mfp_txn_begin(ic, ni, tptk, &ptk_key, have_ptk,
-        &gtk_key, have_gtk, &igtk_key, have_igtk,
+        &gtk_key, have_gtk, &igtk_key, have_igtk, retain_igtk,
         BE_READ_8(key->replaycnt), info,
         IEEE80211_PAE_MFP_REPLY_4WAY_MSG4);
 }
@@ -275,7 +276,8 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
 {
     struct ieee80211_key gtk_key, igtk_key;
     u_int16_t kid;
-    int keylen, gtk_update, bip_update, have_gtk = 0, have_igtk = 0;
+    int keylen, gtk_update, bip_update, have_gtk = 0, have_igtk = 0,
+        retain_igtk = 0;
 
     if (gtk == NULL ||
         ((ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
@@ -313,15 +315,16 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
             IEEE80211_BIP_KEYLEN);
         if (bip_update < 0)
             return EINVAL;
+        igtk_key.k_id = kid;
+        igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+        igtk_key.k_flags = IEEE80211_KEY_IGTK;
+        igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
+        igtk_key.k_len = IEEE80211_BIP_KEYLEN;
+        memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
         if (bip_update) {
-            igtk_key.k_id = kid;
-            igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
-            igtk_key.k_flags = IEEE80211_KEY_IGTK;
-            igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
-            igtk_key.k_len = IEEE80211_BIP_KEYLEN;
-            memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
             have_igtk = 1;
-        }
+        } else
+            retain_igtk = 1;
     } else if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0) {
         /* A rekey may omit IGTK only after either retained RX IGTK slot is
          * live.  Do not observe descriptor fields or k_priv outside its
@@ -335,7 +338,7 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
         return ENOENT;
 
     return ieee80211_pae_mfp_txn_begin(ic, ni, &ni->ni_ptk,
-        NULL, 0, &gtk_key, have_gtk, &igtk_key, have_igtk,
+        NULL, 0, &gtk_key, have_gtk, &igtk_key, have_igtk, retain_igtk,
         BE_READ_8(key->replaycnt), info,
         IEEE80211_PAE_MFP_REPLY_GROUP_MSG2);
 }
@@ -990,14 +993,14 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             reason = IEEE80211_REASON_AUTH_LEAVE;
             goto deauth;
         }
+        bzero(&bip_key, sizeof(bip_key));
+        bip_key.k_id = kid;    /* either 4 or 5 */
+        bip_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+        bip_key.k_flags = IEEE80211_KEY_IGTK;
+        bip_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
+        bip_key.k_len = IEEE80211_BIP_KEYLEN;
+        memcpy(bip_key.k_key, &igtk[14], bip_key.k_len);
         if (bip_update) {
-            bzero(&bip_key, sizeof(bip_key));
-            bip_key.k_id = kid;    /* either 4 or 5 */
-            bip_key.k_cipher = ni->ni_rsngroupmgmtcipher;
-            bip_key.k_flags = IEEE80211_KEY_IGTK;
-            bip_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
-            bip_key.k_len = IEEE80211_BIP_KEYLEN;
-            memcpy(bip_key.k_key, &igtk[14], bip_key.k_len);
             bip_error = ieee80211_pae_install_igtk(ic, ni, &bip_key);
             explicit_bzero(&bip_key, sizeof(bip_key));
             switch (bip_error) {
@@ -1012,6 +1015,13 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
                     goto deauth;
             }
             ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT;
+        } else {
+            bip_error = ieee80211_bip_key_rearm(ic, ni, &bip_key);
+            explicit_bzero(&bip_key, sizeof(bip_key));
+            if (bip_error != 0) {
+                reason = IEEE80211_REASON_AUTH_LEAVE;
+                goto deauth;
+            }
         }
     }
     if (info & EAPOL_KEY_INSTALL)
@@ -1316,14 +1326,14 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
             reason = IEEE80211_REASON_AUTH_LEAVE;
             goto deauth;
         }
+        bzero(&bip_key, sizeof(bip_key));
+        bip_key.k_id = kid;    /* either 4 or 5 */
+        bip_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+        bip_key.k_flags = IEEE80211_KEY_IGTK;
+        bip_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
+        bip_key.k_len = IEEE80211_BIP_KEYLEN;
+        memcpy(bip_key.k_key, &igtk[14], bip_key.k_len);
         if (bip_update) {
-            bzero(&bip_key, sizeof(bip_key));
-            bip_key.k_id = kid;    /* either 4 or 5 */
-            bip_key.k_cipher = ni->ni_rsngroupmgmtcipher;
-            bip_key.k_flags = IEEE80211_KEY_IGTK;
-            bip_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
-            bip_key.k_len = IEEE80211_BIP_KEYLEN;
-            memcpy(bip_key.k_key, &igtk[14], bip_key.k_len);
             bip_error = ieee80211_pae_install_igtk(ic, ni, &bip_key);
             explicit_bzero(&bip_key, sizeof(bip_key));
             switch (bip_error) {
@@ -1337,6 +1347,13 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
                     goto deauth;
             }
             ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT;
+        } else {
+            bip_error = ieee80211_bip_key_rearm(ic, ni, &bip_key);
+            explicit_bzero(&bip_key, sizeof(bip_key));
+            if (bip_error != 0) {
+                reason = IEEE80211_REASON_AUTH_LEAVE;
+                goto deauth;
+            }
         }
     }
     if (info & EAPOL_KEY_SECURE) {

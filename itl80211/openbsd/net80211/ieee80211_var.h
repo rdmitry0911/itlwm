@@ -570,6 +570,8 @@ struct ieee80211_pae_mfp_txn {
 	u_int8_t		have_ptk;
 	u_int8_t		have_gtk;
 	u_int8_t		have_igtk;
+	/* Equal authenticated KDE; validate/rearm at commit, never reinstall. */
+	u_int8_t		retain_igtk;
 	u_int8_t		prepared_bip_installed;
 	u_int8_t		finish_published;
 	u_int8_t		finish_port_became_valid;

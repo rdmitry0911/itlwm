@@ -362,6 +362,14 @@ ieee80211_pae_mfp_txn_finish_publish_locked(struct ieee80211com *ic,
 	/* Do the only fallible transfer first: every remaining publication below
 	 * is a value copy under this lock.  On error the helper leaves both slots
 	 * untouched and the generic cancellation path still owns local BIP. */
+	if (txn->retain_igtk) {
+		/* A new PTK may accompany the same IGTK after a saved-profile
+		 * reconnect.  Equal key material skips installation, but the new
+		 * node still needs both management-protection directions armed. */
+		error = ieee80211_bip_key_rearm_locked(ic, ni, &txn->igtk_key);
+		if (error != 0)
+			return error;
+	}
 	if (txn->have_igtk) {
 		error = ieee80211_bip_key_publish_retire_locked(ic,
 		    &ic->ic_nw_keys[txn->prepared_bip_key.k_id],
@@ -505,7 +513,7 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 	struct ieee80211_node *ni, const struct ieee80211_ptk *ptk,
 	const struct ieee80211_key *ptk_key, int have_ptk,
 	const struct ieee80211_key *gtk_key, int have_gtk,
-	const struct ieee80211_key *igtk_key, int have_igtk,
+	const struct ieee80211_key *igtk_key, int have_igtk, int retain_igtk,
 	u_int64_t replaycnt, u_int16_t key_info, u_int8_t reply)
 {
 	IOSimpleLock *lock;
@@ -527,13 +535,15 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 	    (!have_ptk && !have_gtk && !have_igtk) ||
 	    (have_ptk && ptk_key == NULL) ||
 	    (have_gtk && gtk_key == NULL) ||
-	    (have_igtk && igtk_key == NULL))
+	    ((have_igtk || retain_igtk) && igtk_key == NULL) ||
+	    (have_igtk && retain_igtk))
 		return EINVAL;
 	if ((have_ptk && ptk_key->k_priv != NULL) ||
 	    (have_gtk && gtk_key->k_priv != NULL) ||
-	    (have_igtk && igtk_key->k_priv != NULL))
+	    ((have_igtk || retain_igtk) && igtk_key->k_priv != NULL))
 		return EINVAL;
-	if (have_igtk && !ieee80211_pae_mfp_igtk_shape_valid(igtk_key))
+	if ((have_igtk || retain_igtk) &&
+	    !ieee80211_pae_mfp_igtk_shape_valid(igtk_key))
 		return EINVAL;
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock == NULL)
@@ -572,6 +582,7 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 	txn->have_ptk = !!have_ptk;
 	txn->have_gtk = !!have_gtk;
 	txn->have_igtk = !!have_igtk;
+	txn->retain_igtk = !!retain_igtk;
 	if (have_ptk) {
 		txn->ptk_key = *ptk_key;
 		txn->ptk_key.k_priv = NULL;
@@ -580,7 +591,7 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 		txn->gtk_key = *gtk_key;
 		txn->gtk_key.k_priv = NULL;
 	}
-	if (have_igtk) {
+	if (have_igtk || retain_igtk) {
 		txn->igtk_key = *igtk_key;
 		txn->igtk_key.k_priv = NULL;
 	}

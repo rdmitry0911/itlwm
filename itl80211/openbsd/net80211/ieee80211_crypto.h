@@ -288,6 +288,12 @@ int	ieee80211_bip_active_key_snapshot(struct ieee80211com *,
 struct ieee80211_key *ieee80211_bip_active_slot(struct ieee80211com *);
 int	ieee80211_bip_key_needs_update(struct ieee80211com *, u_int16_t,
 	    const u_int8_t *, u_int);
+/* Re-enable PMF for an authenticated, equal retained IGTK without resetting
+ * its context or replay counters.  The locked form shares the PAE commit. */
+int	ieee80211_bip_key_rearm_locked(struct ieee80211com *,
+	    struct ieee80211_node *, const struct ieee80211_key *);
+int	ieee80211_bip_key_rearm(struct ieee80211com *,
+	    struct ieee80211_node *, const struct ieee80211_key *);
 int	ieee80211_bip_pending_stage(struct ieee80211com *,
 	    const struct ieee80211_key *);
 int	ieee80211_bip_pending_snapshot(struct ieee80211com *,

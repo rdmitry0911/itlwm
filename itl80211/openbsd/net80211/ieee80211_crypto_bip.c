@@ -477,6 +477,46 @@ ieee80211_bip_key_needs_update(struct ieee80211com *ic, u_int16_t kid,
 	return update;
 }
 
+/* Caller holds ic_pae_selected_bss_lock.  The authenticated KDE is a value
+ * witness, not a replacement key: preserve the live context and every IPN. */
+int
+ieee80211_bip_key_rearm_locked(struct ieee80211com *ic,
+    struct ieee80211_node *ni, const struct ieee80211_key *key)
+{
+	struct ieee80211_key *slot;
+	struct ieee80211_bip_ctx *ctx;
+
+	if (ic == NULL || ni == NULL || ic->ic_bss != ni ||
+	    (ni->ni_flags & IEEE80211_NODE_MFP) == 0 ||
+	    !ieee80211_bip_key_shape_valid(key) || key->k_priv != NULL)
+		return EINVAL;
+	slot = &ic->ic_nw_keys[key->k_id];
+	if (!ieee80211_bip_ctx_live_locked(ic, slot, &ctx) ||
+	    slot->k_len != key->k_len ||
+	    memcmp(slot->k_key, key->k_key, key->k_len) != 0)
+		return ECANCELED;
+	ic->ic_igtk_kid = key->k_id;
+	ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT |
+	    IEEE80211_NODE_RXMGMTPROT;
+	return 0;
+}
+
+int
+ieee80211_bip_key_rearm(struct ieee80211com *ic,
+    struct ieee80211_node *ni, const struct ieee80211_key *key)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int error;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return EINVAL;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	error = ieee80211_bip_key_rearm_locked(ic, ni, key);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return error;
+}
+
 int
 ieee80211_bip_next_kid(struct ieee80211com *ic, u_int16_t *kidp)
 {
