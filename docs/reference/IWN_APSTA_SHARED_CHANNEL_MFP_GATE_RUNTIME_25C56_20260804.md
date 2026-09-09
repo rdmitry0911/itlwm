@@ -156,6 +156,42 @@ No driver panic, Debugger entry, firmware fatal, device timeout, or watchdog
 appeared in the tested W93 S3 interval.  QEMU's separate virtio management
 path is not part of this wireless result.
 
+### Product-default role-7 APSTA replay (2026-09-09)
+
+The published default artifact from `6eb51401` (UUID
+`F9E599B0-3FA4-3A9E-886C-BC3A31294DE3`, Mach-O SHA-256
+`91afd774a0fb51aeba21757423661e3147466cdce674ebc90dd7bbb2c9dcb11b`) was
+replayed on the physical IWN/6235 guest after the default-build AP admission
+fix.
+
+The primary interface first held a real WPA3/required-PMF LabAP station on
+channel 13.  A role-7 sequence then created `ap1`, brought it administratively
+up, and applied POWER, CHANNEL and HOST_AP_MODE for a pure-SAE profile whose
+requested channel was 9.  Each Apple80211 request succeeded.  The host AX211
+observed and joined the resulting BSS on channel 13, confirming that the
+current driver follows the live STA channel instead of admitting an impossible
+split-channel DVM schedule.
+
+With an isolated static AP test subnet, the AX211 and guest completed 20/20
+client-to-AP ICMP plus SSH, 5/5 guest-to-client ICMP, and the primary station
+simultaneously completed 5/5 to its external gateway.  System Profile still
+reported the primary WPA3 station as Connected while `ap1` was active.
+
+The guest then entered an ACPI sleep transition (`PMRD: System Sleep` and
+`ACPI SLEEP` on the owned serial console).  This QEMU configuration kept the
+VM monitor in `running`, so the result is recorded as a guest ACPI sleep/wake
+cycle rather than a separate QEMU-suspended proof.  After the owned power-key
+wake event, both `ap1` and the primary station were active again.  AX211
+rejoined the restored role-7 AP and passed 10/10 client-to-AP, 5/5 AP-to-client
+and 5/5 simultaneous STA-to-external-gateway traffic.
+
+For clarity, Tahoe's ordinary Internet Sharing producer was separately
+replayed with the same current artifact.  It created a working WPA3 AP, gave
+the AX211 a DHCP lease, and passed AP traffic, but its primary
+`startHostAPMode` route made the primary station Not Associated.  That
+producer is therefore not evidence of STA+AP concurrency; the completed
+concurrency claim is limited to the distinct role-7 lifecycle above.
+
 ## Regression gates and remaining scope
 
 The focused source contracts pass:
