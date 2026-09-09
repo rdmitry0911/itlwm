@@ -113,6 +113,9 @@ AirportItlwm`), rather than the direct diagnostic selector, an external AX211
 completed discovery, association, DHCP and a 20-packet gateway transfer for
 each Open, WPA2-PSK and WPA3-SAE/required-PMF configuration.  For WPA3 the
 client reported `SAE`, `pmf=2` and `BIP` after the completed handshake.
+The same product-default WPA3 configuration was independently replayed on
+5-GHz channel 149: the AX211 discovered the BSS at 5745 MHz, completed its
+SAE/required-PMF association and DHCP lease, and passed 20/20 gateway probes.
 
 The standard Open configuration was then disabled through its numeric
 `NAT.Enabled` preference and re-enabled through the same producer.  The BSS
