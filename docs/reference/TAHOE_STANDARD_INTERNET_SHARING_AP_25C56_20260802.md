@@ -100,6 +100,37 @@ guest virtio `en0` through the standard Internet Sharing daemon.
 - Standard sharing stop had already been verified to stop the BSS and restore
   the guest's WPA3 STA association and traffic to `LabAP`.
 
+### Product-default replay (2026-09-09)
+
+The published default Tahoe artifact built from `6eb51401` was requalified
+after restoring the target's AP admission defines to the command-line build
+override.  The loaded Mach-O was identified locally by UUID
+`F9E599B0-3FA4-3A9E-886C-BC3A31294DE3` and SHA-256
+`91afd774a0fb51aeba21757423661e3147466cdce674ebc90dd7bbb2c9dcb11b`.
+
+On the actual preference path (`configd -> airportd -> InternetSharing ->
+AirportItlwm`), rather than the direct diagnostic selector, an external AX211
+completed discovery, association, DHCP and a 20-packet gateway transfer for
+each Open, WPA2-PSK and WPA3-SAE/required-PMF configuration.  For WPA3 the
+client reported `SAE`, `pmf=2` and `BIP` after the completed handshake.
+
+The standard Open configuration was then disabled through its numeric
+`NAT.Enabled` preference and re-enabled through the same producer.  The BSS
+disappeared, the client disconnected, and on the subsequent `configd` start
+the client automatically reassociated, retained its DHCP route, and passed a
+fresh 20-packet gateway transfer.  This closes the former default-artifact
+AP-admission and ordinary stop/start gates.
+
+With WPA3 sharing active, a forced `pmset sleepnow` took the guest through
+the expected capability transition while the reference
+`InternetSharingPreferencePlugin` `DenySystemSleep` assertion remained
+present.  The user wake republished `ap1`; the already-associated AX211 still
+reported SAE, required PMF, BIP and its DHCP lease.  Three probes were lost
+during the wake transition, followed by 22 consecutive successful gateway
+probes.  Thus this is a recovery result, not a claim of zero-loss service
+through a forced sleep transition.  The test AP was stopped normally and the
+external adapter was restored to the separate LabAP afterwards.
+
 ## Contract verification
 
 - `scripts/test_tahoe_standard_internet_sharing_ap_contract.sh`
