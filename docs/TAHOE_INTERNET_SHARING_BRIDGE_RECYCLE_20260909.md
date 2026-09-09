@@ -121,3 +121,61 @@ state, but no status-3 carrier publication followed.
 The correction and its qualification are tracked in
 `TAHOE_APSTA_BSD_CARRIER_20260909.md`. It must not be described as a proven fix
 for the retained-INUSE EBUSY case until that sequence passes independently.
+
+## Carrier candidate: repeated failure and detached-USB control
+
+Loaded source `6433e0d3`, UUID `29FD701D-9A8E-3D53-997F-3E71612750BF`,
+passed the standard three-security-mode cold-ARP/DHCP matrix and a subsequent
+role-7 APSTA S3 recovery as described in the carrier note. After that wake,
+standard WPA3 sharing also passed DHCP and cold traffic. Its ordinary stop
+at 19:32:19 UTC left the bridge with INUSE set, 860 DLIL references and raw
+reference flags `0xc`. The next WPA2 start logged `SIOCIFCREATE2: Resource
+busy` at 19:32:28.218, before the external client completed its four-way
+handshake. Thus the carrier correction does not fix this failure.
+
+The same census contained a detached virtual USB Ethernet interface with
+reference flags `0xc`. Physical STA management worked until standard sharing
+changed its role; both emulated management paths were unavailable. A new,
+temporary USB management interface enumerated but obtained no address. It
+was removed, the tablet restored, and the disposable guest recovered without
+changing its kext. The private failure logs survived and supplied the exact
+daemon error above. No physical user machine or other VM was touched.
+
+A fresh-boot control then disabled sharing and kept only a working WPA3 STA.
+A bounded observer traced the global interface-detacher thread across two
+actual S3/wake cycles, with no running AP. The first wake at 19:44 UTC detached
+and re-created the virtual USB Ethernet interface successfully. On the second
+wake, at 19:46:57, the same thread entered USB-interface teardown, returned
+from `dlil_quiesce_and_detach_nexuses`, and blocked at
+`ifnet_detacher_thread_cont+0x17d`. It did not proceed to another interface.
+
+A separate two-second spindump found the same thread blocked at unslid
+`0xffffff80005cf41d`. Its matching 25C56 raw instructions were recovered
+read-only on the reference host with 40 CPUs. The continuation starts at
+`0xffffff80005cf2a0`; the block is the I/O-reference wait loop over ifnet
+offset `0x7c`. The same instructions establish the pending-detach list head,
+count and link offsets. A name-based Ghidra lookup found no named functions
+and is not evidence; the bounded raw range is the evidence used here.
+
+At 19:48:24 the USB interface still held two I/O references. This counter is
+distinct from its 38 DLIL references, and from the bridge's previously large
+DLIL count. To test the global effect independently of HostAP, an unused,
+empty bridge was created and ordinarily destroyed, with no Wi-Fi member or
+IP address. It remained in the pending-detach queue with its normal initial
+I/O reference and INUSE set; recreating that same bridge returned EBUSY.
+The detacher was still blocked on the USB interface, not processing this
+bridge. The bounded observers reported no diagnostic errors. Primary Wi-Fi
+traffic continued at 10/10.
+
+This demonstrates a global detach obstruction at the emulated USB interface
+in the control and explains how an unrelated bridge can retain its in-use
+identity. Apple's [DLIL implementation](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/net/dlil.c)
+likewise processes the detach queue serially and waits for outstanding I/O
+references. The precise owner of the two outstanding USB references is not
+yet identified; the evidence does not justify decrementing any counter,
+forcing a kernel detach, or claiming all driver packet ownership correct.
+
+The next qualification removes this optional emulated USB management device
+from the lab configuration, then repeats real S3 and standard sharing
+open/WPA2/WPA3 stop/start with DHCP and traffic. This is isolation of the
+observed fixture obstruction, not a driver workaround or a passed AP matrix.
