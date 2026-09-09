@@ -60,5 +60,20 @@ with actual DHCP and traffic. The observed failure does not authorize clearing
 kernel flags, forcibly freeing an interface, or manufacturing a fresh bridge
 name to disguise a lifecycle defect.
 
-The candidate release remains held. The physical user machine and other
-agents' virtual machines were not touched.
+## Retired-interface census
+
+After final sharing disable, bootpd and InternetSharing were absent and the
+interface list contained no bridge. The primary STA retained DHCP and passed
+10/10 source-bound 1400-byte packets without another reboot. At 18:43:53 UTC,
+a bounded read-only walk of the kernel's `dlil_ifnet_head` recorded nine
+objects, including a `bridge100` object in Ethernet family 2 with flags
+`0x1` (INUSE). The observer completed without diagnostic errors. The list link,
+name, family and flag offsets came from the exact 25C56 raw instruction range,
+not a different SDK layout. No interface creation/destruction was requested
+during this short census; it remains a point-in-time observation, not a
+lock-held proof of the entire teardown sequence.
+
+This identifies a retained in-use bridge object after ordinary removal from
+the public interface list. Its reference count and retaining owner still need
+to be established. The candidate release remains held. The physical user
+machine and other agents' virtual machines were not touched.
