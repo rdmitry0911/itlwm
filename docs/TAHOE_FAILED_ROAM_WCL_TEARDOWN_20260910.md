@@ -172,3 +172,35 @@ ended normally; no matched driver panic, firmware fatal, device timeout or
 unset-key diagnostic appeared in the complete candidate serial interval.
 Successful-roam, GUI, sleep and AP
 regressions on this exact candidate remain required before publication.
+
+## Successful roaming after the failed-target test
+
+The real System Settings pane selected the saved ordinary WPA3 profile at
+12:32:30 UTC, without a password prompt or radio toggle. Its actual channel-13
+BSSID and DHCP address returned, followed by a 3/3 packet precondition.
+The first persistent-flow run overlapped four unrestricted framework requests
+while the pane remained open. All four lower scans were superseded by WCL
+requests and none produced a completed roam. The source address and traffic
+survived these cancellations, but this is not a successful-roam qualification.
+Its final TCP echo was 1000 bytes short with exactly 1000 bytes still pending
+in the server when the client closed; no byte-exact claim is made for that run.
+
+After the pane was closed, a directed request at 12:35:43 completed on the
+other BSS at 12:35:52.534154, after the first flow had ended. It is likewise
+not counted as a transition inside that earlier flow. A separate 150-second
+run from 12:37:23.874377 used one TCP socket and one UDP socket, neither
+reopened. Four further requests produced three actual ROAMED/BSSID_CHANGED
+pairs at 12:37:52.556416, 12:38:17.713813 and 12:39:07.721408. Lower BSSID
+readback and Apple's current-network channel updates agreed on 13/9/13.
+One intervening request did not complete a BSS transition.
+
+The exact-current-boot native interval contains no link-inactive event, IPv4
+withdrawal or DHCP BOUND across those three transitions. TCP sent and received
+exactly 6,301,000 bytes; the peer accepted once, echoed the same total and had
+zero pending bytes at normal completion. UDP sent 6,340,000 and received
+6,012,000 echo bytes, about 5.17% missing; 55 EAGAIN TCP sends and 16 ENOBUFS
+UDP sends remain visible. There was no EADDRNOTAVAIL. This qualifies logical
+address and established-TCP continuity, not lossless or low-latency roaming.
+The competing foreground-scan behavior and full candidate-selection policy
+remain independent open observations. GUI off/on, actual sleep and AP
+regressions still gate publication of this image.
