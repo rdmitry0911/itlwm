@@ -42,6 +42,7 @@ registers = (root / 'itlwm/hal_iwn/if_iwnreg.h').read_text()
 selected = {
     'IWN_TX_RING_COUNT', 'IWN_AGG_SSN_TO_TXQ_IDX',
     'IWN4965_FIRST_AGG_TXQUEUE', 'IWN5000_FIRST_AGG_TXQUEUE',
+    'IWN_IPAN_AUX_QUEUE', 'IWN_IPAN_FIRST_AGG_QUEUE',
     'IWN_SCHED_BASE', 'IWN_HBUS_TARG_WRPTR',
     'IWN4965_SCHED_QUEUE_STATUS', 'IWN5000_SCHED_QUEUE_STATUS',
     'IWN4965_SCHED_QUEUE_RDPTR', 'IWN5000_SCHED_QUEUE_RDPTR',
@@ -59,7 +60,7 @@ assert len(lines) == len(selected), (len(lines), len(selected))
 (out / 'registers.inc').write_text('\n'.join(lines) + '\n')
 PY
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -g \
-    -fsanitize=address,undefined -fno-omit-frame-pointer \
+    -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
     -I "$TEST_DIR" "$PROJECT_DIR/tests/iwn_sta_aggregate_stop_test.cpp" \
     -o "$TEST_DIR/test"
 "$TEST_DIR/test"

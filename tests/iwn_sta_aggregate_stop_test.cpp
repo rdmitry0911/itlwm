@@ -47,7 +47,7 @@ static const uint8_t iwn_tid2fifo[8] = {1, 0, 0, 1, 2, 2, 3, 3};
 static void reset_sched(iwn_softc *sc, int qid, int idx) {
     assert(sc->locked && sc->stopped[qid]);
     assert(sc->txq[qid].data[idx].m != nullptr);
-    if (sc->first_agg_txq == IWN5000_FIRST_AGG_TXQUEUE)
+    if (sc->first_agg_txq != IWN4965_FIRST_AGG_TXQUEUE)
         for (int word = 0; word < 4; ++word)
             assert(sc->scheduler[IWN5000_SCHED_TX_STATUS_OFFSET(qid) / 4 + word] == 0);
     ++sc->resets;
@@ -86,7 +86,7 @@ public:
     static void iwn_prph_clrbits(iwn_softc *sc, int, int) { assert(sc->locked); }
     static void iwn_mem_set_region_4(iwn_softc *sc, uint32_t address,
                                      uint32_t value, int count) {
-        assert(sc->locked && sc->first_agg_txq == IWN5000_FIRST_AGG_TXQUEUE);
+        assert(sc->locked && sc->first_agg_txq != IWN4965_FIRST_AGG_TXQUEUE);
         assert(value == 0 && count == 4);
         const uint32_t offset = address - sc->sched_base;
         assert(offset >= 0x6a0 && offset + 16 <= 0x7e0);
@@ -123,12 +123,13 @@ public:
 #define IWN_WRITE(sc, reg, value) ItlIwn::write(sc, reg, value)
 #include "production.inc"
 
-static void stop_case(bool old, int read, int pending, uint16_t winstart,
+static void stop_case(int firstQueue, int read, int pending, uint16_t winstart,
                       uint16_t winend, uint8_t tid, bool lockFailure = false) {
+    const bool old = firstQueue == IWN4965_FIRST_AGG_TXQUEUE;
     ItlIwn hal;
     auto &sc = hal.com;
     sc.sc_ic.ic_softc = &sc;
-    sc.first_agg_txq = old ? IWN4965_FIRST_AGG_TXQUEUE : IWN5000_FIRST_AGG_TXQUEUE;
+    sc.first_agg_txq = firstQueue;
     sc.ops = {reset_sched, old ? ItlIwn::iwn4965_ampdu_tx_stop :
                                ItlIwn::iwn5000_ampdu_tx_stop, add_node};
     sc.failLock = lockFailure;
@@ -177,15 +178,17 @@ static void stop_case(bool old, int read, int pending, uint16_t winstart,
 }
 
 int main() {
-    for (bool old : {false, true}) for (uint8_t tid = 0; tid < 8; ++tid) {
+    for (int firstQueue : {IWN4965_FIRST_AGG_TXQUEUE,
+                          IWN5000_FIRST_AGG_TXQUEUE, IWN_IPAN_FIRST_AGG_QUEUE})
+      for (uint8_t tid = 0; tid < 8; ++tid) {
         // One submitted MPDU, but a 64-entry logical BA window: old stop
         // refuses reclaim at 92, then resets both cursors to 29, leaving 1.
-        stop_case(old, 29, 1, 29, 92, tid);
-        stop_case(old, 250, 8, 250, 313, tid);
-        stop_case(old, 255, 1, 4095, 62, tid);
-        stop_case(old, 17, 0, 17, 80, tid);
-        stop_case(old, 12, 3, 12, 14, tid); // logical end is not exclusive cur
-        stop_case(old, 29, 1, 29, 92, tid, true);
+        stop_case(firstQueue, 29, 1, 29, 92, tid);
+        stop_case(firstQueue, 250, 8, 250, 313, tid);
+        stop_case(firstQueue, 255, 1, 4095, 62, tid);
+        stop_case(firstQueue, 17, 0, 17, 80, tid);
+        stop_case(firstQueue, 12, 3, 12, 14, tid); // logical end is not exclusive cur
+        stop_case(firstQueue, 29, 1, 29, 92, tid, true);
     }
     ItlIwn hal;
     iwn_tx_ring ring;
@@ -195,5 +198,5 @@ int main() {
     ring.read = 250; ring.cur = 2;
     assert(hal.iwn_ampdu_txq_can_advance(&ring, 2));
     assert(!hal.iwn_ampdu_txq_can_advance(&ring, 3));
-    std::puts("PASS: actual STA BA stop clears DVM SCD status before draining, preserves cursor and adjacent SRAM; 4965 unchanged");
+    std::puts("PASS: actual STA BA stop respects PAN AUX boundary, clears DVM SCD status before draining, preserves cursor and adjacent SRAM; 4965 unchanged");
 }

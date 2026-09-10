@@ -21822,7 +21822,7 @@ void ItlIwn::
 iwn5000_ampdu_tx_start(struct iwn_softc *sc, struct ieee80211_node *ni,
     uint8_t tid, uint16_t ssn)
 {
-    int qid = IWN5000_FIRST_AGG_TXQUEUE + tid;
+    int qid = sc->first_agg_txq + tid;
     int idx = IWN_AGG_SSN_TO_TXQ_IDX(ssn);
     struct iwn_node *wn = (struct iwn_node *)ni;
     uint8_t frameLimit = static_cast<uint8_t>(MIN(
@@ -21871,7 +21871,7 @@ void ItlIwn::
 iwn5000_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
 {
     ItlIwn *that = container_of(sc, ItlIwn, com);
-    int qid = IWN5000_FIRST_AGG_TXQUEUE + tid;
+    int qid = sc->first_agg_txq + tid;
     struct iwn_tx_ring *ring = &sc->txq[qid];
     (void)ssn;
 
@@ -23156,6 +23156,22 @@ iwn_hw_stop(struct iwn_softc *sc)
     explicit_bzero(&reset_event, sizeof(reset_event));
 }
 
+static void iwn_configure_tx_queue_topology(struct iwn_softc *sc)
+{
+    const bool pan = sc->hw_type != IWN_HW_REV_TYPE_4965 &&
+        sc->eeprom_pan_capable &&
+        (sc->tlv_feature_flags & IWN_UCODE_TLV_FLAGS_PAN) != 0;
+    sc->command_queue = pan ? IWN_IPAN_CMD_QUEUE : IWN_DEFAULT_CMD_QUEUE;
+    /* PAN post_alive assigns q10 to the fixed AUX FIFO. Every STA/AP TX,
+     * completion and BA-retirement consumer must share the same dynamic
+     * boundary; changing only the hardware start method aliases that AUX
+     * queue or makes completions decode another TID. DMA was provisioned
+     * for the complete family range during attach and remains unchanged. */
+    sc->first_agg_txq = sc->hw_type == IWN_HW_REV_TYPE_4965 ?
+        IWN4965_FIRST_AGG_TXQUEUE :
+        (pan ? IWN_IPAN_FIRST_AGG_QUEUE : IWN5000_FIRST_AGG_TXQUEUE);
+}
+
 int ItlIwn::
 iwn_init(struct _ifnet *ifp)
 {
@@ -23193,11 +23209,7 @@ iwn_init(struct _ifnet *ifp)
         XYLog("%s: could not read firmware\n", sc->sc_dev.dv_xname);
         goto fail;
     }
-    sc->command_queue =
-        sc->hw_type != IWN_HW_REV_TYPE_4965 &&
-        sc->eeprom_pan_capable &&
-        (sc->tlv_feature_flags & IWN_UCODE_TLV_FLAGS_PAN) != 0 ?
-        IWN_IPAN_CMD_QUEUE : IWN_DEFAULT_CMD_QUEUE;
+    iwn_configure_tx_queue_topology(sc);
 
     /* Initialize hardware and upload firmware. */
     error = iwn_hw_init(sc);
