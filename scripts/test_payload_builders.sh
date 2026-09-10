@@ -93,3 +93,4 @@ esac
 bash "$(dirname "$0")/test_scan_rssi_publication.sh"
 bash "$(dirname "$0")/test_tahoe_lqm_cca_validity.sh"
 bash "$(dirname "$0")/test_apsta_reentrant_start.sh"
+bash "$(dirname "$0")/test_iwn_ap_stop_tx_retirement.sh"

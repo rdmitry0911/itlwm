@@ -451,6 +451,7 @@ struct iwn_tx_cmd {
 #define IWN_CMD_ADD_NODE         24
 #define IWN_CMD_REMOVE_NODE      25
 #define IWN_CMD_TX_DATA             28
+#define IWN_CMD_TXFIFO_FLUSH        30
 #define IWN_CMD_LINK_QUALITY         78
 #define IWN_CMD_SET_LED             72
 #define IWN5000_CMD_WIMAX_COEX         90
@@ -481,6 +482,14 @@ struct iwn_tx_cmd {
     uint8_t    qid;
     uint8_t    data[136];
 } __packed;
+
+/* DVM API > 2 (including PAN firmware): REPLY_TXFIFO_FLUSH v3. */
+struct iwn_txfifo_flush_cmd {
+    uint32_t queue_control;
+    uint16_t flush_control;
+    uint16_t reserved;
+} __packed;
+#define IWN_TXFIFO_FLUSH_DROP_ALL (1U << 1)
 
 /* Antenna flags, used in various commands. */
 #define IWN_ANT_A    (1 << 0)

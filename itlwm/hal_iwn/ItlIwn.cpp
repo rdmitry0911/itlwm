@@ -4453,6 +4453,8 @@ enum {
     IWN_AP_STAGE_FINAL_POWER,
     IWN_AP_STAGE_FINAL_PAN_PARAMS,
     IWN_AP_STAGE_RUNNING,
+    IWN_AP_STAGE_STOP_TX_FLUSH,
+    IWN_AP_STAGE_STOP_TX_RETIRE,
     IWN_AP_STAGE_STOP_RXON,
     IWN_AP_STAGE_STOP_PAN_PARAMS
 };
@@ -5061,6 +5063,8 @@ void ItlIwn::iwn_reset_ap_runtime_state()
     apStaBssAssociated = false;
     apStaRunPanFencePending = false;
     apStaRunPanFenceIndex = 0;
+    apStopTxFlushIndex = 0;
+    apStopTxQueueMask = 0;
     iwn_set_ap_primary_tx_quiesced(false, false);
     apFirmwareStage = IWN_AP_STAGE_IDLE;
     bzero(&apFirmwareConfig, sizeof(apFirmwareConfig));
@@ -7372,6 +7376,9 @@ void ItlIwn::iwn_ap_ampdu_tx_stop(
     if (com.hw_type == IWN_HW_REV_TYPE_4965) {
         iwn_prph_write(&com, IWN4965_SCHED_QUEUE_STATUS(qid),
             IWN4965_TXQ_STATUS_CHGACT);
+        iwn_ampdu_txq_advance(&com, &com.txq[qid], qid,
+                              com.txq[qid].cur);
+        com.qfullmsk &= ~(1U << qid);
         com.txq[qid].cur = com.txq[qid].read = idx;
         IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
         iwn_prph_write(
@@ -7385,6 +7392,11 @@ void ItlIwn::iwn_ap_ampdu_tx_stop(
     iwn_prph_write(&com, IWN5000_SCHED_QUEUE_STATUS(qid),
         IWN5000_TXQ_STATUS_CHGACT);
     iwn_prph_clrbits(&com, IWN5000_SCHED_AGGR_SEL, 1U << qid);
+    /* The scheduler must stop fetching before the physical submitted
+     * interval is released. A BA window endpoint is not its write cursor. */
+    iwn_ampdu_txq_advance(&com, &com.txq[qid], qid,
+                          com.txq[qid].cur);
+    com.qfullmsk &= ~(1U << qid);
     com.txq[qid].cur = com.txq[qid].read = idx;
     IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
     iwn_prph_write(&com, IWN5000_SCHED_QUEUE_RDPTR(qid), ssn);
@@ -7481,7 +7493,6 @@ int ItlIwn::iwn_set_ap_client_tx_ba(uint8_t tid, uint16_t ssn, bool start)
     if (start)
         return 0;
 
-    iwn_ampdu_txq_advance(&com, ring, qid, ring->cur);
     const int lockError = iwn_nic_lock(&com);
     if (lockError != 0) {
         apClientDisableTid = oldDisableTid;
@@ -10174,6 +10185,165 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
     return kIOReturnSuccess;
 }
 
+int ItlIwn::iwn_ap_stop_tx_queue_mask(uint32_t *result) const
+{
+    if (result == NULL || com.command_queue != IWN_IPAN_CMD_QUEUE ||
+        com.ntxqs <= IWN_IPAN_MCAST_QUEUE || com.ntxqs > 32)
+        return EINVAL;
+
+    /* DVM PAN owns fixed queues 4..8. Queue 9 is commands, 10 auxiliary;
+     * neither those nor the primary's queues belong to this flush. */
+    uint32_t mask = 0;
+    for (int qid = 4; qid <= IWN_IPAN_MCAST_QUEUE; qid++)
+        mask |= 1U << qid;
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        const struct IwnApClientRuntime *client = &apClients[index];
+        if (client->txBaMask != 0 && !client->inUse)
+            return EINVAL;
+        for (uint8_t tid = 0; tid < IWN_NUM_AMPDU_TID; tid++) {
+            if ((client->txBaMask & (1U << tid)) == 0)
+                continue;
+            const int qid = client->txBaQueue[tid];
+            if (qid < IWN_IPAN_FIRST_AGG_QUEUE || qid >= com.ntxqs ||
+                (mask & (1U << qid)) != 0 ||
+                (com.agg_queue_mask & (1U << qid)) == 0)
+                return EINVAL;
+            for (uint8_t staTid = 0; staTid < IWN_NUM_AMPDU_TID; staTid++) {
+                if (com.sc_tx_ba[staTid].wn != NULL &&
+                    qid == com.first_agg_txq + staTid)
+                    return EBUSY;
+            }
+            const struct iwn_tx_ring *ring = &com.txq[qid];
+            if (ring->read < 0 || ring->read >= IWN_TX_RING_COUNT ||
+                ring->cur < 0 || ring->cur >= IWN_TX_RING_COUNT)
+                return EINVAL;
+            int owned = 0;
+            for (int slot = ring->read; slot != ring->cur;
+                 slot = (slot + 1) % IWN_TX_RING_COUNT) {
+                const struct iwn_tx_data *data = &ring->data[slot];
+                if (data->m != NULL || data->ap_mgmt || data->ap_data) {
+                    if (!data->ap_data)
+                        return EINVAL;
+                    owned++;
+                }
+            }
+            if (owned != ring->queued)
+                return EINVAL;
+            mask |= 1U << qid;
+        }
+    }
+    *result = mask;
+    return 0;
+}
+
+int ItlIwn::iwn_retire_flushed_ap_tx()
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_STOP_TX_RETIRE)
+        return EINVAL;
+    uint32_t mask = 0;
+    int error = iwn_ap_stop_tx_queue_mask(&mask);
+    if (error != 0 || (mask & ~apStopTxQueueMask) != 0)
+        return error != 0 ? error : EINVAL;
+
+    /* Flush completion means DMA and FIFO are empty, not that software may
+     * invent TX_DONE for the fixed queues. Let their real responses reclaim
+     * them before RXON destroys the PAN station context. */
+    for (int qid = 4; qid <= IWN_IPAN_MCAST_QUEUE; qid++) {
+        if (com.txq[qid].queued != 0)
+            return EBUSY;
+    }
+    error = iwn_nic_lock(&com);
+    if (error != 0)
+        return error;
+
+    /* RX command processing and public AP work share the command gate.
+     * STOP_TX_FLUSH/RETIRE admit no new AP frames or ADDBA activation. Keep
+     * every RA/TID owner until the exact flush reply and this NIC fence. */
+    for (size_t index = 0; index < kItlApFirmwareMaxClients; index++) {
+        struct IwnApClientRuntime *client = &apClients[index];
+        for (uint8_t tid = 0; tid < IWN_NUM_AMPDU_TID; tid++) {
+            if ((client->txBaMask & (1U << tid)) != 0) {
+                const int qid = client->txBaQueue[tid];
+                const int pending = com.txq[qid].queued;
+                iwn_ap_ampdu_tx_stop(qid, tid,
+                                     client->txSequence[tid] & 0x0fff);
+                com.agg_queue_mask &= ~(1U << qid);
+                client->txBaMask &= static_cast<uint16_t>(~(1U << tid));
+                client->txBaQueue[tid] = UINT8_MAX;
+                XYLog("%s: AP stop retired aggregate qid=%d pending=%d "
+                      "remaining=%d\n", com.sc_dev.dv_xname, qid,
+                      pending, com.txq[qid].queued);
+            }
+            itl_ap_tx_ba_reset(&client->txBa[tid]);
+        }
+        client->txBaEnablePending = false;
+        client->txBaPendingTid = UINT8_MAX;
+        client->txBaPendingQueue = UINT8_MAX;
+        client->txBaPendingSsn = 0;
+        client->txBaPendingOldDisableTid = 0;
+        bzero(client->rateControl.pendingAggregate,
+              sizeof(client->rateControl.pendingAggregate));
+    }
+    iwn_nic_unlock(&com);
+    return 0;
+}
+
+int ItlIwn::iwn_continue_ap_stop_after_flush()
+{
+    const int retireError = iwn_retire_flushed_ap_tx();
+    if (retireError != 0)
+        return retireError;
+
+    apFirmwareDeactivationReplySeen = false;
+    apFirmwareDeactivationNotificationSeen = false;
+    apFirmwarePostDeactivateQueued = false;
+    apFirmwareStage = IWN_AP_STAGE_STOP_RXON;
+    struct iwn_rxon deactivateRxon = apFirmwareRxon;
+    bzero(deactivateRxon.bssid, sizeof(deactivateRxon.bssid));
+    bzero(deactivateRxon.wlap, sizeof(deactivateRxon.wlap));
+    deactivateRxon.filter = 0;
+    deactivateRxon.mode = IWN_MODE_P2P;
+    const int error = iwn_cmd(&com, IWN_CMD_WIPAN_RXON,
+                              &deactivateRxon, com.rxonsz, 1);
+    if (error != 0)
+        apFirmwareStage = IWN_AP_STAGE_STOP_TX_RETIRE;
+    return error;
+}
+
+static bool iwn_ap_stop_tx_prepare_doorbell(
+    struct iwn_softc *sc, void *context)
+{
+    ItlIwn *that = static_cast<ItlIwn *>(context);
+    if (that == NULL || !that->apFirmwareTransitionActive ||
+        that->apFirmwareStage != IWN_AP_STAGE_STOP_TX_FLUSH)
+        return false;
+    that->apStopTxFlushIndex = sc->txq[sc->command_queue].cur;
+    return true;
+}
+
+void ItlIwn::iwn_note_ap_stop_tx_flush(
+    int command, uint16_t commandIndex, bool failed)
+{
+    if (!apFirmwareTransitionActive ||
+        apFirmwareStage != IWN_AP_STAGE_STOP_TX_FLUSH ||
+        command != IWN_CMD_TXFIFO_FLUSH ||
+        commandIndex != apStopTxFlushIndex)
+        return;
+    if (failed) {
+        /* A rejected command is not permission to release DMA ownership.
+         * The upper pending-stop census can retry the real flush. */
+        apFirmwareStage = IWN_AP_STAGE_RUNNING;
+        XYLog("%s: AP stop TX flush rejected; retaining queue owners\n",
+              com.sc_dev.dv_xname);
+        return;
+    }
+    apFirmwareStage = IWN_AP_STAGE_STOP_TX_RETIRE;
+    const int error = iwn_continue_ap_stop_after_flush();
+    XYLog("%s: AP stop TX flush completed mask=0x%x retirement=%d\n",
+          com.sc_dev.dv_xname, apStopTxQueueMask, error);
+}
+
 IOReturn ItlIwn::stopAPMode()
 {
     if (!supportsAPMode()) {
@@ -10196,7 +10366,12 @@ IOReturn ItlIwn::stopAPMode()
         iwn_reset_ap_runtime_state();
         return kIOReturnSuccess;
     }
-    if (apFirmwareStage == IWN_AP_STAGE_STOP_RXON ||
+    if (apFirmwareStage == IWN_AP_STAGE_STOP_TX_RETIRE) {
+        (void)iwn_continue_ap_stop_after_flush();
+        return kIOReturnNotReady;
+    }
+    if (apFirmwareStage == IWN_AP_STAGE_STOP_TX_FLUSH ||
+        apFirmwareStage == IWN_AP_STAGE_STOP_RXON ||
         apFirmwareStage == IWN_AP_STAGE_STOP_PAN_PARAMS) {
         /*
          * The corresponding command reply only proves that DVM accepted
@@ -10214,26 +10389,26 @@ IOReturn ItlIwn::stopAPMode()
         return kIOReturnBusy;
     }
 
-    apFirmwareDeactivationReplySeen = false;
-    apFirmwareDeactivationNotificationSeen = false;
-    apFirmwarePostDeactivateQueued = false;
-    apFirmwareStage = IWN_AP_STAGE_STOP_RXON;
-
-    struct iwn_rxon deactivateRxon = apFirmwareRxon;
-    bzero(deactivateRxon.bssid, sizeof(deactivateRxon.bssid));
-    bzero(deactivateRxon.wlap, sizeof(deactivateRxon.wlap));
-    deactivateRxon.filter = 0;
-    deactivateRxon.mode = IWN_MODE_P2P;
-    const int error = iwn_cmd(&com, IWN_CMD_WIPAN_RXON,
-                              &deactivateRxon, com.rxonsz, 1);
+    uint32_t queueMask = 0;
+    if (iwn_ap_stop_tx_queue_mask(&queueMask) != 0)
+        return kIOReturnError;
+    struct iwn_txfifo_flush_cmd flush;
+    bzero(&flush, sizeof(flush));
+    flush.queue_control = htole32(queueMask);
+    flush.flush_control = htole16(IWN_TXFIFO_FLUSH_DROP_ALL);
+    apStopTxQueueMask = queueMask;
+    apFirmwareStage = IWN_AP_STAGE_STOP_TX_FLUSH;
+    const int error = iwn_cmd_with_doorbell_hook(
+        &com, IWN_CMD_TXFIFO_FLUSH, &flush, sizeof(flush), 1,
+        iwn_ap_stop_tx_prepare_doorbell, NULL, this);
     if (error != 0) {
         apFirmwareStage = IWN_AP_STAGE_RUNNING;
         iwn_set_ap_scan_transition_blocked(false);
         return kIOReturnError;
     }
-    /* The WIPAN_RXON deactivation was queued, not completed.  Do not expose
-     * a lower terminal until its notification/reply chain has removed the
-     * PAN context. */
+    /* Intel DVM forced teardown first flushes DMA/FIFO, then disables and
+     * unmaps the queue. The RXON/notification/PAN-params chain follows that
+     * real completion; submitting the flush is not a lower stop terminal. */
     return kIOReturnNotReady;
 }
 
@@ -10259,7 +10434,7 @@ IOReturn ItlIwn::setAPHidden(bool hidden)
 {
     if (!apFirmwareTransitionActive ||
         apFirmwareStage == IWN_AP_STAGE_IDLE ||
-        apFirmwareStage >= IWN_AP_STAGE_STOP_RXON)
+        apFirmwareStage >= IWN_AP_STAGE_STOP_TX_FLUSH)
         return kIOReturnNotReady;
     if (apHidden == hidden)
         return kIOReturnSuccess;
@@ -15925,6 +16100,9 @@ iwn_notif_intr(struct iwn_softc *sc)
                 commandData->m != NULL ?
                 mtod(commandData->m, const struct iwn_tx_cmd *) :
                 &commandRing->cmd[desc->idx];
+            iwn_note_ap_stop_tx_flush(
+                completedCommand->code, static_cast<uint16_t>(desc->idx),
+                desc->type != IWN_CMD_TXFIFO_FLUSH);
             int completedAddNodeStatus = -1;
             if (apFirmwareTransitionActive &&
                 completedCommand->code == IWN_CMD_ADD_NODE) {

@@ -288,6 +288,10 @@ public:
     void iwn_stop_all_ap_client_tx_ba();
     void iwn_ap_ampdu_tx_start(int, uint8_t, uint16_t, uint8_t);
     void iwn_ap_ampdu_tx_stop(int, uint8_t, uint16_t);
+    int iwn_ap_stop_tx_queue_mask(uint32_t *) const;
+    int iwn_retire_flushed_ap_tx();
+    int iwn_continue_ap_stop_after_flush();
+    void iwn_note_ap_stop_tx_flush(int, uint16_t, bool);
     static void iwn_ap_rx_ba_deliver(void *, struct ItlApRxBaReady *);
     bool iwn_handle_ap_block_ack(const struct ieee80211_frame *, size_t,
         bool);
@@ -669,6 +673,8 @@ public:
     bool apPrimaryTxQuiesced;
     bool apStaRunPanFencePending;
     uint16_t apStaRunPanFenceIndex;
+    uint16_t apStopTxFlushIndex;
+    uint32_t apStopTxQueueMask;
     uint8_t apFirmwareStage;
     struct ItlHalApConfig apFirmwareConfig;
     struct iwn_rxon apFirmwareRxon;
