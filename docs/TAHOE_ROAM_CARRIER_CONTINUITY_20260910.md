@@ -264,3 +264,45 @@ to its saved WPA3 network on channel 13 and had the ordinary address by
 reverse RTT exceeded one second; no latency gate is claimed. This extends
 the same-image post-S3 recovery evidence to signaled AP loss and automatic
 saved-network return, not silent RF loss or all profile-selection policy.
+
+## Post-S3 native Internet Sharing regression
+
+The same boot/image enabled native WPA3 sharing after S3, with the fresh USB
+network service as the upstream. The external AX211 obtained a real system
+DHCP lease and independently reported SAE group 19, required PMF and BIP.
+Forward 20/20, bridge-scoped cold-neighbor reverse 10/10 and routed HTTP
+passed. Normal sharing disable at 11:11:23 was followed by a separate
+15-second dwell: the retired bridge was detached with zero I/O references,
+and the actual current STA address passed 10/10.
+
+The system had selected another saved WPA2 profile on return, reaching DHCP
+BOUND at 11:11:34; the check used that actual address, not the earlier WPA3
+address. Native sharing had withdrawn the STA address when starting AP at
+11:09:44. Consequently these tests qualify native AP service with a USB
+upstream and subsequent STA recovery, not concurrent STA data service while
+native sharing is active. That is distinct from the separately tested role-7
+APSTA producer.
+
+WPA2 and open native sharing subsequently passed the same actual DHCP,
+20/20 forward, bridge-scoped cold-neighbor 10/10 reverse and routed HTTP
+checks on this post-S3 boot. Native disable at 11:14:31 and 11:17:23,
+respectively, each passed a separate 15-second dwell: bridge100 was absent,
+the retired bridge had zero I/O references, and the actual returned STA
+address passed 10/10. No manual bridge rewrite, radio toggle or reboot
+separated these modes. The host's ordinary managed connection was restored.
+The complete 15,630-line serial interval has no matched panic, firmware fatal,
+device timeout, unset-software-key or AP TX gate failure.
+
+The AP interface still reports carrier active after the final native disable,
+despite the lower stop reaching terminal and bridge100 being absent. A host
+channel-9 scan did not return that AP, but this single negative scan is not
+proof of continuous beacon absence. This publication observation remains
+unclassified; neither an active beacon nor full AP-off equivalence is claimed.
+
+The candidate archive was constructed from the exact frozen loaded image;
+extracted Mach-O and Info.plist comparison, host download and ZIP integrity
+verification passed. Its SHA-256 is
+`a255cd88f170e97e7eca56ae5639a273b5960fe1e80b3fe625b029d55f8d8c42`.
+It is not published. The next admission gate is a real same-ESS target that
+reaches SAE and then fails: successful off/on or a different-profile join
+does not establish retirement of a reserved roaming carrier on that path.
