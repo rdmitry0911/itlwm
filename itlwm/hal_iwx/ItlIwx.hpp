@@ -467,7 +467,7 @@ public:
     static void    iwx_rx_ba_session_expired(void *);
     static void    iwx_reorder_timer_expired(void *);
     static void    iwx_update_chw(struct ieee80211com *);
-    void    iwx_sta_rx_agg(struct iwx_softc *, struct ieee80211_node *, uint8_t,
+    int     iwx_sta_rx_agg(struct iwx_softc *, struct ieee80211_node *, uint8_t,
                            uint16_t, uint16_t, int, int,
                            const ItlFirmwareContextReceipt * = nullptr);
     int iwx_sta_rx_ba_cmd(struct iwx_softc *, const ItlFirmwareContextReceipt *,

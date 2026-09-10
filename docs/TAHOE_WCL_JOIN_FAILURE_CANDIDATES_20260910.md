@@ -1,5 +1,82 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Checkpoint — 2026-09-10 22:20 UTC (September 11 locally)
+
+PROGRESS continues after 076a5674: both RUN-stop bodies now select only the
+primary station's RX BA entries and return firmware-stop errors. IWM performs
+one host retirement/count decrement, not two, and its TID lookup cannot select
+an adjacent AP client. An absent primary TID is idempotent even when an AP
+still owns that TID. IWX's RX helper returns the actual error to RUN-stop.
+
+The new 17-scenario executable test compiles both complete RUN-stop and RX
+aggregation bodies plus the actual IWX station/TID lookup. It covers AP entries
+on either side, equal TIDs, first/second command failure, partial progress and
+retry, repeated/absent stop, RX-start error/success and initial IWX flush error.
+Both unchanged 076a5674 implementations compile in that fixture: IWM fails
+the duplicate-host-retirement assertion and IWX fails error propagation, each
+with terminal exit 134. Firmware, timer/purge and the later MAC/PHY/TX helpers
+are explicit boundaries; the TX-aggregation branch is not exercised here.
+This is hardware-BAID cleanup coverage, not old non-MQ IWM RX-session tracking
+or a reset/main-workloop proof.
+
+Full Linux and macOS aggregates pass, including 581 station command cases,
+the new 17 cleanup cases, 206 state-worker groups, 118 context cases and
+adjacent management/three-family AP RX/TX aggregation contracts.
+Equal production fingerprint:
+36aaf163edd9cd56b32fa17228f08d5cfa46f820299395dfce49eb8ac59571ef.
+Built UUID: 8BB37D90-3245-38D9-B29C-89D0EBD18A18.
+Mach-O SHA-256:
+53fad540dd49a3ccb104682387913cf549892dd29415db007c2d4966fb4ca9ee.
+Guest full regression/build log:
+/Volumes/AIAMBuild/itlwm-88c0d3f9/DerivedData-join-failure-20260910/ba-teardown-20260911.FYZ0hX,
+SHA-256 28a97cca5876a047c232c60e2ce5f8a8296b052d5e9337c0d5666349a308d4fb.
+All 1085 symbols resolve; no _thread_call_cancel_wait dependency. This remains
+built WIP, not a loaded/released reconnect or APSTA qualification.
+
+### Next whole BA lifetime boundary
+
+Capture request values at ampdu ingress, not from ic_bss inside the worker:
+station ADD-incarnation, common attempt, TID/operation serial, direction,
+SSN/window, timeout and token. A pending request must not pin a hardware task;
+an admitted worker must retain hardware access until its last command/ring use.
+Record the actual BAID/legacy-TID resource before asynchronous host publication,
+even if the common attempt has changed. The main-workloop completion validates
+the copied request before touching generic BA state, timers or node callbacks.
+Pending host publication can retain a station reader, but not an IWX hardware
+task reference that stop drains while holding the main gate. Newstate/task
+cancellation and actual reset must retire every pending/running/completed owner
+without either dropping an uncertain firmware resource or leaking that reader.
+
+RUN-stop still reaches synchronous reorder timers; IWM also calls ba_del on
+the replacement node. Move these into that same asynchronous transaction,
+with the exact state transition deferred until host retirement. Preserve the
+confirmed command result across the resumed state worker; do not reissue the
+already retired BA command. Primary-resource accounting must cover non-MQ IWM
+without a BAID as well. IWM deauth and IWX rm_sta still zero the shared RX BA
+count; their later primary teardown must not erase AP accounting. The passing
+RUN-stop tests do not claim to fix those later functions. Then finish actual
+IWM hardware-producer drain, IWX TVQM uncertain allocation and the remaining
+AUTH/failure producer prerequisites before exact-image runtime promotion.
+
+## FIX_CANDIDATE: preserve exact RX BA teardown and adjacent AP owners
+
+The completed 076a5674 command split exposed a separate caller defect:
+IWM RUN-stop ignores RX BA command failure, then clears the reorder owner
+and decrements the session count again after the helper already did so.
+Both families walk the combined primary/AP reorder table without filtering
+the station; IWM's helper also selects a stop entry by TID alone. A failed
+primary cleanup can therefore lose its physical resource record or damage an
+AP client sharing the same TID. IWX's void helper cannot report the failure.
+
+Make the caller visit only primary-station entries, retain them and return
+the error on failed firmware stop, and account successful retirement exactly
+once. An already-absent primary TID must not consume an AP session/count.
+Test the complete RUN-stop and RX-aggregation bodies with AP entries before
+and after the primary entries, same TIDs, partial failure/retry and repeated
+stop. Intel's retained-station/TID BAID lookup and command-before-count/host
+retirement order are the reference; this does not yet move timer/node actions
+to their asynchronous main-workloop owner or qualify reset races.
+
 ## Checkpoint — 2026-09-10 22:12 UTC (September 11 locally)
 
 PROGRESS: the actual IWM RX/TX BA and IWX legacy/BAID-ML RX command

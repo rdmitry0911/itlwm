@@ -615,6 +615,21 @@ iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         splx(s);
         return 0;
     }
+
+    if (!start && sc->sc_mqrx_supported) {
+        for (unsigned i = 0; i < nitems(sc->sc_rxba_data); ++i) {
+            struct iwm_rxba_data *candidate = &sc->sc_rxba_data[i];
+            if (candidate->baid != IWM_RX_REORDER_DATA_INVALID_BAID &&
+                candidate->sta_id == IWM_STATION_ID && candidate->tid == tid) {
+                rxba = candidate;
+                break;
+            }
+        }
+        if (rxba == NULL) {
+            splx(s);
+            return 0;
+        }
+    }
     
     err = iwm_sta_rx_ba_cmd(sc, use, tid, ssn, winsize, start != 0, &baid);
     if (err) {
@@ -648,19 +663,8 @@ iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
                 ba = &ni->ni_rx_ba[tid];
                 ba->ba_timeout_val = 0;
             }
-        } else {
-            int i;
-            for (i = 0; i < nitems(sc->sc_rxba_data); i++) {
-                rxba = &sc->sc_rxba_data[i];
-                if (rxba->baid ==
-                    IWM_RX_REORDER_DATA_INVALID_BAID)
-                    continue;
-                if (rxba->tid != tid)
-                    continue;
-                iwm_clear_reorder_buffer(sc, rxba);
-                break;
-            }
-        }
+        } else
+            iwm_clear_reorder_buffer(sc, rxba);
     }
     
     if (start) {
@@ -4645,12 +4649,12 @@ iwm_run_stop(struct iwm_softc *sc)
      */
     for (i = 0; i < nitems(sc->sc_rxba_data); i++) {
         struct iwm_rxba_data *rxba = &sc->sc_rxba_data[i];
-        if (rxba->baid == IWM_RX_REORDER_DATA_INVALID_BAID)
+        if (rxba->baid == IWM_RX_REORDER_DATA_INVALID_BAID ||
+            rxba->sta_id != IWM_STATION_ID)
             continue;
-        iwm_sta_rx_agg(sc, &in->in_ni, rxba->tid, 0, 0, 0, 0);
-        iwm_clear_reorder_buffer(sc, rxba);
-        if (sc->sc_rx_ba_sessions > 0)
-            sc->sc_rx_ba_sessions--;
+        err = iwm_sta_rx_agg(sc, &in->in_ni, rxba->tid, 0, 0, 0, 0);
+        if (err != 0)
+            return err;
     }
     for (tid = 0; tid < IWM_MAX_TID_COUNT; tid++) {
         int qid = IWM_FIRST_AGG_TX_QUEUE + tid;

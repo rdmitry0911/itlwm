@@ -7720,7 +7720,7 @@ iwx_sta_rx_ba_cmd(struct iwx_softc *sc, const ItlFirmwareContextReceipt *use,
     return error;
 }
 
-void ItlIwx::
+int ItlIwx::
 iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
                uint16_t ssn, uint16_t winsize, int timeout_val, int start,
                const ItlFirmwareContextReceipt *use)
@@ -7735,14 +7735,14 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
     if (start && sc->sc_rx_ba_sessions >= IWX_MAX_RX_BA_SESSIONS) {
         ieee80211_addba_req_refuse(ic, ni, tid);
         splx(s);
-        return;
+        return ENOSPC;
     }
     
     if (!start) {
         rxba = iwx_find_rxba_data(sc, IWX_STATION_ID, tid);
         if (rxba == NULL) {
             splx(s);
-            return;
+            return 0;
         }
         baid = rxba->baid;
     }
@@ -7752,7 +7752,7 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         if (start)
             ieee80211_addba_req_refuse(ic, ni, tid);
         splx(s);
-        return;
+        return err;
     }
 
     rxba = &sc->sc_rxba_data[baid];
@@ -7761,7 +7761,7 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         if (rxba->baid != IWX_RX_REORDER_DATA_INVALID_BAID) {
             ieee80211_addba_req_refuse(ic, ni, tid);
             splx(s);
-            return;
+            return EIO;
         }
         rxba->sta_id = IWX_STATION_ID;
         rxba->tid = tid;
@@ -7788,6 +7788,7 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         sc->sc_rx_ba_sessions--;
 
     splx(s);
+    return 0;
 }
 
 void ItlIwx::
@@ -17396,9 +17397,12 @@ iwx_run_stop(struct iwx_softc *sc)
      */
     for (i = 0; i < nitems(sc->sc_rxba_data); i++) {
         struct iwx_rxba_data *rxba = &sc->sc_rxba_data[i];
-        if (rxba->baid == IWX_RX_REORDER_DATA_INVALID_BAID)
+        if (rxba->baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
+            rxba->sta_id != IWX_STATION_ID)
             continue;
-        iwx_sta_rx_agg(sc, ic->ic_bss, rxba->tid, 0, 0, 0, 0);
+        err = iwx_sta_rx_agg(sc, ic->ic_bss, rxba->tid, 0, 0, 0, 0);
+        if (err != 0)
+            return err;
     }
     
     err = iwx_sf_config(sc, IWX_SF_INIT_OFF);
