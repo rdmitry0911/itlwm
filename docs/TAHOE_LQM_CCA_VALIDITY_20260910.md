@@ -118,3 +118,33 @@ interleaving. No AP source correction has been made, and the evidence does not
 establish that the independent CCA change introduced this failure. The public
 release remains the previously qualified `893a3114` image. A fresh same-image
 boot and instrumented native mode sequence are required before any promotion.
+
+## Uninterrupted verification on the AP-lifetime correction
+
+The subsequent `2dc501b2` candidate includes this CCA correction and the
+separately documented AP start/stop generation fence. The 00:49:49 UTC boot
+loaded UUID `AE5962B6-6A4F-365A-AD7F-49961365F43A`. An initial observation
+recorded three correct LQM events, but its source-bound ping could not bind:
+the normal post-boot best-connected roam had withdrawn the primary address.
+That attempt is not a passed continuous-traffic check or evidence that this
+change fixes the remaining roaming interruption.
+
+After the native open/WPA2/WPA3 and repeated AP-lifecycle controls, the primary
+recovered without a radio toggle. A new, uninterrupted observer from 00:57:35
+through 00:57:53 UTC recorded three real controller and Infra deliveries,
+each with valid measured RSSI, unavailable CCA, independent noise/SNR and
+increasing TX/RX/beacon counters. All producer returns succeeded and the
+observer ended with zero diagnostic errors. The enclosing source-bound
+1400-byte traffic run passed 25/25 packets. The same loaded image subsequently
+passed concurrent SAE/PMF APSTA and actual S3 recovery, then the full native
+open/WPA2/WPA3 DHCP, cold-neighbor and routed-HTTP matrix documented in
+`TAHOE_APSTA_REENTRANT_START_STOP_20260910.md`. This qualifies the corrected
+event together with those service regressions; it does not add an independent
+CCA measurement or close the remaining roaming/GUI surface. Publication is
+still separate at this checkpoint.
+
+The final full-console audit additionally found a real AP aggregate-queue
+watchdog reset after WPA2 stop. As recorded in the AP-lifetime note, short
+traffic and upper-owner invariants passed but reset-free lower teardown did
+not. The archive remains held; no CCA-caused reset or packet-loss claim is
+made from that adjacent failure.

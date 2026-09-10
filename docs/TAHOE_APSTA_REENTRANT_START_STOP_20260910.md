@@ -77,8 +77,67 @@ The pre-fix source independently compiles and fails the AP-up/datapath
 invariant. The full payload/scan/LQM/PMF suite and existing APSTA carrier,
 epoch, channel, sleep, IWM/IWX retry and stop-terminal contract checks pass.
 
-The changed AP owner has not yet been built or loaded. Its new private fields
-require fresh matching-build DWARF before any field-based live observer is
-used. Native mode-switch, concurrent STA/AP, true S3 recovery and on-air
-DHCP/traffic qualification remain mandatory. The public artifact remains
-the qualified `893a3114` image; neither this fix nor `cf4b50ad` is promoted.
+Source `2dc501b2` built with all 1085 external symbols resolved. Private
+five-member AuxKC admission and transactional activation passed, preserving
+the four companion members. The 00:49:49 UTC boot loaded UUID
+`AE5962B6-6A4F-365A-AD7F-49961365F43A`, matching frozen and installed
+Mach-O SHA-256
+`282924e98a40a4e643983687fb79b7d818ddc5c9f3a5acca81a0412065fa2e99`.
+The live owner observer uses fresh object DWARF from this exact build.
+
+Native WPA3, WPA2 and open sharing completed sequentially on this boot.
+Each external join obtained DHCP, passed 20/20 client-to-gateway packets,
+isolated cold-neighbor 10/10 reverse packets and routed HTTP. A subsequent
+three-round public-ioctl sequence submitted an old WPA2 start, stop and WPA3
+replacement with 10, 100 and 300 ms caller spacing. All callers completed;
+the final owner reached Terminal with AP-up, stop and replay flags clear.
+The observed lower calls were sequential: these are real repeated-lifecycle
+controls, not proof that the original yielding-call interleaving ran on air.
+
+Concurrent WPA3 STA and role-7 SAE/required-PMF AP passed 20/20 client-to-AP,
+isolated cold-neighbor 10/10 and primary 5/5. A newly built public Apple80211
+probe supplied the existing role/channel/HostAP request sequence; it did not
+call private lower-HAL entry points or inject firmware state.
+
+The temporary USB upstream was removed while awake; no emulated Ethernet
+device remained during the 01:03:06 UTC sleep request. Actual S3 was confirmed
+by serial `ACPI SLEEP` and the owned VM's suspended state. Wake at 01:04:11
+produced `ACPI S3 WAKE`, retaining the boot epoch and loaded UUID. The primary
+address and AP were restored without another AP-start command. Fresh USB
+management was attached only after wake and passed an independent HTTP check.
+Explicit external-client reselection completed SAE with required PMF/BIP;
+the recovered AP and primary passed the same 20/20, cold 10/10 and 5/5 checks.
+This demonstrates service recovery, not automatic client continuity.
+
+Normal role-7 stop retained primary traffic at 10/10. After removing only
+the temporary AP address, native WPA3, WPA2 and open sharing completed in
+sequence on the same post-S3 boot. Each used the normal system producer and
+obtained real DHCP; each passed 20/20 client-to-gateway, isolated bridge-scoped
+cold-neighbor 10/10 and routed HTTP. Client power save remained enabled.
+There was no reboot, manual bridge-member rewrite, daemon restart or radio
+toggle between these modes.
+
+The frozen ZIP SHA-256 is
+`08ed6022d21b430c987d0a39fd6930a4189c39749458e90aca2f19a8ef6e070a`;
+its extracted Mach-O matches the loaded image above. These are IWN/6235
+runtime results, not equivalent recent IWM/IWX hardware qualification, a
+complete GUI/profile matrix or lossless roaming. Publication is still a
+separate step at this checkpoint.
+
+## Final console audit: release held on AP TX teardown
+
+Both bounded owner observers completed without diagnostic errors. The final
+normal sharing stop left Terminal with AP-up, lower-stop and replay flags
+clear; the retired bridge reached I/O count zero and primary traffic passed
+10/10. However, the full serial audit found a separate watchdog timeout after
+WPA2 PAN teardown, both before and after S3. The post-S3 instance follows the
+04:09:14 local sharing stop: PAN stop reports its terminal, then AP aggregate
+queue 12 still owns three descriptors (`cur=41`, `read=38`). The management
+queue named by the broad diagnostic prefix has zero queued descriptors.
+
+The production watchdog emits these records only after the pending-TX timer
+expires, then stops and reinitializes the device. Therefore the passing
+short DHCP/traffic checks do not prove reset-free AP mode switching. The
+CCA and upper-owner corrections are not established as the cause, and the
+next boundary is real AP aggregate retirement before lower stop completion.
+The prepared archive has not been uploaded; public release remains `893a3114`.
