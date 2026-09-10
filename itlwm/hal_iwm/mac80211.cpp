@@ -522,15 +522,89 @@ iwm_setup_vht_rates(struct iwm_softc *sc)
 #define IWM_MAX_RX_BA_SESSIONS 16
 
 int ItlIwm::
+iwm_sta_rx_ba_cmd(struct iwm_softc *sc, const ItlFirmwareContextReceipt *use,
+                  uint8_t tid, uint16_t ssn, uint16_t window, bool start, uint8_t *baid)
+{
+    if (sc == NULL || baid == NULL || tid >= IWM_MAX_TID_COUNT)
+        return EINVAL;
+    ItlFirmwareContextCommand context = {};
+    int error = beginPrimaryBaCommand(use, &context);
+    if (error != 0)
+        return error;
+    struct iwm_add_sta_cmd cmd = {};
+    cmd.sta_id = context.receipt.identity.station;
+    cmd.mac_id_n_color = htole32(context.receipt.identity.mac);
+    cmd.add_modify = IWM_STA_MODE_MODIFY;
+    cmd.modify_mask = start ? IWM_STA_MODIFY_ADD_BA_TID : IWM_STA_MODIFY_REMOVE_BA_TID;
+    if (start) {
+        cmd.add_immediate_ba_tid = tid;
+        cmd.add_immediate_ba_ssn = htole16(ssn);
+        cmd.rx_ba_window = htole16(window);
+    } else
+        cmd.remove_immediate_ba_tid = tid;
+    struct iwm_host_cmd hcmd = {};
+    hcmd.id = IWM_ADD_STA;
+    hcmd.context_command = &context;
+    hcmd.data[0] = &cmd;
+    hcmd.len[0] = context.receipt.identity.commandLength;
+    uint32_t status = IWM_ADD_STA_SUCCESS;
+    error = iwm_send_cmd_status(sc, &hcmd, &status);
+    bool definitelyRejected = false;
+    if (error == 0 && (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS) {
+        definitelyRejected = start &&
+            (status & IWM_ADD_STA_STATUS_MASK) == IWM_ADD_STA_IMMEDIATE_BA_FAILURE;
+        error = definitelyRejected ? ENOSPC : EIO;
+    }
+    uint8_t result = IWM_RX_REORDER_DATA_INVALID_BAID;
+    if (error == 0 && start && sc->sc_mqrx_supported) {
+        result = (status & IWM_ADD_STA_BAID_MASK) >> IWM_ADD_STA_BAID_SHIFT;
+        if (!(status & IWM_ADD_STA_BAID_VALID_MASK) ||
+            result == IWM_RX_REORDER_DATA_INVALID_BAID ||
+            result >= nitems(sc->sc_rxba_data))
+            error = EPROTO;
+    }
+    error = finishPrimaryBaCommand(context, error, definitelyRejected);
+    if (error == 0 && start)
+        *baid = result;
+    return error;
+}
+
+int ItlIwm::
+iwm_sta_tx_ba_cmd(struct iwm_softc *sc, const ItlFirmwareContextReceipt *use,
+                  uint32_t queues, uint16_t disabledTids)
+{
+    if (sc == NULL)
+        return EINVAL;
+    ItlFirmwareContextCommand context = {};
+    int error = beginPrimaryBaCommand(use, &context);
+    if (error != 0)
+        return error;
+    struct iwm_add_sta_cmd cmd = {};
+    cmd.sta_id = context.receipt.identity.station;
+    cmd.mac_id_n_color = htole32(context.receipt.identity.mac);
+    cmd.add_modify = IWM_STA_MODE_MODIFY;
+    cmd.modify_mask = IWM_STA_MODIFY_QUEUES | IWM_STA_MODIFY_TID_DISABLE_TX;
+    cmd.tfd_queue_msk = htole32(queues);
+    cmd.tid_disable_tx = htole16(disabledTids);
+    struct iwm_host_cmd hcmd = {};
+    hcmd.id = IWM_ADD_STA;
+    hcmd.context_command = &context;
+    hcmd.data[0] = &cmd;
+    hcmd.len[0] = context.receipt.identity.commandLength;
+    uint32_t status = IWM_ADD_STA_SUCCESS;
+    error = iwm_send_cmd_status(sc, &hcmd, &status);
+    if (error == 0 && (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
+        error = EIO;
+    return finishPrimaryBaCommand(context, error, false);
+}
+
+int ItlIwm::
 iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
-               uint16_t ssn, uint16_t winsize, int timeout_val, int start)
+               uint16_t ssn, uint16_t winsize, int timeout_val, int start,
+               const ItlFirmwareContextReceipt *use)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    struct iwm_add_sta_cmd cmd;
-    struct iwm_node *in = (struct iwm_node *)ni;
     int err, s;
-    uint32_t status;
-    size_t cmdsize;
     struct iwm_rxba_data *rxba = NULL;
     uint8_t baid = 0;
     
@@ -542,32 +616,7 @@ iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         return 0;
     }
     
-    memset(&cmd, 0, sizeof(cmd));
-    
-    cmd.sta_id = IWM_STATION_ID;
-    cmd.mac_id_n_color
-    = htole32(IWM_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color));
-    cmd.add_modify = IWM_STA_MODE_MODIFY;
-    
-    if (start) {
-        cmd.add_immediate_ba_tid = (uint8_t)tid;
-        cmd.add_immediate_ba_ssn = ssn;
-        cmd.rx_ba_window = winsize;
-    } else {
-        cmd.remove_immediate_ba_tid = (uint8_t)tid;
-    }
-    cmd.modify_mask = start ? IWM_STA_MODIFY_ADD_BA_TID :
-    IWM_STA_MODIFY_REMOVE_BA_TID;
-    
-    status = IWM_ADD_STA_SUCCESS;
-    if (isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
-        cmdsize = sizeof(cmd);
-    else
-        cmdsize = sizeof(struct iwm_add_sta_cmd_v7);
-    err = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA, cmdsize, &cmd,
-                                  &status);
-    if (!err && (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
-        err = EIO;
+    err = iwm_sta_rx_ba_cmd(sc, use, tid, ssn, winsize, start != 0, &baid);
     if (err) {
         if (start)
             ieee80211_addba_req_refuse(ic, ni, tid);
@@ -578,19 +627,6 @@ iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
     if (sc->sc_mqrx_supported) {
         /* Deaggregation is done in hardware. */
         if (start) {
-            if (!(status & IWM_ADD_STA_BAID_VALID_MASK)) {
-                ieee80211_addba_req_refuse(ic, ni, tid);
-                splx(s);
-                return EIO;
-            }
-            baid = (status & IWM_ADD_STA_BAID_MASK) >>
-            IWM_ADD_STA_BAID_SHIFT;
-            if (baid == IWM_RX_REORDER_DATA_INVALID_BAID ||
-                baid >= nitems(sc->sc_rxba_data)) {
-                ieee80211_addba_req_refuse(ic, ni, tid);
-                splx(s);
-                return EIO;
-            }
             rxba = &sc->sc_rxba_data[baid];
             if (rxba->baid != IWM_RX_REORDER_DATA_INVALID_BAID) {
                 ieee80211_addba_req_refuse(ic, ni, tid);
@@ -638,37 +674,11 @@ iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
 }
 
 int ItlIwm::
-iwm_sta_tx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid, uint8_t qid, uint16_t ssn, int start)
+iwm_sta_tx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
+               uint8_t qid, uint16_t ssn, int start, const ItlFirmwareContextReceipt *use)
 {
-    struct iwm_add_sta_cmd cmd;
-    struct iwm_node *in = (struct iwm_node *)ni;
-    int err = 0;
-    uint32_t status;
-    size_t cmdsize;
-
-    memset(&cmd, 0, sizeof(cmd));
-
-    cmd.mac_id_n_color = htole32(IWM_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color));
-    cmd.sta_id = IWM_STATION_ID;
-    cmd.add_modify = IWM_STA_MODE_MODIFY;
-    cmd.modify_mask = (IWM_STA_MODIFY_QUEUES | IWM_STA_MODIFY_TID_DISABLE_TX);
-    cmd.tfd_queue_msk = htole32(sc->agg_queue_mask);
-    cmd.tid_disable_tx = htole16(sc->agg_tid_disable);
-
-    if (isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
-        cmdsize = sizeof(cmd);
-    else
-        cmdsize = sizeof(struct iwm_add_sta_cmd_v7);
-
-    status = IWM_ADD_STA_SUCCESS;
-    err = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA, cmdsize, &cmd,
-                                  &status);
-
-    if (err || ((status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS))
-        XYLog("%s tx agg failed. err=%d status=%d, mask_status=%d\n",
-              __FUNCTION__, err, status, (status & IWM_ADD_STA_STATUS_MASK));
-    
-    return err || ((status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS);
+    (void)ni; (void)tid; (void)qid; (void)ssn; (void)start;
+    return iwm_sta_tx_ba_cmd(sc, use, sc->agg_queue_mask, sc->agg_tid_disable);
 }
 
 void ItlIwm::
@@ -7392,10 +7402,10 @@ iwm_ba_task(void *arg)
         if (sc->ba_rx.start_tidmask & (1 << tid)) {
             struct ieee80211_rx_ba *ba = &ni->ni_rx_ba[tid];
             err = that->iwm_sta_rx_agg(sc, ni, tid,  ba->ba_winstart,
-                           ba->ba_winsize, ba->ba_timeout_val, 1);
+                           ba->ba_winsize, ba->ba_timeout_val, 1, &stationUse.identity());
             sc->ba_rx.start_tidmask &= ~(1 << tid);
         } else if (sc->ba_rx.stop_tidmask & (1 << tid)) {
-            err = that->iwm_sta_rx_agg(sc, ni, tid, 0, 0, 0, 0);
+            err = that->iwm_sta_rx_agg(sc, ni, tid, 0, 0, 0, 0, &stationUse.identity());
             sc->ba_rx.stop_tidmask &= ~(1 << tid);
         }
     }
@@ -7432,7 +7442,7 @@ iwm_ba_task(void *arg)
             sc->agg_queue_mask |= (1 << qid);
             sc->sc_tx_ba[tid].wn = (iwm_node *)ni;
             ba->ba_bitmap = 0;
-            if (!that->iwm_sta_tx_agg(sc, ni, tid, 0, ssn, 1)) {
+            if (!that->iwm_sta_tx_agg(sc, ni, tid, 0, ssn, 1, &stationUse.identity())) {
                 ieee80211_addba_resp_accept(ic, ni, tid);
                 sc->lq_sta.rs_drv.lq.agg_frame_cnt_limit = LINK_QUAL_AGG_FRAME_LIMIT_DEF;
 
@@ -7446,7 +7456,7 @@ iwm_ba_task(void *arg)
             sc->ba_tx.start_tidmask &= ~(1 << tid);
         } else if (sc->ba_tx.stop_tidmask & (1 << tid)) {
             sc->agg_tid_disable |= (1 << tid);
-            that->iwm_sta_tx_agg(sc, ni, tid, 0, 0, 0);
+            that->iwm_sta_tx_agg(sc, ni, tid, 0, 0, 0, &stationUse.identity());
             that->iwm_ampdu_txq_advance(sc, ring, ring->cur);
             that->iwm_clear_oactive(sc, ring);
             /* In DQA-mode the queue isn't removed on agg termination */

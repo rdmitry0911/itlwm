@@ -3054,6 +3054,60 @@ reopenPrimaryStationUsers(const ItlStateTransitionRequest &request)
 }
 
 int ItlIwm::
+beginPrimaryBaCommand(const ItlFirmwareContextReceipt *use,
+                      ItlFirmwareContextCommand *command)
+{
+    using Lease = ItlFirmwareContextLease;
+    if (command == NULL)
+        return EINVAL;
+    *command = ItlFirmwareContextCommand{};
+    command->kind = ItlFirmwareContextCommand::Kind::Station;
+    command->cleanup = use == NULL;
+    if (use == NULL) {
+        const int error = beginPrimaryStationCleanup(false, &command->receipt);
+        return error != 0 ? error : command->receipt.serial != 0 ? 0 : ENOENT;
+    }
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return ENXIO;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    Lease::Admission admission = Lease::Admission::Busy;
+    if (scanCommand.open && !(com.sc_flags & IWM_FLAG_SHUTDOWN) &&
+        primaryStationUses.active != 0 && use->serial != 0 &&
+        use->serial == primaryStationUses.owner.serial &&
+        use->generation == static_cast<uint32_t>(com.sc_generation) &&
+        use->generation == primaryStationUses.owner.generation &&
+        use->identity.equals(primaryStationUses.owner.identity) &&
+        use->identity.attempt.equals(ItlScanCommandPolicy::identityLocked(ic)) &&
+        primaryStationContext.confirmed && !primaryStationContext.uncertain)
+        admission = primaryStationContext.begin(Lease::Operation::Modify,
+            com.sc_generation, use->identity, &command->receipt);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    return admission == Lease::Admission::Submit ? 0 :
+        admission == Lease::Admission::Exhausted ? EOVERFLOW : EBUSY;
+}
+
+int ItlIwm::
+finishPrimaryBaCommand(const ItlFirmwareContextCommand &command, int error,
+                       bool definitelyRejected)
+{
+    using Lease = ItlFirmwareContextLease;
+    if (wclScanLock == NULL)
+        return ENXIO;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const Lease::Completion completion = error == 0 ? Lease::Completion::Success :
+        command.submitted && !definitelyRejected ?
+            Lease::Completion::Uncertain : Lease::Completion::Rejected;
+    if (!primaryStationContext.finish(command.receipt, com.sc_generation, completion))
+        error = ENXIO;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return error;
+}
+
+int ItlIwm::
 beginPrimaryStationCleanup(bool remove, ItlFirmwareContextReceipt *receipt)
 {
     using Lease = ItlFirmwareContextLease;

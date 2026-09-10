@@ -1,5 +1,71 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Checkpoint — 2026-09-10 22:12 UTC (September 11 locally)
+
+PROGRESS: the actual IWM RX/TX BA and IWX legacy/BAID-ML RX command
+boundaries now use retained station identity and distinct command receipts.
+RUN-stop cleanup uses the old physical station, not the replacement node.
+Station ID, MAC/color and command layout survive capability/node replacement;
+IWM RX SSN/window are explicitly little-endian. Unknown transport or BAID
+results retain uncertainty, while a definite RX-start resource refusal returns
+ENOSPC without disabling ordinary station use. Retrying that refusal succeeds
+in the actual-helper fixture. Nonexistent-station status is not treated as
+an ordinary resource refusal. Shared IWX AP BAID commands remain independent
+of the primary station and retain both firmware removal layouts.
+
+Complete Linux/macOS aggregates pass: 581 actual station/BA/cleanup scenarios,
+206 state-worker groups and 118 context/status cases, plus both three-family
+AP aggregation contracts and management transactions. The old AP static guard
+initially failed on the changed call spelling; it now checks the actual wide
+host-command ID, payload, length and sender. The executable shared-helper
+matrix covers AP start/stop, both versions, invalid input/BAID and transport
+failure. These are complete command/helper bodies against real firmware wire
+headers, with transport, locks, nodes and hardware reclamation as fixtures;
+no full BA callback, real DMA or radio qualification is claimed.
+
+Equal production fingerprint on source and guest mirror:
+9ca862383098d0e282b8bdff96ed53dd0b3d9fc60f561bc19c7e88f040bc5c39.
+Built UUID: F2014422-EC2D-3A5D-9FF9-7F7F678EB4EF.
+Mach-O SHA-256:
+da8e0989734ef0efcbd2881da6563a373e0eb514f229e2ff4ecdb50edd4fb4ee.
+Guest regression/build log:
+/Volumes/AIAMBuild/itlwm-88c0d3f9/DerivedData-join-failure-20260910/ba-wire-20260911.CCJ4uz,
+SHA-256 f4d6490e5b722562e92f8a4241855d317ed709e47ab16501d1e9974bcc678dba.
+All 1085 external symbols resolve; no _thread_call_cancel_wait dependency.
+This candidate is built, not loaded or released. Public/loaded b5c6cfd8 and
+user physical hosts are unchanged. Continue immutable BA ingress, retained
+physical BAID ownership and asynchronous main-workloop publication, then the
+actual producer/reset and queue-allocation lifetimes described below.
+
+## FIX_CANDIDATE: separate owned BA firmware results from node callbacks
+
+The cfd9fe5d BA workers still combine firmware commands with node mutation,
+reorder-timer actions and generic ADDBA callbacks. The latter reach the main
+gate synchronously. Before moving their completion, separate the command
+boundary: capture the retained station receipt, return an explicit BAID/error,
+and never select MAC/station IDs or command length from a replacement node.
+An admitted BA reader uses its ADD-incarnation receipt; RUN-stop cleanup uses
+an exclusive retained station modification. Both must reach the existing
+raw transport admission edge. A transport/response ambiguity cannot be
+reported as an absent BA resource or silently release the physical station.
+
+Cover IWM old/v7 and new station layouts, IWX legacy ADD_STA and BAID-ML
+versions, invalid/missing BAID responses, reset and same-hardware replacement.
+Preserve AP callers of the shared IWX BAID helper. This command separation
+alone does not close main-workloop callback ownership, BAID host-publication
+ordering, TVQM uncertainty or IWM reset/drain. Continue the whole asynchronous
+BA transaction and reset lifetime before any runtime promotion.
+
+The September 11 user-status turn was read-only, not another functional
+closure. Revalidation found an over-broad uncertainty path in this WIP:
+ordinary RX ADDBA resource refusal would quarantine the entire station.
+Intel v6.12 `iwl_mvm_fw_baid_op_sta` explicitly returns ENOSPC for
+ADD_STA_IMMEDIATE_BA_FAILURE. Preserve the active station on that definite
+start rejection, but retain uncertainty for transport loss, a successful
+response without a usable BAID, nonexistent-station and unexpected statuses.
+The BAID-ML response contains a bare BAID, not ADD_STA status bits; an invalid
+allocation result is not evidence that no firmware resource was created.
+
 ## Checkpoint — 2026-09-10 21:47 UTC (September 11 locally)
 
 This continuation is PROGRESS; the preceding user-status turn was read-only.

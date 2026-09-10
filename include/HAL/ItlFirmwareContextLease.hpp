@@ -106,6 +106,7 @@ public:
     ~ItlFirmwareStationUseGuard()
     { if (receipt.serial != 0) driver->endPrimaryStationUse(&receipt); }
     bool admitted() const { return receipt.serial != 0; }
+    const ItlFirmwareContextReceipt &identity() const { return receipt; }
     ItlFirmwareStationUseGuard(const ItlFirmwareStationUseGuard &) = delete;
     ItlFirmwareStationUseGuard &operator=(const ItlFirmwareStationUseGuard &) = delete;
 };

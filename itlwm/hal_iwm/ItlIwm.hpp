@@ -155,6 +155,8 @@ public:
     bool primaryFirmwareContextsPresent();
     bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const;
     int beginPrimaryStationCleanup(bool, ItlFirmwareContextReceipt *);
+    int beginPrimaryBaCommand(const ItlFirmwareContextReceipt *, ItlFirmwareContextCommand *);
+    int finishPrimaryBaCommand(const ItlFirmwareContextCommand &, int, bool);
     bool beginPrimaryStationUse(struct ieee80211_node *, ItlFirmwareContextReceipt *, bool = true);
     void endPrimaryStationUse(ItlFirmwareContextReceipt *);
     bool deferPrimaryStationUsers(const ItlStateTransitionRequest &);
@@ -345,14 +347,20 @@ public:
     static void   iwm_reorder_timer_expired(void *);
     static uint8_t iwm_num_of_ant(uint8_t mask);
     int    iwm_sta_rx_agg(struct iwm_softc *, struct ieee80211_node *, uint8_t,
-                           uint16_t, uint16_t, int, int);
+                           uint16_t, uint16_t, int, int,
+                           const ItlFirmwareContextReceipt * = nullptr);
+    int iwm_sta_rx_ba_cmd(struct iwm_softc *, const ItlFirmwareContextReceipt *,
+                         uint8_t, uint16_t, uint16_t, bool, uint8_t *);
+    int iwm_sta_tx_ba_cmd(struct iwm_softc *, const ItlFirmwareContextReceipt *,
+                         uint32_t, uint16_t);
     static int    iwm_ampdu_tx_start(struct ieee80211com *, struct ieee80211_node *,
                               uint8_t);
     static void    iwm_ampdu_tx_stop(struct ieee80211com *, struct ieee80211_node *,
                               uint8_t);
     static void     iwm_update_chw(struct ieee80211com *);
     int iwm_sta_tx_agg(struct iwm_softc *, struct ieee80211_node *,
-                        uint8_t, uint8_t, uint16_t, int);
+                        uint8_t, uint8_t, uint16_t, int,
+                        const ItlFirmwareContextReceipt * = nullptr);
     static void    iwm_ba_task(void *);
     
     int    iwm_parse_nvm_data(struct iwm_softc *, const uint16_t *,

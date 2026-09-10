@@ -5,7 +5,7 @@ PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 STA_TEST_DIR="$(mktemp -d)"
 trap 'rm -f "$STA_TEST_DIR/sta-commands.inc" "$STA_TEST_DIR/sta-defines.inc" "$STA_TEST_DIR/sta-host-commands.inc" "$STA_TEST_DIR/sta-test"; rm -rf "$STA_TEST_DIR/sta-test.dSYM"; rmdir "$STA_TEST_DIR"' EXIT
 awk '
-    /^#define[[:space:]]+IW[MX]_(FLAG_STA_ACTIVE|FLAG_TXFLUSH|FLAG_SHUTDOWN|STATION_ID|MONITOR_STA_ID|INVALID_QUEUE)[[:space:]]/ { print }
+    /^#define[[:space:]]+IW[MX]_(FLAG_STA_ACTIVE|FLAG_TXFLUSH|FLAG_SHUTDOWN|STATION_ID|MONITOR_STA_ID|INVALID_QUEUE|MAX_BAID)[[:space:]]/ { print }
     /^#define[[:space:]]+IEEE80211_(NWID_LEN|ADDR_LEN)[[:space:]]/ { print }
     /^#define[[:space:]]+EDCA_AC_(BE|BK|VI|VO)[[:space:]]/ { print }
     /^struct ieee80211_frame \{/ { selected=1 }
@@ -24,7 +24,7 @@ awk '
 ' "$PROJECT_DIR/itlwm/hal_iwm/if_iwmvar.h" "$PROJECT_DIR/itlwm/hal_iwx/if_iwxvar.h" > "$STA_TEST_DIR/sta-host-commands.inc"
 awk '
     /^(int|bool|void) ItlIw[mx]::$/ { type=$0 }
-    /^(beginPrimaryStationUse|endPrimaryStationUse|beginPrimaryStationCleanup|finishPrimaryStationCleanup|firmwareContextCommandCurrentLocked|primaryStationCleanupCurrent|notePrimaryStationRetirement)\(/ {
+    /^(beginPrimaryBaCommand|finishPrimaryBaCommand|beginPrimaryStationUse|endPrimaryStationUse|beginPrimaryStationCleanup|finishPrimaryStationCleanup|firmwareContextCommandCurrentLocked|primaryStationCleanupCurrent|notePrimaryStationRetirement)\(/ {
         if ($0 ~ /^beginPrimaryStationCleanup\(/ && ENVIRON["STA_USE_NEGATIVE_REF"] != "")
             selected=0
         else { selected=1; print type }
@@ -43,7 +43,7 @@ fi
 for source_file in itlwm/hal_iwm/power.cpp itlwm/hal_iwx/ItlIwx.cpp; do
     sed -n '1,$p' "$PROJECT_DIR/$source_file" | awk '
         /^int ItlIw[mx]::$/ { type=$0 }
-        /^(iw[mx]_(rm_sta_cmd|drain_sta)|iwx_(flush_sta|rm_sta|flush_station|remove_station|flush_sta_tids|disable_txq))\(/ {
+        /^(iw[mx]_(rm_sta_cmd|drain_sta)|iwx_(sta_rx_ba_cmd|rx_baid_cfg_cmd|flush_sta|rm_sta|flush_station|remove_station|flush_sta_tids|disable_txq))\(/ {
             if ($0 ~ /^(iwm_rm_sta_cmd|iwx_rm_sta)\(/ && ENVIRON["STA_RETIREMENT_NEGATIVE_REF"] != "")
                 selected=0
             else { selected=1; print type }
@@ -69,7 +69,7 @@ for source_file in itlwm/hal_iwm/power.cpp itlwm/hal_iwx/ItlIwx.cpp; do
 done >> "$STA_TEST_DIR/sta-commands.inc"
 awk '
     /^int ItlIwm::$/ { type=$0 }
-    /^iwm_(flush_tx_path|disable_txq)\(/ { selected=1; print type }
+    /^iwm_(sta_rx_ba_cmd|sta_tx_ba_cmd|flush_tx_path|disable_txq)\(/ { selected=1; print type }
     selected { print } selected && /^}/ { selected=0 }
 ' "$PROJECT_DIR/itlwm/hal_iwm/mac80211.cpp" "$PROJECT_DIR/itlwm/hal_iwm/tx.cpp" >> "$STA_TEST_DIR/sta-commands.inc"
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function \

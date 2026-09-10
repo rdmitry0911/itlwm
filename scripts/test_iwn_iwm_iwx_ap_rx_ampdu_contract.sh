@@ -119,8 +119,12 @@ for needle, label in (
 for needle, label in (
     ("iwx_rx_baid_cfg_cmd", "IWX BAID command helper"),
     ("const bool baidMl = isset(", "IWX capability-selected BAID API"),
-    ("IWX_WIDE_ID(IWX_DATA_PATH_GROUP,\n                        IWX_RX_BAID_ALLOCATION_CONFIG_CMD)",
+    ("hcmd.id = IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_RX_BAID_ALLOCATION_CONFIG_CMD);",
      "IWX wide DATA_PATH command"),
+    ("hcmd.context_command = context;", "IWX optional primary command ownership"),
+    ("hcmd.data[0] = &command;", "IWX BAID command payload"),
+    ("hcmd.len[0] = sizeof(command);", "IWX BAID command length"),
+    ("iwx_send_cmd_status(sc, &hcmd, &newBaid)", "IWX actual BAID status sender"),
     ("sc, client->staId, tid, ssn, window, start, &baid",
      "IWX AP-client BAID owner"),
     ("IWX AP RX BA refused on legacy BAID firmware",

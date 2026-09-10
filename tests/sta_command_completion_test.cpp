@@ -100,6 +100,8 @@ struct Softc {
     int sc_generation = 7;
     unsigned taskActive = 0;
     bool taskAdmission = true;
+    bool sc_mqrx_supported = true;
+    unsigned sc_rxba_data[IWM_MAX_BAID] = {};
     uint32_t agg_queue_mask = 0x3000, agg_tid_disable = 0xfeed;
     uint8_t sc_ucode_api[128] = {}, sc_enabled_capa[128] = {};
     int first_data_qid = 4, sc_rx_ba_sessions = 2;
@@ -113,7 +115,7 @@ static bool iwm_mimo_enabled(iwm_softc *) { return true; }
 static bool iwx_mimo_enabled(iwx_softc *) { return true; }
 
 
-enum Edge { NoEdge = 0, Add, DrainOn, Flush, DrainOff, DisableQueue, Remove, Delba };
+enum Edge { NoEdge = 0, Add, DrainOn, Flush, DrainOff, DisableQueue, Remove, Delba, RxBa, TxBa, MlBa };
 static std::vector<int> edges;
 static int failEdge, resetEdge, statusEdge, replaceEdge;
 static int transportError = ETIMEDOUT;
@@ -125,6 +127,9 @@ static uint32_t lastStation, lastMac, lastQueues, lastFlags, lastModify;
 static unsigned lastLength;
 static int commandVersion;
 static unsigned packetOwners, replyKind, reclaimed;
+static bool baMode;
+static unsigned baResponse = 3, baResponseKind = 0;
+static unsigned lastTid, lastSsn, lastWindow, lastDisabled, lastBaid;
 static unsigned disableCalls, failDisableCall;
 static bool rejectRepeatedQueueRemoval;
 static std::vector<unsigned> removedQueues;
@@ -135,6 +140,8 @@ static void cleanFixture()
     beforeSubmit=nullptr; afterSubmit=nullptr; baDevice=nullptr;
     lastStation=lastMac=lastQueues=lastFlags=lastModify=lastLength=0;
     commandVersion=0; assert(packetOwners==0); replyKind=reclaimed=0;
+    baMode=false; baResponse=3; baResponseKind=0;
+    lastTid=lastSsn=lastWindow=lastDisabled=lastBaid=0;
     disableCalls=failDisableCall=0; rejectRepeatedQueueRemoval=false; removedQueues.clear();
 }
 static void ieee80211_delba_request(ieee80211com *, ieee80211_node *, int, int, int)
@@ -182,6 +189,8 @@ static int submit(Driver &driver, Device *sc, ItlFirmwareContextCommand *context
     return failEdge==edge ? transportError : 0;
 }
 #define OWNER_DECLS \
+    int beginPrimaryBaCommand(const ItlFirmwareContextReceipt *, ItlFirmwareContextCommand *); \
+    int finishPrimaryBaCommand(const ItlFirmwareContextCommand &,int,bool); \
     bool beginPrimaryStationUse(ieee80211_node *, ItlFirmwareContextReceipt *, bool = true); \
     void endPrimaryStationUse(ItlFirmwareContextReceipt *); \
     bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const; \
@@ -193,11 +202,27 @@ static int statusCommand(Driver &d,Device *sc,Command *command,uint32_t *status,
 {
     const auto &wire=*static_cast<const Wire *>(command->data[0]);
     const bool drain=wire.station_flags_msk==htole32(drainFlag);
-    const int edge=drain ? (wire.station_flags ? DrainOn : DrainOff) : Add;
+    const bool rx=baMode && (wire.modify_mask==IWM_STA_MODIFY_ADD_BA_TID ||
+                            wire.modify_mask==IWM_STA_MODIFY_REMOVE_BA_TID);
+    const int edge=baMode ? (rx?RxBa:TxBa) : drain ? (wire.station_flags ? DrainOn : DrainOff) : Add;
     lastMac=le32toh(wire.mac_id_n_color); lastStation=wire.sta_id;
     lastQueues=wire.tfd_queue_msk; lastFlags=wire.station_flags;
     lastModify=wire.modify_mask; lastLength=command->len[0];
     *status=statusEdge==edge ? 0 : success;
+    if(baMode) {
+        assert(wire.add_modify==IWM_STA_MODE_MODIFY);
+        if(baResponseKind>=2)
+            *status=baResponseKind==2 ? IWM_ADD_STA_IMMEDIATE_BA_FAILURE :
+                baResponseKind==3 ? IWM_ADD_STA_MODIFY_NON_EXISTING_STA : 0;
+        lastTid=wire.modify_mask==IWM_STA_MODIFY_ADD_BA_TID ?
+            wire.add_immediate_ba_tid : wire.remove_immediate_ba_tid;
+        lastSsn=le16toh(wire.add_immediate_ba_ssn);
+        lastWindow=le16toh(wire.rx_ba_window);
+        lastDisabled=le16toh(wire.tid_disable_tx);
+        if(rx && wire.modify_mask==IWM_STA_MODIFY_ADD_BA_TID)
+            *status|=(baResponse<<IWM_ADD_STA_BAID_SHIFT) |
+                (baResponseKind==1?0:IWM_ADD_STA_BAID_VALID_MASK);
+    }
     return submit(d,sc,command->context_command,edge);
 }
 class ItlIwm : public DriverState {
@@ -206,6 +231,8 @@ public:
     struct iwm_add_sta_cmd primaryStationCommand{};
     OWNER_DECLS;
     int iwm_add_sta_cmd(iwm_softc *,iwm_node *,int,unsigned);
+    int iwm_sta_rx_ba_cmd(iwm_softc *,const ItlFirmwareContextReceipt *,uint8_t,uint16_t,uint16_t,bool,uint8_t *);
+    int iwm_sta_tx_ba_cmd(iwm_softc *,const ItlFirmwareContextReceipt *,uint32_t,uint16_t);
     int iwm_drain_sta(iwm_softc *,const ItlFirmwareContextReceipt &,bool);
     int iwm_rm_sta_cmd(iwm_softc *,iwm_node *);
     int iwm_send_cmd_status(iwm_softc *sc,iwm_host_cmd *cmd,uint32_t *status) {
@@ -260,6 +287,8 @@ public:
     OWNER_DECLS;
     bool primaryStationCleanupCurrent(const ItlFirmwareContextReceipt &) const;
     int iwx_add_sta_cmd(iwx_softc *,iwx_node *,int);
+    int iwx_sta_rx_ba_cmd(iwx_softc *,const ItlFirmwareContextReceipt *,uint8_t,uint16_t,uint16_t,bool,uint8_t *);
+    int iwx_rx_baid_cfg_cmd(iwx_softc *,uint8_t,uint8_t,uint16_t,uint16_t,bool,uint8_t *,ItlFirmwareContextCommand * = nullptr);
     int iwx_drain_sta(iwx_softc *,const ItlFirmwareContextReceipt &,int);
     int iwx_flush_sta(iwx_softc *,iwx_node *);
     int iwx_flush_station(iwx_softc *,const ItlFirmwareContextReceipt &);
@@ -267,6 +296,21 @@ public:
     int iwx_rm_sta_cmd(iwx_softc *,iwx_node *);
     int iwx_rm_sta(iwx_softc *,iwx_node *);
     int iwx_send_cmd_status(iwx_softc *sc,iwx_host_cmd *cmd,uint32_t *status) {
+        if(cmd->id==IWX_WIDE_ID(IWX_DATA_PATH_GROUP,IWX_RX_BAID_ALLOCATION_CONFIG_CMD)) {
+            const auto &wire=*static_cast<const struct iwx_rx_baid_cfg_cmd *>(cmd->data[0]);
+            if(le32toh(wire.action)==IWX_RX_BAID_ACTION_ADD) {
+                lastStation=le32toh(wire.alloc.sta_id_mask);
+                lastTid=wire.alloc.tid; lastSsn=le16toh(wire.alloc.ssn);
+                lastWindow=le16toh(wire.alloc.win_size);
+            } else if(commandVersion==1) lastBaid=le32toh(wire.remove_v1.baid);
+            else { lastStation=le32toh(wire.remove.sta_id_mask); lastTid=le32toh(wire.remove.tid); }
+            *status=baResponse;
+            if(cmd->context_command==nullptr) { // AP transport boundary, independent of primary STA.
+                edges.push_back(MlBa);
+                return failEdge==MlBa ? transportError : 0;
+            }
+            return submit(*this,sc,cmd->context_command,MlBa);
+        }
         return statusCommand<ItlIwx,iwx_softc,iwx_host_cmd,struct iwx_add_sta_cmd>(*this,sc,cmd,status,IWX_STA_FLG_DRAIN_FLOW,IWX_ADD_STA_SUCCESS);
     }
     int iwx_send_cmd(iwx_softc *sc,iwx_host_cmd *cmd) {
@@ -363,6 +407,132 @@ static void familyTests(const char *selected)
 {
     constexpr bool iwm=std::is_same<Driver,ItlIwm>::value;
     const uint32_t active=iwm?IWM_FLAG_STA_ACTIVE:IWX_FLAG_STA_ACTIVE;
+    if(std::strcmp(selected,"all")==0 || std::strcmp(selected,"ba")==0) {
+        for(int abi : {0,1,2})
+        for(bool reader : {false,true})
+        for(bool start : {false,true})
+        for(int fault=0; fault<13; ++fault) {
+            cleanFixture(); Driver d; Node n; prepare(d,n);
+            if constexpr(iwm) {
+                if(abi==0) d.com.sc_ucode_api[IWM_UCODE_TLV_API_STA_TYPE/8]&=
+                    ~(1U<<(IWM_UCODE_TLV_API_STA_TYPE%8));
+                d.com.sc_mqrx_supported=abi!=2;
+            } else if(abi!=0) {
+                setbit(d.com.sc_enabled_capa,IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT);
+            }
+            commandVersion=abi;
+            assert(add(d,n)==0);
+            const auto original=d.primaryStationContext.owner;
+            ItlFirmwareContextReceipt use{};
+            if(reader) assert(d.beginPrimaryStationUse(&n.in_ni,&use));
+            else { ++d.com.sc_ic.identity.associationEpoch; ++n.in_id; ++n.in_macaddr[5]; }
+            // Changing advertised layout after ADD may not change retained wire size.
+            if constexpr(iwm)
+                d.com.sc_ucode_api[IWM_UCODE_TLV_API_STA_TYPE/8]^=1U<<(IWM_UCODE_TLV_API_STA_TYPE%8);
+            baMode=true; edges.clear();
+            const int edge=!iwm && abi!=0 ? MlBa : RxBa;
+            if(fault==1) failEdge=edge;
+            if(fault==2) beforeSubmit=[&] { ++d.com.sc_generation; d.primaryStationContext.clear(); };
+            if(fault==3) resetEdge=edge;
+            if(fault==4) beforeSubmit=[&] { ++d.com.sc_ic.identity.associationEpoch; };
+            if(fault==5) replaceEdge=edge;
+            if(fault==6) baResponseKind=1;
+            if(fault==7) baResponse=IWM_MAX_BAID;
+            if(fault>=8 && fault<=10) baResponseKind=fault-6;
+            if(fault==11) { failEdge=edge; baResponseKind=2; }
+            if(fault==12) baResponse=UINT32_MAX;
+            uint8_t baid=7;
+            int error;
+            if constexpr(iwm)
+                error=d.iwm_sta_rx_ba_cmd(&d.com,reader?&use:nullptr,5,0x123,64,start,&baid);
+            else
+                error=d.iwx_sta_rx_ba_cmd(&d.com,reader?&use:nullptr,5,0x123,64,start,&baid);
+            const bool legacy=iwm || abi==0;
+            const bool validatesId=start && (!iwm || abi!=2);
+            const bool invalidId=validatesId && ((fault==6 && legacy) || fault==7 || fault==12);
+            const bool statusFailure=legacy && fault>=8 && fault<=10;
+            const bool refused=statusFailure && fault==8 && start;
+            int expected=(fault==1 || fault==11) ? ETIMEDOUT :
+                (fault==2 || fault==3 || (fault==4 && reader)) ? ENXIO :
+                statusFailure ? (refused?ENOSPC:EIO) :
+                invalidId ? (!legacy?ERANGE:EPROTO) : 0;
+            assert(error==expected);
+            if(error==0) {
+                assert(baid==(start ? (iwm && abi==2 ? IWM_RX_REORDER_DATA_INVALID_BAID : 3) : 7));
+                if(legacy) {
+                    assert(lastMac==original.identity.mac && lastStation==original.identity.station);
+                    assert(lastLength==original.identity.commandLength);
+                } else if(start || abi!=1) {
+                    assert(lastStation==(1U<<original.identity.station));
+                } else assert(lastBaid==7);
+                assert(lastTid==5 || (!start && !legacy && abi==1));
+                if(start) assert(lastSsn==0x123 && lastWindow==64);
+            } else assert(baid==7);
+            if(fault==1 || fault==11 || invalidId || (statusFailure && !refused))
+                assert(d.primaryStationContext.uncertain);
+            if(refused) {
+                assert(d.primaryStationContext.confirmed && !d.primaryStationContext.uncertain);
+                assert(d.primaryStationContext.stage==Lease::Stage::Active);
+                if(reader) {
+                    ItlFirmwareContextReceipt tx{};
+                    assert(d.beginPrimaryStationUse(&n.in_ni,&tx));
+                    d.endPrimaryStationUse(&tx);
+                }
+                baResponseKind=0;
+                if constexpr(iwm)
+                    assert(d.iwm_sta_rx_ba_cmd(&d.com,reader?&use:nullptr,5,0x123,64,true,&baid)==0);
+                else
+                    assert(d.iwx_sta_rx_ba_cmd(&d.com,reader?&use:nullptr,5,0x123,64,true,&baid)==0);
+            }
+            if(fault==4 && reader) {
+                assert(edges.empty() && !d.primaryStationContext.uncertain);
+                assert(d.primaryStationContext.stage==Lease::Stage::Active);
+            }
+            if(reader) d.endPrimaryStationUse(&use);
+            assert(d.com.taskActive==0);
+            ++cases;
+        }
+        if constexpr(iwm) {
+            for(bool reader : {false,true}) {
+                cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+                const auto original=d.primaryStationContext.owner;
+                ItlFirmwareContextReceipt use{};
+                if(reader) assert(d.beginPrimaryStationUse(&n.in_ni,&use));
+                else { ++n.in_id; ++n.in_macaddr[5]; ++d.com.sc_ic.identity.associationEpoch; }
+                baMode=true;
+                assert(d.iwm_sta_tx_ba_cmd(&d.com,reader?&use:nullptr,0x1680,0xffad)==0);
+                assert(lastMac==original.identity.mac && lastStation==original.identity.station);
+                assert(le32toh(lastQueues)==0x1680 && lastDisabled==0xffad);
+                if(reader) d.endPrimaryStationUse(&use);
+                ++cases;
+            }
+        } else {
+            for(int version : {1,2}) for(bool start : {false,true})
+            for(int fault=0; fault<6; ++fault) {
+                cleanFixture(); Driver d; uint8_t baid=7; baMode=true;
+                commandVersion=version;
+                if(fault==1) failEdge=MlBa;
+                if(fault==2) baResponse=IWX_MAX_BAID;
+                if(fault==5) baid=IWX_RX_REORDER_DATA_INVALID_BAID;
+                const int error=d.iwx_rx_baid_cfg_cmd(&d.com,fault==3?32:6,
+                    fault==4?IWX_MAX_TID_COUNT:4,0x456,32,start,&baid);
+                const int expected=fault==3 || fault==4 ? EINVAL :
+                    fault==5 && !start ? ENOENT : fault==1 ? ETIMEDOUT :
+                    fault==2 && start ? ERANGE : 0;
+                assert(error==expected);
+                if(error==0) {
+                    assert(baid==(start?3:7));
+                    if(start || version==2) assert(lastStation==(1U<<6) && lastTid==4);
+                    else assert(lastBaid==7);
+                    if(start) assert(lastSsn==0x456 && lastWindow==32);
+                } else assert(baid==(fault==5?IWX_RX_REORDER_DATA_INVALID_BAID:7));
+                assert(d.primaryStationContext.stage==Lease::Stage::Empty);
+                assert(d.primaryStationUses.active==0 && d.com.taskActive==0);
+                ++cases;
+            }
+        }
+        if(std::strcmp(selected,"ba")==0) return;
+    }
     if(std::strcmp(selected,"all")==0 || std::strcmp(selected,"users")==0) {
         for(int mismatch=0; mismatch<5; ++mismatch) {
             cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);

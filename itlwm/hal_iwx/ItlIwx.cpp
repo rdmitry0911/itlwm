@@ -2069,6 +2069,60 @@ reopenPrimaryStationUsers(const ItlStateTransitionRequest &request)
 }
 
 int ItlIwx::
+beginPrimaryBaCommand(const ItlFirmwareContextReceipt *use,
+                      ItlFirmwareContextCommand *command)
+{
+    using Lease = ItlFirmwareContextLease;
+    if (command == NULL)
+        return EINVAL;
+    *command = ItlFirmwareContextCommand{};
+    command->kind = ItlFirmwareContextCommand::Kind::Station;
+    command->cleanup = use == NULL;
+    if (use == NULL) {
+        const int error = beginPrimaryStationCleanup(false, &command->receipt);
+        return error != 0 ? error : command->receipt.serial != 0 ? 0 : ENOENT;
+    }
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return ENXIO;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    Lease::Admission admission = Lease::Admission::Busy;
+    if (scanCommand.open && !(com.sc_flags & IWX_FLAG_SHUTDOWN) &&
+        primaryStationUses.active != 0 && use->serial != 0 &&
+        use->serial == primaryStationUses.owner.serial &&
+        use->generation == static_cast<uint32_t>(com.sc_generation) &&
+        use->generation == primaryStationUses.owner.generation &&
+        use->identity.equals(primaryStationUses.owner.identity) &&
+        use->identity.attempt.equals(ItlScanCommandPolicy::identityLocked(ic)) &&
+        primaryStationContext.confirmed && !primaryStationContext.uncertain)
+        admission = primaryStationContext.begin(Lease::Operation::Modify,
+            com.sc_generation, use->identity, &command->receipt);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    return admission == Lease::Admission::Submit ? 0 :
+        admission == Lease::Admission::Exhausted ? EOVERFLOW : EBUSY;
+}
+
+int ItlIwx::
+finishPrimaryBaCommand(const ItlFirmwareContextCommand &command, int error,
+                       bool definitelyRejected)
+{
+    using Lease = ItlFirmwareContextLease;
+    if (wclScanLock == NULL)
+        return ENXIO;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const Lease::Completion completion = error == 0 ? Lease::Completion::Success :
+        command.submitted && !definitelyRejected ?
+            Lease::Completion::Uncertain : Lease::Completion::Rejected;
+    if (!primaryStationContext.finish(command.receipt, com.sc_generation, completion))
+        error = ENXIO;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return error;
+}
+
+int ItlIwx::
 beginPrimaryStationCleanup(bool remove, ItlFirmwareContextReceipt *receipt)
 {
     using Lease = ItlFirmwareContextLease;
@@ -7564,7 +7618,7 @@ iwx_find_rxba_data(struct iwx_softc *sc, uint8_t staId, uint8_t tid)
 int ItlIwx::
 iwx_rx_baid_cfg_cmd(struct iwx_softc *sc, uint8_t staId, uint8_t tid,
                     uint16_t ssn, uint16_t window, bool start,
-                    uint8_t *baid)
+                    uint8_t *baid, ItlFirmwareContextCommand *context)
 {
     if (sc == NULL || baid == NULL || staId >= 32 ||
         tid >= IWX_MAX_TID_COUNT)
@@ -7594,10 +7648,12 @@ iwx_rx_baid_cfg_cmd(struct iwx_softc *sc, uint8_t staId, uint8_t tid,
     }
 
     uint32_t newBaid = 0;
-    const int error = iwx_send_cmd_pdu_status(
-        sc, IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
-                        IWX_RX_BAID_ALLOCATION_CONFIG_CMD),
-        sizeof(command), &command, &newBaid);
+    struct iwx_host_cmd hcmd = {};
+    hcmd.id = IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_RX_BAID_ALLOCATION_CONFIG_CMD);
+    hcmd.context_command = context;
+    hcmd.data[0] = &command;
+    hcmd.len[0] = sizeof(command);
+    const int error = iwx_send_cmd_status(sc, &hcmd, &newBaid);
     if (error != 0)
         return error;
     if (start) {
@@ -7608,12 +7664,68 @@ iwx_rx_baid_cfg_cmd(struct iwx_softc *sc, uint8_t staId, uint8_t tid,
     return 0;
 }
 
+int ItlIwx::
+iwx_sta_rx_ba_cmd(struct iwx_softc *sc, const ItlFirmwareContextReceipt *use,
+                  uint8_t tid, uint16_t ssn, uint16_t window, bool start, uint8_t *baid)
+{
+    if (sc == NULL || baid == NULL || tid >= IWX_MAX_TID_COUNT)
+        return EINVAL;
+    if (!start && (*baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
+                   *baid >= nitems(sc->sc_rxba_data)))
+        return ENOENT;
+    ItlFirmwareContextCommand context = {};
+    int error = beginPrimaryBaCommand(use, &context);
+    if (error != 0)
+        return error;
+    uint8_t result = *baid;
+    bool definitelyRejected = false;
+    if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT)) {
+        error = iwx_rx_baid_cfg_cmd(sc, context.receipt.identity.station,
+            tid, ssn, window, start, &result, &context);
+    } else {
+        struct iwx_add_sta_cmd cmd = {};
+        cmd.sta_id = context.receipt.identity.station;
+        cmd.mac_id_n_color = htole32(context.receipt.identity.mac);
+        cmd.add_modify = IWX_STA_MODE_MODIFY;
+        cmd.modify_mask = start ? IWX_STA_MODIFY_ADD_BA_TID : IWX_STA_MODIFY_REMOVE_BA_TID;
+        if (start) {
+            cmd.add_immediate_ba_tid = tid;
+            cmd.add_immediate_ba_ssn = htole16(ssn);
+            cmd.rx_ba_window = htole16(window);
+        } else
+            cmd.remove_immediate_ba_tid = tid;
+        struct iwx_host_cmd hcmd = {};
+        hcmd.id = IWX_ADD_STA;
+        hcmd.context_command = &context;
+        hcmd.data[0] = &cmd;
+        hcmd.len[0] = context.receipt.identity.commandLength;
+        uint32_t status = IWX_ADD_STA_SUCCESS;
+        error = iwx_send_cmd_status(sc, &hcmd, &status);
+        if (error == 0 && (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS) {
+            definitelyRejected = start &&
+                (status & IWX_ADD_STA_STATUS_MASK) == IWX_ADD_STA_IMMEDIATE_BA_FAILURE;
+            error = definitelyRejected ? ENOSPC : EIO;
+        }
+        if (error == 0 && start) {
+            result = (status & IWX_ADD_STA_BAID_MASK) >> IWX_ADD_STA_BAID_SHIFT;
+            if (!(status & IWX_ADD_STA_BAID_VALID_MASK) ||
+                result == IWX_RX_REORDER_DATA_INVALID_BAID ||
+                result >= nitems(sc->sc_rxba_data))
+                error = EPROTO;
+        }
+    }
+    error = finishPrimaryBaCommand(context, error, definitelyRejected);
+    if (error == 0)
+        *baid = result;
+    return error;
+}
+
 void ItlIwx::
 iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
-               uint16_t ssn, uint16_t winsize, int timeout_val, int start)
+               uint16_t ssn, uint16_t winsize, int timeout_val, int start,
+               const ItlFirmwareContextReceipt *use)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    struct iwx_node *in = (struct iwx_node *)ni;
     int err, s;
     struct iwx_rxba_data *rxba = NULL;
     uint8_t baid = IWX_RX_REORDER_DATA_INVALID_BAID;
@@ -7626,8 +7738,6 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         return;
     }
     
-    const bool baidMl = isset(
-        sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_BAID_ML_SUPPORT);
     if (!start) {
         rxba = iwx_find_rxba_data(sc, IWX_STATION_ID, tid);
         if (rxba == NULL) {
@@ -7637,45 +7747,7 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         baid = rxba->baid;
     }
 
-    if (baidMl) {
-        err = iwx_rx_baid_cfg_cmd(
-            sc, IWX_STATION_ID, tid, ssn, winsize, start != 0, &baid);
-    } else {
-        struct iwx_add_sta_cmd cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.sta_id = IWX_STATION_ID;
-        cmd.mac_id_n_color = htole32(
-            IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color));
-        cmd.add_modify = IWX_STA_MODE_MODIFY;
-        if (start) {
-            cmd.add_immediate_ba_tid = tid;
-            cmd.add_immediate_ba_ssn = htole16(ssn);
-            cmd.rx_ba_window = htole16(winsize);
-        } else {
-            cmd.remove_immediate_ba_tid = tid;
-        }
-        cmd.modify_mask = start ? IWX_STA_MODIFY_ADD_BA_TID :
-                                  IWX_STA_MODIFY_REMOVE_BA_TID;
-        uint32_t status = IWX_ADD_STA_SUCCESS;
-        err = iwx_send_cmd_pdu_status(
-            sc, IWX_ADD_STA, sizeof(cmd), &cmd, &status);
-        if (err == 0 &&
-            (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
-            err = EIO;
-        if (err == 0 && start) {
-            if ((status & IWX_ADD_STA_BAID_VALID_MASK) == 0) {
-                err = EINVAL;
-            } else {
-                baid = static_cast<uint8_t>(
-                    (status & IWX_ADD_STA_BAID_MASK) >>
-                    IWX_ADD_STA_BAID_SHIFT);
-                if (baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
-                    baid >= nitems(sc->sc_rxba_data))
-                    err = ERANGE;
-            }
-        }
-    }
-
+    err = iwx_sta_rx_ba_cmd(sc, use, tid, ssn, winsize, start != 0, &baid);
     if (err != 0) {
         if (start)
             ieee80211_addba_req_refuse(ic, ni, tid);
@@ -7869,10 +7941,10 @@ iwx_ba_task(void *arg)
         if (sc->ba_rx.start_tidmask & (1 << tid)) {
             struct ieee80211_rx_ba *ba = &ni->ni_rx_ba[tid];
             that->iwx_sta_rx_agg(sc, ni, tid, ba->ba_winstart,
-                                 ba->ba_winsize, ba->ba_timeout_val, 1);
+                                 ba->ba_winsize, ba->ba_timeout_val, 1, &stationUse.identity());
             sc->ba_rx.start_tidmask &= ~(1 << tid);
         } else if (sc->ba_rx.stop_tidmask & (1 << tid)) {
-            that->iwx_sta_rx_agg(sc, ni, tid, 0, 0, 0, 0);
+            that->iwx_sta_rx_agg(sc, ni, tid, 0, 0, 0, 0, &stationUse.identity());
             sc->ba_rx.stop_tidmask &= ~(1 << tid);
         }
     }
