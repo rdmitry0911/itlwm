@@ -3431,8 +3431,13 @@ ieee80211_recv_deauth(struct ieee80211com *ic, mbuf_t m,
     XYLog("Deauth received, reason %d\n", reason);
     ic->ic_deauth_reason = reason;
     /* Roamscan/stay-auth may return without newstate after this event. */
-    if (ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss)
+    if (ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss) {
+        /* RUN's explicit deauth producer owns WCL link-down. Before RUN,
+         * that producer is ineligible and a lost replacement owns it. */
+        if (ic->ic_state == IEEE80211_S_RUN)
+            ieee80211_roam_link_cancel(ic);
         (void)ieee80211_pae_assoc_epoch_begin(ic);
+    }
     if (ic->ic_event_handler) {
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_DEAUTH, NULL);
     }

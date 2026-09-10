@@ -2261,16 +2261,103 @@ ieee80211_sae_peer_rx_snapshot_admission(struct ieee80211com *ic,
 }
 
 /*
- * Advance a transaction fence before a new STA association owner replaces
- * node/RSN state.  The future SAE relay and PAE continuation queues may read
- * this from a different execution context, hence an atomic increment.  Zero
- * is reserved as the uninitialized/no-attempt value and is skipped on wrap.
- *
- * Only ieee80211_next_scan() may request preservation, and only while it is
- * making an intra-scan channel hop.  It may carry one exact, unbound public
- * initial-BSSID marker to the next epoch; every other asynchronous owner is
- * invalidated exactly as it is for an ordinary cancellation.
+ * Consume one same-ESS link reservation under the selected-BSS leaf lock.
+ * Return whether carrier ownership was consumed; a zero output epoch means
+ * no valid identity was available for the independent WCL indication.
  */
+static int
+ieee80211_roam_link_take_loss_locked(struct ieee80211com *ic,
+    u_int64_t owner_epoch, u_int64_t publication_epoch,
+    struct ieee80211_roam_link_loss *loss)
+{
+	bzero(loss, sizeof(*loss));
+	if (owner_epoch == 0 || publication_epoch == 0 ||
+	    ieee80211_pae_assoc_epoch_current(ic) != publication_epoch ||
+	    __atomic_load_n(&ic->ic_roam_link_epoch, __ATOMIC_ACQUIRE) !=
+	    owner_epoch)
+		return 0;
+	/* Claim before any callback or gate entry; a duplicate cancellation
+	 * cannot publish another terminal for this replacement. */
+	__atomic_store_n(&ic->ic_roam_link_epoch, 0, __ATOMIC_RELEASE);
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    ieee80211_pae_assoc_epoch_current(ic) != publication_epoch ||
+	    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+	    __ATOMIC_ACQUIRE) != owner_epoch ||
+	    !ieee80211_bssid_is_unicast_nonzero(ic->ic_pae_selected_bss.bssid))
+		return 1;
+	loss->epoch = publication_epoch;
+	IEEE80211_ADDR_COPY(loss->bssid, ic->ic_pae_selected_bss.bssid);
+	return 1;
+}
+
+static int
+ieee80211_roam_link_take_loss(struct ieee80211com *ic, u_int64_t epoch,
+    struct ieee80211_roam_link_loss *loss)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int taken;
+
+	bzero(loss, sizeof(*loss));
+	if (ic == NULL || epoch == 0 ||
+	    ieee80211_pae_assoc_epoch_current(ic) != epoch)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL) {
+		/* Preserve ordinary carrier retirement during failed early setup,
+		 * but do not invent a selected identity without its publication lock. */
+		return __atomic_compare_exchange_n(&ic->ic_roam_link_epoch, &epoch,
+		    0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+	}
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	taken = ieee80211_roam_link_take_loss_locked(ic, epoch, epoch, loss);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return taken;
+}
+
+int
+ieee80211_roam_link_loss_current(const struct ieee80211com *ic,
+    const struct ieee80211_roam_link_loss *loss)
+{
+	return ic != NULL && loss != NULL && loss->epoch != 0 &&
+	    ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss != NULL &&
+	    ieee80211_pae_assoc_epoch_current(ic) == loss->epoch &&
+	    ieee80211_bssid_is_unicast_nonzero(loss->bssid) &&
+	    IEEE80211_ADDR_EQ(loss->bssid, ic->ic_bss->ni_bssid);
+}
+
+static void
+ieee80211_roam_link_loss_deliver(struct ieee80211com *ic,
+    struct ieee80211_roam_link_loss *loss)
+{
+	/* Revalidate again in the controller gate: entering that gate can wait
+	 * behind a newer public join. The event carries a value, not ic_bss. */
+	if (ieee80211_roam_link_loss_current(ic, loss) &&
+	    ic->ic_event_handler != NULL)
+		(*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ROAM_LINK_LOST, loss);
+}
+
+void
+ieee80211_roam_link_cancel(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL)
+		return;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock != NULL)
+		irq = IOSimpleLockLockDisableInterrupt(lock);
+	/* An explicit leave, a replacement public request or another real loss
+	 * producer already owns the WCL terminal. Do not add a roam-failure one. */
+	__atomic_store_n(&ic->ic_roam_link_epoch, 0, __ATOMIC_RELEASE);
+	if (lock != NULL)
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+/* Advance the association-attempt fence before invalidating selected state.
+ * Only the explicit scanner/public-initial handoff may preserve an unbound
+ * initial-BSSID marker; every asynchronous association owner is invalidated. */
 static u_int64_t
 ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
     int preserve_unbound_public_initial_bssid_pin)
@@ -2283,6 +2370,7 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 	void (*cancel)(struct ieee80211com *, u_int64_t) = NULL;
 	struct ieee80211_pae_mfp_prepared prepared;
 	struct ieee80211_sae_wcl_request_revocation revocation;
+	struct ieee80211_roam_link_loss roam_loss;
 
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return 0;
@@ -2294,6 +2382,10 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 	prior_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch,
 	    __ATOMIC_ACQUIRE);
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
+	/* The selected value still belongs to prior_epoch here. Capture it
+	 * before revocation, not from a mutable BSS after a yielding callback. */
+	(void)ieee80211_roam_link_take_loss_locked(ic, prior_epoch, epoch,
+	    &roam_loss);
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
@@ -2346,6 +2438,7 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 	ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
 	if (txn_id != 0 && cancel != NULL)
 		(*cancel)(ic, txn_id);
+	ieee80211_roam_link_loss_deliver(ic, &roam_loss);
 	return epoch;
 }
 
@@ -2573,6 +2666,7 @@ ieee80211_sae_wcl_fresh_carrier_accepted(struct ieee80211com *ic)
 		return;
 	bzero(&revocation, sizeof(revocation));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	__atomic_store_n(&ic->ic_roam_link_epoch, 0, __ATOMIC_RELEASE);
 	/* Supersede the old generation before the caller writes the fresh
 	 * carrier's Open/WPA2 policy.  clear_locked() would otherwise erase that
 	 * newly written policy when it tears down the old direct-SAE owner. */
@@ -5402,9 +5496,14 @@ ieee80211_roam_link_begin(struct ieee80211com *ic, u_int64_t source_epoch,
     u_int64_t replacement_epoch)
 {
 	u_int64_t next_epoch = source_epoch + 1;
+	IOSimpleLock *lock;
+	IOInterruptState irq;
 
 	if (next_epoch == 0)
 		next_epoch = 1;
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
 	/* A cancellation during old-queue teardown or candidate preflight may
 	 * not transfer the old network's carrier to an unrelated replacement. */
 	if (source_epoch != 0 && replacement_epoch == next_epoch &&
@@ -5412,17 +5511,19 @@ ieee80211_roam_link_begin(struct ieee80211com *ic, u_int64_t source_epoch,
 	    ic->ic_if.if_link_state == LINK_STATE_UP)
 		__atomic_store_n(&ic->ic_roam_link_epoch, replacement_epoch,
 		    __ATOMIC_RELEASE);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 }
 
 void
 ieee80211_roam_link_failed(struct ieee80211com *ic, u_int64_t epoch)
 {
-	if (ic == NULL || epoch == 0 ||
-	    ieee80211_pae_assoc_epoch_current(ic) != epoch)
-		return;
-	if (__atomic_compare_exchange_n(&ic->ic_roam_link_epoch, &epoch, 0,
-	    0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+	struct ieee80211_roam_link_loss loss;
+
+	if (ieee80211_roam_link_take_loss(ic, epoch, &loss) &&
+	    ieee80211_pae_assoc_epoch_current(ic) == epoch) {
 		ieee80211_set_link_state(ic, LINK_STATE_DOWN);
+		ieee80211_roam_link_loss_deliver(ic, &loss);
+	}
 }
 
 static int
@@ -5441,7 +5542,8 @@ ieee80211_roam_link_progress(struct ieee80211com *ic,
 }
 
 static void
-ieee80211_roam_link_note_terminal(struct ieee80211com *ic, int link_state)
+ieee80211_roam_link_note_terminal(struct ieee80211com *ic, int link_state,
+    u_int64_t epoch)
 {
 	/* IWX can authorize its port before the asynchronous RUN callback.
 	 * Keep the reservation until that callback crosses the last synthetic
@@ -5450,7 +5552,8 @@ ieee80211_roam_link_note_terminal(struct ieee80211com *ic, int link_state)
 	    (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
 	    ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
 	    ic->ic_bss->ni_port_valid)))
-		__atomic_store_n(&ic->ic_roam_link_epoch, 0, __ATOMIC_RELEASE);
+		(void)__atomic_compare_exchange_n(&ic->ic_roam_link_epoch, &epoch,
+		    0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
 
 int
@@ -5858,8 +5961,14 @@ void
 ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
 {
 	struct _ifnet *ifp = &ic->ic_if;
+    const u_int64_t epoch = ieee80211_pae_assoc_epoch_current(ic);
+    struct ieee80211_roam_link_loss roam_loss;
     int link_state;
-	ieee80211_roam_link_note_terminal(ic, nstate);
+    bzero(&roam_loss, sizeof(roam_loss));
+    if (nstate != LINK_STATE_UP) {
+        (void)ieee80211_roam_link_take_loss(ic, epoch, &roam_loss);
+    }
+	ieee80211_roam_link_note_terminal(ic, nstate, epoch);
     
 	switch (ic->ic_opmode) {
 #ifndef IEEE80211_STA_ONLY
@@ -5893,6 +6002,9 @@ ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
             ifp->controller->setLinkStatus(kIONetworkLinkValid);
         }
     }
+    /* All ordinary BSD changes precede this yielding event delivery. A
+     * callback cannot make this function force DOWN on a later join. */
+    ieee80211_roam_link_loss_deliver(ic, &roam_loss);
 //	if (nstate != ifp->if_link_state) {
 //		ifp->if_link_state = nstate;
 //		if (LINK_STATE_IS_UP(nstate)) {

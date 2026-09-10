@@ -1450,6 +1450,16 @@ struct ieee80211_wcl_scan_start_rejected {
  */
 #define IEEE80211_EVT_STA_RSN_RUN_DONE              22
 
+/* One admitted same-ESS replacement lost its established logical link.
+ * The selected identity is copied before cancellation invalidates it; epoch
+ * is the publication fence after that cancellation. Borrowed only during
+ * the synchronous callback, never a retained node or credential pointer. */
+#define IEEE80211_EVT_STA_ROAM_LINK_LOST             23
+struct ieee80211_roam_link_loss {
+    u_int64_t epoch;
+    u_int8_t bssid[IEEE80211_ADDR_LEN];
+};
+
 /*
  * Host-owned WCL reassociation owner contract recovered from the public
  * AppleBCMWLAN binary (AppleBCMWLANCore::setWCL_REASSOC and the

@@ -6106,6 +6106,36 @@ static IOReturn postTahoeWclLinkDownIndGated(
         ? kIOReturnSuccess : kIOReturnNotReady;
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+static IOReturn postTahoeWclRoamLinkLossGated(
+    OSObject *target, void *arg0, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    const auto *loss = static_cast<const ieee80211_roam_link_loss *>(arg0);
+    if (that == nullptr || that->fNetIf == nullptr ||
+        that->fHalService == nullptr || loss == nullptr)
+        return kIOReturnBadArgument;
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    if (!ieee80211_roam_link_loss_current(ic, loss))
+        return kIOReturnNotReady;
+
+    /* This selected replacement is already lost; AUTH/ASSOC/SCAN need the
+     * same independent WCL link indication as firmware RUN loss. A newer
+     * join must survive a late callback even if it targets the same BSSID. */
+    TahoeWclLinkChangedPayload payload;
+    bzero(&payload, sizeof(payload));
+    IEEE80211_ADDR_COPY(payload.bssid, loss->bssid);
+    payload.interfaceType = kTahoeWclInfraInterfaceType;
+    payload.reasonCode = 5; /* normalized firmware reassociation-roam failure */
+    TahoeOwnerRegistry &registry = that->getTahoeOwnerRegistry();
+    registry.association = TahoeOwnerRegistry::AssociationOwner{};
+    registry.publicAssociation = TahoeOwnerRegistry::AssociationOwner{};
+    that->postMessage(that->fNetIf, kTahoeWclLinkChanged, &payload,
+                      sizeof(payload), true);
+    return kIOReturnSuccess;
+}
+#endif
+
 static void publishResolvedCountryCodeProperty(AirportItlwm *controller)
 {
     if (controller == nullptr || controller->fNetIf == nullptr ||
@@ -9077,6 +9107,9 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
     if (action == kAirportItlwmDeferredPowerAvailabilityPublishOff) {
         that->cancelDeferredPowerOnAvailabilityRaw();
 #if __IO80211_TARGET >= __MAC_26_0
+        if (that->fHalService != nullptr)
+            ieee80211_roam_link_cancel(
+                that->fHalService->get80211Controller());
         /* AppleBCMWLANCore::powerOff() publishes DRIVER_UNAVAILABLE but does
          * not manufacture a JOIN_ABORT.  On Broadcom, public DISASSOCIATE or
          * the firmware link event supplies the terminal 0xd8 first.  Tahoe's
@@ -9977,6 +10010,7 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             break;
         case IEEE80211_EVT_STA_BEACON_LOSS:
 #if __IO80211_TARGET >= __MAC_26_0
+            ieee80211_roam_link_cancel(ic);
             /*
              * Exact 25C56 WCLNetManager::linkDownInd reason zero is the
              * firmware "Net Beacons Lost" edge.  Publish its independent
@@ -9989,6 +10023,16 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             (void)gate->runAction(
                 postTahoeWclLinkDownIndGated,
                 (void *)(uintptr_t)1U, NULL, NULL);
+#endif
+            return;
+        case IEEE80211_EVT_STA_ROAM_LINK_LOST:
+#if __IO80211_TARGET >= __MAC_26_0
+            if (data != nullptr) {
+                const ieee80211_roam_link_loss loss =
+                    *static_cast<const ieee80211_roam_link_loss *>(data);
+                (void)gate->runAction(postTahoeWclRoamLinkLossGated,
+                                      (void *)&loss, NULL, NULL);
+            }
 #endif
             return;
         case IEEE80211_EVT_SCAN_DONE:

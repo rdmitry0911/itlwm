@@ -841,6 +841,7 @@ ieee80211_ifdetach(struct _ifnet *ifp)
                    sizeof(ic->ic_wcl_reassoc_source_bssid));
     explicit_bzero(ic->ic_wcl_reassoc_target_bssid,
                    sizeof(ic->ic_wcl_reassoc_target_bssid));
+    ieee80211_roam_link_cancel(ic);
     (void)ieee80211_pae_assoc_epoch_begin(ic);
     timeout_del(&ic->ic_wnm_bgscan_retry_timeout);
     timeout_free(&ic->ic_wnm_bgscan_retry_timeout);
@@ -1366,8 +1367,10 @@ ieee80211_media_change(struct _ifnet *ifp)
     if (ic->ic_opmode != newopmode) {
         /* The STA guard must run while the old owner is still visible. */
         if (ic->ic_opmode == IEEE80211_M_STA &&
-            newopmode != IEEE80211_M_STA)
+            newopmode != IEEE80211_M_STA) {
+            ieee80211_roam_link_cancel(ic);
             (void)ieee80211_pae_assoc_epoch_begin(ic);
+        }
         ic->ic_opmode = newopmode;
 #ifndef IEEE80211_STA_ONLY
         switch (newopmode) {

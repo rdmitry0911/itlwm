@@ -43,8 +43,26 @@ symbol at `0xffffff8000104450` as no-return, truncating ordinary branches.
 The symbol was independently verified against this guest's own BootKC.
 A new read-only batch covers all 308 exact symbol-bounded functions of
 WCLNetManager, WCLRoamManager and their FSM bases, with that metadata corrected
-and 40 actual parallel decompiler workers requested. Its results must be
-checked before relying on a complete teardown/duplicate-event contract.
+and 40 actual parallel decompiler interfaces. All 308 jobs completed; two
+country-code extension functions retain bad-instruction warnings and are not
+claimed complete. The active link-loss, leave, completion and FSM functions
+were checked separately. Manifest SHA-256:
+`9acf702e497267127a4e160de3e12e3ea20e3c55a99f302c99038e2edf344a0c`.
+
+The first configuration-table reader failed because the config at
+`0xffffff80023e2c20` is BSS storage initialized at module load, not populated
+file data. The exact initializer `0xffffff80020f2b66..0xffffff80020f2be8`
+assigns the static context at `0xffffff80023db620` and dimensions 7 states,
+11 events and 22 actions. Decoding the matching level-zero BootKC chained
+pointers recovered all 77 cells and 56 subscriptions. The `0xd8` subscription
+reaches `linkStatusInd`, whose link-state byte selects LINK_UP or LINK_DOWN_IND.
+From WAITING_FOR_CONNECT_COMPLETE, WAITING_FOR_IP, LINK_UP and SLEEP, the latter
+invokes `linkDownInd`. LEAVE_NETWORK then enters DEAUTH/SLEEP_DEAUTH and calls
+`leaveNetwork`; LINK_DOWN_COMPLETE runs the terminal cleanup. A repeated
+LINK_DOWN_IND in DEAUTH, SLEEP_DEAUTH or LINK_DOWN is ignored. Local producer
+one-shot ownership is still required; consumer tolerance is not permission to
+publish events for a newer association. Table SHA-256:
+`a566a2f25cace5dd33e4516d86e10cdd34f44dfcaead15235b8ba8451b24760b`.
 
 ## FIX_CANDIDATE
 
@@ -62,3 +80,45 @@ Source correction, actual-production-function regression with an unchanged
 negative control, full adjacent three-family tests, build, exact-image load
 and repeated successful/failed on-air roaming remain required. There is no
 new production change or qualified release at this checkpoint.
+
+## Implemented candidate and source checks
+
+The common association cancellation now consumes the exact same-ESS carrier
+reservation while holding the selected-BSS leaf lock, before invalidating that
+selected value. It copies only BSSID and the post-cancellation publication
+epoch. After the lock and existing credential-revocation callbacks have been
+released, the controller revalidates epoch and BSSID inside its command gate
+and queues the independent 16-byte WCL link-down indication with normalized
+reason 5. No new timer, synthetic reassociation result, forced framework state
+or credential-preservation exception was introduced.
+
+Direct lower/preflight failures and explicit common carrier retirement consume
+the same one-shot reservation. A stale backend epoch cannot retire a newer
+lease. These direct paths finish their ordinary BSD publication before the
+new event's potentially yielding delivery, and cannot apply another DOWN after
+that callback. Cancellation fences retain their pre-existing lower state
+transition owners. Source-retaining scans have no replacement reservation and
+produce no new link-loss indication. An authorized successful RUN retires the
+reservation without a failure event; early IWX port authorization still waits
+for its committed RUN.
+
+Public disassociate, WCL leave/join-abort, radio off, RUN deauthentication and
+firmware beacon loss retire the replacement-only notification lease before
+their existing terminal path. A fresh public/WCL association also disarms it.
+Pre-RUN deauthentication has no eligible RUN-only link indication, so an actual
+lost replacement there retains the new common failure terminal.
+
+The expanded ASan/UBSan regression compiles the production cancellation body,
+snapshot/claim helpers, BSS replacement, carrier bridge and gated WCL producer.
+Its 98 cases include duplicate failures, cancellation before invalidation,
+reentrant epoch/BSSID replacement, same-BSSID newer joins, explicit cancellation,
+successful completion, missing lock/invalid identity rejection and the exact
+zero-initialized WCL payload. Dependency fixtures model state and callback
+boundaries, not hardware or crypto. The unchanged `a9918b4f` cancellation body
+compiles with the same fixture and fails the reservation-retirement assertion
+(exit 134); the corrected code passes. The full payload suite and adjacent
+SAE, association-comeback, initial-BSSID, WCL reassociation, three-family beacon
+loss, link-context and public-disassociate contracts pass.
+
+Build, exact-image load and repeated successful/failed on-air roaming are still
+required before this candidate can replace the published `964a90b3` image.

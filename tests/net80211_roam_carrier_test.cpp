@@ -2,14 +2,18 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <vector>
 using u_int64_t = uint64_t;
+using u_int8_t = uint8_t;
+#define IEEE80211_ADDR_LEN 6
 #define IEEE80211_STA_ONLY
 #define __IO80211_TARGET 260000
 #define __MAC_26_0 260000
 #define IEEE80211_NWID_LEN 32
 #define IEEE80211_ADDR_EQ(a,b) (std::memcmp(a,b,6)==0)
+#define IEEE80211_ADDR_COPY(a,b) std::memcpy(a,b,6)
 #include "constants.inc"
 enum ieee80211_phymode { ModeA };
 enum ieee80211_state { IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH,
@@ -25,10 +29,28 @@ enum { IEEE80211_F_BGSCAN=4, IEEE80211_F_DISABLE_BG_AUTO_CONNECT=8,
 enum { kAirportItlwmPostPltiTraceEventBssSelected,
        kAirportItlwmPostPltiTraceEventJoinBssEntered };
 enum { kIONetworkLinkValid=1, kIONetworkLinkActive=2 };
+enum { IEEE80211_SAE_WCL_REQUEST_BOUND=4,
+       IEEE80211_NEWSTATE_ARG_SCAN_HOP=1000,
+       IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE=1001 };
+struct IOSimpleLock { bool held=false; };
+static std::function<void()> onUnlock;
+using IOInterruptState = int;
+static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock) {
+    assert(!lock->held); lock->held=true; return 0;
+}
+static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, int) {
+    assert(lock->held); lock->held=false;
+    if (onUnlock) onUnlock();
+}
+struct ieee80211_pae_mfp_prepared {};
+struct ieee80211_sae_wcl_request_revocation {};
 struct Controller {
     std::vector<int> media;
+    std::function<void()> onLink;
     int getCurrentMedium() { return 0; }
-    void setLinkStatus(int status, int=0) { media.push_back(status); }
+    void setLinkStatus(int status, int=0) {
+        media.push_back(status); if (onLink) onLink();
+    }
 };
 struct _ifnet { int if_link_state=LINK_STATE_UP; Controller *controller; };
 struct ieee80211_node {
@@ -49,6 +71,17 @@ struct ieee80211com {
         ic_mgt_timer=5, ic_bgscan_timeout=0;
     uint8_t ic_des_essid[32]={'n','e','t'};
     uint64_t ic_pae_assoc_epoch=7, ic_roam_link_epoch=0;
+    uint64_t ic_pae_assoc_replace_epoch=0, ic_sae_wcl_policy_generation=0;
+    IOSimpleLock *ic_pae_selected_bss_lock=nullptr;
+    struct { uint64_t epoch=0; uint8_t bssid[6]={}; } ic_pae_selected_bss;
+    struct { uint64_t association_epoch=0, configuration_epoch=0;
+        int active=0, binding_pending=0; uint8_t bssid[6]={};
+    } ic_public_initial_bssid_pin;
+    uint8_t ic_des_bssid[6]={};
+    struct { int phase=0; uint64_t generation=0; } ic_sae_wcl_request;
+    int ic_sae_wcl_fresh_carrier_required=0, ic_sae_wcl_request_policy_starting=0;
+    void (*ic_pae_mfp_txn_cancel)(ieee80211com *, uint64_t)=nullptr;
+    void (*ic_event_handler)(ieee80211com *, int, void *)=nullptr;
     void (*ic_node_copy)(ieee80211com *, ieee80211_node *, const ieee80211_node *);
     int (*ic_newstate_preflight)(ieee80211com *, ieee80211_state, int)=nullptr;
     int (*ic_newstate)(ieee80211com *, ieee80211_state, int);
@@ -57,6 +90,35 @@ static uint64_t ieee80211_pae_assoc_epoch_current(const ieee80211com *ic) {
     return ic && ic->ic_opmode == IEEE80211_M_STA ? ic->ic_pae_assoc_epoch : 0;
 }
 void ieee80211_set_link_state(ieee80211com *, int);
+uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *, int);
+void ieee80211_pae_assoc_epoch_note_newstate(ieee80211com *, ieee80211_state, int);
+static uint64_t ieee80211_pae_assoc_epoch_begin(ieee80211com *ic) {
+    return ieee80211_pae_assoc_epoch_begin_internal(ic,0);
+}
+static uint64_t ieee80211_pae_assoc_epoch_advance_locked(ieee80211com *ic) {
+    if (++ic->ic_pae_assoc_epoch==0) ++ic->ic_pae_assoc_epoch;
+    return ic->ic_pae_assoc_epoch;
+}
+static void ieee80211_pae_selected_bss_invalidate(ieee80211com *ic) {
+    ic->ic_pae_selected_bss.epoch=0;
+    std::memset(ic->ic_pae_selected_bss.bssid,0,6);
+}
+static void ieee80211_sae_peer_rx_admission_clear_locked(ieee80211com *) {}
+static void ieee80211_public_initial_bssid_pin_clear_locked(ieee80211com *ic) {
+    ic->ic_public_initial_bssid_pin={};
+}
+static void ieee80211_sae_wcl_request_clear_locked(ieee80211com *,
+    ieee80211_sae_wcl_request_revocation *) {}
+static uint64_t ieee80211_pae_mfp_txn_cancel_locked(ieee80211com *,
+    ieee80211_pae_mfp_prepared *) { return 0; }
+static std::function<void(ieee80211com *)> onRevoke;
+static void ieee80211_sae_wcl_request_revocation_deliver(ieee80211com *ic,
+    ieee80211_sae_wcl_request_revocation *) {
+    assert(!ic->ic_pae_selected_bss_lock || !ic->ic_pae_selected_bss_lock->held);
+    if (onRevoke) onRevoke(ic);
+}
+static void ieee80211_pae_mfp_txn_dispose_prepared(ieee80211com *,
+    ieee80211_pae_mfp_prepared *) {}
 int ieee80211_roam_link_progress(ieee80211com *, ieee80211_state, ieee80211_state);
 static void AirportItlwmRegDiagNet80211LinkContext(ieee80211com *, uint32_t, uint64_t) {}
 static bool admitted=true, bindingRejected=false, preflightRejected=false;
@@ -80,7 +142,10 @@ static void copy_node(ieee80211com *, ieee80211_node *dst, const ieee80211_node 
     ++copies; *dst=*src; dst->ni_port_valid=0;
 }
 static uint8_t ieee80211_sae_selected_bss_profile(ieee80211_node *) { return 3; }
-static void ieee80211_pae_selected_bss_capture(ieee80211com *, ieee80211_node *, uint8_t, uint64_t) {}
+static void ieee80211_pae_selected_bss_capture(ieee80211com *ic, ieee80211_node *ni, uint8_t, uint64_t epoch) {
+    ic->ic_pae_selected_bss.epoch=epoch;
+    IEEE80211_ADDR_COPY(ic->ic_pae_selected_bss.bssid,ni->ni_bssid);
+}
 static int ieee80211_sae_wcl_request_bind_selected_bss(ieee80211com *, ieee80211_node *, uint64_t) {
     return bindingRejected ? -1 : 0;
 }
@@ -94,8 +159,7 @@ static int newstate(ieee80211com *ic, ieee80211_state state, int) {
     return 0;
 }
 static void ieee80211_new_state(ieee80211com *ic, ieee80211_state state, int arg) {
-    if (state == IEEE80211_S_SCAN || state == IEEE80211_S_INIT)
-        ++ic->ic_pae_assoc_epoch;
+    ieee80211_pae_assoc_epoch_note_newstate(ic,state,arg);
     newstate(ic,state,arg);
 }
 static void ieee80211_fix_rate(ieee80211com *, ieee80211_node *, int) {}
@@ -104,18 +168,59 @@ static void ieee80211_node_newstate(ieee80211_node *, int) {}
 static void timeout_del(int *) {}
 #include "production.inc"
 
+static std::vector<ieee80211_roam_link_loss> losses;
+static void record_loss(ieee80211com *ic, int event, void *data) {
+    assert(!ic->ic_pae_selected_bss_lock || !ic->ic_pae_selected_bss_lock->held);
+    assert(event==IEEE80211_EVT_STA_ROAM_LINK_LOST && data);
+    losses.push_back(*static_cast<ieee80211_roam_link_loss *>(data));
+}
+
+using IOReturn = int;
+enum { kIOReturnSuccess, kIOReturnBadArgument, kIOReturnNotReady };
+constexpr unsigned kTahoeWclLinkChanged=0xd8;
+constexpr uint8_t kTahoeWclInfraInterfaceType=1;
+struct OSObject { virtual ~OSObject()=default; };
+#define OSDynamicCast(T, value) dynamic_cast<T *>(value)
+struct TahoeOwnerRegistry {
+    struct AssociationOwner { unsigned token=0; };
+    AssociationOwner association, publicAssociation;
+};
+struct Hal {
+    ieee80211com *ic;
+    ieee80211com *get80211Controller() { return ic; }
+};
+struct AirportItlwm : OSObject {
+    void *fNetIf=this;
+    Hal *fHalService=nullptr;
+    TahoeOwnerRegistry registry;
+    std::vector<TahoeWclLinkChangedPayload> messages;
+    TahoeOwnerRegistry &getTahoeOwnerRegistry() { return registry; }
+    void postMessage(void *netif, unsigned selector, const void *data,
+                     size_t length, bool async) {
+        assert(netif==this && selector==0xd8 && length==16 && async);
+        messages.push_back(*static_cast<const TahoeWclLinkChangedPayload *>(data));
+    }
+};
+#include "controller.inc"
+
 struct Fixture {
     Controller controller;
+    IOSimpleLock lock;
     ieee80211_node source, target;
     ieee80211com ic;
     Fixture() {
         target.ni_bssid[0]=target.ni_macaddr[0]=4;
         ic.ic_bss=&source; ic.ic_if.controller=&controller;
+        ic.ic_pae_selected_bss_lock=&lock;
         ic.ic_node_copy=copy_node; ic.ic_newstate=newstate;
         ic.ic_newstate_preflight=preflight;
         admitted=true; bindingRejected=preflightRejected=false;
         cancelDuringStop=false;
         backendError=stops=copies=0;
+        onRevoke={};
+        onUnlock={};
+        losses.clear();
+        ic.ic_event_handler=record_loss;
     }
     void open() {
         ic.ic_flags &= ~IEEE80211_F_RSNON;
@@ -225,6 +330,122 @@ int main() {
     {
         Fixture f; f.open(); f.ic.ic_flags|=IEEE80211_F_WEPON;
         assert(ieee80211_roam_link_source_epoch(&f.ic,&f.target)==0);
+        ++cases;
+    }
+    for (auto state : {IEEE80211_S_AUTH,IEEE80211_S_ASSOC,IEEE80211_S_RUN}) {
+        Fixture f; f.join(); f.ic.ic_state=state;
+        const auto retired=ieee80211_pae_assoc_epoch_begin(&f.ic);
+        assert(retired==9 && f.ic.ic_roam_link_epoch==0);
+        assert(f.ic.ic_pae_selected_bss.epoch==0);
+        assert(losses.size()==1 && losses[0].epoch==9);
+        assert(IEEE80211_ADDR_EQ(losses[0].bssid,f.target.ni_bssid));
+        const auto copied=losses[0];
+        Hal hal{&f.ic}; AirportItlwm driver; driver.fHalService=&hal;
+        driver.registry.association.token=11;
+        driver.registry.publicAssociation.token=12;
+        assert(postTahoeWclRoamLinkLossGated(&driver,(void *)&copied,nullptr,nullptr,nullptr)==kIOReturnSuccess);
+        assert(driver.registry.association.token==0 && driver.registry.publicAssociation.token==0);
+        assert(driver.messages.size()==1);
+        const auto &event=driver.messages[0];
+        assert(event.linkState==0 && event.interfaceType==1 && event.reasonCode==5 && event.reserved==0);
+        assert(IEEE80211_ADDR_EQ(event.bssid,f.target.ni_bssid));
+        ieee80211_new_state(&f.ic,IEEE80211_S_SCAN,-1);
+        assert(f.ic.ic_if.if_link_state==LINK_STATE_DOWN && losses.size()==1);
+        // Entering the controller gate after a new same-BSSID epoch must not
+        // clear that newer owner's leases or publish another link indication.
+        driver.registry.association.token=22;
+        assert(postTahoeWclRoamLinkLossGated(&driver,(void *)&copied,nullptr,nullptr,nullptr)==kIOReturnNotReady);
+        assert(driver.registry.association.token==22 && driver.messages.size()==1);
+        ++cases;
+    }
+    for (unsigned kind=0; kind<5; ++kind) {
+        Fixture f; f.join();
+        if (kind==0) ieee80211_roam_link_cancel(&f.ic);
+        if (kind==1) ieee80211_sae_wcl_fresh_carrier_accepted(&f.ic);
+        if (kind==2) {
+            f.source.ni_port_valid=1; f.ic.ic_state=IEEE80211_S_RUN;
+            ieee80211_set_link_state(&f.ic,LINK_STATE_UP);
+        }
+        if (kind==3) onRevoke=[](ieee80211com *ic) { ++ic->ic_pae_assoc_epoch; };
+        if (kind==4) onRevoke=[](ieee80211com *ic) { ic->ic_bss->ni_bssid[0]=6; };
+        ieee80211_pae_assoc_epoch_begin(&f.ic);
+        assert(losses.empty());
+        ++cases;
+    }
+    for (unsigned kind=0; kind<5; ++kind) {
+        Fixture f; f.join();
+        if (kind==0) ieee80211_roam_link_failed(&f.ic,8);
+        if (kind==1) ieee80211_set_link_state(&f.ic,LINK_STATE_DOWN);
+        if (kind==2) {
+            f.controller.onLink=[&f] { ++f.ic.ic_pae_assoc_epoch; };
+            ieee80211_roam_link_failed(&f.ic,8);
+        }
+        if (kind==3) {
+            f.ic.ic_pae_selected_bss_lock=nullptr;
+            ieee80211_roam_link_failed(&f.ic,8);
+        }
+        if (kind==4) {
+            f.ic.ic_pae_selected_bss.bssid[0]=1;
+            ieee80211_roam_link_failed(&f.ic,8);
+        }
+        assert(f.ic.ic_roam_link_epoch==0 && f.ic.ic_if.if_link_state==LINK_STATE_DOWN);
+        assert(losses.size()==(kind<2 ? 1U : 0U));
+        ieee80211_roam_link_failed(&f.ic,8);
+        ieee80211_set_link_state(&f.ic,LINK_STATE_DOWN);
+        assert(losses.size()==(kind<2 ? 1U : 0U));
+        assert(f.controller.media.size()==1);
+        ++cases;
+    }
+    {
+        Fixture f; // No admitted replacement: scan failure is not link loss.
+        ieee80211_pae_assoc_epoch_begin(&f.ic);
+        assert(losses.empty() && f.controller.media.empty());
+        ++cases;
+    }
+    for (unsigned invalid=0; invalid<10; ++invalid) {
+        Fixture f; f.join();
+        ieee80211_roam_link_loss loss{};
+        assert(ieee80211_roam_link_take_loss(&f.ic,8,&loss));
+        Hal hal{&f.ic}; AirportItlwm driver; driver.fHalService=&hal;
+        driver.registry.association.token=31;
+        OSObject *object=&driver;
+        void *argument=&loss;
+        switch (invalid) {
+        case 0: object=nullptr; break;
+        case 1: driver.fNetIf=nullptr; break;
+        case 2: driver.fHalService=nullptr; break;
+        case 3: argument=nullptr; break;
+        case 4: hal.ic=nullptr; break;
+        case 5: f.ic.ic_bss=nullptr; break;
+        case 6: f.ic.ic_opmode=IEEE80211_M_HOSTAP; break;
+        case 7: loss.epoch=0; break;
+        case 8: loss.bssid[0]=1; break;
+        case 9: loss.bssid[0]=6; break;
+        }
+        assert(postTahoeWclRoamLinkLossGated(object,argument,nullptr,nullptr,nullptr)!=kIOReturnSuccess);
+        assert(driver.messages.empty() && driver.registry.association.token==31);
+        ++cases;
+    }
+    {
+        Fixture f; f.join();
+        onUnlock=[&f] {
+            f.ic.ic_pae_assoc_epoch=9;
+            f.ic.ic_roam_link_epoch=9;
+        };
+        ieee80211_roam_link_failed(&f.ic,8);
+        assert(f.ic.ic_roam_link_epoch==9 && losses.empty() && f.controller.media.empty());
+        ++cases;
+    }
+    {
+        Fixture f; f.join(); f.ic.ic_roam_link_epoch=9;
+        ieee80211_roam_link_note_terminal(&f.ic,LINK_STATE_DOWN,8);
+        assert(f.ic.ic_roam_link_epoch==9);
+        ++cases;
+    }
+    {
+        Fixture f; f.ic.ic_pae_selected_bss_lock=nullptr; f.join();
+        assert(f.ic.ic_roam_link_epoch==0 && f.ic.ic_if.if_link_state==LINK_STATE_DOWN);
+        assert(losses.empty());
         ++cases;
     }
     std::printf("PASS: %u actual roam carrier ownership/bridge and BSS replacement cases\n",cases);

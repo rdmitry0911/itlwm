@@ -6820,6 +6820,7 @@ setDISASSOCIATE(void *ad)
     // association attempt regardless of which sub-path the
     // disassociate edge takes from here. The clear logs only a
     // credential-safe reason marker and never the PMK bytes.
+    ieee80211_roam_link_cancel(ic);
     clearExternalPmkEligibilityLocked("setDISASSOCIATE");
     ic->ic_pae_mfp_requested = 0;
 
@@ -8676,6 +8677,7 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
     // any externally delivered PMK. Clear before any early return so
     // the host supplicant PMK store does not survive a leave into the
     // next association attempt, regardless of the ic state at entry.
+    ieee80211_roam_link_cancel(ic);
     clearExternalPmkEligibilityLocked("setWCL_LEAVE_NETWORK");
     ic->ic_pae_mfp_requested = 0;
 
@@ -9699,6 +9701,7 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
     if (instance != nullptr)
         instance->getTahoeOwnerRegistry().publicAssociation =
             TahoeOwnerRegistry::AssociationOwner{};
+    ieee80211_roam_link_cancel(ic);
     clearExternalPmkEligibilityLocked("setWCL_JOIN_ABORT");
 
     // AppleBCMWLANCore::setWCL_JOIN_ABORT does not reject NULL. It maps NULL to

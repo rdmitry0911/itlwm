@@ -83,6 +83,7 @@ struct ieee80211_node;
 struct ieee80211_rxinfo;
 struct ieee80211_rsnparams;
 struct ieee80211_pae_selected_bss;
+struct ieee80211_roam_link_loss;
 struct ieee80211_sae_wcl_bound_request;
 struct ItlSaeAuthTxRequestV1;
 struct ItlSaeAuthPeerEventV1;
@@ -444,6 +445,9 @@ extern	int ieee80211_sae_peer_rx_snapshot_admission(struct ieee80211com *,
 	    const u_int8_t[IEEE80211_ADDR_LEN], u_int64_t *, u_int64_t *);
 extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 		enum ieee80211_state, int);
+extern	void ieee80211_roam_link_cancel(struct ieee80211com *);
+extern	int ieee80211_roam_link_loss_current(const struct ieee80211com *,
+	    const struct ieee80211_roam_link_loss *);
 #define IEEE80211_NEWSTATE_BACKEND_ARG(_nstate, _arg) \
 	(((_nstate) == IEEE80211_S_SCAN && \
 	  ((_arg) == IEEE80211_NEWSTATE_ARG_SCAN_HOP || \
