@@ -50,10 +50,71 @@ The corrected header passes all 1212 combinations; the unchanged `3860507a`
 header compiles and fails the exact missing-CCA validity assertion. The full
 payload-builder and existing WCL/scan/PMF trace regression suite also passes.
 
-The change is not yet built, loaded or runtime-qualified. Qualification must
+At the source-test checkpoint the change was not yet built or loaded. Qualification must
 observe the corrected bytes at the real Infra endpoint while retaining actual
 RSSI and counter events, then verify real WPA3/PMF, DHCP, traffic and recovery
 after S3. Existing repeated pure-SAE joins on the old image succeeded but
 still lost packets; a causal connection between false CCA and those losses
 has not been established. Removing false CCA must not be relabeled as a
 lossless-roaming or full GUI/reconnect fix.
+
+## Loaded-image producer and actual userspace consumer
+
+Source `cf4b50ad` built with all 1085 external symbols resolved. Private
+five-member AuxKC admission and transactional activation passed, preserving
+the four companion members. The 23:49:49 UTC guest boot loaded UUID
+`A476957E-AC9D-3712-B32E-F6C2BB870F81`, matching the frozen and installed
+Mach-O SHA-256
+`9aad4a139c73a658f171e2ae04ba7fcb2dfae6500ab20ef9f02d518047843201`.
+
+At 23:50:59 UTC the same real controller and Infra endpoints emitted
+RSSI -69, CCA validity zero, CCA byte zero and event validity one. Independent
+noise -93, SNR 24, TX 148, RX 409 and beacon 462 values remained present;
+the producer returned success. The observer ended with zero errors. The
+new airportd process independently logged seven periodic events between
+23:50:14 and 23:50:59, preserving RSSI/noise/SNR and changing frame/beacon
+counters, while omitting the unavailable CCA field. It did not report a
+fabricated zero-percent measurement instead of the previous negative value.
+
+That first observer overlapped the start of the native-sharing regression,
+so it covers one driver event before STA stopped, not an uninterrupted
+multi-sample STA traffic qualification. Likewise, a concurrent ten-packet
+STA check received nine replies across that role change; it is not a
+steady-state comparison or a demonstrated regression caused by this change.
+The full AP, STA and S3 qualification remains in progress; no new release
+has been promoted at this point.
+
+## Native AP regression failure: release remains held
+
+On this same loaded candidate, native WPA3 and then WPA2 Internet Sharing
+each passed real client DHCP, 20/20 client-to-gateway packets, independently
+isolated cold-neighbor 10/10 reverse packets, and routed HTTP. External client
+state confirmed SAE with required PMF for WPA3 and WPA2-PSK for WPA2.
+
+The following open sharing start failed: the external client could not find
+its SSID. Fresh full and directed scans did not discover it. Separate bounded
+standalone monitor captures on both relevant 2.4-GHz channels received 238
+and 196 other beacon/probe-response frames without kernel drops, but no test
+AP. The primary STA subsequently recovered its ordinary saved network. An
+active-looking BSD interface/bridge was therefore not proof of an on-air AP;
+later both interfaces reported inactive.
+
+A read-only observer using the exact candidate's AP-owner object DWARF
+recorded lifecycle 5 (Terminal) together with AP-up 1 from 00:01:15 through
+00:01:33 UTC. Stop, resume, initial-start and confirmed-start flags were all
+clear. The observer completed without errors. The watchdog did not query the
+lower AP channel because its `isApRunning()` predicate rejects Terminal.
+
+A subsequent standard open retry never reached the instrumented HostAP
+start/stop methods. airportd instead rejected stop because the primary did
+not report SWAP mode. The bounded observer ended at 00:06:45 UTC without
+errors. Normal sharing disable followed by ordinary Wi-Fi off/on also left
+the contradictory owner state unchanged; another native WPA2 attempt failed
+external discovery and again encountered the userspace stop rejection.
+
+This identifies a persistent AP lifecycle/public-mode disagreement. A stale
+or reentrant lower-stop completion is a hypothesis, not yet a captured causal
+interleaving. No AP source correction has been made, and the evidence does not
+establish that the independent CCA change introduced this failure. The public
+release remains the previously qualified `893a3114` image. A fresh same-image
+boot and instrumented native mode sequence are required before any promotion.
