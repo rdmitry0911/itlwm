@@ -143,6 +143,7 @@ public:
 
 private:
     void initSoftAPParameters();
+    void advanceHostAPRequestGeneration();
     void resetRuntimeState();
     IOReturn driveLowerStopToTerminal();
     void restoreRetainedPrimaryStaLinkAfterStop();
@@ -171,6 +172,11 @@ private:
     uint8_t apCredential[0x40];
     uint32_t apCredentialLength;
     bool lowerStopPending;
+    // commandSleep() in an Intel HAL call releases the upper workloop gate.
+    // A newer public intent may be admitted there, but must not enter a
+    // second lower AP operation or let the older call publish its result.
+    bool lowerAPCallInFlight;
+    uint64_t hostAPRequestGeneration;
     // A public HostAP handoff or stop can each transiently withdraw the
     // primary controller carrier. Keep exactly one pre-transition,
     // authorized STA observation and consume it on that carrier edge.

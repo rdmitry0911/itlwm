@@ -13,6 +13,20 @@
 
 OSDefineMetaClassAndStructors(AirportItlwmAPSTAOwner, OSObject)
 
+namespace {
+class APSTALowerCallScope {
+public:
+    explicit APSTALowerCallScope(bool &inFlight) : flag(inFlight) {
+        flag = true;
+    }
+    ~APSTALowerCallScope() { flag = false; }
+private:
+    APSTALowerCallScope(const APSTALowerCallScope &) = delete;
+    APSTALowerCallScope &operator=(const APSTALowerCallScope &) = delete;
+    bool &flag;
+};
+}
+
 static uint64_t apsta_primary_association_epoch(const struct ieee80211com *ic)
 {
     /* DVM can temporarily publish HOSTAP while its primary STA RXON is
@@ -524,6 +538,8 @@ bool AirportItlwmAPSTAOwner::initWithController(
     bzero(apCredential, sizeof(apCredential));
     apCredentialLength = 0;
     lowerStopPending = false;
+    lowerAPCallInFlight = false;
+    hostAPRequestGeneration = 1;
     primaryStaCarrierHoldPending = false;
     primaryStaHandoffAssociationEpoch = 0;
     primaryStaPostStopWclAssociationPending = false;
@@ -635,6 +651,12 @@ void AirportItlwmAPSTAOwner::initSoftAPParameters()
     state.softapAppliedDtimPeriod6a = state.softapDtimPeriod16;
 }
 
+void AirportItlwmAPSTAOwner::advanceHostAPRequestGeneration()
+{
+    if (++hostAPRequestGeneration == 0)
+        ++hostAPRequestGeneration;
+}
+
 void AirportItlwmAPSTAOwner::resetRuntimeState()
 {
     primaryStaHandoffScanArmed = false;
@@ -706,6 +728,9 @@ void AirportItlwmAPSTAOwner::setSoftAPPowerSaveState(uint8_t newState, uint8_t r
 
 IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
 {
+    if (lowerAPCallInFlight || lowerStopPending)
+        return kIOReturnNotReady;
+    const uint64_t requestGeneration = hostAPRequestGeneration;
     if (owner == nullptr || owner->fHalService == nullptr) {
         lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
         state.resetState26c = 0;
@@ -750,7 +775,9 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
     cfg.beaconInterval = state.softapBeaconInterval14;
     cfg.dtimPeriod = static_cast<uint8_t>(state.softapDtimPeriod16);
     cfg.authUpper = apAuthUpper;
-    cfg.ssid = state.softapSsid278;
+    uint8_t ssidSnapshot[sizeof(state.softapSsid278)];
+    memcpy(ssidSnapshot, state.softapSsid278, sizeof(ssidSnapshot));
+    cfg.ssid = ssidSnapshot;
     cfg.ssidLength = state.softapSsidLength274;
     cfg.credential = apCredentialLength != 0 ? apCredential : nullptr;
     cfg.credentialLength = apCredentialLength;
@@ -796,8 +823,17 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
         return kIOReturnBadArgument;
     }
     cfg.beaconTemplate = beaconTemplate;
+    // A public successor may replace the durable profile while the HAL
+    // sleeps in SCAN_ABORT. Keep this submitted profile internally coherent.
+    uint8_t credentialSnapshot[sizeof(apCredential)];
+    memcpy(credentialSnapshot, apCredential, sizeof(credentialSnapshot));
+    cfg.credential = apCredentialLength != 0 ? credentialSnapshot : nullptr;
+    const bool hidden = state.hiddenNetworkFlag0d != 0;
+    APSTALowerCallScope lowerCall(lowerAPCallInFlight);
     IOReturn ret = owner->fHalService->startAPMode(&cfg);
-    if (ret == kIOReturnSuccess && state.hiddenNetworkFlag0d != 0) {
+    explicit_bzero(credentialSnapshot, sizeof(credentialSnapshot));
+    if (ret == kIOReturnSuccess &&
+        requestGeneration == hostAPRequestGeneration && hidden) {
         /*
          * A radio reset reconstructs the lower AP from the retained public
          * profile.  closednet is a separate Apple selector, so replay it
@@ -811,6 +847,18 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
         ret = owner->fHalService->setAPHidden(true);
         if (ret != kIOReturnSuccess)
             (void)owner->fHalService->stopAPMode();
+    }
+    if (requestGeneration != hostAPRequestGeneration || lowerStopPending) {
+        // No other lower start can run inside this scope. Even if an
+        // intervening reset/stop has already reached an upper terminal,
+        // the old HAL call may just have queued its PAN. Retire that lower
+        // context before replaying any independently accepted replacement.
+        lowerStopPending = true;
+        state.resetState26c = 0;
+        state.hostApTransitionState270 = 1;
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        XYLog("APSTA superseded lower start awaits stop terminal\n");
+        return kIOReturnAborted;
     }
     if (ret == kIOReturnSuccess) {
         lifecycle = kAirportItlwmAPSTAOwnerRunning;
@@ -826,6 +874,14 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
          * successful lower-mode edge.
          */
         owner->setAPSTADatapathEnabled(true);
+        if (requestGeneration != hostAPRequestGeneration || lowerStopPending) {
+            owner->setAPSTADatapathEnabled(false);
+            lowerStopPending = true;
+            state.resetState26c = 0;
+            state.hostApTransitionState270 = 1;
+            lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+            return kIOReturnAborted;
+        }
     } else {
         lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
         state.resetState26c = 0;
@@ -835,6 +891,7 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
 
 IOReturn AirportItlwmAPSTAOwner::stopLower()
 {
+    advanceHostAPRequestGeneration();
     radioResetResumePending = false;
     radioResetWaitForPrimaryStaRun = false;
     radioResetPrimaryStaScanHandoff = false;
@@ -893,7 +950,10 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
 {
     if (!lowerStopPending)
         return kIOReturnSuccess;
+    if (lowerAPCallInFlight)
+        return kIOReturnNotReady;
 
+    APSTALowerCallScope lowerCall(lowerAPCallInFlight);
     const IOReturn result =
         owner != nullptr && owner->fHalService != nullptr
             ? owner->fHalService->stopAPMode() : kIOReturnSuccess;
@@ -904,6 +964,7 @@ IOReturn AirportItlwmAPSTAOwner::driveLowerStopToTerminal()
     }
 
     lowerStopPending = false;
+    state.resetState26c = 0;
     state.hostApTransitionState270 = 0;
     if (lifecycle != kAirportItlwmAPSTAOwnerFreed)
         lifecycle = kAirportItlwmAPSTAOwnerTerminal;
@@ -1027,6 +1088,7 @@ void AirportItlwmAPSTAOwner::restoreRetainedPrimaryStaLinkAfterStop()
 
 void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()
 {
+    advanceHostAPRequestGeneration();
     /*
      * This path is immediately followed by HAL disable and a destructive
      * Intel firmware reset.  Apple hostAPPowerOff still makes the no-client
@@ -1059,6 +1121,7 @@ void AirportItlwmAPSTAOwner::prepareEmptyAPForRadioReset()
 void AirportItlwmAPSTAOwner::prepareRetainedLowerReset(
     uint16_t lowerChannel)
 {
+    advanceHostAPRequestGeneration();
     /*
      * The upper HostAP profile is the durable owner across a destructive
      * Intel firmware epoch.  The lower channel is authoritative after an
@@ -1166,6 +1229,7 @@ void AirportItlwmAPSTAOwner::prepareForRadioReset()
 
 IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
 {
+    uint64_t requestGeneration = hostAPRequestGeneration;
     /* An explicit HostAP NULL outranks every retained-profile replay.  Drive
      * its asynchronous IWX teardown from the same once-per-second command-
      * gated census until the HAL reports the actual lower terminal.  Tahoe
@@ -1175,6 +1239,8 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
      * arbitration instead of dropping the replacement request. */
     if (lowerStopPending) {
         const IOReturn stopResult = driveLowerStopToTerminal();
+        if (requestGeneration != hostAPRequestGeneration)
+            return kIOReturnAborted;
         if (stopResult != kIOReturnSuccess)
             return stopResult;
         if (!confirmedHostAPStartPending)
@@ -1216,6 +1282,7 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
             XYLog("APSTA unexpected lower reset detected; retaining "
                   "HostAP profile\n");
             prepareRetainedLowerReset(0);
+            requestGeneration = hostAPRequestGeneration;
         } else {
             /* Keep the durable profile aligned with a completed lower CSA so
              * an unexpected reset between PM callbacks replays the actual
@@ -1296,6 +1363,8 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
             const IOReturn handoffResult =
                 airportItlwmHandoffPrimaryStaRecoveryScanToAP(
                     owner->fHalService);
+            if (requestGeneration != hostAPRequestGeneration)
+                return kIOReturnAborted;
             XYLog("APSTA bounded primary foreground scan handoff "
                   "wait_ticks=%u public_hostap=%u result=0x%x\n",
                   static_cast<unsigned>(radioResetResumeWaitTicks),
@@ -1347,7 +1416,11 @@ IOReturn AirportItlwmAPSTAOwner::resumeAfterRadioReset()
         }
     }
 
+    if (requestGeneration != hostAPRequestGeneration)
+        return kIOReturnAborted;
     const IOReturn result = startLowerIfReady();
+    if (requestGeneration != hostAPRequestGeneration)
+        return kIOReturnAborted;
     if (result == kIOReturnSuccess) {
         radioResetResumePending = false;
         radioResetPrimaryStaScanHandoff = false;
@@ -1675,7 +1748,7 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
          * private terminal fence.  A later non-NULL carrier can then queue a
          * replacement without racing the old firmware context. */
         if (!isApRunning() && !radioResetResumePending &&
-            !lowerStopPending)
+            !lowerStopPending && !lowerAPCallInFlight)
             return kIOReturnSuccess;
         const IOReturn stopResult = stopLower();
         if (stopResult == kIOReturnSuccess)
@@ -1725,6 +1798,8 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     if (channelResult != kIOReturnSuccess)
         return channelResult;
 
+    advanceHostAPRequestGeneration();
+    const uint64_t requestGeneration = hostAPRequestGeneration;
     state.softapSsidLength274 = in->ssidLength1c;
     bzero(state.softapSsid278, sizeof(state.softapSsid278));
     memcpy(state.softapSsid278, in->ssid20, in->ssidLength1c);
@@ -1733,6 +1808,24 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     apCredentialLength = in->credentialLength44;
     if (apCredentialLength != 0) {
         memcpy(apCredential, in->credential50, apCredentialLength);
+    }
+
+    if (lowerAPCallInFlight) {
+        // The new profile is owned, but an older start/stop still holds a
+        // borrowed HAL call. Its eventual completion cannot publish this
+        // request; drain the old context and let the census start this one.
+        lowerStopPending = true;
+        confirmedHostAPStartPending = true;
+        initialHostAPAdmissionPending = false;
+        interfaceDrivenHostAPConfirmationPending = false;
+        state.resetState26c = 0;
+        state.hostApTransitionState270 = 1;
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        radioResetWaitForPrimaryStaRun = false;
+        radioResetPrimaryStaScanHandoff = false;
+        radioResetResumeWaitTicks = 0;
+        radioResetResumePending = true;
+        return kIOReturnSuccess;
     }
 
     if (isApRunning()) {
@@ -1775,6 +1868,8 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
         radioResetPrimaryStaScanHandoff = false;
         radioResetResumeWaitTicks = 0;
         const IOReturn stopResult = driveLowerStopToTerminal();
+        if (requestGeneration != hostAPRequestGeneration)
+            return kIOReturnAborted;
         if (stopResult != kIOReturnSuccess) {
             if (apsta_lower_stop_pending(stopResult)) {
                 XYLog("APSTA queued confirmed HostAP replacement behind "
@@ -1794,6 +1889,8 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
     }
 
     const IOReturn result = startLowerIfReady();
+    if (requestGeneration != hostAPRequestGeneration)
+        return kIOReturnAborted;
     if (result == kIOReturnSuccess) {
         radioResetResumePending = false;
         radioResetWaitForPrimaryStaRun = false;
