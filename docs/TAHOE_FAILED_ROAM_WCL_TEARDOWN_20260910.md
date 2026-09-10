@@ -288,3 +288,16 @@ its extracted Mach-O SHA-256 is
 Guest extraction, canonical/frozen comparisons, host transfer and ZIP integrity
 checks passed. The previous public archive and notes are retained privately.
 Publication and independent public-download verification are the next step.
+
+## Published artifact verification
+
+The Tahoe `v2.4.0-alpha` asset was replaced at 13:08:35 UTC with source
+`b5c6cfd8`, asset ID `555040315`, size 15,613,137 bytes. The loaded boot,
+kext UUID and installed Mach-O hash were independently rechecked immediately
+before publication. A fresh public download is byte-identical to the qualified
+archive, with both ZIP and extracted Mach-O hashes matching the values above.
+The raw GitHub release-body string also matches the staged notes byte for byte.
+An initial CLI text-rendering comparison had an extra output newline; comparison
+of the raw JSON body resolved that formatting difference without rewriting the
+published notes. The previous archive and notes remain available for rollback.
+No physical user host was installed or rebooted.
