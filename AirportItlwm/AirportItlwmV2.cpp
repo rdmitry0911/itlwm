@@ -7276,10 +7276,21 @@ void AirportItlwm::requestAPTxDequeue()
 {
     if (!isHostApRunning())
         return;
+    /*
+     * The 25C56 IOSkywalkTxSubmissionQueue::requestDequeue option bit 0
+     * increments the pending-work generation and signals its workloop.
+     * Option 0 instead calls packetSubmission synchronously, even from an
+     * RX notification. A client-association/low-water kick must let that RX
+     * handler return its descriptors before processing the queued TX tail.
+     * Use the queue's own event source: disable/removal keeps its existing
+     * lifetime and packet-completion ownership, without a separate callback.
+     */
+    constexpr IOOptionBits kAPTxDequeueAsync = 1U;
     for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i) {
         if (fAPSTATxQueues[i] != nullptr &&
             fAPSTATxQueues[i]->isEnabled()) {
-            (void)fAPSTATxQueues[i]->requestDequeue(nullptr, 0);
+            (void)fAPSTATxQueues[i]->requestDequeue(nullptr,
+                                                  kAPTxDequeueAsync);
         }
     }
 }

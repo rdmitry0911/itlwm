@@ -6314,7 +6314,15 @@ IOReturn ItlIwn::transmitAPData(mbuf_t packet)
     const IOReturn result = workLoop->inGate()
         ? iwn_ap_data_tx_action(this, packet, NULL, NULL, NULL)
         : gate->attemptAction(&ItlIwn::iwn_ap_data_tx_action, packet);
-    if (result != kIOReturnSuccess) {
+    /*
+     * Ordinary security/client rejection and ring backpressure are packet
+     * results, not command-gate failures. Preserve their completion/drop
+     * accounting in the caller, without synchronously printing one console
+     * line per rejected packet while the controller workloop is held.
+     */
+    if (result != kIOReturnSuccess &&
+        result != kIOReturnOutputDropped &&
+        result != kIOReturnNoResources) {
         XYLog("%s: AP Ethernet TX gate failed result=0x%x workloop=%p "
               "in_gate=%u\n",
               com.sc_dev.dv_xname, result,

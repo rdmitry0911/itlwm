@@ -97,7 +97,9 @@ restart = body(
     "void AirportItlwm::requestAPTxDequeue()",
     'extern "C" void\nairportItlwmRequestAPTxDequeue(',
 )
-assert "fAPSTATxQueues[i]->requestDequeue(nullptr, 0)" in restart
+assert "constexpr IOOptionBits kAPTxDequeueAsync = 1U;" in restart
+assert "kAPTxDequeueAsync);" in restart
+assert "requestDequeue(nullptr, 0)" not in restart
 
 print("PASS: Tahoe APSTA TX queues honor shared PAN-ring backpressure")
 PY
