@@ -244,6 +244,9 @@ struct iwm_nvm_data {
 #define IWM_MAX_CMD_TBS_PER_TFD 2
 
 struct iwm_host_cmd {
+    /* Host-only physical scan reservation; never encoded as a firmware UID. */
+    uint64_t scan_serial;
+    struct ItlFirmwareContextCommand *context_command;
     const void *data[IWM_MAX_CMD_TBS_PER_TFD];
     struct iwm_rx_packet *resp_pkt;
     size_t resp_pkt_len;

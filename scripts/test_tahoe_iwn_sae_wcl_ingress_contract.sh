@@ -230,7 +230,9 @@ ordered(reserve, "active lower scan remains a deferable exact admission",
         "sc->sc_sae_wcl_admission_requires_fresh_scan =")
 require(common, "iwnHal->saeWclCredentialAdmissionRequiresFreshScan()",
         "cached-join lower radio owner fence")
-newstate = body(iwn, "iwn_newstate(struct ieee80211com *ic,",
+require(body(iwn, "iwn_newstate(struct ieee80211com *ic,", "IWN callback wrapper"),
+        "return iwn_newstate_impl(ic, nstate, arg, 0);", "ordinary state forwarding")
+newstate = body(iwn, "iwn_newstate_impl(struct ieee80211com *ic,",
                 "IWN state transition")
 ordered(newstate, "active-scan direct SAE abort/replay",
         "direct_sae_scan_generation != 0",

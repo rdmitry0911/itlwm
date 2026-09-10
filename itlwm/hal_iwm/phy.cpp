@@ -422,52 +422,104 @@ iwm_send_dqa_cmd(struct iwm_softc *sc)
 int ItlIwm::
 iwm_binding_cmd(struct iwm_softc *sc, struct iwm_node *in, uint32_t action)
 {
-    struct iwm_binding_cmd cmd;
-    struct iwm_phy_ctxt *phyctxt = in->in_phyctxt;
-    uint32_t mac_id = IWM_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color);
-    int i, err, active = (sc->sc_flags & IWM_FLAG_BINDING_ACTIVE);
-    uint32_t status;
-    size_t len;
-    
-    if (action == IWM_FW_CTXT_ACTION_ADD && active) {
-        return 0;
-    }
-    if (action == IWM_FW_CTXT_ACTION_REMOVE && !active) {
-        return 0;
-    }
-    
-    if (phyctxt == NULL) /* XXX race with iwm_stop() */
+    using Lease = ItlFirmwareContextLease;
+    const bool remove = action == IWM_FW_CTXT_ACTION_REMOVE;
+    if (action != IWM_FW_CTXT_ACTION_ADD && !remove)
         return EINVAL;
-    
-    memset(&cmd, 0, sizeof(cmd));
-    
-    cmd.id_and_color
-    = htole32(IWM_FW_CMD_ID_AND_COLOR(phyctxt->id, phyctxt->color));
+    struct ieee80211com *ic = &sc->sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || (!remove && ownerLock == NULL))
+        return ENXIO;
+    IOInterruptState ownerIrq = 0;
+    if (!remove)
+        ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const uint32_t generation = sc->sc_generation;
+    ItlFirmwareContextIdentity identity = {};
+    ItlFirmwareContextReceipt receipt = {};
+    int error = 0;
+    if (sc->sc_flags & IWM_FLAG_SHUTDOWN)
+        error = ENXIO;
+    else if (remove) {
+        identity = primaryBindingContext.owner.identity;
+        if (sc->sc_flags & IWM_FLAG_STA_ACTIVE)
+            error = EBUSY;
+    } else if (in == NULL || in->in_phyctxt == NULL ||
+               in->in_phyctxt->channel == NULL) {
+        error = EINVAL;
+    } else {
+        identity.attempt = ItlScanCommandPolicy::identityLocked(ic);
+        identity.mac = IWM_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color);
+        identity.mode = ic->ic_opmode;
+        identity.commandLength = sizeof(struct iwm_mac_ctx_cmd);
+        IEEE80211_ADDR_COPY(identity.peer, in->in_macaddr);
+        if (primaryMacContext.stage != Lease::Stage::Active ||
+            primaryMacContext.owner.generation != generation ||
+            !primaryMacContext.owner.identity.equals(identity)) {
+            error = EBUSY;
+        } else {
+            identity.phy = IWM_FW_CMD_ID_AND_COLOR(
+                in->in_phyctxt->id, in->in_phyctxt->color);
+            identity.lmac = IEEE80211_IS_CHAN_2GHZ(in->in_phyctxt->channel) ||
+                !isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_CDB_SUPPORT) ?
+                IWM_LMAC_24G_INDEX : IWM_LMAC_5G_INDEX;
+            identity.commandLength = isset(sc->sc_enabled_capa,
+                IWM_UCODE_TLV_CAPA_BINDING_CDB_SUPPORT) ?
+                sizeof(struct iwm_binding_cmd) : sizeof(struct iwm_binding_cmd_v1);
+        }
+    }
+    Lease::Admission admission = Lease::Admission::Missing;
+    if (error == 0) {
+        admission = primaryBindingContext.begin(remove ? Lease::Operation::Remove :
+            Lease::Operation::Add, generation, identity, &receipt);
+        if (admission == Lease::Admission::Busy)
+            error = EBUSY;
+        else if (admission == Lease::Admission::Missing)
+            error = ENOENT;
+        else if (admission == Lease::Admission::Exhausted)
+            error = EOVERFLOW;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!remove)
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (error != 0 || admission == Lease::Admission::Already)
+        return error;
+
+    /* REMOVE names the old PHY even if the current node has disappeared.
+     * Its membership list is empty: this binding has no remaining MAC. */
+    struct iwm_binding_cmd cmd = {};
+    cmd.id_and_color = htole32(receipt.identity.phy);
     cmd.action = htole32(action);
-    cmd.phy = htole32(IWM_FW_CMD_ID_AND_COLOR(phyctxt->id, phyctxt->color));
-    
-    cmd.macs[0] = htole32(mac_id);
-    for (i = 1; i < IWM_MAX_MACS_IN_BINDING; i++)
+    cmd.phy = htole32(receipt.identity.phy);
+    cmd.lmac_id = htole32(receipt.identity.lmac);
+    for (unsigned i = 0; i < IWM_MAX_MACS_IN_BINDING; ++i)
         cmd.macs[i] = htole32(IWM_FW_CTXT_INVALID);
-    
-    if (IEEE80211_IS_CHAN_2GHZ(phyctxt->channel) ||
-        !isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_CDB_SUPPORT))
-        cmd.lmac_id = htole32(IWM_LMAC_24G_INDEX);
+    if (!remove)
+        cmd.macs[0] = htole32(receipt.identity.mac);
+    uint32_t status = 0;
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Binding, remove, false
+    };
+    struct iwm_host_cmd hcmd = {};
+    hcmd.context_command = &context;
+    hcmd.id = IWM_BINDING_CONTEXT_CMD;
+    hcmd.len[0] = static_cast<uint16_t>(receipt.identity.commandLength);
+    hcmd.data[0] = &cmd;
+    error = iwm_send_cmd_status(sc, &hcmd, &status);
+    const Lease::Completion completion = error != 0 ?
+        (context.submitted ? Lease::Completion::Uncertain : Lease::Completion::Rejected) :
+        status != 0 ? Lease::Completion::Rejected : Lease::Completion::Success;
+    if (error == 0 && status != 0)
+        error = EIO;
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (!primaryBindingContext.finish(receipt, sc->sc_generation, completion))
+        error = ENXIO;
+    else if (primaryBindingContext.confirmed)
+        sc->sc_flags |= IWM_FLAG_BINDING_ACTIVE;
     else
-        cmd.lmac_id = htole32(IWM_LMAC_5G_INDEX);
-    
-    if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_BINDING_CDB_SUPPORT))
-        len = sizeof(cmd);
-    else
-        len = sizeof(struct iwm_binding_cmd_v1);
-    
-    status = 0;
-    err = iwm_send_cmd_pdu_status(sc, IWM_BINDING_CONTEXT_CMD, len, &cmd,
-                                  &status);
-    if (err == 0 && status != 0)
-        err = EIO;
-    
-    return err;
+        sc->sc_flags &= ~IWM_FLAG_BINDING_ACTIVE;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return error;
 }
 
 int ItlIwm::
@@ -477,7 +529,7 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
     struct iwm_tfd *desc;
     struct iwm_tx_data *txdata;
     struct iwm_device_cmd *cmd;
-    mbuf_t m;
+    mbuf_t m = NULL;
     bus_addr_t paddr;
     uint32_t addr_lo;
     int err = 0, i, paylen, off, s;
@@ -487,6 +539,35 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
     int generation = sc->sc_generation;
     unsigned int max_chunks = 1;
     IOPhysicalSegment seg;
+    bool command_submitted = false;
+    bool scan_locked = false;
+    bool owner_locked = false;
+    bool nic_wake_acquired = false;
+    IOInterruptState scan_irq = 0;
+    IOInterruptState owner_irq = 0;
+    IOSimpleLock *owner_lock = sc->sc_ic.ic_pae_selected_bss_lock;
+    ItlFirmwareContextCommand *context_command = hcmd->context_command;
+    const bool context_live = context_command != NULL && !context_command->cleanup;
+    const bool scan_request =
+        hcmd->id == IWM_SCAN_OFFLOAD_REQUEST_CMD ||
+        hcmd->id == iwm_cmd_id(IWM_SCAN_REQ_UMAC, IWM_LONG_GROUP, 0);
+    const bool scan_abort = hcmd->id == IWM_SCAN_OFFLOAD_ABORT_CMD ||
+        hcmd->id == IWM_WIDE_ID(IWM_LONG_GROUP, IWM_SCAN_ABORT_UMAC);
+
+    if ((scan_request || scan_abort) &&
+        (wclScanLock == NULL || hcmd->scan_serial == 0))
+        return ENXIO;
+    if ((scan_request || context_live) && owner_lock == NULL)
+        return ENXIO;
+    if (context_command != NULL) {
+        if (scan_request || scan_abort || wclScanLock == NULL)
+            return EINVAL;
+        if (context_command->submitted)
+            return EALREADY;
+        if (context_command->receipt.generation !=
+            static_cast<uint32_t>(sc->sc_generation))
+            return ENXIO;
+    }
     
     code = hcmd->id;
     async = hcmd->flags & IWM_CMD_ASYNC;
@@ -552,15 +633,21 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
         if (txdata->map->dm_nsegs == 0) {
             XYLog("%s: could not load fw cmd mbuf (%zd bytes)\n",
                   DEVNAME(sc), totlen);
-            mbuf_freem(m);
+            err = ENOMEM;
             goto out;
         }
 //        XYLog("map fw cmd dm_nsegs=%d\n", txdata->map->dm_nsegs);
-        txdata->m = m; /* mbuf will be freed in iwm_cmd_done() */
+        /* Keep the allocation local until the descriptor is published. */
         paddr = seg.location;
     } else {
         cmd = &ring->cmd[idx];
         paddr = txdata->cmd_paddr;
+    }
+
+    if (generation != sc->sc_generation ||
+        (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0) {
+        err = ENXIO;
+        goto out;
     }
     
     if (group_id != 0) {
@@ -612,10 +699,43 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
      * returned. This needs to be done only on 7000 family NICs.
      */
     if (sc->sc_device_family == IWM_DEVICE_FAMILY_7000) {
-        if (ring->queued == 0 && !iwm_nic_lock(sc)) {
-            err = EBUSY;
+        if (ring->queued == 0) {
+            if (!iwm_nic_lock(sc)) {
+                err = EBUSY;
+                goto out;
+            }
+            nic_wake_acquired = true;
+        }
+    }
+
+    /* The scan leaf covers both the host receipt and the actual doorbell.
+     * An init/stop boundary during command preparation cannot publish an
+     * old scan into the new firmware epoch. No allocation or wait is inside
+     * this leaf; command acknowledgement remains a separate lifetime. */
+    if (scan_request || scan_abort || context_command != NULL) {
+        if (scan_request || context_live) {
+            owner_irq = IOSimpleLockLockDisableInterrupt(owner_lock);
+            owner_locked = true;
+        }
+        scan_irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        scan_locked = true;
+        if (generation != sc->sc_generation ||
+            (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0 ||
+            (context_command != NULL &&
+             !firmwareContextCommandCurrentLocked(*context_command)) ||
+            (scan_request && !scanCommandOwnerCurrentLocked(hcmd->scan_serial, generation)) ||
+            ((scan_request || scan_abort) &&
+             !(scan_abort ? scanCommand.submitAbort(hcmd->scan_serial, generation) :
+               scanCommand.submit(hcmd->scan_serial, generation)))) {
+            err = scan_abort && scanCommand.current(hcmd->scan_serial, generation) &&
+                scanCommand.terminalSeen ? EALREADY : ENXIO;
             goto out;
         }
+    }
+
+    if (m != NULL) {
+        txdata->m = m; /* completion/reset now owns this DMA allocation */
+        m = NULL;
     }
     
     iwm_update_sched(sc, ring->qid, ring->cur, 0, 0);
@@ -623,6 +743,17 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
     ring->queued++;
     ring->cur = (ring->cur + 1) % IWM_TX_RING_COUNT;
     IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    if (context_command != NULL)
+        context_command->submitted = true;
+    command_submitted = true;
+    if (scan_locked) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, scan_irq);
+        scan_locked = false;
+    }
+    if (owner_locked) {
+        IOSimpleLockUnlockEnableInterrupt(owner_lock, owner_irq);
+        owner_locked = false;
+    }
     
     if (!async) {
         err = tsleep_nsec(desc, PCATCH, "iwmcmd", SEC_TO_NSEC(2));
@@ -642,6 +773,19 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
         }
     }
 out:
+    if (scan_locked)
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, scan_irq);
+    if (owner_locked)
+        IOSimpleLockUnlockEnableInterrupt(owner_lock, owner_irq);
+    if (!command_submitted && generation == sc->sc_generation) {
+        if (nic_wake_acquired)
+            iwm_nic_unlock(sc);
+        ::free(sc->sc_cmd_resp_pkt[idx]);
+        sc->sc_cmd_resp_pkt[idx] = NULL;
+        sc->sc_cmd_resp_len[idx] = 0;
+    }
+    if (m != NULL)
+        mbuf_freem(m);
     splx(s);
     
     return err;
@@ -678,8 +822,10 @@ iwm_send_cmd_status(struct iwm_softc *sc, struct iwm_host_cmd *cmd,
         return err;
     
     pkt = cmd->resp_pkt;
-    if (pkt == NULL || (pkt->hdr.flags & IWM_CMD_FAILED_MSK))
+    if (pkt == NULL || (pkt->hdr.flags & IWM_CMD_FAILED_MSK)) {
+        iwm_free_resp(sc, cmd);
         return EIO;
+    }
     
     resp_len = iwm_rx_packet_payload_len(pkt);
     if (resp_len != sizeof(*resp)) {

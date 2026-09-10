@@ -76,7 +76,7 @@ if "IEEE80211_EVT_STA_DEAUTH" in notif:
 
 scan_terminal = body(
     node,
-    "ieee80211_end_scan_controlled(",
+    "void\nieee80211_end_scan_owned(",
     "generic scan terminal",
 )
 ordered(

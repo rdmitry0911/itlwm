@@ -122,6 +122,7 @@
 #include "ItlIwm.hpp"
 #include "rs.h"
 #include <ClientKit/AirportItlwmScanHomeAwayBridge.h>
+#include <HAL/ItlScanCommandPolicy.hpp>
 
 uint16_t ItlIwm::
 iwm_scan_rx_chain(struct iwm_softc *sc)
@@ -162,16 +163,14 @@ iwm_scan_rate_n_flags(struct iwm_softc *sc, int flags, int no_cck)
 
 uint8_t ItlIwm::
 iwm_lmac_scan_fill_channels(struct iwm_softc *sc,
-                            struct iwm_scan_channel_cfg_lmac *chan, int n_ssids, int bgscan)
+    struct iwm_scan_channel_cfg_lmac *chan, int n_ssids, int bgscan,
+    const struct ieee80211_wcl_scan_plan *plan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_channel *c;
-    struct ieee80211_wcl_scan_plan wclPlan;
-    const bool exactWclPlan =
-        wclScanPhase != ItlIwmWclScanPhase::Idle &&
-        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const bool exactWclPlan = plan != NULL && plan->active != 0;
     const bool activeProbe = exactWclPlan ?
-        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        plan->scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
         (n_ssids != 0 && !bgscan);
     uint8_t nchan;
     
@@ -182,7 +181,7 @@ iwm_lmac_scan_fill_channels(struct iwm_softc *sc,
         if (c->ic_flags == 0)
             continue;
         if (exactWclPlan &&
-            !ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c))
+            !ieee80211_wcl_scan_plan_channel_allowed(ic, plan, c))
             continue;
         
         chan->channel_num = htole16(ieee80211_mhz2ieee(c->ic_freq, 0));
@@ -200,16 +199,14 @@ iwm_lmac_scan_fill_channels(struct iwm_softc *sc,
 
 uint8_t ItlIwm::
 iwm_umac_scan_fill_channels(struct iwm_softc *sc,
-                            struct iwm_scan_channel_cfg_umac *chan, int n_ssids, int bgscan)
+    struct iwm_scan_channel_cfg_umac *chan, int n_ssids, int bgscan,
+    const struct ieee80211_wcl_scan_plan *plan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_channel *c;
-    struct ieee80211_wcl_scan_plan wclPlan;
-    const bool exactWclPlan =
-        wclScanPhase != ItlIwmWclScanPhase::Idle &&
-        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const bool exactWclPlan = plan != NULL && plan->active != 0;
     const bool activeProbe = exactWclPlan ?
-        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        plan->scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
         (n_ssids != 0 && !bgscan);
     uint8_t nchan;
     
@@ -220,7 +217,7 @@ iwm_umac_scan_fill_channels(struct iwm_softc *sc,
         if (c->ic_flags == 0)
             continue;
         if (exactWclPlan &&
-            !ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c))
+            !ieee80211_wcl_scan_plan_channel_allowed(ic, plan, c))
             continue;
         
         chan->channel_num = ieee80211_mhz2ieee(c->ic_freq, 0);
@@ -356,17 +353,15 @@ iwm_fill_probe_req(struct iwm_softc *sc, struct iwm_scan_probe_req *preq)
 }
 
 int ItlIwm::
-iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
+iwm_lmac_scan(struct iwm_softc *sc, int bgscan, uint64_t scan_serial)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_wcl_scan_plan wclPlan;
-    const bool exactWclPlan =
-        wclScanPhase != ItlIwmWclScanPhase::Idle &&
-        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
-    const uint8_t scanSsidLength = exactWclPlan ?
-        wclPlan.ssid_len : ic->ic_des_esslen;
-    const uint8_t *scanSsid = exactWclPlan ?
-        wclPlan.ssid : ic->ic_des_essid;
+    ItlScanCommandPolicy policy = {};
+    if (!copyScanCommandPolicy(scan_serial, &policy))
+        return ECANCELED;
+    const struct ieee80211_wcl_scan_plan &wclPlan = policy.plan;
+    const bool exactWclPlan = wclPlan.active != 0;
+    const uint8_t scanSsidLength = wclPlan.ssid_len;
+    const uint8_t *scanSsid = wclPlan.ssid;
     /* A Tahoe type-1 scan with no SSID is an active wildcard scan.  Keep
      * that transmission mode separate from the optional directed-SSID and
      * pre-connection hints consumed by Intel firmware. */
@@ -380,10 +375,7 @@ iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
     const uint8_t passiveDwell = static_cast<uint8_t>(
         ieee80211_wcl_scan_time_or_default(
             exactWclPlan ? wclPlan.passive_dwell_ms : 0, 110));
-    uint32_t configuredHomeAwayMs = 0;
-    const uint32_t homeAwayMs =
-        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
-            configuredHomeAwayMs : 120U;
+    const uint32_t homeAwayMs = policy.homeAwayMs;
     const uint32_t suspendMs = ieee80211_wcl_scan_time_or_default(
         exactWclPlan ? wclPlan.home_dwell_ms : 0, homeAwayMs);
     struct iwm_host_cmd hcmd = {
@@ -474,7 +466,7 @@ iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
     
     req->n_channels = iwm_lmac_scan_fill_channels(sc,
                                                   (struct iwm_scan_channel_cfg_lmac *)req->data,
-                                                  activeScan ? 1 : 0, bgscan);
+                                                  activeScan ? 1 : 0, bgscan, &wclPlan);
     if (req->n_channels == 0) {
         ::free(req);
         return EINVAL;
@@ -497,6 +489,7 @@ iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
     req->channel_opt[0].non_ebs_ratio = 1;
     req->channel_opt[1].non_ebs_ratio = 1;
     
+    hcmd.scan_serial = scan_serial;
     err = iwm_send_cmd(sc, &hcmd);
     ::free(req);
     return err;
@@ -631,17 +624,15 @@ iwm_get_scan_req_umac_data(struct iwm_softc *sc, struct iwm_scan_req_umac *req)
 #define IWM_SCAN_ADWELL_DEFAULT_N_APS_SOCIAL 10
 
 int ItlIwm::
-iwm_umac_scan(struct iwm_softc *sc, int bgscan)
+iwm_umac_scan(struct iwm_softc *sc, int bgscan, uint64_t scan_serial)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_wcl_scan_plan wclPlan;
-    const bool exactWclPlan =
-        wclScanPhase != ItlIwmWclScanPhase::Idle &&
-        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
-    const uint8_t scanSsidLength = exactWclPlan ?
-        wclPlan.ssid_len : ic->ic_des_esslen;
-    const uint8_t *scanSsid = exactWclPlan ?
-        wclPlan.ssid : ic->ic_des_essid;
+    ItlScanCommandPolicy policy = {};
+    if (!copyScanCommandPolicy(scan_serial, &policy))
+        return ECANCELED;
+    const struct ieee80211_wcl_scan_plan &wclPlan = policy.plan;
+    const bool exactWclPlan = wclPlan.active != 0;
+    const uint8_t scanSsidLength = wclPlan.ssid_len;
+    const uint8_t *scanSsid = wclPlan.ssid;
     const bool activeScan = exactWclPlan ?
         wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
         scanSsidLength != 0;
@@ -652,10 +643,7 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
     const uint8_t passiveDwell = static_cast<uint8_t>(
         ieee80211_wcl_scan_time_or_default(
             exactWclPlan ? wclPlan.passive_dwell_ms : 0, 110));
-    uint32_t configuredHomeAwayMs = 0;
-    const uint32_t homeAwayMs =
-        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
-            configuredHomeAwayMs : 120U;
+    const uint32_t homeAwayMs = policy.homeAwayMs;
     const uint32_t suspendMs = ieee80211_wcl_scan_time_or_default(
         exactWclPlan ? wclPlan.home_dwell_ms : 0, homeAwayMs);
     struct iwm_host_cmd hcmd = {
@@ -745,7 +733,7 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
     chanparam = iwm_get_scan_req_umac_chan_param(sc, req);
     chanparam->count = iwm_umac_scan_fill_channels(sc,
                                                    (struct iwm_scan_channel_cfg_umac *)cmd_data,
-                                                   activeScan ? 1 : 0, bgscan);
+                                                   activeScan ? 1 : 0, bgscan, &wclPlan);
     if (chanparam->count == 0) {
         ::free(req);
         return EINVAL;
@@ -815,6 +803,7 @@ iwm_umac_scan(struct iwm_softc *sc, int bgscan)
     tail->schedule[0].interval = 0;
     tail->schedule[0].iter_count = 1;
     
+    hcmd.scan_serial = scan_serial;
     err = iwm_send_cmd(sc, &hcmd);
     ::free(req);
     return err;
@@ -937,16 +926,18 @@ iwm_ack_rates(struct iwm_softc *sc, struct iwm_node *in, int *cck_rates,
 }
 
 int ItlIwm::
-iwm_scan(struct iwm_softc *sc)
+iwm_scan(struct iwm_softc *sc, const ItlStateTransitionRequest &request)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     int err;
 
+    if (!stateTransitionCurrent(request))
+        return ECANCELED;
+
     /* Match the IWX AP-lifetime scan fence.  The foreground scan displaced
      * by HostAP remains an upper policy owner, but no firmware scan command
      * may overlap the live GO/link-station resource epoch. */
-    if (isAPScanFenceActive()) {
-        noteWclInitialScanCommandRejected();
+    if (isAPScanFenceActive() && deferScanCommand(request)) {
         XYLog("%s: IWM STA scan deferred by live AP radio fence state=%u "
               "flags=0x%x\n", DEVNAME(sc),
               static_cast<unsigned>(ic->ic_state),
@@ -954,27 +945,41 @@ iwm_scan(struct iwm_softc *sc)
         return 0;
     }
     
-    if (sc->sc_flags & IWM_FLAG_BGSCAN) {
+    if (!stateTransitionCurrent(request))
+        return ECANCELED;
+    if (scanCommandBackgroundPending()) {
         /* Pair firmware STOPPING with the host WCL reassociation terminal
          * before admitting the replacement foreground command. */
         if (ic->ic_wcl_reassoc_owner_active)
             err = ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED);
         else
-            err = iwm_scan_abort(sc);
+            err = iwm_scan_abort(sc, true);
         if (err) {
+            if (err == EBUSY && deferScanCommand(request))
+                return 0;
             XYLog("%s: could not abort background scan\n",
                   DEVNAME(sc));
             return err;
         }
     }
     
-    if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN))
-        err = iwm_umac_scan(sc, 0);
+    uint64_t scanSerial = 0;
+    const bool umac = isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN);
+    err = reserveScanCommand(false, umac, &scanSerial, &request);
+    if (err != 0) {
+        if (err == EBUSY && deferScanCommand(request))
+            return 0;
+        noteWclInitialScanCommandRejected(0, request.scanGeneration);
+        return err;
+    }
+    if (umac)
+        err = iwm_umac_scan(sc, 0, scanSerial);
     else
-        err = iwm_lmac_scan(sc, 0);
-    if (err && err != 1) {
+        err = iwm_lmac_scan(sc, 0, scanSerial);
+    if (err) {
         XYLog("%s: %d could not initiate scan, err=%d\n", DEVNAME(sc), __LINE__, err);
-        noteWclInitialScanCommandRejected();
+        noteWclInitialScanCommandRejected(scanSerial);
+        rejectScanCommand(scanSerial);
         return err;
     }
     
@@ -985,19 +990,29 @@ iwm_scan(struct iwm_softc *sc)
     if (IFM_MODE(ic->ic_media.ifm_cur->ifm_media) == IFM_AUTO)
         ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
     
-    sc->sc_flags |= IWM_FLAG_SCANNING;
-    noteWclInitialScanCommandStarted();
+    if (!activateScanCommand(scanSerial, false))
+        return 0;
+    noteWclInitialScanCommandStarted(scanSerial);
+    if (!scanCommandCurrent(scanSerial))
+        return 0;
     if ((sc->sc_flags & IWM_FLAG_BGSCAN) == 0) {
         ieee80211_set_link_state(ic, LINK_STATE_DOWN);
+        if (!scanCommandCurrent(scanSerial))
+            return 0;
         ieee80211_node_cleanup(ic, ic->ic_bss);
     }
+    if (!scanCommandCurrent(scanSerial))
+        return 0;
     ic->ic_state = IEEE80211_S_SCAN;
     /* Availability consumers may submit immediately after this event.  Keep
      * the reference powerOn boundary below both command acceptance and the
      * committed lower SCAN state. */
-    noteWclScanRadioReady();
+    noteWclScanRadioReady(scanSerial);
+    if (!scanCommandCurrent(scanSerial))
+        return 0;
     iwm_led_blink_start(sc);
     wakeupOn(&ic->ic_state); /* wake iwm_init() */
+    (void)readyScanCommand(scanSerial);
     
     return 0;
 }
@@ -1018,17 +1033,26 @@ iwm_bgscan(struct ieee80211com *ic)
     if (sc->sc_flags & IWM_FLAG_SCANNING)
         return 0;
     
-    if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN))
-        err = that->iwm_umac_scan(sc, 1);
+    uint64_t scanSerial = 0;
+    const bool umac = isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN);
+    err = that->reserveScanCommand(true, umac, &scanSerial);
+    if (err != 0) {
+        return err;
+    }
+    if (umac)
+        err = that->iwm_umac_scan(sc, 1, scanSerial);
     else
-        err = that->iwm_lmac_scan(sc, 1);
-    if (err && err != 1) {
+        err = that->iwm_lmac_scan(sc, 1, scanSerial);
+    if (err) {
         XYLog("%s: could not initiate scan\n", DEVNAME(sc));
+        that->rejectScanCommand(scanSerial);
         return err;
     }
     
-    sc->sc_flags |= IWM_FLAG_BGSCAN;
-    that->noteWclBackgroundScanCommandStarted();
+    if (!that->activateScanCommand(scanSerial, true))
+        return ENXIO;
+    that->noteWclBackgroundScanCommandStarted(scanSerial);
+    (void)that->readyScanCommand(scanSerial);
     return 0;
 }
 
@@ -1040,111 +1064,116 @@ iwm_bgscan_abort(struct ieee80211com *ic)
 
     if (ic == NULL || (sc = (struct iwm_softc *)ic->ic_softc) == NULL)
         return EINVAL;
-    /* The lower background lease may already have been retired by the
-     * RUN->SCAN replacement.  In that ordering only the upper WCL owner is
-     * left to close; a new foreground scan is not part of the old roam. */
-    if ((sc->sc_flags & IWM_FLAG_BGSCAN) == 0)
-        return 0;
     that = container_of(sc, ItlIwm, com);
-    return that->iwm_scan_abort(sc);
+    /* Claim the physical kind and abort together; a replacement foreground
+     * command is never part of this cancelled background scan. */
+    return that->iwm_scan_abort(sc, true);
 }
 
 int ItlIwm::
-iwm_umac_scan_abort_status(struct iwm_softc *sc, uint32_t *status)
+iwm_umac_scan_abort_status(struct iwm_softc *sc, uint32_t *status,
+    uint64_t serial)
 {
     struct iwm_umac_scan_abort cmd = { 0 };
-
+    struct iwm_host_cmd hcmd = {
+        .scan_serial = serial,
+        .id = IWM_WIDE_ID(IWM_LONG_GROUP, IWM_SCAN_ABORT_UMAC),
+        .len = { sizeof(cmd), },
+        .data = { &cmd, },
+    };
     if (status == NULL)
         return EINVAL;
     *status = IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
-    return iwm_send_cmd_pdu_status(
-        sc, IWM_WIDE_ID(IWM_LONG_GROUP, IWM_SCAN_ABORT_UMAC),
-        sizeof(cmd), &cmd, status);
+    if (serial == 0)
+        return 0;
+    const int error = iwm_send_cmd_status(sc, &hcmd, status);
+    /* The exact physical notification can win before abort publication.
+     * NOT_FOUND still needs host terminal reconciliation, never UID reuse. */
+    return error == EALREADY ? 0 : error;
 }
 
 int ItlIwm::
 iwm_umac_scan_abort(struct iwm_softc *sc)
 {
+    const uint32_t generation = sc->sc_generation;
+    uint64_t serial = 0;
+    int error = reserveScanCommandAbort(false, &serial);
+    if (error != 0 || serial == 0)
+        return error;
     uint32_t status;
-    int err = iwm_umac_scan_abort_status(sc, &status);
-
-    if (err != 0)
-        return err;
-    if (status != IWM_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
+    error = iwm_umac_scan_abort_status(sc, &status, serial);
+    if (error == 0 &&
+        status != IWM_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
         status != IWM_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
         status != IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)
-        return EIO;
-    return 0;
+        error = EIO;
+    if (error != 0) {
+        if (!scanCommandCurrent(serial) &&
+            generation == static_cast<uint32_t>(sc->sc_generation))
+            return 0;
+        rejectScanCommand(serial);
+    }
+    return error;
 }
 
 int ItlIwm::
-iwm_lmac_scan_abort(struct iwm_softc *sc)
+iwm_lmac_scan_abort(struct iwm_softc *sc, uint64_t serial)
 {
+    const uint32_t generation = sc->sc_generation;
+    if (serial == 0) {
+        const int error = reserveScanCommandAbort(false, &serial);
+        if (error != 0 || serial == 0)
+            return error;
+    }
     struct iwm_host_cmd cmd = {
+        .scan_serial = serial,
         .id = IWM_SCAN_OFFLOAD_ABORT_CMD,
     };
-    int err;
-    uint32_t status;
-    
-    err = iwm_send_cmd_status(sc, &cmd, &status);
-    if (err)
-        return err;
-    
-    if (status != IWM_CAN_ABORT_STATUS) {
-        /*
-         * The scan abort will return 1 for success or
-         * 2 for "failure".  A failure condition can be
-         * due to simply not being in an active scan which
-         * can occur if we send the scan abort before the
-         * microcode has notified us that a scan is completed.
-         */
-        return EBUSY;
+    uint32_t status = 0;
+    const int error = iwm_send_cmd_status(sc, &cmd, &status);
+    if (error == EALREADY)
+        return 0;
+    if (error != 0) {
+        if (!scanCommandCurrent(serial) &&
+            generation == static_cast<uint32_t>(sc->sc_generation))
+            return 0;
+        rejectScanCommand(serial);
+        return error;
     }
-    
+    /* Firmware status 2 is NOT_FOUND, not a physical host terminal.
+     * The blocking owner still waits; AP handoff still needs RX completion. */
+    if (status != IWM_CAN_ABORT_STATUS && status != 2) {
+        rejectScanCommand(serial);
+        return EIO;
+    }
     return 0;
 }
 
 int ItlIwm::
-iwm_scan_abort(struct iwm_softc *sc)
+iwm_scan_abort(struct iwm_softc *sc, bool backgroundOnly)
 {
+    const uint32_t generation = sc->sc_generation;
+    uint64_t serial = 0;
+    int error = reserveScanCommandAbort(true, &serial, backgroundOnly);
+    if (error != 0 || serial == 0)
+        return error;
     uint32_t status = IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
-    const bool umac = isset(sc->sc_enabled_capa,
-                            IWM_UCODE_TLV_CAPA_UMAC_SCAN);
-    int err;
-
-    if ((sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
-        return 0;
-    if (!__sync_bool_compare_and_swap(&sc->sc_scan_abort_pending, 0, 1))
-        return EBUSY;
-
+    const bool umac = isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN);
     if (umac)
-        err = iwm_umac_scan_abort_status(sc, &status);
+        error = iwm_umac_scan_abort_status(sc, &status, serial);
     else
-        err = iwm_lmac_scan_abort(sc);
-    if (err != 0 ||
-        (umac && status != IWM_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
-         status != IWM_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
-         status != IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)) {
-        if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
-                                __ATOMIC_ACQ_REL) != 0)
-            wakeupOn(&sc->sc_scan_abort_pending);
-        return err != 0 ? err : EIO;
+        error = iwm_lmac_scan_abort(sc, serial);
+    if (error == 0 && umac &&
+        status != IWM_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
+        status != IWM_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
+        status != IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)
+        error = EIO;
+    if (error != 0) {
+        if (!scanCommandCurrent(serial) &&
+            generation == static_cast<uint32_t>(sc->sc_generation))
+            return 0;
+        rejectScanCommand(serial);
+        return error;
     }
-
-    /* Intel's native stop contract waits for the final complete notification,
-     * not an iteration notification or the abort command response. */
-    if (__atomic_load_n(&sc->sc_scan_abort_pending,
-                        __ATOMIC_ACQUIRE) != 0)
-        err = tsleep_nsec(&sc->sc_scan_abort_pending, 0, "iwmscab",
-                          SEC_TO_NSEC(1));
-    if (__atomic_load_n(&sc->sc_scan_abort_pending,
-                        __ATOMIC_ACQUIRE) == 0)
-        return 0;
-
-    (void)__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
-                              __ATOMIC_ACQ_REL);
-    if (umac && status == IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND &&
-        (sc->sc_flags & (IWM_FLAG_SCANNING | IWM_FLAG_BGSCAN)) == 0)
-        return 0;
-    return err != 0 ? err : ETIMEDOUT;
+    return waitScanCommandAbort(serial, generation);
 }

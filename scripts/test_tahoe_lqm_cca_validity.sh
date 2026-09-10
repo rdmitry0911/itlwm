@@ -14,6 +14,6 @@ if [ -n "${LQM_HEADER_REF:-}" ]; then
     extra=(-include "$test_root/header.hpp")
 fi
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
-    -I"$root" "${extra[@]}" "$root/tests/tahoe_lqm_cca_validity_test.cpp" \
+    -I"$root" ${extra[@]+"${extra[@]}"} "$root/tests/tahoe_lqm_cca_validity_test.cpp" \
     -o "$test_root/test"
 "$test_root/test"

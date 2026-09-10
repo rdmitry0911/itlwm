@@ -262,6 +262,7 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
     uint32_t aggsize = 0;
     uint32_t max_aggsize = (IWM_STA_FLG_MAX_AGG_SIZE_4M >> IWM_STA_FLG_MAX_AGG_SIZE_SHIFT);
     struct ieee80211com *ic = &sc->sc_ic;
+    const int generation = sc->sc_generation;
     
     if (!update && (sc->sc_flags & IWM_FLAG_STA_ACTIVE)) {
         return 0;
@@ -379,11 +380,15 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
         cmdsize = sizeof(struct iwm_add_sta_cmd_v7);
     err = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA, cmdsize,
                                   &add_sta_cmd, &status);
-    if (!err && (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS) {
-        err = EIO;
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    if (err)
+        return err;
+    if ((status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS) {
         XYLog("%s failed\n", __FUNCTION__);
-    } else
-        sc->sc_flags |= IWM_FLAG_STA_ACTIVE;
+        return EIO;
+    }
+    sc->sc_flags |= IWM_FLAG_STA_ACTIVE;
 
     return err;
 }
@@ -450,6 +455,8 @@ iwm_drain_sta(struct iwm_softc *sc, struct iwm_node *in, bool drain)
     err = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA,
                       cmdsize,
                       &cmd, &status);
+    if (err == 0 && (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
+        return EIO;
     return err;
 }
 
@@ -460,6 +467,7 @@ iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
     struct iwm_rm_sta_cmd rm_sta_cmd;
     int err;
     uint8_t qid;
+    const int generation = sc->sc_generation;
     
     if ((sc->sc_flags & IWM_FLAG_STA_ACTIVE) == 0) {
         return 0;
@@ -467,23 +475,31 @@ iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
     
     if (ic->ic_opmode == IEEE80211_M_STA) {
         err = iwm_drain_sta(sc, in, true);
+        if (generation != sc->sc_generation)
+            return ENXIO;
         if (err) {
             XYLog("%s can not drain sta(TRUE)\n", __FUNCTION__);
-            goto done;
+            return err;
         }
         err = iwm_flush_tx_path(sc, sc->agg_queue_mask);
+        if (generation != sc->sc_generation)
+            return ENXIO;
         if (err) {
             XYLog("%s can not flush sta tx path\n", __FUNCTION__);
-            goto done;
+            return err;
         }
         err = iwm_drain_sta(sc, in, false);
+        if (generation != sc->sc_generation)
+            return ENXIO;
         if (err) {
             XYLog("%s can not drain sta(FALSE)\n", __FUNCTION__);
-            goto done;
+            return err;
         }
         for (qid = IWM_FIRST_AGG_TX_QUEUE; qid <= IWM_LAST_AGG_TX_QUEUE; qid++) {
             if (sc->agg_queue_mask & (1 << qid)) {
                 iwm_disable_txq(sc, qid, 0, 0);
+                if (generation != sc->sc_generation)
+                    return ENXIO;
             }
         }
     }
@@ -495,7 +511,11 @@ iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
     
     err = iwm_send_cmd_pdu(sc, IWM_REMOVE_STA, 0, sizeof(rm_sta_cmd),
                            &rm_sta_cmd);
-done:
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    if (err)
+        return err;
+    /* A rejected/unfinished removal still owns its station and queues. */
     sc->agg_queue_mask = 0;
     sc->agg_tid_disable = 0xffff;
     

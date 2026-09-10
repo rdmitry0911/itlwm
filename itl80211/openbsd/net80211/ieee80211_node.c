@@ -1550,6 +1550,13 @@ void
 ieee80211_end_scan_controlled(struct _ifnet *ifp,
                               enum ieee80211_scan_completion_mode mode)
 {
+    ieee80211_end_scan_owned(ifp, mode, 0);
+}
+
+void
+ieee80211_end_scan_owned(struct _ifnet *ifp,
+    enum ieee80211_scan_completion_mode mode, u_int64_t join_generation)
+{
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     struct ieee80211_node *ni, *selbs = NULL, *curbs = NULL;
     int bgscan = ((ic->ic_flags & IEEE80211_F_BGSCAN) &&
@@ -1579,6 +1586,12 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
     
     if (ic->ic_opmode == IEEE80211_M_STA)
         ieee80211_clean_inactive_nodes(ic, IEEE80211_INACT_SCAN);
+
+    /* A public scan notification may admit another join before returning.
+     * Its request cannot consume or fail the preceding physical census. */
+    if (join_generation != 0 &&
+        !ieee80211_wcl_join_scan_current(ic, join_generation))
+        return;
 
     /* A queued WCL request or a serialized AP transition has drained a
      * generic foreground lease, or an exact WCL foreground lease has just
@@ -1694,6 +1707,10 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
         
         AirportItlwmPostPltiTraceRecord(
             ic, kAirportItlwmPostPltiTraceEventScanNoCandidate);
+        if (!bgscan && ic->ic_state == IEEE80211_S_SCAN &&
+            (ic->ic_caps & IEEE80211_C_SCANALLBAND) != 0 &&
+            ieee80211_wcl_join_scan_failed(ic, join_generation))
+            return;
 #ifndef IEEE80211_STA_ONLY
         if (ic->ic_opmode == IEEE80211_M_IBSS &&
             (ic->ic_flags & IEEE80211_F_IBSSON) &&

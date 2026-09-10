@@ -107,24 +107,30 @@ ieee80211_wcl_scan_plan_stage(struct ieee80211com *ic,
     const struct ieee80211_wcl_scan_plan *source)
 {
 	struct ieee80211_wcl_scan_plan *plan;
+	IOInterruptState irq;
+	int error = 0;
 
 	if (ic == NULL || source == NULL || source->generation == 0 ||
 	    source->ssid_len > IEEE80211_NWID_LEN ||
 	    source->requested_channel_count >
 	    IEEE80211_WCL_SCAN_REQUEST_MAX_CHANNELS)
 		return EINVAL;
+	if (ic->ic_pae_selected_bss_lock == NULL)
+		return ENXIO;
 	plan = &ic->ic_wcl_scan_plan;
+	irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
 	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) != 0)
-		return EBUSY;
-
-	/* The upper WCL lifecycle serializes producers.  Publish active only
-	 * after the complete fixed plan is visible; every lower reader retains
-	 * the plan until that exact generation reaches terminal/invalidation. */
-	memcpy(plan, source, sizeof(*plan));
-	plan->active = 0;
-	__atomic_thread_fence(__ATOMIC_RELEASE);
-	__atomic_store_n(&plan->active, 1, __ATOMIC_RELEASE);
-	return 0;
+		error = EBUSY;
+	else {
+		/* The leaf also excludes readers and clear/restage. An atomic
+		 * active flag alone cannot protect the plain payload memcpy. */
+		memcpy(plan, source, sizeof(*plan));
+		plan->active = 0;
+		__atomic_thread_fence(__ATOMIC_RELEASE);
+		__atomic_store_n(&plan->active, 1, __ATOMIC_RELEASE);
+	}
+	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+	return error;
 }
 
 int
@@ -132,23 +138,24 @@ ieee80211_wcl_scan_plan_snapshot(struct ieee80211com *ic,
     struct ieee80211_wcl_scan_plan *snapshot)
 {
 	struct ieee80211_wcl_scan_plan *plan;
-	u_int64_t generation;
+	IOInterruptState irq;
+	int copied = 0;
 
-	if (ic == NULL || snapshot == NULL)
+	if (snapshot == NULL)
+		return 0;
+	explicit_bzero(snapshot, sizeof(*snapshot));
+	if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL)
 		return 0;
 	plan = &ic->ic_wcl_scan_plan;
-	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) == 0)
-		return 0;
-	generation = plan->generation;
-	memcpy(snapshot, plan, sizeof(*snapshot));
-	__atomic_thread_fence(__ATOMIC_ACQUIRE);
-	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) == 0 ||
-	    plan->generation != generation || generation == 0) {
-		explicit_bzero(snapshot, sizeof(*snapshot));
-		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) != 0 &&
+	    plan->generation != 0) {
+		memcpy(snapshot, plan, sizeof(*snapshot));
+		snapshot->active = 1;
+		copied = 1;
 	}
-	snapshot->active = 1;
-	return 1;
+	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+	return copied;
 }
 
 int
@@ -178,14 +185,19 @@ ieee80211_wcl_scan_plan_clear(struct ieee80211com *ic,
     u_int64_t generation)
 {
 	struct ieee80211_wcl_scan_plan *plan;
+	IOInterruptState irq;
 
-	if (ic == NULL)
+	if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL)
 		return;
 	plan = &ic->ic_wcl_scan_plan;
+	irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
 	if (__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE) == 0 ||
-	    (generation != 0 && plan->generation != generation))
+	    (generation != 0 && plan->generation != generation)) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 		return;
+	}
 	__atomic_store_n(&plan->active, 0, __ATOMIC_RELEASE);
+	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 }
 
 void

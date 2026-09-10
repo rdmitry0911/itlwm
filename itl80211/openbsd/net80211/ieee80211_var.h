@@ -768,6 +768,10 @@ struct ieee80211com {
 				    const struct ieee80211_assoc_comeback_retry *);
 	int			(*ic_newstate)(struct ieee80211com *,
 				    enum ieee80211_state, int);
+	/* Ordinary failed-join cleanup carries the full accepted request token
+	 * through backend state work; it is not encoded in the legacy int arg. */
+	void			(*ic_wcl_join_failure_scan)(struct ieee80211com *,
+				    u_int64_t);
 	int			(*ic_newauth)(struct ieee80211com *,
 				    struct ieee80211_node *, int, uint16_t);
 	void			(*ic_newassoc)(struct ieee80211com *,
@@ -1030,6 +1034,7 @@ struct ieee80211com {
 	 * allowed while held.  A failed allocation keeps publication fail-closed.
 	 */
 	IOSimpleLock		*ic_pae_selected_bss_lock;
+	struct ieee80211_join_attempt ic_wcl_join_attempt;
 	/* Same leaf lock as the selected-BSS value above/below. */
 	struct ieee80211_sae_peer_rx_admission ic_sae_peer_rx_admission;
 	/* Public initial-BSS hint only; never represents raw/legacy/WCL pinning. */
@@ -1455,6 +1460,7 @@ struct ieee80211_wcl_scan_start_rejected {
  * is the publication fence after that cancellation. Borrowed only during
  * the synchronous callback, never a retained node or credential pointer. */
 #define IEEE80211_EVT_STA_ROAM_LINK_LOST             23
+#define IEEE80211_EVT_STA_JOIN_FAILED                24
 struct ieee80211_roam_link_loss {
     u_int64_t epoch;
     u_int8_t bssid[IEEE80211_ADDR_LEN];

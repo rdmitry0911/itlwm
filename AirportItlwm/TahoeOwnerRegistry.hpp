@@ -135,6 +135,10 @@ struct TahoeOwnerRegistry {
         // scan/selection.  Parsed carriers that are blocked, stale, or never
         // reach a real association edge must not publish completion.
         bool authAssocCompletionArmed = false;
+        // Accepted ingress identity, including discovery before AUTH. Epoch
+        // binding is added by the lower selected-BSS owner, never guessed
+        // from a later failed cleanup or a repeated same-BSSID request.
+        uint64_t joinAttemptGeneration = 0;
         // The reference JoinAdapter publishes its candidate-matched 0xd3
         // completion once.  Keep the equivalent one-shot state alongside the
         // WCL carrier so an old candidate cannot complete a later public or

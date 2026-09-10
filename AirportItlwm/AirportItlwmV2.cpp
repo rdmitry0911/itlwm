@@ -25,6 +25,7 @@
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_pae_selected_bss.h>
 #include <net80211/ieee80211_var.h>
+#include "TahoeWclJoinFailure.hpp"
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSString.h>
 #include <libkern/c++/OSSymbol.h>
@@ -5970,6 +5971,8 @@ static IOReturn recordTahoeWclAuthSuccessGated(
     owner->authSuccessRecorded = true;
     owner->authSuccessEpoch = request->associationEpoch;
     IEEE80211_ADDR_COPY(owner->authSuccessBssid, current.bssid);
+    (void)ieee80211_wcl_join_note_success(ic, owner->joinAttemptGeneration,
+        request->associationEpoch, IEEE80211_JOIN_AUTH);
     return kIOReturnSuccess;
 }
 
@@ -6022,6 +6025,9 @@ static IOReturn postTahoeWclAuthAssocCompleteGated(
     if (!buildTahoeWclAuthAssocCompletePayload(current.bssid, &payload))
         return kIOReturnNotReady;
 
+    (void)ieee80211_wcl_join_note_success(ic, owner->joinAttemptGeneration,
+        request->associationEpoch, IEEE80211_JOIN_ASSOC);
+
     /* Claim before dispatch so a synchronous nested callback cannot publish
      * the same candidate twice.  A local dispatch failure releases only this
      * unconsumed lease; it never manufactures a retry completion. */
@@ -6046,6 +6052,57 @@ static IOReturn clearTahoeWclAuthAssocCompletionLeaseGated(
     TahoeOwnerRegistry &registry = that->getTahoeOwnerRegistry();
     registry.association = TahoeOwnerRegistry::AssociationOwner{};
     registry.publicAssociation = TahoeOwnerRegistry::AssociationOwner{};
+    return kIOReturnSuccess;
+}
+
+static IOReturn postTahoeWclJoinFailureGated(
+    OSObject *target, void *arg0, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    const auto *failure = static_cast<const ieee80211_join_failure *>(arg0);
+    if (that == nullptr || failure == nullptr || that->fHalService == nullptr ||
+        that->fNetIf == nullptr)
+        return kIOReturnNotReady;
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    if (!ieee80211_wcl_join_generation_current(ic, failure->generation))
+        return kIOReturnNotReady;
+
+    auto &registry = that->getTahoeOwnerRegistry();
+    auto *owner = &registry.association;
+    if (owner->joinAttemptGeneration != failure->generation)
+        owner = &registry.publicAssociation;
+    if (owner->joinAttemptGeneration != failure->generation ||
+        !owner->hasCarrier || !owner->authAssocCompletionArmed ||
+        owner->connectCompletionPublished || owner->joinTerminalObserved ||
+        owner->ssidLength != failure->ssid_len ||
+        !IEEE80211_ADDR_EQ(owner->selectedBssid, failure->bssid) ||
+        memcmp(owner->ssid, failure->ssid, failure->ssid_len) != 0)
+        return kIOReturnNotReady;
+
+    TahoeWclJoinFailure::Payloads payload;
+    if (!TahoeWclJoinFailure::build(*failure, &payload))
+        return kIOReturnBadArgument;
+    /* The lower cleanup already claimed this exact immutable result. The
+     * gate admits one sequence, before any queued native TRY_NEXT carrier. */
+    owner->joinTerminalObserved = true;
+    owner->connectCompletionPublished = true;
+    if (payload.publishAuthAssoc) {
+        if (failure->phase == IEEE80211_JOIN_ASSOC) {
+            apple80211_wcl_assoc_status_event status;
+            status.status = payload.authAssoc.assoc_status;
+            status.reason = payload.authAssoc.assoc_reason;
+            that->postMessage(that->fNetIf, APPLE80211_M_WCL_AUTH_ASSOC_EVENT,
+                              &status, sizeof(status), true);
+        }
+        owner->authAssocCompletionPublished = true;
+        that->postMessage(that->fNetIf, APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE,
+                          &payload.authAssoc, sizeof(payload.authAssoc), true);
+    }
+    if (payload.publishFirstBeacon)
+        that->postMessage(that->fNetIf, APPLE80211_M_WCL_FIRST_BEACON_EVENT,
+                          &payload.firstBeacon, sizeof(payload.firstBeacon), true);
+    that->postMessage(that->fNetIf, APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT,
+                      &payload.connect, sizeof(payload.connect), true);
     return kIOReturnSuccess;
 }
 #endif
@@ -6262,6 +6319,9 @@ static IOReturn postTahoeWclProtectedRunCompletionGated(
     owner->connectCompletionPublished = true;
     owner->joinTerminalObserved = true;
 
+    (void)ieee80211_wcl_join_note_success(ic, owner->joinAttemptGeneration,
+        epoch, IEEE80211_JOIN_KEYS);
+
     const bool linkPublished =
         postTahoeWclLinkUpInd(controller, rawReason);
     const bool connectPublished =
@@ -6357,6 +6417,8 @@ static IOReturn postTahoeWclOpenJoinCompletionGated(
 
     owner->connectCompletionPublished = true;
     owner->joinTerminalObserved = true;
+    (void)ieee80211_wcl_join_note_success(ic, owner->joinAttemptGeneration,
+        epoch, IEEE80211_JOIN_KEYS);
     const bool linkPublished = postTahoeWclLinkUpInd(controller, 0);
     const bool connectPublished =
         postTahoeWclConnectCompleteEvent(controller);
@@ -9108,6 +9170,9 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
         that->cancelDeferredPowerOnAvailabilityRaw();
 #if __IO80211_TARGET >= __MAC_26_0
         if (that->fHalService != nullptr)
+            ieee80211_wcl_join_cancel(
+                that->fHalService->get80211Controller(), 0);
+        if (that->fHalService != nullptr)
             ieee80211_roam_link_cancel(
                 that->fHalService->get80211Controller());
         /* AppleBCMWLANCore::powerOff() publishes DRIVER_UNAVAILABLE but does
@@ -9996,6 +10061,16 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             (void)gate->runAction(postTahoeWclJoinCompletionGated,
                                   (void *)(uintptr_t)0,
                                   (void *)(uintptr_t)true, NULL);
+#endif
+            return;
+        case IEEE80211_EVT_STA_JOIN_FAILED:
+#if __IO80211_TARGET >= __MAC_26_0
+            if (data != nullptr) {
+                const ieee80211_join_failure failure =
+                    *static_cast<const ieee80211_join_failure *>(data);
+                (void)gate->runAction(postTahoeWclJoinFailureGated,
+                                      (void *)&failure, NULL, NULL);
+            }
 #endif
             return;
         case IEEE80211_EVT_STA_DEAUTH:

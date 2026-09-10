@@ -358,13 +358,14 @@ ordered(stop, "normal terminal remains on the generic completion route",
         "initial_handoff =",
         "IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
         "IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND",
-        "ieee80211_end_scan(ifp)",
+        "ieee80211_end_scan_owned(ifp,",
+        "IEEE80211_SCAN_COMPLETION_GENERIC",
         "IEEE80211_EVT_STANDARD_SCAN_TERMINAL")
 for token in (
         "ieee80211_end_scan_controlled(ifp,",
         "if (initial_handoff)",
         "else if (terminal.wcl_foreground)",
-        "else\n                ieee80211_end_scan(ifp);",
+        "else\n                ieee80211_end_scan_owned(ifp,",
         "terminal.standard",
         "terminal.publish_standard_terminal",
         "standard_terminal.generation = terminal.upper_generation",
@@ -502,7 +503,7 @@ for token in (
         "struct ieee80211_standard_scan_terminal",
 ):
     require(var, token, "normal terminal ABI")
-controlled_end_scan = body(node, "void\nieee80211_end_scan_controlled",
+controlled_end_scan = body(node, "void\nieee80211_end_scan_owned",
                           "controlled scan completion")
 for token in (
         "const int generic_terminal = mode == IEEE80211_SCAN_COMPLETION_GENERIC;",

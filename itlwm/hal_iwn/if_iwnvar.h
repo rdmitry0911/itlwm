@@ -402,6 +402,9 @@ enum iwn_scan_lease_phase {
 struct iwn_scan_lease {
     u_int64_t       serial;
     u_int64_t       upper_generation;
+    /* Ordinary join identity captured before this command, retained across
+     * both bands. Zero for controller discovery/background scans. */
+    u_int64_t       join_generation;
     /* A queued WCL initial handoff carries the retiring generic lease serial
      * only until its own first command crosses WRPTR.  The token lets the
      * replay worker prove that cancellation/reset/detach has not withdrawn
@@ -521,6 +524,9 @@ struct iwn_softc {
     /* Non-zero only when the replay is the exact fresh-scan continuation of
      * a WCL direct-SAE request deferred behind an older physical command. */
     u_int64_t           sc_scan_lease_replay_sae_generation;
+    /* Independent of a queued new scan: this token only retires an exact
+     * failed join after the active physical lease has drained. */
+    u_int64_t           sc_wcl_join_cleanup_generation;
     struct iwn_wcl_initial_scan_pending sc_wcl_initial_scan_pending;
 
     uint8_t         hw_type;
@@ -617,6 +623,9 @@ struct iwn_softc {
     uint8_t             sc_sae_tx_event_head;
     uint8_t             sc_sae_tx_event_tail;
     uint8_t             sc_sae_tx_event_count;
+    /* When the optional crypto owner is absent, the TX worker still owns
+     * failed-join retirement until descriptors and terminal values drain. */
+    u_int64_t           sc_sae_tx_join_failure_generation;
 
     /*
      * Driver-owned SAE core.  Only sae_engine_task calls the crypto engine;
@@ -631,6 +640,9 @@ struct iwn_softc {
     /* Highest WCL request generation whose private staging slot the worker
      * must revoke.  Generic callbacks write only this public fence. */
     u_int64_t            sc_sae_engine_wcl_cancel_generation;
+    /* Ordinary join result waiting for the engine worker's real scrub
+     * terminal. This is not the direct-SAE credential generation above. */
+    u_int64_t            sc_sae_engine_join_failure_generation;
     /* Advances on close/stop so a stale reopen cannot republish hooks. */
     volatile u_int32_t   sc_sae_engine_lifecycle_generation;
     u_int64_t            sc_sae_engine_next_ticket;

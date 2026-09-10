@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Source contract for basic IWM association compatibility after the 802.11v layer.
+# Source contract for capability-controlled association IEs and IWM TX/RUN diagnostics.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -16,6 +16,7 @@ input_c = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 iwm = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
+iwm_delivery = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
 
 
 def fail(message: str) -> None:
@@ -55,8 +56,13 @@ iwm_caps_start = iwm.find("ic->ic_caps =")
 iwm_caps_end = iwm.find("ic->ic_htcaps =", iwm_caps_start)
 if iwm_caps_start < 0 or iwm_caps_end < 0:
     fail("cannot isolate IWM capability assignment")
-if "IEEE80211_C_WNM_BSS_TRANSITION" in iwm[iwm_caps_start:iwm_caps_end]:
-    fail("IWM must retain the pre-802.11v association frame until proven")
+# The driver-resident SAE/roam owner admitted IWM BTM in 09202d0b.
+# This is the shipped source contract, not a new IWM radio qualification.
+require(iwm[iwm_caps_start:iwm_caps_end], "IEEE80211_C_WNM_BSS_TRANSITION",
+        "IWM BTM capability paired with the driver-resident roam owner")
+iwm_engine = (root / "itlwm/hal_iwm/IwmSaeEngine.inc").read_text()
+require(iwm_engine, "ic->ic_sae_wnm_roam_start = ItlIwm::iwm_sae_wnm_roam_start",
+        "IWM admitted capability's roam callback")
 
 for source, token, label in (
         (output_c, "ieee80211_mgmt_output: enqueue ASSOC",
@@ -77,10 +83,10 @@ for source, token, label in (
          "IWM RUN task-start evidence"),
         (iwm, "iwm_newstate_task: RUN lower_complete",
          "IWM RUN firmware-programming evidence"),
-        (iwm, "iwm_newstate_task: RUN state_commit",
+        (iwm_delivery, "iwm_newstate_task: RUN state_commit",
          "IWM RUN generic-state commit evidence"),
 ):
     require(source, token, label)
 
-print("PASS: IWM keeps its proven association frame while IWN/IWX retain BTM and every IWM ASSOC TX/RX/RUN boundary is observable")
+print("PASS: capability-controlled BTM association IE, IWM roam callback and ASSOC TX/RX/RUN diagnostics")
 PY

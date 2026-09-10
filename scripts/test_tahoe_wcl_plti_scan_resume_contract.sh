@@ -259,22 +259,28 @@ require(resume, "PMK_READY_SCAN_RESUME", "credential-safe local progress marker"
 
 # Preserve the lower-layer semantics that make SCAN->SCAN safe. IWX and the
 # actual Tahoe-QEMU legacy IWN backend both coalesce an active scan and restart
-# an inactive one; net80211 still holds an empty AUTO_JOIN scan for airportd
+# an inactive one. IWX now retains its exact deferred request when a physical
+# owner is busy; a stale legacy SCANNING flag alone must not drop that request.
+# net80211 still holds an empty AUTO_JOIN scan for airportd
 # instead of selecting a random BSS. The one exception is an already-issued,
 # exact direct-SAE policy: it is the JoinAdapter owner and must select its
 # matching refreshed BSS rather than be stranded by the generic hold.
 iwx_newstate = body(iwx, "void ItlIwx::\niwx_newstate_task(void *psc)", "IWX newstate task")
 ordered(iwx_newstate, "IWX SCAN->SCAN preservation",
+        "deferScanCommand(request, false)", "return;",
         "if (ostate == IEEE80211_S_SCAN)",
         "if (nstate == ostate)",
-        "IWX_FLAG_SCANNING", "goto next_scan", "iwx_scan(sc)")
-iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate(", "IWN newstate")
+        "goto next_scan", "iwx_scan(sc, request)")
+forbid(iwx_newstate, "IWX_FLAG_SCANNING", "flag-only scan request loss")
+require(body(iwn, "int ItlIwn::\niwn_newstate(", "IWN callback wrapper"),
+        "return iwn_newstate_impl(ic, nstate, arg, 0);", "ordinary state forwarding")
+iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate_impl(", "IWN newstate")
 ordered(iwn_newstate, "IWN SCAN->SCAN preservation",
         "if (ic->ic_state == IEEE80211_S_SCAN)",
         "if (nstate == IEEE80211_S_SCAN)",
         "IWN_FLAG_SCANNING", "return 0;",
         "case IEEE80211_S_SCAN:", "iwn_scan(sc,")
-end_scan = body(node, "void\nieee80211_end_scan", "net80211 end_scan")
+end_scan = body(node, "void\nieee80211_end_scan_owned(", "net80211 owned end_scan")
 ordered(end_scan, "Apple AUTO_JOIN empty-ESS hold",
         "IEEE80211_F_AUTO_JOIN", "ic->ic_des_esslen == 0", "return;",
         "ieee80211_node_choose_bss")

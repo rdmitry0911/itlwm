@@ -88,7 +88,7 @@ for (family, source, scan_source, attach_start, attach_end, scan_marker,
         iwm_scan,
         "bool ItlIwm::\nattach(IOPCIDevice *device)",
         "void ItlIwm::\nfree()",
-        "iwm_scan(struct iwm_softc *sc)",
+        "iwm_scan(struct iwm_softc *sc, const ItlStateTransitionRequest &request)",
         "int ItlIwm::\niwm_bgscan(",
     ),
     (
@@ -97,7 +97,7 @@ for (family, source, scan_source, attach_start, attach_end, scan_marker,
         iwx,
         "bool ItlIwx::attach(IOPCIDevice *device)",
         "void ItlIwx::\ndetach(IOPCIDevice *device)",
-        "iwx_scan(struct iwx_softc *sc)",
+        "iwx_scan(struct iwx_softc *sc, const ItlStateTransitionRequest &request)",
         "int ItlIwx::\niwx_bgscan(",
     ),
 ):
@@ -107,11 +107,11 @@ for (family, source, scan_source, attach_start, attach_end, scan_marker,
     assert "first committed SCAN state" in attach, (
         f"{family} initial APSTA publication rationale is missing")
 
-    note_start = source.index("noteWclScanRadioReady()")
+    note_start = source.index("noteWclScanRadioReady(uint64_t serial)")
     note_end = source.index("claimWclScanTerminal(", note_start)
     note = source[note_start:note_end]
     for needle in (
-        "if (wclScanNeedsReopen)",
+        "if (scanCommand.current(serial, com.sc_generation) && wclScanNeedsReopen)",
         "wclScanNeedsReopen = false",
         "IEEE80211_EVT_WCL_SCAN_REOPENED",
     ):
@@ -123,7 +123,7 @@ for (family, source, scan_source, attach_start, attach_end, scan_marker,
         scan_start:scan_source.index(scan_end_marker, scan_start)
     ]
     assert scan.index("ic->ic_state = IEEE80211_S_SCAN") < scan.index(
-        "noteWclScanRadioReady()"), (
+        "noteWclScanRadioReady(scanSerial)"), (
             f"{family} must publish only after committing SCAN")
 
 print("PASS: Tahoe publishes firmware-admitted AP before primary BSD discovery and rechecks on lower ready")

@@ -5489,12 +5489,14 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
      * response, and that key-cache edge is not a cancellation of the public
      * join.  Real leave/disassociate/abort/replacement paths clear the public
      * lease explicitly at their own ingress. */
-    if (instance != nullptr)
-        instance->getTahoeOwnerRegistry().association =
-            TahoeOwnerRegistry::AssociationOwner{};
-
     struct ieee80211com *ic = fHalService
         ? fHalService->get80211Controller() : nullptr;
+    if (instance != nullptr) {
+        auto &owner = instance->getTahoeOwnerRegistry().association;
+        if (owner.joinAttemptGeneration != 0)
+            ieee80211_wcl_join_cancel(ic, owner.joinAttemptGeneration);
+        owner = TahoeOwnerRegistry::AssociationOwner{};
+    }
     if (ic == nullptr) {
         XYLog("clear_external_pmk NOT_READY reason=%s ic=NULL\n",
               reason_tag != nullptr ? reason_tag : "?");
@@ -6675,11 +6677,19 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
             instance->getTahoeOwnerRegistry().association, ic);
     if (instance != nullptr) {
         auto &registry = instance->getTahoeOwnerRegistry();
-        if (!preserveActiveWclCompletionOwner)
+        if (!preserveActiveWclCompletionOwner) {
+            if (registry.association.joinAttemptGeneration != 0)
+                ieee80211_wcl_join_cancel(
+                    ic, registry.association.joinAttemptGeneration);
             registry.association = TahoeOwnerRegistry::AssociationOwner{};
-        if (!preservePublicCompletionOwner)
+        }
+        if (!preservePublicCompletionOwner) {
+            if (registry.publicAssociation.joinAttemptGeneration != 0)
+                ieee80211_wcl_join_cancel(
+                    ic, registry.publicAssociation.joinAttemptGeneration);
             registry.publicAssociation =
                 TahoeOwnerRegistry::AssociationOwner{};
+        }
     }
     if (preserveActiveWclCompletionOwner) {
         /* The reference JoinAdapter rejects every carrier while its firmware
@@ -6757,9 +6767,16 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
          */
         if (assocResult == kIOReturnSuccess && instance != nullptr) {
             TahoeOwnerRegistry::AssociationOwner publicOwner{};
-            if (tahoeBuildPublicAssociationOwner(ad, &publicOwner))
-                instance->getTahoeOwnerRegistry().publicAssociation =
-                    publicOwner;
+            if (tahoeBuildPublicAssociationOwner(ad, &publicOwner)) {
+                publicOwner.joinAttemptGeneration = ieee80211_wcl_join_begin(
+                    ic, publicOwner.selectedBssid, publicOwner.ssid,
+                    publicOwner.ssidLength);
+                if (publicOwner.joinAttemptGeneration == 0)
+                    assocResult = kIOReturnNotReady;
+                else
+                    instance->getTahoeOwnerRegistry().publicAssociation =
+                        publicOwner;
+            }
         }
         /* CoreWLAN's BSSID is an initial selected candidate on this public
          * path. Arm only after association policy setup succeeded; WCL
@@ -6803,6 +6820,7 @@ setDISASSOCIATE(void *ad)
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(7);
     struct ieee80211com *ic = fHalService->get80211Controller();
+    ieee80211_wcl_join_cancel(ic, 0);
 
     /* Disassociation cancels any initial public provenance before its
      * early-return paths decide whether a lower deauth is needed. */
@@ -7645,6 +7663,7 @@ startIwnDirectSaeCredential(
     struct ieee80211com *ic = nullptr;
     ItlIwn *iwnHal = nullptr;
     uint64_t generation = 0;
+    uint64_t joinAttemptGeneration = 0;
     bool lowerAdmissionReserved = false;
     bool lowerAdmissionRequiresFreshScan = false;
     unsigned lowerAdmissionAttempts = 0;
@@ -7865,6 +7884,13 @@ startIwnDirectSaeCredential(
                sizeof(owner.selectedBssid));
         memcpy(owner.candidateBssid, request->bssid,
                sizeof(owner.candidateBssid));
+        owner.joinAttemptGeneration = ieee80211_wcl_join_begin(
+            ic, owner.selectedBssid, owner.ssid, owner.ssidLength);
+        joinAttemptGeneration = owner.joinAttemptGeneration;
+        if (owner.joinAttemptGeneration == 0) {
+            result = kIOReturnNotReady;
+            goto out;
+        }
     }
 
     /* The trace is identity-free.  It is deliberately armed after private
@@ -7966,8 +7992,12 @@ out:
         fHalService->cancelSaeWclCredential(generation);
         if (request != nullptr && request->wclOwner != nullptr &&
             instance != nullptr) {
-            instance->getTahoeOwnerRegistry().association =
-                TahoeOwnerRegistry::AssociationOwner{};
+            auto &owner = instance->getTahoeOwnerRegistry().association;
+            if (joinAttemptGeneration != 0) {
+                ieee80211_wcl_join_cancel(ic, joinAttemptGeneration);
+                if (owner.joinAttemptGeneration == joinAttemptGeneration)
+                    owner = TahoeOwnerRegistry::AssociationOwner{};
+            }
         }
     }
     if (lowerAdmissionReserved && fHalService != nullptr)
@@ -8138,9 +8168,13 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
     const bool preserveActiveWclCompletionOwner = instance != nullptr &&
         tahoeHasActiveWclAssociationOwner(
             instance->getTahoeOwnerRegistry().association, ic);
-    if (instance != nullptr && !preserveActiveWclCompletionOwner)
+    if (instance != nullptr && !preserveActiveWclCompletionOwner) {
+        const auto &owner = instance->getTahoeOwnerRegistry().association;
+        if (owner.joinAttemptGeneration != 0)
+            ieee80211_wcl_join_cancel(ic, owner.joinAttemptGeneration);
         instance->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
+    }
 
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
 
@@ -8607,6 +8641,11 @@ sae_out:
              */
             associationOwner.authAssocCompletionArmed = true;
             associationOwner.authAssocCompletionPublished = false;
+            associationOwner.joinAttemptGeneration = ieee80211_wcl_join_begin(
+                ic, associationOwner.selectedBssid, associationOwner.ssid,
+                associationOwner.ssidLength);
+            if (associationOwner.joinAttemptGeneration == 0)
+                return kIOReturnNotReady;
             if (instance != nullptr)
                 instance->getTahoeOwnerRegistry().association =
                     associationOwner;
@@ -8663,6 +8702,7 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
+    ieee80211_wcl_join_cancel(ic, 0);
 
     /* Retire the public-only hint before all WCL leave early returns. */
     ieee80211_public_initial_bssid_pin_disarm(ic);
@@ -9453,6 +9493,7 @@ setWCL_REASSOC(apple80211_reassoc *data)
     /* A steady-state reassociation has its own WCL terminal owner.  Retire
      * any join-completion lease unconditionally, including the PSK-present
      * path that intentionally retains the current PMK. */
+    ieee80211_wcl_join_cancel(ic, 0);
     if (instance != nullptr) {
         instance->getTahoeOwnerRegistry().association =
             TahoeOwnerRegistry::AssociationOwner{};
@@ -9679,6 +9720,7 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 {
     AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
+    ieee80211_wcl_join_cancel(ic, 0);
 
     /* Abort must retire a public marker even when the state branch below
      * does not reach ieee80211_deselect_ess(). */

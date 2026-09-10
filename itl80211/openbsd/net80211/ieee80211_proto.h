@@ -46,6 +46,8 @@
 #ifndef _NET80211_IEEE80211_PROTO_H_
 #define _NET80211_IEEE80211_PROTO_H_
 
+#include <net80211/ieee80211_join_attempt.h>
+
 /*
  * 802.11 protocol implementation definitions.
  */
@@ -291,6 +293,27 @@ extern	int ieee80211_pae_mfp_txn_begin(struct ieee80211com *,
 extern	void ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *);
 extern	void ieee80211_pae_selected_bss_capture(struct ieee80211com *,
 	    const struct ieee80211_node *, int, u_int64_t);
+/* Request values are copied under the selected-BSS leaf lock. No caller may
+ * retain a node or invoke a controller/backend callback while holding it. */
+extern	u_int64_t ieee80211_wcl_join_begin(struct ieee80211com *,
+	    const u_int8_t *, const u_int8_t *, u_int);
+extern	void ieee80211_wcl_join_cancel(struct ieee80211com *, u_int64_t);
+extern	int ieee80211_wcl_join_copy_current(struct ieee80211com *,
+    u_int64_t, struct ieee80211_join_failure *);
+extern	u_int64_t ieee80211_wcl_join_scan_generation(struct ieee80211com *);
+extern	int ieee80211_wcl_join_scan_current(struct ieee80211com *, u_int64_t);
+extern	int ieee80211_wcl_join_scan_failed(struct ieee80211com *, u_int64_t);
+extern	int ieee80211_wcl_join_generation_current(struct ieee80211com *,
+	    u_int64_t);
+extern	int ieee80211_wcl_join_note_success(struct ieee80211com *,
+	    u_int64_t, u_int64_t, enum ieee80211_join_phase);
+extern	int ieee80211_wcl_join_fail(struct ieee80211com *,
+	    const struct ieee80211_join_failure *, enum ieee80211_join_failure_cause,
+	    u_int16_t, u_int16_t, u_int32_t, u_int);
+extern	int ieee80211_wcl_join_failure_pending(struct ieee80211com *,
+	    u_int64_t);
+extern	void ieee80211_wcl_join_cleanup_done(struct ieee80211com *,
+	    u_int64_t, u_int);
 extern	int ieee80211_pae_selected_bss_copyout_current(struct ieee80211com *,
 	    u_int64_t, struct ieee80211_pae_selected_bss *);
 extern	void ieee80211_sae_driver_hook_snapshot_copyout(
@@ -445,6 +468,8 @@ extern	int ieee80211_sae_peer_rx_snapshot_admission(struct ieee80211com *,
 	    const u_int8_t[IEEE80211_ADDR_LEN], u_int64_t *, u_int64_t *);
 extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 		enum ieee80211_state, int);
+extern	int ieee80211_wcl_join_state_identity(struct ieee80211com *,
+	    u_int64_t *, u_int64_t *, u_int64_t *);
 extern	void ieee80211_roam_link_cancel(struct ieee80211com *);
 extern	int ieee80211_roam_link_loss_current(const struct ieee80211com *,
 	    const struct ieee80211_roam_link_loss *);

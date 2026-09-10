@@ -385,8 +385,11 @@ for token in ("registry.association =", "registry.publicAssociation ="):
 
 clear = body(sky, "clearExternalPmkEligibilityLocked(const char *reason_tag)",
              "shared association lifecycle clear")
-require(clear, "getTahoeOwnerRegistry().association =",
-        "PMK maintenance clears WCL candidate owner")
+ordered(clear, "PMK maintenance retires only its exact WCL request",
+        "auto &owner = instance->getTahoeOwnerRegistry().association",
+        "if (owner.joinAttemptGeneration != 0)",
+        "ieee80211_wcl_join_cancel(ic, owner.joinAttemptGeneration)",
+        "owner = TahoeOwnerRegistry::AssociationOwner{}")
 forbid(clear, "publicAssociation",
        "PMK maintenance cancellation of public completion lease")
 

@@ -282,7 +282,9 @@ for token in (
 ):
     require(hop_cleanup, token, "fail-closed tagged cleanup guard")
 
-iwn_scan_state = body(iwn, "int ItlIwn::\niwn_newstate(", "IWN scan callback")
+require(body(iwn, "int ItlIwn::\niwn_newstate(", "IWN callback wrapper"),
+        "return iwn_newstate_impl(ic, nstate, arg, 0);", "ordinary state forwarding")
+iwn_scan_state = body(iwn, "int ItlIwn::\niwn_newstate_impl(", "IWN scan callback")
 ordered(iwn_scan_state, "IWN captures then normalizes the hop tag",
         "scan_hop = nstate == IEEE80211_S_SCAN",
         "IEEE80211_NEWSTATE_ARG_SCAN_HOP",
@@ -335,8 +337,8 @@ for text, marker, label in (
     ingress = body(text, marker, label)
     ordered(ingress, f"{label} normalizes before queued task capture",
             "arg = IEEE80211_NEWSTATE_BACKEND_ARG(nstate, arg);",
-            "sc->ns_nstate = nstate;",
-            "sc->ns_arg = arg;")
+            "that->prepareStateTransition(nstate, arg, &request)",
+            "that->enqueueStateTransition(request)")
     forbid(ingress, "scan_hop =", f"{label} stale tag capture")
     forbid(text, "ieee80211_node_cleanup_scan_hop",
            f"{label} IWN-only cleanup bypass")

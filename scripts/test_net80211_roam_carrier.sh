@@ -3,7 +3,7 @@ set -euo pipefail
 ulimit -c 0
 PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 ROAM_TEST_DIR="$(mktemp -d)"
-trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/test"; rmdir "$ROAM_TEST_DIR"' EXIT
+trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/test"; rm -rf "$ROAM_TEST_DIR/test.dSYM"; rmdir "$ROAM_TEST_DIR"' EXIT
 PROTO="$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
 awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST)[ \t]/' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" \
@@ -56,9 +56,20 @@ fi | awk '
 # Verify the tested decision/terminal functions remain wired to the real
 # common bridge and all three hardware failure paths.
 sed -n '/^ieee80211_newstate(/,/^ieee80211_set_link_state(/p' "$PROTO" |
-    grep -Fq 'if (!ieee80211_roam_link_progress(ic, ostate, nstate))'
-for backend in itlwm/hal_iwn/ItlIwn.cpp itlwm/hal_iwm/mac80211.cpp itlwm/hal_iwx/ItlIwx.cpp; do
-    grep -Fq 'ieee80211_roam_link_failed(ic, roam_epoch);' "$PROJECT_DIR/$backend"
+    grep -F 'if (!ieee80211_roam_link_progress(ic, ostate, nstate))' >/dev/null
+grep -Fq 'ieee80211_roam_link_failed(ic, roam_epoch);' "$PROJECT_DIR/itlwm/hal_iwn/ItlIwn.cpp"
+for family in Iwm Iwx; do
+    case "$family" in
+        Iwm) backend=iwm; worker=itlwm/hal_iwm/mac80211.cpp ;;
+        Iwx) backend=iwx; worker=itlwm/hal_iwx/ItlIwx.cpp ;;
+    esac
+    # The terminal now crosses an identity-owned async mailbox. Preserve the
+    # failure wiring check at its real, main-workloop-serialized consumer.
+    sed -n "/^${backend}_newstate_task(/,/^}/p" "$PROJECT_DIR/$worker" |
+        grep -F 'postStateTransitionCommit(request, err)' >/dev/null
+    sed -n '/^drainStateTransitionCommit(/,/^}/p' \
+        "$PROJECT_DIR/itlwm/hal_$backend/Itl$family.cpp" |
+        grep -F 'ieee80211_roam_link_failed(&com.sc_ic, request.identity.associationEpoch);' >/dev/null
 done
 
 # Explicit WCL teardown owns its own terminal; all early returns follow
@@ -75,6 +86,6 @@ for method in setDISASSOCIATE setWCL_LEAVE_NETWORK setWCL_JOIN_ABORT; do
     ' "$PROJECT_DIR/AirportItlwm/AirportItlwmSkywalkInterface.cpp"
 done
 sed -n '/case IEEE80211_EVT_STA_BEACON_LOSS:/,/case IEEE80211_EVT_STA_ROAM_LINK_LOST:/p' \
-    "$PROJECT_DIR/AirportItlwm/AirportItlwmV2.cpp" | grep -Fq 'ieee80211_roam_link_cancel(ic)'
+    "$PROJECT_DIR/AirportItlwm/AirportItlwmV2.cpp" | grep -F 'ieee80211_roam_link_cancel(ic)' >/dev/null
 sed -n '/if (action == kAirportItlwmDeferredPowerAvailabilityPublishOff)/,/postTahoeDriverAvailabilityTransition(/p' \
-    "$PROJECT_DIR/AirportItlwm/AirportItlwmV2.cpp" | grep -Fq 'ieee80211_roam_link_cancel('
+    "$PROJECT_DIR/AirportItlwm/AirportItlwmV2.cpp" | grep -F 'ieee80211_roam_link_cancel(' >/dev/null

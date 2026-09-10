@@ -172,10 +172,18 @@ for family, source, header, flags, phase, abort in (
         terminal,
         "apPrimaryStaRecoveryScanAbortPending",
         "generic = apPrimaryStaRecoveryScanGeneric",
-        f"{flags}_FLAG_SCANNING",
         "IEEE80211_SCAN_COMPLETION_AP_HANDOFF",
         "apPrimaryStaRecoveryScanYielded = true",
     )
+    physical_claim = body(source,
+        f"bool Itl{family.title()}::\nclaimScanCommandTerminal")
+    ordered(physical_claim, "scanCommand.claimTerminal(serial",
+            f"{flags}_FLAG_SCANNING | {flags}_FLAG_BGSCAN")
+    end_source = iwm_mac if family == "IWM" else source
+    physical_end = body(end_source,
+        f"void Itl{family.title()}::\n{family.lower()}_endscan")
+    ordered(physical_end, "claimScanCommandTerminal(serial",
+            "completePrimaryStaRecoveryScanAPHandoff()")
 
     restart = body(
         source,
@@ -194,8 +202,7 @@ for family, source, header, flags, phase, abort in (
 iwm_scan_owner = body(iwm_scan, "int ItlIwm::\niwm_scan")
 ordered(
     iwm_scan_owner,
-    "if (isAPScanFenceActive())",
-    "noteWclInitialScanCommandRejected()",
+    "if (isAPScanFenceActive() && deferScanCommand(request))",
     "IWM STA scan deferred by live AP radio fence",
     "return 0",
     "iwm_umac_scan",
@@ -210,8 +217,7 @@ ordered(
 iwx_scan_owner = body(iwx, "int ItlIwx::\niwx_scan")
 ordered(
     iwx_scan_owner,
-    "if (isAPScanFenceActive())",
-    "noteWclInitialScanCommandRejected()",
+    "if (isAPScanFenceActive() && deferScanCommand(request))",
     "IWX STA scan deferred by live AP radio fence",
     "return 0",
     "iwx_umac_scan",
@@ -224,11 +230,28 @@ ordered(
     "iwx_umac_scan",
 )
 
+for scan in (iwm_scan_owner, iwx_scan_owner):
+    branch = re.search(re.escape(
+        "if (isAPScanFenceActive() && deferScanCommand(request))") +
+        r"\s*\{([^{}]*)\}", scan)
+    assert branch is not None, "missing exact AP-deferred terminal branch"
+    deferred = branch.group(1)
+    assert "noteWclInitialScanCommandRejected" not in deferred
+    ordered(scan, "deferScanCommand(request)", "return 0",
+            "stateTransitionCurrent(request)")
+
 for source, family in ((iwm, "Iwm"), (iwx, "Iwx")):
     initial = body(source, f"IOReturn Itl{family}::\nbeginWclInitialScan")
     background = body(source, f"IOReturn Itl{family}::\nbeginWclBackgroundScan")
     assert "if (isAPScanFenceActive())" in initial
     assert "if (isAPScanFenceActive())" in background
+    assert "scanCommand.apSerial != 0" in initial
+    assert "scanCommand.apSerial != 0" in background
+    ap_reserve = body(source, f"uint64_t Itl{family}::\nreserveAPScanCommand")
+    ordered(ap_reserve, "IOSimpleLockLockDisableInterrupt(wclScanLock)",
+            f"wclScanPhase == Itl{family}WclScanPhase::Idle",
+            "scanCommand.reserveAP(com.sc_generation)",
+            "IOSimpleLockUnlockEnableInterrupt")
 
 iwm_start = body(iwm, "IOReturn ItlIwm::\nstartAPMode")
 ordered(

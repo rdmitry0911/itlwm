@@ -1,5 +1,6 @@
 #include <array>
 #include <cassert>
+#include "scan_test_byte_order.hpp"
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>

@@ -891,7 +891,9 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventEapolTxDone",
 ):
     require(completion, needle, "IWN categorical completion event")
-iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate(", "IWN newstate")
+require(body(iwn, "int ItlIwn::\niwn_newstate(", "IWN callback wrapper"),
+        "return iwn_newstate_impl(ic, nstate, arg, 0);", "ordinary state forwarding")
+iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate_impl(", "IWN newstate")
 ordered(iwn_newstate, "direct SAE reads its STARTING generation before coalesce",
         "ieee80211_sae_wcl_request_scan_starting(ic,",
         "if (ic->ic_state == IEEE80211_S_SCAN)", "IWN_FLAG_SCANNING",

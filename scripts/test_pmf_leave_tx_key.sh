@@ -3,7 +3,7 @@ set -euo pipefail
 ulimit -c 0
 PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d)"
-trap 'rm -f "$TEST_DIR/definitions.inc" "$TEST_DIR/production.inc" "$TEST_DIR/test"; rmdir "$TEST_DIR"' EXIT
+trap 'rm -f "$TEST_DIR/definitions.inc" "$TEST_DIR/production.inc" "$TEST_DIR/test"; rm -rf "$TEST_DIR/test.dSYM"; rmdir "$TEST_DIR"' EXIT
 python3 - "$PROJECT_DIR" "$TEST_DIR" <<'PY'
 from pathlib import Path
 import os

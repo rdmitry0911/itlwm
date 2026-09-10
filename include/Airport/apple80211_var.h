@@ -623,6 +623,21 @@ struct apple80211_wcl_connect_complete_event {
         records[APPLE80211_WCL_CONNECT_COMPLETE_MAX_RECORDS]; // 0x04
 } __attribute__((packed));    // 0xA4 total
 
+// JoinAdapter SET_SSID/first-beacon result. This is not the independent
+// eight-byte SSID_CHANGED bulletin and does not itself advance JoinManager.
+struct apple80211_wcl_first_beacon_event {
+    uint16_t status;
+    uint16_t secondary_state;
+    uint8_t bssid[6];
+    uint16_t reserved;
+    uint32_t event_status;
+    uint32_t event_reason;
+} __attribute__((packed));
+static_assert(sizeof(apple80211_wcl_first_beacon_event) == 0x14,
+              "WCL first-beacon result must be 20 bytes");
+static_assert(__offsetof(apple80211_wcl_first_beacon_event, event_status) == 0x0c,
+              "WCL first-beacon event status must be at +0x0c");
+
 // WCL association-status event — producer ABI recovered from
 // AppleBCMWLANCore::handleAssocEvent on Tahoe.  This is the historical
 // 0x4e bulletin; it is not the WCLJoinManager completion transition.
@@ -910,6 +925,7 @@ struct apple80211_status_msg_hdr
 #define APPLE80211_M_WCL_AUTH_ASSOC_EVENT    78
 #define APPLE80211_M_WCL_SCAN_RESULT         201
 #define APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE 211
+#define APPLE80211_M_WCL_FIRST_BEACON_EVENT 212
 #define APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT 213
 #define APPLE80211_M_WCL_JOIN_ABORT_COMPLETE 214
 #define APPLE80211_M_WCL_SCAN_DONE           237

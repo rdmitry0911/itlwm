@@ -110,6 +110,7 @@
 #include "IwxMfpIgtkContracts.hpp"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 #include <ClientKit/AirportItlwmScanHomeAwayBridge.h>
+#include <HAL/ItlScanCommandPolicy.hpp>
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
@@ -556,6 +557,14 @@ bool ItlIwx::attach(IOPCIDevice *device)
     apCsaTimerInitialized = true;
     /* iwx_attach() may fail partway through; detach() owns this pointer. */
     fSaeTxGate = NULL;
+    stateTransitionSource = NULL;
+    stateTransition = ItlStateTransitionLease{};
+    primaryMacContext = ItlFirmwareContextLease{};
+    primaryBindingContext = ItlFirmwareContextLease{};
+    memset(&primaryMacCommand, 0, sizeof(primaryMacCommand));
+    scanCommand = ItlScanCommandLease{};
+    scanCommandPolicy = ItlScanCommandPolicy{};
+    scanCommandAbortSerial = 0;
     wclScanLock = IOSimpleLockAlloc();
     if (wclScanLock == NULL)
         return false;
@@ -576,6 +585,10 @@ bool ItlIwx::attach(IOPCIDevice *device)
     wclSaeAdmissionReserved = false;
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
+    if (!initStateTransitions()) {
+        releaseAll();
+        return false;
+    }
     if (!iwx_attach(&com, &pci)) {
         /* detach() owns every unwind after iwx_attach() has exposed IRQs. */
         detach(device);
@@ -595,6 +608,7 @@ detach(IOPCIDevice *device)
     IOCommandGate *sae_tx_gate = NULL;
 
     invalidateWclScanForReset();
+    shutdownStateTransitions();
     iwx_sae_engine_detach_begin(sc);
     iwx_sae_wcl_detach_begin(sc);
 
@@ -799,6 +813,7 @@ iwx_interrupt_teardown(struct iwx_softc *sc)
 void ItlIwx::
 releaseAll()
 {
+    shutdownStateTransitions();
     pci_intr_handle *intrHandler = com.ih;
     if (apCsaTimerInitialized) {
         timeout_del(&apCsaTimeout);
@@ -1006,14 +1021,15 @@ beginWclInitialScan(uint64_t generation, uint32_t *outBackendGeneration)
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
     if (wclScanPhase != ItlIwxWclScanPhase::Idle ||
-        wclSaeAdmissionReserved) {
+        wclSaeAdmissionReserved || !scanCommand.open || scanCommand.apSerial != 0) {
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
         return kIOReturnBusy;
     }
     wclScanUpperGeneration = generation;
     wclScanBackendGeneration = 0;
     wclScanPublicationInvalidated = false;
-    if ((com.sc_flags & IWX_FLAG_SCANNING) != 0) {
+    if (scanCommand.live() ||
+        (com.sc_flags & IWX_FLAG_SCANNING) != 0) {
         /*
          * Retire the boot scan without lending its cache or terminal to WCL.
          * Its firmware terminal only queues one fresh UMAC transaction.
@@ -1053,7 +1069,8 @@ beginWclBackgroundScan(uint64_t generation,
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
     if (wclScanPhase != ItlIwxWclScanPhase::Idle ||
-        wclSaeAdmissionReserved) {
+        wclSaeAdmissionReserved || scanCommand.live() || !scanCommand.open ||
+        scanCommand.apSerial != 0) {
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
         return kIOReturnBusy;
     }
@@ -1094,7 +1111,7 @@ beginWclBackgroundScan(uint64_t generation,
 }
 
 void ItlIwx::
-noteWclInitialScanCommandStarted()
+noteWclInitialScanCommandStarted(uint64_t serial)
 {
     uint64_t generation = 0;
     uint32_t backendGeneration = 0;
@@ -1103,7 +1120,10 @@ noteWclInitialScanCommandStarted()
         return;
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
-    if (wclScanPhase == ItlIwxWclScanPhase::InitialStarting) {
+    if (scanCommand.current(serial, com.sc_generation) &&
+        scanCommandPolicy.plan.active != 0 &&
+        scanCommandPolicy.plan.generation == wclScanUpperGeneration &&
+        wclScanPhase == ItlIwxWclScanPhase::InitialStarting) {
         backendGeneration =
             iwx_wcl_scan_next_backend_generation_locked(this);
         wclScanBackendGeneration = backendGeneration;
@@ -1115,7 +1135,7 @@ noteWclInitialScanCommandStarted()
 }
 
 void ItlIwx::
-noteWclInitialScanCommandRejected()
+noteWclInitialScanCommandRejected(uint64_t serial, uint64_t requiredGeneration)
 {
     uint64_t generation = 0;
     uint32_t backendGeneration = 0;
@@ -1124,7 +1144,11 @@ noteWclInitialScanCommandRejected()
         return;
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
-    if (wclScanPhase == ItlIwxWclScanPhase::InitialStarting) {
+    const uint64_t expected = serial == 0 ? requiredGeneration :
+        scanCommandPolicy.plan.generation;
+    if (expected != 0 && expected == wclScanUpperGeneration &&
+        (serial == 0 || scanCommand.current(serial, com.sc_generation)) &&
+        wclScanPhase == ItlIwxWclScanPhase::InitialStarting) {
         generation = wclScanUpperGeneration;
         backendGeneration = wclScanBackendGeneration;
         iwx_wcl_scan_ticket_reset_locked(this);
@@ -1135,13 +1159,16 @@ noteWclInitialScanCommandRejected()
 }
 
 void ItlIwx::
-noteWclBackgroundScanCommandStarted()
+noteWclBackgroundScanCommandStarted(uint64_t serial)
 {
     if (wclScanLock == NULL)
         return;
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
-    if (wclScanPhase == ItlIwxWclScanPhase::BackgroundStarting) {
+    if (scanCommand.current(serial, com.sc_generation) &&
+        scanCommandPolicy.plan.active != 0 &&
+        scanCommandPolicy.plan.generation == wclScanUpperGeneration &&
+        wclScanPhase == ItlIwxWclScanPhase::BackgroundStarting) {
         wclScanBackendGeneration =
             iwx_wcl_scan_next_backend_generation_locked(this);
         wclScanPhase = ItlIwxWclScanPhase::BackgroundActive;
@@ -1152,7 +1179,7 @@ noteWclBackgroundScanCommandStarted()
 }
 
 void ItlIwx::
-noteWclScanRadioReady()
+noteWclScanRadioReady(uint64_t serial)
 {
     bool publish = false;
 
@@ -1160,7 +1187,7 @@ noteWclScanRadioReady()
         return;
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
-    if (wclScanNeedsReopen) {
+    if (scanCommand.current(serial, com.sc_generation) && wclScanNeedsReopen) {
         wclScanNeedsReopen = false;
         publish = true;
     }
@@ -1190,22 +1217,25 @@ noteWclScanRadioReady()
 }
 
 ItlIwxWclScanTerminalKind ItlIwx::
-claimWclScanTerminal(ItlIwxWclScanTerminal *terminal)
+claimWclScanTerminal(ItlIwxWclScanTerminal *terminal, bool leafHeld)
 {
     if (terminal == NULL || wclScanLock == NULL)
         return ItlIwxWclScanTerminalKind::None;
     explicit_bzero(terminal, sizeof(*terminal));
 
-    IOInterruptState irq =
-        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    IOInterruptState irq = 0;
+    if (!leafHeld)
+        irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
     if (wclScanPhase == ItlIwxWclScanPhase::InitialQueued) {
         if (wclScanPublicationInvalidated) {
             iwx_wcl_scan_ticket_reset_locked(this);
-            IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+            if (!leafHeld)
+                IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
             return ItlIwxWclScanTerminalKind::None;
         }
         wclScanPhase = ItlIwxWclScanPhase::InitialStarting;
-        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        if (!leafHeld)
+            IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
         return ItlIwxWclScanTerminalKind::ReplayInitial;
     }
 
@@ -1221,7 +1251,8 @@ claimWclScanTerminal(ItlIwxWclScanTerminal *terminal)
         terminal->publish = !wclScanPublicationInvalidated;
         iwx_wcl_scan_ticket_reset_locked(this);
     }
-    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!leafHeld)
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     return kind;
 }
 
@@ -1289,6 +1320,725 @@ invalidateWclBackgroundScan()
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
 }
 
+uint64_t ItlIwx::
+scanCommandResetEpoch()
+{
+    if (wclScanLock == NULL)
+        return UINT64_MAX;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const uint64_t epoch = scanCommand.resetEpoch;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return epoch;
+}
+
+bool ItlIwx::
+reopenScanCommands(uint64_t resetEpoch, uint32_t hardwareGeneration)
+{
+    if (wclScanLock == NULL)
+        return false;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool reopened =
+        static_cast<uint32_t>(com.sc_generation) == hardwareGeneration &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        scanCommand.reopen(resetEpoch, hardwareGeneration);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return reopened;
+}
+
+int ItlIwx::
+reserveScanCommand(bool background, bool umac, uint64_t *serial,
+                   const ItlStateTransitionRequest *request)
+{
+    if (serial == NULL)
+        return EINVAL;
+    *serial = 0;
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return ENXIO;
+    if (background ? request != NULL :
+        (request == NULL || request->state != IEEE80211_S_SCAN))
+        return EINVAL;
+
+    const uint32_t homeAwayMs = background ?
+        ItlScanCommandPolicy::homeAwayTime() : request->scanHomeAwayMs;
+    ItlScanCommandPolicy policy = {};
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    int error = 0;
+    const uint64_t wclGeneration = background ?
+        (wclScanPhase == ItlIwxWclScanPhase::BackgroundStarting ?
+            wclScanUpperGeneration : 0) : request->scanGeneration;
+    if (!scanCommand.open || (com.sc_flags & IWX_FLAG_SHUTDOWN) != 0)
+        error = ENXIO;
+    else if (!background && !stateTransition.current(*request, com.sc_generation))
+        error = ECANCELED;
+    else if (wclGeneration != 0 &&
+        (wclScanUpperGeneration != wclGeneration || wclScanPublicationInvalidated ||
+         wclScanPhase != (background ? ItlIwxWclScanPhase::BackgroundStarting :
+                                      ItlIwxWclScanPhase::InitialStarting)))
+        error = ECANCELED;
+    else
+        error = ItlScanCommandPolicy::captureOwnedLocked(ic, wclGeneration,
+                                                         request, &policy);
+    if (error == 0) {
+        *serial = scanCommand.reserve(com.sc_generation, policy.joinGeneration,
+                                      umac, background, 0);
+        if (*serial == 0)
+            error = EBUSY;
+        else {
+            policy.homeAwayMs = homeAwayMs;
+            scanCommandPolicy = policy;
+        }
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    return error;
+}
+
+/* Both selected-BSS and scan leaves are held, in that order (IWX may hold
+ * its command-queue leaf outside them). Abort deliberately does not use this
+ * latest-intent check: an obsolete physical command still needs retirement. */
+bool ItlIwx::
+scanCommandOwnerCurrentLocked(uint64_t serial, uint32_t generation) const
+{
+    if (!scanCommand.current(serial, generation) ||
+        !scanCommandPolicy.currentLocked(&com.sc_ic))
+        return false;
+    if (scanCommandPolicy.stateSerial != 0 &&
+        (stateTransition.request.serial != scanCommandPolicy.stateSerial ||
+         stateTransition.request.hardwareGeneration != generation))
+        return false;
+    return scanCommandPolicy.plan.active == 0 ||
+        (!wclScanPublicationInvalidated &&
+         wclScanUpperGeneration == scanCommandPolicy.plan.generation);
+}
+
+bool ItlIwx::
+copyScanCommandPolicy(uint64_t serial, ItlScanCommandPolicy *policy)
+{
+    if (policy == NULL)
+        return false;
+    *policy = ItlScanCommandPolicy{};
+    IOSimpleLock *ownerLock = com.sc_ic.ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return false;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = scanCommandOwnerCurrentLocked(serial, com.sc_generation);
+    if (current)
+        *policy = scanCommandPolicy;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    return current;
+}
+
+void ItlIwx::
+rejectScanCommand(uint64_t serial)
+{
+    if (wclScanLock == NULL || serial == 0)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    bool reset = false;
+    if (scanCommand.rejectUnsubmitted(serial, com.sc_generation))
+        scanCommandPolicy = ItlScanCommandPolicy{};
+    else
+        reset = scanCommand.quarantine(serial, com.sc_generation);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+
+    /* A command response timeout cannot retire a doorbelled scan. The
+     * existing reset worker owns firmware erasure and admission reopening. */
+    if (reset)
+        task_add(systq, &com.init_task);
+}
+
+bool ItlIwx::
+claimScanCommandTerminal(uint64_t serial,
+    ItlScanCommandTerminal *physical, ItlIwxWclScanTerminal *terminal,
+    ItlIwxWclScanTerminalKind *kind)
+{
+    if (wclScanLock == NULL || physical == NULL || terminal == NULL ||
+        kind == NULL)
+        return false;
+    *physical = ItlScanCommandTerminal{};
+    *terminal = ItlIwxWclScanTerminal{};
+    *kind = ItlIwxWclScanTerminalKind::None;
+    lockTsleep();
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (!scanCommand.claimTerminal(serial, com.sc_generation, physical)) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        unlockTsleep();
+        return false;
+    }
+    /* Retire only the completed physical owner before any callback is
+     * allowed to reserve and publish its replacement. */
+    const bool wake = scanCommandAbortSerial == serial;
+    if (wake) {
+        scanCommandAbortSerial = 0;
+        __atomic_store_n(&com.sc_scan_abort_pending, 0, __ATOMIC_RELEASE);
+        physical->stopping = true;
+    }
+    com.sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
+    if (!physical->stopping)
+        *kind = claimWclScanTerminal(terminal, true);
+    if (*kind == ItlIwxWclScanTerminalKind::Background)
+        __atomic_store_n(&com.sc_ic.ic_wcl_scan_active, 0, __ATOMIC_RELEASE);
+    if (!physical->stopping && physical->background &&
+        (physical->aborted || stateTransition.stage == ItlStateTransitionLease::Stage::Deferred))
+        com.sc_ic.ic_flags &= ~(IEEE80211_F_BGSCAN |
+                               IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+    scanCommandPolicy = ItlScanCommandPolicy{};
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (wake)
+        wakeupOn(&com.sc_scan_abort_pending);
+    unlockTsleep();
+    return true;
+}
+
+bool ItlIwx::
+activateScanCommand(uint64_t serial, bool background)
+{
+    if (wclScanLock == NULL)
+        return false;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = scanCommand.current(serial, com.sc_generation) &&
+        scanCommand.submitted && scanCommand.command.background == background;
+    if (current)
+        com.sc_flags |= background ? IWX_FLAG_BGSCAN : IWX_FLAG_SCANNING;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return current;
+}
+
+bool ItlIwx::
+scanCommandCurrent(uint64_t serial)
+{
+    if (wclScanLock == NULL)
+        return false;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = scanCommand.current(serial, com.sc_generation);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return current;
+}
+
+uint64_t ItlIwx::
+reserveAPScanCommand()
+{
+    if (wclScanLock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const uint64_t serial =
+        wclScanPhase == ItlIwxWclScanPhase::Idle &&
+        (com.sc_flags & (IWX_FLAG_SHUTDOWN |
+                         IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0 ?
+        scanCommand.reserveAP(com.sc_generation) : 0;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return serial;
+}
+
+uint64_t ItlIwx::
+currentAPScanCommand() const
+{
+    if (wclScanLock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const uint64_t serial = scanCommand.apSerial;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return serial;
+}
+
+void ItlIwx::
+finishAPScanCommand(uint64_t serial, bool quiescent)
+{
+    if (wclScanLock == NULL || serial == 0)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    bool reset = false;
+    if (quiescent)
+        (void)scanCommand.releaseAP(serial, com.sc_generation);
+    else
+        reset = scanCommand.quarantineAP(serial, com.sc_generation);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (reset)
+        task_add(systq, &com.init_task);
+}
+
+bool ItlIwx::
+scanCommandBackgroundPending()
+{
+    if (wclScanLock == NULL)
+        return false;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool pending = scanCommand.live() && scanCommand.command.background;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return pending;
+}
+
+bool ItlIwx::
+deferScanCommand(const ItlStateTransitionRequest &request, bool includeBackground)
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return false;
+    const bool apFenced = isAPScanFenceActive();
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = stateTransitionSource != NULL &&
+        request.state == IEEE80211_S_SCAN &&
+        stateTransition.current(request, com.sc_generation) &&
+        request.identity.equals(ItlScanCommandPolicy::identityLocked(ic));
+    const bool occupied = current && scanCommand.open &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        ((scanCommand.live() &&
+          (includeBackground || !scanCommand.command.background)) ||
+         scanCommand.apSerial != 0 || apFenced);
+    const bool deferred = occupied &&
+        stateTransition.defer(request, com.sc_generation);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+
+    /* The release edge may have preceded publication of this waiter. A
+     * level check queues at most one exact Deferred -> Queued transition;
+     * it neither spins nor invokes common scan preparation a second time. */
+    if (deferred)
+        resumeScanCommand();
+    return deferred;
+}
+
+bool ItlIwx::
+scanCommandReplayPending()
+{
+    if (wclScanLock == NULL)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool pending = stateTransition.stage == ItlStateTransitionLease::Stage::Deferred &&
+        stateTransition.request.state == IEEE80211_S_SCAN;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return pending;
+}
+
+void ItlIwx::
+resumeScanCommand()
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL || isAPScanFenceActive() ||
+        !iwx_task_gate_enter(&com, true))
+        return;
+
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    bool queued = false;
+    if (stateTransition.stage == ItlStateTransitionLease::Stage::Deferred) {
+        const ItlStateTransitionRequest &request = stateTransition.request;
+        ItlScanCommandPolicy policy = {};
+        const bool current = stateTransitionSource != NULL && scanCommand.open &&
+            (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+            request.hardwareGeneration == static_cast<uint32_t>(com.sc_generation) &&
+            request.state == IEEE80211_S_SCAN &&
+            (ic->ic_if.if_flags & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING) &&
+            (request.scanGeneration == 0 ||
+             (wclScanPhase == ItlIwxWclScanPhase::InitialStarting &&
+              !wclScanPublicationInvalidated &&
+              request.scanGeneration == wclScanUpperGeneration)) &&
+            ItlScanCommandPolicy::captureOwnedLocked(ic, request.scanGeneration,
+                                                       &request, &policy) == 0;
+        if (!current)
+            stateTransition.invalidate();
+        else if (!scanCommand.live() && scanCommand.apSerial == 0)
+            queued = stateTransition.resume(com.sc_generation);
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (queued)
+        iwx_add_task(&com, com.sc_nswq, &com.newstate_task);
+    iwx_task_gate_leave(&com);
+}
+
+bool ItlIwx::
+noteStateTransitionProgress(ItlStateTransitionRequest *request, uint8_t step)
+{
+    IOSimpleLock *ownerLock = com.sc_ic.ic_pae_selected_bss_lock;
+    if (request == NULL || wclScanLock == NULL || ownerLock == NULL)
+        return false;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = stateTransitionSource != NULL && scanCommand.open &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        request->identity.equals(ItlScanCommandPolicy::identityLocked(&com.sc_ic)) &&
+        stateTransition.completeLowerStep(request, com.sc_generation, step);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    return current;
+}
+
+int ItlIwx::
+reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly)
+{
+    if (serial == NULL)
+        return EINVAL;
+    *serial = 0;
+    if (wclScanLock == NULL)
+        return ENXIO;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (!scanCommand.open) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return ENXIO;
+    }
+    if (!scanCommand.live() ||
+        (backgroundOnly && !scanCommand.command.background)) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return 0;
+    }
+    /* The original sender must publish readiness before another caller
+     * waits for its terminal. A reserved/unready census is busy, not absent. */
+    if (backgroundOnly && !scanCommand.upperReady) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return EBUSY;
+    }
+    const uint64_t current = scanCommand.command.serial;
+    if (!scanCommand.beginAbort(current, com.sc_generation)) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return EBUSY;
+    }
+    *serial = current;
+    if (wait) {
+        scanCommandAbortSerial = current;
+        __atomic_store_n(&com.sc_scan_abort_pending, 1, __ATOMIC_RELEASE);
+    }
+    const bool complete = scanCommand.terminalSeen && scanCommand.upperReady;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (complete)
+        iwx_endscan(&com, current);
+    return 0;
+}
+
+int ItlIwx::
+waitScanCommandAbort(uint64_t serial, uint32_t generation)
+{
+    int error = 0;
+    lockTsleep();
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    bool current = scanCommand.open &&
+        static_cast<uint32_t>(com.sc_generation) == generation;
+    bool pending = current && scanCommandAbortSerial == serial;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (pending)
+        error = tsleep_nsec_locked(&com.sc_scan_abort_pending, 0,
+                                   "scan-abort", SEC_TO_NSEC(1));
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    current = scanCommand.open &&
+        static_cast<uint32_t>(com.sc_generation) == generation;
+    pending = current && scanCommandAbortSerial == serial;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    unlockTsleep();
+    if (!current)
+        return ENXIO;
+    if (!pending)
+        return 0;
+
+    /* Timeout never clears another command's waiter or reuses a UID whose
+     * physical terminal was not received. Hardware reset owns that erasure. */
+    rejectScanCommand(serial);
+    return error != 0 ? error : ETIMEDOUT;
+}
+
+bool ItlIwx::
+readyScanCommand(uint64_t serial)
+{
+    if (wclScanLock == NULL)
+        return false;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool accepted = scanCommand.ready(serial, com.sc_generation);
+    const bool complete = accepted && scanCommand.terminalSeen;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (complete)
+        iwx_endscan(&com, serial);
+    return accepted;
+}
+
+void ItlIwx::
+noteScanCommandTerminal(bool umac, uint32_t uid, bool aborted)
+{
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool complete = scanCommand.noteTerminal(
+        com.sc_generation, umac, uid, aborted) && scanCommand.upperReady;
+    const uint64_t serial = complete ? scanCommand.command.serial : 0;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (complete)
+        iwx_endscan(&com, serial);
+}
+
+bool ItlIwx::
+initStateTransitions()
+{
+    IOWorkLoop *workloop = getMainWorkLoop();
+    if (wclScanLock == NULL || workloop == NULL)
+        return false;
+    IOInterruptEventSource *source = IOInterruptEventSource::interruptEventSource(
+        this, &ItlIwx::stateTransitionEvent);
+    if (source == NULL)
+        return false;
+    if (workloop->addEventSource(source) != kIOReturnSuccess) {
+        source->release();
+        return false;
+    }
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    stateTransitionSource = source;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    source->enable();
+    return true;
+}
+
+void ItlIwx::
+shutdownStateTransitions()
+{
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    IOInterruptEventSource *source = stateTransitionSource;
+    stateTransitionSource = NULL;
+    stateTransition.invalidate();
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (source != NULL) {
+        source->disable();
+        getMainWorkLoop()->removeEventSource(source);
+        source->release();
+    }
+}
+
+int ItlIwx::
+prepareStateTransition(int state, int argument, ItlStateTransitionRequest *request)
+{
+    if (request == NULL)
+        return EINVAL;
+    *request = ItlStateTransitionRequest{};
+    IOSimpleLock *ownerLock = com.sc_ic.ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return ENXIO;
+    const uint32_t homeAwayMs = state == IEEE80211_S_SCAN ?
+        ItlScanCommandPolicy::homeAwayTime() : 0;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const ItlStateTransitionIdentity identity =
+        ItlScanCommandPolicy::identityLocked(&com.sc_ic);
+    ItlStateTransitionRequest scanFacts = {};
+    scanFacts.identity = identity;
+    const uint64_t scanGeneration = state == IEEE80211_S_SCAN &&
+        wclScanPhase == ItlIwxWclScanPhase::InitialStarting &&
+        !wclScanPublicationInvalidated ? wclScanUpperGeneration : 0;
+    const bool validScan = state != IEEE80211_S_SCAN ||
+        ItlScanCommandPolicy::captureIngressLocked(&com.sc_ic, scanGeneration,
+                                                  &scanFacts);
+    int error = ENXIO;
+    if (stateTransitionSource != NULL && scanCommand.open &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
+        if (!validScan)
+            error = EINVAL;
+        else if (state != IEEE80211_S_SCAN && state != IEEE80211_S_AUTH &&
+            stateTransition.duplicate(com.sc_generation, state, argument, identity))
+            error = EALREADY;
+        else if (stateTransition.prepare(com.sc_generation, state, argument,
+                                          identity, request)) {
+            request->scanGeneration = scanFacts.scanGeneration;
+            request->scanJoinGeneration = scanFacts.scanJoinGeneration;
+            request->scanHomeAwayMs = homeAwayMs;
+            request->scanSsidLength = scanFacts.scanSsidLength;
+            memcpy(request->scanSsid, scanFacts.scanSsid, sizeof(request->scanSsid));
+            stateTransition.request = *request;
+            /* Compatibility/debug fields are not the queued worker's input. */
+            com.ns_nstate = (enum ieee80211_state)state;
+            com.ns_arg = argument;
+            error = 0;
+        } else
+            error = EOVERFLOW;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    return error;
+}
+
+bool ItlIwx::
+stateTransitionCurrent(const ItlStateTransitionRequest &request)
+{
+    ItlStateTransitionIdentity identity = {};
+    if (wclScanLock == NULL ||
+        !ieee80211_wcl_join_state_identity(&com.sc_ic, &identity.joinSequence,
+            &identity.joinGeneration, &identity.associationEpoch) ||
+        !request.identity.equals(identity))
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = stateTransitionSource != NULL && scanCommand.open &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        stateTransition.current(request, com.sc_generation);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return current;
+}
+
+bool ItlIwx::
+primaryFirmwareContextsPresent()
+{
+    if (wclScanLock == NULL)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool present = primaryMacContext.occupied() ||
+        primaryBindingContext.occupied();
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return present;
+}
+
+bool ItlIwx::
+firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &command) const
+{
+    const ItlFirmwareContextLease *context = NULL;
+    switch (command.kind) {
+        case ItlFirmwareContextCommand::Kind::Mac:
+            context = &primaryMacContext;
+            break;
+        case ItlFirmwareContextCommand::Kind::Binding:
+            context = &primaryBindingContext;
+            break;
+    }
+    if (context == NULL || command.submitted || !scanCommand.open ||
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) != 0 ||
+        command.receipt.generation != static_cast<uint32_t>(com.sc_generation) ||
+        !context->commandCurrent(command.receipt.serial, com.sc_generation) ||
+        !context->owner.identity.equals(command.receipt.identity))
+        return false;
+    if (command.cleanup)
+        return context->stage == ItlFirmwareContextLease::Stage::Removing ||
+            (command.kind == ItlFirmwareContextCommand::Kind::Mac &&
+             context->stage == ItlFirmwareContextLease::Stage::Modifying);
+    return command.receipt.identity.attempt.equals(
+        ItlScanCommandPolicy::identityLocked(&com.sc_ic));
+}
+
+bool ItlIwx::
+enqueueStateTransition(const ItlStateTransitionRequest &request)
+{
+    if (!stateTransitionCurrent(request) || !iwx_task_gate_enter(&com, false))
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool queued = stateTransitionSource != NULL && scanCommand.open &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        stateTransition.enqueue(request, com.sc_generation);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (queued)
+        iwx_add_task(&com, com.sc_nswq, &com.newstate_task);
+    iwx_task_gate_leave(&com);
+    return queued;
+}
+
+bool ItlIwx::
+takeStateTransition(ItlStateTransitionRequest *request)
+{
+    if (wclScanLock == NULL || request == NULL)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool taken = stateTransitionSource != NULL && scanCommand.open &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        stateTransition.take(com.sc_generation, request);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return taken && stateTransitionCurrent(*request);
+}
+
+int ItlIwx::
+postStateTransitionCommit(const ItlStateTransitionRequest &request, int error)
+{
+    if (!stateTransitionCurrent(request))
+        return ECANCELED;
+    IOInterruptEventSource *source = NULL;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (stateTransitionSource != NULL && scanCommand.open &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        stateTransition.publish(request, com.sc_generation, error)) {
+        source = stateTransitionSource;
+        source->retain();
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (source == NULL)
+        return ECANCELED;
+    int result = 0;
+    if (getMainWorkLoop()->inGate())
+        result = drainStateTransitionCommit(source);
+    else
+        source->interruptOccurred(NULL, NULL, 0);
+    source->release();
+    return result;
+}
+
+void ItlIwx::
+recoverStateTransition(const ItlStateTransitionRequest &request)
+{
+    if (!getMainWorkLoop()->inGate() || !stateTransitionCurrent(request))
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool recover = stateTransitionSource != NULL && scanCommand.open &&
+        (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        stateTransition.current(request, com.sc_generation);
+    if (recover) {
+        /* Partial lower resources cannot admit a successor before reset. */
+        scanCommand.open = false;
+        stateTransition.invalidate();
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (recover)
+        iwx_add_task(&com, systq, &com.init_task);
+}
+
+int ItlIwx::
+drainStateTransitionCommit(IOInterruptEventSource *source)
+{
+    if (wclScanLock == NULL || !getMainWorkLoop()->inGate())
+        return ENXIO;
+    ItlStateTransitionRequest request = {};
+    int error = 0;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool taken = source != NULL && source == stateTransitionSource &&
+        scanCommand.open && (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        stateTransition.takeCommit(com.sc_generation, &request, &error);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!taken || !stateTransitionCurrent(request))
+        return ECANCELED;
+    if (error != 0) {
+        ieee80211_roam_link_failed(&com.sc_ic, request.identity.associationEpoch);
+        recoverStateTransition(request);
+        return error;
+    }
+
+    /* Generic AUTH/ASSOC enqueue and its if_start now share the recursive
+     * main workloop gate. No drained worker waits for that gate. */
+    error = com.sc_newstate(&com.sc_ic,
+        (enum ieee80211_state)request.state, request.argument);
+    if (error != 0)
+        recoverStateTransition(request);
+    return error;
+}
+
+void ItlIwx::
+stateTransitionEvent(OSObject *owner, IOInterruptEventSource *source, int count)
+{
+    (void)count;
+    ItlIwx *that = static_cast<ItlIwx *>(owner);
+    (void)that->drainStateTransitionCommit(source);
+}
+
 void ItlIwx::
 invalidateWclScanForReset()
 {
@@ -1313,6 +2063,10 @@ invalidateWclScanForReset()
     iwx_wcl_scan_ticket_reset_locked(this);
     wclSaeAdmissionReserved = false;
     wclScanNeedsReopen = true;
+    scanCommand.invalidate();
+    scanCommandPolicy = ItlScanCommandPolicy{};
+    stateTransition.invalidate();
+    scanCommandAbortSerial = 0;
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     __atomic_store_n(&com.sc_ic.ic_wcl_scan_active, 0, __ATOMIC_RELEASE);
 
@@ -1447,6 +2201,8 @@ supportsAPMode() const
 bool ItlIwx::
 isAPScanFenceActive() const
 {
+    if (currentAPScanCommand() != 0)
+        return true;
     if (apLifecycleLock == NULL)
         return false;
     IOLockLock(apLifecycleLock);
@@ -2189,7 +2945,6 @@ completePrimaryStaRecoveryScanAPHandoff()
     /* The native terminal, not the abort command response, retires the scan
      * lease.  Reconcile net80211 without publishing SCAN_DONE, selecting a
      * cached BSS, or immediately starting the next scan. */
-    sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
     ieee80211_end_scan_controlled(
         &ic->ic_if, IEEE80211_SCAN_COMPLETION_AP_HANDOFF);
 
@@ -2222,6 +2977,8 @@ resumePrimaryStaRecoveryScanAfterAPHandoff()
 
     if (apLifecycleLock == NULL)
         return;
+    if (isAPScanFenceActive())
+        return;
     IOLockLock(apLifecycleLock);
     /* The yielded scan is the foreground policy displaced by HostAP, not a
      * temporary prerequisite which should restart as soon as MAC_CONTEXT is
@@ -2240,6 +2997,10 @@ resumePrimaryStaRecoveryScanAfterAPHandoff()
         apPrimaryStaRecoveryScanGeneration = 0;
     }
     IOLockUnlock(apLifecycleLock);
+    if (scanCommandReplayPending()) {
+        resumeScanCommand();
+        return;
+    }
     if ((generation == 0 && !generic) ||
         sc->sc_sae_wcl_credential_lock == NULL || wclScanLock == NULL)
         return;
@@ -8703,46 +9464,102 @@ iwx_rx_bmiss(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
 int ItlIwx::
 iwx_binding_cmd(struct iwx_softc *sc, struct iwx_node *in, uint32_t action)
 {
-    struct iwx_binding_cmd cmd;
-    struct iwx_phy_ctxt *phyctxt = in->in_phyctxt;
-    uint32_t mac_id = IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color);
-    int i, err, active = (sc->sc_flags & IWX_FLAG_BINDING_ACTIVE);
-    uint32_t status;
-    
-    if (action == IWX_FW_CTXT_ACTION_ADD && active) {
-        return 0;
-    }
-    if (action == IWX_FW_CTXT_ACTION_REMOVE && !active) {
-        return 0;
-    }
-    
-    if (phyctxt == NULL) /* XXX race with iwx_stop() */
+    using Lease = ItlFirmwareContextLease;
+    const bool remove = action == IWX_FW_CTXT_ACTION_REMOVE;
+    if (action != IWX_FW_CTXT_ACTION_ADD && !remove)
         return EINVAL;
-    
-    memset(&cmd, 0, sizeof(cmd));
-    
-    cmd.id_and_color
-    = htole32(IWX_FW_CMD_ID_AND_COLOR(phyctxt->id, phyctxt->color));
+    struct ieee80211com *ic = &sc->sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || (!remove && ownerLock == NULL))
+        return ENXIO;
+    IOInterruptState ownerIrq = 0;
+    if (!remove)
+        ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const uint32_t generation = sc->sc_generation;
+    ItlFirmwareContextIdentity identity = {};
+    ItlFirmwareContextReceipt receipt = {};
+    int error = 0;
+    if (sc->sc_flags & IWX_FLAG_SHUTDOWN)
+        error = ENXIO;
+    else if (remove) {
+        identity = primaryBindingContext.owner.identity;
+        if (sc->sc_flags & IWX_FLAG_STA_ACTIVE)
+            error = EBUSY;
+    } else if (in == NULL || in->in_phyctxt == NULL ||
+               in->in_phyctxt->channel == NULL) {
+        error = EINVAL;
+    } else {
+        identity.attempt = ItlScanCommandPolicy::identityLocked(ic);
+        identity.mac = IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color);
+        identity.mode = ic->ic_opmode;
+        identity.commandLength = sizeof(struct iwx_mac_ctx_cmd);
+        IEEE80211_ADDR_COPY(identity.peer, in->in_macaddr);
+        if (primaryMacContext.stage != Lease::Stage::Active ||
+            primaryMacContext.owner.generation != generation ||
+            !primaryMacContext.owner.identity.equals(identity)) {
+            error = EBUSY;
+        } else {
+            identity.phy = IWX_FW_CMD_ID_AND_COLOR(
+                in->in_phyctxt->id, in->in_phyctxt->color);
+            identity.lmac = IEEE80211_IS_CHAN_2GHZ(in->in_phyctxt->channel) ||
+                !isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT) ?
+                IWX_LMAC_24G_INDEX : IWX_LMAC_5G_INDEX;
+            identity.commandLength = sizeof(struct iwx_binding_cmd);
+        }
+    }
+    Lease::Admission admission = Lease::Admission::Missing;
+    if (error == 0) {
+        admission = primaryBindingContext.begin(remove ? Lease::Operation::Remove :
+            Lease::Operation::Add, generation, identity, &receipt);
+        if (admission == Lease::Admission::Busy)
+            error = EBUSY;
+        else if (admission == Lease::Admission::Missing)
+            error = ENOENT;
+        else if (admission == Lease::Admission::Exhausted)
+            error = EOVERFLOW;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!remove)
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (error != 0 || admission == Lease::Admission::Already)
+        return error;
+
+    /* REMOVE names the old PHY even if the current node has disappeared.
+     * Its membership list is empty: this binding has no remaining MAC. */
+    struct iwx_binding_cmd cmd = {};
+    cmd.id_and_color = htole32(receipt.identity.phy);
     cmd.action = htole32(action);
-    cmd.phy = htole32(IWX_FW_CMD_ID_AND_COLOR(phyctxt->id, phyctxt->color));
-    
-    cmd.macs[0] = htole32(mac_id);
-    for (i = 1; i < IWX_MAX_MACS_IN_BINDING; i++)
+    cmd.phy = htole32(receipt.identity.phy);
+    cmd.lmac_id = htole32(receipt.identity.lmac);
+    for (unsigned i = 0; i < IWX_MAX_MACS_IN_BINDING; ++i)
         cmd.macs[i] = htole32(IWX_FW_CTXT_INVALID);
-    
-    if (IEEE80211_IS_CHAN_2GHZ(phyctxt->channel) ||
-        !isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT))
-        cmd.lmac_id = htole32(IWX_LMAC_24G_INDEX);
+    if (!remove)
+        cmd.macs[0] = htole32(receipt.identity.mac);
+    uint32_t status = 0;
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Binding, remove, false
+    };
+    struct iwx_host_cmd hcmd = {};
+    hcmd.context_command = &context;
+    hcmd.id = IWX_BINDING_CONTEXT_CMD;
+    hcmd.len[0] = static_cast<uint16_t>(receipt.identity.commandLength);
+    hcmd.data[0] = &cmd;
+    error = iwx_send_cmd_status(sc, &hcmd, &status);
+    const Lease::Completion completion = error != 0 ?
+        (context.submitted ? Lease::Completion::Uncertain : Lease::Completion::Rejected) :
+        status != 0 ? Lease::Completion::Rejected : Lease::Completion::Success;
+    if (error == 0 && status != 0)
+        error = EIO;
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (!primaryBindingContext.finish(receipt, sc->sc_generation, completion))
+        error = ENXIO;
+    else if (primaryBindingContext.confirmed)
+        sc->sc_flags |= IWX_FLAG_BINDING_ACTIVE;
     else
-        cmd.lmac_id = htole32(IWX_LMAC_5G_INDEX);
-    
-    status = 0;
-    err = iwx_send_cmd_pdu_status(sc, IWX_BINDING_CONTEXT_CMD, sizeof(cmd),
-                                  &cmd, &status);
-    if (err == 0 && status != 0)
-        err = EIO;
-    
-    return err;
+        sc->sc_flags &= ~IWX_FLAG_BINDING_ACTIVE;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return error;
 }
 
 static uint8_t
@@ -9314,6 +10131,32 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     IOPhysicalSegment seg = {};
     IOMbufNaturalMemoryCursor *cursor = NULL;
     int txq_size;
+    bool scan_locked = false;
+    bool owner_locked = false;
+    IOInterruptState scan_irq = 0;
+    IOInterruptState owner_irq = 0;
+    IOSimpleLock *owner_lock = sc->sc_ic.ic_pae_selected_bss_lock;
+    ItlFirmwareContextCommand *context_command = hcmd->context_command;
+    const bool context_live = context_command != NULL && !context_command->cleanup;
+    const bool scan_request =
+        hcmd->id == iwx_cmd_id(IWX_SCAN_REQ_UMAC, IWX_LONG_GROUP, 0);
+    const bool scan_abort =
+        hcmd->id == IWX_WIDE_ID(IWX_LONG_GROUP, IWX_SCAN_ABORT_UMAC);
+
+    if ((scan_request || scan_abort) &&
+        (wclScanLock == NULL || hcmd->scan_serial == 0))
+        return ENXIO;
+    if ((scan_request || context_live) && owner_lock == NULL)
+        return ENXIO;
+    if (context_command != NULL) {
+        if (scan_request || scan_abort || wclScanLock == NULL)
+            return EINVAL;
+        if (context_command->submitted)
+            return EALREADY;
+        if (context_command->receipt.generation !=
+            static_cast<uint32_t>(sc->sc_generation))
+            return ENXIO;
+    }
 
     /* The ref covers every later use of q0 storage, including tsleep(). */
     if (!iwx_cmdq_enter(sc))
@@ -9437,6 +10280,30 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     desc = &ring->desc[idx];
     txdata = &ring->data[idx];
 
+    /* q0 -> selected-BSS -> scan leaf. Callers release both before entering
+     * q0. Reserve the physical receipt before transferring mbuf ownership;
+     * keep it serialized through the doorbell, with no callbacks or waits. */
+    if (scan_request || scan_abort || context_command != NULL) {
+        if (scan_request || context_live) {
+            owner_irq = IOSimpleLockLockDisableInterrupt(owner_lock);
+            owner_locked = true;
+        }
+        scan_irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        scan_locked = true;
+        if (generation != sc->sc_generation ||
+            (sc->sc_flags & IWX_FLAG_SHUTDOWN) != 0 ||
+            (context_command != NULL &&
+             !firmwareContextCommandCurrentLocked(*context_command)) ||
+            (scan_request && !scanCommandOwnerCurrentLocked(hcmd->scan_serial, generation)) ||
+            ((scan_request || scan_abort) &&
+             !(scan_abort ? scanCommand.submitAbort(hcmd->scan_serial, generation) :
+               scanCommand.submit(hcmd->scan_serial, generation)))) {
+            err = scan_abort && scanCommand.current(hcmd->scan_serial, generation) &&
+                scanCommand.terminalSeen ? EALREADY : ENXIO;
+            goto unlock;
+        }
+    }
+
     /*
      * XXX Intel inside (tm)
      * Firmware API versions >= 50 reject old-style commands in group 0.
@@ -9520,6 +10387,16 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     ring->queued++;
     ring->cur = (ring->cur + 1) % txq_size;
     IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
+    if (context_command != NULL)
+        context_command->submitted = true;
+    if (scan_locked) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, scan_irq);
+        scan_locked = false;
+    }
+    if (owner_locked) {
+        IOSimpleLockUnlockEnableInterrupt(owner_lock, owner_irq);
+        owner_locked = false;
+    }
 
     if (hcmd->async_owner == IWX_CMD_ASYNC_OWNER_MFP_PAE) {
         /*
@@ -9533,6 +10410,10 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     }
 
 unlock:
+    if (scan_locked)
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, scan_irq);
+    if (owner_locked)
+        IOSimpleLockUnlockEnableInterrupt(owner_lock, owner_irq);
     IOSimpleLockUnlock(sc->sc_cmdq_lock);
     if (err)
         goto out;
@@ -9697,8 +10578,10 @@ iwx_send_cmd_status(struct iwx_softc *sc, struct iwx_host_cmd *cmd,
         return err;
     
     pkt = cmd->resp_pkt;
-    if (pkt == NULL || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK))
+    if (pkt == NULL || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
+        iwx_free_resp(sc, cmd);
         return EIO;
+    }
     
     resp_len = iwx_rx_packet_payload_len(pkt);
     if (resp_len != sizeof(*resp)) {
@@ -10697,6 +11580,7 @@ int ItlIwx::
 iwx_flush_sta(struct iwx_softc *sc, struct iwx_node *in)
 {
     int err;
+    const int generation = sc->sc_generation;
     const bool inherited_flush =
         (sc->sc_flags & IWX_FLAG_TXFLUSH) != 0;
     
@@ -10705,11 +11589,14 @@ iwx_flush_sta(struct iwx_softc *sc, struct iwx_node *in)
     sc->sc_flags |= IWX_FLAG_TXFLUSH;
     
     err = iwx_drain_sta(sc, in, 1);
-    
-    if (err == ENXIO)
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    if (err)
         goto done;
     
     err = iwx_flush_sta_tids(sc, IWX_STATION_ID, 0xffff);
+    if (generation != sc->sc_generation)
+        return ENXIO;
     if (err) {
         XYLog("%s: could not flush Tx path (error %d)\n",
                __FUNCTION__, err);
@@ -10717,10 +11604,8 @@ iwx_flush_sta(struct iwx_softc *sc, struct iwx_node *in)
     }
     
     err = iwx_drain_sta(sc, in, 0);
-    if (err == ENXIO)
-        goto done;
-    else
-        err = 0;
+    if (generation != sc->sc_generation)
+        return ENXIO;
 done:
     if (!inherited_flush)
         sc->sc_flags &= ~IWX_FLAG_TXFLUSH;
@@ -10901,6 +11786,7 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     uint32_t status, agg_size = 0;
     uint32_t max_aggsize = (IWX_STA_FLG_MAX_AGG_SIZE_4M >> IWX_STA_FLG_MAX_AGG_SIZE_SHIFT);
     struct ieee80211com *ic = &sc->sc_ic;
+    const int generation = sc->sc_generation;
     
     if (!update && (sc->sc_flags & IWX_FLAG_STA_ACTIVE)) {
         return 0;
@@ -11002,10 +11888,13 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     status = IWX_ADD_STA_SUCCESS;
     err = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA, sizeof(add_sta_cmd),
                                   &add_sta_cmd, &status);
-    if (!err && (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
-        err = EIO;
-    else
-        sc->sc_flags |= IWX_FLAG_STA_ACTIVE;
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    if (err)
+        return err;
+    if ((status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
+        return EIO;
+    sc->sc_flags |= IWX_FLAG_STA_ACTIVE;
 
     return err;
 }
@@ -11055,6 +11944,7 @@ iwx_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_rm_sta_cmd rm_sta_cmd;
     int err;
+    const int generation = sc->sc_generation;
     
     if ((sc->sc_flags & IWX_FLAG_STA_ACTIVE) == 0) {
         return 0;
@@ -11068,7 +11958,10 @@ iwx_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
     
     err = iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0, sizeof(rm_sta_cmd),
                            &rm_sta_cmd);
-    
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    if (err)
+        return err;
     sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
 
     return err;
@@ -11080,6 +11973,7 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_node *ni = &in->in_ni;
     int err = 0, i;
+    const int generation = sc->sc_generation;
     const bool inherited_flush =
         (sc->sc_flags & IWX_FLAG_TXFLUSH) != 0;
 
@@ -11089,6 +11983,8 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
     sc->sc_flags |= IWX_FLAG_TXFLUSH;
 
     err = iwx_flush_sta(sc, in);
+    if (generation != sc->sc_generation)
+        return ENXIO;
     if (err) {
         XYLog("%s: could not flush Tx path (error %d)\n",
             __FUNCTION__, err);
@@ -11098,6 +11994,8 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
     if (ic->ic_opmode != IEEE80211_M_MONITOR) {
         err = iwx_disable_txq(sc, IWX_STATION_ID,
                               sc->first_data_qid, IWX_MGMT_TID);
+        if (generation != sc->sc_generation)
+            return ENXIO;
         if (err) {
             XYLog("%s: could not disable management Tx queue %d "
                   "(error %d)\n", DEVNAME(sc), sc->first_data_qid, err);
@@ -11105,6 +12003,8 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
         }
     }
     err = iwx_rm_sta_cmd(sc, in);
+    if (generation != sc->sc_generation)
+        return ENXIO;
     if (err) {
         printf("%s: could not remove STA (error %d)\n",
             DEVNAME(sc), err);
@@ -11121,6 +12021,8 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
         if (ba->ba_state != IEEE80211_BA_AGREED)
             continue;
         ieee80211_delba_request(ic, ni, 0, 1, i);
+        if (generation != sc->sc_generation)
+            return ENXIO;
     }
 
 out:
@@ -11131,16 +12033,14 @@ out:
 
 uint8_t ItlIwx::
 iwx_umac_scan_fill_channels(struct iwx_softc *sc,
-                            struct iwx_scan_channel_cfg_umac *chan, int n_ssids, int bgscan)
+    struct iwx_scan_channel_cfg_umac *chan, int n_ssids, int bgscan,
+    const struct ieee80211_wcl_scan_plan *plan)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_channel *c;
-    struct ieee80211_wcl_scan_plan wclPlan;
-    const bool exactWclPlan =
-        wclScanPhase != ItlIwxWclScanPhase::Idle &&
-        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
+    const bool exactWclPlan = plan != NULL && plan->active != 0;
     const bool activeProbe = exactWclPlan ?
-        wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
+        plan->scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
         (n_ssids != 0 && !bgscan);
     uint8_t nchan;
     
@@ -11153,7 +12053,7 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
         if (c->ic_flags == 0)
             continue;
         if (exactWclPlan &&
-            !ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c))
+            !ieee80211_wcl_scan_plan_channel_allowed(ic, plan, c))
             continue;
         
         channel_num = ieee80211_mhz2ieee(c->ic_freq, 0);
@@ -11504,17 +12404,15 @@ iwx_get_scan_req_umac_data(struct iwx_softc *sc, struct iwx_scan_req_umac *req)
 #define IWX_MVM_6GHZ_PASSIVE_SCAN_MIN_CHANS 4
 
 int ItlIwx::
-iwx_umac_scan(struct iwx_softc *sc, int bgscan)
+iwx_umac_scan(struct iwx_softc *sc, int bgscan, uint64_t scan_serial)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_wcl_scan_plan wclPlan;
-    const bool exactWclPlan =
-        wclScanPhase != ItlIwxWclScanPhase::Idle &&
-        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
-    const uint8_t scanSsidLength = exactWclPlan ?
-        wclPlan.ssid_len : ic->ic_des_esslen;
-    const uint8_t *scanSsid = exactWclPlan ?
-        wclPlan.ssid : ic->ic_des_essid;
+    ItlScanCommandPolicy policy = {};
+    if (!copyScanCommandPolicy(scan_serial, &policy))
+        return ECANCELED;
+    const struct ieee80211_wcl_scan_plan &wclPlan = policy.plan;
+    const bool exactWclPlan = wclPlan.active != 0;
+    const uint8_t scanSsidLength = wclPlan.ssid_len;
+    const uint8_t *scanSsid = wclPlan.ssid;
     /* AppleBCMWLAN's scan type owns active/passive mode independently of
      * the optional SSID.  An active carrier with a zero-length SSID sends a
      * wildcard probe; only the SSID-selection and pre-connect hints remain
@@ -11544,10 +12442,7 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
     struct iwx_scan_umac_chan_param *chanparam;
     size_t req_len;
     int err, async = bgscan;
-    uint32_t configuredHomeAwayMs = 0;
-    const uint32_t homeAwayMs =
-        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
-            configuredHomeAwayMs : 120U;
+    const uint32_t homeAwayMs = policy.homeAwayMs;
     const uint32_t maxOutTime = bgscan ? htole32(homeAwayMs) : htole32(0);
     const uint32_t suspendTime = bgscan ? htole32(
         ieee80211_wcl_scan_time_or_default(
@@ -11556,9 +12451,9 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
     uint8_t scan_ver = iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_SCAN_REQ_UMAC);
     
     if (scan_ver == 12)
-        return iwx_umac_scan_v12(sc, bgscan);
+        return iwx_umac_scan_v12(sc, bgscan, scan_serial, policy);
     else if (scan_ver == 14)
-        return iwx_umac_scan_v14(sc, bgscan);
+        return iwx_umac_scan_v14(sc, bgscan, scan_serial, policy);
     
     req_len = iwx_umac_scan_size(sc);
     if ((req_len < IWX_SCAN_REQ_UMAC_SIZE_V1 +
@@ -11644,7 +12539,7 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
     chanparam = iwx_get_scan_req_umac_chan_param(sc, req);
     chanparam->count = iwx_umac_scan_fill_channels(sc,
                                                    (struct iwx_scan_channel_cfg_umac *)cmd_data,
-                                                   activeScan ? 1 : 0, bgscan);
+                                                   activeScan ? 1 : 0, bgscan, &wclPlan);
     if (chanparam->count == 0) {
         ::free(req);
         return EINVAL;
@@ -11713,23 +12608,20 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
     tail->schedule[0].interval = 0;
     tail->schedule[0].iter_count = 1;
     
+    hcmd.scan_serial = scan_serial;
     err = iwx_send_cmd(sc, &hcmd);
     ::free(req);
     return err;
 }
 
 int ItlIwx::
-iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
+iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan, uint64_t scan_serial,
+    const ItlScanCommandPolicy &policy)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_wcl_scan_plan wclPlan;
-    const bool exactWclPlan =
-        wclScanPhase != ItlIwxWclScanPhase::Idle &&
-        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
-    const uint8_t scanSsidLength = exactWclPlan ?
-        wclPlan.ssid_len : ic->ic_des_esslen;
-    const uint8_t *scanSsid = exactWclPlan ?
-        wclPlan.ssid : ic->ic_des_essid;
+    const struct ieee80211_wcl_scan_plan &wclPlan = policy.plan;
+    const bool exactWclPlan = wclPlan.active != 0;
+    const uint8_t scanSsidLength = wclPlan.ssid_len;
+    const uint8_t *scanSsid = wclPlan.ssid;
     const bool activeScan = exactWclPlan ?
         wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
         (scanSsidLength != 0 && !bgscan);
@@ -11746,10 +12638,7 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     struct iwx_scan_req_umac_v12 *req;
     size_t req_len;
     uint16_t gen_flags = 0;
-    uint32_t configuredHomeAwayMs = 0;
-    const uint32_t homeAwayMs =
-        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
-            configuredHomeAwayMs : 120U;
+    const uint32_t homeAwayMs = policy.homeAwayMs;
     const uint32_t maxOutTime = bgscan ? htole32(homeAwayMs) : htole32(0);
     const uint32_t suspendTime = bgscan ? htole32(
         ieee80211_wcl_scan_time_or_default(
@@ -11819,8 +12708,10 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     req->scan_params.periodic_params.schedule[0].iter_count = 1;
     
     err = iwx_fill_probe_req(sc, &req->scan_params.probe_params.preq);
-    if (err)
+    if (err) {
+        ::free(req);
         return err;
+    }
 
     if (activeScan) {
         req->scan_params.probe_params.ssid_num = 1;
@@ -11837,30 +12728,27 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
     cp->flags = IWX_SCAN_CHANNEL_FLAG_ENABLE_CHAN_ORDER;
     cp->count = iwx_umac_scan_fill_channels(sc,
                                             (struct iwx_scan_channel_cfg_umac *)cp->channel_config,
-                                            activeScan ? 1 : 0, bgscan);
+                                            activeScan ? 1 : 0, bgscan, &wclPlan);
     if (cp->count == 0) {
         ::free(req);
         return EINVAL;
     }
     cp->num_of_aps_override = IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY;
     
+    hcmd.scan_serial = scan_serial;
     err = iwx_send_cmd(sc, &hcmd);
     ::free(req);
     return err;
 }
 
 int ItlIwx::
-iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
+iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan, uint64_t scan_serial,
+    const ItlScanCommandPolicy &policy)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_wcl_scan_plan wclPlan;
-    const bool exactWclPlan =
-        wclScanPhase != ItlIwxWclScanPhase::Idle &&
-        ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan) != 0;
-    const uint8_t scanSsidLength = exactWclPlan ?
-        wclPlan.ssid_len : ic->ic_des_esslen;
-    const uint8_t *scanSsid = exactWclPlan ?
-        wclPlan.ssid : ic->ic_des_essid;
+    const struct ieee80211_wcl_scan_plan &wclPlan = policy.plan;
+    const bool exactWclPlan = wclPlan.active != 0;
+    const uint8_t scanSsidLength = wclPlan.ssid_len;
+    const uint8_t *scanSsid = wclPlan.ssid;
     const bool activeScan = exactWclPlan ?
         wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE :
         (scanSsidLength != 0 && !bgscan);
@@ -11879,10 +12767,7 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     uint16_t gen_flags = 0;
     struct iwx_scan_general_params_v10 *general_params;
     struct iwx_scan_channel_params_v6 *cp;
-    uint32_t configuredHomeAwayMs = 0;
-    const uint32_t homeAwayMs =
-        airportItlwmGetScanHomeAwayTime(&configuredHomeAwayMs) ?
-            configuredHomeAwayMs : 120U;
+    const uint32_t homeAwayMs = policy.homeAwayMs;
     const uint32_t maxOutTime = bgscan ? htole32(homeAwayMs) : htole32(0);
     const uint32_t suspendTime = bgscan ? htole32(
         ieee80211_wcl_scan_time_or_default(
@@ -11949,8 +12834,10 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     req->scan_params.periodic_params.schedule[0].iter_count = 1;
     
     err = iwx_fill_probe_req(sc, &req->scan_params.probe_params.preq);
-    if (err)
+    if (err) {
+        ::free(req);
         return err;
+    }
     if (activeScan) {
         req->scan_params.probe_params.direct_scan[0].id = IEEE80211_ELEMID_SSID;
         req->scan_params.probe_params.direct_scan[0].len = scanSsidLength;
@@ -11964,7 +12851,7 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     cp->flags = IWX_SCAN_CHANNEL_FLAG_ENABLE_CHAN_ORDER;
     cp->count = iwx_umac_scan_fill_channels(sc,
                                             (struct iwx_scan_channel_cfg_umac *)cp->channel_config,
-                                            activeScan ? 1 : 0, bgscan);
+                                            activeScan ? 1 : 0, bgscan, &wclPlan);
     if (cp->count == 0) {
         ::free(req);
         return EINVAL;
@@ -11972,6 +12859,7 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     cp->n_aps_override[0] = IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY;
     cp->n_aps_override[1] = IWX_SCAN_ADWELL_N_APS_SOCIAL_CHS;
     
+    hcmd.scan_serial = scan_serial;
     err = iwx_send_cmd(sc, &hcmd);
     ::free(req);
     return err;
@@ -12140,7 +13028,7 @@ iwx_mac_ctxt_cmd_common(struct iwx_softc *sc, struct iwx_node *in,
 {
 #define IWX_EXP2(x)    ((1 << (x)) - 1)    /* CWmin = 2^ECWmin - 1 */
     struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_node *ni = ic->ic_bss;
+    struct ieee80211_node *ni = &in->in_ni;
     int cck_ack_rates, ofdm_ack_rates;
     int i;
     
@@ -13873,6 +14761,10 @@ iwx_start_ap_mode(struct iwx_softc *sc,
     if (channel == NULL)
         return EINVAL;
 
+    const uint64_t radioSerial = reserveAPScanCommand();
+    if (radioSerial == 0)
+        return EBUSY;
+
     runtime->macId = 1;
     runtime->macColor = 0;
     runtime->broadcastStaId = 2;
@@ -13900,8 +14792,10 @@ iwx_start_ap_mode(struct iwx_softc *sc,
         error = iwx_phy_ctxt_update(sc, &sc->sc_phyctxt[runtime->phyId],
                                     channel, 1, 1, 0);
         XYLog("IWX AP stage phy_update error=%d\n", error);
-        if (error != 0)
+        if (error != 0) {
+            finishAPScanCommand(radioSerial, false);
             return error;
+        }
     }
     /*
      * Keep command ordering in the same firmware-ABI epoch as the beacon
@@ -13919,8 +14813,10 @@ iwx_start_ap_mode(struct iwx_softc *sc,
         error = iwx_ap_mac_ctxt_cmd(sc, runtime,
                                     IWX_FW_CTXT_ACTION_ADD);
         XYLog("IWX AP stage mac_add error=%d\n", error);
-        if (error != 0)
+        if (error != 0) {
+            finishAPScanCommand(radioSerial, false);
             return error;
+        }
         runtime->stage = kItlApFirmwareResourceMac;
         error = iwx_ap_send_beacon_template(sc, runtime);
         XYLog("IWX AP stage beacon error=%d\n", error);
@@ -13929,8 +14825,10 @@ iwx_start_ap_mode(struct iwx_softc *sc,
     } else {
         error = iwx_ap_send_beacon_template(sc, runtime);
         XYLog("IWX AP stage beacon error=%d\n", error);
-        if (error != 0)
+        if (error != 0) {
+            finishAPScanCommand(radioSerial, false);
             return error;
+        }
         runtime->stage = kItlApFirmwareResourceBeacon;
         error = iwx_ap_mac_ctxt_cmd(sc, runtime,
                                     IWX_FW_CTXT_ACTION_ADD);
@@ -13977,6 +14875,7 @@ iwx_start_ap_mode(struct iwx_softc *sc,
 unwind:
     XYLog("IWX AP start unwind stage=%u error=%d\n",
           static_cast<unsigned>(runtime->stage), error);
+    finishAPScanCommand(radioSerial, false);
     (void)iwx_stop_ap_mode(sc, runtime);
     return error;
 }
@@ -13987,6 +14886,7 @@ iwx_stop_ap_mode(struct iwx_softc *sc,
 {
     if (runtime == NULL || runtime->stage == kItlApFirmwareResourceIdle)
         return 0;
+    const uint64_t radioSerial = currentAPScanCommand();
     const uint8_t previousStage = runtime->stage;
     runtime->stage = kItlApFirmwareResourceStopping;
     /*
@@ -14037,80 +14937,119 @@ iwx_stop_ap_mode(struct iwx_softc *sc,
             firstError = error;
     }
     itl_ap_firmware_runtime_reset(runtime);
+    finishAPScanCommand(radioSerial, firstError == 0);
     return firstError;
 }
 
 int ItlIwx::
-iwx_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in, uint32_t action,
-                 int assoc)
+iwx_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in,
+                 uint32_t action, int assoc)
 {
+    using Lease = ItlFirmwareContextLease;
     struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_node *ni = &in->in_ni;
-    struct iwx_mac_ctx_cmd cmd;
-    int active = (sc->sc_flags & IWX_FLAG_MAC_ACTIVE);
-    
-    if (action == IWX_FW_CTXT_ACTION_ADD && active) {
-        return 0;
-    }
-    if (action == IWX_FW_CTXT_ACTION_REMOVE && !active) {
-        return 0;
-    }
-
-    /*
-     * Operating-mode admission gate for the iwx MAC-context firmware
-     * command. iwx_mac_ctxt_cmd_common() encodes the firmware MAC type
-     * from ic->ic_opmode and aborts with panic("unsupported operating
-     * mode") when the opmode is neither IEEE80211_M_MONITOR nor
-     * IEEE80211_M_STA. The recovered Apple AP/GO control plane and the
-     * iwx AP/GO MAC-context owner introduced for that contract do not
-     * yet have a firmware MAC-context backend on this HAL, so AP-up
-     * cannot be reached on the iwx path under any reviewed runtime
-     * today. Even so, refuse the command at the wrapper layer with
-     * ENOTSUP for any opmode value outside the two supported families;
-     * this keeps the void helper unreachable from a non-supported
-     * opmode and turns a future host-side opmode regression into a
-     * logged, recoverable error rather than a kernel panic. The guard
-     * becomes load-bearing once the upcoming IEEE80211_STA_ONLY
-     * removal allows IEEE80211_M_HOSTAP, IEEE80211_M_IBSS, or
-     * IEEE80211_M_AHDEMO to propagate from net80211 into this HAL.
-     */
-    if (ic->ic_opmode != IEEE80211_M_MONITOR &&
-        ic->ic_opmode != IEEE80211_M_STA) {
-        XYLog("%s: refusing MAC context cmd for unsupported ic_opmode %d\n",
-              __FUNCTION__, ic->ic_opmode);
-        return ENOTSUP;
-    }
-
-    memset(&cmd, 0, sizeof(cmd));
-    
-    iwx_mac_ctxt_cmd_common(sc, in, &cmd, action);
-
-    if (action == IWX_FW_CTXT_ACTION_REMOVE) {
-        return iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0,
-                                sizeof(cmd), &cmd);
-    }
-
-    if (ic->ic_opmode == IEEE80211_M_MONITOR) {
-        cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_PROMISC |
-                                    IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
-                                    IWX_MAC_FILTER_ACCEPT_GRP |
-                                    IWX_MAC_FILTER_IN_BEACON |
-                                    IWX_MAC_FILTER_IN_PROBE_REQUEST |
-                                    IWX_MAC_FILTER_IN_CRC32);
-    } else if (!assoc || !ni->ni_associd || !ni->ni_dtimperiod)
-    /*
-     * Allow beacons to pass through as long as we are not
-     * associated or we do not have dtim period information.
-     */
+    const bool remove = action == IWX_FW_CTXT_ACTION_REMOVE;
+    const bool disassociate = action == IWX_FW_CTXT_ACTION_MODIFY && !assoc;
+    if (action != IWX_FW_CTXT_ACTION_ADD &&
+        action != IWX_FW_CTXT_ACTION_MODIFY && !remove)
+        return EINVAL;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ((!remove && !disassociate) && ownerLock == NULL))
+        return ENXIO;
+    IOInterruptState ownerIrq = 0;
+    if (!remove && !disassociate)
+        ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const uint32_t generation = sc->sc_generation;
+    struct iwx_mac_ctx_cmd cmd = {};
+    ItlFirmwareContextIdentity identity = {};
+    ItlFirmwareContextReceipt receipt = {};
+    int error = 0;
+    if (sc->sc_flags & IWX_FLAG_SHUTDOWN)
+        error = ENXIO;
+    else if (remove) {
+        /* A replacement ic_bss/opmode is not the owner being removed. */
+        identity = primaryMacContext.owner.identity;
+        if (primaryBindingContext.occupied() ||
+            (sc->sc_flags & (IWX_FLAG_STA_ACTIVE | IWX_FLAG_TE_ACTIVE)))
+            error = EBUSY;
+        cmd.id_and_color = htole32(identity.mac);
+        cmd.action = htole32(action);
+    } else if (disassociate) {
+        /* RUN-stop can already see the next AP. Use the last submitted
+         * MAC value, with association disabled, not that replacement. */
+        identity = primaryMacContext.owner.identity;
+        cmd = primaryMacCommand;
+        cmd.action = htole32(action);
+        cmd.sta.is_assoc = 0;
         cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_BEACON);
-    else
-        iwx_mac_ctxt_cmd_fill_sta(sc, in, &cmd.sta, assoc);
-    
-    if (ni->ni_flags & IEEE80211_NODE_HE) {
-        cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_11AX);
+    } else if (in == NULL || (ic->ic_opmode != IEEE80211_M_MONITOR &&
+                              ic->ic_opmode != IEEE80211_M_STA)) {
+        error = ENOTSUP;
+    } else {
+        identity.attempt = ItlScanCommandPolicy::identityLocked(ic);
+        identity.mac = IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color);
+        identity.commandLength = sizeof(cmd);
+        identity.mode = ic->ic_opmode;
+        IEEE80211_ADDR_COPY(identity.peer, in->in_macaddr);
+        iwx_mac_ctxt_cmd_common(sc, in, &cmd, action);
+        struct ieee80211_node *ni = &in->in_ni;
+        if (ic->ic_opmode == IEEE80211_M_MONITOR)
+            cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_PROMISC |
+                IWX_MAC_FILTER_IN_CONTROL_AND_MGMT | IWX_MAC_FILTER_ACCEPT_GRP |
+                IWX_MAC_FILTER_IN_BEACON | IWX_MAC_FILTER_IN_PROBE_REQUEST |
+                IWX_MAC_FILTER_IN_CRC32);
+        else if (!assoc || !ni->ni_associd || !ni->ni_dtimperiod)
+            cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_BEACON);
+        else
+            iwx_mac_ctxt_cmd_fill_sta(sc, in, &cmd.sta, assoc);
+        if (ni->ni_flags & IEEE80211_NODE_HE)
+            cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_11AX);
     }
-    
-    return iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0, sizeof(cmd), &cmd);
+    Lease::Admission admission = Lease::Admission::Missing;
+    if (error == 0) {
+        const Lease::Operation operation = remove ? Lease::Operation::Remove :
+            action == IWX_FW_CTXT_ACTION_ADD ? Lease::Operation::Add :
+            Lease::Operation::Modify;
+        admission = primaryMacContext.begin(operation, generation, identity, &receipt);
+        if (admission == Lease::Admission::Busy)
+            error = EBUSY;
+        else if (admission == Lease::Admission::Missing)
+            error = ENOENT;
+        else if (admission == Lease::Admission::Exhausted)
+            error = EOVERFLOW;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!remove && !disassociate)
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (error != 0 || admission == Lease::Admission::Already)
+        return error;
+
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Mac, remove || disassociate, false
+    };
+    struct iwx_host_cmd hcmd = {};
+    hcmd.context_command = &context;
+    hcmd.id = IWX_MAC_CONTEXT_CMD;
+    hcmd.len[0] = sizeof(cmd);
+    hcmd.data[0] = &cmd;
+    error = iwx_send_cmd(sc, &hcmd);
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const Lease::Completion completion = error == 0 ? Lease::Completion::Success :
+        context.submitted ? Lease::Completion::Uncertain : Lease::Completion::Rejected;
+    if (!primaryMacContext.finish(receipt, sc->sc_generation, completion)) {
+        error = ENXIO;
+    } else {
+        if (primaryMacContext.confirmed)
+            sc->sc_flags |= IWX_FLAG_MAC_ACTIVE;
+        else
+            sc->sc_flags &= ~IWX_FLAG_MAC_ACTIVE;
+        if (primaryMacContext.occupied() && !remove && context.submitted)
+            primaryMacCommand = cmd;
+        else if (!primaryMacContext.occupied())
+            memset(&primaryMacCommand, 0, sizeof(primaryMacCommand));
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return error;
 }
 
 int ItlIwx::
@@ -14995,10 +15934,13 @@ iwx_security_rx_eapol_input(struct ieee80211com *ic, mbuf_t m,
 }
 
 int ItlIwx::
-iwx_scan(struct iwx_softc *sc)
+iwx_scan(struct iwx_softc *sc, const ItlStateTransitionRequest &request)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     int err;
+
+    if (!stateTransitionCurrent(request))
+        return ECANCELED;
 
     /* The foreground SCAN state yielded during HostAP admission can still
      * have one already-queued newstate task.  Core-66 firmware accepts its
@@ -15006,8 +15948,7 @@ iwx_scan(struct iwx_softc *sc)
      * soon as AP traffic arrives.  Preserve the yielded policy owner without
      * submitting a second radio lease; the authoritative AP stop edge calls
      * resumePrimaryStaRecoveryScanAfterAPHandoff() and queues it again. */
-    if (isAPScanFenceActive()) {
-        noteWclInitialScanCommandRejected();
+    if (isAPScanFenceActive() && deferScanCommand(request)) {
         XYLog("%s: IWX STA scan deferred by live AP radio fence state=%u "
               "flags=0x%x\n", DEVNAME(sc),
               static_cast<unsigned>(ic->ic_state),
@@ -15015,7 +15956,9 @@ iwx_scan(struct iwx_softc *sc)
         return 0;
     }
     
-    if (sc->sc_flags & IWX_FLAG_BGSCAN) {
+    if (!stateTransitionCurrent(request))
+        return ECANCELED;
+    if (scanCommandBackgroundPending()) {
         /* A foreground replacement retires both halves of a host-owned WCL
          * reassociation census.  Closing only the firmware scan leaves the
          * upper BGSCAN owner behind; JoinAdapter then sees a phantom busy
@@ -15023,18 +15966,29 @@ iwx_scan(struct iwx_softc *sc)
         if (ic->ic_wcl_reassoc_owner_active)
             err = ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED);
         else
-            err = iwx_scan_abort(sc);
+            err = iwx_scan_abort(sc, true);
         if (err) {
+            if (err == EBUSY && deferScanCommand(request))
+                return 0;
             XYLog("%s: could not abort background scan\n",
                   DEVNAME(sc));
             return err;
         }
     }
     
-    err = iwx_umac_scan(sc, 0);
+    uint64_t scanSerial = 0;
+    err = reserveScanCommand(false, true, &scanSerial, &request);
+    if (err != 0) {
+        if (err == EBUSY && deferScanCommand(request))
+            return 0;
+        noteWclInitialScanCommandRejected(0, request.scanGeneration);
+        return err;
+    }
+    err = iwx_umac_scan(sc, 0, scanSerial);
     if (err) {
         XYLog("%s: could not initiate scan\n", DEVNAME(sc));
-        noteWclInitialScanCommandRejected();
+        noteWclInitialScanCommandRejected(scanSerial);
+        rejectScanCommand(scanSerial);
         return err;
     }
     
@@ -15045,18 +15999,28 @@ iwx_scan(struct iwx_softc *sc)
     if (IFM_MODE(ic->ic_media.ifm_cur->ifm_media) == IFM_AUTO)
         ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
     
-    sc->sc_flags |= IWX_FLAG_SCANNING;
-    noteWclInitialScanCommandStarted();
+    if (!activateScanCommand(scanSerial, false))
+        return 0;
+    noteWclInitialScanCommandStarted(scanSerial);
+    if (!scanCommandCurrent(scanSerial))
+        return 0;
     if ((sc->sc_flags & IWX_FLAG_BGSCAN) == 0) {
         ieee80211_set_link_state(ic, LINK_STATE_DOWN);
+        if (!scanCommandCurrent(scanSerial))
+            return 0;
         ieee80211_node_cleanup(ic, ic->ic_bss);
     }
+    if (!scanCommandCurrent(scanSerial))
+        return 0;
     ic->ic_state = IEEE80211_S_SCAN;
     /* Availability consumers may submit immediately after this event.  Keep
      * the reference powerOn boundary below both command acceptance and the
      * committed lower SCAN state. */
-    noteWclScanRadioReady();
+    noteWclScanRadioReady(scanSerial);
+    if (!scanCommandCurrent(scanSerial))
+        return 0;
     wakeupOn(&ic->ic_state); /* wake iwx_init() */
+    (void)readyScanCommand(scanSerial);
     
     return 0;
 }
@@ -15077,14 +16041,21 @@ iwx_bgscan(struct ieee80211com *ic)
     if (sc->sc_flags & IWX_FLAG_SCANNING)
         return 0;
     
-    err = that->iwx_umac_scan(sc, 1);
+    uint64_t scanSerial = 0;
+    err = that->reserveScanCommand(true, true, &scanSerial);
+    if (err != 0)
+        return err;
+    err = that->iwx_umac_scan(sc, 1, scanSerial);
     if (err) {
         XYLog("%s: could not initiate scan\n", DEVNAME(sc));
+        that->rejectScanCommand(scanSerial);
         return err;
     }
     
-    sc->sc_flags |= IWX_FLAG_BGSCAN;
-    that->noteWclBackgroundScanCommandStarted();
+    if (!that->activateScanCommand(scanSerial, true))
+        return ENXIO;
+    that->noteWclBackgroundScanCommandStarted(scanSerial);
+    (void)that->readyScanCommand(scanSerial);
     return 0;
 }
 
@@ -15096,91 +16067,83 @@ iwx_bgscan_abort(struct ieee80211com *ic)
 
     if (ic == NULL || (sc = (struct iwx_softc *)ic->ic_softc) == NULL)
         return EINVAL;
-    /* A RUN->SCAN replacement can retire the lower background lease before
-     * the upper reassociation owner reaches its cancellation hook.  The old
-     * lower half is already quiescent; do not mistake the unrelated new
-     * foreground scan for a still-busy roam. */
-    if ((sc->sc_flags & IWX_FLAG_BGSCAN) == 0)
-        return 0;
     that = container_of(sc, ItlIwx, com);
 
     /* The command ACK is not the terminal.  iwx_scan_abort() follows Intel's
      * native STOPPING contract: suppress the old upper completion and wait
      * for SCAN_COMPLETE_UMAC before replacement JoinAdapter work may start. */
-    return that->iwx_scan_abort(sc);
+    return that->iwx_scan_abort(sc, true);
 }
 
 int ItlIwx::
-iwx_umac_scan_abort_status(struct iwx_softc *sc, uint32_t *status)
+iwx_umac_scan_abort_status(struct iwx_softc *sc, uint32_t *status,
+    uint64_t serial)
 {
     struct iwx_umac_scan_abort cmd = { 0 };
-
+    struct iwx_host_cmd hcmd = {
+        .scan_serial = serial,
+        .id = IWX_WIDE_ID(IWX_LONG_GROUP, IWX_SCAN_ABORT_UMAC),
+        .len = { sizeof(cmd), },
+        .data = { &cmd, },
+    };
     if (status == NULL)
         return EINVAL;
     *status = IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
-    return iwx_send_cmd_pdu_status(
-        sc, IWX_WIDE_ID(IWX_LONG_GROUP, IWX_SCAN_ABORT_UMAC),
-        sizeof(cmd), &cmd, status);
+    if (serial == 0)
+        return 0;
+    const int error = iwx_send_cmd_status(sc, &hcmd, status);
+    /* The exact physical notification can win before abort publication.
+     * NOT_FOUND still needs host terminal reconciliation, never UID reuse. */
+    return error == EALREADY ? 0 : error;
 }
 
 int ItlIwx::
 iwx_umac_scan_abort(struct iwx_softc *sc)
 {
+    const uint32_t generation = sc->sc_generation;
+    uint64_t serial = 0;
+    int error = reserveScanCommandAbort(false, &serial);
+    if (error != 0 || serial == 0)
+        return error;
     uint32_t status;
-    int err = iwx_umac_scan_abort_status(sc, &status);
-
-    if (err != 0)
-        return err;
-    if (status != IWX_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
+    error = iwx_umac_scan_abort_status(sc, &status, serial);
+    if (error == 0 &&
+        status != IWX_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
         status != IWX_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
         status != IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)
-        return EIO;
-    return 0;
+        error = EIO;
+    if (error != 0) {
+        if (!scanCommandCurrent(serial) &&
+            generation == static_cast<uint32_t>(sc->sc_generation))
+            return 0;
+        rejectScanCommand(serial);
+    }
+    return error;
 }
 
 int ItlIwx::
-iwx_scan_abort(struct iwx_softc *sc)
+iwx_scan_abort(struct iwx_softc *sc, bool backgroundOnly)
 {
+    const uint32_t generation = sc->sc_generation;
+    uint64_t serial = 0;
+    int error = reserveScanCommandAbort(true, &serial, backgroundOnly);
+    if (error != 0 || serial == 0)
+        return error;
     uint32_t status = IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
-    int err;
-
-    if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
-        return 0;
-    if (!__sync_bool_compare_and_swap(&sc->sc_scan_abort_pending, 0, 1))
-        return EBUSY;
-
-    err = iwx_umac_scan_abort_status(sc, &status);
-    if (err != 0 ||
-        (status != IWX_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
-         status != IWX_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
-         status != IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)) {
-        if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
-                                __ATOMIC_ACQ_REL) != 0)
-            wakeupOn(&sc->sc_scan_abort_pending);
-        return err != 0 ? err : EIO;
+    error = iwx_umac_scan_abort_status(sc, &status, serial);
+    if (error == 0 &&
+        status != IWX_UMAC_SCAN_ABORT_STATUS_SUCCESS &&
+        status != IWX_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS &&
+        status != IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)
+        error = EIO;
+    if (error != 0) {
+        if (!scanCommandCurrent(serial) &&
+            generation == static_cast<uint32_t>(sc->sc_generation))
+            return 0;
+        rejectScanCommand(serial);
+        return error;
     }
-
-    /* Linux iwlwifi marks the UID STOPPING and waits up to one second for
-     * SCAN_COMPLETE_UMAC.  Do the same for this port's single UID.  The
-     * completion path clears the pending word before waking us; a lost wake
-     * can therefore cost at most this bounded wait, never admit a new scan
-     * or AUTH epoch early. */
-    if (__atomic_load_n(&sc->sc_scan_abort_pending,
-                        __ATOMIC_ACQUIRE) != 0)
-        err = tsleep_nsec(&sc->sc_scan_abort_pending, 0, "iwxscab",
-                          SEC_TO_NSEC(1));
-    if (__atomic_load_n(&sc->sc_scan_abort_pending,
-                        __ATOMIC_ACQUIRE) == 0)
-        return 0;
-
-    (void)__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
-                              __ATOMIC_ACQ_REL);
-    /* NOT_FOUND means firmware has already retired the lease.  It is safe
-     * only when the host has also observed that no lower scan is active. */
-    if (status == IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND &&
-        (sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
-        return 0;
-    return err != 0 ? err : ETIMEDOUT;
+    return waitScanCommandAbort(serial, generation);
 }
 
 int ItlIwx::
@@ -15731,7 +16694,6 @@ iwx_auth(struct iwx_softc *sc)
               DEVNAME(sc), err);
         return err;
     }
-    sc->sc_flags |= IWX_FLAG_MAC_ACTIVE;
 
     err = iwx_binding_cmd(sc, in, IWX_FW_CTXT_ACTION_ADD);
     if (err) {
@@ -15739,7 +16701,6 @@ iwx_auth(struct iwx_softc *sc)
               DEVNAME(sc), err);
         goto rm_mac_ctxt;
     }
-    sc->sc_flags |= IWX_FLAG_BINDING_ACTIVE;
 
     err = iwx_add_sta_cmd(sc, in, 0);
     if (err) {
@@ -15798,17 +16759,22 @@ iwx_auth(struct iwx_softc *sc)
     return err;
     
 rm_sta:
-    if (generation == sc->sc_generation)
-        iwx_rm_sta_cmd(sc, in);
+    if (generation == sc->sc_generation) {
+        const int cleanupError = iwx_rm_sta_cmd(sc, in);
+        if (cleanupError != 0)
+            return cleanupError;
+    }
 rm_binding:
     if (generation == sc->sc_generation) {
-        iwx_binding_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE);
-        sc->sc_flags &= ~IWX_FLAG_BINDING_ACTIVE;
+        const int cleanupError = iwx_binding_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE);
+        if (cleanupError != 0)
+            return cleanupError;
     }
 rm_mac_ctxt:
     if (generation == sc->sc_generation) {
-        iwx_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE, 0);
-        sc->sc_flags &= ~IWX_FLAG_MAC_ACTIVE;
+        const int cleanupError = iwx_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE, 0);
+        if (cleanupError != 0)
+            return cleanupError;
     }
     return err;
 }
@@ -15833,24 +16799,22 @@ iwx_deauth(struct iwx_softc *sc)
             return err;
     }
     
-    if (sc->sc_flags & IWX_FLAG_BINDING_ACTIVE) {
+    { /* The retained owner also covers an ADD with an uncertain reply. */
         err = iwx_binding_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE);
         if (err) {
             XYLog("%s: could not remove binding (error %d)\n",
                   DEVNAME(sc), err);
             return err;
         }
-        sc->sc_flags &= ~IWX_FLAG_BINDING_ACTIVE;
     }
     
-    if (sc->sc_flags & IWX_FLAG_MAC_ACTIVE) {
+    { /* The retained owner also covers an ADD with an uncertain reply. */
         err = iwx_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE, 0);
         if (err) {
             XYLog("%s: could not remove MAC context (error %d)\n",
                   DEVNAME(sc), err);
             return err;
         }
-        sc->sc_flags &= ~IWX_FLAG_MAC_ACTIVE;
     }
     
     in->in_ni.ni_chw = IEEE80211_CHAN_WIDTH_20_NOHT;
@@ -16271,45 +17235,39 @@ void ItlIwx::
 iwx_newstate_task(void *psc)
 {
     struct iwx_softc *sc = (struct iwx_softc *)psc;
-    struct ieee80211com *ic = &sc->sc_ic;
-    enum ieee80211_state nstate = sc->ns_nstate;
-    enum ieee80211_state ostate = ic->ic_state;
-    const u_int64_t roam_epoch = ieee80211_pae_assoc_epoch_current(ic);
-    int arg = sc->ns_arg;
-    int err = 0, s = splnet();
     ItlIwx *that = container_of(sc, ItlIwx, com);
-
-    if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
-        /* iwx_stop() is waiting for us. */
-        //        refcnt_rele_wake(&sc->task_refs);
+    struct ieee80211com *ic = &sc->sc_ic;
+    ItlStateTransitionRequest request = {};
+    int err = 0, s = splnet();
+    if (!that->takeStateTransition(&request)) {
         splx(s);
         return;
     }
-    
-    if (ostate == IEEE80211_S_SCAN) {
-        if (nstate == ostate) {
-            if (sc->sc_flags & IWX_FLAG_SCANNING) {
-                //                refcnt_rele_wake(&sc->task_refs);
-                splx(s);
-                return;
-            }
-            /* Firmware is no longer scanning. Do another scan. */
-            goto next_scan;
-        }
+    const enum ieee80211_state nstate = (enum ieee80211_state)request.state;
+    const enum ieee80211_state ostate = ic->ic_state;
+    if (nstate == IEEE80211_S_SCAN && that->deferScanCommand(request, false)) {
+        splx(s);
+        return;
     }
-    
+
+
     if (nstate <= ostate) {
         switch (ostate) {
             case IEEE80211_S_RUN:
-                err = that->iwx_run_stop(sc);
-                if (err)
-                    goto out;
+                if ((request.lowerCompleted & ItlStateTransitionRequest::RunStopped) == 0) {
+                    err = that->iwx_run_stop(sc);
+                    if (err || !that->noteStateTransitionProgress(
+                        &request, ItlStateTransitionRequest::RunStopped))
+                        goto out;
+                }
                 /* FALLTHROUGH */
             case IEEE80211_S_ASSOC:
             case IEEE80211_S_AUTH:
-                if (nstate <= IEEE80211_S_AUTH) {
+                if (nstate <= IEEE80211_S_AUTH &&
+                    (request.lowerCompleted & ItlStateTransitionRequest::Deauthenticated) == 0) {
                     err = that->iwx_deauth(sc);
-                    if (err)
+                    if (err || !that->noteStateTransitionProgress(
+                        &request, ItlStateTransitionRequest::Deauthenticated))
                         goto out;
                 }
                 /* FALLTHROUGH */
@@ -16317,78 +17275,44 @@ iwx_newstate_task(void *psc)
             case IEEE80211_S_INIT:
                 break;
         }
-        
-        /* Die now if iwx_stop() was called while we were sleeping. */
-        if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
-            //            refcnt_rele_wake(&sc->task_refs);
-            splx(s);
-            return;
-        }
     }
-    
+    if (!that->stateTransitionCurrent(request))
+        goto out;
+
+    /* AUTH may have created physical contexts before generic AUTH committed.
+     * A later INIT/SCAN/AUTH must retire those contexts even when ic_state
+     * still says SCAN. The copied cleanup bit prevents a deferred replay
+     * from repeating already completed lower work. */
+    if (nstate <= IEEE80211_S_AUTH &&
+        (request.lowerCompleted & ItlStateTransitionRequest::Deauthenticated) == 0 &&
+        that->primaryFirmwareContextsPresent()) {
+        err = that->iwx_deauth(sc);
+        if (err || !that->noteStateTransitionProgress(
+            &request, ItlStateTransitionRequest::Deauthenticated))
+            goto out;
+    }
+
     switch (nstate) {
         case IEEE80211_S_INIT:
             break;
-            
         case IEEE80211_S_SCAN:
-        next_scan:
-            err = that->iwx_scan(sc);
+            err = that->iwx_scan(sc, request);
             if (err)
                 break;
-            //        refcnt_rele_wake(&sc->task_refs);
             splx(s);
             return;
-            
         case IEEE80211_S_AUTH:
             err = that->iwx_auth(sc);
             break;
-            
         case IEEE80211_S_ASSOC:
             err = that->iwx_rs_init(sc, (iwx_node *)ic->ic_bss, false);
-            if (err) {
-                XYLog("%s: could not init rate scaling (error %d)\n",
-                      DEVNAME(sc), err);
-                goto out;
-            }
             break;
-            
         case IEEE80211_S_RUN:
             err = that->iwx_run(sc);
             break;
     }
-    
 out:
-    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
-        if (err) {
-            ieee80211_roam_link_failed(ic, roam_epoch);
-            that->iwx_add_task(sc, systq, &sc->init_task);
-        } else {
-            const int state_result = sc->sc_newstate(ic, nstate, arg);
-
-            /* SCAN -> AUTH and AUTH -> AUTH enqueue the sole Authentication
-             * frame from this asynchronous worker.  The generic enqueue's
-             * if_start() uses non-blocking attemptAction(); a concurrent WCL
-             * command-gate owner can therefore reject that one kick and
-             * leave the frame in ic_mgtq until the authentication timer
-             * expires.  Drain synchronously after publication, just as the
-             * existing AUTH -> ASSOC and MFP completion paths do for their
-             * only management/EAPOL frame. */
-            if (state_result == 0 && nstate == IEEE80211_S_AUTH) {
-                IOCommandGate *gate = that->getMainCommandGate();
-                const IOReturn drain = gate != NULL ?
-                    gate->runAction(_iwx_start_task, &ic->ic_ac.ac_if) :
-                    kIOReturnNotReady;
-                if (drain != kIOReturnSuccess) {
-                    XYLog("%s: could not drain AUTH management frame "
-                          "(0x%x)\n", DEVNAME(sc), drain);
-                    that->iwx_add_task(sc, systq, &sc->init_task);
-                }
-            } else if (state_result != 0) {
-                that->iwx_add_task(sc, systq, &sc->init_task);
-            }
-        }
-    }
-    //    refcnt_rele_wake(&sc->task_refs);
+    (void)that->postStateTransitionCommit(request, err);
     splx(s);
 }
 
@@ -16398,151 +17322,89 @@ iwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     struct _ifnet *ifp = IC2IFP(ic);
     struct iwx_softc *sc = (struct iwx_softc *)ifp->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
-    struct ieee80211_node *ni = ic->ic_bss;
-    int err;
+    ItlStateTransitionRequest request = {};
 
-    /* IWX queues state work without a per-request epoch.  Do not carry the
-     * private IWN scan-hop tag across that queue; it keeps its established
-     * generic cleanup semantics until that distinct race is hardened. */
+    /* Private IWN lower-cleanup tags are not this backend's firmware ABI. */
     arg = IEEE80211_NEWSTATE_BACKEND_ARG(nstate, arg);
+    const int admission = that->prepareStateTransition(nstate, arg, &request);
+    if (admission != 0)
+        return admission == EALREADY ? 0 : admission;
 
-    /*
-     * A successful Authentication response reaches this callback on the
-     * main RX workloop.  Deferring the otherwise sequential AUTH -> ASSOC
-     * work to sc_nswq makes net80211 enqueue the Association Request there.
-     * iwx_start() then uses a deliberately non-blocking main command gate;
-     * if RX still owns that gate, the sole management-queue TX kick is lost.
-     *
-     * Preserve IWX's required lower-layer ordering: submit the asynchronous
-     * TLC configuration first, then commit the generic state transition on
-     * the originating workloop.  The recursive command-gate entry made by
-     * iwx_start() can consequently drain the Association Request before the
-     * Authentication receive edge retires.
-     */
-    if (ic->ic_state == IEEE80211_S_AUTH &&
-        nstate == IEEE80211_S_ASSOC) {
-        err = that->iwx_rs_init(sc, (iwx_node *)ni, false);
-        if (err) {
-            XYLog("%s: could not init rate scaling (error %d)\n",
-                  DEVNAME(sc), err);
-            if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0)
-                that->iwx_add_task(sc, systq, &sc->init_task);
-            return err;
-        }
-        sc->ns_nstate = nstate;
-        sc->ns_arg = arg;
-        return sc->sc_newstate(ic, nstate, arg);
+    /* AUTH receive already owns the main workloop. Keep the only ASSOC
+     * frame on its recursive TX gate; another context uses the state queue. */
+    if (ic->ic_state == IEEE80211_S_AUTH && nstate == IEEE80211_S_ASSOC &&
+        that->getMainWorkLoop()->inGate()) {
+        const int error = that->iwx_rs_init(sc, (iwx_node *)ic->ic_bss, false);
+        return that->postStateTransitionCommit(request, error);
     }
-    
-    /*
-     * Prevent attemps to transition towards the same state, unless
-     * we are scanning in which case a SCAN -> SCAN transition
-     * triggers another scan iteration. And AUTH -> AUTH is needed
-     * to support band-steering.
-     */
-    if (sc->ns_nstate == nstate && nstate != IEEE80211_S_SCAN &&
-        nstate != IEEE80211_S_AUTH)
-        return 0;
-    
+
     if (ic->ic_state == IEEE80211_S_RUN) {
         if (nstate == IEEE80211_S_SCAN) {
-            /*
-             * During RUN->SCAN we don't call sc_newstate() so
-             * we must stop A-MPDU Tx ourselves in this case.
-             */
+            /* The scan wrapper, not generic newstate, owns this transition. */
+            struct ieee80211_node *ni = ic->ic_bss;
             ieee80211_stop_ampdu_tx(ic, ni, -1);
+            if (!that->stateTransitionCurrent(request))
+                return ECANCELED;
             ieee80211_ba_del(ni);
         }
         that->iwx_del_task(sc, systq, &sc->ba_task);
         that->iwx_del_task(sc, systq, &sc->mac_ctxt_task);
         that->iwx_del_task(sc, systq, &sc->chan_ctxt_task);
     }
-    
-    sc->ns_nstate = nstate;
-    sc->ns_arg = arg;
-    
-    that->iwx_add_task(sc, sc->sc_nswq, &sc->newstate_task);
-    
-    return 0;
+
+    return that->enqueueStateTransition(request) ? 0 : ECANCELED;
 }
 
 void ItlIwx::
-iwx_endscan(struct iwx_softc *sc)
+iwx_endscan(struct iwx_softc *sc, uint64_t serial)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     ItlIwx *that = container_of(sc, ItlIwx, com);
+    ItlScanCommandTerminal physical;
     ItlIwxWclScanTerminal terminal;
-    
-    struct ieee80211_node *ni, *nextbs;
-    
-//    ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
-//    for (; ni != NULL; ni = nextbs) {
-//        nextbs = RB_NEXT(ieee80211_tree, &ic->ic_tree, ni);
-//        XYLog("%s scan_result ssid=%s, bssid=%s, ni_rsnciphers=%d, ni_rsncipher=%d, ni_rsngroupmgmtcipher=%d, ni_rsngroupcipher=%d, ni_rssi=%d,  ni_capinfo=%d, ni_intval=%d, ni_rsnakms=%d, ni_supported_rsnakms=%d, ni_rsnprotos=%d, ni_supported_rsnprotos=%d, ni_rstamp=%d\n", __FUNCTION__, ni->ni_essid, ether_sprintf(ni->ni_bssid), ni->ni_rsnciphers, ni->ni_rsncipher, ni->ni_rsngroupmgmtcipher, ni->ni_rsngroupcipher, ni->ni_rssi, ni->ni_capinfo, ni->ni_intval, ni->ni_rsnakms, ni->ni_supported_rsnakms, ni->ni_rsnprotos, ni->ni_supported_rsnprotos, ni->ni_rstamp);
-//    }
-    
-    /* A command response merely accepted the abort.  Only this final UMAC
-     * notification retires its old UID.  Do not publish it into net80211:
-     * the aborting owner performs its own exact upper reconciliation after
-     * this wait edge, just as iwlwifi suppresses mac80211 notification for a
-     * STOPPING UID. */
-    if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
-                            __ATOMIC_ACQ_REL) != 0) {
-        sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
-        XYLog("%s: IWX_SCAN_ABORT_TERMINAL state=%u flags=0x%x\n",
-              DEVNAME(sc), (unsigned)ic->ic_state,
-              (unsigned)sc->sc_flags);
-        wakeupOn(&sc->sc_scan_abort_pending);
-        return;
-    }
-
-    if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
+    ItlIwxWclScanTerminalKind wclTerminal;
+    if (!that->claimScanCommandTerminal(serial, &physical, &terminal,
+                                        &wclTerminal))
         return;
 
+    /* The exact final notification has retired its physical flags and any
+     * WCL ticket before callbacks can admit a replacement. Nothing below
+     * may exchange-clear a new scan's abort word or scanning flags. */
     if (that->completePrimaryStaRecoveryScanAPHandoff())
         return;
+    if (physical.stopping)
+        return;
 
-    explicit_bzero(&terminal, sizeof(terminal));
-    const ItlIwxWclScanTerminalKind wclTerminal =
-        that->claimWclScanTerminal(&terminal);
-    XYLog("%s: IWX_SCAN_TERMINAL kind=%u ic_state=%u ic_flags=0x%x "
-          "sc_flags=0x%x upper=%llu backend=%u publish=%u\n",
-          DEVNAME(sc), (unsigned)wclTerminal, (unsigned)ic->ic_state,
-          (unsigned)ic->ic_flags, (unsigned)sc->sc_flags,
-          terminal.upperGeneration, terminal.backendGeneration,
-          terminal.publish ? 1U : 0U);
-    sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
     if (wclTerminal == ItlIwxWclScanTerminalKind::ReplayInitial) {
         ieee80211_end_scan_controlled(
             &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_HANDOFF);
         ieee80211_begin_scan(&ic->ic_if);
-        if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
-                                __ATOMIC_ACQ_REL) != 0)
-            wakeupOn(&sc->sc_scan_abort_pending);
         return;
     }
     if (wclTerminal == ItlIwxWclScanTerminalKind::Foreground) {
         ieee80211_end_scan_controlled(
             &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND);
+    } else if (physical.aborted) {
+        /* An aborted census is not proof of candidate exhaustion. */
+        ieee80211_end_scan_controlled(
+            &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_HANDOFF);
+    } else if (that->scanCommandReplayPending()) {
+        /* A newly accepted join requires its own physical census. */
+        ieee80211_end_scan_controlled(
+            &ic->ic_if, IEEE80211_SCAN_COMPLETION_WCL_HANDOFF);
     } else {
         if (wclTerminal == ItlIwxWclScanTerminalKind::Background)
             __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once, 1,
                              __ATOMIC_RELEASE);
         ieee80211_end_scan(&ic->ic_if);
-        if (wclTerminal == ItlIwxWclScanTerminalKind::Background)
-            __atomic_store_n(&ic->ic_wcl_scan_active, 0,
-                             __ATOMIC_RELEASE);
     }
     if (wclTerminal == ItlIwxWclScanTerminalKind::Foreground ||
         wclTerminal == ItlIwxWclScanTerminalKind::Background)
         that->publishWclScanTerminal(
-            &terminal,
-            IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE);
-    /* If abort admission raced after the entry check, its caller must not
-     * proceed until all normal upper completion work above has finished. */
-    if (__atomic_exchange_n(&sc->sc_scan_abort_pending, 0,
-                            __ATOMIC_ACQ_REL) != 0)
-        wakeupOn(&sc->sc_scan_abort_pending);
+            &terminal, physical.aborted ?
+                IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED :
+                IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE);
+    that->resumeScanCommand();
 }
 
 /*
@@ -16983,6 +17845,7 @@ iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
     bool driver_reset_reconnect;
     int err, generation;
     int i;
+    const uint64_t scanResetEpoch = that->scanCommandResetEpoch();
 
     //    rw_assert_wrlock(&sc->ioctl_rwl);
 
@@ -17023,6 +17886,11 @@ iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
     if (!that->iwx_task_gate_open(sc, generation)) {
         /* A stop won the epoch after init_hw; leave its q0 closed. */
         that->iwx_cmdq_stop(sc);
+        err = ENXIO;
+        goto out;
+    }
+
+    if (!that->reopenScanCommands(scanResetEpoch, generation)) {
         err = ENXIO;
         goto out;
     }
@@ -17296,6 +18164,14 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
      * upper HostAP profile after an unexpected IWX recovery epoch. */
     if (that->apCsaTimerInitialized)
         timeout_del(&that->apCsaTimeout);
+    if (that->wclScanLock != NULL) {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(that->wclScanLock);
+        that->primaryMacContext.clear();
+        that->primaryBindingContext.clear();
+        memset(&that->primaryMacCommand, 0, sizeof(that->primaryMacCommand));
+        IOSimpleLockUnlockEnableInterrupt(that->wclScanLock, irq);
+    }
     iwx_ap_lifecycle_reset(that, false);
     /* Device reset is the last edge required before active-slot release. */
     that->iwx_sae_tx_purge(sc);
@@ -18012,7 +18888,8 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data,
             case IWX_SCAN_COMPLETE_UMAC: {
                 struct iwx_umac_scan_complete *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwx_umac_scan_complete *);
-                iwx_endscan(sc);
+                noteScanCommandTerminal(true, le32toh(notif->uid),
+                    notif->status != IWX_SCAN_OFFLOAD_COMPLETED);
                 break;
             }
                 

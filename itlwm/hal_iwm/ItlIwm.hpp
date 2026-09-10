@@ -34,6 +34,10 @@
 #include <HAL/ItlApOpenRuntime.hpp>
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
+#include <HAL/ItlScanCommandLease.hpp>
+#include <HAL/ItlStateTransitionLease.hpp>
+#include <HAL/ItlFirmwareContextLease.hpp>
+#include <HAL/ItlScanCommandPolicy.hpp>
 
 enum class ItlIwmWclScanPhase : uint8_t {
     Idle,
@@ -108,15 +112,52 @@ public:
     IOReturn abortWclBackgroundScan(uint64_t generation) override;
     void invalidateWclBackgroundScan() override;
 
-    void noteWclInitialScanCommandStarted();
-    void noteWclInitialScanCommandRejected();
-    void noteWclBackgroundScanCommandStarted();
-    void noteWclScanRadioReady();
+    void noteWclInitialScanCommandStarted(uint64_t serial);
+    void noteWclInitialScanCommandRejected(uint64_t serial = 0,
+                                          uint64_t requiredGeneration = 0);
+    void noteWclBackgroundScanCommandStarted(uint64_t serial);
+    void noteWclScanRadioReady(uint64_t serial);
     ItlIwmWclScanTerminalKind claimWclScanTerminal(
-        ItlIwmWclScanTerminal *terminal);
+        ItlIwmWclScanTerminal *terminal, bool leafHeld = false);
+    bool claimScanCommandTerminal(uint64_t serial,
+        ItlScanCommandTerminal *physical, ItlIwmWclScanTerminal *terminal,
+        ItlIwmWclScanTerminalKind *kind);
     void publishWclScanTerminal(
         const ItlIwmWclScanTerminal *terminal, uint32_t status);
     void invalidateWclScanForReset();
+    uint64_t scanCommandResetEpoch();
+    bool reopenScanCommands(uint64_t, uint32_t);
+    int reserveScanCommand(bool, bool, uint64_t *,
+                           const ItlStateTransitionRequest * = nullptr);
+    bool copyScanCommandPolicy(uint64_t, ItlScanCommandPolicy *);
+    bool scanCommandOwnerCurrentLocked(uint64_t, uint32_t) const;
+    void rejectScanCommand(uint64_t);
+    bool readyScanCommand(uint64_t);
+    bool activateScanCommand(uint64_t, bool);
+    bool scanCommandCurrent(uint64_t);
+    bool scanCommandBackgroundPending();
+    uint64_t reserveAPScanCommand();
+    uint64_t currentAPScanCommand() const;
+    void finishAPScanCommand(uint64_t, bool);
+    bool deferScanCommand(const ItlStateTransitionRequest &, bool includeBackground = true);
+    bool scanCommandReplayPending();
+    void resumeScanCommand();
+    bool noteStateTransitionProgress(ItlStateTransitionRequest *, uint8_t);
+    int reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly = false);
+    int waitScanCommandAbort(uint64_t serial, uint32_t generation);
+    void noteScanCommandTerminal(bool, uint32_t, bool);
+    bool initStateTransitions();
+    void shutdownStateTransitions();
+    int prepareStateTransition(int, int, ItlStateTransitionRequest *);
+    bool enqueueStateTransition(const ItlStateTransitionRequest &);
+    bool takeStateTransition(ItlStateTransitionRequest *);
+    bool stateTransitionCurrent(const ItlStateTransitionRequest &);
+    bool primaryFirmwareContextsPresent();
+    bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const;
+    int postStateTransitionCommit(const ItlStateTransitionRequest &, int);
+    int drainStateTransitionCommit(IOInterruptEventSource *);
+    void recoverStateTransition(const ItlStateTransitionRequest &);
+    static void stateTransitionEvent(OSObject *, IOInterruptEventSource *, int);
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwm_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -171,7 +212,8 @@ public:
     
     //scan
     uint8_t iwm_umac_scan_fill_channels(struct iwm_softc *sc,
-                                        struct iwm_scan_channel_cfg_umac *chan, int n_ssids, int bgscan);
+        struct iwm_scan_channel_cfg_umac *chan, int n_ssids, int bgscan,
+        const struct ieee80211_wcl_scan_plan *);
     
     //coex
     uint16_t iwm_coex_agg_time_limit(struct iwm_softc *, struct ieee80211_node *);
@@ -474,15 +516,16 @@ public:
     uint16_t iwm_scan_rx_chain(struct iwm_softc *);
     uint32_t iwm_scan_rate_n_flags(struct iwm_softc *, int, int);
     uint8_t    iwm_lmac_scan_fill_channels(struct iwm_softc *,
-                                           struct iwm_scan_channel_cfg_lmac *, int, int);
+        struct iwm_scan_channel_cfg_lmac *, int, int,
+        const struct ieee80211_wcl_scan_plan *);
     int iwm_fill_probe_req_v1(struct iwm_softc *, struct iwm_scan_probe_req_v1 *);
     int    iwm_fill_probe_req(struct iwm_softc *, struct iwm_scan_probe_req *);
-    int    iwm_lmac_scan(struct iwm_softc *, int);
+    int    iwm_lmac_scan(struct iwm_softc *, int, uint64_t);
     int    iwm_config_umac_scan(struct iwm_softc *);
     int    iwm_umac_scan_size(struct iwm_softc *sc);
     struct iwm_scan_umac_chan_param *iwm_get_scan_req_umac_chan_param(struct iwm_softc *sc, struct iwm_scan_req_umac *req);
     void *iwm_get_scan_req_umac_data(struct iwm_softc *sc, struct iwm_scan_req_umac *req);
-    int    iwm_umac_scan(struct iwm_softc *, int);
+    int    iwm_umac_scan(struct iwm_softc *, int, uint64_t);
     void    iwm_mcc_update(struct iwm_softc *, struct iwm_mcc_chub_notif *);
     uint8_t    iwm_ridx2rate(struct ieee80211_rateset *, int);
     void    iwm_ack_rates(struct iwm_softc *, struct iwm_node *, int *, int *);
@@ -550,13 +593,13 @@ public:
     int    iwm_update_quotas(struct iwm_softc *, struct iwm_node *, int);
     void    iwm_add_task(struct iwm_softc *, struct taskq *, struct task *);
     void    iwm_del_task(struct iwm_softc *, struct taskq *, struct task *);
-    int    iwm_scan(struct iwm_softc *);
+    int    iwm_scan(struct iwm_softc *, const ItlStateTransitionRequest &);
     static int    iwm_bgscan(struct ieee80211com *);
     static int    iwm_bgscan_abort(struct ieee80211com *);
-    int    iwm_umac_scan_abort_status(struct iwm_softc *, uint32_t *);
+    int    iwm_umac_scan_abort_status(struct iwm_softc *, uint32_t *, uint64_t);
     int    iwm_umac_scan_abort(struct iwm_softc *);
-    int    iwm_lmac_scan_abort(struct iwm_softc *);
-    int    iwm_scan_abort(struct iwm_softc *);
+    int    iwm_lmac_scan_abort(struct iwm_softc *, uint64_t serial = 0);
+    int    iwm_scan_abort(struct iwm_softc *, bool backgroundOnly = false);
     int    iwm_phy_ctxt_update(struct iwm_softc *, struct iwm_phy_ctxt *,
                                struct ieee80211_channel *, uint8_t, uint8_t, uint32_t);
     int    iwm_auth(struct iwm_softc *);
@@ -575,8 +618,9 @@ public:
     static void    iwm_calib_timeout(void *);
     int    iwm_media_change(struct _ifnet *);
     static void    iwm_newstate_task(void *);
+    static void    iwm_newstate_task_dispatch(void *);
     static int    iwm_newstate(struct ieee80211com *, enum ieee80211_state, int);
-    void    iwm_endscan(struct iwm_softc *);
+    void    iwm_endscan(struct iwm_softc *, uint64_t);
     void    iwm_fill_sf_command(struct iwm_softc *, struct iwm_sf_cfg_cmd *,
                                 struct ieee80211_node *);
     int    iwm_sf_config(struct iwm_softc *, int);
@@ -644,6 +688,14 @@ public:
     CTimeout *apCsaTimeout;
     bool apCsaTimerInitialized;
     IOSimpleLock *wclScanLock;
+    ItlScanCommandLease scanCommand;
+    ItlScanCommandPolicy scanCommandPolicy;
+    ItlStateTransitionLease stateTransition;
+    ItlFirmwareContextLease primaryMacContext;
+    ItlFirmwareContextLease primaryBindingContext;
+    struct iwm_mac_ctx_cmd primaryMacCommand;
+    IOInterruptEventSource *stateTransitionSource;
+    uint64_t scanCommandAbortSerial;
     ItlIwmWclScanPhase wclScanPhase;
     uint64_t wclScanUpperGeneration;
     uint32_t wclScanBackendGeneration;

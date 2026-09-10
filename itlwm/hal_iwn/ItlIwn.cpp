@@ -1129,6 +1129,54 @@ iwn_sae_engine_schedule_task(struct iwn_softc *sc)
     iwn_sae_engine_task_admission_leave(sc);
 }
 
+static void
+iwn_sae_engine_wake_join_retirement(struct iwn_softc *sc)
+{
+    bool waiting;
+
+    if (sc == NULL)
+        return;
+    if (sc->sc_sae_engine_lock == NULL) {
+        if (sc->sc_sae_tx_lock == NULL)
+            return;
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        waiting = sc->sc_sae_tx_join_failure_generation != 0 &&
+            !sc->sc_sae_tx_stopping;
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+        if (waiting)
+            iwn_sae_tx_schedule_task(sc, false);
+        return;
+    }
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    waiting = sc->sc_sae_engine_join_failure_generation != 0 &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching;
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (waiting)
+        iwn_sae_engine_schedule_task(sc);
+}
+
+/* The no-engine case still runs through the ordinary transport worker,
+ * after its local terminal value is scrubbed and with its lifecycle held. */
+static void
+iwn_sae_tx_finish_join_retirement(struct iwn_softc *sc)
+{
+    u_int64_t generation = 0;
+
+    if (sc == NULL || sc->sc_sae_engine_lock != NULL ||
+        sc->sc_sae_tx_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (!sc->sc_sae_tx_stopping && !sc->sc_sae_tx_active &&
+        sc->sc_sae_tx_event_count == 0) {
+        generation = sc->sc_sae_tx_join_failure_generation;
+        sc->sc_sae_tx_join_failure_generation = 0;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    if (generation != 0)
+        ieee80211_wcl_join_cleanup_done(&sc->sc_ic, generation,
+            IEEE80211_JOIN_CLEANUP_SAE);
+}
+
 } // namespace
 
 bool ItlIwn::
@@ -1418,6 +1466,7 @@ cancelSaeAuthFrame(uint64_t ticket)
         sc->sc_sae_tx_event_count = 0;
     }
     IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    iwn_sae_engine_wake_join_retirement(sc);
     iwn_sae_tx_lifecycle_leave(sc);
 }
 
@@ -1772,6 +1821,9 @@ iwn_sae_tx_queue_terminal(struct iwn_softc *sc,
     /* A cancelled ticket reaches terminal state but is deliberately silent. */
     if (queued)
         iwn_sae_tx_schedule_task(sc, schedule_allow_closed);
+    /* Even a silent cancelled descriptor must release a failed join which
+     * is waiting for real TX_DONE, not merely the cancellation fence. */
+    iwn_sae_engine_wake_join_retirement(sc);
     return true;
 }
 
@@ -1816,6 +1868,7 @@ iwn_sae_tx_retire_unsubmitted(struct iwn_softc *sc, uint64_t ticket)
             sizeof(sc->sc_sae_tx_last_event));
     }
     IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    iwn_sae_engine_wake_join_retirement(sc);
 }
 
 void ItlIwn::
@@ -1830,6 +1883,7 @@ iwn_sae_tx_stop_begin(struct iwn_softc *sc)
         return;
     IOSimpleLockLock(sc->sc_sae_tx_lock);
     sc->sc_sae_tx_stopping = true;
+    sc->sc_sae_tx_join_failure_generation = 0;
     iwn_sae_tx_generation_advance_locked(sc);
     /* A reservation not yet doorbelled has no physical owner to retain. */
     if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled) {
@@ -1926,6 +1980,7 @@ iwn_sae_tx_cancel_all(struct iwn_softc *sc)
     sc->sc_sae_tx_event_head = 0;
     sc->sc_sae_tx_event_tail = 0;
     sc->sc_sae_tx_event_count = 0;
+    sc->sc_sae_tx_join_failure_generation = 0;
     IOSimpleLockUnlock(sc->sc_sae_tx_lock);
 }
 
@@ -2030,6 +2085,7 @@ iwn_sae_tx_purge(struct iwn_softc *sc)
     sc->sc_sae_tx_event_head = 0;
     sc->sc_sae_tx_event_tail = 0;
     sc->sc_sae_tx_event_count = 0;
+    sc->sc_sae_tx_join_failure_generation = 0;
     sc->sc_sae_tx_active = false;
     sc->sc_sae_tx_doorbelled = false;
     sc->sc_sae_tx_active_ticket = 0;
@@ -2104,11 +2160,14 @@ iwn_sae_tx_task(void *arg)
         }
     }
     explicit_bzero(&event, sizeof(event));
+    iwn_sae_tx_finish_join_retirement(sc);
     /* Keep the lease until any requeue is admitted or rejected by close().
      * Otherwise detach could drain, free the task storage, and race the
      * post-callback task_add() below. */
     if (more)
         iwn_sae_tx_schedule_task(sc, false);
+    else if (sc->sc_sae_engine_lock != NULL)
+        iwn_sae_engine_wake_join_retirement(sc);
     /* Detach drains this lease before it can release ic/softc storage. */
     iwn_sae_tx_lifecycle_leave(sc);
 }
@@ -3566,6 +3625,74 @@ iwn_sae_engine_worker_retire(struct iwn_softc *sc, bool request_scan)
 
 } // namespace
 
+static void
+iwn_sae_engine_request_join_retirement(struct iwn_softc *sc,
+    u_int64_t generation)
+{
+    bool queued = false;
+
+    if (sc == NULL ||
+        !ieee80211_wcl_join_failure_pending(&sc->sc_ic, generation))
+        return;
+    if (sc->sc_sae_engine_lock == NULL) {
+        /* Crypto allocation can fail independently of the legacy transport.
+         * Its worker must retire any remaining native descriptor/event. */
+        if (sc->sc_sae_tx_lock == NULL)
+            return;
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        if (!sc->sc_sae_tx_stopping &&
+            generation >= sc->sc_sae_tx_join_failure_generation) {
+            sc->sc_sae_tx_join_failure_generation = generation;
+            queued = true;
+        }
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+        if (queued)
+            iwn_sae_tx_schedule_task(sc, false);
+        return;
+    }
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    if (sc->sc_sae_engine_task_ready && !sc->sc_sae_engine_stopping &&
+        !sc->sc_sae_engine_detaching &&
+        generation >= sc->sc_sae_engine_join_failure_generation) {
+        sc->sc_sae_engine_join_failure_generation = generation;
+        queued = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (queued)
+        iwn_sae_engine_schedule_task(sc);
+}
+
+/* Called by the engine worker with its TX lifecycle admission still held,
+ * after local secret buffers and every cancellation/engine owner are gone. */
+static void
+iwn_sae_engine_finish_join_retirement(struct iwn_softc *sc)
+{
+    u_int64_t generation = 0;
+
+    if (sc == NULL || sc->sc_sae_engine_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    if (!sc->sc_sae_engine_owner.active && sc->sc_sae_engine == NULL &&
+        sc->sc_sae_engine_wcl_cancel_generation == 0 &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching) {
+        /* Same engine -> TX leaf order as the doorbell cancellation fence.
+         * A cancelled descriptor remains live until TX_DONE/reset reclaims
+         * it; queued terminal values are drained by the TX worker as well. */
+        if (sc->sc_sae_tx_lock != NULL)
+            IOSimpleLockLock(sc->sc_sae_tx_lock);
+        if (!sc->sc_sae_tx_active && sc->sc_sae_tx_event_count == 0) {
+            generation = sc->sc_sae_engine_join_failure_generation;
+            sc->sc_sae_engine_join_failure_generation = 0;
+        }
+        if (sc->sc_sae_tx_lock != NULL)
+            IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (generation != 0)
+        ieee80211_wcl_join_cleanup_done(&sc->sc_ic, generation,
+            IEEE80211_JOIN_CLEANUP_SAE);
+}
+
 void ItlIwn::
 iwn_sae_engine_task(void *arg)
 {
@@ -3819,6 +3946,7 @@ out:
     explicit_bzero(&continuation, sizeof(continuation));
     explicit_bzero(&peer, sizeof(peer));
     explicit_bzero(&terminal, sizeof(terminal));
+    iwn_sae_engine_finish_join_retirement(sc);
     iwn_sae_tx_lifecycle_leave(sc);
 }
 
@@ -3837,6 +3965,7 @@ iwn_sae_engine_stop_begin(struct iwn_softc *sc)
     if (sc->sc_sae_engine_lock != NULL) {
         IOSimpleLockLock(sc->sc_sae_engine_lock);
         sc->sc_sae_engine_stopping = true;
+        sc->sc_sae_engine_join_failure_generation = 0;
         (void)iwn_sae_engine_generation_advance_locked(sc);
         (void)iwn_sae_engine_mark_cancelled_locked(sc, 0, true, &cancel);
         schedule = sc->sc_sae_engine_task_ready;
@@ -4025,6 +4154,7 @@ iwn_sae_engine_detach_begin(struct iwn_softc *sc)
         sc->sc_sae_engine = NULL;
         wcl_cancel_generation = sc->sc_sae_engine_wcl_cancel_generation;
         sc->sc_sae_engine_wcl_cancel_generation = 0;
+        sc->sc_sae_engine_join_failure_generation = 0;
         iwn_sae_engine_owner_clear_locked(sc);
         IOSimpleLockUnlock(sc->sc_sae_engine_lock);
     }
@@ -7995,6 +8125,9 @@ detach(IOPCIDevice *device)
 
     if (com.sc_ic.ic_newstate_preflight == iwn_newstate_preflight)
         com.sc_ic.ic_newstate_preflight = NULL;
+    if (com.sc_ic.ic_wcl_join_failure_scan == iwn_wcl_join_failure_scan)
+        com.sc_ic.ic_wcl_join_failure_scan = NULL;
+    ieee80211_wcl_join_cancel(&com.sc_ic, 0);
     /* Close and drain every producer which could otherwise enqueue replay
      * after the task_del()+barrier snapshot below.  A worker already inside
      * its body is fenced separately by clearing its exact initial-handoff
@@ -8008,6 +8141,7 @@ detach(IOPCIDevice *device)
         sc->sc_scan_lease_replay_task_ready = false;
         sc->sc_scan_lease_replay_pending = false;
         sc->sc_scan_lease_replay_sae_generation = 0;
+        sc->sc_wcl_join_cleanup_generation = 0;
         if (iwn_scan_lease_live_locked(sc) &&
             iwn_scan_lease_owner_is_wcl(sc->sc_scan_lease.owner)) {
             sc->sc_scan_lease.publication_invalidated = true;
@@ -11002,6 +11136,8 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
         sizeof(sc->sc_sae_engine_owner));
     sc->sc_sae_engine = NULL;
     sc->sc_sae_engine_wcl_cancel_generation = 0;
+    sc->sc_sae_engine_join_failure_generation = 0;
+    sc->sc_sae_tx_join_failure_generation = 0;
     __atomic_store_n(&sc->sc_sae_engine_lifecycle_generation, 1,
         __ATOMIC_RELEASE);
     sc->sc_sae_engine_next_ticket = 0;
@@ -11023,6 +11159,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
     sc->sc_scan_lease_replay_arg = -1;
     sc->sc_scan_lease_replay_sae_generation = 0;
+    sc->sc_wcl_join_cleanup_generation = 0;
     explicit_bzero(&sc->sc_wcl_initial_scan_pending,
                    sizeof(sc->sc_wcl_initial_scan_pending));
 
@@ -11187,6 +11324,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
     sc->sc_scan_lease_replay_arg = -1;
     sc->sc_scan_lease_replay_sae_generation = 0;
+    sc->sc_wcl_join_cleanup_generation = 0;
     explicit_bzero(&sc->sc_wcl_initial_scan_pending,
                    sizeof(sc->sc_wcl_initial_scan_pending));
     sc->sc_sae_tx_lifecycle_lock = IOLockAlloc();
@@ -11231,6 +11369,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
         sizeof(sc->sc_sae_engine_owner));
     sc->sc_sae_engine = NULL;
     sc->sc_sae_engine_wcl_cancel_generation = 0;
+    sc->sc_sae_engine_join_failure_generation = 0;
     __atomic_store_n(&sc->sc_sae_engine_lifecycle_generation, 1,
         __ATOMIC_RELEASE);
     __atomic_store_n(&sc->sc_sae_engine_task_admission_state,
@@ -11400,6 +11539,7 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     /* Override 802.11 state transition machine. */
     sc->sc_newstate = ic->ic_newstate;
     ic->ic_newstate = iwn_newstate;
+    ic->ic_wcl_join_failure_scan = iwn_wcl_join_failure_scan;
     ieee80211_media_init(ifp);
 
     sc->amrr.amrr_min_success_threshold =  1;
@@ -12774,6 +12914,7 @@ struct iwn_scan_lease_terminal {
     bool aborted;
     u_int64_t serial;
     u_int64_t upper_generation;
+    u_int64_t join_generation;
     u_int32_t backend_generation;
 };
 
@@ -13120,6 +13261,7 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
                        u_int8_t wnm_target_channel)
 {
     u_int64_t serial;
+    u_int64_t join_generation = 0;
     const bool direct_sae_scan = direct_sae_scan_generation != 0;
 
     const bool tagged_controller_owner = iwn_scan_lease_owner_is_wcl(owner) ||
@@ -13133,6 +13275,11 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
         return false;
     if (out_backend_generation != NULL)
         *out_backend_generation = 0;
+
+    /* No nested selected-BSS/scan leaf locks. A later replacement can only
+     * make this copied token stale; it cannot retag the admitted command. */
+    if (owner == IWN_SCAN_LEASE_GENERIC_FOREGROUND)
+        join_generation = ieee80211_wcl_join_scan_generation(&sc->sc_ic);
 
     IOSimpleLockLock(sc->sc_scan_lease_lock);
     const bool initial_pending = sc->sc_wcl_initial_scan_pending.queued;
@@ -13171,6 +13318,7 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
     sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ARMING;
     sc->sc_scan_lease.wnm_target_channel = wnm_target_channel;
     sc->sc_scan_lease.upper_generation = upper_generation;
+    sc->sc_scan_lease.join_generation = join_generation;
     sc->sc_scan_lease.wcl_initial_handoff_serial =
         required_initial_handoff_serial;
     if (tagged_controller_owner) {
@@ -13430,6 +13578,7 @@ iwn_scan_lease_claim_terminal(struct iwn_softc *sc,
             !sc->sc_scan_lease.publication_invalidated;
         terminal->aborted = sc->sc_scan_lease.abort_requested;
         terminal->upper_generation = sc->sc_scan_lease.upper_generation;
+        terminal->join_generation = sc->sc_scan_lease.join_generation;
         terminal->backend_generation = sc->sc_scan_lease.backend_generation;
         sc->sc_scan_lease.terminal_claimed = true;
         sc->sc_scan_lease.phase = IWN_SCAN_LEASE_DRAINING;
@@ -13504,10 +13653,13 @@ iwn_scan_lease_restore_continuation(struct iwn_softc *sc, u_int64_t serial,
 }
 
 static bool
-iwn_scan_lease_finish_terminal(struct iwn_softc *sc, u_int64_t serial)
+iwn_scan_lease_finish_terminal(struct iwn_softc *sc, u_int64_t serial,
+    bool *join_terminal_retired = NULL)
 {
     bool schedule_replay = false;
 
+    if (join_terminal_retired != NULL)
+        *join_terminal_retired = false;
     if (sc == NULL || sc->sc_scan_lease_lock == NULL || serial == 0)
         return false;
     IOSimpleLockLock(sc->sc_scan_lease_lock);
@@ -13518,7 +13670,10 @@ iwn_scan_lease_finish_terminal(struct iwn_softc *sc, u_int64_t serial)
          * invalidated lease and has already discarded replay; never revive a
          * queued S_SCAN intent after its radio epoch has been fenced. */
         schedule_replay = !sc->sc_scan_lease.hardware_invalidated &&
-            sc->sc_scan_lease_replay_pending;
+            (sc->sc_scan_lease_replay_pending ||
+             sc->sc_wcl_join_cleanup_generation != 0);
+        if (join_terminal_retired != NULL)
+            *join_terminal_retired = !sc->sc_scan_lease.hardware_invalidated;
         /* auth_hold() must synchronously consume a hard-loss handoff while
          * end_scan() owns this terminal.  Never let an unconsumed token
          * escape into a later scan or association generation. */
@@ -13689,6 +13844,7 @@ iwn_scan_lease_begin_hardware_invalidation(
     sc->sc_scan_lease_replay_nstate = IEEE80211_S_INIT;
     sc->sc_scan_lease_replay_arg = -1;
     sc->sc_scan_lease_replay_sae_generation = 0;
+    sc->sc_wcl_join_cleanup_generation = 0;
     sc->sc_sae_wcl_admission_reserved = false;
     sc->sc_sae_wcl_admission_requires_fresh_scan = false;
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
@@ -13795,6 +13951,26 @@ iwn_newstate_preflight(struct ieee80211com *ic,
     return 1;
 }
 
+static u_int64_t
+iwn_scan_lease_take_join_cleanup(struct iwn_softc *sc)
+{
+    u_int64_t generation = 0;
+
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL)
+        return 0;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (sc->sc_scan_lease_replay_task_ready &&
+        !iwn_scan_lease_live_locked(sc) &&
+        (sc->sc_flags & IWN_FLAG_SCANNING) == 0 &&
+        (sc->sc_ic.ic_if.if_flags & (IFF_UP | IFF_RUNNING)) ==
+            (IFF_UP | IFF_RUNNING)) {
+        generation = sc->sc_wcl_join_cleanup_generation;
+        sc->sc_wcl_join_cleanup_generation = 0;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return generation;
+}
+
 void ItlIwn::
 iwn_scan_lease_replay_task(void *arg)
 {
@@ -13805,6 +13981,7 @@ iwn_scan_lease_replay_task(void *arg)
     u_int64_t initial_generation = 0;
     u_int64_t initial_handoff_serial = 0;
     u_int64_t direct_sae_generation = 0;
+    u_int64_t join_cleanup_generation = 0;
     u_int32_t initial_backend_generation = 0;
     bool launch_initial = false;
     bool reject_initial = false;
@@ -13813,6 +13990,17 @@ iwn_scan_lease_replay_task(void *arg)
     if (sc == NULL || sc->sc_scan_lease_lock == NULL)
         return;
     ic = &sc->sc_ic;
+    join_cleanup_generation = iwn_scan_lease_take_join_cleanup(sc);
+    if (join_cleanup_generation != 0 &&
+        ieee80211_wcl_join_failure_pending(ic, join_cleanup_generation)) {
+        ieee80211_pae_assoc_epoch_note_newstate(ic, IEEE80211_S_SCAN, -1);
+        if (ieee80211_wcl_join_failure_pending(ic, join_cleanup_generation) &&
+            iwn_newstate_impl(ic, IEEE80211_S_SCAN, -1,
+                join_cleanup_generation) == 0)
+            iwn_sae_engine_request_join_retirement(sc, join_cleanup_generation);
+    }
+    /* Cleanup can yield to a new association or scan. Recheck all physical
+     * admission below rather than carrying the earlier idle observation. */
     IOSimpleLockLock(sc->sc_scan_lease_lock);
     if (sc->sc_scan_lease_replay_task_ready &&
         !iwn_scan_lease_live_locked(sc) &&
@@ -14123,6 +14311,38 @@ invalidateWclBackgroundScan()
 int ItlIwn::
 iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 {
+    return iwn_newstate_impl(ic, nstate, arg, 0);
+}
+
+void ItlIwn::
+iwn_wcl_join_failure_scan(struct ieee80211com *ic, u_int64_t generation)
+{
+    struct iwn_softc *sc;
+    bool queued = false;
+
+    if (!ieee80211_wcl_join_failure_pending(ic, generation))
+        return;
+    sc = (struct iwn_softc *)ic->ic_if.if_softc;
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (sc->sc_scan_lease_replay_task_ready &&
+        !sc->sc_scan_lease.hardware_invalidated &&
+        generation >= sc->sc_wcl_join_cleanup_generation) {
+        sc->sc_wcl_join_cleanup_generation = generation;
+        queued = true;
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    /* Do not revoke an unrelated foreground scan or overwrite its replay
+     * intent. Its real terminal will wake this separate cleanup token. */
+    if (queued)
+        iwn_scan_lease_schedule_replay_task(sc);
+}
+
+int ItlIwn::
+iwn_newstate_impl(struct ieee80211com *ic, enum ieee80211_state nstate, int arg,
+                  u_int64_t join_failure_generation)
+{
     struct _ifnet *ifp = &ic->ic_if;
     struct iwn_softc *sc = (struct iwn_softc *)ifp->if_softc;
     struct ieee80211_node *ni = ic->ic_bss;
@@ -14137,6 +14357,11 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         arg == IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD;
     int error;
 
+    if (join_failure_generation != 0 &&
+        (nstate != IEEE80211_S_SCAN ||
+         !ieee80211_wcl_join_failure_pending(ic, join_failure_generation)))
+        return ECANCELED;
+
     /* The tagged net80211 channel hop reaches this exact callback so its
      * transient current-BSS cleanup can avoid a duplicate epoch cancellation.
      * No lower IWN or generic net80211 callback may observe the private tag. */
@@ -14145,10 +14370,11 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     /* Most callers pass through ieee80211_new_state(), whose preflight has
      * already consumed a conflicting RUN->SCAN request before epoch change.
      * Keep the same fence for the few raw backend callers. */
-    if (nstate == IEEE80211_S_SCAN && ic->ic_state == IEEE80211_S_RUN &&
+    if (join_failure_generation == 0 &&
+        nstate == IEEE80211_S_SCAN && ic->ic_state == IEEE80211_S_RUN &&
         iwn_newstate_preflight(ic, nstate, arg) != 0)
         return 0;
-    if (nstate == IEEE80211_S_SCAN &&
+    if (join_failure_generation == 0 && nstate == IEEE80211_S_SCAN &&
         iwn_wcl_initial_scan_pending_blocks_generic(sc))
         return 0;
 
@@ -14158,8 +14384,9 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         /* A direct request remains HOLD-only until this raw state call has
          * accepted a fresh IWN scan.  The copied generation is public and
          * lets the coalesce branch reject only that exact request. */
-        (void)ieee80211_sae_wcl_request_scan_starting(ic,
-            &direct_sae_scan_generation);
+        if (join_failure_generation == 0)
+            (void)ieee80211_sae_wcl_request_scan_starting(ic,
+                &direct_sae_scan_generation);
     }
 
     if (ic->ic_state == IEEE80211_S_RUN) {
@@ -14180,6 +14407,10 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     if (ic->ic_state == IEEE80211_S_SCAN) {
         if (nstate == IEEE80211_S_SCAN) {
             if (sc->sc_flags & IWN_FLAG_SCANNING) {
+                if (join_failure_generation != 0) {
+                    iwn_wcl_join_failure_scan(ic, join_failure_generation);
+                    return EAGAIN;
+                }
                 AirportItlwmPostPltiTraceRecord(
                     ic, kAirportItlwmPostPltiTraceEventIwnScanCoalesced);
                 /* Ordinary SCAN -> SCAN stays coalesced, but direct SAE must
@@ -14270,6 +14501,10 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         }
     }
 
+    if (join_failure_generation != 0 &&
+        !ieee80211_wcl_join_failure_pending(ic, join_failure_generation))
+        return ECANCELED;
+
     switch (nstate) {
     case IEEE80211_S_SCAN:
     {
@@ -14288,7 +14523,18 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
             else
                 ieee80211_node_cleanup(ic, ic->ic_bss);
         }
+        if (join_failure_generation != 0 &&
+            !ieee80211_wcl_join_failure_pending(ic, join_failure_generation))
+            return ECANCELED;
         ic->ic_state = nstate;
+        if (join_failure_generation != 0) {
+            /* The next JoinAdapter candidate owns its own scan. This edge
+             * only retires the failed lower association and must not start
+             * an autonomous replacement before its terminal is delivered. */
+            ieee80211_wcl_join_cleanup_done(ic, join_failure_generation,
+                IEEE80211_JOIN_CLEANUP_LOWER);
+            return 0;
+        }
         if (wnm_reconnect_hold) {
             /* The protected BTM census retained one freshly confirmed node.
              * Enter SCAN so WCL can restage its SAE credential, but do not
@@ -16403,6 +16649,7 @@ iwn_notif_intr(struct iwn_softc *sc)
             u_int8_t wnm_target_channel = 0;
             bool initial_handoff = false;
             bool replay_scan = false;
+            bool join_terminal_retired = false;
             const bool wnm_exact_channel =
                 iwn_scan_lease_wnm_target_channel(sc, 0,
                     &wnm_target_channel);
@@ -16487,8 +16734,13 @@ iwn_notif_intr(struct iwn_softc *sc)
             else if (terminal.wcl_foreground)
                 ieee80211_end_scan_controlled(ifp,
                     IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND);
+            else if (terminal.join_generation != 0 && terminal.aborted)
+                ieee80211_end_scan_controlled(ifp,
+                    IEEE80211_SCAN_COMPLETION_WCL_HANDOFF);
             else
-                ieee80211_end_scan(ifp);
+                ieee80211_end_scan_owned(ifp,
+                    IEEE80211_SCAN_COMPLETION_GENERIC,
+                    terminal.join_generation);
             if (terminal.standard && terminal.publish_standard_terminal &&
                 ic->ic_event_handler != NULL) {
                 struct ieee80211_standard_scan_terminal standard_terminal;
@@ -16522,7 +16774,15 @@ iwn_notif_intr(struct iwn_softc *sc)
             if (terminal.wcl && !terminal.wcl_foreground)
                 __atomic_store_n(&ic->ic_wcl_scan_active, 0,
                                  __ATOMIC_RELEASE);
-            replay_scan = iwn_scan_lease_finish_terminal(sc, terminal.serial);
+            replay_scan = iwn_scan_lease_finish_terminal(sc, terminal.serial,
+                &join_terminal_retired);
+            if (join_terminal_retired && terminal.join_generation != 0 &&
+                ieee80211_wcl_join_failure_pending(ic,
+                    terminal.join_generation)) {
+                iwn_wcl_join_failure_scan(ic, terminal.join_generation);
+                ieee80211_wcl_join_cleanup_done(ic, terminal.join_generation,
+                    IEEE80211_JOIN_CLEANUP_PRODUCER);
+            }
             explicit_bzero(&terminal, sizeof(terminal));
             if (initial_handoff || replay_scan)
                 iwn_scan_lease_schedule_replay_task(sc);

@@ -332,6 +332,9 @@ struct iwx_cmd_async_identity {
 };
 
 struct iwx_host_cmd {
+    /* Host-only physical scan reservation; never encoded as a firmware UID. */
+    uint64_t scan_serial;
+    struct ItlFirmwareContextCommand *context_command;
 	const void *data[IWX_MAX_CMD_TBS_PER_TFD];
 	struct iwx_rx_packet *resp_pkt;
 	size_t resp_pkt_len;

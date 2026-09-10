@@ -1278,7 +1278,8 @@ iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data,
             case IWM_SCAN_OFFLOAD_COMPLETE: {
                 struct iwm_periodic_scan_complete *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwm_periodic_scan_complete *);
-                iwm_endscan(sc);
+                noteScanCommandTerminal(false, 0,
+                    notif->status != IWM_SCAN_OFFLOAD_COMPLETED);
                 break;
             }
                 
@@ -1292,7 +1293,8 @@ iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data,
             case IWM_SCAN_COMPLETE_UMAC: {
                 struct iwm_umac_scan_complete *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwm_umac_scan_complete *);
-                iwm_endscan(sc);
+                noteScanCommandTerminal(true, le32toh(notif->uid),
+                    notif->status != IWM_SCAN_OFFLOAD_COMPLETED);
                 break;
             }
                 

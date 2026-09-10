@@ -2022,6 +2022,228 @@ ieee80211_pae_assoc_epoch_advance_locked(struct ieee80211com *ic)
 	return epoch;
 }
 
+int
+ieee80211_wcl_join_state_identity(struct ieee80211com *ic,
+    u_int64_t *sequence, u_int64_t *generation, u_int64_t *epoch)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (sequence == NULL || generation == NULL || epoch == NULL)
+		return 0;
+	*sequence = *generation = *epoch = 0;
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_opmode == IEEE80211_M_STA) {
+		*sequence = ic->ic_wcl_join_attempt.next_generation;
+		if (ic->ic_wcl_join_attempt.phase != IEEE80211_JOIN_IDLE)
+			*generation = ic->ic_wcl_join_attempt.result.generation;
+		*epoch = ic->ic_pae_assoc_epoch;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return 1;
+}
+
+u_int64_t
+ieee80211_wcl_join_begin(struct ieee80211com *ic, const u_int8_t *bssid,
+    const u_int8_t *ssid, u_int ssid_len)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	u_int64_t generation;
+
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	generation = ieee80211_join_attempt_begin(&ic->ic_wcl_join_attempt,
+	    bssid, ssid, ssid_len);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return generation;
+}
+
+void
+ieee80211_wcl_join_cancel(struct ieee80211com *ic, u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	(void)ieee80211_join_attempt_cancel(&ic->ic_wcl_join_attempt, generation);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+int
+ieee80211_wcl_join_copy_current(struct ieee80211com *ic, u_int64_t epoch,
+    struct ieee80211_join_failure *request)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int copied = 0;
+
+	if (request == NULL || ic == NULL ||
+	    request == &ic->ic_wcl_join_attempt.result)
+		return 0;
+	memset(request, 0, sizeof(*request));
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_wcl_join_attempt.phase >= IEEE80211_JOIN_DISCOVERY &&
+	    ic->ic_wcl_join_attempt.phase <= IEEE80211_JOIN_KEYS &&
+	    ic->ic_wcl_join_attempt.result.association_epoch == epoch &&
+	    (epoch == 0 || epoch == ic->ic_pae_assoc_epoch)) {
+		*request = ic->ic_wcl_join_attempt.result;
+		request->phase = ic->ic_wcl_join_attempt.phase;
+		copied = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return copied;
+}
+
+u_int64_t
+ieee80211_wcl_join_scan_generation(struct ieee80211com *ic)
+{
+	struct ieee80211_join_failure request;
+
+	/* Capture at physical admission, never at completion. An initial census
+	 * and an established-link/background scan are not ordinary join attempts. */
+	if (ic == NULL || ic->ic_state != IEEE80211_S_SCAN ||
+	    __atomic_load_n(&ic->ic_initial_scan_census_only, __ATOMIC_ACQUIRE) ||
+	    !ieee80211_wcl_join_copy_current(ic, 0, &request))
+		return 0;
+	return request.generation;
+}
+
+int
+ieee80211_wcl_join_scan_current(struct ieee80211com *ic, u_int64_t generation)
+{
+	struct ieee80211_join_failure request;
+
+	return generation != 0 &&
+	    ieee80211_wcl_join_copy_current(ic, 0, &request) &&
+	    request.generation == generation;
+}
+
+int
+ieee80211_wcl_join_scan_failed(struct ieee80211com *ic, u_int64_t generation)
+{
+	struct ieee80211_join_failure request;
+
+	if (generation == 0 ||
+	    !ieee80211_wcl_join_copy_current(ic, 0, &request) ||
+	    request.generation != generation)
+		return 0;
+	/* The caller still owns the physical scan terminal. It must retire that
+	 * lease before requesting lower cleanup and acknowledging PRODUCER.
+	 * Credential/engine retirement is a separate real SAE worker terminal. */
+	return ieee80211_wcl_join_fail(ic, &request,
+	    IEEE80211_JOIN_FAILURE_NO_NETWORKS, 0, 0, 0,
+	    IEEE80211_JOIN_CLEANUP_ALL);
+}
+
+int
+ieee80211_wcl_join_generation_current(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int current;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	current = ieee80211_join_attempt_is_current(&ic->ic_wcl_join_attempt,
+	    generation);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return current;
+}
+
+int
+ieee80211_wcl_join_note_success(struct ieee80211com *ic, u_int64_t generation,
+    u_int64_t epoch, enum ieee80211_join_phase phase)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int accepted;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	accepted = epoch == ic->ic_pae_assoc_epoch &&
+	    ieee80211_join_attempt_note_success(&ic->ic_wcl_join_attempt,
+	    generation, epoch, phase);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return accepted;
+}
+
+int
+ieee80211_wcl_join_fail(struct ieee80211com *ic,
+    const struct ieee80211_join_failure *request,
+    enum ieee80211_join_failure_cause cause, u_int16_t peer_status,
+    u_int16_t peer_reason, u_int32_t local_error, u_int cleanup)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int accepted;
+
+	if (ic == NULL || request == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	accepted = (request->association_epoch == 0 ||
+	    request->association_epoch == ic->ic_pae_assoc_epoch) &&
+	    ieee80211_join_attempt_fail(&ic->ic_wcl_join_attempt,
+	    request->generation, request->association_epoch,
+	    (enum ieee80211_join_phase)request->phase, cause, peer_status,
+	    peer_reason, local_error, cleanup);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return accepted;
+}
+
+int
+ieee80211_wcl_join_failure_pending(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int pending;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	pending = ieee80211_join_attempt_is_current(&ic->ic_wcl_join_attempt,
+	    generation) && ic->ic_wcl_join_attempt.phase == IEEE80211_JOIN_FAILING;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return pending;
+}
+
+void
+ieee80211_wcl_join_cleanup_done(struct ieee80211com *ic,
+    u_int64_t generation, u_int participant)
+{
+	struct ieee80211_join_failure failure;
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int deliver = 0;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ieee80211_join_attempt_cleanup_done(&ic->ic_wcl_join_attempt,
+	    generation, participant))
+		deliver = ieee80211_join_attempt_take_failure(
+		    &ic->ic_wcl_join_attempt, generation, &failure);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	/* The event handler value-copies and revalidates the request under its
+	 * own command gate. No controller entry is made under the leaf lock. */
+	if (deliver && ic->ic_event_handler != NULL)
+		(*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_JOIN_FAILED, &failure);
+}
+
 /*
  * Capture only the BSS net80211 selected and copied into ic_bss.  The caller
  * reaches this after node replacement; request-side WCL/ASSOCIATE carriers,
@@ -2056,6 +2278,9 @@ ieee80211_pae_selected_bss_capture(struct ieee80211com *ic,
 		goto out;
 	__atomic_store_n(&ic->ic_pae_selected_bss.epoch, expected_epoch,
 	    __ATOMIC_RELEASE);
+	(void)ieee80211_join_attempt_bind(&ic->ic_wcl_join_attempt,
+	    ic->ic_wcl_join_attempt.result.generation, expected_epoch,
+	    ni->ni_bssid, ni->ni_essid, ni->ni_esslen);
 	/* A public initial-BSS hint becomes eligible only after this exact
 	 * post-copy selected-BSS identity has been published for the replacement
 	 * epoch.  It never binds a scan candidate or a request-side BSSID. */
@@ -2596,6 +2821,7 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 
 	bzero(&revocation, sizeof(revocation));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	(void)ieee80211_join_attempt_cancel(&ic->ic_wcl_join_attempt, 0);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	ieee80211_sae_peer_rx_admission_clear_locked(ic);
 	ieee80211_public_initial_bssid_pin_clear_locked(ic);
@@ -2623,6 +2849,8 @@ ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
 {
 	if (ic == NULL)
 		return;
+	if (nstate == IEEE80211_S_INIT)
+		ieee80211_wcl_join_cancel(ic, 0);
 	/* Passive trace ownership follows the same pre-callback state boundary. */
 	AirportItlwmPostPltiTraceNoteStateRequest(ic, (uint32_t)ic->ic_state,
 	    (uint32_t)nstate);

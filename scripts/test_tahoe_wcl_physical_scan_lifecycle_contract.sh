@@ -333,7 +333,8 @@ require(iwx_initial, "AppleBCMWLANScanAdapter",
         "IWX reference WCL admission rationale")
 ordered(iwx_initial, "IWX fresh initial physical scan",
         "wclScanUpperGeneration = generation",
-        "if ((com.sc_flags & IWX_FLAG_SCANNING) != 0)",
+        "if (scanCommand.live() ||",
+        "(com.sc_flags & IWX_FLAG_SCANNING) != 0)",
         "wclScanPhase = ItlIwxWclScanPhase::InitialQueued",
         "wclScanPhase = ItlIwxWclScanPhase::InitialStarting",
         "ieee80211_begin_scan(&ic->ic_if)")
@@ -351,7 +352,7 @@ ordered(iwx_background, "IWX background physical scan",
         "*outBackendGeneration = wclScanBackendGeneration")
 
 iwx_initial_started = body(
-    iwx, "noteWclInitialScanCommandStarted()",
+    iwx, "noteWclInitialScanCommandStarted(uint64_t serial)",
     "IWX initial post-submit owner")
 ordered(iwx_initial_started, "IWX initial backend generation",
         "wclScanPhase == ItlIwxWclScanPhase::InitialStarting",
@@ -360,14 +361,14 @@ ordered(iwx_initial_started, "IWX initial backend generation",
         "iwx_wcl_scan_publish_started")
 
 iwx_radio_ready = body(
-    iwx, "noteWclScanRadioReady()", "IWX radio-ready fence")
+    iwx, "noteWclScanRadioReady(uint64_t serial)", "IWX radio-ready fence")
 ordered(iwx_radio_ready, "IWX reset reopening",
-        "if (wclScanNeedsReopen)",
+        "if (scanCommand.current(serial, com.sc_generation) && wclScanNeedsReopen)",
         "wclScanNeedsReopen = false",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
 
 iwx_claim = body(
-    iwx, "claimWclScanTerminal(ItlIwxWclScanTerminal *terminal)",
+    iwx, "claimWclScanTerminal(ItlIwxWclScanTerminal *terminal, bool leafHeld)",
     "IWX terminal claim")
 ordered(iwx_claim, "IWX initial handoff",
         "wclScanPhase == ItlIwxWclScanPhase::InitialQueued",
@@ -385,29 +386,34 @@ for token in (
     require(iwx_claim, token, "IWX exact terminal ticket")
 
 iwx_foreground_submit = body(
-    iwx, "iwx_scan(struct iwx_softc *sc)",
+    iwx, "iwx_scan(struct iwx_softc *sc, const ItlStateTransitionRequest &request)",
     "IWX foreground command submit")
 ordered(iwx_foreground_submit, "IWX post-submit readiness edge",
-        "sc->sc_flags |= IWX_FLAG_SCANNING",
-        "noteWclInitialScanCommandStarted()",
+        "activateScanCommand(scanSerial, false)",
+        "noteWclInitialScanCommandStarted(scanSerial)",
         "ic->ic_state = IEEE80211_S_SCAN",
-        "noteWclScanRadioReady()",
+        "noteWclScanRadioReady(scanSerial)",
         "wakeupOn(&ic->ic_state)")
-require(iwx_foreground_submit, "noteWclInitialScanCommandRejected()",
+require(iwx_foreground_submit, "noteWclInitialScanCommandRejected(0, request.scanGeneration)",
         "IWX pre-submit initial rejection")
+iwx_activate = body(iwx, "activateScanCommand(uint64_t serial, bool background)",
+                    "IWX exact physical activation")
+for token in ("scanCommand.current(serial, com.sc_generation)",
+              "scanCommand.submitted", "IWX_FLAG_BGSCAN : IWX_FLAG_SCANNING"):
+    require(iwx_activate, token, "IWX flag publication requires actual submission")
 
 iwx_background_submit = body(
     iwx, "iwx_bgscan(struct ieee80211com *ic)",
     "IWX background command submit")
 ordered(iwx_background_submit, "IWX background activation",
-        "sc->sc_flags |= IWX_FLAG_BGSCAN",
-        "that->noteWclBackgroundScanCommandStarted()")
+        "that->activateScanCommand(scanSerial, true)",
+        "that->noteWclBackgroundScanCommandStarted(scanSerial)")
 
 iwx_terminal = body(
-    iwx, "iwx_endscan(struct iwx_softc *sc)",
+    iwx, "iwx_endscan(struct iwx_softc *sc, uint64_t serial)",
     "IWX firmware scan terminal")
 ordered(iwx_terminal, "IWX queued initial handoff",
-        "that->claimWclScanTerminal(&terminal)",
+        "that->claimScanCommandTerminal(serial, &physical, &terminal,",
         "ItlIwxWclScanTerminalKind::ReplayInitial",
         "IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
         "ieee80211_begin_scan(&ic->ic_if)")
@@ -432,6 +438,7 @@ ordered(iwx_abort, "IWX physical abort terminal",
 iwx_reset = body(
     iwx, "void ItlIwx::\ninvalidateWclScanForReset()",
     "IWX reset invalidation")
+require(iwx_reset, "scanCommand.invalidate()", "IWX physical admission close")
 for token in (
         "iwx_wcl_scan_publish_start_rejected",
         "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
@@ -492,7 +499,8 @@ require(iwm_initial, "AppleBCMWLANScanAdapter",
         "IWM reference WCL admission rationale")
 ordered(iwm_initial, "IWM fresh initial physical scan",
         "wclScanUpperGeneration = generation",
-        "if ((com.sc_flags & IWM_FLAG_SCANNING) != 0)",
+        "if (scanCommand.live() ||",
+        "(com.sc_flags & IWM_FLAG_SCANNING) != 0)",
         "wclScanPhase = ItlIwmWclScanPhase::InitialQueued",
         "wclScanPhase = ItlIwmWclScanPhase::InitialStarting",
         "ieee80211_begin_scan(&ic->ic_if)")
@@ -510,7 +518,7 @@ ordered(iwm_background, "IWM background physical scan",
         "*outBackendGeneration = wclScanBackendGeneration")
 
 iwm_initial_started = body(
-    iwm, "noteWclInitialScanCommandStarted()",
+    iwm, "noteWclInitialScanCommandStarted(uint64_t serial)",
     "IWM initial post-submit owner")
 ordered(iwm_initial_started, "IWM initial backend generation",
         "wclScanPhase == ItlIwmWclScanPhase::InitialStarting",
@@ -519,14 +527,14 @@ ordered(iwm_initial_started, "IWM initial backend generation",
         "iwm_wcl_scan_publish_started")
 
 iwm_radio_ready = body(
-    iwm, "noteWclScanRadioReady()", "IWM radio-ready fence")
+    iwm, "noteWclScanRadioReady(uint64_t serial)", "IWM radio-ready fence")
 ordered(iwm_radio_ready, "IWM reset reopening",
-        "if (wclScanNeedsReopen)",
+        "if (scanCommand.current(serial, com.sc_generation) && wclScanNeedsReopen)",
         "wclScanNeedsReopen = false",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
 
 iwm_claim = body(
-    iwm, "claimWclScanTerminal(ItlIwmWclScanTerminal *terminal)",
+    iwm, "claimWclScanTerminal(ItlIwmWclScanTerminal *terminal, bool leafHeld)",
     "IWM terminal claim")
 ordered(iwm_claim, "IWM initial handoff",
         "wclScanPhase == ItlIwmWclScanPhase::InitialQueued",
@@ -544,29 +552,34 @@ for token in (
     require(iwm_claim, token, "IWM exact terminal ticket")
 
 iwm_foreground_submit = body(
-    iwm_scan, "iwm_scan(struct iwm_softc *sc)",
+    iwm_scan, "iwm_scan(struct iwm_softc *sc, const ItlStateTransitionRequest &request)",
     "IWM foreground command submit")
 ordered(iwm_foreground_submit, "IWM post-submit readiness edge",
-        "sc->sc_flags |= IWM_FLAG_SCANNING",
-        "noteWclInitialScanCommandStarted()",
+        "activateScanCommand(scanSerial, false)",
+        "noteWclInitialScanCommandStarted(scanSerial)",
         "ic->ic_state = IEEE80211_S_SCAN",
-        "noteWclScanRadioReady()",
+        "noteWclScanRadioReady(scanSerial)",
         "wakeupOn(&ic->ic_state)")
-require(iwm_foreground_submit, "noteWclInitialScanCommandRejected()",
+require(iwm_foreground_submit, "noteWclInitialScanCommandRejected(0, request.scanGeneration)",
         "IWM pre-submit initial rejection")
+iwm_activate = body(iwm, "activateScanCommand(uint64_t serial, bool background)",
+                    "IWM exact physical activation")
+for token in ("scanCommand.current(serial, com.sc_generation)",
+              "scanCommand.submitted", "IWM_FLAG_BGSCAN : IWM_FLAG_SCANNING"):
+    require(iwm_activate, token, "IWM flag publication requires actual submission")
 
 iwm_background_submit = body(
     iwm_scan, "iwm_bgscan(struct ieee80211com *ic)",
     "IWM background command submit")
 ordered(iwm_background_submit, "IWM background activation",
-        "sc->sc_flags |= IWM_FLAG_BGSCAN",
-        "that->noteWclBackgroundScanCommandStarted()")
+        "that->activateScanCommand(scanSerial, true)",
+        "that->noteWclBackgroundScanCommandStarted(scanSerial)")
 
 iwm_terminal = body(
-    iwm_mac, "iwm_endscan(struct iwm_softc *sc)",
+    iwm_mac, "iwm_endscan(struct iwm_softc *sc, uint64_t serial)",
     "IWM firmware scan terminal")
 ordered(iwm_terminal, "IWM queued initial handoff",
-        "that->claimWclScanTerminal(&terminal)",
+        "that->claimScanCommandTerminal(serial, &physical, &terminal,",
         "ItlIwmWclScanTerminalKind::ReplayInitial",
         "IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
         "ieee80211_begin_scan(&ic->ic_if)")
@@ -589,7 +602,8 @@ ordered(iwm_abort, "IWM physical abort terminal",
         "IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED")
 
 iwm_reset = body(
-    iwm, "invalidateWclScanForReset()", "IWM reset invalidation")
+    iwm, "void ItlIwm::\ninvalidateWclScanForReset()", "IWM reset invalidation")
+require(iwm_reset, "scanCommand.invalidate()", "IWM physical admission close")
 for token in (
         "iwm_wcl_scan_publish_start_rejected",
         "IEEE80211_EVT_WCL_SCAN_INVALIDATED",
@@ -961,7 +975,7 @@ for token in ("IEEE80211_SCAN_COMPLETION_WCL_HANDOFF",
               "IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND",
               "ieee80211_end_scan_controlled"):
     require(i80211_node_h, token, "controlled foreground terminal ABI")
-controlled_end = body(i80211_node, "ieee80211_end_scan_controlled(struct _ifnet *ifp,",
+controlled_end = body(i80211_node, "ieee80211_end_scan_owned(struct _ifnet *ifp,",
                       "controlled net80211 scan terminal")
 ordered(controlled_end, "controlled terminal suppresses generic completion and selection",
         "const int generic_terminal",

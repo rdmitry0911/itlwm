@@ -28,21 +28,14 @@ for label, path, cls, prefix in cases:
         raise SystemExit(f"FAIL: cannot isolate {label} newstate callback")
 
     body = match.group(0)
-    duplicate = re.search(
-        r"if \(sc->ns_nstate == nstate && nstate != IEEE80211_S_SCAN &&\s*"
-        r"nstate != IEEE80211_S_AUTH\)\s*"
-        r"return 0;",
-        body,
-    )
+    duplicate = re.search(r"if \(admission != 0\)\s*return admission == EALREADY \? 0 : admission;", body)
     if duplicate is None:
         raise SystemExit(
             f"FAIL: {label} does not reject duplicate queued states"
         )
 
     run_cleanup = body.find("if (ic->ic_state == IEEE80211_S_RUN)")
-    queue = body.find(
-        f"that->{prefix}_add_task(sc, sc->sc_nswq, &sc->newstate_task);"
-    )
+    queue = body.find("that->enqueueStateTransition(request)")
     if run_cleanup < 0 or queue < 0:
         raise SystemExit(f"FAIL: cannot find {label} cleanup/queue boundary")
     if not duplicate.end() < run_cleanup < queue:
@@ -50,11 +43,16 @@ for label, path, cls, prefix in cases:
             f"FAIL: {label} duplicate return does not precede cleanup and queue"
         )
 
-    guard = body[duplicate.start():duplicate.end()]
-    if "IEEE80211_S_SCAN" not in guard or "IEEE80211_S_AUTH" not in guard:
-        raise SystemExit(
-            f"FAIL: {label} duplicate suppression lost SCAN/AUTH exceptions"
-        )
+    admission_source = path.with_name(f"{cls}.cpp").read_text()
+    admission = re.search(r"prepareStateTransition\(int state,.*?\n\}", admission_source, re.S).group(0)
+    assert "state != IEEE80211_S_SCAN && state != IEEE80211_S_AUTH" in admission
+    assert "stateTransition.duplicate(com.sc_generation, state, argument, identity)" in admission
+    assert "error = EALREADY" in admission
+    assert "ItlScanCommandPolicy::identityLocked(&com.sc_ic)" in admission
+    assert admission.index("IOSimpleLockLockDisableInterrupt(ownerLock)") < admission.index(
+        "ItlScanCommandPolicy::identityLocked(&com.sc_ic)") < admission.index(
+        "stateTransition.duplicate(com.sc_generation, state, argument, identity)")
+    assert "sc->ns_nstate == nstate" not in body
 
-print("PASS: IWM/IWX reject duplicate async state transitions before cleanup")
+print("PASS: IWM/IWX deduplicate only exact state/argument/join/epoch requests before cleanup")
 PY

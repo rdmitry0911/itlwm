@@ -89,6 +89,9 @@ struct ieee80211com {
 static uint64_t ieee80211_pae_assoc_epoch_current(const ieee80211com *ic) {
     return ic && ic->ic_opmode == IEEE80211_M_STA ? ic->ic_pae_assoc_epoch : 0;
 }
+/* The join ledger has its own production-function fixture. This adjacent
+ * carrier fixture does not arm an ordinary join. */
+static void ieee80211_wcl_join_cancel(ieee80211com *, uint64_t) {}
 void ieee80211_set_link_state(ieee80211com *, int);
 uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *, int);
 void ieee80211_pae_assoc_epoch_note_newstate(ieee80211com *, ieee80211_state, int);

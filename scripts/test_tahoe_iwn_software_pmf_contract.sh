@@ -160,7 +160,9 @@ order(delete_key, "software-key teardown", "IEEE80211_KEY_SWCRYPTO",
 run = body("iwn_run(struct iwn_softc *sc", "IWN RUN")
 order(run, "raw protected RX policy", "IEEE80211_NODE_MFP",
       "IWN_FILTER_NODECRYPT", "IWN_FILTER_NODECRYPT")
-newstate = body("iwn_newstate(struct ieee80211com *ic", "IWN state transition")
+require(body("iwn_newstate(struct ieee80211com *ic", "IWN callback wrapper"),
+        "return iwn_newstate_impl(ic, nstate, arg, 0);", "ordinary state forwarding")
+newstate = body("iwn_newstate_impl(struct ieee80211com *ic", "IWN state transition")
 require(newstate, "sc->rxon.filter &= ~htole32(IWN_FILTER_NODECRYPT);",
         "RUN-exit decrypt restoration")
 

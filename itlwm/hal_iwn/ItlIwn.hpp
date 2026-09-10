@@ -413,6 +413,9 @@ public:
                 int);
     int        iwn_media_change(struct _ifnet *);
     static int        iwn_newstate(struct ieee80211com *, enum ieee80211_state, int);
+    static int        iwn_newstate_impl(struct ieee80211com *, enum ieee80211_state,
+                                        int, u_int64_t);
+    static void       iwn_wcl_join_failure_scan(struct ieee80211com *, u_int64_t);
     static int        iwn_newstate_preflight(struct ieee80211com *,
                     enum ieee80211_state, int);
     static void       iwn_scan_lease_replay_task(void *);

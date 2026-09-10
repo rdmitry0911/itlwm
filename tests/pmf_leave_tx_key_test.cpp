@@ -5,6 +5,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <strings.h>
+#include "kernel_memory_test_support.hpp"
 #include "definitions.inc"
 
 // Field-only fixtures, not kernel ABI layouts. Crypto primitives are sinks;

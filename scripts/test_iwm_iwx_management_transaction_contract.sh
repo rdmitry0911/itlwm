@@ -9,6 +9,7 @@ import sys
 
 root = Path(sys.argv[1])
 iwm = (root / "itlwm/hal_iwm/mac80211.cpp").read_text(encoding="utf-8")
+iwm_delivery = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text(encoding="utf-8")
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text(encoding="utf-8")
 reg = (root / "itlwm/hal_iwx/if_iwxreg.h").read_text(encoding="utf-8")
 
@@ -49,26 +50,27 @@ def ordered(text, needles, label):
         cursor += len(needle)
 
 
-for source, marker, start_task, label in (
-    (iwm, "iwm_newstate_task(void *psc)", "_iwm_start_task", "IWM AUTH drain"),
-    (iwx, "iwx_newstate_task(void *psc)", "_iwx_start_task", "IWX AUTH drain"),
+for source, delivery, marker, label in (
+    (iwm, iwm_delivery, "iwm_newstate_task(void *psc)", "IWM AUTH drain"),
+    (iwx, iwx, "iwx_newstate_task(void *psc)", "IWX AUTH drain"),
 ):
     state = body(source, marker, label)
-    for token in (
-        "const int state",
-        "sc->sc_newstate(ic, nstate, arg)",
-        "nstate == IEEE80211_S_AUTH",
-        "getMainCommandGate()",
-        f"gate->runAction({start_task}, &ic->ic_ac.ac_if)",
-        "kIOReturnNotReady",
-        "could not drain AUTH management frame",
-    ):
-        require(state, token, label)
-    ordered(state, (
-        "sc->sc_newstate(ic, nstate, arg)",
-        "nstate == IEEE80211_S_AUTH",
-        f"gate->runAction({start_task}, &ic->ic_ac.ac_if)",
-    ), label)
+    require(state, "takeStateTransition(&request)", label)
+    require(state, "postStateTransitionCommit(request, err)", label)
+    if "sc->sc_newstate" in state or "runAction" in state:
+        fail(f"{label} publishes outside the workloop or waits on its gate")
+    post = body(delivery, "postStateTransitionCommit(const ItlStateTransitionRequest", label)
+    ordered(post, ("stateTransitionCurrent(request)",
+                  "stateTransition.publish(request, com.sc_generation, error)",
+                  "source->retain()", "IOSimpleLockUnlockEnableInterrupt",
+                  "getMainWorkLoop()->inGate()", "drainStateTransitionCommit(source)",
+                  "source->interruptOccurred(NULL, NULL, 0)", "source->release()"), label)
+    commit = body(delivery, "drainStateTransitionCommit(IOInterruptEventSource", label)
+    ordered(commit, ("getMainWorkLoop()->inGate()", "stateTransition.takeCommit",
+                    "IOSimpleLockUnlockEnableInterrupt", "stateTransitionCurrent(request)",
+                    "com.sc_newstate("), label)
+    if "runAction" in post + commit:
+        fail(f"{label} reintroduces blocking state delivery")
 
 enable = body(iwx, "iwx_enable_txq(struct iwx_softc", "IWX TXQ enable")
 for token in (

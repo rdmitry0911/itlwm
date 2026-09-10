@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cassert>
+#include "scan_test_byte_order.hpp"
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>

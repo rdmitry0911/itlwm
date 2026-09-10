@@ -15,6 +15,9 @@ var = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 iwm = (root / "itlwm/hal_iwm/scan.cpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
+policy = (root / "include/HAL/ItlScanCommandPolicy.hpp").read_text()
+iwm_hal = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
+iwm_sender = (root / "itlwm/hal_iwm/phy.cpp").read_text()
 
 
 def fail(message):
@@ -148,20 +151,23 @@ if producer.count("ieee80211_wcl_scan_plan_clear(ic, generation)") < 3:
 
 stage = body(core, "ieee80211_wcl_scan_plan_stage(", "plan publisher")
 ordered(stage, "publish-last protocol",
+        "IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock)",
         "__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE)",
         "memcpy(plan, source, sizeof(*plan))",
         "plan->active = 0",
         "__atomic_thread_fence(__ATOMIC_RELEASE)",
-        "__atomic_store_n(&plan->active, 1, __ATOMIC_RELEASE)")
+        "__atomic_store_n(&plan->active, 1, __ATOMIC_RELEASE)",
+        "IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq)")
 
 snapshot = body(core, "ieee80211_wcl_scan_plan_snapshot(",
                 "immutable plan reader")
-ordered(snapshot, "generation-stable snapshot",
+ordered(snapshot, "leaf-serialized complete snapshot",
+        "IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock)",
         "__atomic_load_n(&plan->active, __ATOMIC_ACQUIRE)",
-        "generation = plan->generation",
+        "plan->generation != 0",
         "memcpy(snapshot, plan, sizeof(*snapshot))",
-        "plan->generation != generation",
-        "snapshot->active = 1")
+        "snapshot->active = 1",
+        "IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq)")
 
 allowed = body(core, "ieee80211_wcl_scan_plan_channel_allowed(",
                "common exact channel predicate")
@@ -178,8 +184,10 @@ for token in (
 clear = body(core, "ieee80211_wcl_scan_plan_clear(",
              "generation-scoped plan retirement")
 ordered(clear, "generation-matched clear",
+        "IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock)",
         "generation != 0 && plan->generation != generation",
-        "__atomic_store_n(&plan->active, 0, __ATOMIC_RELEASE)")
+        "__atomic_store_n(&plan->active, 0, __ATOMIC_RELEASE)",
+        "IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq)")
 require(core, "memset(&ic->ic_wcl_scan_plan, 0, sizeof(ic->ic_wcl_scan_plan))",
         "attach initialization")
 require(core, "ieee80211_wcl_scan_plan_clear(ic, 0)",
@@ -211,17 +219,21 @@ for marker in ("IEEE80211_EVT_WCL_SCAN_START_REJECTED",
 def require_hal_plan(text, function_marker, label, zero_count_token):
     scan = body(text, function_marker, label)
     for token in (
-            "ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan)",
+            "const struct ieee80211_wcl_scan_plan &wclPlan = policy.plan",
             "wclPlan.ssid_len",
             "wclPlan.ssid",
             "wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE",
             "wclPlan.active_dwell_ms",
             "wclPlan.passive_dwell_ms",
             "wclPlan.home_dwell_ms",
+            "const uint32_t homeAwayMs = policy.homeAwayMs",
+            "activeScan ? 1 : 0, bgscan, &wclPlan",
             zero_count_token,
             "return EINVAL",
     ):
         require(scan, token, f"{label} exact-plan consumption")
+    forbid(scan, "ieee80211_wcl_scan_plan_snapshot", f"{label} policy reread")
+    forbid(scan, "ic->ic_des_essid", f"{label} borrowed mutable SSID")
 
 
 def require_active_wildcard(scan, label, passive_flag):
@@ -251,23 +263,23 @@ def require_intel_probe_selector(scan, label, *tokens):
 iwx_channels = body(iwx, "iwx_umac_scan_fill_channels(",
                     "IWX channel builder")
 for token in (
-        "wclScanPhase != ItlIwxWclScanPhase::Idle",
-        "ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan)",
-        "ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c)",
+        "plan != NULL && plan->active != 0",
+        "ieee80211_wcl_scan_plan_channel_allowed(ic, plan, c)",
         "const bool activeProbe = exactWclPlan ?",
-        "wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE",
+        "plan->scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE",
         "if (activeProbe)",
 ):
     require(iwx_channels, token, "IWX exact channel admission")
+forbid(iwx_channels, "ieee80211_wcl_scan_plan_snapshot", "IWX nested policy reread")
 for marker, label, zero_count, passive_flag, selector_tokens in (
-        ("iwx_umac_scan(struct iwx_softc *sc, int bgscan)",
+        ("iwx_umac_scan(struct iwx_softc *sc, int bgscan, uint64_t scan_serial)",
          "IWX legacy UMAC scan", "chanparam->count == 0",
          "IWX_UMAC_SCAN_GEN_FLAGS_PASSIVE", ()),
-        ("iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)",
+        ("iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan, uint64_t scan_serial,",
          "IWX v12 scan", "cp->count == 0",
          "IWX_UMAC_SCAN_GEN_FLAGS_V2_FORCE_PASSIVE",
          ("probe_params.ssid_num = 1", "probe_params.ssid_num = 0")),
-        ("iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)",
+        ("iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan, uint64_t scan_serial,",
          "IWX v14 scan", "cp->count == 0",
          "IWX_UMAC_SCAN_GEN_FLAGS_V2_FORCE_PASSIVE", ()),
 ):
@@ -282,19 +294,19 @@ for marker, label in (
 ):
     channels = body(iwm, marker, label)
     for token in (
-            "wclScanPhase != ItlIwmWclScanPhase::Idle",
-            "ieee80211_wcl_scan_plan_snapshot(ic, &wclPlan)",
-            "ieee80211_wcl_scan_plan_channel_allowed(ic, &wclPlan, c)",
+            "plan != NULL && plan->active != 0",
+            "ieee80211_wcl_scan_plan_channel_allowed(ic, plan, c)",
             "const bool activeProbe = exactWclPlan ?",
-            "wclPlan.scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE",
+            "plan->scan_type != IEEE80211_WCL_SCAN_TYPE_PASSIVE",
             "if (activeProbe)",
     ):
         require(channels, token, "IWM exact channel admission")
+    forbid(channels, "ieee80211_wcl_scan_plan_snapshot", "IWM nested policy reread")
 for marker, label, zero_count, passive_flag in (
-        ("iwm_lmac_scan(struct iwm_softc *sc, int bgscan)",
+        ("iwm_lmac_scan(struct iwm_softc *sc, int bgscan, uint64_t scan_serial)",
          "IWM LMAC scan", "req->n_channels == 0",
          "IWM_LMAC_SCAN_FLAG_PASSIVE"),
-        ("iwm_umac_scan(struct iwm_softc *sc, int bgscan)",
+        ("iwm_umac_scan(struct iwm_softc *sc, int bgscan, uint64_t scan_serial)",
          "IWM UMAC scan", "chanparam->count == 0",
          "IWM_UMAC_SCAN_GEN_FLAGS_PASSIVE"),
 ):
@@ -302,6 +314,75 @@ for marker, label, zero_count, passive_flag in (
     scan = body(iwm, marker, label)
     require_active_wildcard(scan, label, passive_flag)
     require_intel_probe_selector(scan, label)
+
+capture = body(policy, "static int captureOwnedLocked(", "physical-owner policy capture")
+ordered(capture, "missing matching WCL policy rejects, never widens",
+        "request->identity.equals(policy->identity)",
+        "request->scanGeneration != wclGeneration",
+        "if (wclGeneration != 0)",
+        "plan.active == 0 || plan.generation != wclGeneration",
+        "return ECANCELED", "policy->plan = plan")
+require(capture, "memcpy(policy->plan.ssid, request->scanSsid, sizeof(policy->plan.ssid))",
+        "foreground SSID from copied ingress")
+require(capture, "policy->joinGeneration = request->scanJoinGeneration",
+        "fresh-join role retained from ingress, not inferred at allocation")
+for hal, sender, prefix in ((iwm_hal, iwm_sender, "iwm"), (iwx, iwx, "iwx")):
+    reserve = body(hal, "reserveScanCommand(bool", "physical admission")
+    ordered(reserve, "selected owner before scan leaf, then capture and reserve",
+            "IOSimpleLockLockDisableInterrupt(ownerLock)",
+            "IOSimpleLockLockDisableInterrupt(wclScanLock)",
+            "stateTransition.current(*request, com.sc_generation)",
+            "ItlScanCommandPolicy::captureOwnedLocked(ic, wclGeneration,",
+            "scanCommand.reserve(", "scanCommandPolicy = policy")
+    prepare = body(hal, "prepareStateTransition(int", "queued scan ingress")
+    ordered(prepare, "ingress value under selected and scan leaves",
+            "IOSimpleLockLockDisableInterrupt(ownerLock)",
+            "IOSimpleLockLockDisableInterrupt(wclScanLock)",
+            "ItlScanCommandPolicy::identityLocked(",
+            "ItlScanCommandPolicy::captureIngressLocked(",
+            "stateTransition.prepare(", "stateTransition.request = *request")
+    submit = body(sender, f"\n{prefix}_send_cmd(struct", "real firmware sender")
+    ordered(submit, "same owner checked before physical receipt and doorbell",
+            "IOSimpleLockLockDisableInterrupt(owner_lock)",
+            "IOSimpleLockLockDisableInterrupt(wclScanLock)",
+            "scan_request && !scanCommandOwnerCurrentLocked(",
+            "scanCommand.submitAbort(", "scanCommand.submit(",
+            f"{prefix.upper()}_WRITE(sc, {prefix.upper()}_HBUS_TARG_WRPTR")
+    defer = body(hal, "deferScanCommand(const", "exact deferred ingress")
+    require(defer, "stateTransition.current(request, com.sc_generation)", "no successor resampling")
+    forbid(defer, "ieee80211_wcl_join_copy_current", "newest join substituted for queued owner")
+    ordered(defer, "defer exact request then level-check a concurrent release",
+            "stateTransition.defer(request, com.sc_generation)",
+            "IOSimpleLockUnlockEnableInterrupt(ownerLock",
+            "resumeScanCommand()")
+    replay = body(hal, "\nresumeScanCommand()\n", "exact deferred replay")
+    pin = ("iwm_sae_tx_lifecycle_enter" if prefix == "iwm" else
+           "iwx_task_gate_enter")
+    unpin = ("iwm_sae_tx_lifecycle_leave" if prefix == "iwm" else
+             "iwx_task_gate_leave")
+    ordered(replay, "pin, validate and claim exact replay before scheduling",
+            pin, "IOSimpleLockLockDisableInterrupt(ownerLock)",
+            "IOSimpleLockLockDisableInterrupt(wclScanLock)",
+            "ItlStateTransitionLease::Stage::Deferred",
+            "ItlScanCommandPolicy::captureOwnedLocked(",
+            "stateTransition.resume(com.sc_generation)",
+            "IOSimpleLockUnlockEnableInterrupt(ownerLock",
+            f"{prefix}_add_task(", unpin)
+    for token in ("ieee80211_begin_scan", "stateTransition.prepare(",
+                  "prepareStateTransition(", "ieee80211_new_state("):
+        forbid(replay, token, "replay must not create another common/state request")
+for text, marker in ((iwm, "iwm_lmac_scan(struct"),
+                     (iwm, "iwm_umac_scan(struct"),
+                     (iwx, "iwx_umac_scan(struct")):
+    scan = body(text, marker, "top-level Intel scan")
+    ordered(scan, "reserved policy precedes command allocation",
+            "copyScanCommandPolicy(scan_serial, &policy)",
+            "return ECANCELED", "malloc(req_len,")
+    forbid(scan, "wclScanPhase", "mutable upper phase chosen by old builder")
+dispatch = body(iwx, "iwx_umac_scan(struct", "IWX scan-version dispatcher")
+for version in (12, 14):
+    require(dispatch, f"iwx_umac_scan_v{version}(sc, bgscan, scan_serial, policy)",
+            "immutable policy through firmware version dispatch")
 
 iwn_scan = body(iwn, "iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,",
                 "IWN scan command")

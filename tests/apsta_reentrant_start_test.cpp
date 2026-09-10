@@ -6,6 +6,8 @@
 #include <strings.h>
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 
+#include "tests/kernel_memory_test_support.hpp"
+
 using IOReturn = uint32_t;
 constexpr IOReturn kIOReturnSuccess = 0;
 constexpr IOReturn kIOReturnNotReady = 0xe00002d8;
