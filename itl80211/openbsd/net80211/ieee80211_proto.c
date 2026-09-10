@@ -5358,6 +5358,101 @@ ieee80211_check_wpa_supplicant_failure(struct ieee80211com *ic,
 		ni2->ni_assoc_fail |= ic->ic_bss->ni_assoc_fail;
 }
 
+u_int64_t
+ieee80211_roam_link_source_epoch(const struct ieee80211com *ic,
+    const struct ieee80211_node *target)
+{
+#if defined(__IO80211_TARGET) && __IO80211_TARGET >= __MAC_26_0
+	const struct ieee80211_node *source;
+
+	if (ic == NULL || target == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_RUN ||
+	    ic->ic_if.if_link_state != LINK_STATE_UP ||
+	    (source = ic->ic_bss) == NULL || source->ni_esslen == 0 ||
+	    source->ni_esslen > IEEE80211_NWID_LEN ||
+	    target->ni_esslen != source->ni_esslen ||
+	    memcmp(source->ni_essid, target->ni_essid, source->ni_esslen) != 0 ||
+	    IEEE80211_ADDR_EQ(source->ni_bssid, target->ni_bssid) ||
+	    ((source->ni_capinfo ^ target->ni_capinfo) &
+	    IEEE80211_CAPINFO_PRIVACY) != 0)
+		return 0;
+	if (ic->ic_flags & IEEE80211_F_RSNON) {
+		if (!source->ni_port_valid ||
+		    (target->ni_rsnprotos & source->ni_rsnprotos) == 0 ||
+		    (target->ni_rsnakms & source->ni_rsnakms) == 0 ||
+		    (target->ni_rsnciphers & source->ni_rsncipher) == 0 ||
+		    target->ni_rsngroupcipher != source->ni_rsngroupcipher ||
+		    ((source->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+		    (target->ni_rsncaps & IEEE80211_RSNCAP_MFPC) == 0))
+			return 0;
+	} else if ((ic->ic_flags & IEEE80211_F_WEPON) != 0 ||
+	    (source->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) != 0) {
+		return 0;
+	}
+	return ieee80211_pae_assoc_epoch_current(ic);
+#else
+	(void)ic;
+	(void)target;
+	return 0;
+#endif
+}
+
+void
+ieee80211_roam_link_begin(struct ieee80211com *ic, u_int64_t source_epoch,
+    u_int64_t replacement_epoch)
+{
+	u_int64_t next_epoch = source_epoch + 1;
+
+	if (next_epoch == 0)
+		next_epoch = 1;
+	/* A cancellation during old-queue teardown or candidate preflight may
+	 * not transfer the old network's carrier to an unrelated replacement. */
+	if (source_epoch != 0 && replacement_epoch == next_epoch &&
+	    ieee80211_pae_assoc_epoch_current(ic) == replacement_epoch &&
+	    ic->ic_if.if_link_state == LINK_STATE_UP)
+		__atomic_store_n(&ic->ic_roam_link_epoch, replacement_epoch,
+		    __ATOMIC_RELEASE);
+}
+
+void
+ieee80211_roam_link_failed(struct ieee80211com *ic, u_int64_t epoch)
+{
+	if (ic == NULL || epoch == 0 ||
+	    ieee80211_pae_assoc_epoch_current(ic) != epoch)
+		return;
+	if (__atomic_compare_exchange_n(&ic->ic_roam_link_epoch, &epoch, 0,
+	    0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+		ieee80211_set_link_state(ic, LINK_STATE_DOWN);
+}
+
+static int
+ieee80211_roam_link_progress(struct ieee80211com *ic,
+    enum ieee80211_state ostate, enum ieee80211_state nstate)
+{
+	u_int64_t epoch = __atomic_load_n(&ic->ic_roam_link_epoch,
+	    __ATOMIC_ACQUIRE);
+
+	return epoch != 0 &&
+	    ieee80211_pae_assoc_epoch_current(ic) == epoch &&
+	    ic->ic_if.if_link_state == LINK_STATE_UP &&
+	    ((ostate == IEEE80211_S_RUN && nstate == IEEE80211_S_AUTH) ||
+	     (ostate == IEEE80211_S_AUTH && nstate == IEEE80211_S_ASSOC) ||
+	     (ostate == IEEE80211_S_ASSOC && nstate == IEEE80211_S_RUN));
+}
+
+static void
+ieee80211_roam_link_note_terminal(struct ieee80211com *ic, int link_state)
+{
+	/* IWX can authorize its port before the asynchronous RUN callback.
+	 * Keep the reservation until that callback crosses the last synthetic
+	 * down edge. Real down/unknown requests always retire it immediately. */
+	if (link_state != LINK_STATE_UP ||
+	    (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+	    ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
+	    ic->ic_bss->ni_port_valid)))
+		__atomic_store_n(&ic->ic_roam_link_epoch, 0, __ATOMIC_RELEASE);
+}
+
 int
 ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
     int mgt)
@@ -5385,7 +5480,11 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 	ic->ic_assoc_comeback_retries = 0;
 	ic->ic_state = nstate;			/* state transition */
 	ni = ic->ic_bss;			/* NB: no reference held */
-	ieee80211_set_link_state(ic, LINK_STATE_DOWN);
+	/* Same-ESS reassociation changes the peer, not the logical network.
+	 * Keep only an admitted replacement's forward progression transparent
+	 * to IPConfiguration. Every real loss/retry retains ordinary teardown. */
+	if (!ieee80211_roam_link_progress(ic, ostate, nstate))
+		ieee80211_set_link_state(ic, LINK_STATE_DOWN);
 	ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
 	switch (nstate) {
 	case IEEE80211_S_INIT:
@@ -5760,6 +5859,7 @@ ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
 {
 	struct _ifnet *ifp = &ic->ic_if;
     int link_state;
+	ieee80211_roam_link_note_terminal(ic, nstate);
     
 	switch (ic->ic_opmode) {
 #ifndef IEEE80211_STA_ONLY

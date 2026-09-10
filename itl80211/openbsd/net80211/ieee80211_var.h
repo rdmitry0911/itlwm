@@ -1020,6 +1020,9 @@ struct ieee80211com {
 	struct ieee80211_pae_mfp_txn ic_pae_mfp_txn;
 	/* Private owner token for one controlled current-BSS replacement. */
 	volatile u_int64_t	ic_pae_assoc_replace_epoch;
+	/* Logical STA carrier retained by one admitted same-ESS BSS replacement.
+	 * It grants no target-port or key authorization. */
+	volatile u_int64_t	ic_roam_link_epoch;
 	/*
 	 * Serializes only epoch advancement and fixed selected-BSS publication.
 	 * It is a leaf spin lock because either writer can run in an

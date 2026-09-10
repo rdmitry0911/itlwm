@@ -1294,6 +1294,7 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     struct ieee80211_node *ni;
     uint32_t assoc_fail = 0;
     u_int64_t replacement_epoch;
+    u_int64_t roam_source_epoch;
     uint8_t sae_profile;
     int sae_wcl_bind;
 
@@ -1313,6 +1314,8 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     AirportItlwmPostPltiTraceRecord(
         ic, kAirportItlwmPostPltiTraceEventJoinBssEntered);
     
+    roam_source_epoch = ieee80211_roam_link_source_epoch(ic, selbs);
+
     /* Reinitialize media mode and channels if needed. */
     mode = ieee80211_chan2mode(ic, selbs->ni_chan);
     if (mode != ic->ic_curmode)
@@ -1347,7 +1350,9 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
      * normal scanning before any historical Open-System AUTH path can run. */
     sae_wcl_bind = ieee80211_sae_wcl_request_bind_selected_bss(ic, ni,
         replacement_epoch);
+    ieee80211_roam_link_begin(ic, roam_source_epoch, replacement_epoch);
     if (sae_wcl_bind == IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED) {
+        ieee80211_roam_link_failed(ic, replacement_epoch);
         ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
         ieee80211_sae_wcl_request_join_end(ic);
         return;
@@ -1433,7 +1438,10 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
             ic->ic_newstate_preflight(ic, IEEE80211_S_AUTH, mgt) == 0) {
             AirportItlwmPostPltiTraceNoteStateRequest(
                 ic, (uint32_t)ic->ic_state, (uint32_t)IEEE80211_S_AUTH);
-            ic->ic_newstate(ic, IEEE80211_S_AUTH, mgt);
+            if (ic->ic_newstate(ic, IEEE80211_S_AUTH, mgt) != 0)
+                ieee80211_roam_link_failed(ic, replacement_epoch);
+        } else {
+            ieee80211_roam_link_failed(ic, replacement_epoch);
         }
     }
     ieee80211_sae_wcl_request_join_end(ic);

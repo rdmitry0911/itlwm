@@ -132,6 +132,11 @@ struct ieee80211_sae_driver_hook_snapshot {
 		    const struct ItlSaeAuthPeerEventV1 *);
 };
 extern	void ieee80211_set_link_state(struct ieee80211com *, int);
+extern	u_int64_t ieee80211_roam_link_source_epoch(const struct ieee80211com *,
+	    const struct ieee80211_node *);
+extern	void ieee80211_roam_link_begin(struct ieee80211com *, u_int64_t,
+	    u_int64_t);
+extern	void ieee80211_roam_link_failed(struct ieee80211com *, u_int64_t);
 extern	u_int ieee80211_get_hdrlen(const struct ieee80211_frame *);
 extern	int ieee80211_classify(struct ieee80211com *, mbuf_t);
 extern	void ieee80211_inputm(struct _ifnet *, mbuf_t,

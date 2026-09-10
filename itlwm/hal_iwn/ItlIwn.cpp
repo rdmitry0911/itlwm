@@ -14127,6 +14127,7 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     struct iwn_softc *sc = (struct iwn_softc *)ifp->if_softc;
     struct ieee80211_node *ni = ic->ic_bss;
     ItlIwn *that = container_of(sc, ItlIwn, com);
+    const u_int64_t roam_epoch = ieee80211_pae_assoc_epoch_current(ic);
     u_int64_t direct_sae_scan_generation = 0;
     const bool scan_hop = nstate == IEEE80211_S_SCAN &&
         ic->ic_state == IEEE80211_S_SCAN &&
@@ -14325,6 +14326,7 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         if ((error = that->iwn_auth(sc, arg)) != 0) {
             XYLog("%s: could not move to auth state\n",
                 sc->sc_dev.dv_xname);
+            ieee80211_roam_link_failed(ic, roam_epoch);
             return error;
         }
         break;
@@ -14333,6 +14335,7 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         if ((error = that->iwn_run(sc)) != 0) {
             XYLog("%s: could not move to run state\n",
                 sc->sc_dev.dv_xname);
+            ieee80211_roam_link_failed(ic, roam_epoch);
             return error;
         }
         AirportItlwmPostPltiTraceRecord(

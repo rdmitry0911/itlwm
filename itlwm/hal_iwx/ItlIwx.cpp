@@ -16274,6 +16274,7 @@ iwx_newstate_task(void *psc)
     struct ieee80211com *ic = &sc->sc_ic;
     enum ieee80211_state nstate = sc->ns_nstate;
     enum ieee80211_state ostate = ic->ic_state;
+    const u_int64_t roam_epoch = ieee80211_pae_assoc_epoch_current(ic);
     int arg = sc->ns_arg;
     int err = 0, s = splnet();
     ItlIwx *that = container_of(sc, ItlIwx, com);
@@ -16358,9 +16359,10 @@ iwx_newstate_task(void *psc)
     
 out:
     if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
-        if (err)
+        if (err) {
+            ieee80211_roam_link_failed(ic, roam_epoch);
             that->iwx_add_task(sc, systq, &sc->init_task);
-        else {
+        } else {
             const int state_result = sc->sc_newstate(ic, nstate, arg);
 
             /* SCAN -> AUTH and AUTH -> AUTH enqueue the sole Authentication

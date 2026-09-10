@@ -80,6 +80,12 @@ static void ieee80211_fix_rate(ieee80211com *, ieee80211_node *, int) {}
 static void ieee80211_choose_rsnparams(ieee80211com *) {}
 static void ieee80211_node_newstate(ieee80211_node *, int) {}
 static void timeout_del(int *) {}
+// This fixture tests TX ownership only. Carrier behavior is exercised with
+// the actual production helpers in net80211_roam_carrier_test.cpp.
+[[maybe_unused]] static uint64_t ieee80211_roam_link_source_epoch(
+    const ieee80211com *, const ieee80211_node *) { return 0; }
+[[maybe_unused]] static void ieee80211_roam_link_begin(ieee80211com *, uint64_t, uint64_t) {}
+[[maybe_unused]] static void ieee80211_roam_link_failed(ieee80211com *, uint64_t) {}
 #include "production.inc"
 
 static void run_case(int mode, int state, bool allow, bool sameIdentity, bool rejectBinding) {

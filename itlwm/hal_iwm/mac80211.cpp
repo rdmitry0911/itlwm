@@ -5014,6 +5014,7 @@ iwm_newstate_task(void *psc)
     struct ieee80211com *ic = &sc->sc_ic;
     enum ieee80211_state nstate = sc->ns_nstate;
     enum ieee80211_state ostate = ic->ic_state;
+    const u_int64_t roam_epoch = ieee80211_pae_assoc_epoch_current(ic);
     int arg = sc->ns_arg;
     int err = 0, s = splnet();
 
@@ -5103,9 +5104,10 @@ iwm_newstate_task(void *psc)
     
 out:
     if ((sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0) {
-        if (err)
+        if (err) {
+            ieee80211_roam_link_failed(ic, roam_epoch);
             task_add(systq, &sc->init_task);
-        else {
+        } else {
             const int stateResult = sc->sc_newstate(ic, nstate, arg);
             /* The asynchronous SCAN/AUTH -> AUTH worker can enqueue the
              * only Authentication frame while a WCL caller still owns the
