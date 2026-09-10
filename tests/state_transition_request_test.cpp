@@ -172,6 +172,7 @@ struct TestHal : OSObject {
     ItlScanCommandLease scanCommand{};
     ItlStateTransitionLease stateTransition{};
     ItlFirmwareContextLease primaryMacContext{}, primaryBindingContext{}, primaryStationContext{};
+    ItlFirmwareStationUses primaryStationUses{};
     IOInterruptEventSource *stateTransitionSource = nullptr;
     ieee80211_node node;
     TestCommandGate gate;
@@ -227,6 +228,9 @@ static void ieee80211_stop_ampdu_tx(ieee80211com *ic, ieee80211_node *, int) {
 static void ieee80211_ba_del(ieee80211_node *) { assert(!leafDepth); }
 
 #define STATE_DECLARATIONS \
+    void reopenPrimaryStationUsers(const ItlStateTransitionRequest &); \
+    bool deferPrimaryStationUsers(const ItlStateTransitionRequest &); \
+    void resumePrimaryStationUsers(); \
     bool initStateTransitions(); \
     void shutdownStateTransitions(); \
     int prepareStateTransition(int, int, ItlStateTransitionRequest *); \
@@ -308,6 +312,104 @@ template<class T> struct Fixture {
     ~Fixture() { driver.shutdownStateTransitions(); assert(!driver.com.active); }
 };
 template<class T> static void suite() {
+    for (auto nextState : {IEEE80211_S_ASSOC,IEEE80211_S_RUN})
+    for (bool superseded : {false,true}) {
+        Fixture<T> f; auto &d = f.driver;
+        d.com.sc_ic.ic_state = IEEE80211_S_RUN;
+        assert(d.request(nextState,7) == 0);
+        auto &station = d.primaryStationContext;
+        station.owner = {19,d.com.sc_generation,{}};
+        station.owner.identity.attempt = d.stateTransition.request.identity;
+        station.stage = ItlFirmwareContextLease::Stage::Active;
+        station.confirmed = true;
+        assert(d.primaryStationUses.start(station.owner));
+        ItlFirmwareContextReceipt use{};
+        assert(d.primaryStationUses.acquire(station.owner,&use));
+        d.work();
+        assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Deferred);
+        assert(d.primaryStationUses.closed && !d.primaryStationUses.retiring);
+        assert(d.lowerCalls.empty());
+        assert(d.primaryStationUses.release(&use));
+        d.resumePrimaryStationUsers(); d.work();
+        assert(d.primaryStationUses.closed);
+        const auto oldRequest = d.stateTransition.request;
+        if (superseded) {
+            assert(d.request(IEEE80211_S_AUTH,9) == 0);
+            d.reopenPrimaryStationUsers(oldRequest);
+            assert(d.primaryStationUses.closed);
+        } else {
+            d.stateTransitionSource->deliver();
+            assert(!d.primaryStationUses.closed);
+            assert(d.primaryStationUses.acquire(station.owner,&use));
+            assert(d.primaryStationUses.release(&use));
+        }
+        assert(!d.com.init_task.enqueues);
+        ++physicalContextCases;
+    }
+    // Full production deferral/replay methods and workers. Reader storage is
+    // a fixture here; packet construction itself is not simulated.
+    for (auto nextState : {IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH})
+    for (int race = 0; race < 4; ++race) {
+        Fixture<T> f; auto &d = f.driver;
+        d.com.sc_ic.ic_state = IEEE80211_S_RUN;
+        assert(d.request(nextState, 7) == 0);
+        auto &station = d.primaryStationContext;
+        station.owner = {19,d.com.sc_generation,{}};
+        station.owner.identity.attempt = d.stateTransition.request.identity;
+        station.stage = ItlFirmwareContextLease::Stage::Active;
+        station.confirmed = true;
+        assert(d.primaryStationUses.start(station.owner));
+        ItlFirmwareContextReceipt use{};
+        assert(d.primaryStationUses.acquire(station.owner,&use));
+        const auto serial = d.stateTransition.request.serial;
+        std::function<void()> exitAtDeferral;
+        if (race == 1) {
+            exitAtDeferral = [&] {
+                if (d.stateTransition.stage != ItlStateTransitionLease::Stage::Deferred) {
+                    unlocked = exitAtDeferral;
+                    return;
+                }
+                assert(d.primaryStationUses.release(&use));
+                // No exit notification: the post-deferral level check must wake it.
+            };
+            unlocked = exitAtDeferral;
+        }
+        d.work();
+        assert(d.lowerCalls.empty() && !d.com.init_task.enqueues);
+        assert(d.primaryStationUses.closed);
+        if (race != 1) {
+            assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Deferred);
+            const auto enqueues = d.com.newstate_task.enqueues;
+            d.resumeScanCommand(); // A scan terminal cannot resume station-reader wait.
+            assert(d.com.newstate_task.enqueues == enqueues);
+            if (race == 2)
+                assert(d.request(IEEE80211_S_AUTH,9) == 0);
+            if (race == 3) {
+                ++d.com.sc_generation;
+                d.scanCommand.open = false;
+            }
+            assert(d.primaryStationUses.release(&use));
+            d.resumePrimaryStationUsers();
+        }
+        if (race == 3) {
+            assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Empty);
+            assert(d.lowerCalls.empty());
+        } else {
+            const auto expectedState = race == 2 ? IEEE80211_S_AUTH : nextState;
+            assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Queued);
+            assert((d.stateTransition.request.serial == serial) == (race != 2));
+            const auto enqueues = d.com.newstate_task.enqueues;
+            d.resumePrimaryStationUsers();
+            assert(d.com.newstate_task.enqueues == enqueues);
+            d.work();
+            std::vector<int> expected{1,2};
+            if (expectedState == IEEE80211_S_SCAN) expected.push_back(3);
+            if (expectedState == IEEE80211_S_AUTH) expected.push_back(4);
+            assert(d.lowerCalls == expected && !d.com.init_task.enqueues);
+        }
+        assert(!unlocked);
+        ++physicalContextCases;
+    }
     for (auto oldState : {IEEE80211_S_INIT, IEEE80211_S_SCAN})
     for (auto nextState : {IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH})
     for (int kind : {0,1,2})

@@ -39,6 +39,102 @@ struct ItlFirmwareContextReceipt {
     ItlFirmwareContextIdentity identity;
 };
 
+/* The ADD serial identifies an incarnation; MODIFY/REMOVE command serials
+ * may change while an admitted constructor still owns its copied receipt.
+ * clear/stop closes admission, but may not erase outstanding readers. */
+struct ItlFirmwareStationUses {
+    ItlFirmwareContextReceipt owner;
+    uint32_t active;
+    bool closed;
+    bool retiring;
+
+    bool start(const ItlFirmwareContextReceipt &station)
+    {
+        if (active != 0 || station.serial == 0)
+            return false;
+        owner = station;
+        closed = false;
+        retiring = false;
+        return true;
+    }
+
+    bool acquire(const ItlFirmwareContextReceipt &station,
+                 ItlFirmwareContextReceipt *receipt)
+    {
+        if (receipt == nullptr || closed || owner.serial == 0 ||
+            active == UINT32_MAX || owner.generation != station.generation ||
+            !owner.identity.equals(station.identity))
+            return false;
+        ++active;
+        *receipt = owner;
+        return true;
+    }
+
+    void close(bool retire = true) { closed = true; retiring |= retire; }
+
+    bool reopen(const ItlFirmwareContextReceipt &station)
+    {
+        if (active != 0 || retiring || owner.serial == 0 ||
+            owner.generation != station.generation ||
+            !owner.identity.equals(station.identity))
+            return false;
+        closed = false;
+        return true;
+    }
+
+    bool release(ItlFirmwareContextReceipt *receipt)
+    {
+        if (receipt == nullptr || receipt->serial == 0 || active == 0 ||
+            receipt->serial != owner.serial ||
+            receipt->generation != owner.generation ||
+            !receipt->identity.equals(owner.identity))
+            return false;
+        --active;
+        *receipt = ItlFirmwareContextReceipt{};
+        return true;
+    }
+};
+
+template <class Driver, class Node>
+class ItlFirmwareStationUseGuard {
+    Driver *driver;
+    ItlFirmwareContextReceipt receipt;
+public:
+    ItlFirmwareStationUseGuard(Driver *value, Node *node, bool currentAttempt = true) :
+        driver(value), receipt{}
+    { (void)driver->beginPrimaryStationUse(node, &receipt, currentAttempt); }
+    ~ItlFirmwareStationUseGuard()
+    { if (receipt.serial != 0) driver->endPrimaryStationUse(&receipt); }
+    bool admitted() const { return receipt.serial != 0; }
+    ItlFirmwareStationUseGuard(const ItlFirmwareStationUseGuard &) = delete;
+    ItlFirmwareStationUseGuard &operator=(const ItlFirmwareStationUseGuard &) = delete;
+};
+
+/* Confirmed teardown progress belongs to a station incarnation, not to a
+ * particular retry's command serial. Clear on fresh ADD or actual stop. */
+struct ItlFirmwareStationRetirement {
+    enum : uint8_t { DrainEnabled = 1, Flushed = 2, DrainDisabled = 4, Removed = 8 };
+    enum : unsigned { MaxQueues = 512 };
+    ItlFirmwareContextIdentity identity;
+    uint32_t generation;
+    uint32_t flushQueues;
+    int managementQueue;
+    uint8_t completed;
+    bool started;
+    bool drain;
+    uint64_t retiredQueues[MaxQueues / 64];
+
+    bool owns(const ItlFirmwareContextReceipt &receipt) const
+    {
+        return started && generation == receipt.generation &&
+            identity.equals(receipt.identity);
+    }
+    bool queueRetired(unsigned queue) const
+    {
+        return queue < MaxQueues && (retiredQueues[queue / 64] & (UINT64_C(1) << (queue % 64)));
+    }
+};
+
 /* Stack-owned only until send_cmd returns. No pointer is retained in a TX
  * descriptor or asynchronous completion. submitted changes at the doorbell. */
 struct ItlFirmwareContextCommand {

@@ -1720,6 +1720,16 @@ int ItlIwm::
 iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
        const struct ItlSaeAuthTxRequestV1 *sae_request)
 {
+    /* Keep the incarnation through crypto, DMA construction, publication
+     * and every rejected-packet cleanup, not only the final doorbell. */
+    /* A protected old-peer leave remains valid after logical cancellation;
+     * physical station closure, not credential policy, retires this TX path.
+     * Direct SAE/association keep their additional preflight/commit checks. */
+    ItlFirmwareStationUseGuard<ItlIwm, ieee80211_node> stationUse(this, ni, false);
+    if (!stationUse.admitted()) {
+        mbuf_freem(m);
+        return ECANCELED;
+    }
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwm_node *in = (struct iwm_node *)ni;
     struct iwm_tx_ring *ring;
@@ -5089,6 +5099,10 @@ iwm_newstate_task(void *psc)
         splx(s);
         return;
     }
+    if (that->deferPrimaryStationUsers(request)) {
+        splx(s);
+        return;
+    }
     if (nstate == IEEE80211_S_RUN)
         IWX_AUTH_DIAG(
             "iwm_newstate_task: RUN start old_state=%u queued_state=%u shutdown=%u\n",
@@ -5808,6 +5822,8 @@ iwm_stop(struct _ifnet *ifp)
         that->primaryMacContext.clear();
         that->primaryBindingContext.clear();
         that->primaryStationContext.clear();
+        that->primaryStationUses.close();
+        that->primaryStationRetirement = ItlFirmwareStationRetirement{};
         memset(&that->primaryStationCommand, 0, sizeof(that->primaryStationCommand));
         memset(&that->primaryMacCommand, 0, sizeof(that->primaryMacCommand));
         that->apPrimaryStaRecoveryScanAbortPending = false;
@@ -7361,6 +7377,11 @@ iwm_ba_task(void *arg)
     if ((sc->sc_flags & IWM_FLAG_SHUTDOWN) ||
         ic->ic_state != IEEE80211_S_RUN) {
 //        refcnt_rele_wake(&sc->task_refs);
+        splx(s);
+        return;
+    }
+    ItlFirmwareStationUseGuard<ItlIwm, ieee80211_node> stationUse(that, ni);
+    if (!stationUse.admitted()) {
         splx(s);
         return;
     }

@@ -1,5 +1,117 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Checkpoint — 2026-09-10 21:47 UTC (September 11 locally)
+
+This continuation is PROGRESS; the preceding user-status turn was read-only.
+The following production changes build, but remain explicitly unqualified WIP.
+The installed/public b5c6cfd8 image and all physical user hosts are unchanged.
+
+Station removal now retains acknowledged drain/flush/queue-removal progress
+across retries. IWM skips already retired aggregation queues and IWX retains
+the original management queue ID. Fresh ADD/actual stop clear that progress.
+Both families retain a separate ADD-incarnation reader receipt through the
+whole primary TX body (ordinary, direct SAE and association paths) and BA task.
+Cleanup closes admission and cannot submit while those readers remain. A new
+ADD cannot reuse the station while an old reader is outstanding.
+
+The state worker closes admission before lower cleanup and defers the exact
+request, not a reconstructed SCAN. Last-reader exit resumes asynchronously;
+the post-deferral level check covers exit-before-notification. Scan and station
+reader waits have distinct reasons, so a scan terminal cannot prematurely
+resume cleanup. Temporary RUN-to-ASSOC/RUN cleanup reopens only on the same
+successful main-workloop commit; final removal stays closed. Ordinary old-peer
+TX does not depend on the cancelled credential policy, preserving protected
+leave until physical closure. Direct SAE retains its additional admission and
+doorbell checks. IWX also retains its existing task-gate reference through
+the constructor, so stop_internal must drain it before resetting the rings.
+
+Full Linux and macOS aggregates pass: 243 actual station/helper scenarios,
+206 actual state-worker/replay groups, and the existing 118 context/status
+cases. Management, both direct-SAE transport and association compatibility
+contracts pass. The station-use tests exercise the full production admission/
+release helpers and cleanup chains, not the full packet/DMA constructor.
+The state tests execute the full workers and deferral/reopen functions with
+fixture lower hardware calls. IWX lifecycle counters are a fixture boundary;
+neither test suite constitutes radio, reset-timing or immutable-node proof.
+Both unchanged 2af6ee65 cleanup admissions compile and fail the active-reader
+removal assertion; both unchanged state workers fail the deferred-cleanup
+assertion. Each negative control exits 134, not a compile failure.
+
+Final production fingerprint (equal source mirrors):
+35d042f8d38cd7183321ccfa571b669f52cd7ef42d2ddec6fd3e789cc932cb7d.
+Built UUID: FC69FF10-708B-327C-B243-D70DEAAA8DD7.
+Mach-O SHA-256:
+ee505e090f60b42fc7c192b9c997362857938635d532816473a39308f33b382e.
+Guest full regression/build log:
+/Volumes/AIAMBuild/itlwm-88c0d3f9/DerivedData-join-failure-20260910/station-users-final-20260911.s1l06p,
+SHA-256 8d14b04bb88987a551e5f496117d03ca4af3de2bfd8193bcbd118b9406f238a2.
+All 1085 external symbols resolve; no _thread_call_cancel_wait dependency.
+The earlier a09d2e73b1d8 build is superseded. Read-only runtime identity remains
+boot 9C8DDC74, loaded UUID 9D5A9332 and STA address 172.16.66.212.
+
+### Required next production work before loading
+
+IWM stop_device still resets all ring slots without draining these readers.
+Do not add a blind synchronous wait: splnet/splx are no-ops in timeout.c,
+taskq_thread invokes callbacks on its own thread, and timeout_add/del call
+the main command gate synchronously. Both BA workers still reach such timer/
+generic callbacks and mutate borrowed nodes after command waits. IWX's
+existing stop/task barrier can therefore also wait on a worker that needs
+the main gate. Separate immutable BA hardware work from asynchronous
+main-workloop completion, then close/drain the actual IWM hardware producer
+lifetime before DMA reset. Merely checking a flag at the doorbell cannot
+protect data->m and ring DMA published earlier during construction.
+
+Queue creation still needs independent exact ownership: persistent IWM base
+queues versus aggregation queues, IWX management/monitor queues and TVQM
+allocated carriers. A submitted-but-uncertain TVQM response cannot free its
+DMA or enter allocation retry as if nothing were created. Retain the whole
+AUTH/TIME_EVENT/SESSION_PROTECTION and failure-producer prerequisites below,
+then qualify the exact built image through GUI/open/WPA2/SAE/S3/AP before
+updating the release. These reader changes are not a whole-layer closure.
+
+## FIX_CANDIDATE: close and retire station TX/BA constructors
+
+The retry-progress candidate passes 224 production-function fixture cases,
+but those cases do not admit a concurrent packet constructor. Both TX bodies
+publish mbufs into shared rings before their doorbell, and ring reset walks
+all slots, including unpublished slots. IWM ordinary TX and both BA tasks
+therefore need a lifetime covering construction, not a final flag check.
+Intel [v6.12 mvm/sta.c](https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/net/wireless/intel/iwlwifi/mvm/sta.c)
+remove_sta_queue_marking first withdraws the queue
+mapping and then synchronize_net() drains existing TX readers before reuse.
+Apple request retirement does not replace that physical producer boundary.
+
+Add a station-incarnation use receipt, close admission before state-worker
+cleanup, and defer the exact state request until existing constructors leave.
+The last exit signals asynchronous replay; a level recheck after deferral
+closes the lost-wakeup interval. No leaf covers DMA, crypto or callbacks and
+the worker must not synchronously acquire the main gate. Cover ordinary,
+direct-SAE and association TX, plus the BA task body. This is still WIP:
+actual reset/drain, immutable BA callbacks, queue-allocation uncertainty and
+the remaining whole-AUTH prerequisites must be proven before loading.
+
+## FIX_CANDIDATE: station retirement progress and family queue lifetimes
+
+The 2af6ee65 tree still restarts drain/flush/queue removal after any failed
+REMOVE chain. A queue already acknowledged as removed is then removed again;
+a failed final REMOVE_STA also unnecessarily restarts drain against possibly
+absent firmware state. Preserve completed drain/flush/queue steps under the
+retained station lifetime, not a transient command receipt. A fresh station
+ADD and actual device stop reset this progress; a cleanup retry does not.
+Record progress only after a successful response for the exact receipt and
+generation, before another yielding command. Exercise a successful first queue
+removal followed by a failed second removal, and final station-removal failure.
+
+Do not unify incompatible hardware queue lifetimes: IWM init_hw creates base
+queues before the first ADD_STA and before scan admission opens; those queues
+survive station replacement. IWM BA queues are separate. IWX management and
+monitor queues are created after ADD_STA, and dynamic TVQM allocation has its
+own allocated carrier and firmware-assigned queue ID. Their creation/retirement
+owners, uncertain DMA lifetime, TX/BA producer fencing and immutable AUTH
+preparation remain the following work in this same layer. This progress fix
+is not permission to promote the still-incomplete whole layer.
+
 ## Current checkpoint — 2026-09-10 21:09 UTC (September 11 locally)
 
 This goal continuation is PROGRESS. The prior status turn was read-only.

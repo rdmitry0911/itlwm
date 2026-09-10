@@ -408,9 +408,14 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
         cmdsize = sizeof(struct iwm_add_sta_cmd_v7);
     identity.station = add_sta_cmd.sta_id;
     identity.commandLength = cmdsize;
-    const Lease::Admission admission = primaryStationContext.begin(
+    const Lease::Admission admission = !update && primaryStationUses.active != 0 ?
+        Lease::Admission::Busy : primaryStationContext.begin(
         update ? Lease::Operation::Modify : Lease::Operation::Add,
         generation, identity, &receipt);
+    if (!update && admission == Lease::Admission::Submit) {
+        primaryStationRetirement = ItlFirmwareStationRetirement{};
+        (void)primaryStationUses.start(receipt);
+    }
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
     if (admission != Lease::Admission::Submit)
@@ -530,6 +535,7 @@ iwm_drain_sta(struct iwm_softc *sc, const ItlFirmwareContextReceipt &receipt, bo
 int ItlIwm::
 iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
 {
+    using Retirement = ItlFirmwareStationRetirement;
     ItlFirmwareContextReceipt receipt = {};
     int error = beginPrimaryStationCleanup(true, &receipt);
     if (error != 0 || receipt.serial == 0)
@@ -537,30 +543,40 @@ iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
     const bool current = primaryStationContext.commandCurrent(
         receipt.serial, sc->sc_generation);
-    const bool confirmed = primaryStationContext.confirmed;
-    /* A submitted queue update with unknown status may own either census. */
-    const uint32_t queues = sc->agg_queue_mask | primaryStationCommand.tfd_queue_msk;
+    const Retirement progress = primaryStationRetirement;
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
-    if (!current)
+    if (!current || !progress.owns(receipt))
         return ENXIO;
     ItlFirmwareContextCommand context = {
         receipt, ItlFirmwareContextCommand::Kind::Station, true, false
     };
-    if (confirmed && receipt.identity.mode == IEEE80211_M_STA) {
-        error = iwm_drain_sta(sc, receipt, true);
-        if (error == 0)
-            error = iwm_flush_tx_path(sc, queues, &context);
-        if (error == 0)
+    if (progress.drain) {
+        if (!(progress.completed & Retirement::DrainEnabled)) {
+            error = iwm_drain_sta(sc, receipt, true);
+            if (error == 0 && !notePrimaryStationRetirement(receipt, Retirement::DrainEnabled))
+                error = ENXIO;
+        }
+        if (error == 0 && !(progress.completed & Retirement::Flushed)) {
+            error = iwm_flush_tx_path(sc, progress.flushQueues, &context);
+            if (error == 0 && !notePrimaryStationRetirement(receipt, Retirement::Flushed))
+                error = ENXIO;
+        }
+        if (error == 0 && !(progress.completed & Retirement::DrainDisabled)) {
             error = iwm_drain_sta(sc, receipt, false);
+            if (error == 0 && !notePrimaryStationRetirement(receipt, Retirement::DrainDisabled))
+                error = ENXIO;
+        }
         for (uint8_t qid = IWM_FIRST_AGG_TX_QUEUE;
              error == 0 && qid <= IWM_LAST_AGG_TX_QUEUE; ++qid) {
-            if (queues & (1U << qid)) {
+            if ((progress.flushQueues & (1U << qid)) && !progress.queueRetired(qid)) {
                 context.submitted = false;
                 error = iwm_disable_txq(sc, qid, 0, 0, &context);
+                if (error == 0 && !notePrimaryStationRetirement(receipt, 0, qid))
+                    error = ENXIO;
             }
         }
     }
-    if (error == 0) {
+    if (error == 0 && !(progress.completed & Retirement::Removed)) {
         struct iwm_rm_sta_cmd command = {};
         command.sta_id = receipt.identity.station;
         context.submitted = false;
@@ -570,6 +586,8 @@ iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
         hcmd.len[0] = sizeof(command);
         hcmd.data[0] = &command;
         error = iwm_send_cmd(sc, &hcmd);
+        if (error == 0 && !notePrimaryStationRetirement(receipt, Retirement::Removed))
+            error = ENXIO;
     }
     return finishPrimaryStationCleanup(receipt, error);
 }

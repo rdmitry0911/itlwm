@@ -11,7 +11,7 @@ bash "$PROJECT_DIR/scripts/test_scan_owner_declarations.sh" > "$STATE_TEST_DIR/s
         "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
     awk '
         /^[[:alnum:]_]+ ItlIw[mx]::$/ { type=$0 }
-        /^(initStateTransitions|shutdownStateTransitions|prepareStateTransition|stateTransitionCurrent|primaryFirmwareContextsPresent|enqueueStateTransition|takeStateTransition|postStateTransitionCommit|recoverStateTransition|drainStateTransitionCommit|stateTransitionEvent|noteStateTransitionProgress|deferScanCommand|resumeScanCommand|scanCommandReplayPending|iwm_newstate_task_dispatch|iwx_newstate_task_dispatch)\(/ { selected=1; print type }
+        /^(initStateTransitions|shutdownStateTransitions|prepareStateTransition|stateTransitionCurrent|primaryFirmwareContextsPresent|enqueueStateTransition|takeStateTransition|postStateTransitionCommit|recoverStateTransition|drainStateTransitionCommit|stateTransitionEvent|noteStateTransitionProgress|deferScanCommand|resumeScanCommand|scanCommandReplayPending|deferPrimaryStationUsers|resumePrimaryStationUsers|reopenPrimaryStationUsers|iwm_newstate_task_dispatch|iwx_newstate_task_dispatch)\(/ { selected=1; print type }
         selected { print } selected && /^}/ { selected=0 }
     ' "$PROJECT_DIR/itlwm/hal_iwm/ItlIwm.cpp" "$PROJECT_DIR/itlwm/hal_iwx/ItlIwx.cpp"
     for source_file in itlwm/hal_iwm/mac80211.cpp itlwm/hal_iwx/ItlIwx.cpp; do

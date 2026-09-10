@@ -562,6 +562,8 @@ bool ItlIwx::attach(IOPCIDevice *device)
     primaryMacContext = ItlFirmwareContextLease{};
     primaryBindingContext = ItlFirmwareContextLease{};
     primaryStationContext = ItlFirmwareContextLease{};
+    primaryStationUses = ItlFirmwareStationUses{};
+    primaryStationRetirement = ItlFirmwareStationRetirement{};
     memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
     memset(&primaryMacCommand, 0, sizeof(primaryMacCommand));
     scanCommand = ItlScanCommandLease{};
@@ -1641,7 +1643,8 @@ resumeScanCommand()
     IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
     bool queued = false;
-    if (stateTransition.stage == ItlStateTransitionLease::Stage::Deferred) {
+    if (stateTransition.stage == ItlStateTransitionLease::Stage::Deferred &&
+        stateTransition.deferredKind == ItlStateTransitionLease::DeferredKind::Scan) {
         const ItlStateTransitionRequest &request = stateTransition.request;
         ItlScanCommandPolicy policy = {};
         const bool current = stateTransitionSource != NULL && scanCommand.open &&
@@ -1935,6 +1938,136 @@ firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &command) co
         ItlScanCommandPolicy::identityLocked(&com.sc_ic));
 }
 
+bool ItlIwx::
+beginPrimaryStationUse(struct ieee80211_node *node, ItlFirmwareContextReceipt *receipt,
+                       bool currentAttempt)
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (receipt == NULL)
+        return false;
+    *receipt = ItlFirmwareContextReceipt{};
+    if (node == NULL || wclScanLock == NULL || ownerLock == NULL)
+        return false;
+    /* stop_internal closes this admission and drains its active count
+     * before resetting/freeing TX carriers. Hold it through construction,
+     * not only through a later direct-SAE doorbell. */
+    if (!iwx_task_gate_enter(&com, false))
+        return false;
+    const struct iwx_node *in = (const struct iwx_node *)node;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const ItlFirmwareContextIdentity &identity = primaryStationContext.owner.identity;
+    const bool admitted = scanCommand.open && !(com.sc_flags & IWX_FLAG_SHUTDOWN) &&
+        primaryStationContext.confirmed && !primaryStationContext.uncertain &&
+        (primaryStationContext.stage == ItlFirmwareContextLease::Stage::Active ||
+         primaryStationContext.stage == ItlFirmwareContextLease::Stage::Modifying) &&
+        primaryStationContext.owner.generation == static_cast<uint32_t>(com.sc_generation) &&
+        (!currentAttempt ||
+         (identity.attempt.equals(ItlScanCommandPolicy::identityLocked(ic)) &&
+          identity.mode == ic->ic_opmode)) &&
+        identity.mac == IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color) &&
+        memcmp(identity.peer, in->in_macaddr, sizeof(identity.peer)) == 0 &&
+        primaryStationUses.acquire(primaryStationContext.owner, receipt);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (!admitted)
+        iwx_task_gate_leave(&com);
+    return admitted;
+}
+
+void ItlIwx::
+endPrimaryStationUse(ItlFirmwareContextReceipt *receipt)
+{
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool released = primaryStationUses.release(receipt);
+    const bool ready = released && primaryStationUses.active == 0;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (ready)
+        resumePrimaryStationUsers();
+    if (released)
+        iwx_task_gate_leave(&com);
+}
+
+bool ItlIwx::
+deferPrimaryStationUsers(const ItlStateTransitionRequest &request)
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return false;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = scanCommand.open && !(com.sc_flags & IWX_FLAG_SHUTDOWN) &&
+        stateTransitionSource != NULL &&
+        (request.state <= IEEE80211_S_AUTH || ic->ic_state == IEEE80211_S_RUN) &&
+        stateTransition.current(request, com.sc_generation) &&
+        request.identity.equals(ItlScanCommandPolicy::identityLocked(ic));
+    if (current && primaryStationContext.occupied())
+        primaryStationUses.close(request.state <= IEEE80211_S_AUTH);
+    const bool deferred = current && primaryStationUses.active != 0 &&
+        stateTransition.defer(request, com.sc_generation,
+                              ItlStateTransitionLease::DeferredKind::StationUsers);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    /* Close the exit-before-deferral lost wakeup without waiting on a gate. */
+    if (deferred)
+        resumePrimaryStationUsers();
+    return deferred;
+}
+
+void ItlIwx::
+resumePrimaryStationUsers()
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL || !iwx_task_gate_enter(&com, false))
+        return;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    bool queued = false;
+    if (stateTransition.stage == ItlStateTransitionLease::Stage::Deferred &&
+        stateTransition.deferredKind == ItlStateTransitionLease::DeferredKind::StationUsers) {
+        const ItlStateTransitionRequest &request = stateTransition.request;
+        const bool current = scanCommand.open && !(com.sc_flags & IWX_FLAG_SHUTDOWN) &&
+            stateTransitionSource != NULL &&
+            request.hardwareGeneration == static_cast<uint32_t>(com.sc_generation) &&
+            request.identity.equals(ItlScanCommandPolicy::identityLocked(ic));
+        if (!current)
+            stateTransition.invalidate();
+        else if (primaryStationUses.active == 0)
+            queued = stateTransition.resume(com.sc_generation);
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (queued)
+        iwx_add_task(&com, com.sc_nswq, &com.newstate_task);
+    iwx_task_gate_leave(&com);
+}
+
+void ItlIwx::
+reopenPrimaryStationUsers(const ItlStateTransitionRequest &request)
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL || request.state < IEEE80211_S_ASSOC)
+        return;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (scanCommand.open && !(com.sc_flags & IWX_FLAG_SHUTDOWN) &&
+        stateTransition.current(request, com.sc_generation) &&
+        request.identity.equals(ItlScanCommandPolicy::identityLocked(ic)) &&
+        primaryStationContext.stage == ItlFirmwareContextLease::Stage::Active &&
+        primaryStationContext.confirmed && !primaryStationContext.uncertain &&
+        primaryStationContext.owner.generation == static_cast<uint32_t>(com.sc_generation) &&
+        primaryStationContext.owner.identity.attempt.equals(request.identity))
+        (void)primaryStationUses.reopen(primaryStationContext.owner);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+}
+
 int ItlIwx::
 beginPrimaryStationCleanup(bool remove, ItlFirmwareContextReceipt *receipt)
 {
@@ -1947,10 +2080,23 @@ beginPrimaryStationCleanup(bool remove, ItlFirmwareContextReceipt *receipt)
     if (scanCommand.open && !(com.sc_flags & IWX_FLAG_SHUTDOWN)) {
         if (!primaryStationContext.occupied())
             admission = Lease::Admission::Already;
-        else
-            admission = primaryStationContext.begin(
-                remove ? Lease::Operation::Remove : Lease::Operation::Modify,
-                com.sc_generation, primaryStationContext.owner.identity, receipt);
+        else {
+            primaryStationUses.close(remove);
+            if (primaryStationUses.active == 0)
+                admission = primaryStationContext.begin(
+                    remove ? Lease::Operation::Remove : Lease::Operation::Modify,
+                    com.sc_generation, primaryStationContext.owner.identity, receipt);
+        }
+    }
+    if (admission == Lease::Admission::Submit && remove &&
+        !primaryStationRetirement.started) {
+        primaryStationRetirement = ItlFirmwareStationRetirement{};
+        primaryStationRetirement.started = true;
+        primaryStationRetirement.identity = receipt->identity;
+        primaryStationRetirement.generation = receipt->generation;
+        primaryStationRetirement.drain = primaryStationContext.confirmed &&
+            receipt->identity.mode == IEEE80211_M_STA;
+        primaryStationRetirement.managementQueue = com.first_data_qid;
     }
     if (admission == Lease::Admission::Submit)
         com.sc_flags |= IWX_FLAG_TXFLUSH;
@@ -1969,6 +2115,27 @@ primaryStationCleanupCurrent(const ItlFirmwareContextReceipt &receipt) const
         receipt.generation == static_cast<uint32_t>(com.sc_generation) &&
         primaryStationContext.commandCurrent(receipt.serial, com.sc_generation) &&
         primaryStationContext.owner.identity.equals(receipt.identity);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return current;
+}
+
+bool ItlIwx::
+notePrimaryStationRetirement(const ItlFirmwareContextReceipt &receipt, uint8_t step, int queue)
+{
+    if (wclScanLock == NULL || queue < -1 ||
+        queue >= static_cast<int>(ItlFirmwareStationRetirement::MaxQueues))
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = primaryStationContext.commandCurrent(receipt.serial, com.sc_generation) &&
+        primaryStationContext.stage == ItlFirmwareContextLease::Stage::Removing &&
+        primaryStationContext.owner.identity.equals(receipt.identity) &&
+        receipt.generation == static_cast<uint32_t>(com.sc_generation) &&
+        primaryStationRetirement.owns(receipt);
+    if (current) {
+        primaryStationRetirement.completed |= step;
+        if (queue >= 0)
+            primaryStationRetirement.retiredQueues[queue / 64] |= UINT64_C(1) << (queue % 64);
+    }
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     return current;
 }
@@ -2096,6 +2263,7 @@ drainStateTransitionCommit(IOInterruptEventSource *source)
 
     /* Generic AUTH/ASSOC enqueue and its if_start now share the recursive
      * main workloop gate. No drained worker waits for that gate. */
+    reopenPrimaryStationUsers(request);
     error = com.sc_newstate(&com.sc_ic,
         (enum ieee80211_state)request.state, request.argument);
     if (error != 0)
@@ -7689,6 +7857,11 @@ iwx_ba_task(void *arg)
         splx(s);
         return;
     }
+    ItlFirmwareStationUseGuard<ItlIwx, ieee80211_node> stationUse(that, ni);
+    if (!stationUse.admitted()) {
+        splx(s);
+        return;
+    }
 
     for (tid = 0; tid < IWX_MAX_TID_COUNT; tid++) {
         if (sc->sc_flags & IWX_FLAG_SHUTDOWN)
@@ -11002,6 +11175,16 @@ int ItlIwx::
 iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
        const struct ItlSaeAuthTxRequestV1 *sae_request)
 {
+    /* Keep the incarnation through crypto, DMA construction, publication
+     * and every rejected-packet cleanup, not only the final doorbell. */
+    /* A protected old-peer leave remains valid after logical cancellation;
+     * physical station closure, not credential policy, retires this TX path.
+     * Direct SAE/association keep their additional preflight/commit checks. */
+    ItlFirmwareStationUseGuard<ItlIwx, ieee80211_node> stationUse(this, ni, false);
+    if (!stationUse.admitted()) {
+        mbuf_freem(m);
+        return ECANCELED;
+    }
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ni;
     struct iwx_tx_ring *ring;
@@ -11671,14 +11854,33 @@ iwx_flush_sta(struct iwx_softc *sc, struct iwx_node *in)
 int ItlIwx::
 iwx_flush_station(struct iwx_softc *sc, const ItlFirmwareContextReceipt &receipt)
 {
-    int error = iwx_drain_sta(sc, receipt, 1);
+    using Retirement = ItlFirmwareStationRetirement;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool retiring = primaryStationContext.stage == ItlFirmwareContextLease::Stage::Removing;
+    const Retirement progress = primaryStationRetirement;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (retiring && !progress.owns(receipt))
+        return ENXIO;
+    const uint8_t completed = retiring ? progress.completed : 0;
+    int error = 0;
+    if (!(completed & Retirement::DrainEnabled)) {
+        error = iwx_drain_sta(sc, receipt, 1);
+        if (error == 0 && retiring && !notePrimaryStationRetirement(receipt, Retirement::DrainEnabled))
+            error = ENXIO;
+    }
     ItlFirmwareContextCommand context = {
         receipt, ItlFirmwareContextCommand::Kind::Station, true, false
     };
-    if (error == 0)
+    if (error == 0 && !(completed & Retirement::Flushed)) {
         error = iwx_flush_sta_tids(sc, receipt.identity.station, 0xffff, &context);
-    if (error == 0)
+        if (error == 0 && retiring && !notePrimaryStationRetirement(receipt, Retirement::Flushed))
+            error = ENXIO;
+    }
+    if (error == 0 && !(completed & Retirement::DrainDisabled)) {
         error = iwx_drain_sta(sc, receipt, 0);
+        if (error == 0 && retiring && !notePrimaryStationRetirement(receipt, Retirement::DrainDisabled))
+            error = ENXIO;
+    }
     return error;
 }
 
@@ -11986,9 +12188,14 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     status = IWX_ADD_STA_SUCCESS;
     identity.station = add_sta_cmd.sta_id;
     identity.commandLength = sizeof(add_sta_cmd);
-    const Lease::Admission admission = primaryStationContext.begin(
+    const Lease::Admission admission = !update && primaryStationUses.active != 0 ?
+        Lease::Admission::Busy : primaryStationContext.begin(
         update ? Lease::Operation::Modify : Lease::Operation::Add,
         generation, identity, &receipt);
+    if (!update && admission == Lease::Admission::Submit) {
+        primaryStationRetirement = ItlFirmwareStationRetirement{};
+        (void)primaryStationUses.start(receipt);
+    }
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
     if (admission != Lease::Admission::Submit)
@@ -12097,6 +12304,7 @@ iwx_remove_station(struct iwx_softc *sc, const ItlFirmwareContextReceipt &receip
 int ItlIwx::
 iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
 {
+    using Retirement = ItlFirmwareStationRetirement;
     struct ieee80211com *ic = &sc->sc_ic;
     ItlFirmwareContextReceipt receipt = {};
     int err = beginPrimaryStationCleanup(true, &receipt);
@@ -12104,22 +12312,27 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
         return err;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
     const bool current = primaryStationContext.commandCurrent(receipt.serial, sc->sc_generation);
-    const bool confirmed = primaryStationContext.confirmed;
-    const int queue = sc->first_data_qid;
+    const Retirement progress = primaryStationRetirement;
+    const int queue = progress.managementQueue;
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
-    if (!current)
+    if (!current || !progress.owns(receipt))
         return ENXIO;
-    if (confirmed && receipt.identity.mode != IEEE80211_M_MONITOR) {
+    if (progress.drain) {
         err = iwx_flush_station(sc, receipt);
-        if (err == 0) {
+        if (err == 0 && !progress.queueRetired(queue)) {
             ItlFirmwareContextCommand context = {
                 receipt, ItlFirmwareContextCommand::Kind::Station, true, false
             };
             err = iwx_disable_txq(sc, receipt.identity.station, queue, IWX_MGMT_TID, &context);
+            if (err == 0 && !notePrimaryStationRetirement(receipt, 0, queue))
+                err = ENXIO;
         }
     }
-    if (err == 0)
+    if (err == 0 && !(progress.completed & Retirement::Removed)) {
         err = iwx_remove_station(sc, receipt);
+        if (err == 0 && !notePrimaryStationRetirement(receipt, Retirement::Removed))
+            err = ENXIO;
+    }
     if (err == 0) {
         irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
         if (!primaryStationContext.commandCurrent(receipt.serial, sc->sc_generation))
@@ -17374,6 +17587,10 @@ iwx_newstate_task(void *psc)
         splx(s);
         return;
     }
+    if (that->deferPrimaryStationUsers(request)) {
+        splx(s);
+        return;
+    }
 
 
     if (nstate <= ostate) {
@@ -18295,6 +18512,8 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
         that->primaryMacContext.clear();
         that->primaryBindingContext.clear();
         that->primaryStationContext.clear();
+        that->primaryStationUses.close();
+        that->primaryStationRetirement = ItlFirmwareStationRetirement{};
         memset(&that->primaryStationCommand, 0, sizeof(that->primaryStationCommand));
         memset(&that->primaryMacCommand, 0, sizeof(that->primaryMacCommand));
         IOSimpleLockUnlockEnableInterrupt(that->wclScanLock, irq);

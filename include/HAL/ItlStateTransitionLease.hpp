@@ -39,10 +39,12 @@ struct ItlStateTransitionRequest {
  * takes a copy, not a pointer into the slot another ingress will replace. */
 struct ItlStateTransitionLease {
     enum class Stage : uint8_t { Empty, Prepared, Queued, Executing, Deferred, Pending, Committed };
+    enum class DeferredKind : uint8_t { Scan, StationUsers };
     uint64_t nextSerial;
     ItlStateTransitionRequest request;
     Stage stage;
     int result;
+    DeferredKind deferredKind;
 
     void invalidate()
     {
@@ -125,11 +127,13 @@ struct ItlStateTransitionLease {
         return true;
     }
 
-    bool defer(const ItlStateTransitionRequest &copy, uint32_t generation)
+    bool defer(const ItlStateTransitionRequest &copy, uint32_t generation,
+               DeferredKind kind = DeferredKind::Scan)
     {
         if (!current(copy, generation) || stage != Stage::Executing)
             return false;
         stage = Stage::Deferred;
+        deferredKind = kind;
         return true;
     }
 

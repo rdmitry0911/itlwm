@@ -23,16 +23,40 @@ awk '
     selected { print } selected && /^};/ { selected=0 }
 ' "$PROJECT_DIR/itlwm/hal_iwm/if_iwmvar.h" "$PROJECT_DIR/itlwm/hal_iwx/if_iwxvar.h" > "$STA_TEST_DIR/sta-host-commands.inc"
 awk '
-    /^(int|bool) ItlIw[mx]::$/ { type=$0 }
-    /^(beginPrimaryStationCleanup|finishPrimaryStationCleanup|firmwareContextCommandCurrentLocked|primaryStationCleanupCurrent)\(/ { selected=1; print type }
+    /^(int|bool|void) ItlIw[mx]::$/ { type=$0 }
+    /^(beginPrimaryStationUse|endPrimaryStationUse|beginPrimaryStationCleanup|finishPrimaryStationCleanup|firmwareContextCommandCurrentLocked|primaryStationCleanupCurrent|notePrimaryStationRetirement)\(/ {
+        if ($0 ~ /^beginPrimaryStationCleanup\(/ && ENVIRON["STA_USE_NEGATIVE_REF"] != "")
+            selected=0
+        else { selected=1; print type }
+    }
     selected { print } selected && /^}/ { selected=0 }
 ' "$PROJECT_DIR/itlwm/hal_iwm/ItlIwm.cpp" "$PROJECT_DIR/itlwm/hal_iwx/ItlIwx.cpp" > "$STA_TEST_DIR/sta-commands.inc"
+if [ -n "${STA_USE_NEGATIVE_REF:-}" ]; then
+    for source_file in itlwm/hal_iwm/ItlIwm.cpp itlwm/hal_iwx/ItlIwx.cpp; do
+        git -C "$PROJECT_DIR" show "$STA_USE_NEGATIVE_REF:$source_file" | awk '
+            /^int ItlIw[mx]::$/ { type=$0 }
+            /^beginPrimaryStationCleanup\(/ { selected=1; print type }
+            selected { print } selected && /^}/ { selected=0 }
+        '
+    done >> "$STA_TEST_DIR/sta-commands.inc"
+fi
 for source_file in itlwm/hal_iwm/power.cpp itlwm/hal_iwx/ItlIwx.cpp; do
     sed -n '1,$p' "$PROJECT_DIR/$source_file" | awk '
         /^int ItlIw[mx]::$/ { type=$0 }
-        /^(iw[mx]_(rm_sta_cmd|drain_sta)|iwx_(flush_sta|rm_sta|flush_station|remove_station|flush_sta_tids|disable_txq))\(/ { selected=1; print type }
+        /^(iw[mx]_(rm_sta_cmd|drain_sta)|iwx_(flush_sta|rm_sta|flush_station|remove_station|flush_sta_tids|disable_txq))\(/ {
+            if ($0 ~ /^(iwm_rm_sta_cmd|iwx_rm_sta)\(/ && ENVIRON["STA_RETIREMENT_NEGATIVE_REF"] != "")
+                selected=0
+            else { selected=1; print type }
+        }
         selected { print } selected && /^}/ { selected=0 }
     '
+    if [ -n "${STA_RETIREMENT_NEGATIVE_REF:-}" ]; then
+        git -C "$PROJECT_DIR" show "$STA_RETIREMENT_NEGATIVE_REF:$source_file" | awk '
+            /^int ItlIw[mx]::$/ { type=$0 }
+            /^(iwm_rm_sta_cmd|iwx_rm_sta)\(/ { selected=1; print type }
+            selected { print } selected && /^}/ { selected=0 }
+        '
+    fi
     if [ -n "${STA_COMMAND_NEGATIVE_REF:-}" ]; then
         git -C "$PROJECT_DIR" show "$STA_COMMAND_NEGATIVE_REF:$source_file"
     else

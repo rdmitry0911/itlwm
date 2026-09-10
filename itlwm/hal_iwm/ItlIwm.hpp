@@ -155,7 +155,13 @@ public:
     bool primaryFirmwareContextsPresent();
     bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const;
     int beginPrimaryStationCleanup(bool, ItlFirmwareContextReceipt *);
+    bool beginPrimaryStationUse(struct ieee80211_node *, ItlFirmwareContextReceipt *, bool = true);
+    void endPrimaryStationUse(ItlFirmwareContextReceipt *);
+    bool deferPrimaryStationUsers(const ItlStateTransitionRequest &);
+    void resumePrimaryStationUsers();
+    void reopenPrimaryStationUsers(const ItlStateTransitionRequest &);
     int finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &, int);
+    bool notePrimaryStationRetirement(const ItlFirmwareContextReceipt &, uint8_t, int = -1);
     int postStateTransitionCommit(const ItlStateTransitionRequest &, int);
     int drainStateTransitionCommit(IOInterruptEventSource *);
     void recoverStateTransition(const ItlStateTransitionRequest &);
@@ -698,6 +704,8 @@ public:
     ItlFirmwareContextLease primaryMacContext;
     ItlFirmwareContextLease primaryBindingContext;
     ItlFirmwareContextLease primaryStationContext;
+    ItlFirmwareStationUses primaryStationUses;
+    ItlFirmwareStationRetirement primaryStationRetirement;
     struct iwm_add_sta_cmd primaryStationCommand;
     struct iwm_mac_ctx_cmd primaryMacCommand;
     IOInterruptEventSource *stateTransitionSource;

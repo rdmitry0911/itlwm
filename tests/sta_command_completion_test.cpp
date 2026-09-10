@@ -98,6 +98,8 @@ struct Softc {
     ieee80211com sc_ic;
     uint32_t sc_flags = 0;
     int sc_generation = 7;
+    unsigned taskActive = 0;
+    bool taskAdmission = true;
     uint32_t agg_queue_mask = 0x3000, agg_tid_disable = 0xfeed;
     uint8_t sc_ucode_api[128] = {}, sc_enabled_capa[128] = {};
     int first_data_qid = 4, sc_rx_ba_sessions = 2;
@@ -123,6 +125,9 @@ static uint32_t lastStation, lastMac, lastQueues, lastFlags, lastModify;
 static unsigned lastLength;
 static int commandVersion;
 static unsigned packetOwners, replyKind, reclaimed;
+static unsigned disableCalls, failDisableCall;
+static bool rejectRepeatedQueueRemoval;
+static std::vector<unsigned> removedQueues;
 static void cleanFixture()
 {
     assert(locks.empty()); edges.clear();
@@ -130,6 +135,7 @@ static void cleanFixture()
     beforeSubmit=nullptr; afterSubmit=nullptr; baDevice=nullptr;
     lastStation=lastMac=lastQueues=lastFlags=lastModify=lastLength=0;
     commandVersion=0; assert(packetOwners==0); replyKind=reclaimed=0;
+    disableCalls=failDisableCall=0; rejectRepeatedQueueRemoval=false; removedQueues.clear();
 }
 static void ieee80211_delba_request(ieee80211com *, ieee80211_node *, int, int, int)
 {
@@ -139,6 +145,10 @@ static void ieee80211_delba_request(ieee80211com *, ieee80211_node *, int, int, 
 struct DriverState {
     IOSimpleLock *wclScanLock = &halLock;
     Lease primaryMacContext{}, primaryBindingContext{}, primaryStationContext{};
+    ItlFirmwareStationRetirement primaryStationRetirement{};
+    ItlFirmwareStationUses primaryStationUses{};
+    unsigned resumeChecks = 0;
+    void resumePrimaryStationUsers() { assert(locks.empty()); ++resumeChecks; }
     struct { bool open=true; } scanCommand;
 };
 template<class Driver, class Device>
@@ -155,6 +165,8 @@ static int submit(Driver &driver, Device *sc, ItlFirmwareContextCommand *context
     if(!context->cleanup) IOSimpleLockUnlockEnableInterrupt(sc->sc_ic.ic_pae_selected_bss_lock,selected);
     if(!current) return ENXIO;
     edges.push_back(edge);
+    if(edge==DisableQueue && ++disableCalls==failDisableCall)
+        return ETIMEDOUT;
     if(replaceEdge==edge) {
         ++sc->sc_ic.identity.associationEpoch;
         sc->sc_ic.ic_opmode=IEEE80211_M_MONITOR;
@@ -170,9 +182,12 @@ static int submit(Driver &driver, Device *sc, ItlFirmwareContextCommand *context
     return failEdge==edge ? transportError : 0;
 }
 #define OWNER_DECLS \
+    bool beginPrimaryStationUse(ieee80211_node *, ItlFirmwareContextReceipt *, bool = true); \
+    void endPrimaryStationUse(ItlFirmwareContextReceipt *); \
     bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const; \
     int beginPrimaryStationCleanup(bool, ItlFirmwareContextReceipt *); \
-    int finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &, int)
+    int finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &, int); \
+    bool notePrimaryStationRetirement(const ItlFirmwareContextReceipt &, uint8_t, int = -1)
 template<class Driver,class Device,class Command,class Wire>
 static int statusCommand(Driver &d,Device *sc,Command *command,uint32_t *status,uint32_t drainFlag,uint32_t success)
 {
@@ -207,7 +222,13 @@ public:
             const auto *wire=static_cast<const iwm_scd_txq_cfg_cmd *>(cmd->data[0]);
             assert(wire->sta_id==cmd->context_command->receipt.identity.station);
             assert(wire->enable==IWM_SCD_CFG_DISABLE_QUEUE);
-            return submit(*this,sc,cmd->context_command,DisableQueue);
+            int result=submit(*this,sc,cmd->context_command,DisableQueue);
+            if(result==0 && rejectRepeatedQueueRemoval) {
+                if(std::find(removedQueues.begin(),removedQueues.end(),wire->scd_queue)!=removedQueues.end())
+                    return EIO;
+                removedQueues.push_back(wire->scd_queue);
+            }
+            return result;
         }
         assert(cmd->id==IWM_REMOVE_STA);
         const auto *wire=static_cast<const struct iwm_rm_sta_cmd *>(cmd->data[0]);
@@ -226,6 +247,15 @@ public:
 class ItlIwx : public DriverState {
 public:
     iwx_softc com;
+    bool iwx_task_gate_enter(iwx_softc *sc,bool) {
+        assert(locks.empty());
+        if(!sc->taskAdmission) return false;
+        ++sc->taskActive; return true;
+    }
+    void iwx_task_gate_leave(iwx_softc *sc) {
+        assert(locks.empty() && sc->taskActive);
+        --sc->taskActive;
+    }
     struct iwx_add_sta_cmd primaryStationCommand{};
     OWNER_DECLS;
     bool primaryStationCleanupCurrent(const ItlFirmwareContextReceipt &) const;
@@ -257,6 +287,11 @@ public:
             }
             assert(sc->sc_flags&IWX_FLAG_TXFLUSH);
             int err=submit(*this,sc,cmd->context_command,flush?Flush:DisableQueue);
+            if(!flush && err==0 && rejectRepeatedQueueRemoval) {
+                if(std::find(removedQueues.begin(),removedQueues.end(),4U)!=removedQueues.end())
+                    return EIO;
+                removedQueues.push_back(4);
+            }
             if(err || replyKind==1) return err;
             const size_t length=flush?sizeof(iwx_tx_path_flush_cmd_rsp):sizeof(iwx_tx_queue_cfg_rsp);
             auto *pkt=static_cast<iwx_rx_packet *>(std::calloc(1,sizeof(iwx_rx_packet)+length));
@@ -328,6 +363,132 @@ static void familyTests(const char *selected)
 {
     constexpr bool iwm=std::is_same<Driver,ItlIwm>::value;
     const uint32_t active=iwm?IWM_FLAG_STA_ACTIVE:IWX_FLAG_STA_ACTIVE;
+    if(std::strcmp(selected,"all")==0 || std::strcmp(selected,"users")==0) {
+        for(int mismatch=0; mismatch<5; ++mismatch) {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            if(mismatch==1) ++d.com.sc_ic.identity.associationEpoch;
+            if(mismatch==2) ++n.in_id;
+            if(mismatch==3) ++n.in_macaddr[5];
+            if(mismatch==4) ++d.com.sc_generation;
+            ItlFirmwareContextReceipt use{};
+            assert(d.beginPrimaryStationUse(&n.in_ni,&use)==(mismatch==0));
+            if(mismatch==0) {
+                assert(d.primaryStationUses.active==1);
+                d.endPrimaryStationUse(&use);
+                assert(d.primaryStationUses.active==0 && use.serial==0 && d.resumeChecks==1);
+            }
+            assert(d.com.taskActive==0);
+            ++cases;
+        }
+        {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            ItlFirmwareContextReceipt first{},second{},rejected{};
+            assert(d.beginPrimaryStationUse(&n.in_ni,&first));
+            assert(d.beginPrimaryStationUse(&n.in_ni,&second));
+            edges.clear();
+            assert(removeStation(d,static_cast<Node *>(nullptr))==EBUSY && edges.empty());
+            assert(d.primaryStationUses.closed && d.primaryStationUses.active==2);
+            assert(!d.beginPrimaryStationUse(&n.in_ni,&rejected,false));
+            d.endPrimaryStationUse(&first);
+            assert(removeStation(d,static_cast<Node *>(nullptr))==EBUSY && edges.empty());
+            d.endPrimaryStationUse(&second);
+            assert(removeStation(d,static_cast<Node *>(nullptr))==0);
+            assert(add(d,n)==0 && d.beginPrimaryStationUse(&n.in_ni,&first));
+            d.endPrimaryStationUse(&first);
+            ++cases;
+        }
+        {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            ++d.com.sc_ic.identity.associationEpoch;
+            ItlFirmwareContextReceipt use{};
+            assert(!d.beginPrimaryStationUse(&n.in_ni,&use));
+            // The still-live old peer can send its protected leave.
+            assert(d.beginPrimaryStationUse(&n.in_ni,&use,false));
+            d.primaryStationUses.close();
+            ItlFirmwareContextReceipt rejected{};
+            assert(!d.beginPrimaryStationUse(&n.in_ni,&rejected,false));
+            d.endPrimaryStationUse(&use);
+            ++cases;
+        }
+        {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            ItlFirmwareContextReceipt use{};
+            assert(d.beginPrimaryStationUse(&n.in_ni,&use));
+            const auto copied=use;
+            // Model the reset admission edge, NOT hardware/DMA reclamation.
+            d.primaryStationUses.close(); d.primaryStationContext.clear();
+            ++d.com.sc_generation; prepare(d,n);
+            assert(add(d,n)==EBUSY);
+            d.endPrimaryStationUse(&use);
+            assert(add(d,n)==0);
+            auto stale=copied;
+            assert(!d.primaryStationUses.release(&stale));
+            assert(d.primaryStationUses.active==0);
+            ++cases;
+        }
+        {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            {
+                ItlFirmwareStationUseGuard<Driver,ieee80211_node> guard(&d,&n.in_ni);
+                assert(guard.admitted() && d.primaryStationUses.active==1);
+                assert(add(d,n,1)==0); // MODIFY does not invalidate an ADD-incarnation reader.
+            }
+            assert(d.primaryStationUses.active==0 && d.resumeChecks==1);
+            ++cases;
+        }
+        if constexpr(!iwm) {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            ItlFirmwareContextReceipt use{},rejected{};
+            assert(d.beginPrimaryStationUse(&n.in_ni,&use) && d.com.taskActive==1);
+            d.com.taskAdmission=false; // Actual stop must drain this reference before ring reset.
+            assert(!d.beginPrimaryStationUse(&n.in_ni,&rejected));
+            assert(d.com.taskActive==1);
+            d.endPrimaryStationUse(&use);
+            assert(d.com.taskActive==0);
+            ++cases;
+        }
+        if(std::strcmp(selected,"users")==0) return;
+    }
+    if(std::strcmp(selected,"all")==0 || std::strcmp(selected,"retirement")==0) {
+        for(bool replace : {false,true}) {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            if(iwm) d.com.agg_queue_mask|=1U<<IWM_FIRST_AGG_TX_QUEUE;
+            rejectRepeatedQueueRemoval=true; failEdge=Remove;
+            assert(removeStation(d,static_cast<Node *>(nullptr))==ETIMEDOUT);
+            if(replace) {
+                ++d.com.sc_ic.identity.associationEpoch; ++n.in_id; ++n.in_macaddr[5];
+                d.com.first_data_qid=7;
+            }
+            edges.clear(); failEdge=0;
+            assert(removeStation(d,static_cast<Node *>(nullptr))==0);
+            assert(edges==std::vector<int>{Remove});
+            assert(!d.primaryStationContext.occupied()); ++cases;
+        }
+        if constexpr(iwm) {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            d.com.agg_queue_mask|=3U<<IWM_FIRST_AGG_TX_QUEUE;
+            rejectRepeatedQueueRemoval=true; failDisableCall=2;
+            assert(removeStation(d,static_cast<Node *>(nullptr))==ETIMEDOUT);
+            assert(removedQueues==std::vector<unsigned>{IWM_FIRST_AGG_TX_QUEUE});
+            edges.clear(); failDisableCall=0;
+            assert(removeStation(d,static_cast<Node *>(nullptr))==0);
+            assert(edges==(std::vector<int>{DisableQueue,Remove}));
+            assert(removedQueues==(std::vector<unsigned>{IWM_FIRST_AGG_TX_QUEUE,IWM_FIRST_AGG_TX_QUEUE+1}));
+            ++cases;
+        }
+        {
+            cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+            failEdge=Remove;
+            assert(removeStation(d,static_cast<Node *>(nullptr))==ETIMEDOUT);
+            const auto stale=d.primaryStationContext.owner;
+            ++d.com.sc_generation; d.primaryStationContext.clear(); prepare(d,n);
+            failEdge=0; assert(add(d,n)==0);
+            assert(!d.primaryStationRetirement.started);
+            assert(!d.notePrimaryStationRetirement(stale,ItlFirmwareStationRetirement::Removed));
+            ++cases;
+        }
+        if(std::strcmp(selected,"retirement")==0) return;
+    }
     if(std::strcmp(selected,"owner_add")==0) {
         cleanFixture(); Driver d; Node n; prepare(d,n);
         d.primaryStationContext=d.primaryBindingContext;
