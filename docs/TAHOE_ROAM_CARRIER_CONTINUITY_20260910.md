@@ -306,3 +306,47 @@ verification passed. Its SHA-256 is
 It is not published. The next admission gate is a real same-ESS target that
 reaches SAE and then fails: successful off/on or a different-profile join
 does not establish retirement of a reserved roaming carrier on that path.
+
+## Failed on-air SAE target: carrier retirement passes, WCL recovery does not
+
+On this same post-S3 boot/image, an isolated external third BSSID advertised
+the same SAE-only SSID with group 19 and required PMF, but a deliberately
+incorrect password. The normal external APs and saved guest credentials were
+unchanged. The independent USB management path and host wired route remained
+available. The controlled AP became ready at 11:28:52 UTC.
+
+The framework's directed request at 11:29:23 returned success. More
+importantly, the physical scan selected the exact controlled BSSID at -33 dBm,
+the lower retarget was accepted and the driver-resident SAE exchange began.
+External hostapd received Commit and Confirm, detected a Confirm mismatch,
+sent an unsuccessful authentication response and removed the unauthenticated
+station. It did not authorize that station or issue a DHCP lease. This is a
+real failed target, not request rejection, an empty scan or a source-BSSID
+no-op. The guest's management timeout was also observed.
+
+Native LINK_CHANGED arrived at 11:29:33.756 and IPConfiguration removed
+the old address at 11:29:33.869. The independent two-second samples then
+reported inactive carrier and no IPv4. Thus the candidate does not retain
+a false BSD data link indefinitely after failed target admission.
+
+However, airportd immediately aborted automatic recovery as already
+associated and scheduled a roughly 120-second associated-network retry.
+Fresh scan results continued arriving. BSSID/SSID teardown events did not
+arrive until 11:30:27, about 54 seconds after the first link-down event.
+The ensuing SAE-profile auto-join timed out at 11:30:42; airportd then excluded
+the whole failed known profile, including the independently visible strong
+original BSS. It eventually selected another saved WPA2 profile, with carrier
+active by 11:30:51 and IPv4 observed by 11:30:55. This was automatic recovery,
+not a return to the original network or a prompt recovery pass.
+
+Actual recovered-address traffic passed 20/20 forward while the bad AP still
+ran. Normal shutdown of the exact fixture controller began at 11:32:23 and
+completed restoration of the host managed profile at 11:32:39. A separately
+awaited reverse check passed 20/20 after that restoration. No guest join
+command, radio toggle, daemon restart or reboot intervened after the directed
+request. The bounded state observer and traffic processes terminated normally.
+
+Publication remains held. The next correction must close the WCL association
+state as well as the BSD carrier on a real failed replacement. It must retain
+successful-roam continuity, source association on no-target scans, security
+admission, exact epoch ownership and one-shot notification semantics.
