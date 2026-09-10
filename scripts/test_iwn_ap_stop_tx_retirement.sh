@@ -73,6 +73,7 @@ wire = block(registers, 'struct iwn_txfifo_flush_cmd {') + ' __attribute__((pack
     '\n'.join(defines) + '\n' + current[stage_start:stage_end] + '\n' + wire)
 
 if not baseline:
+    assert current.index('void iwn_mem_set_region_4(struct iwn_softc *, uint32_t, uint32_t, int);') < current.index('void ItlIwn::iwn_ap_ampdu_tx_stop(')
     # Completion is decoded from the submitted command-ring owner before its
     # storage is released. Notification type mismatch cannot admit retirement.
     interrupt = block(current, 'iwn_notif_intr(struct iwn_softc *sc)')

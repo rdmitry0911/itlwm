@@ -152,6 +152,7 @@ void iwn_prph_setbits(struct iwn_softc *, uint32_t, uint32_t);
 void iwn_prph_clrbits(struct iwn_softc *, uint32_t, uint32_t);
 void iwn_mem_write(struct iwn_softc *, uint32_t, uint32_t);
 void iwn_mem_write_2(struct iwn_softc *, uint32_t, uint16_t);
+void iwn_mem_set_region_4(struct iwn_softc *, uint32_t, uint32_t, int);
 
 /* The laboratory switch exposes diagnostic observation and stimulus only.
  * Product WCL SAE/PMF admission is tied separately to the Tahoe in-kext

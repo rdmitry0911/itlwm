@@ -75,3 +75,10 @@ still nonzero (exit 134). The full payload suite, AP RX/TX A-MPDU, STA DVM
 scheduler, client-materialization and multicast/backpressure regressions pass.
 These are source-contract checks with external hardware I/O substituted;
 build, exact-image activation and runtime remain the next gate.
+
+The first whole-target build caught a missing forward declaration for the
+existing SRAM-fill helper, now called earlier by the AP backend. The extracted
+method harness's external-I/O substitute did not check that translation-unit
+declaration order. The declaration is added beside the other memory helpers,
+and the source integration check now covers its position. No failed-build
+artifact was activated; whole-target build and symbol admission are repeated.
