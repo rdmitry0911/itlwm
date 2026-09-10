@@ -156,3 +156,31 @@ host-Wi-Fi-to-guest check returned 18/20, not a bidirectional zero-loss pass.
 No second off/on was used. Exact event correlation and the iperf reproduction
 remain pending at this checkpoint, followed by genuine failed-target, profile,
 sleep and AP regressions before publication.
+
+## Iperf offered-stream reproduction and scan boundaries
+
+A first 150-second, 2-Mbit/s iperf UDP run at 10:40:14 UTC offered all
+31,250 datagrams; the receiver lost 47 (0.15%). Its directed request at
+10:40:35 reached a physical scan but found no eligible target. The next
+request named the still-current source BSSID and was rejected. Its controller
+stopped, as required. A later unrestricted request at 10:42:42 completed the
+transition at 10:42:48, after that stream had ended. Therefore this run is
+not used as an iperf-across-roam qualification.
+
+The second independent 150-second run started at 10:43:36. Four unrestricted
+requests were accepted. The first completed without an eligible target and
+the second was superseded by another foreground WCL request. The third and
+fourth produced real ROAMED/BSSID_CHANGED at 10:45:03 and 10:45:23, respectively,
+with native associated-network channels changing from 9 to 13 and back to 9.
+The third request's fixed-delay packet check started before completion and
+returned only 1/3; the fourth's post-transition check passed 3/3. Request
+acceptance and ping's zero process exit are not substituted for those counts.
+
+Iperf continued offering traffic in every five-second interval through both
+actual transitions and to its normal terminal. It offered 31,250 datagrams
+and the receiver lost 893 (2.9%). Both processes ended successfully. Unlike
+the published-image reproduction, the sender did not stop offering after
+the first transition. Native IPConfiguration recorded no media-inactive,
+address withdrawal or DHCP BOUND during these two completed transitions.
+This qualifies the offered-stream/address boundary, not lossless roaming;
+the no-target/superseded scans and packet losses remain separately visible.
