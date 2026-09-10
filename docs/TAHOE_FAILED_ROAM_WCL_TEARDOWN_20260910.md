@@ -122,3 +122,53 @@ loss, link-context and public-disassociate contracts pass.
 
 Build, exact-image load and repeated successful/failed on-air roaming are still
 required before this candidate can replace the published `964a90b3` image.
+
+## Loaded candidate and first failed-target recovery
+
+Source `b5c6cfd8` built with all 1085 external symbols resolved. Private
+five-member AuxKC admission and transactional activation preserved the four
+companion members. A normal disposable-guest reboot at 12:25:29 UTC returned
+SSH with the new loaded UUID by 12:26:26, within 57 seconds. Boot session
+`9C8DDC74-0D6C-49D7-9200-4DE18FBC3C76` loaded UUID
+`9D5A9332-924A-3D77-8615-7E1CF1C73CB1`, matching Mach-O SHA-256
+`4037898627c66b449c6c6688378910954c65839b62a0bdf5c702792e356cb7ec`.
+The initial saved pure-WPA3/required-PMF connection obtained its ordinary DHCP
+address and passed 5/5 1400-byte packets. An automatic completed transition
+to the other ordinary BSS preceded the negative test.
+
+The isolated same-SSID wrong-password AP became ready at 12:27:39 UTC.
+The public directed request at 12:28:15 selected its actual BSSID at -33 dBm.
+External hostapd received SAE Commit and Confirm, rejected the Confirm
+mismatch and did not authorize the station. This repeats the real failed
+authentication boundary, not a no-target scan or request-only check.
+
+Exact-current-boot native logs show BSD link inactive at 12:28:24.886176,
+BSSID_CHANGED at .899159, the autojoin manager's associated network becoming
+null at .900909, and SSID_CHANGED at .917234. IPv4 was removed at
+12:28:25.007886. The associated-network cleanup therefore followed the first
+link-off observation by about 15 ms, not the prior approximately 54 seconds.
+There is no Already-associated autojoin refusal between that loss and the
+next actual successful association; later refusals while connected are not
+misclassified as the reproduced defect.
+
+Automatic recovery attempted the saved WPA3 profile at 12:28:28.693932,
+about 3.8 seconds after loss. That attempt still failed: hostapd recorded a
+second Confirm mismatch, and airportd excluded the profile at 12:28:39.246264.
+It then selected the saved WPA2 profile, obtained carrier at 12:28:45.847620
+and DHCP BOUND at 12:28:46.973350, approximately 22.1 seconds after loss.
+Thus this is prompt retirement of stale association ownership, not complete
+candidate-selection equivalence or recovery to the original WPA3 BSS.
+In particular, Apple's fresh-join candidate record named a strong channel-13
+BSS while the wrong-password channel-9 AP saw another exchange; that target
+selection boundary remains a separate question to resolve.
+
+Actual recovered-address forward traffic passed 20/20 while the bad AP was
+still active. Normal termination of only the fixture controller at 12:30:04
+restored the host's ordinary managed profile by 12:30:09 and preserved its
+wired default route. No guest off/on, join command, daemon restart or reboot
+intervened after the directed request. The separately awaited reverse check
+then passed 20/20 through the restored host Wi-Fi link. The 85-sample observer
+ended normally; no matched driver panic, firmware fatal, device timeout or
+unset-key diagnostic appeared in the complete candidate serial interval.
+Successful-roam, GUI, sleep and AP
+regressions on this exact candidate remain required before publication.
