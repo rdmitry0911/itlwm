@@ -187,8 +187,8 @@ for needle, label in (
     ("itl_ap_rx_ba_start(&apClientRxBa[tid]", "IWN reorder start"),
     ("itl_ap_rx_ba_stop(&apClientRxBa[tid]", "IWN reorder stop"),
     ("itl_ap_rx_ba_reorder(", "IWN pre-decap reorder dispatch"),
-    ("clientOwned ? apClientContext->stationId",
-     "IWN unicast management station ownership"),
+    ("tx->id = IWN5000_ID_PAN_BROADCAST;",
+     "IWN non-data firmware owner independent of client aggregation"),
 ):
     require(iwn, needle, label)
 ordered(iwn, "iwn_handle_ap_assoc_req(wh, len)",

@@ -132,7 +132,7 @@ for needle, label in (
     ("iwn_send_ap_compressed_bar", "IWN failed-MPDU compressed BAR"),
     ("compressedBar ? IWN_IPAN_BE_QUEUE", "IWN PAN AC queue BAR transport"),
     ("compressedBar ? IWN_TX_IMM_BA | IWN_TX_LINKQ", "IWN immediate BAR station-rate firmware flags"),
-    ("compressedBar ? IWN5000_ID_PAN_BROADCAST", "IWN non-data BAR firmware station owner"),
+    ("tx->id = IWN5000_ID_PAN_BROADCAST;", "IWN non-data BAR firmware station owner"),
     ("tx->data_ntries = compressedBar ? 60", "IWN reference BAR retry limit"),
     ("(failedSequence + 1) & 0x0fff", "IWN failed-MPDU BAR SSN"),
     ("txq->queued < queuedBeforeReclaim", "IWN newly reclaimed descriptor BAR gate"),

@@ -5710,17 +5710,14 @@ int ItlIwn::iwn_send_ap_raw_frame(const void *frameBytes,
                          IWN_TX_AUTO_SEQ) |
         (insertTimestamp ? IWN_TX_INSERT_TSTAMP : 0) |
         (ignoreBluetooth ? IWN_TX_BT_DISABLE : 0));
-    /* Auth/Assoc responses precede station materialization and therefore use
-     * the PAN broadcast owner.  Once the client exists, every unicast
-     * management frame (including an unprotected ADDBA Response) must use
-     * its station ID so DVM can match the receiver and obtain the ACK. */
-    /* Linux DVM assigns every non-data frame, including a BAR addressed to
-     * one peer, to the PAN broadcast firmware station.  The BAR still uses
-     * station-rate selection, but station 2 is reserved for QoS data and can
-     * assert 6030 uCode when used by the PAN AC queue's control-frame path. */
-    tx->id = compressedBar ? IWN5000_ID_PAN_BROADCAST :
-        (clientOwned ? apClientContext->stationId :
-                       IWN5000_ID_PAN_BROADCAST);
+    /*
+     * DVM sends every non-data frame through the context's broadcast
+     * station, even when its receiver already has a data station/BA owner.
+     * The receiver address and ACK flag still describe unicast delivery;
+     * the firmware station must not borrow that receiver's aggregation
+     * context. Protected management retains the peer's inline CCMP key/PN.
+     */
+    tx->id = IWN5000_ID_PAN_BROADCAST;
     tx->lifetime = htole32(IWN_LIFETIME_INFINITE);
     tx->rts_ntries = insertTimestamp ? 3 : 60;
     tx->data_ntries = compressedBar ? 60 :
