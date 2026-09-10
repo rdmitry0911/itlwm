@@ -2343,16 +2343,20 @@ iwm_reset_sched(struct iwm_softc *sc, int qid, int idx, uint8_t sta_id)
 }
 
 int ItlIwm::
-iwm_flush_tx_path(struct iwm_softc *sc, int tfd_queue_msk)
+iwm_flush_tx_path(struct iwm_softc *sc, int tfd_queue_msk,
+                 ItlFirmwareContextCommand *context)
 {
-    struct iwm_tx_path_flush_cmd_v1 flush_cmd = {
-        .queues_ctl = htole32(tfd_queue_msk),
-        .flush_ctl = htole16(IWM_DUMP_TX_FIFO_FLUSH),
-    };
+    struct iwm_tx_path_flush_cmd_v1 flush_cmd = {};
+    flush_cmd.queues_ctl = htole32(tfd_queue_msk);
+    flush_cmd.flush_ctl = htole16(IWM_DUMP_TX_FIFO_FLUSH);
     int err;
     
-    err = iwm_send_cmd_pdu(sc, IWM_TXPATH_FLUSH, 0,
-                           sizeof(flush_cmd), &flush_cmd);
+    struct iwm_host_cmd hcmd = {};
+    hcmd.context_command = context;
+    hcmd.id = IWM_TXPATH_FLUSH;
+    hcmd.len[0] = sizeof(flush_cmd);
+    hcmd.data[0] = &flush_cmd;
+    err = iwm_send_cmd(sc, &hcmd);
     if (err)
         XYLog("%s: Flushing tx queue failed: %d\n", DEVNAME(sc), err);
     return err;
@@ -4342,7 +4346,7 @@ iwm_auth(struct iwm_softc *sc)
     if (err) {
         XYLog("%s: could not add sta (error %d)\n",
               DEVNAME(sc), err);
-        goto rm_binding;
+        goto rm_station;
     }
     
     iwm_toggle_tx_ant(sc, &sc->sc_tx_ant);
@@ -4368,6 +4372,12 @@ iwm_auth(struct iwm_softc *sc)
     
     return 0;
     
+rm_station:
+    if (generation == sc->sc_generation) {
+        const int cleanupError = iwm_rm_sta_cmd(sc, NULL);
+        if (cleanupError != 0)
+            return cleanupError;
+    }
 rm_binding:
     if (generation == sc->sc_generation) {
         const int cleanupError = iwm_binding_cmd(sc, in, IWM_FW_CTXT_ACTION_REMOVE);
@@ -4394,7 +4404,7 @@ iwm_deauth(struct iwm_softc *sc)
     
     iwm_unprotect_session(sc, in);
     
-    if (sc->sc_flags & IWM_FLAG_STA_ACTIVE) {
+    { /* An uncertain station ADD owns cleanup even without STA_ACTIVE. */
         err = iwm_rm_sta_cmd(sc, in);
         if (err) {
             XYLog("%s: could not remove STA (error %d)\n",
@@ -5797,6 +5807,8 @@ iwm_stop(struct _ifnet *ifp)
             IOSimpleLockLockDisableInterrupt(that->wclScanLock);
         that->primaryMacContext.clear();
         that->primaryBindingContext.clear();
+        that->primaryStationContext.clear();
+        memset(&that->primaryStationCommand, 0, sizeof(that->primaryStationCommand));
         memset(&that->primaryMacCommand, 0, sizeof(that->primaryMacCommand));
         that->apPrimaryStaRecoveryScanAbortPending = false;
         that->apPrimaryStaRecoveryScanYielded = false;

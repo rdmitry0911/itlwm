@@ -117,30 +117,27 @@ for token in (
     require(flush_tids, token, "sparse management TID reclaim")
 
 flush = body(iwx, "iwx_flush_sta(struct iwx_softc", "IWX flush fence")
-for token in (
-    "inherited_flush",
-    "sc->sc_flags |= IWX_FLAG_TXFLUSH",
-    "if (!inherited_flush)",
-    "sc->sc_flags &= ~IWX_FLAG_TXFLUSH",
-):
-    require(flush, token, "nested TX flush fence")
+ordered(flush, ("beginPrimaryStationCleanup(false, &receipt)",
+                "iwx_flush_station(sc, receipt)",
+                "finishPrimaryStationCleanup(receipt, error)"), "owned TX flush")
+begin_cleanup = body(iwx, "beginPrimaryStationCleanup(bool", "station cleanup reservation")
+finish_cleanup = body(iwx, "finishPrimaryStationCleanup(const", "station cleanup completion")
+require(begin_cleanup, "primaryStationContext.begin(", "station cleanup reservation")
+require(begin_cleanup, "com.sc_flags |= IWX_FLAG_TXFLUSH", "owned TX producer fence")
+ordered(finish_cleanup, ("primaryStationContext.finish(", "if (error == 0)",
+                        "com.sc_flags &= ~IWX_FLAG_TXFLUSH"), "confirmed fence retirement")
 
 remove = body(iwx, "iwx_rm_sta(struct iwx_softc", "IWX STA removal")
-for token in (
-    "sc->sc_flags |= IWX_FLAG_TXFLUSH",
-    "iwx_flush_sta(sc, in)",
-    "iwx_disable_txq(sc, IWX_STATION_ID",
-    "iwx_rm_sta_cmd(sc, in)",
-    "if (!inherited_flush)",
-):
-    require(remove, token, "IWX STA removal")
 ordered(remove, (
-    "sc->sc_flags |= IWX_FLAG_TXFLUSH",
-    "iwx_flush_sta(sc, in)",
-    "iwx_disable_txq(sc, IWX_STATION_ID",
-    "iwx_rm_sta_cmd(sc, in)",
-    "sc->sc_flags &= ~IWX_FLAG_TXFLUSH",
+    "beginPrimaryStationCleanup(true, &receipt)",
+    "iwx_flush_station(sc, receipt)",
+    "iwx_disable_txq(sc, receipt.identity.station",
+    "iwx_remove_station(sc, receipt)",
+    "finishPrimaryStationCleanup(receipt, err)",
 ), "flush-disable-remove transaction")
+for lower in (disable, flush_tids):
+    require(lower, "hcmd.context_command = context", "physical cleanup submission owner")
+    require(lower, "primaryStationCleanupCurrent(context->receipt)", "response retirement owner")
 
 for token in (
     "#define IWX_SCD_QUEUE_CONFIG_CMD 0x17",

@@ -386,18 +386,25 @@ iwm_enable_txq(struct iwm_softc *sc, int sta_id, int qid, int fifo, int ssn, int
 }
 
 int ItlIwm::
-iwm_disable_txq(struct iwm_softc *sc, uint8_t qid, uint8_t tid, uint8_t flags)
+iwm_disable_txq(struct iwm_softc *sc, uint8_t qid, uint8_t tid, uint8_t flags,
+                ItlFirmwareContextCommand *context)
 {
     int err;
-    struct iwm_scd_txq_cfg_cmd cmd = {
-        .scd_queue = qid,
-        .enable = IWM_SCD_CFG_DISABLE_QUEUE,
-        .sta_id = IWM_STATION_ID,
-        .tid = tid,
-    };
+    struct iwm_scd_txq_cfg_cmd cmd = {};
+    cmd.scd_queue = qid;
+    cmd.enable = IWM_SCD_CFG_DISABLE_QUEUE;
+    cmd.sta_id = IWM_STATION_ID;
+    cmd.tid = tid;
     
-    err = iwm_send_cmd_pdu(sc, IWM_SCD_QUEUE_CFG, flags,
-                               sizeof(struct iwm_scd_txq_cfg_cmd), &cmd);
+    if (context != NULL)
+        cmd.sta_id = context->receipt.identity.station;
+    struct iwm_host_cmd hcmd = {};
+    hcmd.context_command = context;
+    hcmd.id = IWM_SCD_QUEUE_CFG;
+    hcmd.flags = flags;
+    hcmd.len[0] = sizeof(cmd);
+    hcmd.data[0] = &cmd;
+    err = iwm_send_cmd(sc, &hcmd);
     return err;
 }
 

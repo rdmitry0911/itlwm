@@ -262,11 +262,33 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
     uint32_t aggsize = 0;
     uint32_t max_aggsize = (IWM_STA_FLG_MAX_AGG_SIZE_4M >> IWM_STA_FLG_MAX_AGG_SIZE_SHIFT);
     struct ieee80211com *ic = &sc->sc_ic;
-    const int generation = sc->sc_generation;
-    
-    if (!update && (sc->sc_flags & IWM_FLAG_STA_ACTIVE)) {
-        return 0;
+    using Lease = ItlFirmwareContextLease;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (in == NULL || ownerLock == NULL || wclScanLock == NULL)
+        return ENXIO;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const uint32_t generation = sc->sc_generation;
+    ItlFirmwareContextIdentity identity = {};
+    identity.attempt = ItlScanCommandPolicy::identityLocked(ic);
+    identity.mac = IWM_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color);
+    identity.mode = ic->ic_opmode;
+    IEEE80211_ADDR_COPY(identity.peer, in->in_macaddr);
+    if (!scanCommand.open || (sc->sc_flags & IWM_FLAG_SHUTDOWN) ||
+        (identity.mode != IEEE80211_M_STA && identity.mode != IEEE80211_M_MONITOR) ||
+        primaryMacContext.stage != Lease::Stage::Active ||
+        primaryBindingContext.stage != Lease::Stage::Active ||
+        primaryMacContext.owner.generation != generation ||
+        primaryBindingContext.owner.generation != generation ||
+        !primaryMacContext.owner.identity.sameEndpoint(identity) ||
+        !primaryBindingContext.owner.identity.sameEndpoint(identity)) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+        return EBUSY;
     }
+    identity.phy = primaryBindingContext.owner.identity.phy;
+    identity.lmac = primaryBindingContext.owner.identity.lmac;
+    ItlFirmwareContextReceipt receipt = {};
     
     memset(&add_sta_cmd, 0, sizeof(add_sta_cmd));
     
@@ -290,26 +312,32 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
         else
             qid = IWM_AUX_QUEUE;
         add_sta_cmd.tfd_queue_msk |= htole32(1 << qid);
-    } else if (!update || (flags & IWM_STA_MODIFY_QUEUES)) {
+    }
+    uint32_t queueMask = sc->agg_queue_mask;
+    uint16_t tidDisable = sc->agg_tid_disable;
+    if (ic->ic_opmode != IEEE80211_M_MONITOR &&
+        (!update || (flags & IWM_STA_MODIFY_QUEUES))) {
         if (!update) {
             int ac;
-            sc->agg_queue_mask = 0;
-            sc->agg_tid_disable = 0xffff;
+            queueMask = 0;
+            tidDisable = 0xffff;
             for (ac = 0; ac < EDCA_NUM_AC; ac++) {
                 int qid = ac;
                 if (isset(sc->sc_enabled_capa,
                           IWM_UCODE_TLV_CAPA_DQA_SUPPORT))
                     qid += IWM_DQA_MIN_MGMT_QUEUE;
-                sc->agg_queue_mask |= htole32(1 << qid);
+                queueMask |= htole32(1 << qid);
             }
         }
-        add_sta_cmd.tfd_queue_msk = sc->agg_queue_mask;
+        add_sta_cmd.tfd_queue_msk = queueMask;
+        if (flags & IWM_STA_MODIFY_QUEUES)
+            add_sta_cmd.modify_mask |= IWM_STA_MODIFY_QUEUES;
         IEEE80211_ADDR_COPY(&add_sta_cmd.addr, in->in_macaddr);
     }
     add_sta_cmd.add_modify = update ? 1 : 0;
     add_sta_cmd.station_flags_msk
     |= htole32(IWM_STA_FLG_FAT_EN_MSK | IWM_STA_FLG_MIMO_EN_MSK);
-    add_sta_cmd.tid_disable_tx = htole16(sc->agg_tid_disable);
+    add_sta_cmd.tid_disable_tx = htole16(tidDisable);
     if (update)
         add_sta_cmd.modify_mask |= (IWM_STA_MODIFY_TID_DISABLE_TX);
     
@@ -335,7 +363,7 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
             }
         }
         
-        if (iwm_mimo_enabled(sc) && ic->ic_bss->ni_rx_nss > 1)
+        if (iwm_mimo_enabled(sc) && in->in_ni.ni_rx_nss > 1)
             add_sta_cmd.station_flags |= htole32(IWM_STA_FLG_MIMO_EN_MIMO2);
         else
             add_sta_cmd.station_flags |= htole32(IWM_STA_FLG_MIMO_EN_SISO);
@@ -378,18 +406,54 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
         cmdsize = sizeof(add_sta_cmd);
     else
         cmdsize = sizeof(struct iwm_add_sta_cmd_v7);
-    err = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA, cmdsize,
-                                  &add_sta_cmd, &status);
-    if (generation != sc->sc_generation)
-        return ENXIO;
-    if (err)
-        return err;
-    if ((status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS) {
-        XYLog("%s failed\n", __FUNCTION__);
-        return EIO;
+    identity.station = add_sta_cmd.sta_id;
+    identity.commandLength = cmdsize;
+    const Lease::Admission admission = primaryStationContext.begin(
+        update ? Lease::Operation::Modify : Lease::Operation::Add,
+        generation, identity, &receipt);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (admission != Lease::Admission::Submit)
+        return admission == Lease::Admission::Already ? 0 :
+            admission == Lease::Admission::Missing ? ENOENT :
+            admission == Lease::Admission::Exhausted ? EOVERFLOW : EBUSY;
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Station, false, false
+    };
+    struct iwm_host_cmd hcmd = {};
+    hcmd.context_command = &context;
+    hcmd.id = IWM_ADD_STA;
+    hcmd.len[0] = identity.commandLength;
+    hcmd.data[0] = &add_sta_cmd;
+    err = iwm_send_cmd_status(sc, &hcmd, &status);
+    const bool accepted = err == 0 &&
+        (status & IWM_ADD_STA_STATUS_MASK) == IWM_ADD_STA_SUCCESS;
+    const Lease::Completion completion = err != 0 && context.submitted ?
+        Lease::Completion::Uncertain : accepted ?
+        Lease::Completion::Success : Lease::Completion::Rejected;
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (!primaryStationContext.finish(receipt, sc->sc_generation, completion)) {
+        err = ENXIO;
+    } else {
+        if (primaryStationContext.confirmed)
+            sc->sc_flags |= IWM_FLAG_STA_ACTIVE;
+        else
+            sc->sc_flags &= ~IWM_FLAG_STA_ACTIVE;
+        if (primaryStationContext.occupied() && context.submitted) {
+            if (update && !(flags & IWM_STA_MODIFY_QUEUES) &&
+                identity.mode != IEEE80211_M_MONITOR)
+                add_sta_cmd.tfd_queue_msk = primaryStationCommand.tfd_queue_msk;
+            primaryStationCommand = add_sta_cmd;
+        } else if (!primaryStationContext.occupied())
+            memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
+        if (accepted) {
+            sc->agg_queue_mask = queueMask;
+            sc->agg_tid_disable = tidDisable;
+        }
+        if (err == 0 && !accepted)
+            err = EIO;
     }
-    sc->sc_flags |= IWM_FLAG_STA_ACTIVE;
-
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     return err;
 }
 
@@ -435,26 +499,29 @@ iwm_add_aux_sta(struct iwm_softc *sc)
 }
 
 int ItlIwm::
-iwm_drain_sta(struct iwm_softc *sc, struct iwm_node *in, bool drain)
+iwm_drain_sta(struct iwm_softc *sc, const ItlFirmwareContextReceipt &receipt, bool drain)
 {
     struct iwm_add_sta_cmd cmd = {};
     int err;
     uint32_t status;
     size_t cmdsize;
     
-    cmd.mac_id_n_color = cpu_to_le32(IWM_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color));
-    cmd.sta_id = IWM_STATION_ID;
+    cmd.mac_id_n_color = cpu_to_le32(receipt.identity.mac);
+    cmd.sta_id = receipt.identity.station;
     cmd.add_modify = IWM_STA_MODE_MODIFY;
     cmd.station_flags = drain ? cpu_to_le32(IWM_STA_FLG_DRAIN_FLOW) : 0;
     cmd.station_flags_msk = cpu_to_le32(IWM_STA_FLG_DRAIN_FLOW);
     status = IWM_ADD_STA_SUCCESS;
-    if (isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
-        cmdsize = sizeof(cmd);
-    else
-        cmdsize = sizeof(struct iwm_add_sta_cmd_v7);
-    err = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA,
-                      cmdsize,
-                      &cmd, &status);
+    cmdsize = receipt.identity.commandLength;
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Station, true, false
+    };
+    struct iwm_host_cmd hcmd = {};
+    hcmd.context_command = &context;
+    hcmd.id = IWM_ADD_STA;
+    hcmd.len[0] = cmdsize;
+    hcmd.data[0] = &cmd;
+    err = iwm_send_cmd_status(sc, &hcmd, &status);
     if (err == 0 && (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
         return EIO;
     return err;
@@ -463,63 +530,46 @@ iwm_drain_sta(struct iwm_softc *sc, struct iwm_node *in, bool drain)
 int ItlIwm::
 iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
-    struct iwm_rm_sta_cmd rm_sta_cmd;
-    int err;
-    uint8_t qid;
-    const int generation = sc->sc_generation;
-    
-    if ((sc->sc_flags & IWM_FLAG_STA_ACTIVE) == 0) {
-        return 0;
-    }
-    
-    if (ic->ic_opmode == IEEE80211_M_STA) {
-        err = iwm_drain_sta(sc, in, true);
-        if (generation != sc->sc_generation)
-            return ENXIO;
-        if (err) {
-            XYLog("%s can not drain sta(TRUE)\n", __FUNCTION__);
-            return err;
-        }
-        err = iwm_flush_tx_path(sc, sc->agg_queue_mask);
-        if (generation != sc->sc_generation)
-            return ENXIO;
-        if (err) {
-            XYLog("%s can not flush sta tx path\n", __FUNCTION__);
-            return err;
-        }
-        err = iwm_drain_sta(sc, in, false);
-        if (generation != sc->sc_generation)
-            return ENXIO;
-        if (err) {
-            XYLog("%s can not drain sta(FALSE)\n", __FUNCTION__);
-            return err;
-        }
-        for (qid = IWM_FIRST_AGG_TX_QUEUE; qid <= IWM_LAST_AGG_TX_QUEUE; qid++) {
-            if (sc->agg_queue_mask & (1 << qid)) {
-                iwm_disable_txq(sc, qid, 0, 0);
-                if (generation != sc->sc_generation)
-                    return ENXIO;
+    ItlFirmwareContextReceipt receipt = {};
+    int error = beginPrimaryStationCleanup(true, &receipt);
+    if (error != 0 || receipt.serial == 0)
+        return error;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = primaryStationContext.commandCurrent(
+        receipt.serial, sc->sc_generation);
+    const bool confirmed = primaryStationContext.confirmed;
+    /* A submitted queue update with unknown status may own either census. */
+    const uint32_t queues = sc->agg_queue_mask | primaryStationCommand.tfd_queue_msk;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!current)
+        return ENXIO;
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Station, true, false
+    };
+    if (confirmed && receipt.identity.mode == IEEE80211_M_STA) {
+        error = iwm_drain_sta(sc, receipt, true);
+        if (error == 0)
+            error = iwm_flush_tx_path(sc, queues, &context);
+        if (error == 0)
+            error = iwm_drain_sta(sc, receipt, false);
+        for (uint8_t qid = IWM_FIRST_AGG_TX_QUEUE;
+             error == 0 && qid <= IWM_LAST_AGG_TX_QUEUE; ++qid) {
+            if (queues & (1U << qid)) {
+                context.submitted = false;
+                error = iwm_disable_txq(sc, qid, 0, 0, &context);
             }
         }
     }
-    memset(&rm_sta_cmd, 0, sizeof(rm_sta_cmd));
-    if (ic->ic_opmode == IEEE80211_M_MONITOR)
-        rm_sta_cmd.sta_id = IWM_MONITOR_STA_ID;
-    else
-        rm_sta_cmd.sta_id = IWM_STATION_ID;
-    
-    err = iwm_send_cmd_pdu(sc, IWM_REMOVE_STA, 0, sizeof(rm_sta_cmd),
-                           &rm_sta_cmd);
-    if (generation != sc->sc_generation)
-        return ENXIO;
-    if (err)
-        return err;
-    /* A rejected/unfinished removal still owns its station and queues. */
-    sc->agg_queue_mask = 0;
-    sc->agg_tid_disable = 0xffff;
-    
-    sc->sc_flags &= ~IWM_FLAG_STA_ACTIVE;
-
-    return err;
+    if (error == 0) {
+        struct iwm_rm_sta_cmd command = {};
+        command.sta_id = receipt.identity.station;
+        context.submitted = false;
+        struct iwm_host_cmd hcmd = {};
+        hcmd.context_command = &context;
+        hcmd.id = IWM_REMOVE_STA;
+        hcmd.len[0] = sizeof(command);
+        hcmd.data[0] = &command;
+        error = iwm_send_cmd(sc, &hcmd);
+    }
+    return finishPrimaryStationCleanup(receipt, error);
 }

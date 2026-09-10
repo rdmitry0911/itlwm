@@ -11,6 +11,9 @@
 #include <sys/types.h>
 #include <type_traits>
 #include <vector>
+#include <functional>
+#include <cstdlib>
+#include <HAL/ItlFirmwareContextLease.hpp>
 using std::min;
 using u8 = uint8_t; using u16 = uint16_t; using u32 = uint32_t;
 using u64 = uint64_t; using s8 = int8_t; using s16 = int16_t;
@@ -36,10 +39,22 @@ using bus_addr_t = uint64_t;
 #define setbit(a, b) ((a)[(b) / 8] |= (1U << ((b) % 8)))
 #define IEEE80211_ADDR_COPY(a, b) std::memcpy((a), (b), 6)
 #define XYLog(...) ((void)0)
+#define DPRINTF(...) ((void)0)
+#define nitems(a) (sizeof(a)/sizeof((a)[0]))
 #define DEVNAME(sc) "fixture"
 #include "sta-defines.inc"
 #include "itlwm/hal_iwm/if_iwmreg.h"
 #include "itlwm/hal_iwx/if_iwxreg.h"
+#include "sta-host-commands.inc"
+using Lease = ItlFirmwareContextLease;
+struct IOSimpleLock { unsigned rank; };
+using IOInterruptState = unsigned;
+static IOSimpleLock selectedLock{1}, halLock{2};
+static std::vector<unsigned> locks;
+static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock)
+{ assert(lock && (locks.empty() || locks.back() < lock->rank)); auto depth=locks.size(); locks.push_back(lock->rank); return depth; }
+static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, IOInterruptState depth)
+{ assert(lock && !locks.empty() && locks.back()==lock->rank); locks.pop_back(); assert(locks.size()==depth); }
 
 enum { IEEE80211_M_STA, IEEE80211_M_MONITOR, IEEE80211_S_ASSOC = 3 };
 enum { IEEE80211_NODE_HT = 1, IEEE80211_NODE_VHT = 2, IEEE80211_NODE_HE = 4 };
@@ -66,12 +81,19 @@ struct ieee80211_node {
     ieee80211_tx_ba ni_tx_ba[IEEE80211_NUM_TID];
 };
 struct ieee80211com {
+    IOSimpleLock *ic_pae_selected_bss_lock = &selectedLock;
+    ItlStateTransitionIdentity identity{11,11,12};
     int ic_opmode = IEEE80211_M_STA, ic_state = IEEE80211_S_ASSOC;
     unsigned ic_ampdu_params = 4;
     ieee80211_node *ic_bss = nullptr;
 };
+struct ItlScanCommandPolicy {
+    static ItlStateTransitionIdentity identityLocked(const ieee80211com *ic)
+    { assert(!locks.empty() && locks.front()==1); return ic->identity; }
+};
 struct iwm_node { ieee80211_node in_ni; unsigned in_id = 1, in_color = 2; uint8_t in_macaddr[6] = {2,3,4,5,6,7}; };
 struct iwx_node { ieee80211_node in_ni; unsigned in_id = 1, in_color = 2; uint8_t in_macaddr[6] = {2,3,4,5,6,7}; };
+struct iwx_tx_ring { int cur=0, ring_count=256, retired=0; };
 struct Softc {
     ieee80211com sc_ic;
     uint32_t sc_flags = 0;
@@ -80,226 +102,386 @@ struct Softc {
     uint8_t sc_ucode_api[128] = {}, sc_enabled_capa[128] = {};
     int first_data_qid = 4, sc_rx_ba_sessions = 2;
     struct { int start_tidmask = 1, stop_tidmask = 2; } ba_rx, ba_tx;
+    iwx_tx_ring txq[64];
+    struct { int qid=IWX_INVALID_QUEUE; } sc_tid_data[IWX_MAX_TID_COUNT+1];
 };
 struct iwm_softc : Softc {};
 struct iwx_softc : Softc {};
 static bool iwm_mimo_enabled(iwm_softc *) { return true; }
 static bool iwx_mimo_enabled(iwx_softc *) { return true; }
 
+
 enum Edge { NoEdge = 0, Add, DrainOn, Flush, DrainOff, DisableQueue, Remove, Delba };
 static std::vector<int> edges;
-static int failEdge, resetEdge, statusEdge, transportError;
-static uint32_t replacementFlags;
+static int failEdge, resetEdge, statusEdge, replaceEdge;
+static int transportError = ETIMEDOUT;
 static unsigned cases;
-static Softc *baDevice;
 static constexpr uint32_t unrelatedFlag = 0x40000000;
-static int completion(Softc *sc, int edge)
-{
-    edges.push_back(edge);
-    if (resetEdge == edge) {
-        ++sc->sc_generation;
-        sc->sc_flags = replacementFlags;
-        sc->agg_queue_mask = 0xface;
-        sc->agg_tid_disable = 0xbeef;
-    }
-    return failEdge == edge ? transportError : 0;
-}
+static std::function<void()> beforeSubmit, afterSubmit;
+static Softc *baDevice;
+static uint32_t lastStation, lastMac, lastQueues, lastFlags, lastModify;
+static unsigned lastLength;
+static int commandVersion;
+static unsigned packetOwners, replyKind, reclaimed;
 static void cleanFixture()
 {
-    edges.clear(); failEdge = resetEdge = statusEdge = 0;
-    transportError = ETIMEDOUT; replacementFlags = unrelatedFlag;
-    baDevice = nullptr;
+    assert(locks.empty()); edges.clear();
+    failEdge=resetEdge=statusEdge=replaceEdge=0;
+    beforeSubmit=nullptr; afterSubmit=nullptr; baDevice=nullptr;
+    lastStation=lastMac=lastQueues=lastFlags=lastModify=lastLength=0;
+    commandVersion=0; assert(packetOwners==0); replyKind=reclaimed=0;
 }
 static void ieee80211_delba_request(ieee80211com *, ieee80211_node *, int, int, int)
-{ assert(baDevice); (void)completion(baDevice, Delba); }
-class ItlIwm {
-public:
-    int iwm_add_sta_cmd(iwm_softc *, iwm_node *, int, unsigned);
-    int iwm_drain_sta(iwm_softc *, iwm_node *, bool);
-    int iwm_rm_sta_cmd(iwm_softc *, iwm_node *);
-    int iwm_send_cmd_pdu_status(iwm_softc *sc, int id, size_t size,
-                                const void *bytes, uint32_t *status) {
-        assert(id == IWM_ADD_STA);
-        assert(size == sizeof(struct iwm_add_sta_cmd) || size == sizeof(iwm_add_sta_cmd_v7));
-        const auto *cmd = static_cast<const struct iwm_add_sta_cmd *>(bytes);
-        const bool drain = cmd->station_flags_msk == cpu_to_le32(IWM_STA_FLG_DRAIN_FLOW);
-        const int edge = drain ? (cmd->station_flags ? DrainOn : DrainOff) : Add;
-        assert(cmd->mac_id_n_color == htole32(IWM_FW_CMD_ID_AND_COLOR(1, 2)));
-        *status = statusEdge == edge ? 0 : IWM_ADD_STA_SUCCESS;
-        return completion(sc, edge);
-    }
-    int iwm_send_cmd_pdu(iwm_softc *sc, int id, int flags, size_t size, const void *bytes) {
-        assert(id == IWM_REMOVE_STA && flags == 0 && size == sizeof(struct iwm_rm_sta_cmd));
-        const auto *cmd = static_cast<const struct iwm_rm_sta_cmd *>(bytes);
-        assert(cmd->sta_id == (sc->sc_ic.ic_opmode == IEEE80211_M_MONITOR ? IWM_MONITOR_STA_ID : IWM_STATION_ID));
-        assert(cmd->reserved[0] == 0 && cmd->reserved[1] == 0 && cmd->reserved[2] == 0);
-        return completion(sc, Remove);
-    }
-    int iwm_flush_tx_path(iwm_softc *sc, uint32_t mask) {
-        assert(mask == sc->agg_queue_mask); return completion(sc, Flush);
-    }
-    void iwm_disable_txq(iwm_softc *sc, int qid, int, int) {
-        assert(sc->agg_queue_mask & (1U << qid)); (void)completion(sc, DisableQueue);
-    }
+{
+    assert(baDevice); edges.push_back(Delba);
+    if (resetEdge == Delba) { ++baDevice->sc_generation; baDevice->sc_flags=unrelatedFlag; }
+}
+struct DriverState {
+    IOSimpleLock *wclScanLock = &halLock;
+    Lease primaryMacContext{}, primaryBindingContext{}, primaryStationContext{};
+    struct { bool open=true; } scanCommand;
 };
-class ItlIwx {
+template<class Driver, class Device>
+static int submit(Driver &driver, Device *sc, ItlFirmwareContextCommand *context, int edge)
+{
+    assert(locks.empty() && context);
+    auto before=beforeSubmit; beforeSubmit=nullptr; if(before) before();
+    IOInterruptState selected=0;
+    if(!context->cleanup) selected=IOSimpleLockLockDisableInterrupt(sc->sc_ic.ic_pae_selected_bss_lock);
+    auto irq=IOSimpleLockLockDisableInterrupt(driver.wclScanLock);
+    const bool current=driver.firmwareContextCommandCurrentLocked(*context);
+    if(current) context->submitted=true;
+    IOSimpleLockUnlockEnableInterrupt(driver.wclScanLock,irq);
+    if(!context->cleanup) IOSimpleLockUnlockEnableInterrupt(sc->sc_ic.ic_pae_selected_bss_lock,selected);
+    if(!current) return ENXIO;
+    edges.push_back(edge);
+    if(replaceEdge==edge) {
+        ++sc->sc_ic.identity.associationEpoch;
+        sc->sc_ic.ic_opmode=IEEE80211_M_MONITOR;
+    }
+    auto after=afterSubmit; afterSubmit=nullptr; if(after) after();
+    if(resetEdge==edge) {
+        ++sc->sc_generation;
+        driver.primaryStationContext.clear();
+        driver.primaryMacContext.clear(); driver.primaryBindingContext.clear();
+        sc->sc_flags=unrelatedFlag; sc->agg_queue_mask=0xface; sc->agg_tid_disable=0xbeef;
+        return ENXIO;
+    }
+    return failEdge==edge ? transportError : 0;
+}
+#define OWNER_DECLS \
+    bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const; \
+    int beginPrimaryStationCleanup(bool, ItlFirmwareContextReceipt *); \
+    int finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &, int)
+template<class Driver,class Device,class Command,class Wire>
+static int statusCommand(Driver &d,Device *sc,Command *command,uint32_t *status,uint32_t drainFlag,uint32_t success)
+{
+    const auto &wire=*static_cast<const Wire *>(command->data[0]);
+    const bool drain=wire.station_flags_msk==htole32(drainFlag);
+    const int edge=drain ? (wire.station_flags ? DrainOn : DrainOff) : Add;
+    lastMac=le32toh(wire.mac_id_n_color); lastStation=wire.sta_id;
+    lastQueues=wire.tfd_queue_msk; lastFlags=wire.station_flags;
+    lastModify=wire.modify_mask; lastLength=command->len[0];
+    *status=statusEdge==edge ? 0 : success;
+    return submit(d,sc,command->context_command,edge);
+}
+class ItlIwm : public DriverState {
 public:
-    int iwx_add_sta_cmd(iwx_softc *, iwx_node *, int);
-    int iwx_rm_sta_cmd(iwx_softc *, iwx_node *);
-    int iwx_drain_sta(iwx_softc *, iwx_node *, int);
-    int iwx_flush_sta(iwx_softc *, iwx_node *);
-    int iwx_rm_sta(iwx_softc *, iwx_node *);
-    int iwx_send_cmd_pdu_status(iwx_softc *sc, int id, size_t size,
-                                const void *bytes, uint32_t *status) {
-        assert(id == IWX_ADD_STA && size == sizeof(struct iwx_add_sta_cmd));
-        const auto *cmd = static_cast<const struct iwx_add_sta_cmd *>(bytes);
-        assert(cmd->mac_id_n_color == htole32(IWX_FW_CMD_ID_AND_COLOR(1, 2)));
-        const bool drain = cmd->station_flags_msk == htole32(IWX_STA_FLG_DRAIN_FLOW);
-        const int edge = drain ? (cmd->station_flags ? DrainOn : DrainOff) : Add;
-        *status = statusEdge == edge ? 0 : IWX_ADD_STA_SUCCESS;
-        return completion(sc, edge);
+    iwm_softc com;
+    struct iwm_add_sta_cmd primaryStationCommand{};
+    OWNER_DECLS;
+    int iwm_add_sta_cmd(iwm_softc *,iwm_node *,int,unsigned);
+    int iwm_drain_sta(iwm_softc *,const ItlFirmwareContextReceipt &,bool);
+    int iwm_rm_sta_cmd(iwm_softc *,iwm_node *);
+    int iwm_send_cmd_status(iwm_softc *sc,iwm_host_cmd *cmd,uint32_t *status) {
+        return statusCommand<ItlIwm,iwm_softc,iwm_host_cmd,struct iwm_add_sta_cmd>(*this,sc,cmd,status,IWM_STA_FLG_DRAIN_FLOW,IWM_ADD_STA_SUCCESS);
     }
-    int iwx_send_cmd_pdu(iwx_softc *sc, int id, int flags, size_t size, const void *bytes) {
-        assert(id == IWX_REMOVE_STA && flags == 0 && size == sizeof(struct iwx_rm_sta_cmd));
-        const auto *cmd = static_cast<const struct iwx_rm_sta_cmd *>(bytes);
-        assert(cmd->sta_id == (sc->sc_ic.ic_opmode == IEEE80211_M_MONITOR ? IWX_MONITOR_STA_ID : IWX_STATION_ID));
-        assert(cmd->reserved[0] == 0 && cmd->reserved[1] == 0 && cmd->reserved[2] == 0);
-        return completion(sc, Remove);
+    int iwm_send_cmd(iwm_softc *sc,iwm_host_cmd *cmd) {
+        if(cmd->id==IWM_TXPATH_FLUSH) {
+            const auto *wire=static_cast<const iwm_tx_path_flush_cmd_v1 *>(cmd->data[0]);
+            lastQueues=wire->queues_ctl;
+            assert(le16toh(wire->flush_ctl)==IWM_DUMP_TX_FIFO_FLUSH);
+            return submit(*this,sc,cmd->context_command,Flush);
+        }
+        if(cmd->id==IWM_SCD_QUEUE_CFG) {
+            const auto *wire=static_cast<const iwm_scd_txq_cfg_cmd *>(cmd->data[0]);
+            assert(wire->sta_id==cmd->context_command->receipt.identity.station);
+            assert(wire->enable==IWM_SCD_CFG_DISABLE_QUEUE);
+            return submit(*this,sc,cmd->context_command,DisableQueue);
+        }
+        assert(cmd->id==IWM_REMOVE_STA);
+        const auto *wire=static_cast<const struct iwm_rm_sta_cmd *>(cmd->data[0]);
+        lastStation=wire->sta_id;
+        assert(wire->reserved[0]==0 && wire->reserved[1]==0 && wire->reserved[2]==0);
+        return submit(*this,sc,cmd->context_command,Remove);
     }
-    int iwx_flush_sta_tids(iwx_softc *sc, int id, int tids) {
-        assert(id == IWX_STATION_ID && tids == 0xffff);
-        assert(sc->sc_flags & IWX_FLAG_TXFLUSH);
-        return completion(sc, Flush);
+    int iwm_send_cmd_pdu_status(iwm_softc *sc,int,size_t,const void *,uint32_t *status) {
+        *status=statusEdge==Add ? 0 : IWM_ADD_STA_SUCCESS; edges.push_back(Add);
+        if(resetEdge==Add) { ++sc->sc_generation; sc->sc_flags=unrelatedFlag; }
+        return failEdge==Add ? transportError : 0;
     }
-    int iwx_disable_txq(iwx_softc *sc, int id, int qid, int tid) {
-        assert(id == IWX_STATION_ID && qid == sc->first_data_qid && tid == IWX_MGMT_TID);
-        assert(sc->sc_flags & IWX_FLAG_TXFLUSH);
-        return completion(sc, DisableQueue);
+    int iwm_flush_tx_path(iwm_softc *,int,ItlFirmwareContextCommand *);
+    int iwm_disable_txq(iwm_softc *,uint8_t,uint8_t,uint8_t,ItlFirmwareContextCommand *);
+};
+class ItlIwx : public DriverState {
+public:
+    iwx_softc com;
+    struct iwx_add_sta_cmd primaryStationCommand{};
+    OWNER_DECLS;
+    bool primaryStationCleanupCurrent(const ItlFirmwareContextReceipt &) const;
+    int iwx_add_sta_cmd(iwx_softc *,iwx_node *,int);
+    int iwx_drain_sta(iwx_softc *,const ItlFirmwareContextReceipt &,int);
+    int iwx_flush_sta(iwx_softc *,iwx_node *);
+    int iwx_flush_station(iwx_softc *,const ItlFirmwareContextReceipt &);
+    int iwx_remove_station(iwx_softc *,const ItlFirmwareContextReceipt &);
+    int iwx_rm_sta_cmd(iwx_softc *,iwx_node *);
+    int iwx_rm_sta(iwx_softc *,iwx_node *);
+    int iwx_send_cmd_status(iwx_softc *sc,iwx_host_cmd *cmd,uint32_t *status) {
+        return statusCommand<ItlIwx,iwx_softc,iwx_host_cmd,struct iwx_add_sta_cmd>(*this,sc,cmd,status,IWX_STA_FLG_DRAIN_FLOW,IWX_ADD_STA_SUCCESS);
     }
+    int iwx_send_cmd(iwx_softc *sc,iwx_host_cmd *cmd) {
+        if(cmd->id!=IWX_REMOVE_STA) {
+            const bool flush=cmd->id==IWX_TXPATH_FLUSH;
+            if(flush) {
+                const auto *wire=static_cast<const iwx_tx_path_flush_cmd *>(cmd->data[0]);
+                assert(le32toh(wire->sta_id)==cmd->context_command->receipt.identity.station);
+                assert(le16toh(wire->tid_mask)==0xffff);
+            } else if(commandVersion==3) {
+                const auto *wire=static_cast<const iwx_scd_queue_cfg_cmd *>(cmd->data[0]);
+                assert(le32toh(wire->operation)==IWX_SCD_QUEUE_REMOVE);
+                assert(le32toh(wire->u.remove.sta_mask)==(1U<<cmd->context_command->receipt.identity.station));
+            } else {
+                const auto *wire=static_cast<const iwx_tx_queue_cfg_cmd *>(cmd->data[0]);
+                assert(wire->sta_id==cmd->context_command->receipt.identity.station);
+                assert((le16toh(wire->flags)&IWX_TX_QUEUE_CFG_ENABLE_QUEUE)==0);
+            }
+            assert(sc->sc_flags&IWX_FLAG_TXFLUSH);
+            int err=submit(*this,sc,cmd->context_command,flush?Flush:DisableQueue);
+            if(err || replyKind==1) return err;
+            const size_t length=flush?sizeof(iwx_tx_path_flush_cmd_rsp):sizeof(iwx_tx_queue_cfg_rsp);
+            auto *pkt=static_cast<iwx_rx_packet *>(std::calloc(1,sizeof(iwx_rx_packet)+length));
+            assert(pkt); ++packetOwners; cmd->resp_pkt=pkt;
+            pkt->len_n_flags=htole32(sizeof(pkt->hdr)+length);
+            if(replyKind==2) pkt->hdr.group_id|=IWX_CMD_FAILED_MSK;
+            if(flush) {
+                auto *response=reinterpret_cast<iwx_tx_path_flush_cmd_rsp *>(pkt->data);
+                response->sta_id=htole16(cmd->context_command->receipt.identity.station);
+                response->num_flushed_queues=htole16(1);
+                response->queues[0].tid=htole16(IWX_MGMT_TID);
+                response->queues[0].queue_num=htole16(4);
+                response->queues[0].read_after_flush=htole16(17);
+            }
+            return 0;
+        }
+        const auto *wire=static_cast<const struct iwx_rm_sta_cmd *>(cmd->data[0]);
+        lastStation=wire->sta_id;
+        assert(wire->reserved[0]==0 && wire->reserved[1]==0 && wire->reserved[2]==0);
+        return submit(*this,sc,cmd->context_command,Remove);
+    }
+    int iwx_send_cmd_pdu_status(iwx_softc *sc,int,size_t,const void *,uint32_t *status) {
+        *status=statusEdge==Add ? 0 : IWX_ADD_STA_SUCCESS; edges.push_back(Add);
+        if(resetEdge==Add) { ++sc->sc_generation; sc->sc_flags=unrelatedFlag; }
+        return failEdge==Add ? transportError : 0;
+    }
+    int iwx_flush_sta_tids(iwx_softc *,int,uint16_t,ItlFirmwareContextCommand *);
+    int iwx_disable_txq(iwx_softc *,int,int,uint8_t,ItlFirmwareContextCommand *);
+    int iwx_lookup_cmd_ver(iwx_softc *,int,int) { return commandVersion; }
+    void iwx_free_resp(iwx_softc *,iwx_host_cmd *cmd) {
+        if(cmd->resp_pkt) { assert(packetOwners); --packetOwners; std::free(cmd->resp_pkt); cmd->resp_pkt=nullptr; }
+    }
+    void iwx_reset_tx_ring(iwx_softc *,iwx_tx_ring *ring) { ++ring->retired; }
+    void iwx_ampdu_txq_advance(iwx_softc *,iwx_tx_ring *,int index) { assert(index==17); ++reclaimed; }
 };
 #include "sta-commands.inc"
-
-template<class Driver, class Device, class Node>
-static void testFamily(Driver &driver, int active, bool iwm, const char *selected)
+template<class Driver,class Node>
+static void prepare(Driver &d,Node &node,int mode=IEEE80211_M_STA)
 {
-    auto add = [&](Device &sc, Node &node, int update) {
-        if constexpr (std::is_same<Driver, ItlIwm>::value)
-            return driver.iwm_add_sta_cmd(&sc, &node, update, 0);
-        else return driver.iwx_add_sta_cmd(&sc, &node, update);
-    };
-    auto remove = [&](Device &sc, Node &node) {
-        if constexpr (std::is_same<Driver, ItlIwm>::value)
-            return driver.iwm_rm_sta_cmd(&sc, &node);
-        else return driver.iwx_rm_sta_cmd(&sc, &node);
-    };
-    if (!std::strcmp(selected, "all") || !std::strcmp(selected, "add")) {
-        for (int mode : {IEEE80211_M_STA, IEEE80211_M_MONITOR})
-        for (bool update : {false, true})
-        for (unsigned phy : {0U, 1U, 2U, 4U})
-        for (int failure : {0, 1, 2}) {
-            cleanFixture(); Device sc; Node node; sc.sc_ic.ic_bss = &node.in_ni;
-            sc.sc_ic.ic_opmode = mode; node.in_ni.ni_flags = phy;
-            sc.sc_flags = unrelatedFlag | (update ? active : 0);
-            setbit(sc.sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE);
-            if (failure == 1) failEdge = Add;
-            if (failure == 2) statusEdge = Add;
-            assert(add(sc, node, update) == (failure == 0 ? 0 : failure == 1 ? ETIMEDOUT : EIO));
-            assert(sc.sc_flags == (unrelatedFlag | ((update || !failure) ? active : 0)));
-            if (failure) { failEdge = statusEdge = 0; assert(add(sc, node, update) == 0); }
-            assert(sc.sc_flags == (unrelatedFlag | active));
-            ++cases;
-        }
-        for (uint32_t successor : {unrelatedFlag, unrelatedFlag | static_cast<uint32_t>(active)}) {
-            cleanFixture(); Device sc; Node node; sc.sc_ic.ic_bss = &node.in_ni;
-            resetEdge = Add; replacementFlags = successor;
-            assert(add(sc, node, 0) == ENXIO);
-            assert(sc.sc_flags == successor && sc.agg_queue_mask == 0xface);
-            ++cases;
-        }
+    auto &sc=d.com;
+    sc.sc_ic.ic_bss=&node.in_ni; sc.sc_ic.ic_opmode=mode; sc.sc_flags=unrelatedFlag;
+    setbit(sc.sc_ucode_api,IWM_UCODE_TLV_API_STA_TYPE);
+    ItlFirmwareContextIdentity id{};
+    id.attempt=sc.sc_ic.identity; id.mac=(node.in_id | node.in_color<<8);
+    id.mode=mode; std::memcpy(id.peer,node.in_macaddr,6);
+    for(auto *context : {&d.primaryMacContext,&d.primaryBindingContext}) {
+        context->owner={1,static_cast<uint32_t>(sc.sc_generation),id};
+        context->stage=Lease::Stage::Active; context->confirmed=true;
     }
-    if (!std::strcmp(selected, "all") || !std::strcmp(selected, "remove")) {
-        for (int mode : {IEEE80211_M_STA, IEEE80211_M_MONITOR})
-        for (int edge : {DrainOn, Flush, DrainOff, Remove}) {
-            if (edge != Remove && (!iwm || mode == IEEE80211_M_MONITOR)) continue;
-            cleanFixture(); Device sc; Node node; sc.sc_flags = unrelatedFlag | active;
-            sc.sc_ic.ic_opmode = mode; const auto mask = sc.agg_queue_mask;
-            failEdge = edge;
-            assert(remove(sc, node) == ETIMEDOUT);
-            assert(sc.sc_flags == (unrelatedFlag | active));
-            assert(sc.agg_queue_mask == mask && sc.agg_tid_disable == 0xfeed);
-            assert(edges.back() == edge);
-            failEdge = 0; assert(remove(sc, node) == 0);
-            assert(sc.sc_flags == unrelatedFlag);
-            if (iwm) assert(sc.agg_queue_mask == 0 && sc.agg_tid_disable == 0xffff);
-            const auto count = edges.size(); assert(remove(sc, node) == 0);
-            assert(edges.size() == count); ++cases;
-        }
-        for (int edge : {DrainOn, Flush, DrainOff, DisableQueue, Remove}) {
-            if (!iwm && edge != Remove) continue;
-            for (uint32_t successor : {unrelatedFlag, unrelatedFlag | static_cast<uint32_t>(active)}) {
-                cleanFixture(); Device sc; Node node; sc.sc_flags = active;
-                resetEdge = edge; replacementFlags = successor;
-                assert(remove(sc, node) == ENXIO);
-                assert(sc.sc_flags == successor && sc.agg_queue_mask == 0xface && sc.agg_tid_disable == 0xbeef);
-                assert(edges.back() == edge); ++cases;
+    d.primaryBindingContext.owner.identity.phy=0x123;
+    d.primaryBindingContext.owner.identity.lmac=1;
+    sc.sc_tid_data[IWX_MAX_TID_COUNT].qid=4;
+}
+template<class Driver,class Node>
+static int add(Driver &d,Node &node,int update=0)
+{
+    if constexpr(std::is_same<Driver,ItlIwm>::value)
+        return d.iwm_add_sta_cmd(&d.com,&node,update,0);
+    else return d.iwx_add_sta_cmd(&d.com,&node,update);
+}
+template<class Driver,class Node>
+static int removeStation(Driver &d,Node *node)
+{
+    if constexpr(std::is_same<Driver,ItlIwm>::value) return d.iwm_rm_sta_cmd(&d.com,node);
+    else return d.iwx_rm_sta(&d.com,node);
+}
+template<class Driver,class Node>
+static void familyTests(const char *selected)
+{
+    constexpr bool iwm=std::is_same<Driver,ItlIwm>::value;
+    const uint32_t active=iwm?IWM_FLAG_STA_ACTIVE:IWX_FLAG_STA_ACTIVE;
+    if(std::strcmp(selected,"owner_add")==0) {
+        cleanFixture(); Driver d; Node n; prepare(d,n);
+        d.primaryStationContext=d.primaryBindingContext;
+        d.primaryStationContext.owner.identity.station=iwm?IWM_STATION_ID:IWX_STATION_ID;
+        d.primaryStationContext.owner.identity.commandLength=sizeof(d.primaryStationCommand);
+        d.com.sc_flags|=active;
+        ++d.com.sc_ic.identity.associationEpoch;
+        assert(add(d,n)==EBUSY && edges.empty());
+        ++cases; return;
+    }
+    for(int mode : {IEEE80211_M_STA,IEEE80211_M_MONITOR})
+    for(int update : {0,1})
+    for(unsigned phy : {0U,1U,2U,4U})
+    for(int failure : {0,1,2}) {
+        cleanFixture(); Driver d; Node n; prepare(d,n,mode); n.in_ni.ni_flags=phy;
+        if(update) assert(add(d,n)==0);
+        edges.clear();
+        if(failure==1) failEdge=Add;
+        if(failure==2) statusEdge=Add;
+        const auto oldMask=d.com.agg_queue_mask;
+        const auto oldTid=d.com.agg_tid_disable;
+        assert(add(d,n,update)==(failure==0?0:failure==1?ETIMEDOUT:EIO));
+        assert((d.com.sc_flags&active)==((update||!failure)?active:0));
+        if(failure) {
+            assert(d.com.agg_queue_mask==oldMask && d.com.agg_tid_disable==oldTid);
+            if(failure==1) {
+                assert(d.primaryStationContext.stage==Lease::Stage::Uncertain);
+                failEdge=0; assert(add(d,n,update)==EBUSY);
+                assert(removeStation(d,static_cast<Node *>(nullptr))==0);
+                assert(!d.primaryStationContext.occupied());
+                assert(add(d,n)==0);
+            } else {
+                statusEdge=0; assert(add(d,n,update)==0);
             }
         }
+        assert(d.primaryStationContext.stage==Lease::Stage::Active); ++cases;
     }
+    for(int change : {0,1,2,3,4,5,6,7}) {
+        cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+        auto old=d.primaryStationContext.owner;
+        if(change==0) ++d.com.sc_ic.identity.associationEpoch;
+        if(change==1) ++n.in_macaddr[5];
+        if(change==2) ++n.in_id;
+        if(change==3) d.com.sc_ic.ic_opmode=IEEE80211_M_MONITOR;
+        if(change==4) d.primaryBindingContext.stage=Lease::Stage::Uncertain;
+        if(change==5) ++d.primaryBindingContext.owner.generation;
+        if(change==6) ++d.primaryMacContext.owner.generation;
+        if(change==7) d.primaryMacContext.clear();
+        const auto count=edges.size();
+        assert(add(d,n)==EBUSY && edges.size()==count);
+        assert(d.primaryStationContext.owner.serial==old.serial); ++cases;
+    }
+    for(int edge : {Add,DrainOn,Flush,DrainOff,DisableQueue,Remove})
+    for(int disturbance : {0,1,2}) {
+        cleanFixture(); Driver d; Node n; prepare(d,n);
+        if(edge!=Add) assert(add(d,n)==0);
+        if(iwm && edge==DisableQueue) d.com.agg_queue_mask|=1U<<IWM_FIRST_AGG_TX_QUEUE;
+        edges.clear();
+        if(disturbance==0) resetEdge=edge;
+        if(disturbance==1) replaceEdge=edge;
+        if(disturbance==2) failEdge=edge;
+        int result=edge==Add ? add(d,n) : removeStation(d,&n);
+        if(disturbance==0) {
+            assert(result==ENXIO && edges.back()==edge);
+            assert(d.com.sc_flags==unrelatedFlag && d.com.agg_queue_mask==0xface);
+        } else if(disturbance==2) {
+            assert(result==ETIMEDOUT && edges.back()==edge);
+            assert(d.primaryStationContext.stage==Lease::Stage::Uncertain);
+            if(!iwm && edge!=Add) assert(d.com.sc_flags&IWX_FLAG_TXFLUSH);
+        } else {
+            assert(result==0);
+            if(edge!=Add) assert(!d.primaryStationContext.occupied());
+        }
+        ++cases;
+    }
+    for(int before : {0,1,2,3,4}) {
+        cleanFixture(); Driver d; Node n; prepare(d,n);
+        beforeSubmit=[&] {
+            if(before==0) ++d.com.sc_ic.identity.associationEpoch;
+            if(before==1) { ++d.com.sc_generation; d.primaryStationContext.clear(); }
+            if(before==2) d.scanCommand.open=false;
+            if(before==3) ++d.primaryStationContext.owner.serial;
+            if(before==4) d.primaryStationContext.clear();
+        };
+        assert(add(d,n)==ENXIO && edges.empty());
+        if(before==0 || before==2) assert(!d.primaryStationContext.occupied());
+        ++cases;
+    }
+    for(int change : {0,1,2}) {
+        cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+        if(change==0) { ++n.in_id; ++n.in_color; ++n.in_macaddr[5]; }
+        if(change==1) d.com.sc_ic.ic_opmode=IEEE80211_M_MONITOR;
+        if(change==2) ++d.com.sc_ic.identity.associationEpoch;
+        edges.clear();
+        assert(removeStation(d,&n)==0 && lastStation==(iwm?IWM_STATION_ID:IWX_STATION_ID));
+        assert(!d.primaryStationContext.occupied()); ++cases;
+    }
+    cleanFixture(); Driver d; Node n; prepare(d,n); assert(add(d,n)==0);
+    edges.clear(); assert(add(d,n)==0 && edges.empty());
+    afterSubmit=[&] { assert(add(d,n)==EBUSY); };
+    assert(removeStation(d,&n)==0); ++cases;
 }
-int main(int argc, char **argv)
+int main(int argc,char **argv)
 {
-    const char *selected = argc > 1 ? argv[1] : "all";
-    const char *family = argc > 2 ? argv[2] : "all";
-    ItlIwm iwm; ItlIwx iwx;
-    if (std::strcmp(family, "iwx"))
-        testFamily<ItlIwm, iwm_softc, iwm_node>(iwm, IWM_FLAG_STA_ACTIVE, true, selected);
-    if (std::strcmp(family, "iwm"))
-        testFamily<ItlIwx, iwx_softc, iwx_node>(iwx, IWX_FLAG_STA_ACTIVE, false, selected);
-    if (std::strcmp(family, "iwx") &&
-        (!std::strcmp(selected, "all") || !std::strcmp(selected, "drain"))) {
-        for (int edge : {DrainOn, DrainOff}) {
-            cleanFixture(); iwm_softc sc; iwm_node node;
-            sc.sc_flags = IWM_FLAG_STA_ACTIVE; statusEdge = edge;
-            assert(iwm.iwm_rm_sta_cmd(&sc, &node) == EIO);
-            assert(sc.sc_flags == IWM_FLAG_STA_ACTIVE && sc.agg_queue_mask == 0x3000);
-            assert(edges.back() == edge); ++cases;
-        }
-    }
-    if (std::strcmp(family, "iwm") &&
-        (!std::strcmp(selected, "all") || !std::strcmp(selected, "flush"))) {
-        for (bool inherited : {false, true})
-        for (bool outer : {false, true})
-        for (int edge : {NoEdge, DrainOn, Flush, DrainOff, DisableQueue, Remove})
-        for (bool statusFailure : {false, true}) {
-            if (!outer && (edge == DisableQueue || edge == Remove)) continue;
-            if (statusFailure && edge != DrainOn && edge != DrainOff) continue;
-            cleanFixture(); iwx_softc sc; iwx_node node;
-            sc.sc_flags = unrelatedFlag | IWX_FLAG_STA_ACTIVE | (inherited ? IWX_FLAG_TXFLUSH : 0);
-            baDevice = &sc; node.in_ni.ni_tx_ba[3].ba_state = IEEE80211_BA_AGREED;
-            if (statusFailure) statusEdge = edge; else failEdge = edge;
-            int error = outer ? iwx.iwx_rm_sta(&sc, &node) : iwx.iwx_flush_sta(&sc, &node);
-            assert(error == (edge == 0 ? 0 : statusFailure ? EIO : ETIMEDOUT));
-            if (edge) assert(edges.back() == edge);
-            assert((sc.sc_flags & IWX_FLAG_TXFLUSH) == (inherited ? IWX_FLAG_TXFLUSH : 0));
-            assert((sc.sc_flags & IWX_FLAG_STA_ACTIVE) == (outer && !edge ? 0 : IWX_FLAG_STA_ACTIVE));
-            assert(sc.sc_rx_ba_sessions == (outer && !edge ? 0 : 2));
+    const char *selected=argc>1?argv[1]:"all";
+    const char *family=argc>2?argv[2]:"all";
+    if(std::strcmp(family,"iwx")) familyTests<ItlIwm,iwm_node>(selected);
+    if(std::strcmp(family,"iwm")) familyTests<ItlIwx,iwx_node>(selected);
+    if(std::strcmp(family,"iwm") && std::strcmp(selected,"owner_add")) {
+        for(int version : {0,3,IWX_FW_CMD_VER_UNKNOWN})
+        for(bool flush : {false,true})
+        for(unsigned reply : {0U,1U,2U})
+        for(bool superseded : {false,true}) {
+            cleanFixture(); ItlIwx d; iwx_node n; prepare(d,n); assert(add(d,n)==0);
+            ItlFirmwareContextReceipt receipt{};
+            assert(d.beginPrimaryStationCleanup(true,&receipt)==0);
+            ItlFirmwareContextCommand command{receipt,ItlFirmwareContextCommand::Kind::Station,true,false};
+            commandVersion=version; replyKind=reply;
+            if(superseded) afterSubmit=[&] { ++d.primaryStationContext.owner.serial; };
+            const int result=flush ?
+                d.iwx_flush_sta_tids(&d.com,receipt.identity.station,0xffff,&command) :
+                d.iwx_disable_txq(&d.com,receipt.identity.station,4,IWX_MGMT_TID,&command);
+            assert(result==(superseded?ENXIO:reply?EIO:0));
+            assert(packetOwners==0);
+            assert(d.com.txq[4].retired==(!flush && result==0 ? 1 : 0));
+            assert(reclaimed==(flush && result==0 ? 1U : 0U));
             ++cases;
         }
-        for (bool outer : {false, true})
-        for (int edge : {DrainOn, Flush, DrainOff, DisableQueue, Remove, Delba})
-        for (bool successorFlush : {false, true}) {
-            if (!outer && (edge == DisableQueue || edge == Remove || edge == Delba)) continue;
-            cleanFixture(); iwx_softc sc; iwx_node node;
-            sc.sc_flags = IWX_FLAG_STA_ACTIVE; baDevice = &sc;
-            node.in_ni.ni_tx_ba[3].ba_state = IEEE80211_BA_AGREED;
-            resetEdge = edge;
-            replacementFlags = unrelatedFlag | IWX_FLAG_STA_ACTIVE | (successorFlush ? IWX_FLAG_TXFLUSH : 0);
-            int error = outer ? iwx.iwx_rm_sta(&sc, &node) : iwx.iwx_flush_sta(&sc, &node);
-            assert(error == ENXIO && edges.back() == edge);
-            assert(sc.sc_flags == replacementFlags && sc.agg_queue_mask == 0xface);
+        for(int queue : {-1,IWX_DQA_CMD_QUEUE,64}) {
+            cleanFixture(); ItlIwx d; iwx_node n; prepare(d,n); assert(add(d,n)==0);
+            ItlFirmwareContextReceipt receipt{}; assert(d.beginPrimaryStationCleanup(true,&receipt)==0);
+            ItlFirmwareContextCommand command{receipt,ItlFirmwareContextCommand::Kind::Station,true,false};
+            edges.clear();
+            assert(d.iwx_disable_txq(&d.com,receipt.identity.station,queue,IWX_MGMT_TID,&command)==EINVAL);
+            assert(!command.submitted && edges.empty()); ++cases;
+        }
+        for(int edge : {NoEdge,DrainOn,Flush,DrainOff})
+        for(int disturbance : {0,1,2}) {
+            cleanFixture(); ItlIwx d; iwx_node n; prepare(d,n); assert(add(d,n)==0);
+            edges.clear();
+            if(disturbance==0) failEdge=edge;
+            if(disturbance==1) resetEdge=edge;
+            if(disturbance==2) statusEdge=edge;
+            if(disturbance==2 && edge==Flush) continue;
+            int expected=edge==0?0:disturbance==0?ETIMEDOUT:disturbance==1?ENXIO:EIO;
+            assert(d.iwx_flush_sta(&d.com,&n)==expected);
+            assert((d.com.sc_flags&IWX_FLAG_TXFLUSH)==((expected && disturbance!=1)?IWX_FLAG_TXFLUSH:0));
             ++cases;
         }
+        cleanFixture(); ItlIwx d; iwx_node n; prepare(d,n); assert(add(d,n)==0);
+        n.in_ni.ni_tx_ba[3].ba_state=IEEE80211_BA_AGREED; baDevice=&d.com;
+        replaceEdge=Remove;
+        assert(d.iwx_rm_sta(&d.com,&n)==0);
+        assert(std::find(edges.begin(),edges.end(),Delba)==edges.end()); ++cases;
     }
-    assert(cases > 0);
-    std::printf("actual IWM/IWX STA add/drain/remove completion: PASS (%u scenarios)\n", cases);
+    std::printf("actual IWM/IWX STA ownership and completion: PASS (%u scenarios)\n",cases);
 }

@@ -1,5 +1,104 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Current checkpoint — 2026-09-10 21:09 UTC (September 11 locally)
+
+This goal continuation is PROGRESS. The prior status turn was read-only.
+The previous complete tested/built WIP was committed and pushed as c3a8a218;
+it did not replace the release or installed image. This continuation adds
+real primary STA ownership and the physical cleanup command chain in both
+IWM and IWX, not another report-only checkpoint.
+
+### Station ownership and actual cleanup commands
+
+ADD/MODIFY reserves a distinct Station receipt after validating the retained
+active MAC/binding, hardware generation, common attempt, peer and mode.
+Station ID and command length survive node replacement; the complete wire
+value is built before transport yields. Both MIMO builders use the supplied
+peer's NSS. IWM prepares queue masks locally and publishes them only after an
+accepted reply; a queue update includes its required modify-mask bit.
+An unknown ADD reply retains the physical owner without pretending STA_ACTIVE.
+Binding removal and state-worker occupancy account for that owner.
+
+IWM's whole station-removal command chain carries the retained receipt through
+drain-on, TXPATH_FLUSH, drain-off, queue disable and REMOVE_STA. Queue-disable
+errors are no longer discarded. IWX reserves the station before its flush/
+queue-disable/remove chain; TXFLUSH remains set on failed cleanup and is
+released by successful retirement (or actual stop). IWX raw queue/flush
+helpers recheck the receipt before applying response-side ring retirement.
+Drain and REMOVE no longer select IDs or mode from the replacement node.
+AUTH unwind visits an uncertain station before attempting binding removal.
+Actual stop clears station ownership; logical request cancellation does not.
+
+The real ADD/drain/remove/flush/queue-disable bodies compile against the
+actual host-command and firmware packet definitions. The 217 ASan/UBSan cases
+include both station modes, HT/VHT/HE command paths, definite/uncertain
+failures, reentrant ADD, stale-before-send, reset/replacement at each cleanup
+edge, IWX scheduler versions 0/3/unknown, missing/failed responses, balanced
+reply allocations and stale response retirement. Raw transport, locks, node/
+softc storage and ring reclamation are fixture boundaries, not radio evidence.
+Both unchanged c3a8a218 ADD wrappers independently compile and fail the exact
+foreign-attempt acceptance assertion (exit 134). The current wrappers pass
+that same selector. Full Linux/macOS aggregates pass; the state suite was
+then extended from 150 to 174 groups to include independent STA occupancy.
+Adjacent management, AUTH/ASSOC, duplicate-state, AP/scan-handoff and three-
+family AP aggregation contracts pass.
+
+Production fingerprint, equal across source mirrors:
+2dbd36559aeedcdc0cf84a0b5f669d652a665631d2c2b2776c100452e2976a28.
+Built UUID: 35BEFBA7-CD27-3D66-8E30-BA5A70EAB506.
+Mach-O SHA-256:
+8b621a0a9dc674ddf11773048701e088aa1e55a9cde7b9fd5b44f0ecb95e0cdc.
+Guest full regression/build log:
+/Volumes/AIAMBuild/itlwm-88c0d3f9/DerivedData-join-failure-20260910/station-owner-20260911.0AuopG,
+SHA-256 eba9de30bed24b8b30db96ca017c3051432ac38b7b507f4d0f06b42e0be042be.
+All 1085 external symbols resolve; no _thread_call_cancel_wait dependency.
+This build used the 150-group state suite; the subsequent 174-group extension
+changes tests only, not the production fingerprint. The 174-group suite and
+adjacent management/AUTH/ASSOC contracts subsequently passed on macOS too.
+The final read-only check retained boot 9C8DDC74, loaded UUID 9D5A9332 and
+the ordinary STA address 172.16.66.212.
+
+### Required continuation — do not load or promote as whole-layer closure
+
+Queue creation and partial cleanup progress are not yet independent owners.
+IWM still has direct BA queue/STA mutations and no equivalent primary TXFLUSH
+admission fence. IWX management enable changes first_data_qid before its
+yielding queue command; monitor injection and AUTH unwind after queue enable
+still need owned queue retirement. A cleanup retry must not blindly repeat
+removal of already-retired queues. The retained station receipt is necessary
+but does not itself close these producers or progress edges.
+
+The IWX DELBA loop now rejects an already-replaced attempt, but its unlocked
+callback boundary is not immutable main-workloop node ownership. Generic
+ieee80211_stop_ampdu_tx already performs BA teardown at committed transitions;
+reconcile that owner rather than retaining a worker callback into a mutable
+node. TIME_EVENT/SESSION_PROTECTION still need independent receipts and real
+terminals. Whole AUTH preparation, partial RUN unwind, key/SAE failure
+producers and the previously listed scan/epoch/three-family cleanup gates
+remain open. Then perform exact-image GUI/open/WPA2/SAE/S3/AP runtime checks.
+The guest/public b5c6cfd8 image and user physical hosts remain untouched.
+
+## FIX_CANDIDATE: primary station command identity
+
+Both ADD_STA wrappers still accept any STA_ACTIVE bit, even for a different
+attempt/peer. The IWM builder changes global queue masks before submission;
+both MIMO builders borrow ic_bss instead of the supplied peer. Drain/remove
+uses the replacement node's MAC ID/color and current mode. Extend retained
+physical ownership to the primary station, preserving exact MAC/station ID,
+wire length, mode and attempt through commands and error completion. Bind
+admission to the retained active MAC/binding owners, and prevent their removal
+while a station ADD is pending or uncertain. Unknown ADD completion cannot be
+silently retried as if no resource existed.
+
+Intel's v6.12 sta.c uses the retained mvm_sta MAC/station IDs for drain and
+remove, checks transport before firmware status, and orders drain, flush,
+queue retirement and station removal under its station lifetime. Preserve
+that real dependency in our yielding HAL; an ACTIVE bit is not a lifetime.
+Actual station wrappers and sender boundaries require tests with peer/mode/
+generation replacement and rejected/uncertain results. Whole queue/time-event
+ownership and main-workloop immutable AUTH preparation are still required;
+this work is not a qualified on-air failure-recovery result by itself.
+
 ## Source checkpoint — 2026-09-10 20:48 UTC
 
 The preceding user-status turn was read-only, not a new functional closure.

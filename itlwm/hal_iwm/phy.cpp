@@ -442,7 +442,7 @@ iwm_binding_cmd(struct iwm_softc *sc, struct iwm_node *in, uint32_t action)
         error = ENXIO;
     else if (remove) {
         identity = primaryBindingContext.owner.identity;
-        if (sc->sc_flags & IWM_FLAG_STA_ACTIVE)
+        if (primaryStationContext.occupied() || (sc->sc_flags & IWM_FLAG_STA_ACTIVE))
             error = EBUSY;
     } else if (in == NULL || in->in_phyctxt == NULL ||
                in->in_phyctxt->channel == NULL) {

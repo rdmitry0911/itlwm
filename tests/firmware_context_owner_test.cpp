@@ -127,7 +127,7 @@ static int transmit(size_t length, const void *bytes)
 struct DriverState {
     IOSimpleLock leaf{2};
     IOSimpleLock *wclScanLock = &leaf;
-    Lease primaryMacContext{}, primaryBindingContext{};
+    Lease primaryMacContext{}, primaryBindingContext{}, primaryStationContext{};
     struct { bool open = true; } scanCommand;
 };
 template<class Driver, class Device, class Command>

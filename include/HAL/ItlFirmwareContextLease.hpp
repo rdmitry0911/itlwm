@@ -11,19 +11,25 @@ struct ItlFirmwareContextIdentity {
     uint32_t phy;
     uint32_t lmac;
     uint32_t commandLength;
+    uint32_t station;
     int mode;
     uint8_t peer[6];
 
-    bool equals(const ItlFirmwareContextIdentity &other) const
+    bool sameEndpoint(const ItlFirmwareContextIdentity &other) const
     {
         if (!attempt.equals(other.attempt) || mac != other.mac ||
-            phy != other.phy || lmac != other.lmac ||
-            commandLength != other.commandLength || mode != other.mode)
+            mode != other.mode)
             return false;
         for (unsigned i = 0; i < sizeof(peer); ++i)
             if (peer[i] != other.peer[i])
                 return false;
         return true;
+    }
+
+    bool equals(const ItlFirmwareContextIdentity &other) const
+    {
+        return sameEndpoint(other) && phy == other.phy && lmac == other.lmac &&
+            commandLength == other.commandLength && station == other.station;
     }
 };
 
@@ -36,7 +42,7 @@ struct ItlFirmwareContextReceipt {
 /* Stack-owned only until send_cmd returns. No pointer is retained in a TX
  * descriptor or asynchronous completion. submitted changes at the doorbell. */
 struct ItlFirmwareContextCommand {
-    enum class Kind : uint8_t { Mac, Binding };
+    enum class Kind : uint8_t { Mac, Binding, Station };
     ItlFirmwareContextReceipt receipt;
     Kind kind;
     bool cleanup;

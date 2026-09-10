@@ -290,6 +290,9 @@ public:
     bool stateTransitionCurrent(const ItlStateTransitionRequest &);
     bool primaryFirmwareContextsPresent();
     bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const;
+    int beginPrimaryStationCleanup(bool, ItlFirmwareContextReceipt *);
+    int finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &, int);
+    bool primaryStationCleanupCurrent(const ItlFirmwareContextReceipt &) const;
     int postStateTransitionCommit(const ItlStateTransitionRequest &, int);
     int drainStateTransitionCommit(IOInterruptEventSource *);
     void recoverStateTransition(const ItlStateTransitionRequest &);
@@ -550,10 +553,14 @@ public:
             int, int);
     int    iwx_tx(struct iwx_softc *, mbuf_t, struct ieee80211_node *, int,
                   const struct ItlSaeAuthTxRequestV1 * = nullptr);
-    int    iwx_disable_txq(struct iwx_softc *, int, int, uint8_t);
-    int    iwx_flush_sta_tids(struct iwx_softc *, int, uint16_t);
+    int    iwx_disable_txq(struct iwx_softc *, int, int, uint8_t,
+                          ItlFirmwareContextCommand * = nullptr);
+    int    iwx_flush_sta_tids(struct iwx_softc *, int, uint16_t,
+                             ItlFirmwareContextCommand * = nullptr);
     int    iwx_flush_sta(struct iwx_softc *, struct iwx_node *);
-    int    iwx_drain_sta(struct iwx_softc *sc, struct iwx_node *, int);
+    int    iwx_drain_sta(struct iwx_softc *, const ItlFirmwareContextReceipt &, int);
+    int    iwx_flush_station(struct iwx_softc *, const ItlFirmwareContextReceipt &);
+    int    iwx_remove_station(struct iwx_softc *, const ItlFirmwareContextReceipt &);
     int    iwx_beacon_filter_send_cmd(struct iwx_softc *,
             struct iwx_beacon_filter_cmd *);
     int    iwx_update_beacon_abort(struct iwx_softc *, struct iwx_node *, int);
@@ -855,6 +862,8 @@ public:
     ItlStateTransitionLease stateTransition;
     ItlFirmwareContextLease primaryMacContext;
     ItlFirmwareContextLease primaryBindingContext;
+    ItlFirmwareContextLease primaryStationContext;
+    struct iwx_add_sta_cmd primaryStationCommand;
     struct iwx_mac_ctx_cmd primaryMacCommand;
     IOInterruptEventSource *stateTransitionSource;
     uint64_t scanCommandAbortSerial;

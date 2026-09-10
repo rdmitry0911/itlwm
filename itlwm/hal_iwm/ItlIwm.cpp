@@ -968,6 +968,8 @@ attach(IOPCIDevice *device)
     stateTransition = ItlStateTransitionLease{};
     primaryMacContext = ItlFirmwareContextLease{};
     primaryBindingContext = ItlFirmwareContextLease{};
+    primaryStationContext = ItlFirmwareContextLease{};
+    memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
     memset(&primaryMacCommand, 0, sizeof(primaryMacCommand));
     scanCommand = ItlScanCommandLease{};
     scanCommandPolicy = ItlScanCommandPolicy{};
@@ -2892,7 +2894,7 @@ primaryFirmwareContextsPresent()
         return false;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
     const bool present = primaryMacContext.occupied() ||
-        primaryBindingContext.occupied();
+        primaryBindingContext.occupied() || primaryStationContext.occupied();
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     return present;
 }
@@ -2908,6 +2910,9 @@ firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &command) co
         case ItlFirmwareContextCommand::Kind::Binding:
             context = &primaryBindingContext;
             break;
+        case ItlFirmwareContextCommand::Kind::Station:
+            context = &primaryStationContext;
+            break;
     }
     if (context == NULL || command.submitted || !scanCommand.open ||
         (com.sc_flags & IWM_FLAG_SHUTDOWN) != 0 ||
@@ -2917,10 +2922,60 @@ firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &command) co
         return false;
     if (command.cleanup)
         return context->stage == ItlFirmwareContextLease::Stage::Removing ||
-            (command.kind == ItlFirmwareContextCommand::Kind::Mac &&
+            ((command.kind == ItlFirmwareContextCommand::Kind::Mac ||
+              command.kind == ItlFirmwareContextCommand::Kind::Station) &&
              context->stage == ItlFirmwareContextLease::Stage::Modifying);
     return command.receipt.identity.attempt.equals(
         ItlScanCommandPolicy::identityLocked(&com.sc_ic));
+}
+
+int ItlIwm::
+beginPrimaryStationCleanup(bool remove, ItlFirmwareContextReceipt *receipt)
+{
+    using Lease = ItlFirmwareContextLease;
+    if (wclScanLock == NULL || receipt == NULL)
+        return ENXIO;
+    *receipt = ItlFirmwareContextReceipt{};
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    Lease::Admission admission = Lease::Admission::Busy;
+    if (scanCommand.open && !(com.sc_flags & IWM_FLAG_SHUTDOWN)) {
+        if (!primaryStationContext.occupied())
+            admission = Lease::Admission::Already;
+        else
+            admission = primaryStationContext.begin(
+                remove ? Lease::Operation::Remove : Lease::Operation::Modify,
+                com.sc_generation, primaryStationContext.owner.identity, receipt);
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return admission == Lease::Admission::Submit || admission == Lease::Admission::Already ? 0 :
+        admission == Lease::Admission::Exhausted ? EOVERFLOW : EBUSY;
+}
+
+int ItlIwm::
+finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &receipt, int error)
+{
+    using Lease = ItlFirmwareContextLease;
+    if (wclScanLock == NULL)
+        return ENXIO;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    /* A failed multi-command cleanup may already have drained/removed queues.
+     * Retain the station and forbid new live modification until retirement. */
+    if (!primaryStationContext.finish(receipt, com.sc_generation,
+            error == 0 ? Lease::Completion::Success : Lease::Completion::Uncertain)) {
+        error = ENXIO;
+    } else {
+        if (primaryStationContext.confirmed)
+            com.sc_flags |= IWM_FLAG_STA_ACTIVE;
+        else
+            com.sc_flags &= ~IWM_FLAG_STA_ACTIVE;
+        if (!primaryStationContext.occupied()) {
+            memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
+            com.agg_queue_mask = 0;
+            com.agg_tid_disable = 0xffff;
+        }
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return error;
 }
 
 bool ItlIwm::

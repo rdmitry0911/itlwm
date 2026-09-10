@@ -561,6 +561,8 @@ bool ItlIwx::attach(IOPCIDevice *device)
     stateTransition = ItlStateTransitionLease{};
     primaryMacContext = ItlFirmwareContextLease{};
     primaryBindingContext = ItlFirmwareContextLease{};
+    primaryStationContext = ItlFirmwareContextLease{};
+    memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
     memset(&primaryMacCommand, 0, sizeof(primaryMacCommand));
     scanCommand = ItlScanCommandLease{};
     scanCommandPolicy = ItlScanCommandPolicy{};
@@ -1898,7 +1900,7 @@ primaryFirmwareContextsPresent()
         return false;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
     const bool present = primaryMacContext.occupied() ||
-        primaryBindingContext.occupied();
+        primaryBindingContext.occupied() || primaryStationContext.occupied();
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     return present;
 }
@@ -1914,6 +1916,9 @@ firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &command) co
         case ItlFirmwareContextCommand::Kind::Binding:
             context = &primaryBindingContext;
             break;
+        case ItlFirmwareContextCommand::Kind::Station:
+            context = &primaryStationContext;
+            break;
     }
     if (context == NULL || command.submitted || !scanCommand.open ||
         (com.sc_flags & IWX_FLAG_SHUTDOWN) != 0 ||
@@ -1923,10 +1928,77 @@ firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &command) co
         return false;
     if (command.cleanup)
         return context->stage == ItlFirmwareContextLease::Stage::Removing ||
-            (command.kind == ItlFirmwareContextCommand::Kind::Mac &&
+            ((command.kind == ItlFirmwareContextCommand::Kind::Mac ||
+              command.kind == ItlFirmwareContextCommand::Kind::Station) &&
              context->stage == ItlFirmwareContextLease::Stage::Modifying);
     return command.receipt.identity.attempt.equals(
         ItlScanCommandPolicy::identityLocked(&com.sc_ic));
+}
+
+int ItlIwx::
+beginPrimaryStationCleanup(bool remove, ItlFirmwareContextReceipt *receipt)
+{
+    using Lease = ItlFirmwareContextLease;
+    if (wclScanLock == NULL || receipt == NULL)
+        return ENXIO;
+    *receipt = ItlFirmwareContextReceipt{};
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    Lease::Admission admission = Lease::Admission::Busy;
+    if (scanCommand.open && !(com.sc_flags & IWX_FLAG_SHUTDOWN)) {
+        if (!primaryStationContext.occupied())
+            admission = Lease::Admission::Already;
+        else
+            admission = primaryStationContext.begin(
+                remove ? Lease::Operation::Remove : Lease::Operation::Modify,
+                com.sc_generation, primaryStationContext.owner.identity, receipt);
+    }
+    if (admission == Lease::Admission::Submit)
+        com.sc_flags |= IWX_FLAG_TXFLUSH;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return admission == Lease::Admission::Submit || admission == Lease::Admission::Already ? 0 :
+        admission == Lease::Admission::Exhausted ? EOVERFLOW : EBUSY;
+}
+
+bool ItlIwx::
+primaryStationCleanupCurrent(const ItlFirmwareContextReceipt &receipt) const
+{
+    if (wclScanLock == NULL)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = scanCommand.open &&
+        receipt.generation == static_cast<uint32_t>(com.sc_generation) &&
+        primaryStationContext.commandCurrent(receipt.serial, com.sc_generation) &&
+        primaryStationContext.owner.identity.equals(receipt.identity);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return current;
+}
+
+int ItlIwx::
+finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &receipt, int error)
+{
+    using Lease = ItlFirmwareContextLease;
+    if (wclScanLock == NULL)
+        return ENXIO;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    /* A failed multi-command cleanup may already have drained/removed queues.
+     * Retain the station and forbid new live modification until retirement. */
+    if (!primaryStationContext.finish(receipt, com.sc_generation,
+            error == 0 ? Lease::Completion::Success : Lease::Completion::Uncertain)) {
+        error = ENXIO;
+    } else {
+        if (primaryStationContext.confirmed)
+            com.sc_flags |= IWX_FLAG_STA_ACTIVE;
+        else
+            com.sc_flags &= ~IWX_FLAG_STA_ACTIVE;
+        if (!primaryStationContext.occupied())
+            memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
+        /* This reservation owns all primary flush producers. Failed cleanup
+         * retains the fence; retry or device stop is the release edge. */
+        if (error == 0)
+            com.sc_flags &= ~IWX_FLAG_TXFLUSH;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return error;
 }
 
 bool ItlIwx::
@@ -6306,19 +6378,20 @@ out:
 }
 
 int ItlIwx::
-iwx_disable_txq(struct iwx_softc *sc, int sta_id, int qid, uint8_t tid)
+iwx_disable_txq(struct iwx_softc *sc, int sta_id, int qid, uint8_t tid,
+                ItlFirmwareContextCommand *context)
 {
     struct iwx_tx_queue_cfg_cmd cmd_v0;
     struct iwx_scd_queue_cfg_cmd cmd_v3;
     struct iwx_rx_packet *pkt;
     struct iwx_tx_queue_cfg_rsp *resp;
-    struct iwx_host_cmd hcmd = {
-        .id = IWX_SCD_QUEUE_CFG,
-        .flags = IWX_CMD_WANT_RESP,
-        .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
-    };
+    struct iwx_host_cmd hcmd = {};
+    hcmd.id = IWX_SCD_QUEUE_CFG;
+    hcmd.flags = IWX_CMD_WANT_RESP;
+    hcmd.resp_pkt_len = sizeof(*pkt) + sizeof(*resp);
     struct iwx_tx_ring *ring;
     int err = 0, cmd_ver;
+    hcmd.context_command = context;
 
     if (qid == IWX_DQA_CMD_QUEUE || qid < 0 ||
         qid >= (int)nitems(sc->txq))
@@ -6355,6 +6428,10 @@ iwx_disable_txq(struct iwx_softc *sc, int sta_id, int qid, uint8_t tid)
         return err;
 
     pkt = hcmd.resp_pkt;
+    if (context != NULL && !primaryStationCleanupCurrent(context->receipt)) {
+        err = ENXIO;
+        goto out;
+    }
     if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
         err = EIO;
         goto out;
@@ -9484,7 +9561,7 @@ iwx_binding_cmd(struct iwx_softc *sc, struct iwx_node *in, uint32_t action)
         error = ENXIO;
     else if (remove) {
         identity = primaryBindingContext.owner.identity;
-        if (sc->sc_flags & IWX_FLAG_STA_ACTIVE)
+        if (primaryStationContext.occupied() || (sc->sc_flags & IWX_FLAG_STA_ACTIVE))
             error = EBUSY;
     } else if (in == NULL || in->in_phyctxt == NULL ||
                in->in_phyctxt->channel == NULL) {
@@ -11502,28 +11579,32 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
 }
 
 int ItlIwx::
-iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids)
+iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids,
+                   ItlFirmwareContextCommand *context)
 {
     struct iwx_rx_packet *pkt;
     struct iwx_tx_path_flush_cmd_rsp *resp;
-    struct iwx_tx_path_flush_cmd flush_cmd = {
-        .sta_id = htole32(sta_id),
-        .tid_mask = htole16(tids),
-    };
-    struct iwx_host_cmd hcmd = {
-        .id = IWX_TXPATH_FLUSH,
-        .len = { sizeof(flush_cmd), },
-        .data = { &flush_cmd, },
-        .flags = IWX_CMD_WANT_RESP,
-        .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
-    };
+    struct iwx_tx_path_flush_cmd flush_cmd = {};
+    flush_cmd.sta_id = htole32(sta_id);
+    flush_cmd.tid_mask = htole16(tids);
+    struct iwx_host_cmd hcmd = {};
+    hcmd.id = IWX_TXPATH_FLUSH;
+    hcmd.len[0] = sizeof(flush_cmd);
+    hcmd.data[0] = &flush_cmd;
+    hcmd.flags = IWX_CMD_WANT_RESP;
+    hcmd.resp_pkt_len = sizeof(*pkt) + sizeof(*resp);
     int err, resp_len, i, num_flushed_queues;
+    hcmd.context_command = context;
     
     err = iwx_send_cmd(sc, &hcmd);
     if (err)
         return err;
     
     pkt = hcmd.resp_pkt;
+    if (context != NULL && !primaryStationCleanupCurrent(context->receipt)) {
+        err = ENXIO;
+        goto out;
+    }
     if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
         err = EIO;
         goto out;
@@ -11579,57 +11660,52 @@ out:
 int ItlIwx::
 iwx_flush_sta(struct iwx_softc *sc, struct iwx_node *in)
 {
-    int err;
-    const int generation = sc->sc_generation;
-    const bool inherited_flush =
-        (sc->sc_flags & IWX_FLAG_TXFLUSH) != 0;
-    
-    splassert(IPL_NET);
-    
-    sc->sc_flags |= IWX_FLAG_TXFLUSH;
-    
-    err = iwx_drain_sta(sc, in, 1);
-    if (generation != sc->sc_generation)
-        return ENXIO;
-    if (err)
-        goto done;
-    
-    err = iwx_flush_sta_tids(sc, IWX_STATION_ID, 0xffff);
-    if (generation != sc->sc_generation)
-        return ENXIO;
-    if (err) {
-        XYLog("%s: could not flush Tx path (error %d)\n",
-               __FUNCTION__, err);
-        goto done;
-    }
-    
-    err = iwx_drain_sta(sc, in, 0);
-    if (generation != sc->sc_generation)
-        return ENXIO;
-done:
-    if (!inherited_flush)
-        sc->sc_flags &= ~IWX_FLAG_TXFLUSH;
-    return err;
+    ItlFirmwareContextReceipt receipt = {};
+    int error = beginPrimaryStationCleanup(false, &receipt);
+    if (error != 0 || receipt.serial == 0)
+        return error;
+    error = iwx_flush_station(sc, receipt);
+    return finishPrimaryStationCleanup(receipt, error);
 }
 
 int ItlIwx::
-iwx_drain_sta(struct iwx_softc *sc, struct iwx_node* in, int drain)
+iwx_flush_station(struct iwx_softc *sc, const ItlFirmwareContextReceipt &receipt)
+{
+    int error = iwx_drain_sta(sc, receipt, 1);
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Station, true, false
+    };
+    if (error == 0)
+        error = iwx_flush_sta_tids(sc, receipt.identity.station, 0xffff, &context);
+    if (error == 0)
+        error = iwx_drain_sta(sc, receipt, 0);
+    return error;
+}
+
+int ItlIwx::
+iwx_drain_sta(struct iwx_softc *sc, const ItlFirmwareContextReceipt &receipt, int drain)
 {
     struct iwx_add_sta_cmd cmd;
     int err;
     uint32_t status;
     
     memset(&cmd, 0, sizeof(cmd));
-    cmd.mac_id_n_color = htole32(IWX_FW_CMD_ID_AND_COLOR(in->in_id,
-                                                         in->in_color));
-    cmd.sta_id = IWX_STATION_ID;
+    cmd.mac_id_n_color = htole32(receipt.identity.mac);
+    cmd.sta_id = receipt.identity.station;
     cmd.add_modify = IWX_STA_MODE_MODIFY;
     cmd.station_flags = drain ? htole32(IWX_STA_FLG_DRAIN_FLOW) : 0;
     cmd.station_flags_msk = htole32(IWX_STA_FLG_DRAIN_FLOW);
     
     status = IWX_ADD_STA_SUCCESS;
-    err = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA,
-                                  sizeof(cmd), &cmd, &status);
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Station, true, false
+    };
+    struct iwx_host_cmd hcmd = {};
+    hcmd.context_command = &context;
+    hcmd.id = IWX_ADD_STA;
+    hcmd.len[0] = receipt.identity.commandLength;
+    hcmd.data[0] = &cmd;
+    err = iwx_send_cmd_status(sc, &hcmd, &status);
     if (err) {
         printf("%s: could not update sta (error %d)\n",
                DEVNAME(sc), err);
@@ -11786,11 +11862,33 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     uint32_t status, agg_size = 0;
     uint32_t max_aggsize = (IWX_STA_FLG_MAX_AGG_SIZE_4M >> IWX_STA_FLG_MAX_AGG_SIZE_SHIFT);
     struct ieee80211com *ic = &sc->sc_ic;
-    const int generation = sc->sc_generation;
-    
-    if (!update && (sc->sc_flags & IWX_FLAG_STA_ACTIVE)) {
-        return 0;
+    using Lease = ItlFirmwareContextLease;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (in == NULL || ownerLock == NULL || wclScanLock == NULL)
+        return ENXIO;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const uint32_t generation = sc->sc_generation;
+    ItlFirmwareContextIdentity identity = {};
+    identity.attempt = ItlScanCommandPolicy::identityLocked(ic);
+    identity.mac = IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color);
+    identity.mode = ic->ic_opmode;
+    IEEE80211_ADDR_COPY(identity.peer, in->in_macaddr);
+    if (!scanCommand.open || (sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
+        (identity.mode != IEEE80211_M_STA && identity.mode != IEEE80211_M_MONITOR) ||
+        primaryMacContext.stage != Lease::Stage::Active ||
+        primaryBindingContext.stage != Lease::Stage::Active ||
+        primaryMacContext.owner.generation != generation ||
+        primaryBindingContext.owner.generation != generation ||
+        !primaryMacContext.owner.identity.sameEndpoint(identity) ||
+        !primaryBindingContext.owner.identity.sameEndpoint(identity)) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+        return EBUSY;
     }
+    identity.phy = primaryBindingContext.owner.identity.phy;
+    identity.lmac = primaryBindingContext.owner.identity.lmac;
+    ItlFirmwareContextReceipt receipt = {};
     
     memset(&add_sta_cmd, 0, sizeof(add_sta_cmd));
     
@@ -11839,7 +11937,7 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
             }
         }
         
-        if (iwx_mimo_enabled(sc) && ic->ic_bss->ni_rx_nss > 1)
+        if (iwx_mimo_enabled(sc) && in->in_ni.ni_rx_nss > 1)
             add_sta_cmd.station_flags |= htole32(IWX_STA_FLG_MIMO_EN_MIMO2);
         else
             add_sta_cmd.station_flags |= htole32(IWX_STA_FLG_MIMO_EN_SISO);
@@ -11886,16 +11984,47 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     }
     
     status = IWX_ADD_STA_SUCCESS;
-    err = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA, sizeof(add_sta_cmd),
-                                  &add_sta_cmd, &status);
-    if (generation != sc->sc_generation)
-        return ENXIO;
-    if (err)
-        return err;
-    if ((status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
-        return EIO;
-    sc->sc_flags |= IWX_FLAG_STA_ACTIVE;
-
+    identity.station = add_sta_cmd.sta_id;
+    identity.commandLength = sizeof(add_sta_cmd);
+    const Lease::Admission admission = primaryStationContext.begin(
+        update ? Lease::Operation::Modify : Lease::Operation::Add,
+        generation, identity, &receipt);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (admission != Lease::Admission::Submit)
+        return admission == Lease::Admission::Already ? 0 :
+            admission == Lease::Admission::Missing ? ENOENT :
+            admission == Lease::Admission::Exhausted ? EOVERFLOW : EBUSY;
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Station, false, false
+    };
+    struct iwx_host_cmd hcmd = {};
+    hcmd.context_command = &context;
+    hcmd.id = IWX_ADD_STA;
+    hcmd.len[0] = identity.commandLength;
+    hcmd.data[0] = &add_sta_cmd;
+    err = iwx_send_cmd_status(sc, &hcmd, &status);
+    const bool accepted = err == 0 &&
+        (status & IWX_ADD_STA_STATUS_MASK) == IWX_ADD_STA_SUCCESS;
+    const Lease::Completion completion = err != 0 && context.submitted ?
+        Lease::Completion::Uncertain : accepted ?
+        Lease::Completion::Success : Lease::Completion::Rejected;
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (!primaryStationContext.finish(receipt, sc->sc_generation, completion)) {
+        err = ENXIO;
+    } else {
+        if (primaryStationContext.confirmed)
+            sc->sc_flags |= IWX_FLAG_STA_ACTIVE;
+        else
+            sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
+        if (primaryStationContext.occupied() && context.submitted)
+            primaryStationCommand = add_sta_cmd;
+        else if (!primaryStationContext.occupied())
+            memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
+        if (err == 0 && !accepted)
+            err = EIO;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     return err;
 }
 
@@ -11941,94 +12070,90 @@ iwx_add_aux_sta(struct iwx_softc *sc)
 int ItlIwx::
 iwx_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
-    struct iwx_rm_sta_cmd rm_sta_cmd;
-    int err;
-    const int generation = sc->sc_generation;
-    
-    if ((sc->sc_flags & IWX_FLAG_STA_ACTIVE) == 0) {
-        return 0;
-    }
-    
-    memset(&rm_sta_cmd, 0, sizeof(rm_sta_cmd));
-    if (ic->ic_opmode == IEEE80211_M_MONITOR)
-        rm_sta_cmd.sta_id = IWX_MONITOR_STA_ID;
-    else
-        rm_sta_cmd.sta_id = IWX_STATION_ID;
-    
-    err = iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0, sizeof(rm_sta_cmd),
-                           &rm_sta_cmd);
-    if (generation != sc->sc_generation)
-        return ENXIO;
-    if (err)
-        return err;
-    sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
+    ItlFirmwareContextReceipt receipt = {};
+    int error = beginPrimaryStationCleanup(true, &receipt);
+    if (error != 0 || receipt.serial == 0)
+        return error;
+    error = iwx_remove_station(sc, receipt);
+    return finishPrimaryStationCleanup(receipt, error);
+}
 
-    return err;
+int ItlIwx::
+iwx_remove_station(struct iwx_softc *sc, const ItlFirmwareContextReceipt &receipt)
+{
+    struct iwx_rm_sta_cmd command = {};
+    command.sta_id = receipt.identity.station;
+    ItlFirmwareContextCommand context = {
+        receipt, ItlFirmwareContextCommand::Kind::Station, true, false
+    };
+    struct iwx_host_cmd hcmd = {};
+    hcmd.context_command = &context;
+    hcmd.id = IWX_REMOVE_STA;
+    hcmd.len[0] = sizeof(command);
+    hcmd.data[0] = &command;
+    return iwx_send_cmd(sc, &hcmd);
 }
 
 int ItlIwx::
 iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_node *ni = &in->in_ni;
-    int err = 0, i;
-    const int generation = sc->sc_generation;
-    const bool inherited_flush =
-        (sc->sc_flags & IWX_FLAG_TXFLUSH) != 0;
-
-    /* Keep all producers fenced from the flush response through scheduler
-     * queue removal and REMOVE_STA.  Reopening the producer between those
-     * operations recreates a queue whose firmware owner is disappearing. */
-    sc->sc_flags |= IWX_FLAG_TXFLUSH;
-
-    err = iwx_flush_sta(sc, in);
-    if (generation != sc->sc_generation)
+    ItlFirmwareContextReceipt receipt = {};
+    int err = beginPrimaryStationCleanup(true, &receipt);
+    if (err != 0 || receipt.serial == 0)
+        return err;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = primaryStationContext.commandCurrent(receipt.serial, sc->sc_generation);
+    const bool confirmed = primaryStationContext.confirmed;
+    const int queue = sc->first_data_qid;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!current)
         return ENXIO;
-    if (err) {
-        XYLog("%s: could not flush Tx path (error %d)\n",
-            __FUNCTION__, err);
-        goto out;
-    }
-
-    if (ic->ic_opmode != IEEE80211_M_MONITOR) {
-        err = iwx_disable_txq(sc, IWX_STATION_ID,
-                              sc->first_data_qid, IWX_MGMT_TID);
-        if (generation != sc->sc_generation)
-            return ENXIO;
-        if (err) {
-            XYLog("%s: could not disable management Tx queue %d "
-                  "(error %d)\n", DEVNAME(sc), sc->first_data_qid, err);
-            goto out;
+    if (confirmed && receipt.identity.mode != IEEE80211_M_MONITOR) {
+        err = iwx_flush_station(sc, receipt);
+        if (err == 0) {
+            ItlFirmwareContextCommand context = {
+                receipt, ItlFirmwareContextCommand::Kind::Station, true, false
+            };
+            err = iwx_disable_txq(sc, receipt.identity.station, queue, IWX_MGMT_TID, &context);
         }
     }
-    err = iwx_rm_sta_cmd(sc, in);
-    if (generation != sc->sc_generation)
-        return ENXIO;
-    if (err) {
-        printf("%s: could not remove STA (error %d)\n",
-            DEVNAME(sc), err);
-        goto out;
+    if (err == 0)
+        err = iwx_remove_station(sc, receipt);
+    if (err == 0) {
+        irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        if (!primaryStationContext.commandCurrent(receipt.serial, sc->sc_generation))
+            err = ENXIO;
+        else {
+            sc->sc_rx_ba_sessions = 0;
+            sc->ba_rx.start_tidmask = 0;
+            sc->ba_rx.stop_tidmask = 0;
+            sc->ba_tx.start_tidmask = 0;
+            sc->ba_tx.stop_tidmask = 0;
+        }
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     }
-
-    sc->sc_rx_ba_sessions = 0;
-    sc->ba_rx.start_tidmask = 0;
-    sc->ba_rx.stop_tidmask = 0;
-    sc->ba_tx.start_tidmask = 0;
-    sc->ba_tx.stop_tidmask = 0;
-    for (i = 0; i < IEEE80211_NUM_TID; i++) {
-        struct ieee80211_tx_ba *ba = &ni->ni_tx_ba[i];
-        if (ba->ba_state != IEEE80211_BA_AGREED)
-            continue;
-        ieee80211_delba_request(ic, ni, 0, 1, i);
-        if (generation != sc->sc_generation)
-            return ENXIO;
+    for (int i = 0; err == 0 && in != NULL && i < IEEE80211_NUM_TID; ++i) {
+        IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+        if (ownerLock == NULL)
+            break;
+        IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+        const bool sameAttempt = receipt.identity.attempt.equals(
+            ItlScanCommandPolicy::identityLocked(ic)) &&
+            memcmp(receipt.identity.peer, in->in_macaddr, IEEE80211_ADDR_LEN) == 0;
+        const bool agreed = sameAttempt &&
+            in->in_ni.ni_tx_ba[i].ba_state == IEEE80211_BA_AGREED;
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+        /* The generic BSS replacement owns old BA retirement. Never issue
+         * DELBA against the successor simply because it occupies ic_bss. */
+        if (!sameAttempt)
+            break;
+        if (agreed)
+            ieee80211_delba_request(ic, &in->in_ni, 0, 1, i);
+        if (receipt.generation != static_cast<uint32_t>(sc->sc_generation))
+            err = ENXIO;
     }
-
-out:
-    if (!inherited_flush)
-        sc->sc_flags &= ~IWX_FLAG_TXFLUSH;
-    return err;
+    return finishPrimaryStationCleanup(receipt, err);
 }
 
 uint8_t ItlIwx::
@@ -16706,7 +16831,7 @@ iwx_auth(struct iwx_softc *sc)
     if (err) {
         XYLog("%s: could not add sta (error %d)\n",
               DEVNAME(sc), err);
-        goto rm_binding;
+        goto rm_sta;
     }
 
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
@@ -16793,7 +16918,7 @@ iwx_deauth(struct iwx_softc *sc)
     else
         iwx_cancel_session_protection(sc, in);
     
-    if (sc->sc_flags & IWX_FLAG_STA_ACTIVE) {
+    { /* An uncertain station ADD owns cleanup even without STA_ACTIVE. */
         err = iwx_rm_sta(sc, in);
         if (err)
             return err;
@@ -18169,6 +18294,8 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
             IOSimpleLockLockDisableInterrupt(that->wclScanLock);
         that->primaryMacContext.clear();
         that->primaryBindingContext.clear();
+        that->primaryStationContext.clear();
+        memset(&that->primaryStationCommand, 0, sizeof(that->primaryStationCommand));
         memset(&that->primaryMacCommand, 0, sizeof(that->primaryMacCommand));
         IOSimpleLockUnlockEnableInterrupt(that->wclScanLock, irq);
     }

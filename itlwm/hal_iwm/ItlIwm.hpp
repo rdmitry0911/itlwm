@@ -154,6 +154,8 @@ public:
     bool stateTransitionCurrent(const ItlStateTransitionRequest &);
     bool primaryFirmwareContextsPresent();
     bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const;
+    int beginPrimaryStationCleanup(bool, ItlFirmwareContextReceipt *);
+    int finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &, int);
     int postStateTransitionCommit(const ItlStateTransitionRequest &, int);
     int drainStateTransitionCommit(IOInterruptEventSource *);
     void recoverStateTransition(const ItlStateTransitionRequest &);
@@ -281,7 +283,8 @@ public:
     int    iwm_nic_init(struct iwm_softc *);
     int    iwm_enable_ac_txq(struct iwm_softc *, int, int);
     int    iwm_enable_txq(struct iwm_softc *, int, int, int, int, int, int);
-    int    iwm_disable_txq(struct iwm_softc *, uint8_t, uint8_t, uint8_t);
+    int    iwm_disable_txq(struct iwm_softc *, uint8_t, uint8_t, uint8_t,
+                          ItlFirmwareContextCommand * = nullptr);
     int    iwm_enable_default_tx_queues(struct iwm_softc *);
     int    iwm_disable_tx_queues(struct iwm_softc *);
     int    iwm_post_alive(struct iwm_softc *);
@@ -491,7 +494,8 @@ public:
     void iwm_publish_mfp_capability(struct iwm_softc *);
     void iwm_mfp_pae_abort_all(struct iwm_softc *);
     void iwm_mfp_pae_detach_begin(struct iwm_softc *);
-    int    iwm_flush_tx_path(struct iwm_softc *, int);
+    int    iwm_flush_tx_path(struct iwm_softc *, int,
+                            ItlFirmwareContextCommand * = nullptr);
     void    iwm_led_enable(struct iwm_softc *);
     void    iwm_led_disable(struct iwm_softc *);
     int    iwm_led_is_enabled(struct iwm_softc *);
@@ -512,7 +516,7 @@ public:
     int    iwm_add_sta_cmd(struct iwm_softc *, struct iwm_node *, int, unsigned int);
     int    iwm_add_aux_sta(struct iwm_softc *);
     int    iwm_rm_sta_cmd(struct iwm_softc *, struct iwm_node *);
-    int    iwm_drain_sta(struct iwm_softc *, struct iwm_node *, bool);
+    int    iwm_drain_sta(struct iwm_softc *, const ItlFirmwareContextReceipt &, bool);
     uint16_t iwm_scan_rx_chain(struct iwm_softc *);
     uint32_t iwm_scan_rate_n_flags(struct iwm_softc *, int, int);
     uint8_t    iwm_lmac_scan_fill_channels(struct iwm_softc *,
@@ -693,6 +697,8 @@ public:
     ItlStateTransitionLease stateTransition;
     ItlFirmwareContextLease primaryMacContext;
     ItlFirmwareContextLease primaryBindingContext;
+    ItlFirmwareContextLease primaryStationContext;
+    struct iwm_add_sta_cmd primaryStationCommand;
     struct iwm_mac_ctx_cmd primaryMacCommand;
     IOInterruptEventSource *stateTransitionSource;
     uint64_t scanCommandAbortSerial;

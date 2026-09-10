@@ -171,7 +171,7 @@ struct TestHal : OSObject {
     IOSimpleLock *wclScanLock = &scanLock;
     ItlScanCommandLease scanCommand{};
     ItlStateTransitionLease stateTransition{};
-    ItlFirmwareContextLease primaryMacContext{}, primaryBindingContext{};
+    ItlFirmwareContextLease primaryMacContext{}, primaryBindingContext{}, primaryStationContext{};
     IOInterruptEventSource *stateTransitionSource = nullptr;
     ieee80211_node node;
     TestCommandGate gate;
@@ -248,7 +248,7 @@ static void ieee80211_ba_del(ieee80211_node *) { assert(!leafDepth); }
     int prefix##_run_stop(soft *) { return lower(1); } \
     int prefix##_deauth(soft *) { \
         const int result = lower(2); \
-        if (result == 0) { primaryMacContext.clear(); primaryBindingContext.clear(); } \
+        if (result == 0) { primaryMacContext.clear(); primaryBindingContext.clear(); primaryStationContext.clear(); } \
         return result; \
     } \
     int prefix##_scan(soft *, const ItlStateTransitionRequest &request) { \
@@ -310,11 +310,12 @@ template<class T> struct Fixture {
 template<class T> static void suite() {
     for (auto oldState : {IEEE80211_S_INIT, IEEE80211_S_SCAN})
     for (auto nextState : {IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH})
-    for (bool binding : {false,true})
+    for (int kind : {0,1,2})
     for (bool uncertain : {false,true}) {
         Fixture<T> f; auto &d = f.driver;
         d.com.sc_ic.ic_state = oldState;
-        auto &context = binding ? d.primaryBindingContext : d.primaryMacContext;
+        auto &context = kind == 2 ? d.primaryStationContext :
+            kind == 1 ? d.primaryBindingContext : d.primaryMacContext;
         context.owner.serial = 19; context.owner.generation = d.com.sc_generation;
         context.stage = uncertain ? ItlFirmwareContextLease::Stage::Uncertain :
             ItlFirmwareContextLease::Stage::Active;
