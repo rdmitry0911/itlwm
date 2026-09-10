@@ -1,5 +1,77 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Next-gate evidence — 2026-09-10 23:16 UTC
+
+The RX commit 58d19493 is confirmed on origin. Its full guest build and loaded
+image distinction above is unchanged. Work immediately continued into the
+actual TVQM allocation prerequisite, not another status-only goal turn.
+
+scripts/test_iwx_tvqm_allocation.sh now extracts the complete production
+iwx_tvqm_alloc_txq, both enable wrappers, iwx_alloc_tx_ring,
+iwx_tx_ring_init and iwx_ap_exchange_tx_ring_carrier. It compiles the real
+firmware structures, tracks each allocated DMA address/map, and models an
+accepted command whose response is lost or malformed. This is a software
+reproducer, not observed firmware behavior or a new on-air test.
+
+The four controls (control, local-dma, preallocated, ap-control) pass on Linux
+and macOS. Named transport and short cases independently fail because the
+allocator resets firmware-owned descriptor storage; collision fails because
+the full exchange replaces an already-live primary carrier with an AP one.
+Each is a compiled executable failure with exit 134, not a compilation failure.
+The retry case records five submitted commands, five unsafe carrier resets
+and ten freed firmware-referenced DMA regions before its assertion fails
+(exit 134). The actual driver retry loop, not the fixture, chooses those five
+sizes. TVQM_NEGATIVE_REF=58d19493 retains the exact baseline extraction route.
+These four negative cases are deliberately outside the passing aggregate
+until the complete lifetime correction lands; the control default is not a
+claim that TVQM is fixed.
+
+Important implementation constraint discovered during this audit: attach
+preallocates q0/q1/q2 storage (larger qids return an empty carrier from
+iwx_alloc_tx_ring). A nonzero ring_count therefore cannot prove firmware
+ownership. The preallocated control must continue to allow replacement of
+unused local q1 memory; collision rejection needs a real firmware queue owner,
+including the fixed iwx_enable_txq/disable path, not just an allocation flag.
+The shared AP removal path also detaches/reclaims a carrier before REMOVE_STA;
+audit its flush/removal terminal and readers together with the dynamic path.
+Do not implement a blanket nonempty-ring refusal or merely limit the retry
+count while leaving submitted DMA reclamation unsafe.
+
+The next production step remains the whole allocation/q0/physical-reset
+contract described below, followed by copied TX BA completion and IWM reset
+drain. No new driver changes, installation, reboot or release promotion are
+claimed for this reproducer checkpoint.
+
+## FIX_CANDIDATE: actual IWX TVQM allocation and reset ownership
+
+58d19493 is built and pushed, not loaded. Continue the physical TX queue
+transaction before moving its upper BA completion. The current allocator uses
+one shared sc_tvqm_ring, overwrites it at entry, frees it after any response
+error, and retries the whole firmware command at smaller sizes. A command can
+already have transferred its DMA addresses to firmware before such an error.
+The current carrier exchange also replaces an occupied queue instead of proving
+that the returned firmware ID is available for this allocation.
+
+Intel v6.12 pcie/tx-gen2.c, iwl_txq_dyn_alloc, retries only the local DMA
+allocation before submitting SCD_QUEUE_CFG; iwl_pcie_txq_alloc_response rejects
+an already-used queue before publication. Linux's transport failure/free paths
+are not copied as a claim that this port has the same stop/error synchronization.
+The exact local q0 doorbell and iwx_stop_device software-reset edge must own
+submitted-but-unknown memory here. The Apple 25C56 retained join-abort consumer
+remains the upper lifecycle reference, not an Intel queue ABI source.
+
+Give the complete pending allocation an exact serial, hardware/reset lifecycle,
+station/TID and task admission. Fence its actual q0 doorbell. Permit size
+fallback only for a local allocation failure before submission. Publish a
+confirmed queue only into an unused carrier. Retain an ambiguous submitted
+carrier, prevent its reuse and request recovery; free it only after an actual
+hardware reset, outside the leaf lock. Cancellation before submission may
+free immediately, while an active allocator survives reset until its own exit.
+Cover the full allocator and q0/reset integration, including AP callers, before
+claiming this prerequisite complete. Then finish TX BA request/host publication
+and IWM's actual producer/reset barrier; do not promote RX-only work as a
+completed failure/reconnect layer.
+
 ## Checkpoint — 2026-09-10 23:03 UTC (September 11 locally)
 
 PROGRESS: the preceding status response was read-only. The complete primary
