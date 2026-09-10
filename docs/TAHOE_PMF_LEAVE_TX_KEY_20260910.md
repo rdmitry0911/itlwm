@@ -217,3 +217,16 @@ ZIP integrity verification also passed. Publication and fresh public-download
 verification remain a separate next operation. The post-roam DHCP failure,
 earlier monitored traffic losses, full post-S3 GUI/profile matrix and IWM/IWX
 hardware qualification remain explicitly open.
+
+## Published artifact verification
+
+The Tahoe prerelease asset was replaced at 08:35:53 UTC with source
+`964a90b3`, asset ID `554606775`, size 15,610,969 bytes. A fresh GitHub API
+read returned the candidate ZIP digest above and the exact staged release
+notes. A separate fresh public download was byte-compared with the qualified
+archive; its ZIP SHA-256 and extracted Mach-O SHA-256 match the prepared,
+installed and loaded candidate identities. The loaded boot/UUID were checked
+again before publication. The previous public archive remains available for
+rollback. Publication does not close the remaining roaming, GUI/profile,
+packet-loss or hardware-coverage boundaries recorded above. No physical user
+host was installed or rebooted.
