@@ -298,6 +298,23 @@ ieee80211_get_txkey(struct ieee80211com *ic, const struct ieee80211_frame *wh,
     struct ieee80211_node *ni)
 {
 	int kid;
+	int subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+
+	/* WCL leave cancels the next-association SAE/RSN policy before sending
+	 * the old peer's protected deauth.  That configuration lifetime is not
+	 * the installed PTK lifetime: use the negotiated peer key for robust
+	 * unicast management until node/key teardown actually retires it.
+	 * Never fall back to a GTK (or plaintext) if that PTK has been removed;
+	 * the normal encryption/lifetime checks still reject the packet. */
+	if (!IEEE80211_IS_MULTICAST(wh->i_addr1) &&
+	    (ni->ni_flags & (IEEE80211_NODE_MFP | IEEE80211_NODE_TXMGMTPROT)) ==
+	    (IEEE80211_NODE_MFP | IEEE80211_NODE_TXMGMTPROT) &&
+	    (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0 &&
+	    (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT &&
+	    (subtype == IEEE80211_FC0_SUBTYPE_DEAUTH ||
+	    subtype == IEEE80211_FC0_SUBTYPE_DISASSOC ||
+	    subtype == IEEE80211_FC0_SUBTYPE_ACTION))
+		return &ni->ni_pairwise_key;
 
 	if ((ic->ic_flags & IEEE80211_F_RSNON) &&
         !IEEE80211_IS_MULTICAST(wh->i_addr1) &&
