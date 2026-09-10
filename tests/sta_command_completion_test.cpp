@@ -14,6 +14,7 @@
 #include <functional>
 #include <cstdlib>
 #include <HAL/ItlFirmwareContextLease.hpp>
+#include <HAL/ItlStationRxBa.hpp>
 using std::min;
 using u8 = uint8_t; using u16 = uint16_t; using u32 = uint32_t;
 using u64 = uint64_t; using s8 = int8_t; using s16 = int16_t;
@@ -154,6 +155,7 @@ struct DriverState {
     Lease primaryMacContext{}, primaryBindingContext{}, primaryStationContext{};
     ItlFirmwareStationRetirement primaryStationRetirement{};
     ItlFirmwareStationUses primaryStationUses{};
+    ItlStationRxBa primaryRxBa{};
     unsigned resumeChecks = 0;
     void resumePrimaryStationUsers() { assert(locks.empty()); ++resumeChecks; }
     struct { bool open=true; } scanCommand;
@@ -193,6 +195,8 @@ static int submit(Driver &driver, Device *sc, ItlFirmwareContextCommand *context
     int finishPrimaryBaCommand(const ItlFirmwareContextCommand &,int,bool); \
     bool beginPrimaryStationUse(ieee80211_node *, ItlFirmwareContextReceipt *, bool = true); \
     void endPrimaryStationUse(ItlFirmwareContextReceipt *); \
+    bool releasePrimaryStationReader(ItlFirmwareContextReceipt *); \
+    int retirePrimaryRxBa() { return 0; } \
     bool firmwareContextCommandCurrentLocked(const ItlFirmwareContextCommand &) const; \
     int beginPrimaryStationCleanup(bool, ItlFirmwareContextReceipt *); \
     int finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &, int); \

@@ -145,6 +145,7 @@
 #include <HAL/ItlScanCommandLease.hpp>
 #include <HAL/ItlStateTransitionLease.hpp>
 #include <HAL/ItlFirmwareContextLease.hpp>
+#include <HAL/ItlStationRxBa.hpp>
 #include <HAL/ItlScanCommandPolicy.hpp>
 
 enum class ItlIwxWclScanPhase : uint8_t {
@@ -295,7 +296,14 @@ public:
     int finishPrimaryBaCommand(const ItlFirmwareContextCommand &, int, bool);
     bool beginPrimaryStationUse(struct ieee80211_node *, ItlFirmwareContextReceipt *, bool = true);
     void endPrimaryStationUse(ItlFirmwareContextReceipt *);
-    bool deferPrimaryStationUsers(const ItlStateTransitionRequest &);
+    bool releasePrimaryStationReader(ItlFirmwareContextReceipt *);
+    bool deferPrimaryStationUsers(const ItlStateTransitionRequest &, bool = false);
+    int queuePrimaryRxBa(struct ieee80211_node *, uint8_t, bool);
+    void runPrimaryRxBa();
+    void postPrimaryRxBa(const ItlStationRxBaRequest &, ItlFirmwareContextReceipt *, int, uint8_t, bool);
+    void drainPrimaryRxBa(IOInterruptEventSource *);
+    int retirePrimaryRxBa();
+    void resetPrimaryRxBaLocked();
     void resumePrimaryStationUsers();
     void reopenPrimaryStationUsers(const ItlStateTransitionRequest &);
     int finishPrimaryStationCleanup(const ItlFirmwareContextReceipt &, int);
@@ -467,9 +475,6 @@ public:
     static void    iwx_rx_ba_session_expired(void *);
     static void    iwx_reorder_timer_expired(void *);
     static void    iwx_update_chw(struct ieee80211com *);
-    int     iwx_sta_rx_agg(struct iwx_softc *, struct ieee80211_node *, uint8_t,
-                           uint16_t, uint16_t, int, int,
-                           const ItlFirmwareContextReceipt * = nullptr);
     int iwx_sta_rx_ba_cmd(struct iwx_softc *, const ItlFirmwareContextReceipt *,
                          uint8_t, uint16_t, uint16_t, bool, uint8_t *);
     int     iwx_rx_baid_cfg_cmd(struct iwx_softc *, uint8_t, uint8_t,
@@ -876,6 +881,7 @@ public:
     ItlFirmwareContextLease primaryBindingContext;
     ItlFirmwareContextLease primaryStationContext;
     ItlFirmwareStationUses primaryStationUses;
+    ItlStationRxBa primaryRxBa;
     ItlFirmwareStationRetirement primaryStationRetirement;
     struct iwx_add_sta_cmd primaryStationCommand;
     struct iwx_mac_ctx_cmd primaryMacCommand;

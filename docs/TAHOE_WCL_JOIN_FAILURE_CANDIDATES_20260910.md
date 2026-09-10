@@ -1,5 +1,106 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Checkpoint — 2026-09-10 23:03 UTC (September 11 locally)
+
+PROGRESS: the preceding status response was read-only. The complete primary
+RX BA ingress/worker/mailbox/host-retirement path is now implemented in IWM
+and IWX, including old non-MQ IWM sessions. ADDBA captures station incarnation,
+TID, serial, SSN/window, timeout and token before queuing. A separate stop slot
+cannot be overwritten by a successor start. Hardware work carries values,
+not a borrowed node; a real created resource survives logical replacement or
+callback-source shutdown. Main-workloop publication validates the accepted
+request and owns reorder/timer and generic callbacks. IWX releases the inner
+hardware task admission before notification; the old outer TX worker is still
+a separate prerequisite, not implicitly made safe by this RX split.
+
+RUN-stop and station removal preserve completed firmware removals while
+deferring the exact state transition for host cleanup. EINPROGRESS is not a
+failed join. Closed-admission host-retirement readers prevent early station
+reuse. Actual reset clears resources and pending mailboxes but does not erase
+a running worker/publishing reader. Primary deauth/removal no longer zeros
+adjacent AP session accounting; all shared count accesses are atomic.
+
+The adjacent timer audit below found and corrected missing timer recreation
+after DELBA/reset in primary and AP starts. The pre-correction production RX
+completion compiled, then failed the repeated-start timer assertion (exit
+134). The unchanged c15a4977 state workers independently compile and fail the
+EINPROGRESS-as-normal-completion assertion for IWM and IWX (each exit 134).
+Old complete RX ingress negative controls similarly fail copied-request
+admission, not compilation.
+
+Linux and macOS complete aggregates pass: 81 RX lifecycle scenarios, 254
+state-worker groups, 581 actual station/BA command cases, 118 context cases,
+management and three-family AP RX/TX contracts. RX tests include cancellation
+before/after submission, source closure, ambiguous start/stop, AP BAID collision,
+stop-before-successor-start during a command, partial cleanup/retry, reader
+and IWX task balance, reset/reentrant callbacks, timer reuse and serial limits.
+Three concurrent counter users also retain the adjacent count. Firmware wire
+helpers are executed separately in the station suite; timers, scheduling,
+packet storage and real reset/DMA remain explicit fixture boundaries. The AP
+timer callsites have source/build coverage, not new AP hardware qualification.
+
+Production fingerprint, equal source and guest mirror:
+d24d995c59628618e349ba7aff96bfd00231138bd825fef8f79daaec421f65c8.
+Built UUID: 2CEF0F69-B628-3295-B863-0A1050B56DD3.
+Mach-O SHA-256:
+0c721ffd051e792d8cba1df616a5793b7ff129dfd9a57b19b3fbd3df8e2a3166.
+Guest regression/build log:
+/Volumes/AIAMBuild/itlwm-88c0d3f9/DerivedData-join-failure-20260910/rx-ba-async-20260911.k1hoB7,
+SHA-256 6d0bacf77f4893a3df22645313ea942658f856ae96d19dfb15270ec91ba1993f.
+Linux log: /tmp/aiam-rx-ba-async-20260911.HrHOrm,
+SHA-256 74f2d9d2d83d7b8a8e37c979d36cb60a2995330beb88b155706c78d5920c8919.
+All 1085 undefined symbols resolve; no _thread_call_cancel_wait dependency.
+This is built WIP, not a runtime-qualified reconnect layer. Read-only lab
+verification retained boot 9C8DDC74, loaded UUID 9D5A9332 and STA
+172.16.66.212. No installation/reboot, physical user-host change or replacement
+release occurred. User-owned local Build/ remains untouched.
+
+Required continuation: complete copied TX BA operations and actual queue
+ownership, drain IWM hardware constructors before ring reset, retain uncertain
+IWX TVQM allocations, and finish AUTH/time-event/failure-producer lifetimes.
+Then qualify the exact image through real candidate failure/progression,
+GUI/open/WPA2/SAE/S3/AP and update the release. RX tests do not close those
+remaining full-lifetime boundaries.
+
+## FIX_CANDIDATE: reusable RX timers and shared AP/STA accounting
+
+The RX transaction review found a concrete repeated-session defect in both
+families: clear_reorder_buffer calls timeout_free for both timers, whereas
+the next STA/AP start only initializes reorder values. CTimeout::timeout_free
+nulls the pointer and timeout_add_msec rejects a null object. The original
+timeout_set calls run only at attach, not at every reconnect or hardware reset.
+Recreate missing session/reorder timers on the main-workloop RX publication
+and in the adjacent AP start, before any timer can be armed. Keep timeout
+callbacks tied to the persistent RXBA table, not a borrowed node. Exercise a
+stop/start reuse with timer storage actually cleared at retirement; this is
+timer-lifecycle coverage, not real IOTimerEventSource scheduling qualification.
+
+The new primary worker and existing AP path also update the shared RX session
+count in different contexts. Use common atomic load/add/drop/reset operations
+for every production access. This prevents lost accounting updates but does
+not make a check-then-submit a firmware resource reservation, replace the
+pending IWM reset barrier, or qualify AP firmware ownership after an ambiguous
+command response. Firmware resource refusal remains an explicit result.
+
+## FIX_CANDIDATE: immutable RX BA work and asynchronous host retirement
+
+The previous goal turn is PROGRESS (076a5674/c15a4977, tests and complete
+builds). Continue the actual RX transaction, not another result-only guard:
+copy the ADDBA ingress values and station incarnation, keep stop-before-start
+ordering per TID, execute only wire operations in the worker, and publish the
+copied result on the main workloop. Firmware-created resources survive stale
+upper requests. Keep a station reader through host publication but release
+the separate IWX hardware task pin before notifying the workloop.
+
+Use the same asynchronous host-retirement boundary for RUN-stop/deauth.
+Successful firmware removals must survive state-worker deferral and must not
+be reissued; the main callback owns reorder purge/timers and exact accounting.
+Include legacy non-MQ IWM TIDs without BAIDs and preserve adjacent AP counts.
+Actual reset, logical cancellation and source shutdown must balance pending
+readers without forgetting a still-owned firmware resource. TX BA/TVQM and
+the actual IWM hardware-producer reset barrier remain part of the whole layer,
+not claims implied by completion of this RX transaction.
+
 ## Checkpoint — 2026-09-10 22:20 UTC (September 11 locally)
 
 PROGRESS continues after 076a5674: both RUN-stop bodies now select only the

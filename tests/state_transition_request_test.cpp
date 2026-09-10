@@ -229,7 +229,8 @@ static void ieee80211_ba_del(ieee80211_node *) { assert(!leafDepth); }
 
 #define STATE_DECLARATIONS \
     void reopenPrimaryStationUsers(const ItlStateTransitionRequest &); \
-    bool deferPrimaryStationUsers(const ItlStateTransitionRequest &); \
+    bool deferPrimaryStationUsers(const ItlStateTransitionRequest &, bool = false); \
+    void drainPrimaryRxBa(IOInterruptEventSource *) {} \
     void resumePrimaryStationUsers(); \
     bool initStateTransitions(); \
     void shutdownStateTransitions(); \
@@ -408,6 +409,77 @@ template<class T> static void suite() {
             assert(d.lowerCalls == expected && !d.com.init_task.enqueues);
         }
         assert(!unlocked);
+        ++physicalContextCases;
+    }
+    // RX firmware retirement can finish before its main-workloop publication.
+    // EINPROGRESS is an exact continuation, never a failed join or INIT reset.
+    // Exercise the complete state worker with the asynchronous RX boundary
+    // represented by a real station reader, including both lost-wakeup edges.
+    for (auto oldState : {IEEE80211_S_SCAN, IEEE80211_S_RUN})
+    for (auto nextState : {IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH})
+    for (int race = 0; race < 4; ++race) {
+        Fixture<T> f; auto &d = f.driver;
+        d.com.sc_ic.ic_state = oldState;
+        assert(d.request(nextState, 7) == 0);
+        auto &station = d.primaryStationContext;
+        station.owner = {19,d.com.sc_generation,{}};
+        station.owner.identity.attempt = d.stateTransition.request.identity;
+        station.stage = ItlFirmwareContextLease::Stage::Active;
+        station.confirmed = true;
+        assert(d.primaryStationUses.start(station.owner));
+        const auto serial = d.stateTransition.request.serial;
+        ItlFirmwareContextReceipt use{};
+        std::function<void()> exitAtDeferral;
+        d.lowerError = EINPROGRESS;
+        d.lowerHook = [&] {
+            assert(d.primaryStationUses.closed);
+            assert(d.primaryStationUses.acquire(station.owner, &use, true));
+            if (race == 1) {
+                // Completion was already delivered before the worker returned.
+                assert(d.primaryStationUses.release(&use));
+            } else if (race == 2) {
+                exitAtDeferral = [&] {
+                    if (d.stateTransition.stage != ItlStateTransitionLease::Stage::Deferred) {
+                        unlocked = exitAtDeferral;
+                        return;
+                    }
+                    assert(d.primaryStationUses.release(&use));
+                };
+                unlocked = exitAtDeferral;
+            } else if (race == 3) {
+                assert(d.request(IEEE80211_S_AUTH, 9) == 0);
+            }
+        };
+        d.work();
+        assert(d.lowerCalls.size() == 1);
+        assert(!d.commits && !d.failures && !d.com.init_task.enqueues);
+        assert(!d.stateTransitionSource->signals);
+        if (race == 0) {
+            assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Deferred);
+            assert(d.primaryStationUses.active == 1);
+        }
+        if (use.serial != 0) {
+            assert(d.primaryStationUses.release(&use));
+            d.resumePrimaryStationUsers();
+        }
+        assert(!unlocked && !d.primaryStationUses.active);
+        assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Queued);
+        assert((d.stateTransition.request.serial == serial) == (race != 3));
+        d.lowerError = 0;
+        d.work();
+        const auto expectedState = race == 3 ? IEEE80211_S_AUTH : nextState;
+        std::vector<int> expected;
+        if (oldState == IEEE80211_S_RUN) expected = {1,1,2};
+        else expected = {2,2};
+        if (expectedState == IEEE80211_S_SCAN) expected.push_back(3);
+        if (expectedState == IEEE80211_S_AUTH) expected.push_back(4);
+        assert(d.lowerCalls == expected && !d.com.init_task.enqueues);
+        d.stateTransitionSource->deliver();
+        assert(!d.failures && !d.com.init_task.enqueues);
+        if (expectedState != IEEE80211_S_SCAN) {
+            assert(d.commits == 1 && d.com.sc_ic.ic_state == expectedState);
+            assert(d.lastArgument == (race == 3 ? 9 : 7));
+        }
         ++physicalContextCases;
     }
     for (auto oldState : {IEEE80211_S_INIT, IEEE80211_S_SCAN})

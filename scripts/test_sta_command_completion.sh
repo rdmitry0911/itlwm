@@ -24,7 +24,7 @@ awk '
 ' "$PROJECT_DIR/itlwm/hal_iwm/if_iwmvar.h" "$PROJECT_DIR/itlwm/hal_iwx/if_iwxvar.h" > "$STA_TEST_DIR/sta-host-commands.inc"
 awk '
     /^(int|bool|void) ItlIw[mx]::$/ { type=$0 }
-    /^(beginPrimaryBaCommand|finishPrimaryBaCommand|beginPrimaryStationUse|endPrimaryStationUse|beginPrimaryStationCleanup|finishPrimaryStationCleanup|firmwareContextCommandCurrentLocked|primaryStationCleanupCurrent|notePrimaryStationRetirement)\(/ {
+    /^(beginPrimaryBaCommand|finishPrimaryBaCommand|beginPrimaryStationUse|endPrimaryStationUse|releasePrimaryStationReader|beginPrimaryStationCleanup|finishPrimaryStationCleanup|firmwareContextCommandCurrentLocked|primaryStationCleanupCurrent|notePrimaryStationRetirement)\(/ {
         if ($0 ~ /^beginPrimaryStationCleanup\(/ && ENVIRON["STA_USE_NEGATIVE_REF"] != "")
             selected=0
         else { selected=1; print type }

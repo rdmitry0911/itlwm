@@ -563,6 +563,7 @@ bool ItlIwx::attach(IOPCIDevice *device)
     primaryBindingContext = ItlFirmwareContextLease{};
     primaryStationContext = ItlFirmwareContextLease{};
     primaryStationUses = ItlFirmwareStationUses{};
+    primaryRxBa = ItlStationRxBa{};
     primaryStationRetirement = ItlFirmwareStationRetirement{};
     memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
     memset(&primaryMacCommand, 0, sizeof(primaryMacCommand));
@@ -1979,20 +1980,26 @@ beginPrimaryStationUse(struct ieee80211_node *node, ItlFirmwareContextReceipt *r
 void ItlIwx::
 endPrimaryStationUse(ItlFirmwareContextReceipt *receipt)
 {
+    if (releasePrimaryStationReader(receipt))
+        iwx_task_gate_leave(&com);
+}
+
+bool ItlIwx::
+releasePrimaryStationReader(ItlFirmwareContextReceipt *receipt)
+{
     if (wclScanLock == NULL)
-        return;
+        return false;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
     const bool released = primaryStationUses.release(receipt);
     const bool ready = released && primaryStationUses.active == 0;
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     if (ready)
         resumePrimaryStationUsers();
-    if (released)
-        iwx_task_gate_leave(&com);
+    return released;
 }
 
 bool ItlIwx::
-deferPrimaryStationUsers(const ItlStateTransitionRequest &request)
+deferPrimaryStationUsers(const ItlStateTransitionRequest &request, bool continuation)
 {
     struct ieee80211com *ic = &com.sc_ic;
     IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
@@ -2007,7 +2014,7 @@ deferPrimaryStationUsers(const ItlStateTransitionRequest &request)
         request.identity.equals(ItlScanCommandPolicy::identityLocked(ic));
     if (current && primaryStationContext.occupied())
         primaryStationUses.close(request.state <= IEEE80211_S_AUTH);
-    const bool deferred = current && primaryStationUses.active != 0 &&
+    const bool deferred = current && (primaryStationUses.active != 0 || continuation) &&
         stateTransition.defer(request, com.sc_generation,
                               ItlStateTransitionLease::DeferredKind::StationUsers);
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
@@ -2067,6 +2074,420 @@ reopenPrimaryStationUsers(const ItlStateTransitionRequest &request)
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
 }
+
+int ItlIwx::
+queuePrimaryRxBa(struct ieee80211_node *node, uint8_t tid, bool start)
+{
+    if (node == NULL || tid >= ItlStationRxBa::TidCount ||
+        wclScanLock == NULL || !getMainWorkLoop()->inGate())
+        return EINVAL;
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (ownerLock == NULL)
+        return ENXIO;
+    const struct iwx_node *in = (const struct iwx_node *)node;
+    ItlStationRxBaRequest request = {};
+    request.tid = tid;
+    request.start = start;
+    request.hardwareBaid = true;
+    if (start) {
+        const struct ieee80211_rx_ba *ba = &node->ni_rx_ba[tid];
+        request.ssn = ba->ba_winstart;
+        request.window = ba->ba_winsize;
+        request.timeout = ba->ba_timeout_val;
+        request.token = ba->ba_token;
+    }
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const auto &station = primaryStationUses.owner;
+    const bool current = stateTransitionSource != NULL && scanCommand.open &&
+        !(com.sc_flags & IWX_FLAG_SHUTDOWN) && ic->ic_state == IEEE80211_S_RUN &&
+        !primaryStationUses.closed && primaryStationContext.confirmed &&
+        !primaryStationContext.uncertain && station.serial != 0 &&
+        station.generation == static_cast<uint32_t>(com.sc_generation) &&
+        station.identity.mode == IEEE80211_M_STA && ic->ic_opmode == IEEE80211_M_STA &&
+        station.identity.attempt.equals(ItlScanCommandPolicy::identityLocked(ic)) &&
+        station.identity.mac == IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color) &&
+        memcmp(station.identity.peer, in->in_macaddr, IEEE80211_ADDR_LEN) == 0 &&
+        primaryRxBa.nextSerial != UINT64_MAX && primaryRxBa.lifecycle != UINT64_MAX;
+    if (current) {
+        request.station = station;
+        request.serial = ++primaryRxBa.nextSerial;
+        request.lifecycle = primaryRxBa.lifecycle;
+        primaryRxBa.latest[tid] = request.serial;
+        if (!start)
+            primaryRxBa.pending[1][tid] = ItlStationRxBaRequest{};
+        primaryRxBa.pending[start ? 1 : 0][tid] = request;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (!current)
+        return ECANCELED;
+    iwx_add_task(&com, systq, &com.ba_task);
+    return 0;
+}
+
+void ItlIwx::
+runPrimaryRxBa()
+{
+    struct ieee80211com *ic = &com.sc_ic;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return;
+    if (!iwx_task_gate_enter(&com, false))
+        return;
+    ItlStationRxBaRequest request = {};
+    ItlFirmwareContextReceipt use = {};
+    ItlStationRxBaResource resource = {};
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (primaryRxBa.phase == ItlStationRxBa::Phase::Idle &&
+        stateTransitionSource != NULL && scanCommand.open &&
+        !(com.sc_flags & IWX_FLAG_SHUTDOWN) &&
+        primaryStationContext.stage == ItlFirmwareContextLease::Stage::Active &&
+        primaryStationContext.confirmed && !primaryStationContext.uncertain) {
+        for (unsigned direction = 0; direction < 2 && request.serial == 0; ++direction) {
+            for (unsigned tid = 0; tid < ItlStationRxBa::TidCount; ++tid) {
+                auto &pending = primaryRxBa.pending[direction][tid];
+                if (pending.serial == 0)
+                    continue;
+                const bool current = pending.lifecycle == primaryRxBa.lifecycle &&
+                    pending.station.serial == primaryStationUses.owner.serial &&
+                    pending.station.generation == static_cast<uint32_t>(com.sc_generation) &&
+                    pending.station.identity.equals(primaryStationUses.owner.identity) &&
+                    pending.station.identity.attempt.equals(ItlScanCommandPolicy::identityLocked(ic));
+                if (current && primaryStationUses.acquire(pending.station, &use)) {
+                    request = pending;
+                    primaryRxBa.current = request;
+                    primaryRxBa.phase = ItlStationRxBa::Phase::Hardware;
+                    resource = primaryRxBa.resource[tid];
+                }
+                pending = ItlStationRxBaRequest{};
+                if (request.serial != 0)
+                    break;
+            }
+        }
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (request.serial == 0) {
+        iwx_task_gate_leave(&com);
+        return;
+    }
+    int error = 0;
+    uint8_t baid = resource.occupied ? resource.baid : IWX_RX_REORDER_DATA_INVALID_BAID;
+    if (request.start && (resource.occupied ||
+        ItlRxBaSessionCount::load(&com.sc_rx_ba_sessions) >= ItlStationRxBa::SessionLimit))
+        error = ENOSPC;
+    else if (request.start || resource.occupied)
+        error = iwx_sta_rx_ba_cmd(&com, &use, request.tid, request.ssn,
+            request.window, request.start, &baid);
+    postPrimaryRxBa(request, &use, error, baid, true);
+}
+
+void ItlIwx::
+postPrimaryRxBa(const ItlStationRxBaRequest &request, ItlFirmwareContextReceipt *use,
+                int error, uint8_t baid, bool hardwareTaskHeld)
+{
+    IOInterruptEventSource *source = NULL;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool owns = primaryRxBa.matches(request) &&
+        primaryRxBa.phase == ItlStationRxBa::Phase::Hardware;
+    const bool physical = owns && request.lifecycle == primaryRxBa.lifecycle &&
+        request.station.generation == static_cast<uint32_t>(com.sc_generation);
+    if (physical && !request.cleanup) {
+        auto &resource = primaryRxBa.resource[request.tid];
+        if (request.start && !resource.occupied &&
+            (error == 0 || primaryStationContext.uncertain)) {
+            resource = ItlStationRxBaResource{};
+            resource.station = request.station;
+            resource.occupied = true;
+            resource.hardwareBaid = request.hardwareBaid;
+            resource.baid = baid;
+            resource.uncertain = error != 0;
+            resource.counted = true;
+            ItlRxBaSessionCount::add(&com.sc_rx_ba_sessions);
+        } else if (!request.start && resource.occupied) {
+            if (error == 0)
+                resource.firmwareRemoved = true;
+            else if (primaryStationContext.uncertain)
+                resource.uncertain = true;
+        }
+    }
+    if (physical && stateTransitionSource != NULL && scanCommand.open &&
+        !(com.sc_flags & IWX_FLAG_SHUTDOWN) && use->serial != 0) {
+        primaryRxBa.use = *use;
+        *use = ItlFirmwareContextReceipt{};
+        primaryRxBa.result = error;
+        primaryRxBa.resultBaid = baid;
+        primaryRxBa.phase = ItlStationRxBa::Phase::Ready;
+        source = stateTransitionSource;
+        source->retain();
+    } else if (owns) {
+        primaryRxBa.current = ItlStationRxBaRequest{};
+        primaryRxBa.phase = ItlStationRxBa::Phase::Idle;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (use->serial != 0)
+        (void)releasePrimaryStationReader(use);
+    if (hardwareTaskHeld)
+        iwx_task_gate_leave(&com);
+    if (source != NULL) {
+        /* Always asynchronous, including a caller already on the main gate. */
+        source->interruptOccurred(NULL, NULL, 0);
+        source->release();
+    }
+}
+
+void ItlIwx::
+drainPrimaryRxBa(IOInterruptEventSource *source)
+{
+    if (wclScanLock == NULL || !getMainWorkLoop()->inGate())
+        return;
+    struct ieee80211com *ic = &com.sc_ic;
+    ItlStationRxBaRequest request = {};
+    ItlFirmwareContextReceipt use = {};
+    int error = 0;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool taken = source != NULL && source == stateTransitionSource &&
+        primaryRxBa.phase == ItlStationRxBa::Phase::Ready;
+    bool physical = false;
+    if (taken) {
+        request = primaryRxBa.current;
+        use = primaryRxBa.use;
+        error = primaryRxBa.result;
+        primaryRxBa.phase = ItlStationRxBa::Phase::Publishing;
+        physical = request.lifecycle == primaryRxBa.lifecycle && scanCommand.open &&
+            request.station.generation == static_cast<uint32_t>(com.sc_generation) &&
+            !(com.sc_flags & IWX_FLAG_SHUTDOWN);
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!taken)
+        return;
+
+    bool upper = false, recover = false;
+    struct ieee80211_node *node = ic->ic_bss;
+    IOSimpleLock *ownerLock = ic->ic_pae_selected_bss_lock;
+    if (physical && !request.cleanup && node != NULL && ownerLock != NULL) {
+        const struct iwx_node *in = (const struct iwx_node *)node;
+        IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+        irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        upper = primaryRxBa.latest[request.tid] == request.serial &&
+            request.station.identity.attempt.equals(ItlScanCommandPolicy::identityLocked(ic)) &&
+            request.station.identity.mac == IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color) &&
+            memcmp(request.station.identity.peer, in->in_macaddr, IEEE80211_ADDR_LEN) == 0 &&
+            ic->ic_state == IEEE80211_S_RUN && ic->ic_opmode == request.station.identity.mode;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+        if (upper && request.start) {
+            const struct ieee80211_rx_ba *ba = &node->ni_rx_ba[request.tid];
+            upper = ba->ba_state == IEEE80211_BA_REQUESTED &&
+                ba->ba_token == request.token && ba->ba_winstart == request.ssn &&
+                ba->ba_winsize == request.window && ba->ba_timeout_val == request.timeout;
+        }
+    }
+
+    if (physical) {
+        const unsigned first = request.cleanup ? 0 : request.tid;
+        const unsigned last = request.cleanup ? ItlStationRxBa::TidCount : first + 1;
+        for (unsigned tid = first; tid < last; ++tid) {
+            irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+            const auto resource = primaryRxBa.resource[tid];
+            IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+            if (!resource.occupied)
+                continue;
+            recover |= resource.uncertain;
+            if (resource.firmwareRemoved) {
+                if (resource.hostPublished && resource.hardwareBaid) {
+                    struct iwx_rxba_data *rxba = &com.sc_rxba_data[resource.baid];
+                    if (rxba->baid != resource.baid || rxba->sta_id != resource.station.identity.station ||
+                        rxba->tid != tid) {
+                        error = EIO;
+                        recover = true;
+                        continue;
+                    }
+                    iwx_clear_reorder_buffer(&com, rxba);
+                }
+                irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+                if (request.lifecycle == primaryRxBa.lifecycle &&
+                    request.station.generation == static_cast<uint32_t>(com.sc_generation)) {
+                    if (resource.counted)
+                        ItlRxBaSessionCount::drop(&com.sc_rx_ba_sessions);
+                    primaryRxBa.resource[tid] = ItlStationRxBaResource{};
+                }
+                IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+            } else if (!request.cleanup && request.start && error == 0 && !resource.hostPublished) {
+                if (resource.hardwareBaid) {
+                    struct iwx_rxba_data *rxba = &com.sc_rxba_data[resource.baid];
+                    if (rxba->baid != IWX_RX_REORDER_DATA_INVALID_BAID) {
+                        error = EIO;
+                        recover = true;
+                        continue;
+                    }
+                    rxba->sta_id = resource.station.identity.station;
+                    rxba->tid = tid;
+                    rxba->baid = resource.baid;
+                    rxba->timeout = upper ? request.timeout : 0;
+                    /* Previous DELBA/reset frees these persistent-slot timers. */
+                    if (!timeout_initialized(&rxba->session_timer))
+                        timeout_set(&rxba->session_timer, iwx_rx_ba_session_expired, rxba);
+                    if (!timeout_initialized(&rxba->reorder_buf.reorder_timer))
+                        timeout_set(&rxba->reorder_buf.reorder_timer,
+                            iwx_reorder_timer_expired, &rxba->reorder_buf);
+                    getmicrouptime(&rxba->last_rx);
+                    iwx_init_reorder_buffer(&rxba->reorder_buf, request.ssn, request.window);
+                    if (upper && request.timeout != 0) {
+                        timeout_add_usec(&rxba->session_timer, request.timeout);
+                        node->ni_rx_ba[tid].ba_timeout_val = 0;
+                    }
+                }
+                irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+                if (request.lifecycle == primaryRxBa.lifecycle &&
+                    request.station.generation == static_cast<uint32_t>(com.sc_generation))
+                    primaryRxBa.resource[tid].hostPublished = true;
+                else
+                    upper = false;
+                IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+            }
+        }
+    }
+    /* No borrowed node is used after either callback; its output may yield. */
+    if (upper && request.start) {
+        if (error == 0)
+            ieee80211_addba_req_accept(ic, node, request.tid);
+        else
+            ieee80211_addba_req_refuse(ic, node, request.tid);
+    }
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (primaryRxBa.matches(request)) {
+        if (physical && request.cleanup && request.lifecycle == primaryRxBa.lifecycle &&
+            request.station.generation == static_cast<uint32_t>(com.sc_generation))
+            primaryRxBa.cleanupError = error;
+        primaryRxBa.current = ItlStationRxBaRequest{};
+        primaryRxBa.use = ItlFirmwareContextReceipt{};
+        primaryRxBa.phase = ItlStationRxBa::Phase::Idle;
+    }
+    const bool replay = scanCommand.open && stateTransitionSource != NULL &&
+        !(com.sc_flags & IWX_FLAG_SHUTDOWN);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    (void)releasePrimaryStationReader(&use);
+    if (replay) {
+        if (recover && !request.cleanup)
+            iwx_add_task(&com, systq, &com.init_task);
+        else
+            iwx_add_task(&com, systq, &com.ba_task);
+    }
+}
+
+int ItlIwx::
+retirePrimaryRxBa()
+{
+    if (wclScanLock == NULL)
+        return ENXIO;
+    ItlStationRxBaRequest request = {};
+    ItlStationRxBaResource resources[ItlStationRxBa::TidCount] = {};
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const int priorError = primaryRxBa.cleanupError;
+    primaryRxBa.cleanupError = 0;
+    if (priorError != 0) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return priorError;
+    }
+    if (primaryRxBa.phase != ItlStationRxBa::Phase::Idle) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return EINPROGRESS;
+    }
+    bool occupied = false;
+    for (unsigned tid = 0; tid < ItlStationRxBa::TidCount; ++tid) {
+        resources[tid] = primaryRxBa.resource[tid];
+        occupied |= resources[tid].occupied;
+    }
+    primaryRxBa.cancelPending();
+    if (!occupied) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return 0;
+    }
+    if (!scanCommand.open || primaryRxBa.nextSerial == UINT64_MAX ||
+        primaryStationUses.active != 0 || primaryStationUses.owner.serial == 0) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return EBUSY;
+    }
+    request.serial = ++primaryRxBa.nextSerial;
+    request.lifecycle = primaryRxBa.lifecycle;
+    request.station = primaryStationUses.owner;
+    request.tid = ItlStationRxBa::CleanupTid;
+    request.cleanup = true;
+    primaryRxBa.current = request;
+    primaryRxBa.phase = ItlStationRxBa::Phase::Hardware;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+
+    int error = 0;
+    bool removed = false;
+    for (unsigned tid = 0; tid < ItlStationRxBa::TidCount; ++tid) {
+        auto &resource = resources[tid];
+        if (!resource.occupied)
+            continue;
+        if (resource.station.serial != request.station.serial ||
+            resource.station.generation != request.station.generation ||
+            !resource.station.identity.equals(request.station.identity)) {
+            error = ENXIO;
+            break;
+        }
+        if (!resource.firmwareRemoved) {
+            uint8_t baid = resource.baid;
+            error = iwx_sta_rx_ba_cmd(&com, NULL, tid, 0, 0, false, &baid);
+            if (error != 0)
+                break;
+            irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+            const bool current = primaryRxBa.matches(request) &&
+                request.lifecycle == primaryRxBa.lifecycle &&
+                request.station.generation == static_cast<uint32_t>(com.sc_generation);
+            if (current)
+                primaryRxBa.resource[tid].firmwareRemoved = true;
+            else
+                error = ENXIO;
+            IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+            if (error != 0)
+                break;
+        }
+        removed = true;
+    }
+    ItlFirmwareContextReceipt use = {};
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = primaryRxBa.matches(request) &&
+        request.lifecycle == primaryRxBa.lifecycle &&
+        request.station.generation == static_cast<uint32_t>(com.sc_generation);
+    const bool retained = current && removed &&
+        primaryStationUses.acquire(request.station, &use, true);
+    if (!retained && primaryRxBa.matches(request)) {
+        primaryRxBa.current = ItlStationRxBaRequest{};
+        primaryRxBa.phase = ItlStationRxBa::Phase::Idle;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!retained)
+        return error != 0 ? error : ENXIO;
+    postPrimaryRxBa(request, &use, error, IWX_RX_REORDER_DATA_INVALID_BAID, false);
+    return EINPROGRESS;
+}
+
+void ItlIwx::
+resetPrimaryRxBaLocked()
+{
+    if (primaryRxBa.lifecycle != UINT64_MAX)
+        ++primaryRxBa.lifecycle;
+    primaryRxBa.cancelPending();
+    primaryRxBa.cleanupError = 0;
+    for (auto &resource : primaryRxBa.resource)
+        resource = ItlStationRxBaResource{};
+    if (primaryRxBa.phase == ItlStationRxBa::Phase::Ready) {
+        (void)primaryStationUses.release(&primaryRxBa.use);
+        primaryRxBa.current = ItlStationRxBaRequest{};
+        primaryRxBa.phase = ItlStationRxBa::Phase::Idle;
+    }
+    /* A hardware worker or reentrant publishing callback owns its reader
+     * until it exits. Do not erase it or permit a new ADD to reuse it. */
+}
+
 
 int ItlIwx::
 beginPrimaryBaCommand(const ItlFirmwareContextReceipt *use,
@@ -2330,6 +2751,7 @@ stateTransitionEvent(OSObject *owner, IOInterruptEventSource *source, int count)
 {
     (void)count;
     ItlIwx *that = static_cast<ItlIwx *>(owner);
+    that->drainPrimaryRxBa(source);
     (void)that->drainStateTransitionCommit(source);
 }
 
@@ -7599,6 +8021,7 @@ iwx_setup_he_rates(struct iwx_softc *sc)
 }
 
 #define IWX_MAX_RX_BA_SESSIONS 16
+static_assert(IWX_MAX_RX_BA_SESSIONS == ItlStationRxBa::SessionLimit, "primary RX BA session limit");
 
 static struct iwx_rxba_data *
 iwx_find_rxba_data(struct iwx_softc *sc, uint8_t staId, uint8_t tid)
@@ -7720,76 +8143,6 @@ iwx_sta_rx_ba_cmd(struct iwx_softc *sc, const ItlFirmwareContextReceipt *use,
     return error;
 }
 
-int ItlIwx::
-iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
-               uint16_t ssn, uint16_t winsize, int timeout_val, int start,
-               const ItlFirmwareContextReceipt *use)
-{
-    struct ieee80211com *ic = &sc->sc_ic;
-    int err, s;
-    struct iwx_rxba_data *rxba = NULL;
-    uint8_t baid = IWX_RX_REORDER_DATA_INVALID_BAID;
-    
-    s = splnet();
-    
-    if (start && sc->sc_rx_ba_sessions >= IWX_MAX_RX_BA_SESSIONS) {
-        ieee80211_addba_req_refuse(ic, ni, tid);
-        splx(s);
-        return ENOSPC;
-    }
-    
-    if (!start) {
-        rxba = iwx_find_rxba_data(sc, IWX_STATION_ID, tid);
-        if (rxba == NULL) {
-            splx(s);
-            return 0;
-        }
-        baid = rxba->baid;
-    }
-
-    err = iwx_sta_rx_ba_cmd(sc, use, tid, ssn, winsize, start != 0, &baid);
-    if (err != 0) {
-        if (start)
-            ieee80211_addba_req_refuse(ic, ni, tid);
-        splx(s);
-        return err;
-    }
-
-    rxba = &sc->sc_rxba_data[baid];
-    /* Deaggregation is done in hardware. */
-    if (start) {
-        if (rxba->baid != IWX_RX_REORDER_DATA_INVALID_BAID) {
-            ieee80211_addba_req_refuse(ic, ni, tid);
-            splx(s);
-            return EIO;
-        }
-        rxba->sta_id = IWX_STATION_ID;
-        rxba->tid = tid;
-        rxba->baid = baid;
-        rxba->timeout = timeout_val;
-        getmicrouptime(&rxba->last_rx);
-        iwx_init_reorder_buffer(&rxba->reorder_buf, ssn,
-                                winsize);
-        if (timeout_val != 0) {
-            struct ieee80211_rx_ba *ba;
-            timeout_add_usec(&rxba->session_timer,
-                             timeout_val);
-            /* XXX disable net80211's BA timeout handler */
-            ba = &ni->ni_rx_ba[tid];
-            ba->ba_timeout_val = 0;
-        }
-    } else
-        iwx_clear_reorder_buffer(sc, rxba);
-    
-    if (start) {
-        sc->sc_rx_ba_sessions++;
-        ieee80211_addba_req_accept(ic, ni, tid);
-    } else if (sc->sc_rx_ba_sessions > 0)
-        sc->sc_rx_ba_sessions--;
-
-    splx(s);
-    return 0;
-}
 
 void ItlIwx::
 iwx_mac_ctxt_task(void *arg)
@@ -7917,6 +8270,7 @@ iwx_ba_task(void *arg)
     struct iwx_softc *sc = (struct iwx_softc *)arg;
     struct ieee80211com *ic = &sc->sc_ic;
     ItlIwx *that = container_of(sc, ItlIwx, com);
+    that->runPrimaryRxBa();
     struct ieee80211_node *ni = ic->ic_bss;
     struct ieee80211_tx_ba *ba;
     struct iwx_tx_ring *ring;
@@ -7936,20 +8290,6 @@ iwx_ba_task(void *arg)
         return;
     }
 
-    for (tid = 0; tid < IWX_MAX_TID_COUNT; tid++) {
-        if (sc->sc_flags & IWX_FLAG_SHUTDOWN)
-            break;
-        if (sc->ba_rx.start_tidmask & (1 << tid)) {
-            struct ieee80211_rx_ba *ba = &ni->ni_rx_ba[tid];
-            that->iwx_sta_rx_agg(sc, ni, tid, ba->ba_winstart,
-                                 ba->ba_winsize, ba->ba_timeout_val, 1, &stationUse.identity());
-            sc->ba_rx.start_tidmask &= ~(1 << tid);
-        } else if (sc->ba_rx.stop_tidmask & (1 << tid)) {
-            that->iwx_sta_rx_agg(sc, ni, tid, 0, 0, 0, 0, &stationUse.identity());
-            sc->ba_rx.stop_tidmask &= ~(1 << tid);
-        }
-    }
-    
     for (tid = 0; tid < IWX_MAX_TID_COUNT; tid++) {
         if (sc->sc_flags & IWX_FLAG_SHUTDOWN)
             break;
@@ -7986,26 +8326,12 @@ iwx_ba_task(void *arg)
  * from another STA and before the ADDBA response is sent.
  */
 int ItlIwx::
-iwx_ampdu_rx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
-                   uint8_t tid)
+iwx_ampdu_rx_start(struct ieee80211com *ic, struct ieee80211_node *ni, uint8_t tid)
 {
     struct iwx_softc *sc = (struct iwx_softc *)IC2IFP(ic)->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
-    
-    if (sc->sc_rx_ba_sessions >= IWX_MAX_RX_BA_SESSIONS ||
-        tid >= IWX_MAX_TID_COUNT)
-        return ENOSPC;
-    
-    if (ic->ic_state != IEEE80211_S_RUN)
-        return ENOSPC;
-    
-    if (sc->ba_rx.start_tidmask & (1 << tid))
-        return EBUSY;
-
-    sc->ba_rx.start_tidmask |= (1 << tid);
-    that->iwx_add_task(sc, systq, &sc->ba_task);
-    
-    return EBUSY;
+    const int error = that->queuePrimaryRxBa(ni, tid, true);
+    return error == 0 ? EBUSY : error;
 }
 
 /*
@@ -8013,20 +8339,11 @@ iwx_ampdu_rx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
  * Block Ack agreement (eg. upon receipt of a DELBA frame).
  */
 void ItlIwx::
-iwx_ampdu_rx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
-                  uint8_t tid)
+iwx_ampdu_rx_stop(struct ieee80211com *ic, struct ieee80211_node *ni, uint8_t tid)
 {
     struct iwx_softc *sc = (struct iwx_softc *)IC2IFP(ic)->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
-    
-    if (tid >= IWX_MAX_TID_COUNT || sc->ba_rx.stop_tidmask & (1 << tid))
-        return;
-    
-    if (ic->ic_state != IEEE80211_S_RUN)
-        return;
-
-    sc->ba_rx.stop_tidmask |= (1 << tid);
-    that->iwx_add_task(sc, systq, &sc->ba_task);
+    (void)that->queuePrimaryRxBa(ni, tid, false);
 }
 
 int ItlIwx::
@@ -12261,7 +12578,8 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     status = IWX_ADD_STA_SUCCESS;
     identity.station = add_sta_cmd.sta_id;
     identity.commandLength = sizeof(add_sta_cmd);
-    const Lease::Admission admission = !update && primaryStationUses.active != 0 ?
+    const Lease::Admission admission = !update &&
+        (primaryStationUses.active != 0 || primaryRxBa.occupied()) ?
         Lease::Admission::Busy : primaryStationContext.begin(
         update ? Lease::Operation::Modify : Lease::Operation::Add,
         generation, identity, &receipt);
@@ -12380,7 +12698,10 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
     using Retirement = ItlFirmwareStationRetirement;
     struct ieee80211com *ic = &sc->sc_ic;
     ItlFirmwareContextReceipt receipt = {};
-    int err = beginPrimaryStationCleanup(true, &receipt);
+    int err = retirePrimaryRxBa();
+    if (err != 0)
+        return err;
+    err = beginPrimaryStationCleanup(true, &receipt);
     if (err != 0 || receipt.serial == 0)
         return err;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
@@ -12411,7 +12732,7 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
         if (!primaryStationContext.commandCurrent(receipt.serial, sc->sc_generation))
             err = ENXIO;
         else {
-            sc->sc_rx_ba_sessions = 0;
+            /* The RX ledger has retired primary sessions, not adjacent APs. */
             sc->ba_rx.start_tidmask = 0;
             sc->ba_rx.stop_tidmask = 0;
             sc->ba_tx.start_tidmask = 0;
@@ -14049,7 +14370,7 @@ iwx_ap_set_client_rx_ba(struct iwx_softc *sc,
     const uint16_t bit = static_cast<uint16_t>(1U << tid);
     if (((client->clientRxBaMask & bit) != 0) == start)
         return 0;
-    if (start && sc->sc_rx_ba_sessions >= IWX_MAX_RX_BA_SESSIONS)
+    if (start && ItlRxBaSessionCount::load(&sc->sc_rx_ba_sessions) >= IWX_MAX_RX_BA_SESSIONS)
         return ENOSPC;
 
     const bool baidMl = isset(
@@ -14092,8 +14413,13 @@ iwx_ap_set_client_rx_ba(struct iwx_softc *sc,
         rxba->sta_id = client->staId;
         rxba->tid = tid;
         rxba->baid = baid;
-        rxba->timeout = 0;
-        getmicrouptime(&rxba->last_rx);
+       rxba->timeout = 0;
+        if (!timeout_initialized(&rxba->session_timer))
+            timeout_set(&rxba->session_timer, iwx_rx_ba_session_expired, rxba);
+        if (!timeout_initialized(&rxba->reorder_buf.reorder_timer))
+            timeout_set(&rxba->reorder_buf.reorder_timer,
+                iwx_reorder_timer_expired, &rxba->reorder_buf);
+       getmicrouptime(&rxba->last_rx);
         iwx_init_reorder_buffer(&rxba->reorder_buf, ssn, window);
     } else {
         iwx_clear_reorder_buffer(sc, rxba);
@@ -14102,12 +14428,11 @@ iwx_ap_set_client_rx_ba(struct iwx_softc *sc,
         itl_ap_rx_ba_start(&client->clientRxBa[tid], ssn, window,
                            this, iwx_ap_rx_ba_deliver);
         client->clientRxBaMask |= bit;
-        sc->sc_rx_ba_sessions++;
+        ItlRxBaSessionCount::add(&sc->sc_rx_ba_sessions);
     } else {
         itl_ap_rx_ba_stop(&client->clientRxBa[tid]);
         client->clientRxBaMask &= static_cast<uint16_t>(~bit);
-        if (sc->sc_rx_ba_sessions > 0)
-            sc->sc_rx_ba_sessions--;
+        ItlRxBaSessionCount::drop(&sc->sc_rx_ba_sessions);
     }
     XYLog("%s: IWX AP RX BA firmware start=%u sta=%u tid=%u "
           "baid=%u baid_ml=%u\n", DEVNAME(sc), start ? 1U : 0U,
@@ -17375,7 +17700,7 @@ iwx_run_stop(struct iwx_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
-    int err, i;
+    int err;
     
     splassert(IPL_NET);
     
@@ -17395,15 +17720,9 @@ iwx_run_stop(struct iwx_softc *sc)
      * This means we cannot rely on struct ieee802111_node to tell
      * us which BA sessions exist.
      */
-    for (i = 0; i < nitems(sc->sc_rxba_data); i++) {
-        struct iwx_rxba_data *rxba = &sc->sc_rxba_data[i];
-        if (rxba->baid == IWX_RX_REORDER_DATA_INVALID_BAID ||
-            rxba->sta_id != IWX_STATION_ID)
-            continue;
-        err = iwx_sta_rx_agg(sc, ic->ic_bss, rxba->tid, 0, 0, 0, 0);
-        if (err != 0)
-            return err;
-    }
+    err = retirePrimaryRxBa();
+    if (err != 0)
+        return err;
     
     err = iwx_sf_config(sc, IWX_SF_INIT_OFF);
     if (err)
@@ -17730,6 +18049,11 @@ iwx_newstate_task(void *psc)
             break;
     }
 out:
+    if (err == EINPROGRESS) {
+        (void)that->deferPrimaryStationUsers(request, true);
+        splx(s);
+        return;
+    }
     (void)that->postStateTransitionCommit(request, err);
     splx(s);
 }
@@ -18589,6 +18913,7 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
         that->primaryBindingContext.clear();
         that->primaryStationContext.clear();
         that->primaryStationUses.close();
+        that->resetPrimaryRxBaLocked();
         that->primaryStationRetirement = ItlFirmwareStationRetirement{};
         memset(&that->primaryStationCommand, 0, sizeof(that->primaryStationCommand));
         memset(&that->primaryMacCommand, 0, sizeof(that->primaryMacCommand));
@@ -18628,7 +18953,7 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     sc->sc_flags &= ~IWX_FLAG_HW_ERR;
     sc->sc_flags &= ~IWX_FLAG_TXFLUSH;
 
-    sc->sc_rx_ba_sessions = 0;
+    ItlRxBaSessionCount::reset(&sc->sc_rx_ba_sessions);
     sc->ba_rx.start_tidmask = 0;
     sc->ba_rx.stop_tidmask = 0;
     sc->ba_tx.start_tidmask = 0;

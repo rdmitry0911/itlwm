@@ -59,9 +59,9 @@ struct ItlFirmwareStationUses {
     }
 
     bool acquire(const ItlFirmwareContextReceipt &station,
-                 ItlFirmwareContextReceipt *receipt)
+                 ItlFirmwareContextReceipt *receipt, bool hostRetirement = false)
     {
-        if (receipt == nullptr || closed || owner.serial == 0 ||
+        if (receipt == nullptr || (closed && !hostRetirement) || owner.serial == 0 ||
             active == UINT32_MAX || owner.generation != station.generation ||
             !owner.identity.equals(station.identity))
             return false;

@@ -520,6 +520,7 @@ iwm_setup_vht_rates(struct iwm_softc *sc)
 }
 
 #define IWM_MAX_RX_BA_SESSIONS 16
+static_assert(IWM_MAX_RX_BA_SESSIONS == ItlStationRxBa::SessionLimit, "primary RX BA session limit");
 
 int ItlIwm::
 iwm_sta_rx_ba_cmd(struct iwm_softc *sc, const ItlFirmwareContextReceipt *use,
@@ -598,84 +599,6 @@ iwm_sta_tx_ba_cmd(struct iwm_softc *sc, const ItlFirmwareContextReceipt *use,
     return finishPrimaryBaCommand(context, error, false);
 }
 
-int ItlIwm::
-iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
-               uint16_t ssn, uint16_t winsize, int timeout_val, int start,
-               const ItlFirmwareContextReceipt *use)
-{
-    struct ieee80211com *ic = &sc->sc_ic;
-    int err, s;
-    struct iwm_rxba_data *rxba = NULL;
-    uint8_t baid = 0;
-    
-    s = splnet();
-    
-    if (start && sc->sc_rx_ba_sessions >= IWM_MAX_RX_BA_SESSIONS) {
-        ieee80211_addba_req_refuse(ic, ni, tid);
-        splx(s);
-        return 0;
-    }
-
-    if (!start && sc->sc_mqrx_supported) {
-        for (unsigned i = 0; i < nitems(sc->sc_rxba_data); ++i) {
-            struct iwm_rxba_data *candidate = &sc->sc_rxba_data[i];
-            if (candidate->baid != IWM_RX_REORDER_DATA_INVALID_BAID &&
-                candidate->sta_id == IWM_STATION_ID && candidate->tid == tid) {
-                rxba = candidate;
-                break;
-            }
-        }
-        if (rxba == NULL) {
-            splx(s);
-            return 0;
-        }
-    }
-    
-    err = iwm_sta_rx_ba_cmd(sc, use, tid, ssn, winsize, start != 0, &baid);
-    if (err) {
-        if (start)
-            ieee80211_addba_req_refuse(ic, ni, tid);
-        splx(s);
-        return err;
-    }
-    
-    if (sc->sc_mqrx_supported) {
-        /* Deaggregation is done in hardware. */
-        if (start) {
-            rxba = &sc->sc_rxba_data[baid];
-            if (rxba->baid != IWM_RX_REORDER_DATA_INVALID_BAID) {
-                ieee80211_addba_req_refuse(ic, ni, tid);
-                splx(s);
-                return 0;
-            }
-            rxba->sta_id = IWM_STATION_ID;
-            rxba->tid = tid;
-            rxba->baid = baid;
-            rxba->timeout = timeout_val;
-            getmicrouptime(&rxba->last_rx);
-            iwm_init_reorder_buffer(&rxba->reorder_buf, ssn,
-                                    winsize);
-            if (timeout_val != 0) {
-                struct ieee80211_rx_ba *ba;
-                timeout_add_usec(&rxba->session_timer,
-                                 timeout_val);
-                /* XXX disable net80211's BA timeout handler */
-                ba = &ni->ni_rx_ba[tid];
-                ba->ba_timeout_val = 0;
-            }
-        } else
-            iwm_clear_reorder_buffer(sc, rxba);
-    }
-    
-    if (start) {
-        sc->sc_rx_ba_sessions++;
-        ieee80211_addba_req_accept(ic, ni, tid);
-    } else if (sc->sc_rx_ba_sessions > 0)
-        sc->sc_rx_ba_sessions--;
-    
-    splx(s);
-    return 0;
-}
 
 int ItlIwm::
 iwm_sta_tx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
@@ -2885,7 +2808,7 @@ iwm_ap_set_client_rx_ba(struct iwm_softc *sc,
     const uint16_t bit = static_cast<uint16_t>(1U << tid);
     if (((client->clientRxBaMask & bit) != 0) == start)
         return 0;
-    if (start && sc->sc_rx_ba_sessions >= IWM_MAX_RX_BA_SESSIONS)
+    if (start && ItlRxBaSessionCount::load(&sc->sc_rx_ba_sessions) >= IWM_MAX_RX_BA_SESSIONS)
         return ENOSPC;
 
     struct iwm_add_sta_cmd command;
@@ -2950,8 +2873,13 @@ iwm_ap_set_client_rx_ba(struct iwm_softc *sc,
             rxba->sta_id = client->staId;
             rxba->tid = tid;
             rxba->baid = baid;
-            rxba->timeout = 0;
-            getmicrouptime(&rxba->last_rx);
+           rxba->timeout = 0;
+            if (!timeout_initialized(&rxba->session_timer))
+                timeout_set(&rxba->session_timer, iwm_rx_ba_session_expired, rxba);
+            if (!timeout_initialized(&rxba->reorder_buf.reorder_timer))
+                timeout_set(&rxba->reorder_buf.reorder_timer,
+                    iwm_reorder_timer_expired, &rxba->reorder_buf);
+           getmicrouptime(&rxba->last_rx);
             iwm_init_reorder_buffer(&rxba->reorder_buf, ssn, window);
         } else {
             for (size_t index = 0; index < nitems(sc->sc_rxba_data);
@@ -2969,12 +2897,11 @@ iwm_ap_set_client_rx_ba(struct iwm_softc *sc,
         itl_ap_rx_ba_start(&client->clientRxBa[tid], ssn, window,
                            this, iwm_ap_rx_ba_deliver);
         client->clientRxBaMask |= bit;
-        sc->sc_rx_ba_sessions++;
+        ItlRxBaSessionCount::add(&sc->sc_rx_ba_sessions);
     } else {
         itl_ap_rx_ba_stop(&client->clientRxBa[tid]);
         client->clientRxBaMask &= static_cast<uint16_t>(~bit);
-        if (sc->sc_rx_ba_sessions > 0)
-            sc->sc_rx_ba_sessions--;
+        ItlRxBaSessionCount::drop(&sc->sc_rx_ba_sessions);
     }
     return 0;
 }
@@ -4425,7 +4352,7 @@ iwm_deauth(struct iwm_softc *sc)
     int ac, tfd_queue_msk, err, i;
     
     splassert(IPL_NET);
-    
+
     iwm_unprotect_session(sc, in);
     
     { /* An uncertain station ADD owns cleanup even without STA_ACTIVE. */
@@ -4435,7 +4362,7 @@ iwm_deauth(struct iwm_softc *sc)
                   DEVNAME(sc), err);
             return err;
         }
-        sc->sc_rx_ba_sessions = 0;
+        /* RX retirement above removed only primary-owned sessions. */
         for (i = 0; i < nitems(sc->sc_tx_ba); i++)
             sc->sc_tx_ba[i].wn = NULL;
         sc->ba_rx.start_tidmask = 0;
@@ -4634,7 +4561,7 @@ iwm_run_stop(struct iwm_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwm_node *in = (struct iwm_node *)ic->ic_bss;
-    int err, i, tid;
+    int err, tid;
     
     splassert(IPL_NET);
     
@@ -4647,15 +4574,9 @@ iwm_run_stop(struct iwm_softc *sc)
      * This means we cannot rely on struct ieee802111_node to tell
      * us which BA sessions exist.
      */
-    for (i = 0; i < nitems(sc->sc_rxba_data); i++) {
-        struct iwm_rxba_data *rxba = &sc->sc_rxba_data[i];
-        if (rxba->baid == IWM_RX_REORDER_DATA_INVALID_BAID ||
-            rxba->sta_id != IWM_STATION_ID)
-            continue;
-        err = iwm_sta_rx_agg(sc, &in->in_ni, rxba->tid, 0, 0, 0, 0);
-        if (err != 0)
-            return err;
-    }
+    err = retirePrimaryRxBa();
+    if (err != 0)
+        return err;
     for (tid = 0; tid < IWM_MAX_TID_COUNT; tid++) {
         int qid = IWM_FIRST_AGG_TX_QUEUE + tid;
         struct iwm_tx_ring *ring = &sc->txq[qid];
@@ -4667,7 +4588,7 @@ iwm_run_stop(struct iwm_softc *sc)
         iwm_ampdu_txq_advance(sc, ring, ring->cur);
         iwm_clear_oactive(sc, ring);
     }
-    ieee80211_ba_del(&in->in_ni);
+    /* Generic BA node teardown belongs to the committed main-workloop transition. */
     sc->ba_tx.start_tidmask = 0;
     sc->ba_tx.stop_tidmask = 0;
     
@@ -4913,26 +4834,12 @@ iwm_allow_mcast(struct iwm_softc *sc)
  * from another STA and before the ADDBA response is sent.
  */
 int ItlIwm::
-iwm_ampdu_rx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
-                   uint8_t tid)
+iwm_ampdu_rx_start(struct ieee80211com *ic, struct ieee80211_node *ni, uint8_t tid)
 {
     struct iwm_softc *sc = (struct iwm_softc *)IC2IFP(ic)->if_softc;
     ItlIwm *that = container_of(sc, ItlIwm, com);
-    
-    if (sc->sc_rx_ba_sessions >= IWM_MAX_RX_BA_SESSIONS ||
-        tid > IWM_MAX_TID_COUNT)
-        return ENOSPC;
-    
-    if (ic->ic_state != IEEE80211_S_RUN)
-        return ENOSPC;
-
-    if (sc->ba_rx.start_tidmask & (1 << tid))
-        return EBUSY;
-    
-    sc->ba_rx.start_tidmask |= (1 << tid);
-    that->iwm_add_task(sc, systq, &sc->ba_task);
-    
-    return EBUSY;
+    const int error = that->queuePrimaryRxBa(ni, tid, true);
+    return error == 0 ? EBUSY : error;
 }
 
 /*
@@ -4940,20 +4847,11 @@ iwm_ampdu_rx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
  * Block Ack agreement (eg. upon receipt of a DELBA frame).
  */
 void ItlIwm::
-iwm_ampdu_rx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
-                  uint8_t tid)
+iwm_ampdu_rx_stop(struct ieee80211com *ic, struct ieee80211_node *ni, uint8_t tid)
 {
     struct iwm_softc *sc = (struct iwm_softc *)IC2IFP(ic)->if_softc;
     ItlIwm *that = container_of(sc, ItlIwm, com);
-    
-    if (tid > IWM_MAX_TID_COUNT || sc->ba_rx.stop_tidmask & (1 << tid))
-        return;
-    
-    if (ic->ic_state != IEEE80211_S_RUN)
-        return;
-
-    sc->ba_rx.stop_tidmask |= (1 << tid);
-    that->iwm_add_task(sc, systq, &sc->ba_task);
+    (void)that->queuePrimaryRxBa(ni, tid, false);
 }
 
 int ItlIwm::
@@ -5189,6 +5087,11 @@ iwm_newstate_task(void *psc)
             break;
     }
 out:
+    if (err == EINPROGRESS) {
+        (void)that->deferPrimaryStationUsers(request, true);
+        splx(s);
+        return;
+    }
     (void)that->postStateTransitionCommit(request, err);
     splx(s);
 }
@@ -5837,6 +5740,7 @@ iwm_stop(struct _ifnet *ifp)
         that->primaryBindingContext.clear();
         that->primaryStationContext.clear();
         that->primaryStationUses.close();
+        that->resetPrimaryRxBaLocked();
         that->primaryStationRetirement = ItlFirmwareStationRetirement{};
         memset(&that->primaryStationCommand, 0, sizeof(that->primaryStationCommand));
         memset(&that->primaryMacCommand, 0, sizeof(that->primaryMacCommand));
@@ -5874,7 +5778,7 @@ iwm_stop(struct _ifnet *ifp)
     sc->sc_flags &= ~IWM_FLAG_HW_ERR;
     sc->sc_flags &= ~IWM_FLAG_SHUTDOWN;
 
-    sc->sc_rx_ba_sessions = 0;
+    ItlRxBaSessionCount::reset(&sc->sc_rx_ba_sessions);
     sc->ba_rx.start_tidmask = 0;
     sc->ba_rx.stop_tidmask = 0;
     for (i = 0; i < nitems(sc->sc_tx_ba); i++)
@@ -7383,6 +7287,7 @@ iwm_ba_task(void *arg)
 {
     struct iwm_softc *sc = (struct iwm_softc *)arg;
     ItlIwm *that = container_of(sc, ItlIwm, com);
+    that->runPrimaryRxBa();
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_node *ni = ic->ic_bss;
     int s = splnet();
@@ -7398,20 +7303,6 @@ iwm_ba_task(void *arg)
     if (!stationUse.admitted()) {
         splx(s);
         return;
-    }
-    
-    for (tid = 0; tid < IWM_MAX_TID_COUNT; tid++) {
-        if (sc->sc_flags & IWM_FLAG_SHUTDOWN)
-            break;
-        if (sc->ba_rx.start_tidmask & (1 << tid)) {
-            struct ieee80211_rx_ba *ba = &ni->ni_rx_ba[tid];
-            err = that->iwm_sta_rx_agg(sc, ni, tid,  ba->ba_winstart,
-                           ba->ba_winsize, ba->ba_timeout_val, 1, &stationUse.identity());
-            sc->ba_rx.start_tidmask &= ~(1 << tid);
-        } else if (sc->ba_rx.stop_tidmask & (1 << tid)) {
-            err = that->iwm_sta_rx_agg(sc, ni, tid, 0, 0, 0, 0, &stationUse.identity());
-            sc->ba_rx.stop_tidmask &= ~(1 << tid);
-        }
     }
     
     for (tid = 0; tid < IWM_MAX_TID_COUNT && !err; tid++) {

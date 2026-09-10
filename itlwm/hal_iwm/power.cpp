@@ -408,7 +408,8 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
         cmdsize = sizeof(struct iwm_add_sta_cmd_v7);
     identity.station = add_sta_cmd.sta_id;
     identity.commandLength = cmdsize;
-    const Lease::Admission admission = !update && primaryStationUses.active != 0 ?
+    const Lease::Admission admission = !update &&
+        (primaryStationUses.active != 0 || primaryRxBa.occupied()) ?
         Lease::Admission::Busy : primaryStationContext.begin(
         update ? Lease::Operation::Modify : Lease::Operation::Add,
         generation, identity, &receipt);
@@ -537,7 +538,10 @@ iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
 {
     using Retirement = ItlFirmwareStationRetirement;
     ItlFirmwareContextReceipt receipt = {};
-    int error = beginPrimaryStationCleanup(true, &receipt);
+    int error = retirePrimaryRxBa();
+    if (error != 0)
+        return error;
+    error = beginPrimaryStationCleanup(true, &receipt);
     if (error != 0 || receipt.serial == 0)
         return error;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
