@@ -179,3 +179,41 @@ the host's managed connection and wired route. The complete candidate serial
 interval through these client checks has no matched driver panic, firmware
 fatal, device-timeout or unset-software-key diagnostic. AP regressions and
 the full post-S3 GUI/profile matrix remain open; publication is still held.
+
+## Same-candidate post-S3 native AP regressions
+
+On the same boot/image after S3, native system Internet Sharing ran WPA3,
+WPA2 and open sequentially. Each mode obtained a real external-client DHCP
+lease, independently verified negotiated security, passed 20/20 forward and
+bridge-scoped cold-neighbor 10/10 reverse packets, and routed HTTP through the
+guest's independent upstream. WPA3 reported SAE group 19, required PMF and BIP.
+No bridge rewrite, daemon restart, Wi-Fi toggle or reboot separated the modes.
+These operations used the native sharing producer, not a claim of post-sleep
+GUI operation on the stalled framebuffer.
+
+WPA3 stop at 08:19:50 and WPA2 stop at 08:22:37 each passed a separate
+15-second dwell, showed the retired bridge detached with zero I/O references,
+and retained the ordinary STA at 10/10. Open stop at 08:25:29 also retired its
+bridge to zero I/O references. Its hard-coded old-address check failed to bind;
+that is not recorded as a passed old-profile return. Exact current-boot logs
+instead show automatic selection of the other saved WPA2 profile at 08:25:34,
+association at 08:25:38 and a new DHCP address published at 08:25:43, before
+that failed old-address probe. Independent checks on the actual current STA
+address then passed 20/20 in both directions. The host's normal managed
+connection and wired route were restored. The bounded HTTP fixture terminated.
+
+The complete 13,177-line candidate serial interval audited after all three
+AP modes has no matched driver panic, firmware fatal, device timeout,
+unset-software-key diagnostic or AP TX gate failure. The only production-code
+change from the previous release is the shared 17-line TX key selection fix;
+these runs qualify its reproduced protected-leave correction with client,
+sleep and AP service regressions, not full roaming/profile equivalence.
+
+The prepared release ZIP SHA-256 is
+`eaa6ef1c077dfb7fc309f0781722f8ed3aa6594ad3aa01b127192a021974f9ab`.
+Its extracted Mach-O and Info.plist were byte-compared with the frozen image;
+the Mach-O hash and UUID match the loaded candidate above. Host download and
+ZIP integrity verification also passed. Publication and fresh public-download
+verification remain a separate next operation. The post-roam DHCP failure,
+earlier monitored traffic losses, full post-S3 GUI/profile matrix and IWM/IWX
+hardware qualification remain explicitly open.
