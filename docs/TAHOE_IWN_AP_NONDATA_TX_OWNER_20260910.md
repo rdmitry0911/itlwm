@@ -68,3 +68,41 @@ audit. The firmware's internal assert has not been decoded, so the reference
 correction is not alone proof that every restart failure is repaired.
 Primary missed-beacon continuity and the full GUI/profile matrix remain
 separate required work. No new release is claimed at this checkpoint.
+
+## Loaded correction: restart failure persists
+
+Source `020654b7` built with all 1085 external symbols resolved. Private
+five-member AuxKC admission and transactional activation passed, preserving
+the four companion members. The 02:51:26 UTC boot loaded UUID
+`5339ED1F-2CC5-3B53-81C1-3692F65FF598`, matching frozen Mach-O SHA-256
+`b18c42e467e7c85d9a010bb2976d0703b32c01b8c807df05c170b49afe2eb517`.
+
+The first concurrent WPA3 AP/STA check passed 20/20 external-client packets,
+isolated cold-neighbor 10/10 reverse packets and primary 5/5. The observer
+recorded the actual Association Response on queue 7/index 18 through station
+14, followed by TX completion. Protected ADDBA Action frames also used
+station 14 and completed. This verifies the new non-data ownership on air;
+it is not proof of reset-free subsequent service.
+
+A bounded UDP-pressure stop retired 213 outstanding AP aggregate descriptors
+to zero, then completed the normal stop chain. The 15-second dwell and primary
+10/10 passed. On the next ordinary AP start, an Association Response used
+queue 7/index 52, station 14, at 02:55:15 UTC. At 02:55:19 the observer saw its
+TX completion and then a firmware fatal. The independent error dump again
+reports type `0x22CE`, PC `0x26294`, line `0x5e` and data
+`0x000000ff0000005e`. This time queue 7 was empty, while AP data queue 5 held
+one descriptor. Thus neither pending management ownership nor the previous
+client station ID is a sufficient explanation for this fatal.
+
+Automatic firmware recovery was followed by successful short AP/client
+traffic; that does not turn the restart into a pass. The complete six-minute
+observer ended at 02:58:44 UTC with one fatal, zero diagnostic errors and an
+empty stderr file, with no dynamic-variable-drop report. Normal cleanup
+subsequently retained primary traffic at 10/10.
+
+The reference-aligned correction is retained, but the restart gate remains
+failed and no replacement release is published. The next investigation must
+follow the full PAN station, queue and aggregation lifecycle across forced TX
+flush and AP recreation, rather than assuming another isolated frame flag
+explains the firmware's still-undecoded assertion. Full native security/S3
+qualification of this new image is not claimed.
