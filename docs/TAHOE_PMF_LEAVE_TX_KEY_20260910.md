@@ -116,19 +116,66 @@ The guest automatically regained its ordinary address and passed 10/10.
 ## Remaining candidate gates
 
 The first post-boot ordinary-network check failed to bind its previously
-observed address. IPConfiguration subsequently failed router ARP and DHCP
-retries and published a link-local address. This is a real failed startup
-service check; the cause is not established by the passing GUI rejoins.
-The initial association selected a strong 2.4-GHz BSS, so the earlier weak-5-GHz
-explanation cannot simply be reused for this boot. Exact subsequent BSS
-transitions still need correlation with this boot's DHCP timeline.
+observed address. Current-boot JSON log correlation subsequently established
+the exact sequence: initial association on channel 13 at about -44 dBm,
+successful DHCP publication at 07:46:21, `BEST CONNECTED ROAM` at 07:46:42,
+address withdrawal at 07:46:48, then `ROAMED` and channel 9 at about -69 dBm
+at 07:46:49. Router ARP and DHCP retries thereafter received no response and
+the guest published a link-local address. This is a failed post-association
+BSS transition, not failure of the initial DHCP exchange on the strong BSS.
+Its cause is not established by passing GUI rejoins or by the earlier
+weak-5-GHz observation. Log selection uses the exact boot UUID, because
+wall-clock-only queries included records from earlier VM boots.
 
-Open/WPA2 GUI regressions, candidate-specific actual S3 and AP regressions
-remain required. The earlier S3 pass above belongs to the old released image,
-not this candidate. The host pool is low on space; another sleep run is held
-to avoid repeating the previous QEMU no-space stall. A backup of an inactive
-old overlay is incomplete and is not counted as recovered space.
+At this checkpoint, open/WPA2 GUI regressions, candidate-specific actual S3
+and AP regressions remained required. Subsequent client checks are below.
+A backup of an inactive old overlay is incomplete and is not counted as
+recovered space.
 
 The reproduced protected-leave defect is now corrected and accepted on air,
 but release qualification is incomplete. The public release remains
 `3e73f218`; no physical user host was installed or rebooted.
+
+## Candidate GUI WPA2/open and actual S3 service recovery
+
+The real System Settings pane requested a password for a new WPA2 Personal
+profile on the external OpenWrt control network. Submission at 08:05:53 UTC
+completed the GUI association request successfully at 08:05:57 on channel
+161, about -33 dBm. A fresh DHCP exchange reached BOUND at 08:06:02 and IPv4
+publication at 08:06:04. Separate source-bound 1400-byte checks passed 20/20
+guest-to-gateway and 20/20 host-Wi-Fi-to-guest. No command-line join, radio
+toggle or reboot replaced the GUI operation. The legacy command-line network
+name query reported not associated despite GUI, DHCP and traffic success;
+that query's privacy/API behavior is not classified as a driver defect here.
+
+After three further byte-identical redundant release ZIPs were removed while
+retaining their rollback copies, the unchanged storage guard admitted a
+bounded open-AP fixture at 08:08:36. Two earlier start attempts had stopped
+at the free-space guard before any wireless mutation; they are not driver
+failures. The saved open profile was selected through GUI. External DHCPACK
+at 08:09:49 and independently awaited 20/20 forward and 20/20 reverse checks
+completed at 08:10:33. The external AP reported open security with no PMF.
+
+The candidate's power configuration independently reported `hibernatemode=0`
+and no sleep image. With host free space stable at about 1.54 GiB, the guarded
+S3 helper verified the exact boot/image, open-network address and two packets.
+USB management and tablet were removed while awake at 08:11:04. The 08:11:25
+request reached actual ACPI SLEEP and QEMU suspended state. Wake at 08:12:29
+produced ACPI S3 WAKE without another boot. Fresh USB devices were attached
+only after that wake record was verified.
+
+The guest automatically selected its other saved WPA3/required-PMF network,
+not the open test AP. Association completed about 08:12:36, DHCP reached
+BOUND at 08:12:37 and IPv4 was published at 08:12:39. Later independent
+forward and reverse runs passed 20/20 each on the same boot and kext UUID.
+Individual RTTs include approximately one second; this is not a latency gate.
+The first freshly attached USB SSH probe timed out during enumeration; a
+subsequent probe succeeded. Neither that transport timeout nor the other
+profile's recovery is counted as a passed post-S3 open-network check.
+
+The framebuffer retained the pre-sleep 08:11 GUI image, so no post-wake GUI
+selection is claimed. The open fixture ended normally at 08:15:20 and restored
+the host's managed connection and wired route. The complete candidate serial
+interval through these client checks has no matched driver panic, firmware
+fatal, device-timeout or unset-software-key diagnostic. AP regressions and
+the full post-S3 GUI/profile matrix remain open; publication is still held.
