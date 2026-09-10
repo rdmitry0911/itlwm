@@ -104,6 +104,54 @@ separate source-bound 10/10 check. The same boot epoch was required by the
 observer. The complete clean-boot serial interval through these GUI checks
 contains no matched Intel firmware fatal, device-timeout watchdog or panic.
 
-The WPA3 new-profile and post-sleep GUI matrix remains in progress. These
-passing selections do not close the complete matrix or the separately
-documented weak-BSS reconnect delay.
+## New pure-WPA3 profile through GUI
+
+The controlled SAE-only AP, with PMF required and group 19, started at
+06:50:05 UTC. System Settings identified it as WPA3 Personal. The complete
+test password was verified before the 06:52:21 GUI submission. The external
+AP associated the STA at 06:52:27.127, reported SAE AKM, group 19 and MFP,
+and completed the four-way key handshake. DHCPACK followed at 06:52:31;
+the guest read back that lease.
+
+The separately awaited 1400-byte forward and reverse checks passed 20/20
+each, ending at 06:53:11. This was a new GUI profile, not a command-line
+join or reuse of the previously tested ordinary WPA3 profile. The same
+boot and released kext remained loaded.
+
+## Actual S3 and the post-wake GUI boundary
+
+The sleep guard verified the current boot/image and working controlled
+WPA3 link. Temporary USB management and the VNC tablet were removed while
+the VM was awake; both the monitor and guest USB inventory confirmed their
+absence before the 06:54:22 UTC sleep request. Serial `ACPI SLEEP` and the
+owned VM's `paused (suspended)` state independently confirmed actual S3.
+Wake at 06:55:44 produced `ACPI S3 WAKE`. Fresh USB management and the tablet
+were added only after wake. The boot session and kext UUID remained unchanged.
+
+Without manual selection or off/on, airportd chose the other saved WPA3
+network at 06:55:49.087, not the controlled test network. IPConfiguration
+verified its cached lease's router and published IPv4 at 06:55:51.328;
+BOUND followed at 06:55:54.621. A separate source-bound check passed 10/10.
+This proves automatic network-service recovery, not restoration of the last
+selected profile. No firmware-fatal, device-timeout or panic matched the
+post-wake serial interval.
+
+The display did not provide a usable post-wake GUI: VNC retained the 06:54
+pre-sleep frame despite the guest clock and network processes advancing.
+A one-second WindowServer sample at 06:58:56 found its main thread waiting
+in `displayDidWake -> IOFBAcknowledgeNotification -> IOConnectCallMethod`.
+The independent native screenshot process waited for the SkyLight session
+port and produced no image. Its exact diagnostic PID was then terminated;
+WindowServer was not restarted and no privacy permissions were changed.
+These userspace stacks identify the blocked framebuffer-wake path, not the
+kernel lock owner or a proven complete cause. No blind clicks or rebooted
+GUI session are counted as a successful post-S3 profile-selection test.
+
+The sleep-transition serial log also contains software-encryption attempts
+with a cleared key descriptor. The production rejection branch frees the
+packet and returns NULL. Their originating call path remains to be traced;
+successful recovery does not erase this observation.
+
+Thus post-sleep GUI qualification remains open. The passing selections do
+not close the complete matrix, last-selected-profile policy, or the separate
+weak-BSS reconnect delay.
