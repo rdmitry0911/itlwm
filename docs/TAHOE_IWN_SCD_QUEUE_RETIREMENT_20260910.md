@@ -120,3 +120,35 @@ lifecycle failure. No replacement release is qualified or uploaded. The
 next discriminating control repeats this pressure stop/restart with WPA2
 and PMF disabled on the same loaded image before attributing the fatal to
 SAE/PMF or moving the same physical card to native Linux.
+
+## WPA2 control: SAE/PMF is not a necessary condition
+
+On the same boot and loaded image, a separate role-7 WPA2 AP admitted the
+external AX211 with `key_mgmt=WPA2-PSK` and its live supplicant network's
+`ieee80211w=0`. The initial test wrapper stopped because it expected a
+`pmf=0` status line, which this supplicant omits when PMF is disabled.
+The corrected read-only validation continued on the already running AP;
+it did not restart the AP to turn that fixture failure into a pass.
+Forward 20/20, isolated cold-neighbor 10/10 and primary 5/5 then passed.
+
+At 03:34:52 UTC, the same UDP-pressure/public-stop sequence retired 225
+pending descriptors on queue 11 to zero, with an observed four-word SCD
+status clear. After 15 seconds primary traffic passed 10/10. The next AP
+start at 03:35:36 produced the same firmware fatal at 03:35:55: `0x22CE`,
+PC `0x26294`, line `0x5E`, data `0x000000FF0000005E`. Its last queue-7 raw
+submission was Association Response index 74, non-data station 14. The
+observer ended at 03:37:40 with zero diagnostic errors, one fatal and empty
+stderr. Again, short traffic passed only after automatic hardware recovery.
+
+The primary had roamed to channel 13 before this WPA2 control, whereas the
+earlier WPA3 run used channel 9. This is not a channel-identical A/B test,
+but the positive WPA2 reproduction proves that AP SAE/PMF is not necessary
+for the same assert. Native Linux same-card APSTA command-sequence control
+is the next gate, not another speculative security-path correction.
+
+Final public cleanup initially returned a lower error; the owner subsequently
+retried and reached the ordinary PAN-stop terminal. The temporary AP address
+was removed, but the primary address was also absent at the later check.
+That cleanup therefore does not qualify preserved STA connectivity. The
+management path remained reachable and all observer/traffic jobs terminated
+before the controlled guest shutdown for native Linux comparison.
