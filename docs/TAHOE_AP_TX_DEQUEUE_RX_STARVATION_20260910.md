@@ -205,3 +205,11 @@ open/WPA2/WPA3 data service, including real S3 recovery. The failed weak-BSS
 selection, complete GUI/profile matrix, automatic external-client continuity,
 active-AP off-channel scanning, ad-hoc and equivalent IWM/IWX hardware
 qualification remain open; they are not erased by these passing AP checks.
+
+The exact Tahoe release asset was replaced at 05:54:35 UTC; the release notes
+were updated one second later and explicitly retain the failed 15-second
+return check and subsequent automatic recovery. A fresh GitHub download was
+byte-compared with the qualified archive and independently rehashed; both ZIP
+and extracted Mach-O match the identities above. The published notes were
+also compared with their staged text. The previous archive remains privately
+available for rollback. No physical user host was installed or rebooted.
