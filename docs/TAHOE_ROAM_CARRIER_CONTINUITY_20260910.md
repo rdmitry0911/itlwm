@@ -97,3 +97,62 @@ initial-BSSID, WCL reassoc, IWN/IWM/IWX beacon-loss, IWN BTM, link-context and
 three-family SAE ownership contracts passed. Build, exact-image activation,
 current-BSS refresh, continuous-IP runtime, genuine-failure and sleep/AP
 regressions remain required. This candidate is not a published runtime fix.
+
+## Loaded candidate and first continuous-address transitions
+
+Source `c19ab0db` built with all 1085 external symbols resolved. Private
+five-member AuxKC preflight and transactional activation preserved the four
+companion members. A normal disposable-guest reboot at 10:27:04 UTC returned
+SSH by 10:27:44. Boot session `9BC5E960-E1B4-4A2E-9BD2-D4B4986CDF7B`
+loaded UUID `74F8A32B-57C3-3D50-8DA9-E795D9D35EBF`, matching Mach-O
+SHA-256 `d28297b766394c40b286f3f91d575145034ad3cc8f8afdef50bf21727366eb61`.
+The initial pure-WPA3/required-PMF association on channel 13 reached link up
+at 10:27:39 and DHCP BOUND/address publication at 10:27:41.
+
+Airportd's automatic best-connected transition completed on the other BSS,
+channel 9, at 10:28:14. Four subsequent unrestricted framework requests
+alternated channel 13/9/13/9, with actual ROAMED events at 10:28:54,
+10:29:19, 10:29:49 and 10:30:14. Each explicit transition passed its separate
+three-packet, 1400-byte check. No radio toggle or explicit fresh join
+intervened. Exact-current-boot airportd/configd logs contain no media-inactive,
+IPv4 withdrawal or repeated DHCP BOUND/address publication across these five
+completed transitions. Initial boot's pre-association inactive events are not
+misclassified as roam events.
+
+Native airportd received both ROAMED and BSSID_CHANGED and updated its
+associated-network channel, security, RSSI and per-BSS association record
+at every transition. The original network association timestamp remained
+unchanged. Lower-driver BSSID readback matched the two actual channel-specific
+targets. Thus continuity did not simply leave Apple's consumer describing the
+old AP. Privacy-redacted native BSSID strings and absent direct scutil BSSID
+keys are not used as independent raw-BSSID proofs.
+
+One 150-second client opened exactly one connected TCP socket and one UDP
+socket, bound to the STA address; neither was reopened or reconnected. Its
+10:28:34--10:31:04 interval covered all four explicit transitions. TCP sent
+and received exactly 6,665,000 bytes with no pending output. The peer accepted
+TCP once and saw EOF only at normal client completion. UDP sent 6,720,000
+bytes and received 6,347,000 echo bytes. There were 24 ENOBUFS UDP sends and
+79 EAGAIN TCP sends, but no EADDRNOTAVAIL. Both processes ended normally.
+The roughly 5.55% missing UDP echo bytes and queue errors remain failures of
+lossless service, not a seamless/latency/throughput pass. This path contains
+both the guest radio and the host's separate Wi-Fi hop.
+
+The complete candidate serial interval through this run has no matched
+firmware fatal, device timeout, driver panic, unset-key diagnostic or AP TX
+gate error. This is first loaded evidence for continuous logical address,
+not closure of the earlier persistent post-roam ARP/DHCP failure or IWM/IWX
+hardware qualification. The published image remains `964a90b3`.
+
+## Real GUI off/on negative control
+
+The current-boot GUI was independently visible and usable. A System Settings
+Wi-Fi off click at 10:38:24 UTC was followed by power Off, inactive carrier
+and absent IPv4 at 10:38:27. Thus a real radio-off operation still withdraws
+the logical network; the roam reservation does not suppress ordinary down.
+GUI on at 10:38:44 restored the saved WPA3 link and its address by 10:38:57.
+The subsequent 1400-byte forward check passed 20/20. A separately awaited
+host-Wi-Fi-to-guest check returned 18/20, not a bidirectional zero-loss pass.
+No second off/on was used. Exact event correlation and the iperf reproduction
+remain pending at this checkpoint, followed by genuine failed-target, profile,
+sleep and AP regressions before publication.
