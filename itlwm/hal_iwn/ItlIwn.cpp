@@ -7389,17 +7389,19 @@ void ItlIwn::iwn_ap_ampdu_tx_stop(
     iwn_prph_write(&com, IWN5000_SCHED_QUEUE_STATUS(qid),
         IWN5000_TXQ_STATUS_CHGACT);
     iwn_prph_clrbits(&com, IWN5000_SCHED_AGGR_SEL, 1U << qid);
+    /* DVM retires the queue's four TX-status words separately from its
+     * configuration context. Clearing context1 at the next start does not
+     * retire the previous RA/TID's scheduler status. */
+    iwn_mem_set_region_4(&com,
+        com.sched_base + IWN5000_SCHED_TX_STATUS_OFFSET(qid), 0, 4);
     /* The scheduler must stop fetching before the physical submitted
      * interval is released. A BA window endpoint is not its write cursor. */
     iwn_ampdu_txq_advance(&com, &com.txq[qid], qid,
                           com.txq[qid].cur);
     com.qfullmsk &= ~(1U << qid);
-    com.txq[qid].cur = com.txq[qid].read = idx;
-    IWN_WRITE(&com, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
-    iwn_prph_write(&com, IWN5000_SCHED_QUEUE_RDPTR(qid), ssn);
-    /* See start: the 5000-family SCD interrupt mask remains firmware-owned. */
-    iwn_prph_write(&com, IWN5000_SCHED_QUEUE_STATUS(qid),
-        IWN5000_TXQ_STATUS_INACTIVE | fifo);
+    /* Leave the empty transport at its real submitted endpoint. The next
+     * start owns sequence/cursor assignment and the activation doorbell.
+     * See start: the PAN SCD interrupt mask remains firmware-owned. */
 }
 
 int ItlIwn::iwn_set_ap_client_tx_ba(uint8_t tid, uint16_t ssn, bool start)
@@ -21726,7 +21728,7 @@ iwn_ampdu_tx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (iwn_nic_lock(sc) != 0)
         return;
     /* The backend stops the scheduler and drains the actual submitted
-     * descriptors before rebasing its cursors.  ba_winend is a logical
+     * descriptors before retiring queue ownership. ba_winend is a logical
      * admission limit, not an exclusive transport completion pointer. */
     ops->ampdu_tx_stop(sc, tid, ba->ba_winstart);
     iwn_nic_unlock(sc);
@@ -21869,8 +21871,8 @@ iwn5000_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
 {
     ItlIwn *that = container_of(sc, ItlIwn, com);
     int qid = IWN5000_FIRST_AGG_TXQUEUE + tid;
-    int idx = IWN_AGG_SSN_TO_TXQ_IDX(ssn);
     struct iwn_tx_ring *ring = &sc->txq[qid];
+    (void)ssn;
 
     /* Stop TX scheduler while we're changing its configuration. */
     iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
@@ -21879,21 +21881,18 @@ iwn5000_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
     /* Disable aggregation for the queue. */
     iwn_prph_clrbits(sc, IWN5000_SCHED_AGGR_SEL, 1 << qid);
 
-    /* A short queue need not extend to ba_winend.  Reclaim only the
-     * submitted interval, after deactivation but before cursor reset. */
-    that->iwn_ampdu_txq_advance(sc, ring, qid, ring->cur);
+    /* DVM queue disable clears TX status before descriptor unmapping.
+     * Context configuration is a different SRAM area, owned by start. */
+    iwn_mem_set_region_4(sc,
+        sc->sched_base + IWN5000_SCHED_TX_STATUS_OFFSET(qid), 0, 4);
 
-    /* Set starting sequence number from the ADDBA request. */
-    sc->txq[qid].cur = sc->txq[qid].read = idx;
-    IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | idx);
-    iwn_prph_write(sc, IWN5000_SCHED_QUEUE_RDPTR(qid), ssn);
+    /* A short queue need not extend to ba_winend.  Reclaim only the
+     * submitted interval after deactivation. The next start, not stop,
+     * assigns the successor sequence and writes the hardware pointers. */
+    that->iwn_ampdu_txq_advance(sc, ring, qid, ring->cur);
 
     /* Disable interrupts for the queue. */
     iwn_prph_clrbits(sc, IWN5000_SCHED_INTR_MASK, 1 << qid);
-
-    /* Mark the queue as inactive. */
-    iwn_prph_write(sc, IWN5000_SCHED_QUEUE_STATUS(qid),
-        IWN5000_TXQ_STATUS_INACTIVE | iwn_tid2fifo[tid]);
 }
 
 /*

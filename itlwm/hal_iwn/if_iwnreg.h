@@ -154,6 +154,7 @@
 #define IWN5000_SCHED_CTX_OFF        0x600
 #define IWN5000_SCHED_CTX_LEN        520
 #define IWN5000_SCHED_QUEUE_OFFSET(qid)    (0x600 + (qid) * 8)
+#define IWN5000_SCHED_TX_STATUS_OFFSET(qid) (0x6a0 + (qid) * 16)
 #define IWN5000_SCHED_TRANS_TBL(qid)    (0x7e0 + (qid) * 2)
 
 /*

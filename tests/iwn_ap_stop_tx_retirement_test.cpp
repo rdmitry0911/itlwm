@@ -52,10 +52,16 @@ struct iwn_softc {
     int freed = 0, resets = 0, commandError = 0, rxonError = 0;
     std::vector<int> commands;
     uint32_t flushedMask = 0;
+    uint32_t sched_base = 0x800000;
+    uint32_t scheduler[0x808 / 4] = {};
+    unsigned statusClears = 0, pointerWrites = 0;
 };
 static void reset_sched(iwn_softc *sc, int qid, int) {
     assert(sc->locked && sc->stopped[qid]);
     assert(!sc->demandFlush || sc->flushDone);
+    if (sc->hw_type != IWN_HW_REV_TYPE_4965)
+        for (int word = 0; word < 4; ++word)
+            assert(sc->scheduler[IWN5000_SCHED_TX_STATUS_OFFSET(qid) / 4 + word] == 0);
     ++sc->resets;
 }
 class ItlIwn {
@@ -70,7 +76,11 @@ public:
     iwn_rxon apFirmwareRxon;
     bool supported = true, scanBlocked = false;
     int scanResult = kIOReturnSuccess, resets = 0;
-    ItlIwn() { com.ops.reset_sched = reset_sched; }
+    ItlIwn() {
+        com.ops.reset_sched = reset_sched;
+        for (size_t word = 0; word < sizeof(com.scheduler) / sizeof(uint32_t); ++word)
+            com.scheduler[word] = 0x5ca00000U + word;
+    }
     ~ItlIwn() { for (auto &ring : com.txq) for (auto &data : ring.data) delete data.m; }
     bool iwn_ampdu_txq_can_advance(const iwn_tx_ring *, int) const;
     bool iwn_ampdu_txq_advance(iwn_softc *, iwn_tx_ring *, int, int);
@@ -103,9 +113,24 @@ public:
         }
     }
     static void iwn_prph_clrbits(iwn_softc *sc, int, int) { assert(sc->locked); }
+    static void iwn_mem_set_region_4(iwn_softc *sc, uint32_t address,
+                                     uint32_t value, int count) {
+        assert(sc->locked && sc->hw_type != IWN_HW_REV_TYPE_4965);
+        assert(value == 0 && count == 4);
+        const uint32_t offset = address - sc->sched_base;
+        assert(offset >= 0x6a0 && offset + 16 <= 0x7e0);
+        assert((offset - 0x6a0) % 16 == 0);
+        const int qid = (offset - 0x6a0) / 16;
+        assert(sc->stopped[qid]);
+        for (int word = 0; word < count; ++word)
+            sc->scheduler[offset / 4 + word] = value;
+        ++sc->statusClears;
+    }
     static void write(iwn_softc *sc, int, int value) {
         const int qid = value >> 8;
         assert(sc->locked && sc->stopped[qid]);
+        assert(sc->hw_type == IWN_HW_REV_TYPE_4965);
+        ++sc->pointerWrites;
         assert(sc->txq[qid].queued == 0);
         for (const auto &data : sc->txq[qid].data)
             assert(data.m == nullptr && !data.ap_data && !data.ap_mgmt);
@@ -166,6 +191,15 @@ static void accepted_flush(ItlIwn &hal) {
     hal.com.flushDone = true;
     hal.iwn_note_ap_stop_tx_flush(IWN_CMD_TXFIFO_FLUSH, hal.apStopTxFlushIndex, false);
 }
+static void check_scheduler(const iwn_softc &sc, uint32_t clearedQueues) {
+    for (size_t word = 0; word < sizeof(sc.scheduler) / sizeof(uint32_t); ++word) {
+        const bool status = word * 4 >= 0x6a0 && word * 4 < 0x7e0;
+        const int qid = status ? (word * 4 - 0x6a0) / 16 : 0;
+        const uint32_t expected = status && (clearedQueues & (1U << qid)) ?
+            0 : 0x5ca00000U + word;
+        assert(sc.scheduler[word] == expected);
+    }
+}
 static void protocol_cases() {
     ItlIwn hal;
     seed(hal, 0, 0, 12, 38, 3);
@@ -191,6 +225,7 @@ static void protocol_cases() {
     accepted_flush(hal);
     assert(hal.apFirmwareStage == IWN_AP_STAGE_STOP_TX_RETIRE);
     assert(sc.freed == 0 && hal.apClients[0].txBaMask == 1);
+    check_scheduler(sc, 0);
     assert(hal.apClients[2].txBaEnablePending);
     assert(hal.stopAPMode() == kIOReturnNotReady && sc.freed == 0);
     sc.failLock = false;
@@ -208,6 +243,8 @@ static void protocol_cases() {
     assert(sc.agg_queue_mask == (1U << 10) && sc.qfullmsk == (1U << 10));
     assert(sc.txq[10].queued == 7 && sc.txq[10].read == 12 && sc.txq[10].cur == 19);
     assert(!sc.stopped[10] && sc.sc_tx_ba[0].wn == &hal);
+    check_scheduler(sc, (1U << 12) | (1U << 19));
+    assert(sc.statusClears == 2 && sc.pointerWrites == 0);
     accepted_flush(hal); // Late duplicate is not another retirement.
     assert(sc.freed == 10 && sc.commands.size() == 2);
     assert(hal.stopAPMode() == kIOReturnNotReady && hal.resets == 0);
@@ -263,25 +300,33 @@ static void failure_cases() {
     assert(scan.stopAPMode() == kIOReturnBusy && scan.com.commands.empty());
 }
 static void backend_cases() {
-    for (bool old : {false, true}) for (int read : {0, 38, 250, 255}) {
+    for (bool old : {false, true}) for (int read : {0, 38, 250, 255})
+    for (int count : {0, 1, 3, 213}) for (uint8_t tid = 0; tid < 8; ++tid)
+    for (int qid : {11, 12, 19}) {
+        if (old && qid != 12) continue;
         ItlIwn hal;
         hal.com.hw_type = old ? IWN_HW_REV_TYPE_4965 : 12;
-        seed(hal, 0, 0, 12, read, 3, true);
+        seed(hal, 0, tid, qid, read, count, true);
         hal.com.flushDone = true;
         assert(ItlIwn::iwn_nic_lock(&hal.com) == 0);
-        hal.iwn_ap_ampdu_tx_stop(12, 0, 4095);
+        hal.iwn_ap_ampdu_tx_stop(qid, tid, 4095);
         ItlIwn::iwn_nic_unlock(&hal.com);
-        assert(hal.com.freed == 2 && hal.com.resets == 3);
-        assert(hal.com.txq[12].queued == 0 && hal.com.txq[12].read == 255);
+        assert(hal.com.freed == (count ? count - 1 : 0) && hal.com.resets == count);
+        assert(hal.com.txq[qid].queued == 0);
+        assert(hal.com.txq[qid].read == (old ? 255 : (read + count) % 256));
+        assert(hal.com.txq[qid].read == hal.com.txq[qid].cur);
+        check_scheduler(hal.com, old ? 0 : 1U << qid);
+        assert(hal.com.pointerWrites == (old ? 1U : 0));
         assert(ItlIwn::iwn_nic_lock(&hal.com) == 0);
-        hal.iwn_ap_ampdu_tx_stop(12, 0, 4095);
+        hal.iwn_ap_ampdu_tx_stop(qid, tid, 4095);
         ItlIwn::iwn_nic_unlock(&hal.com);
-        assert(hal.com.freed == 2 && hal.com.resets == 3);
+        assert(hal.com.freed == (count ? count - 1 : 0) && hal.com.resets == count);
+        check_scheduler(hal.com, old ? 0 : 1U << qid);
     }
 }
 int main(int argc, char **argv) {
     (void)&iwn_ap_stop_tx_prepare_doorbell;
     if (argc == 2 && std::string(argv[1]) == "--backend") backend_cases();
     else { protocol_cases(); failure_cases(); backend_cases(); }
-    std::puts("PASS: actual AP stop waits exact FIFO flush, retires AP-only DMA, preserves STA and error ownership");
+    std::puts("PASS: actual AP stop waits exact FIFO flush, clears retired SCD status, drains AP-only DMA and preserves STA");
 }

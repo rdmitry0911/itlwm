@@ -59,6 +59,7 @@ selected = {
     'IWN_IPAN_FIRST_AGG_QUEUE', 'IWN_CMD_TXFIFO_FLUSH',
     'IWN_TXFIFO_FLUSH_DROP_ALL', 'IWN_CMD_WIPAN_RXON',
     'IWN_MODE_P2P',
+    'IWN5000_SCHED_TX_STATUS_OFFSET',
 }
 defines = [line for line in registers.splitlines()
            if line.startswith('#define ') and
