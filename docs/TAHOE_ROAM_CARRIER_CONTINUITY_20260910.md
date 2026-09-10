@@ -184,3 +184,23 @@ the first transition. Native IPConfiguration recorded no media-inactive,
 address withdrawal or DHCP BOUND during these two completed transitions.
 This qualifies the offered-stream/address boundary, not lossless roaming;
 the no-target/superseded scans and packet losses remain separately visible.
+
+## Saved-profile security changes through GUI
+
+System Settings selected the saved external OpenWrt WPA2 profile at
+10:47:57 UTC, without another radio toggle. The old WPA3 address was removed
+at 10:48:00.783; native logs identify the new association as WPA2-PSK/CCMP,
+without PMF, on channel 161 at about -33 dBm. A fixed 12-second readback
+preceded DHCP completion and failed to obtain an address; that early probe
+is retained as failed. DHCP BOUND followed at 10:48:10.982. A later actual
+lease readback and independently awaited 1400-byte forward/reverse checks
+passed 20/20 each, without reselection or recovery operations.
+
+GUI selection of the saved pure-WPA3 profile at 10:52:20 removed the WPA2
+address at 10:52:21.108, associated on channel 13 and reached DHCP BOUND at
+10:52:26.222. The actual restored lease and separate 20/20 forward and 20/20
+reverse checks passed. Thus the continuity correction preserves ordinary
+address teardown for a different network/security policy in both directions;
+it does not carry the old profile's address or authorization into that join.
+This does not close the new-profile/open, failed-target, S3 or AP gates for
+the candidate, nor last-selected-profile preference after sleep/off-on.
