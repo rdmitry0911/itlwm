@@ -204,3 +204,63 @@ address teardown for a different network/security policy in both directions;
 it does not carry the old profile's address or authorization into that join.
 This does not close the new-profile/open, failed-target, S3 or AP gates for
 the candidate, nor last-selected-profile preference after sleep/off-on.
+
+## Controlled open-network GUI regression
+
+The first host-side fixture failed before AP readiness: hostapd's nl80211
+authentication-frame registration returned EALREADY because NetworkManager
+had acquired the newly created temporary interface after an early successful
+unmanaged setter. Host journals identify that ordering. Cleanup removed only
+the fixture interface and restored the host's ordinary managed connection.
+No guest open-network attempt occurred; it is not a guest-driver failure.
+
+The repeated fixture waited for NetworkManager's unmanaged state and the
+supplicant's explicit absence of that interface before starting hostapd.
+The same disk-space safety thresholds remained active. The AP became ready
+at 10:59:39 UTC. At 11:00:57 System Settings selected its saved open profile,
+without a Wi-Fi toggle or command-line join. The external DHCPACK at 11:01:05
+and guest lease readback identified the controlled subnet. Independently
+awaited 1400-byte traffic passed 20/20 forward and 20/20 reverse by 11:01:46.
+External station state confirmed authorization without PMF; GUI displayed
+the connected unsecured network. Individual forward RTTs reached 853 ms,
+so this is service qualification, not a latency gate.
+
+## Actual S3 and automatic return to the same open network
+
+The guarded sleep request at 11:02:39 UTC verified this exact boot/image,
+the working open-network address and hibernatemode zero. Temporary USB
+management and the tablet were removed while awake at 11:02:36; the guard
+independently refused to proceed if either remained. The OS transition was
+not instantaneous: the 11:03:02 monitor still reported running. Subsequent
+serial ACPI SLEEP and the 11:03:45 monitor's suspended state confirmed actual
+S3. An intervening direct Wi-Fi SSH timeout during entry/sleep is not a
+working-transport test or classified driver failure.
+
+Owned-monitor wake at 11:04:42 produced ACPI S3 WAKE. Fresh USB management
+and tablet were attached only after that wake record was verified. Readback
+at 11:05:16 retained boot session `9BC5E960-E1B4-4A2E-9BD2-D4B4986CDF7B`
+and loaded UUID `74F8A32B-57C3-3D50-8DA9-E795D9D35EBF`; no reboot occurred.
+
+The guest automatically rejoined the same controlled open AP. The external
+DHCPACK at 11:04:47 and native DHCP BOUND at 11:04:48 independently establish
+recovery. No GUI selection, command-line join or Wi-Fi toggle intervened.
+Separately awaited 1400-byte forward and reverse checks passed 20/20 each,
+ending at 11:06:27. The external station remained authorized without PMF.
+The 12,610-line candidate serial interval through the checks has no matched
+driver panic, firmware fatal, device timeout, unset-key or AP TX gate failure.
+
+VNC retained a pre-sleep 14:03 local-time frame despite the guest clock and
+network advancing. Thus this is automatic open-network service recovery,
+not a successful post-S3 GUI profile-selection test. The bounded external
+fixture expired after the packet checks and completed normal cleanup at
+11:06:43, restoring the host's managed connection and preserving its wired
+default route. Guest automatic return after that AP shutdown, failed-target
+and native AP regressions remain separate gates before publication.
+
+After the signaled external AP shutdown, the guest automatically returned
+to its saved WPA3 network on channel 13 and had the ordinary address by
+11:07:27. Independently awaited 1400-byte forward and reverse checks passed
+20/20 each without any join command, GUI selection or radio toggle. One
+reverse RTT exceeded one second; no latency gate is claimed. This extends
+the same-image post-S3 recovery evidence to signaled AP loss and automatic
+saved-network return, not silent RF loss or all profile-selection policy.
