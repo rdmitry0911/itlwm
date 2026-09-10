@@ -245,3 +245,46 @@ host's ordinary managed profile and wired route by 12:49:36. The guest
 automatically regained its ordinary WPA3 address and passed 10/10 without a
 join command. The fresh USB upstream separately passed HTTP. Native AP
 open/WPA2/WPA3 service remains the last candidate release regression gate.
+
+## Completed same-image post-S3 AP matrix
+
+Native system Internet Sharing ran WPA3, WPA2 and open sequentially on the
+same `b5c6cfd8` boot after the real S3 above. Every external AX211 client
+profile used automatic IPv4 configuration, obtained the actual 192.168.2.2
+DHCP lease, and independently reported the intended negotiated security.
+WPA3 used SAE with required PMF; WPA2 used WPA2-PSK; open used no pairwise or
+group cipher. Every mode passed 20/20 1400-byte client-to-gateway packets,
+10/10 reverse packets after deleting only the bridge-scoped client ARP entry,
+and routed HTTP through the guest's independent upstream. Each bounded
+lower TX observer completed with empty diagnostic stderr. No manual bridge
+rewrite, daemon restart, radio toggle or reboot separated the three modes.
+
+Normal disable at 12:52:16, 13:02:21 and 13:05:04 UTC respectively was followed
+by a separate 15-second dwell. In each case `bridge100` was absent, its retired
+object had zero I/O references and a cleared detach byte, and the actual
+returned STA address passed 10/10 packets. WPA2/open retired objects still
+had flags 0x2 and ordinary reference counts; zero I/O ownership is not a claim
+that every ordinary object reference was destroyed. The host's normal managed
+WPA3 profile and 172.16.66.226 address were restored; its wired default route
+was preserved and the exact temporary HTTP destination route was removed.
+The bounded HTTP fixture was normally terminated after the matrix.
+
+The complete 13,684-line current-boot serial interval audited after final
+disable contains no matched driver panic, firmware fatal/assert, device
+timeout, unset-key or TX-gate diagnostic. Successful ADDBA responses with
+`error=0` were independently distinguished from failures. This qualifies
+the reproduced successful-roam address continuity and failed-roam WCL
+retirement changes with GUI, actual S3 and native AP service regressions.
+It does not close the separate candidate-selection ambiguity, measured UDP
+loss, prior post-roam ARP/DHCP blackhole, stalled post-S3 GUI, active-AP
+off-channel scans, automatic external-client continuity or ad-hoc. Common
+IWM/IWX source coverage is not equivalent recent hardware qualification.
+
+The archive was packaged from the same frozen, installed and loaded image.
+ZIP SHA-256 is
+`c2940702f7de42e797659bc59a36a0908756c35c219b9196eea19bd123815b44`;
+its extracted Mach-O SHA-256 is
+`4037898627c66b449c6c6688378910954c65839b62a0bdf5c702792e356cb7ec`.
+Guest extraction, canonical/frozen comparisons, host transfer and ZIP integrity
+checks passed. The previous public archive and notes are retained privately.
+Publication and independent public-download verification are the next step.
