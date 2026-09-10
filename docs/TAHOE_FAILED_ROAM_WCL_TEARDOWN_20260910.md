@@ -204,3 +204,44 @@ address and established-TCP continuity, not lossless or low-latency roaming.
 The competing foreground-scan behavior and full candidate-selection policy
 remain independent open observations. GUI off/on, actual sleep and AP
 regressions still gate publication of this image.
+
+## GUI radio lifecycle and open-network pre-sleep control
+
+System Settings radio-off at 12:41:18 UTC produced native inactive carrier at
+12:41:18.411828 and removed IPv4 at .595171. The independent power query
+reported Off and no address. One GUI on at 12:41:44 restored active carrier
+at 12:41:53.900596 and DHCP BOUND at 12:41:56.664811. Separate 1400-byte
+forward and reverse checks passed 20/20 each. No second toggle was used.
+
+The isolated open AP became ready at 12:43:19. Its saved profile was selected
+through the visible System Settings pane at 12:44:00. External DHCP and the
+actual guest lease agreed on 192.168.73.26; the external station state reported
+open security with no MFP. Both independently awaited 1400-byte checks passed
+20/20 by 12:44:50, with individual reverse RTTs up to 556 ms. These results
+are connectivity, not latency qualification. Actual S3 and post-wake service
+checks are the next gate; pre-sleep traffic alone does not satisfy it.
+
+The exact-image sleep guard verified hibernatemode zero, the current open
+address and a 2/2 precondition. USB management and the tablet were removed
+while awake at 12:45:23; the delayed guard independently required both
+Ethernet interfaces and the tablet absent before requesting sleep at 12:45:42.
+Serial ACPI SLEEP and the owned VM's suspended state confirmed real S3 by
+12:46:30. The ordinary wake request at 12:47:37 produced ACPI S3 WAKE in the
+complete current-boot serial interval. A short tail query missed that line
+after newer console traffic; the complete interval, not that negative tail,
+establishes wake. USB management/tablet were reattached at 12:47:59.
+
+Native logs show automatic return to the same open network, carrier active
+at 12:47:39.556343 and DHCP BOUND at 12:47:40.623303, before USB reattachment.
+The unchanged boot session and loaded UUID were independently checked. Both
+post-wake 1400-byte checks passed 20/20 by 12:49:01. No manual selection,
+off/on or reboot was used. The first USB SSH probe timed out during interface
+enumeration; the next completed. The framebuffer still displayed its 15:46
+pre-sleep image at 12:49 UTC, so this proves service recovery, not a usable
+post-S3 GUI.
+
+The controlled AP was normally stopped at 12:49:33; its fixture restored the
+host's ordinary managed profile and wired route by 12:49:36. The guest
+automatically regained its ordinary WPA3 address and passed 10/10 without a
+join command. The fresh USB upstream separately passed HTTP. Native AP
+open/WPA2/WPA3 service remains the last candidate release regression gate.
