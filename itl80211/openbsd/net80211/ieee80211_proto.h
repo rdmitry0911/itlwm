@@ -86,6 +86,24 @@ extern	int ieee80211_assoc_comeback_retry_abort(struct ieee80211com *,
 	    const struct ieee80211_assoc_comeback_retry *, int);
 
 struct ieee80211_node;
+struct ieee80211_sta_sa_query_token;
+extern void ieee80211_sta_sa_query_attach(struct ieee80211com *);
+extern void ieee80211_sta_sa_query_detach(struct ieee80211com *);
+extern void ieee80211_sta_sa_query_unprotected(struct ieee80211com *,
+    struct ieee80211_node *, const struct ieee80211_frame *, size_t);
+extern void ieee80211_sta_sa_query_response(struct ieee80211com *,
+    struct ieee80211_node *, const struct ieee80211_frame *, size_t);
+extern int ieee80211_sta_sa_query_tag(struct ieee80211com *, mbuf_t,
+    const struct ieee80211_sta_sa_query_token *);
+extern int ieee80211_sta_sa_query_tx_snapshot(struct ieee80211com *,
+    struct ieee80211_node *, mbuf_t, struct ieee80211_sta_sa_query_token *);
+/* Caller holds the selected-BSS leaf through the actual TX doorbell. */
+extern int ieee80211_sta_sa_query_tx_commit_locked(struct ieee80211com *,
+    struct ieee80211_node *, const struct ieee80211_sta_sa_query_token *);
+extern int ieee80211_sta_sa_query_claim_failure(struct ieee80211com *,
+    const struct ieee80211_sta_sa_query_token *);
+extern int ieee80211_send_sta_sa_query(struct ieee80211com *,
+    struct ieee80211_node *, const struct ieee80211_sta_sa_query_token *);
 struct ieee80211_rxinfo;
 struct ieee80211_rsnparams;
 struct ieee80211_pae_selected_bss;

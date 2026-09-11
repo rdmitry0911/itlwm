@@ -17928,6 +17928,14 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
     wh = mtod(m, struct ieee80211_frame *);
     type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
     subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    struct ieee80211_sta_sa_query_token sa_query = {};
+    const int sa_query_admission = type == IEEE80211_FC0_TYPE_MGT &&
+        subtype == IEEE80211_FC0_SUBTYPE_ACTION ?
+        ieee80211_sta_sa_query_tx_snapshot(ic, ni, m, &sa_query) : 0;
+    if (sa_query_admission < 0) {
+        mbuf_freem(m);
+        return ECANCELED;
+    }
     if (type == IEEE80211_FC0_TYPE_CTL)
         hdrlen = sizeof(struct ieee80211_frame_min);
     else
@@ -18550,6 +18558,37 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
         IWN_DIRECT_SAE_TRACE(ic,
             kAirportItlwmPostPltiTraceEventIwnDirectSaeAssocDescriptorAccepted);
         iwn_sae_engine_schedule_task(sc);
+    } else if (sa_query_admission == 1) {
+        IOSimpleLock *lock = ic->ic_pae_selected_bss_lock;
+        const IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+        const bool current = ieee80211_sta_sa_query_tx_commit_locked(
+            ic, ni, &sa_query) != 0;
+        if (current) {
+            ops->update_sched(sc, ring->qid, ring->cur, tx->id, totlen);
+            ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
+            IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+        }
+        IOSimpleLockUnlockEnableInterrupt(lock, irq);
+        if (!current) {
+            explicit_bzero(desc, sizeof(*desc));
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->ni = NULL;
+            data->totlen = 0;
+            data->ampdu_nframes = 0;
+            data->ampdu_txmcs = 0;
+            data->ampdu_rate_generation = 0;
+            data->ampdu_rate_rflags = 0;
+            data->ampdu_rate_feedback_valid = 0;
+            data->tx_apple_nrate = 0;
+            data->tx_apple_nrate_valid = 0;
+            data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+            data->diag_subtype = 0xff;
+            data->diag_auth_seq = 0xffff;
+            explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
+            iwn_sae_tx_data_clear(data);
+            return ECANCELED;
+        }
     } else {
         /* Existing non-SAE output keeps its historical scheduler ordering. */
         ops->update_sched(sc, ring->qid, ring->cur, tx->id, totlen);

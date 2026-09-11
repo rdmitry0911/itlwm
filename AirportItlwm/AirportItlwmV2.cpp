@@ -6191,6 +6191,34 @@ static IOReturn postTahoeWclRoamLinkLossGated(
                       sizeof(payload), true);
     return kIOReturnSuccess;
 }
+
+static IOReturn postTahoeWclSaQueryTimeoutGated(
+    OSObject *target, void *arg0, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    const auto *token = static_cast<const ieee80211_sta_sa_query_token *>(arg0);
+    if (that == nullptr || that->fNetIf == nullptr ||
+        that->fHalService == nullptr || token == nullptr)
+        return kIOReturnBadArgument;
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    if (!ieee80211_sta_sa_query_claim_failure(ic, token))
+        return kIOReturnNotReady;
+
+    TahoeWclLinkChangedPayload payload;
+    bzero(&payload, sizeof(payload));
+    IEEE80211_ADDR_COPY(payload.bssid, token->bssid);
+    payload.interfaceType = kTahoeWclInfraInterfaceType;
+    /* No invented firmware/beacon/deauth reason. The 25C56 linkDownInd
+     * default handles an unmapped local loss through leaveNetworkCommand;
+     * WCL then owns ordinary leave/reconnect, including new credentials. */
+    payload.reasonCode = kTahoeWclInvalidLinkReason;
+    TahoeOwnerRegistry &registry = that->getTahoeOwnerRegistry();
+    registry.association = TahoeOwnerRegistry::AssociationOwner{};
+    registry.publicAssociation = TahoeOwnerRegistry::AssociationOwner{};
+    that->postMessage(that->fNetIf, kTahoeWclLinkChanged, &payload,
+                      sizeof(payload), true);
+    return kIOReturnSuccess;
+}
 #endif
 
 static void publishResolvedCountryCodeProperty(AirportItlwm *controller)
@@ -10140,6 +10168,16 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             }
 #endif
             return;
+        case IEEE80211_EVT_STA_SA_QUERY_TIMEOUT:
+#if __IO80211_TARGET >= __MAC_26_0
+            if (data != nullptr) {
+                const ieee80211_sta_sa_query_token token =
+                    *static_cast<const ieee80211_sta_sa_query_token *>(data);
+                (void)gate->runAction(postTahoeWclSaQueryTimeoutGated,
+                                      (void *)&token, NULL, NULL);
+            }
+#endif
+            return;
         case IEEE80211_EVT_SCAN_DONE:
             RT_SET(25);
             sRT.scanDoneCount++;
@@ -11123,6 +11161,7 @@ bool AirportItlwm::start(IOService *provider)
     fHalService->initWithController(this, _fWorkloop, _fCommandGate);
     fHalService->get80211Controller()->ic_event_handler = eventHandler;
 #if __IO80211_TARGET >= __MAC_26_0
+    fHalService->get80211Controller()->ic_sta_sa_query_enabled = 1;
     {
         struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
         memset(&tahoeLegacyNetStats, 0, sizeof(tahoeLegacyNetStats));

@@ -1697,6 +1697,14 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
     type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
     subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
     explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
+    struct ieee80211_sta_sa_query_token sa_query = {};
+    const int sa_query_admission = type == IEEE80211_FC0_TYPE_MGT &&
+        subtype == IEEE80211_FC0_SUBTYPE_ACTION ?
+        ieee80211_sta_sa_query_tx_snapshot(ic, ni, m, &sa_query) : 0;
+    if (sa_query_admission < 0) {
+        mbuf_freem(m);
+        return ECANCELED;
+    }
     
     if (type == IEEE80211_FC0_TYPE_CTL)
         hdrlen = sizeof(struct ieee80211_frame_min);
@@ -2032,6 +2040,30 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
             iwm_sae_tx_data_clear(data);
             explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
             return EIO;
+        }
+    } else if (sa_query_admission == 1) {
+        IOSimpleLock *lock = ic->ic_pae_selected_bss_lock;
+        const IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+        const bool current = ieee80211_sta_sa_query_tx_commit_locked(
+            ic, ni, &sa_query) != 0;
+        if (current) {
+            iwm_update_sched(sc, ring->qid, doorbell_idx, tx->sta_id,
+                le16toh(tx->len));
+            ring->cur = next_cur;
+            IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+        }
+        IOSimpleLockUnlockEnableInterrupt(lock, irq);
+        if (!current) {
+            memset(desc, 0, sizeof(*desc));
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->in = NULL;
+            data->totlen = 0;
+            data->fc = 0;
+            data->sta_id = 0;
+            data->ap_frame = false;
+            iwm_sae_tx_data_clear(data);
+            return ECANCELED;
         }
     } else {
         iwm_update_sched(sc, ring->qid, doorbell_idx, tx->sta_id,

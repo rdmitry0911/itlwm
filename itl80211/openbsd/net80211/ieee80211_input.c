@@ -681,7 +681,11 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                         if (m == NULL)
                             goto out;
                     } else if (!is_multicast && !is_protected) {
-                        /* unicast mgmt not encrypted */
+                        /* Still reject the unauthenticated disconnect. A
+                         * current completed PMF STA may challenge reason6/7
+                         * through a separate protected, bounded SA Query. */
+                        ieee80211_sta_sa_query_unprotected(ic, ni, wh,
+                            mbuf_len(m));
                         ic->ic_stats.is_rx_unencrypted++;
                         goto out;
                     } else {
@@ -694,6 +698,13 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                         }
                     }
                     wh = mtod(m, struct ieee80211_frame *);
+                    /* This is the verified CCMP/PN edge, not the later raw
+                     * action dispatcher. An unprotected or replayed response
+                     * cannot cancel a STA liveness procedure. */
+                    if (!is_multicast &&
+                        subtype == IEEE80211_FC0_SUBTYPE_ACTION)
+                        ieee80211_sta_sa_query_response(ic, ni, wh,
+                            mbuf_len(m));
                 }
             } else if ((ic->ic_flags & IEEE80211_F_RSNON) &&
                        ((wh->i_fc[1] & IEEE80211_FC1_PROTECTED) ||

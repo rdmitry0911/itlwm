@@ -98,6 +98,7 @@
 #include <net80211/ieee80211_node.h>
 #include <net80211/ieee80211_bss_switch.h>
 #include <net80211/ieee80211_pae_selected_bss.h>
+#include <net80211/ieee80211_sta_sa_query.h>
 #include <net80211/ieee80211_proto.h>
 
 #include <IOKit/IOLib.h>
@@ -1044,6 +1045,14 @@ struct ieee80211com {
 	 */
 	IOSimpleLock		*ic_pae_selected_bss_lock;
 	struct ieee80211_join_attempt ic_wcl_join_attempt;
+	/* STA query values share the selected-BSS leaf; the timer owns no node.
+	 * Only a controller with an identity-fenced native recovery carrier may
+	 * enable this procedure. The tag ID is immutable after attach. */
+	struct ieee80211_sta_sa_query ic_sta_sa_query;
+	CTimeout *ic_sta_sa_query_timeout;
+	mbuf_tag_id_t ic_sta_sa_query_tag_id;
+	u_int8_t ic_sta_sa_query_tag_valid;
+	u_int8_t ic_sta_sa_query_enabled;
 	/* Same leaf lock as the selected-BSS value above/below. */
 	struct ieee80211_sae_peer_rx_admission ic_sae_peer_rx_admission;
 	/* Public initial-BSS hint only; never represents raw/legacy/WCL pinning. */
@@ -1471,6 +1480,8 @@ struct ieee80211_wcl_scan_start_rejected {
  * the synchronous callback, never a retained node or credential pointer. */
 #define IEEE80211_EVT_STA_ROAM_LINK_LOST             23
 #define IEEE80211_EVT_STA_JOIN_FAILED                24
+/* Local protected liveness timeout, NOT a received deauthentication. */
+#define IEEE80211_EVT_STA_SA_QUERY_TIMEOUT           25
 struct ieee80211_roam_link_loss {
     u_int64_t epoch;
     u_int8_t bssid[IEEE80211_ADDR_LEN];

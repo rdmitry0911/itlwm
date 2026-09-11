@@ -11917,6 +11917,14 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
     wh = mtod(m, struct ieee80211_frame *);
     type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
     subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    struct ieee80211_sta_sa_query_token sa_query = {};
+    const int sa_query_admission = type == IEEE80211_FC0_TYPE_MGT &&
+        subtype == IEEE80211_FC0_SUBTYPE_ACTION ?
+        ieee80211_sta_sa_query_tx_snapshot(ic, ni, m, &sa_query) : 0;
+    if (sa_query_admission < 0) {
+        mbuf_freem(m);
+        return ECANCELED;
+    }
     if (type == IEEE80211_FC0_TYPE_CTL)
         hdrlen = sizeof(struct ieee80211_frame_min);
     else
@@ -12264,6 +12272,28 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
             iwx_sae_tx_data_clear(data);
             explicit_bzero(&sae_assoc_claim, sizeof(sae_assoc_claim));
             return EIO;
+        }
+    } else if (sa_query_admission == 1) {
+        IOSimpleLock *lock = ic->ic_pae_selected_bss_lock;
+        const IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+        const bool current = ieee80211_sta_sa_query_tx_commit_locked(
+            ic, ni, &sa_query) != 0;
+        if (current) {
+            ring->cur = (ring->cur + 1) % getTxQueueSize();
+            IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
+        }
+        IOSimpleLockUnlockEnableInterrupt(lock, irq);
+        if (!current) {
+            iwx_clear_tx_desc(sc, ring, idx);
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->in = NULL;
+            data->type = 0;
+            data->diag_subtype = 0xff;
+            data->diag_auth_seq = 0xffff;
+            explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
+            iwx_sae_tx_data_clear(data);
+            return ECANCELED;
         }
     } else {
         ring->cur = (ring->cur + 1) % getTxQueueSize();

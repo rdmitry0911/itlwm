@@ -125,6 +125,8 @@ ieee80211_pae_assoc_epoch_current(const struct ieee80211com *ic)
 	return __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
 }
 
+#include "ieee80211_sta_sa_query.inc"
+
 /*
  * The selected-BSS leaf lock also serializes the compact PMF transaction
  * record.  It deliberately protects values only: driver callbacks, crypto,
@@ -2015,6 +2017,9 @@ ieee80211_pae_assoc_epoch_advance_locked(struct ieee80211com *ic)
 {
 	u_int64_t epoch;
 
+	/* Value-only cancellation: never enter the timer gate under this leaf.
+	 * A queued old timer/TX/response cannot acquire the next association. */
+	ieee80211_sta_sa_query_cancel_value(&ic->ic_sta_sa_query);
 	do {
 		epoch = __atomic_add_fetch(&ic->ic_pae_assoc_epoch, 1,
 		    __ATOMIC_ACQ_REL);

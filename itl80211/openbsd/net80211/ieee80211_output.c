@@ -2128,7 +2128,7 @@ ieee80211_get_delba(struct ieee80211com *ic, struct ieee80211_node *ni,
  * SA Query Request/Reponse frame format:
  * [1]  Category
  * [1]  Action
- * [16] Transaction Identifier
+ * [2]  Transaction Identifier
  */
 mbuf_t
 ieee80211_get_sa_query(struct ieee80211com *ic, struct ieee80211_node *ni,
@@ -2151,6 +2151,35 @@ ieee80211_get_sa_query(struct ieee80211com *ic, struct ieee80211_node *ni,
     mbuf_setlen(m, l);
 
 	return m;
+}
+
+/* Explicit STA token: never overwrite ni_sa_query_trid, which belongs to
+ * the independent AP request/STA response exchange. This packet takes the
+ * ordinary protected management/CCMP path in every HAL. */
+int
+ieee80211_send_sta_sa_query(struct ieee80211com *ic, struct ieee80211_node *ni,
+    const struct ieee80211_sta_sa_query_token *token)
+{
+    mbuf_t m = ieee80211_getmgmt(MBUF_DONTWAIT, MT_DATA, 4);
+    if (m == NULL)
+        return ENOMEM;
+    u_int8_t *body = mtod(m, u_int8_t *);
+    body[0] = IEEE80211_CATEG_SA_QUERY;
+    body[1] = IEEE80211_ACTION_SA_QUERY_REQ;
+    LE_WRITE_2(body + 2, token->transaction);
+    mbuf_setlen(m, 4);
+    mbuf_pkthdr_setlen(m, 4);
+    /* mbuf_prepend preserves the packet header and its native KPI tags. */
+    if (ieee80211_sta_sa_query_tag(ic, m, token) != 0) {
+        mbuf_freem(m);
+        return ENOBUFS;
+    }
+    ieee80211_ref_node(ni);
+    const int result = ieee80211_mgmt_output(&ic->ic_if, ni, m,
+        IEEE80211_FC0_SUBTYPE_ACTION);
+    if (result != 0)
+        ieee80211_release_node(ic, ni);
+    return result;
 }
 
 mbuf_t
