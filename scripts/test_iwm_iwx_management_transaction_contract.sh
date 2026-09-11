@@ -73,39 +73,50 @@ for source, delivery, marker, label in (
         fail(f"{label} reintroduces blocking state delivery")
 
 enable = body(iwx, "iwx_enable_txq(struct iwx_softc", "IWX TXQ enable")
+require(enable, "iwx_allocate_tx_queue(sc, station, tid, 0, slots, queue)", "fixed queue physical transaction")
+enable = body(iwx, "iwx_allocate_tx_queue(struct iwx_softc", "IWX shared TXQ enable")
 for token in (
     "IWX_SCD_QUEUE_CONFIG_CMD",
-    "cmd_ver == 0 || cmd_ver == IWX_FW_CMD_VER_UNKNOWN",
+    "version != 0 && version != IWX_FW_CMD_VER_UNKNOWN && version != 3",
     "IWX_TX_QUEUE_CFG_ENABLE_QUEUE",
-    "cmd_ver == 3",
+    "version == 3",
     "IWX_SCD_QUEUE_ADD",
     "IWX_WIDE_ID(IWX_DATA_PATH_GROUP",
-    "sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = qid",
+    "sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = queue",
 ):
     require(enable, token, "IWX TXQ enable")
 
 disable = body(iwx, "iwx_disable_txq(struct iwx_softc", "IWX TXQ disable")
 for token in (
-    "cmd_ver == 0 || cmd_ver == IWX_FW_CMD_VER_UNKNOWN",
+    "version == 0 || version == IWX_FW_CMD_VER_UNKNOWN",
     "IWX_SCD_QUEUE_REMOVE",
     "iwx_send_cmd(sc, &hcmd)",
-    "iwx_reset_tx_ring(sc, ring)",
-    "sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = IWX_INVALID_QUEUE",
+    "ring->firmware.closing = true",
+    "ring->firmware.removed = true",
 ):
     require(disable, token, "IWX TXQ disable")
 ordered(disable, (
     "iwx_send_cmd(sc, &hcmd)",
-    "pkt = hcmd.resp_pkt",
-    "if (!pkt ||",
-    "iwx_reset_tx_ring(sc, ring)",
+    "hcmd.resp_pkt == NULL",
+    "primaryStationCleanupCurrent(context->receipt)",
+    "ring->firmware.removed = true",
 ), "IWX acknowledged TXQ teardown")
 for forbidden in (
     "ring->queued == 0 && ring->tail == ring->cur",
-    "return EBUSY",
-    "IOSimpleLockLock(txq_lock)",
+    "iwx_reset_tx_ring(",
+    "cmd_v0.flags",
 ):
     if forbidden in disable:
-        fail(f"TXQ removal must accept flush completion without read pointers: {forbidden}")
+        fail(f"TXQ removal must retain DMA until station completion: {forbidden}")
+
+retire = body(iwx, "iwx_retire_station_tx_queues(struct iwx_softc", "IWX complete station queue retirement")
+ordered(retire, ("owner.closing = true", "iwx_flush_sta_tids(",
+                 "iwx_disable_txq(", "hcmd.id = IWX_REMOVE_STA",
+                 "iwx_send_cmd(sc, &hcmd)", "hcmd.resp_pkt == NULL",
+                 "iwx_ap_exchange_tx_ring_carrier(sc, queue, NULL, detached)",
+                 "iwx_reset_tx_ring(sc, detached)", "iwx_free_tx_ring(sc, detached)",
+                 "tid.qid = IWX_INVALID_QUEUE", "finishTxQueueAllocation"),
+        "confirmed queue close/flush/remove/detach/reclaim")
 
 flush_tids = body(iwx, "iwx_flush_sta_tids(struct iwx_softc", "IWX flush response")
 for token in (
@@ -131,7 +142,6 @@ remove = body(iwx, "iwx_rm_sta(struct iwx_softc", "IWX STA removal")
 ordered(remove, (
     "beginPrimaryStationCleanup(true, &receipt)",
     "iwx_flush_station(sc, receipt)",
-    "iwx_disable_txq(sc, receipt.identity.station",
     "iwx_remove_station(sc, receipt)",
     "finishPrimaryStationCleanup(receipt, err)",
 ), "flush-disable-remove transaction")

@@ -2,6 +2,7 @@
  * and lock order; firmware/radio behavior remains a separate live gate. */
 #include "include/HAL/ItlScanCommandLease.hpp"
 #include "include/HAL/ItlFirmwareContextLease.hpp"
+#include "include/HAL/ItlTxQueueAllocation.hpp"
 #include "scan_test_byte_order.hpp"
 #include <algorithm>
 #include <cassert>
@@ -127,6 +128,7 @@ struct iwx_cmd_async_identity {
 };
 struct iwx_host_cmd {
     ItlFirmwareContextCommand *context_command;
+    ItlTxQueueAllocationCommand *queue_allocation;
     uint64_t scan_serial;
     uint32_t id;
     uint16_t len[2];
@@ -143,7 +145,15 @@ struct Slot {
     bool async;
     unsigned state;
 };
-struct ieee80211com { IOSimpleLock *ic_pae_selected_bss_lock; };
+struct ieee80211com {
+    IOSimpleLock *ic_pae_selected_bss_lock;
+    ItlStateTransitionIdentity identity{11,11,12};
+};
+struct ItlScanCommandPolicy {
+    static ItlStateTransitionIdentity identityLocked(const ieee80211com *ic) {
+        assert(ic->ic_pae_selected_bss_lock->held); return ic->identity;
+    }
+};
 struct iwx_softc {
     iwx_tx_ring txq[1];
     ieee80211com sc_ic;
@@ -158,6 +168,8 @@ struct iwx_softc {
     unsigned sc_cmd_resp_len[4];
 };
 constexpr int IWX_SCAN_REQ_UMAC = 0xd, IWX_LONG_GROUP = 1;
+constexpr int IWX_SCD_QUEUE_CFG=0x1d, IWX_DATA_PATH_GROUP=5, IWX_SCD_QUEUE_CONFIG_CMD=0x17;
+constexpr int IWX_REMOVE_STA=0x19, IWX_TXPATH_FLUSH=0x1e;
 constexpr int IWX_SCAN_ABORT_UMAC = 0xe;
 constexpr int IWX_CMD_ASYNC = 1, IWX_CMD_WANT_RESP = 2;
 constexpr int IWX_FLAG_SHUTDOWN = 0x100;
@@ -200,6 +212,7 @@ static void AirportItlwmPostPltiTraceRecord(ieee80211com *, int)
 static ItlScanCommandLease *observed_lease;
 static bool expect_scan;
 static ItlFirmwareContextCommand *observed_context;
+static ItlTxQueueAllocationCommand *observed_queue;
 static iwx_softc *context_sc;
 static void test_doorbell(iwx_softc *sc, int, int)
 {
@@ -208,7 +221,7 @@ static void test_doorbell(iwx_softc *sc, int, int)
     assert(sc->sc_cmdq_slots[0].state == IWX_CMD_SLOT_SUBMITTED);
     const bool owner = sc->sc_ic.ic_pae_selected_bss_lock != nullptr &&
         sc->sc_ic.ic_pae_selected_bss_lock->held;
-    assert(locks == ((expect_scan || observed_context) ? (owner ? 3U : 2U) : 1U));
+    assert(locks == ((expect_scan || observed_context || observed_queue) ? (owner ? 3U : 2U) : 1U));
     if (expect_scan) {
         assert(owner == !observed_lease->command.stopping);
         assert(observed_lease->submitted);
@@ -217,8 +230,17 @@ static void test_doorbell(iwx_softc *sc, int, int)
         assert(owner == !observed_context->cleanup);
         assert(!observed_context->submitted);
     }
+    if (observed_queue) {
+        assert(owner == (observed_queue->primary && !observed_queue->retirement));
+        assert(!observed_queue->submitted);
+    }
 }
 struct ItlIwx {
+    iwx_softc com{};
+    ItlTxQueueAllocation txQueueAllocation{};
+    ItlFirmwareContextLease primaryStationContext{};
+    ItlFirmwareStationUses primaryStationUses{};
+    bool txQueueAllocationCurrentLocked(const ItlTxQueueAllocationCommand &) const;
     ItlScanCommandLease scanCommand = {};
     ItlFirmwareContextLease contextOwner = {};
     IOSimpleLock scanLock = {false, true};
@@ -253,13 +275,14 @@ struct ItlIwx {
 
 struct Fixture {
     ItlIwx driver;
-    iwx_softc sc = {};
+    iwx_softc &sc = driver.com;
     IOSimpleLock q0;
     IOSimpleLock ownerLock = {false, false, true};
     iwx_device_cmd commands[4] = {};
     uint8_t payload[1025] = {};
     iwx_host_cmd cmd = {};
     ItlFirmwareContextCommand context = {};
+    ItlTxQueueAllocationCommand queue = {};
     Fixture(bool large = true, bool synchronous = false)
     {
         assert(!allocations && !cursors && !refs && !locks && !sleep_locked);
@@ -287,6 +310,7 @@ struct Fixture {
         observed_lease = &driver.scanCommand;
         expect_scan = true;
         observed_context = nullptr;
+        observed_queue = nullptr;
         context_sc = &sc;
     }
     void useContext(bool cleanup = false) {
@@ -303,6 +327,32 @@ struct Fixture {
             ItlFirmwareContextLease::Stage::Adding;
         expect_scan = false;
         observed_context = &context;
+    }
+    void useQueue(bool primary, bool retirement, bool modern = false) {
+        useContext(true);
+        context.kind=ItlFirmwareContextCommand::Kind::Station;
+        context.receipt.identity.station=primary?0:6;
+        context.receipt.identity.attempt=sc.sc_ic.identity;
+        driver.contextOwner.owner=context.receipt;
+        driver.primaryStationContext=driver.contextOwner;
+        driver.primaryStationContext.confirmed=true;
+        assert(driver.primaryStationUses.start(context.receipt));
+        if(retirement) driver.primaryStationUses.close();
+        else {
+            driver.primaryStationContext.stage=ItlFirmwareContextLease::Stage::Active;
+            assert(driver.primaryStationUses.acquire(context.receipt,&queue.use));
+        }
+        queue.serial=91; queue.lifecycle=4; queue.generation=sc.sc_generation;
+        queue.station=primary?0:6; queue.tid=3; queue.queue=-1;
+        queue.primary=primary; queue.retirement=retirement;
+        driver.txQueueAllocation.current=queue;
+        driver.txQueueAllocation.lifecycle=queue.lifecycle;
+        driver.txQueueAllocation.phase=ItlTxQueueAllocation::Phase::Building;
+        cmd.queue_allocation=&queue;
+        cmd.id=modern?IWX_WIDE_ID(IWX_DATA_PATH_GROUP,IWX_SCD_QUEUE_CONFIG_CMD):
+            retirement?IWX_REMOVE_STA:IWX_SCD_QUEUE_CFG;
+        if(!retirement || !primary) { cmd.context_command=nullptr; observed_context=nullptr; }
+        observed_queue=&queue;
     }
     int send() { return driver.iwx_send_cmd(&sc, &cmd); }
     void rejected(int error)
@@ -328,6 +378,34 @@ struct Fixture {
 int main()
 {
     unsigned cases = 0;
+    for(bool primary : {false,true}) for(bool retire : {false,true}) for(bool modern : {false,true}) {
+        Fixture f(true,true); f.useQueue(primary,retire,modern);
+        if(retire) f.driver.ownerCurrent=false;
+        assert(f.send()==0 && f.queue.submitted && doorbells==1);
+        assert(f.send()==EINVAL && doorbells==1); ++cases;
+    }
+    for(unsigned edge=0;edge<12;++edge) {
+        Fixture f(true,true); f.useQueue(true,false);
+        if(edge==0) ++f.queue.generation;
+        if(edge==1) map_hook=[&] { ++f.sc.sc_generation; };
+        if(edge==2) map_hook=[&] { ++f.driver.txQueueAllocation.lifecycle; };
+        if(edge==3) map_hook=[&] { ++f.driver.txQueueAllocation.current.serial; };
+        if(edge==4) map_hook=[&] { f.driver.primaryStationUses.close(); };
+        if(edge==5) map_hook=[&] { ++f.sc.sc_ic.identity.joinSequence; };
+        if(edge==6) map_hook=[&] { f.driver.primaryStationContext.uncertain=true; };
+        if(edge==7) map_hook=[&] { f.driver.scanCommand.open=false; };
+        if(edge==8) f.cmd.id=IWX_REMOVE_STA;
+        if(edge==9) f.cmd.context_command=&f.context;
+        if(edge==10) fail_map=true;
+        if(edge==11) f.sc.sc_ic.ic_pae_selected_bss_lock=nullptr;
+        f.rejected(edge==0 || edge==8 || edge==9 ? EINVAL : edge==10 ? ENOMEM : ENXIO);
+        assert(!f.queue.submitted); ++cases;
+    }
+    { Fixture f(true,true); f.useQueue(false,true); f.cmd.id=IWX_TXPATH_FLUSH;
+      assert(f.send()==0 && f.queue.submitted); ++cases; }
+    { Fixture f(true,true); f.useQueue(true,false); sleep_result=ETIMEDOUT;
+      assert(f.send()==ETIMEDOUT && f.queue.submitted && doorbells==1);
+      assert(f.sc.sc_cmdq_slots[0].state==IWX_CMD_SLOT_TIMED_OUT && f.sc.txq[0].data[0].m); ++cases; }
     for (bool cleanup : {false,true}) for (bool large : {false,true}) {
         Fixture f(large); f.useContext(cleanup);
         if (cleanup) f.driver.ownerCurrent = false;

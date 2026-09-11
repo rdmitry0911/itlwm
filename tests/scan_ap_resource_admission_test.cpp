@@ -1,15 +1,18 @@
 #include "include/HAL/ItlScanCommandLease.hpp"
+#include "include/HAL/ItlTxQueueAllocation.hpp"
 #include <cassert>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <type_traits>
 
 using IOInterruptState = unsigned;
 struct IOSimpleLock { bool held = false; };
 struct IOLock { bool held = false; };
 static unsigned leaf_held, commands, fail_at, resets;
+static unsigned resumeCalls;
 static std::function<void()> command_hook;
 static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock)
 { assert(lock && !lock->held && !leaf_held); lock->held = true; ++leaf_held; return 1; }
@@ -75,6 +78,7 @@ using ItlIwxWclScanPhase = Phase;
 using IOReturn = int;
 #define XYLog(...) ((void)0)
 #define DEVNAME(...) "fixture"
+#define container_of(ptr, type, member) reinterpret_cast<type *>(reinterpret_cast<char *>(ptr) - offsetof(type, member))
 #define DECLARE(family, lower) \
 struct Itl##family { \
     Softc com; IOSimpleLock leaf; IOSimpleLock *wclScanLock = &leaf; \
@@ -82,6 +86,12 @@ struct Itl##family { \
     bool apPrimaryStaRecoveryScanYielded = false; \
     Phase wclScanPhase = Phase::Idle; uint64_t wclScanUpperGeneration = 0; \
     ItlScanCommandLease scanCommand = {}; ieee80211_channel channel; \
+    ItlTxQueueAllocation txQueueAllocation{}; \
+    ItlApFirmwareRuntime apRuntime; \
+    bool apLifecycleDetached=false, apStartPending=false, apStopPending=false; \
+    bool apLowerRunning=false, apStopRequested=false, apStartResultValid=false; \
+    IOReturn apStartResult=0; \
+    void resumePrimaryStaRecoveryScanAfterAPHandoff() { assert(!leaf_held && !lifecycle.held); ++resumeCalls; } \
     uint8_t beacon_version = 12; \
     uint64_t reserveAPScanCommand(); uint64_t currentAPScanCommand() const; \
     void finishAPScanCommand(uint64_t, bool); \
@@ -111,6 +121,7 @@ struct Itl##family { \
 };
 DECLARE(Iwm, iwm)
 DECLARE(Iwx, iwx)
+static IOReturn iwx_ap_start_result_from_errno(int error) { return error; }
 #define iwm_softc Softc
 #define iwx_softc Softc
 #define iwm_node Node
@@ -123,7 +134,7 @@ static int start(ItlIwx &d, ItlApFirmwareRuntime &r) { return d.iwx_start_ap_mod
 static int stop(ItlIwm &d, ItlApFirmwareRuntime &r) { return d.iwm_stop_ap_resources(&d.com, &r); }
 static int stop(ItlIwx &d, ItlApFirmwareRuntime &r) { return d.iwx_stop_ap_mode(&d.com, &r); }
 static void observers()
-{ assert(!leaf_held); commands = fail_at = resets = 0; command_hook = {}; }
+{ assert(!leaf_held); commands = fail_at = resets = resumeCalls = 0; command_hook = {}; }
 template<class D> static unsigned exercise()
 {
     unsigned count = 0, start_commands = 0, stop_commands = 0;
@@ -160,7 +171,11 @@ template<class D> static unsigned exercise()
     for (unsigned failed = 1; failed <= stop_commands; ++failed) {
       observers(); D d; ItlApFirmwareRuntime r; assert(d.scanCommand.reopen(0, 7));
       assert(start(d, r) == 0); commands = 0; fail_at = failed;
-      assert(stop(d, r) == EIO && r.stage == kItlApFirmwareResourceIdle);
+      assert(stop(d, r) == EIO);
+      if constexpr (std::is_same<D, ItlIwx>::value) {
+          assert(r.stage == kItlApFirmwareResourceStopping && commands == failed);
+          assert(stop(d, r) == EBUSY && commands == failed);
+      } else assert(r.stage == kItlApFirmwareResourceIdle);
       assert(resets == 1 && !d.scanCommand.open && d.currentAPScanCommand());
       assert(!d.scanCommand.reserve(7, 92, true, false, 0)); ++count;
     }
@@ -173,6 +188,45 @@ template<class D> static unsigned exercise()
 int main()
 {
     unsigned count = exercise<ItlIwm>() + exercise<ItlIwx>();
+    // Execute the real outer workers too: a lower error must not be turned
+    // into an unconditional runtime_reset after retaining physical ownership.
+    for(unsigned test=0;test<3;++test) {
+        observers(); ItlIwx d; assert(d.scanCommand.reopen(0,7));
+        if(test==0) {
+            assert(start(d,d.apRuntime)==0);
+            d.apLowerRunning=true; d.apStopPending=true;
+            commands=0; fail_at=1;
+            iwx_ap_stop_task(&d.com);
+            assert(!d.apStopPending && !d.apLowerRunning && resumeCalls==0);
+        } else {
+            d.apStartPending=true;
+            if(test==1) {
+                fail_at=8;
+                command_hook=[&] { d.apStopRequested=true; };
+            } else {
+                fail_at=6;
+                std::function<void()> hook;
+                hook=[&] {
+                    if(commands==6) fail_at=7;
+                    else command_hook=hook;
+                };
+                command_hook=hook;
+                iwx_ap_start_task(&d.com);
+                assert(d.apStartResultValid && !d.apStartPending);
+                assert(d.apRuntime.stage==kItlApFirmwareResourceStopping && !d.scanCommand.open);
+                ++count; continue;
+            }
+            iwx_ap_start_task(&d.com);
+            assert(!d.apStartPending && !d.apLowerRunning && resumeCalls==0);
+        }
+        assert(d.apRuntime.stage==kItlApFirmwareResourceStopping && !d.scanCommand.open);
+        ++count;
+    }
+    { observers(); ItlIwx d; assert(d.scanCommand.reopen(0,7));
+      assert(start(d,d.apRuntime)==0); commands=0;
+      d.txQueueAllocation.phase=ItlTxQueueAllocation::Phase::Quarantined;
+      assert(stop(d,d.apRuntime)==EIO && commands==0 && resets==1);
+      assert(d.apRuntime.stage==kItlApFirmwareResourceStopping); ++count; }
     // Link-owned v13 uses the opposite MAC/beacon order; both first commands
     // must still be inside the same physical reservation.
     observers(); ItlIwx d; ItlApFirmwareRuntime r; d.beacon_version = 13;

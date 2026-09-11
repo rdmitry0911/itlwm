@@ -110,6 +110,7 @@
 #include <HAL/ItlSaeAuthTransportV1.h>
 #include <HAL/ItlSaePmkContinuationV1.h>
 #include <HAL/ItlSaeWclCredentialV1.h>
+#include <HAL/ItlTxQueueAllocation.hpp>
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
@@ -335,6 +336,7 @@ struct iwx_host_cmd {
     /* Host-only physical scan reservation; never encoded as a firmware UID. */
     uint64_t scan_serial;
     struct ItlFirmwareContextCommand *context_command;
+    struct ItlTxQueueAllocationCommand *queue_allocation;
 	const void *data[IWX_MAX_CMD_TBS_PER_TFD];
 	struct iwx_rx_packet *resp_pkt;
 	size_t resp_pkt_len;
@@ -457,6 +459,7 @@ struct iwx_async_cmd_result {
 };
 
 struct iwx_tx_ring {
+	struct ItlTxQueueFirmwareOwner firmware;
 	struct iwx_dma_info	desc_dma;
 	struct iwx_dma_info	cmd_dma;
 	struct iwx_dma_info	bc_tbl;

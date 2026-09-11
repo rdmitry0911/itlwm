@@ -564,6 +564,7 @@ bool ItlIwx::attach(IOPCIDevice *device)
     primaryStationContext = ItlFirmwareContextLease{};
     primaryStationUses = ItlFirmwareStationUses{};
     primaryRxBa = ItlStationRxBa{};
+    txQueueAllocation = ItlTxQueueAllocation{};
     primaryStationRetirement = ItlFirmwareStationRetirement{};
     memset(&primaryStationCommand, 0, sizeof(primaryStationCommand));
     memset(&primaryMacCommand, 0, sizeof(primaryMacCommand));
@@ -3034,7 +3035,8 @@ iwx_ap_start_task(void *argument)
         that->apStopRequested = false;
         that->apStartResult = result;
         that->apStartResultValid = report;
-        itl_ap_firmware_runtime_reset(&that->apRuntime);
+        if (that->apRuntime.stage != kItlApFirmwareResourceStopping)
+            itl_ap_firmware_runtime_reset(&that->apRuntime);
     }
     IOLockUnlock(that->apLifecycleLock);
 
@@ -3045,11 +3047,13 @@ iwx_ap_start_task(void *argument)
         that->apStopRequested = false;
         that->apStopPending = false;
         that->apStartResultValid = false;
-        itl_ap_firmware_runtime_reset(&that->apRuntime);
+        if (stopError == 0)
+            itl_ap_firmware_runtime_reset(&that->apRuntime);
         IOLockUnlock(that->apLifecycleLock);
         XYLog("%s: IWX AP lower cancelled start teardown error=%d\n",
               DEVNAME(sc), stopError);
-        that->resumePrimaryStaRecoveryScanAfterAPHandoff();
+        if (stopError == 0)
+            that->resumePrimaryStaRecoveryScanAfterAPHandoff();
         return;
     }
     that->resumePrimaryStaRecoveryScanAfterAPHandoff();
@@ -3079,7 +3083,8 @@ iwx_ap_stop_task(void *argument)
     that->apLowerRunning = false;
     that->apStopRequested = false;
     that->apStartResultValid = false;
-    itl_ap_firmware_runtime_reset(&that->apRuntime);
+    if (error == 0)
+        itl_ap_firmware_runtime_reset(&that->apRuntime);
     IOLockUnlock(that->apLifecycleLock);
     XYLog("%s: IWX AP lower stop worker complete error=%d\n",
           DEVNAME(sc), error);
@@ -3162,6 +3167,10 @@ startAPMode(const struct ItlHalApConfig *config)
         IOLockUnlock(apLifecycleLock);
         return result;
     }
+    if (apRuntime.stage == kItlApFirmwareResourceStopping) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnNotReady; // Actual hardware recovery owns this runtime.
+    }
     const int snapshotError =
         itl_ap_firmware_runtime_snapshot(&apRuntime, config);
     if (snapshotError != 0) {
@@ -3204,6 +3213,10 @@ stopAPMode()
     if (apLifecycleDetached) {
         IOLockUnlock(apLifecycleLock);
         return kIOReturnSuccess;
+    }
+    if (apRuntime.stage == kItlApFirmwareResourceStopping) {
+        IOLockUnlock(apLifecycleLock);
+        return kIOReturnNotReady;
     }
     apStartResultValid = false;
     apStopRequested = true;
@@ -4217,6 +4230,10 @@ iwx_ap_exchange_tx_ring_carrier(struct iwx_softc *sc, uint16_t queueId,
 
     struct iwx_tx_ring *published = &sc->txq[queueId];
     IOSimpleLockLock(sc->sc_txq_locks[queueId]);
+    if (published->firmware.owned) {
+        IOSimpleLockUnlock(sc->sc_txq_locks[queueId]);
+        return EBUSY;
+    }
     memcpy(displaced, published, sizeof(*displaced));
     if (published->qid >= 0 &&
         published->qid < static_cast<int>(sizeof(sc->qfullmsk) * NBBY))
@@ -6746,6 +6763,7 @@ iwx_start_hw(struct iwx_softc *sc)
     /* Reset the entire device */
     IWX_SETBITS(sc, IWX_CSR_RESET, IWX_CSR_RESET_REG_FLAG_SW_RESET);
     DELAY(5000);
+    resetTxQueueAllocation(sc);
 
     if (sc->sc_device_family == IWX_DEVICE_FAMILY_22000 && sc->sc_integrated) {
         IWX_SETBITS(sc, IWX_CSR_GP_CNTRL,
@@ -6795,8 +6813,6 @@ iwx_stop_device(struct iwx_softc *sc)
     
     iwx_disable_rx_dma(sc);
     iwx_reset_rx_ring(sc, &sc->rxq);
-    for (qid = 0; qid < nitems(sc->txq); qid++)
-        iwx_reset_tx_ring(sc, &sc->txq[qid]);
     
     /* Make sure (redundant) we've released our request to stay awake */
     IWX_CLRBITS(sc, IWX_CSR_GP_CNTRL,
@@ -6812,6 +6828,11 @@ iwx_stop_device(struct iwx_softc *sc)
     /* Reset the on-board processor. */
     IWX_SETBITS(sc, IWX_CSR_RESET, IWX_CSR_RESET_REG_FLAG_SW_RESET);
     DELAY(5000);
+    /* Task/q0 admission has drained; only now has hardware stopped using
+     * descriptor memory, including submitted-but-unconfirmed allocations. */
+    resetTxQueueAllocation(sc);
+    for (qid = 0; qid < nitems(sc->txq); qid++)
+        iwx_reset_tx_ring(sc, &sc->txq[qid]);
     
     /*
      * Upon stop, the IVAR table gets erased, so msi-x won't
@@ -6921,199 +6942,232 @@ const uint8_t iwx_ac_to_tx_fifo[] = {
 };
 
 int ItlIwx::
-iwx_enable_txq(struct iwx_softc *sc, int sta_id, int qid, int tid,
-               int num_slots)
+iwx_enable_txq(struct iwx_softc *sc, int station, int queue, int tid, int slots)
 {
-    struct iwx_tx_queue_cfg_cmd cmd_v0;
-    struct iwx_scd_queue_cfg_cmd cmd_v3;
-    struct iwx_rx_packet *pkt;
-    struct iwx_tx_queue_cfg_rsp *resp;
-    struct iwx_host_cmd hcmd = {
-        .flags = IWX_CMD_WANT_RESP,
-        .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
-    };
-    struct iwx_tx_ring *ring;
-    int err, fwqid, cmd_ver;
-    uint32_t wr_idx;
-    size_t resp_len;
-    
-    if (qid == IWX_DQA_CMD_QUEUE || qid < 0 ||
-        qid >= (int)nitems(sc->txq))
+    if (station < 0 || station >= IWX_STATION_COUNT || slots <= 0)
         return EINVAL;
-    ring = &sc->txq[qid];
-
-    iwx_reset_tx_ring(sc, ring);
-    
-    cmd_ver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
-                                 IWX_SCD_QUEUE_CONFIG_CMD);
-    if (cmd_ver == 0 || cmd_ver == IWX_FW_CMD_VER_UNKNOWN) {
-        memset(&cmd_v0, 0, sizeof(cmd_v0));
-        cmd_v0.sta_id = sta_id;
-        cmd_v0.tid = tid;
-        cmd_v0.flags = htole16(IWX_TX_QUEUE_CFG_ENABLE_QUEUE);
-        cmd_v0.cb_size = htole32(IWX_TFD_QUEUE_CB_SIZE(num_slots));
-        cmd_v0.byte_cnt_addr = htole64(ring->bc_tbl.paddr);
-        cmd_v0.tfdq_addr = htole64(ring->desc_dma.paddr);
-        hcmd.id = IWX_SCD_QUEUE_CFG;
-        hcmd.data[0] = &cmd_v0;
-        hcmd.len[0] = sizeof(cmd_v0);
-    } else if (cmd_ver == 3) {
-        memset(&cmd_v3, 0, sizeof(cmd_v3));
-        cmd_v3.operation = htole32(IWX_SCD_QUEUE_ADD);
-        cmd_v3.u.add.tfdq_dram_addr = htole64(ring->desc_dma.paddr);
-        cmd_v3.u.add.bc_dram_addr = htole64(ring->bc_tbl.paddr);
-        cmd_v3.u.add.cb_size = htole32(IWX_TFD_QUEUE_CB_SIZE(num_slots));
-        cmd_v3.u.add.sta_mask = htole32(1U << sta_id);
-        cmd_v3.u.add.tid = tid;
-        hcmd.id = IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
-                              IWX_SCD_QUEUE_CONFIG_CMD);
-        hcmd.data[0] = &cmd_v3;
-        hcmd.len[0] = sizeof(cmd_v3);
-    } else {
-        XYLog("%s: unsupported SCD_QUEUE_CONFIG command version %d\n",
-              DEVNAME(sc), cmd_ver);
-        return ENOTSUP;
-    }
-
-    err = iwx_send_cmd(sc, &hcmd);
-    if (err)
-        return err;
-    
-    pkt = hcmd.resp_pkt;
-    if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
-        DPRINTF(("SCD_QUEUE_CFG command failed\n"));
-        err = EIO;
-        goto out;
-    }
-    
-    resp_len = iwx_rx_packet_payload_len(pkt);
-    if (resp_len != sizeof(*resp)) {
-        DPRINTF(("SCD_QUEUE_CFG returned %zu bytes, expected %zu bytes\n", resp_len, sizeof(*resp)));
-        err = EIO;
-        goto out;
-    }
-    
-    resp = (struct iwx_tx_queue_cfg_rsp *)pkt->data;
-    fwqid = le16toh(resp->queue_number);
-    wr_idx = le16toh(resp->write_pointer);
-    
-    /* Unlike iwlwifi, we do not support dynamic queue ID assignment. */
-    if (fwqid != qid) {
-        DPRINTF(("requested qid %d but %d was assigned\n", qid, fwqid));
-        err = EIO;
-        goto out;
-    }
-    
-    if (wr_idx != ring->cur) {
-        DPRINTF(("fw write index is %d but ring is %d\n", wr_idx, ring->cur));
-        err = EIO;
-        goto out;
-    }
-
-    /* sc_tid_data has one host-side slot after the QoS TIDs for the
-     * firmware's sparse management TID (15).  Record that translation so a
-     * later TXPATH_FLUSH response can reclaim this queue without indexing
-     * sc_tid_data[15] out of bounds. */
-    if (sta_id == IWX_STATION_ID && tid == IWX_MGMT_TID)
-        sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = qid;
-out:
-    iwx_free_resp(sc, &hcmd);
-    return err;
+    const int result = iwx_allocate_tx_queue(sc, station, tid, 0, slots, queue);
+    return result < 0 ? -result : 0;
 }
 
 int ItlIwx::
 iwx_disable_txq(struct iwx_softc *sc, int sta_id, int qid, uint8_t tid,
-                ItlFirmwareContextCommand *context)
+                ItlFirmwareContextCommand *context,
+                ItlTxQueueAllocationCommand *transaction)
 {
-    struct iwx_tx_queue_cfg_cmd cmd_v0;
-    struct iwx_scd_queue_cfg_cmd cmd_v3;
-    struct iwx_rx_packet *pkt;
-    struct iwx_tx_queue_cfg_rsp *resp;
-    struct iwx_host_cmd hcmd = {};
-    hcmd.id = IWX_SCD_QUEUE_CFG;
-    hcmd.flags = IWX_CMD_WANT_RESP;
-    hcmd.resp_pkt_len = sizeof(*pkt) + sizeof(*resp);
-    struct iwx_tx_ring *ring;
-    int err = 0, cmd_ver;
-    hcmd.context_command = context;
-
-    if (qid == IWX_DQA_CMD_QUEUE || qid < 0 ||
-        qid >= (int)nitems(sc->txq))
+    if (sc == NULL || sta_id < 0 || sta_id >= IWX_STATION_COUNT ||
+        qid <= IWX_DQA_CMD_QUEUE || qid >= static_cast<int>(nitems(sc->txq)) ||
+        sc->sc_txq_locks[qid] == NULL || transaction == NULL ||
+        !transaction->retirement || transaction->station != sta_id)
         return EINVAL;
-    ring = &sc->txq[qid];
+    struct iwx_tx_ring *ring = &sc->txq[qid];
+    IOSimpleLockLock(sc->sc_txq_locks[qid]);
+    const ItlTxQueueFirmwareOwner owner = ring->firmware;
+    const bool matches = owner.owned && owner.station == sta_id &&
+        owner.tid == tid && owner.generation == transaction->generation &&
+        owner.lifecycle == transaction->lifecycle;
+    if (matches)
+        ring->firmware.closing = true;
+    IOSimpleLockUnlock(sc->sc_txq_locks[qid]);
+    if (!matches || owner.uncertain)
+        return EBUSY;
+    if (owner.removed)
+        return 0;
 
-    cmd_ver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
-                                 IWX_SCD_QUEUE_CONFIG_CMD);
-    if (cmd_ver == 0 || cmd_ver == IWX_FW_CMD_VER_UNKNOWN) {
-        memset(&cmd_v0, 0, sizeof(cmd_v0));
-        cmd_v0.sta_id = sta_id;
-        cmd_v0.tid = tid;
-        /* Clearing ENABLE_QUEUE is the legacy scheduler removal operation. */
-        hcmd.id = IWX_SCD_QUEUE_CFG;
-        hcmd.data[0] = &cmd_v0;
-        hcmd.len[0] = sizeof(cmd_v0);
-    } else if (cmd_ver == 3) {
-        memset(&cmd_v3, 0, sizeof(cmd_v3));
-        cmd_v3.operation = htole32(IWX_SCD_QUEUE_REMOVE);
-        cmd_v3.u.remove.sta_mask = htole32(1U << sta_id);
-        cmd_v3.u.remove.tid = htole32(tid);
-        hcmd.id = IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
-                              IWX_SCD_QUEUE_CONFIG_CMD);
-        hcmd.data[0] = &cmd_v3;
-        hcmd.len[0] = sizeof(cmd_v3);
-    } else {
-        XYLog("%s: unsupported SCD_QUEUE_CONFIG command version %d\n",
-              DEVNAME(sc), cmd_ver);
+    const int version = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
+                                           IWX_SCD_QUEUE_CONFIG_CMD);
+    /* Legacy TVQM has no REMOVE_QUEUE command. Keep DMA and its closed owner
+     * through the checked REMOVE_STA terminal below. ENABLE_QUEUE=0 is not
+     * the older, unrelated DQA SCD_CFG_DISABLE_QUEUE wire operation. */
+    if (version == 0 || version == IWX_FW_CMD_VER_UNKNOWN)
+        return 0;
+    if (version != 3)
         return ENOTSUP;
-    }
 
-    err = iwx_send_cmd(sc, &hcmd);
-    if (err)
-        return err;
-
-    pkt = hcmd.resp_pkt;
-    if (context != NULL && !primaryStationCleanupCurrent(context->receipt)) {
-        err = ENXIO;
-        goto out;
-    }
-    if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
-        err = EIO;
-        goto out;
-    }
-
-    /* Some AX210-family firmware acknowledges TXPATH_FLUSH without returning
-     * per-queue read pointers, so the host ring can still look occupied here.
-     * The synchronous queue-removal response is the authoritative terminal:
-     * it orders removal after the flush while IWX_FLAG_TXFLUSH keeps packet
-     * producers fenced.  Reclaim only after that response, matching the
-     * reference IWX teardown rather than forcing a full firmware reset. */
-    iwx_reset_tx_ring(sc, ring);
-    if (sta_id == IWX_STATION_ID && tid == IWX_MGMT_TID)
-        sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = IWX_INVALID_QUEUE;
-out:
+    struct iwx_scd_queue_cfg_cmd command = {};
+    command.operation = htole32(IWX_SCD_QUEUE_REMOVE);
+    command.u.remove.sta_mask = htole32(1U << sta_id);
+    command.u.remove.tid = htole32(tid);
+    struct iwx_host_cmd hcmd = {};
+    hcmd.id = IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_SCD_QUEUE_CONFIG_CMD);
+    hcmd.flags = IWX_CMD_WANT_RESP;
+    hcmd.resp_pkt_len = IWX_CMD_RESP_MAX;
+    hcmd.data[0] = &command;
+    hcmd.len[0] = sizeof(command);
+    hcmd.context_command = context;
+    hcmd.queue_allocation = transaction;
+    transaction->submitted = false;
+    if (context != NULL)
+        context->submitted = false;
+    int error = iwx_send_cmd(sc, &hcmd);
+    if (error == 0 && (hcmd.resp_pkt == NULL ||
+        iwx_rx_packet_len(hcmd.resp_pkt) < sizeof(hcmd.resp_pkt->hdr) ||
+        (hcmd.resp_pkt->hdr.group_id & IWX_CMD_FAILED_MSK)))
+        error = EIO;
     iwx_free_resp(sc, &hcmd);
-    return err;
+    if (context != NULL && !primaryStationCleanupCurrent(context->receipt))
+        error = ENXIO;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current = txQueueAllocation.physical(*transaction, sc->sc_generation);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (!current)
+        return ENXIO;
+    if (error == 0) {
+        IOSimpleLockLock(sc->sc_txq_locks[qid]);
+        if (ring->firmware.serial != owner.serial ||
+            ring->firmware.generation != owner.generation ||
+            ring->firmware.lifecycle != owner.lifecycle)
+            error = ENXIO;
+        else
+            ring->firmware.removed = true;
+        IOSimpleLockUnlock(sc->sc_txq_locks[qid]);
+    }
+    /* Reclamation is delayed until the whole station transaction completes.
+     * A later error cannot erase this acknowledged per-queue progress. */
+    return error;
+}
+
+int ItlIwx::
+iwx_retire_station_tx_queues(struct iwx_softc *sc, uint8_t station,
+                              ItlFirmwareContextCommand *context, bool reclaim)
+{
+    if (sc == NULL || station >= IWX_STATION_COUNT ||
+        ((station == IWX_STATION_ID || station == IWX_MONITOR_STA_ID) &&
+         (context == NULL || !context->cleanup ||
+          context->receipt.identity.station != station)))
+        return EINVAL;
+    ItlTxQueueAllocationCommand transaction = {};
+    int error = beginTxQueueAllocation(sc, station, IWX_MGMT_TID, -2,
+                                        &transaction, true);
+    if (error != 0)
+        return error;
+    struct iwx_host_cmd hcmd = {};
+    struct iwx_rm_sta_cmd command = {};
+    struct iwx_tx_ring *detached = static_cast<struct iwx_tx_ring *>(
+        malloc(sizeof(*detached), 0, M_NOWAIT | M_ZERO));
+    bool quarantine = false;
+    bool flushed = false;
+    if (detached == NULL) {
+        finishTxQueueAllocation(sc, &transaction, false);
+        return ENOMEM;
+    }
+    /* The complete allocation/removal serial excludes new firmware queues.
+     * AP constructors hold the queue leaf through their doorbell; primary
+     * constructors were drained before beginPrimaryStationCleanup. */
+    for (unsigned queue = 1; queue < nitems(sc->txq); ++queue) {
+        if (sc->sc_txq_locks[queue] == NULL)
+            continue;
+        IOSimpleLockLock(sc->sc_txq_locks[queue]);
+        auto &owner = sc->txq[queue].firmware;
+        if (owner.owned && owner.station == station &&
+            owner.generation == transaction.generation)
+            owner.closing = true;
+        IOSimpleLockUnlock(sc->sc_txq_locks[queue]);
+    }
+    if (context != NULL) {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        flushed = primaryStationRetirement.owns(context->receipt) &&
+            (primaryStationRetirement.completed & ItlFirmwareStationRetirement::Flushed);
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    }
+    error = flushed ? 0 : iwx_flush_sta_tids(sc, station, 0xffff, context, &transaction);
+    if (error != 0)
+        goto out;
+    for (unsigned queue = 1; queue < nitems(sc->txq); ++queue) {
+        if (sc->sc_txq_locks[queue] == NULL)
+            continue;
+        IOSimpleLockLock(sc->sc_txq_locks[queue]);
+        const ItlTxQueueFirmwareOwner owner = sc->txq[queue].firmware;
+        IOSimpleLockUnlock(sc->sc_txq_locks[queue]);
+        if (!owner.owned || owner.station != station)
+            continue;
+        error = iwx_disable_txq(sc, station, queue, owner.tid, context, &transaction);
+        if (error != 0)
+            goto out;
+    }
+    command.sta_id = station;
+    hcmd.id = IWX_REMOVE_STA;
+    hcmd.len[0] = sizeof(command);
+    hcmd.data[0] = &command;
+    hcmd.flags = IWX_CMD_WANT_RESP;
+    hcmd.resp_pkt_len = IWX_CMD_RESP_MAX;
+    hcmd.context_command = context;
+    hcmd.queue_allocation = &transaction;
+    transaction.submitted = false;
+    if (context != NULL)
+        context->submitted = false;
+    error = iwx_send_cmd(sc, &hcmd);
+    if (error == 0 && (hcmd.resp_pkt == NULL ||
+        iwx_rx_packet_len(hcmd.resp_pkt) < sizeof(hcmd.resp_pkt->hdr) ||
+        (hcmd.resp_pkt->hdr.group_id & IWX_CMD_FAILED_MSK)))
+        error = EIO;
+    iwx_free_resp(sc, &hcmd);
+    if (context != NULL && !primaryStationCleanupCurrent(context->receipt))
+        error = ENXIO;
+    {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        const bool current = txQueueAllocation.physical(transaction, sc->sc_generation);
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        if (!current)
+            error = ENXIO;
+    }
+    if (error != 0)
+        goto out;
+    /* REMOVE_STA has retired every queue of this exact hardware station.
+     * The transaction and task pin remain held through all sleeping releases;
+     * no allocator or reset can reuse their storage between reset and clear. */
+    for (unsigned queue = 1; queue < nitems(sc->txq); ++queue) {
+        if (sc->sc_txq_locks[queue] == NULL)
+            continue;
+        struct iwx_tx_ring *ring = &sc->txq[queue];
+        IOSimpleLockLock(sc->sc_txq_locks[queue]);
+        const bool owned = ring->firmware.owned && ring->firmware.station == station &&
+            ring->firmware.generation == transaction.generation &&
+            ring->firmware.lifecycle == transaction.lifecycle;
+        IOSimpleLockUnlock(sc->sc_txq_locks[queue]);
+        if (!owned)
+            continue;
+        IOSimpleLockLock(sc->sc_txq_locks[queue]);
+        ring->firmware = ItlTxQueueFirmwareOwner{};
+        IOSimpleLockUnlock(sc->sc_txq_locks[queue]);
+        error = iwx_ap_exchange_tx_ring_carrier(sc, queue, NULL, detached);
+        if (error != 0)
+            goto out;
+        iwx_reset_tx_ring(sc, detached);
+        if (reclaim) {
+            iwx_free_tx_ring(sc, detached);
+        } else {
+            /* Fixed management storage must survive station reconnect. */
+            IOSimpleLockLock(sc->sc_txq_locks[queue]);
+            memcpy(ring, detached, sizeof(*ring));
+            memset(detached, 0, sizeof(*detached));
+            IOSimpleLockUnlock(sc->sc_txq_locks[queue]);
+        }
+        if (station == IWX_STATION_ID || station == IWX_MONITOR_STA_ID)
+            for (auto &tid : sc->sc_tid_data)
+                if (tid.qid == static_cast<int>(queue))
+                    tid.qid = IWX_INVALID_QUEUE;
+    }
+out:
+    {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        quarantine = error != 0 && transaction.submitted &&
+            txQueueAllocation.physical(transaction, sc->sc_generation);
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    }
+    if (detached != NULL)
+        ::free(detached);
+    finishTxQueueAllocation(sc, &transaction, quarantine);
+    return error;
 }
 
 int ItlIwx::
 iwx_tvqm_alloc_txq(struct iwx_softc *sc, int tid, int ssn)
 {
-    int queue;
-    //TODO: Here is a bug, for gen3 devices which support 256 frame aggregate into 1 A-MPDU like ax210, if the TfDs count larger than 256 than it would trigger system freeze on macOS, don't know why but Linux can do this. Still need to dig deep into the code or optimize the DMA memory allocation, here I just limit the size to 256 as the temporary solution.
-#ifdef notyet
-    int size = sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210 ? IWX_MIN_256_BA_QUEUE_SIZE_GEN3 : IWX_DEFAULT_QUEUE_SIZE;
-#else
-    int size = IWX_DEFAULT_QUEUE_SIZE;
-#endif
-    
-    do {
-        queue = iwx_tvqm_enable_txq(sc, tid, ssn, size);
-        if (queue < 0)
-            XYLog("Failed allocating TXQ of size %d for sta %d tid %d, ret: %d\n",
-                  size, IWX_STATION_ID, tid, queue);
-        size /= 2;
-    } while (queue < 0 && size >= 16);
-    
+    /* Size fallback belongs to local allocation, before any firmware command. */
+    if (tid < 0 || tid >= IWX_MAX_TID_COUNT)
+        return -EINVAL;
+    const int queue = iwx_tvqm_enable_txq(sc, tid, ssn, IWX_DEFAULT_QUEUE_SIZE);
     if (queue < 0)
         return queue;
     sc->sc_tid_data[tid].qid = queue;
@@ -7127,153 +7181,354 @@ iwx_tvqm_enable_txq(struct iwx_softc *sc, int tid, int ssn, uint32_t size)
 }
 
 int ItlIwx::
-iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t staId, int tid,
-                            int ssn, uint32_t size)
+beginTxQueueAllocation(struct iwx_softc *sc, uint8_t station, uint8_t tid,
+                       int queue, ItlTxQueueAllocationCommand *command, bool retirement)
 {
-    int err = -1;
-    int i = 0;
-    bus_addr_t paddr;
-    int fwqid;
-    uint32_t wr_idx;
-    size_t resp_len;
-    struct iwx_tx_queue_cfg_cmd cmd = {
-        .flags = htole16(IWX_TX_QUEUE_CFG_ENABLE_QUEUE),
-        .sta_id = staId,
-        .tid = (uint8_t)tid,
-    };
-    struct iwx_rx_packet *pkt;
-    struct iwx_tx_queue_cfg_rsp *resp;
-    struct iwx_host_cmd hcmd = {
-        .id = IWX_SCD_QUEUE_CFG,
-        .flags = IWX_CMD_WANT_RESP,
-        .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
-    };
-    struct iwx_tx_ring *ring = &sc->sc_tvqm_ring;
-    struct iwx_tx_ring *displaced = static_cast<struct iwx_tx_ring *>(
-        malloc(sizeof(*displaced), 0, M_NOWAIT | M_ZERO));
+    if (command == NULL || wclScanLock == NULL || sc->sc_task_gate_lock == NULL)
+        return ENXIO;
+    *command = ItlTxQueueAllocationCommand{};
+    /* Runtime stop drains this pin; init may also allocate its AUX queue
+     * while the normal task gate is closed under its exact init epoch. */
+    IOLockLock(sc->sc_task_gate_lock);
+    const bool pinned = !sc->sc_task_gate_detaching && sc->sc_task_gate_stop_refs == 0 &&
+        !(sc->sc_flags & IWX_FLAG_SHUTDOWN) &&
+        (!sc->sc_task_gate_closed || sc->sc_task_gate_init_refs != 0) &&
+        sc->sc_task_gate_active != UINT32_MAX;
+    if (pinned) {
+        ++sc->sc_task_gate_active;
+        command->generation = sc->sc_generation;
+    }
+    IOLockUnlock(sc->sc_task_gate_lock);
+    if (!pinned)
+        return ENXIO;
+    command->primary = station == IWX_STATION_ID || station == IWX_MONITOR_STA_ID;
+    command->station = station;
+    command->tid = tid;
+    command->queue = queue;
+    command->retirement = retirement;
+    IOSimpleLock *ownerLock = sc->sc_ic.ic_pae_selected_bss_lock;
+    const bool live = command->primary && !retirement;
+    if (live && ownerLock == NULL) {
+        iwx_task_gate_leave(sc);
+        return ENXIO;
+    }
+    IOInterruptState ownerIrq = 0;
+    if (live)
+        ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    bool admitted = txQueueAllocation.phase == ItlTxQueueAllocation::Phase::Idle &&
+        txQueueAllocation.nextSerial != UINT64_MAX && txQueueAllocation.lifecycle != UINT64_MAX &&
+        command->generation == static_cast<uint32_t>(sc->sc_generation) &&
+        !(sc->sc_flags & IWX_FLAG_SHUTDOWN);
+    if (admitted && command->primary && retirement)
+        admitted = primaryStationUses.closed && primaryStationUses.active == 0 &&
+            primaryStationContext.occupied() &&
+            primaryStationContext.owner.generation == command->generation &&
+            primaryStationContext.owner.identity.station == station;
+    if (admitted && live)
+        admitted = scanCommand.open && primaryStationContext.confirmed &&
+            !primaryStationContext.uncertain &&
+            primaryStationContext.owner.generation == command->generation &&
+            primaryStationContext.owner.identity.station == station &&
+            primaryStationContext.owner.identity.attempt.equals(ItlScanCommandPolicy::identityLocked(&sc->sc_ic)) &&
+            primaryStationUses.acquire(primaryStationContext.owner, &command->use);
+    if (admitted) {
+        command->serial = ++txQueueAllocation.nextSerial;
+        command->lifecycle = txQueueAllocation.lifecycle;
+        txQueueAllocation.current = *command;
+        txQueueAllocation.phase = ItlTxQueueAllocation::Phase::Building;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (live)
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (!admitted)
+        iwx_task_gate_leave(sc);
+    return admitted ? 0 : EBUSY;
+}
 
-    if (displaced == NULL)
-        return -ENOMEM;
+bool ItlIwx::
+txQueueAllocationCurrentLocked(const ItlTxQueueAllocationCommand &command) const
+{
+    if (command.submitted || txQueueAllocation.phase != ItlTxQueueAllocation::Phase::Building ||
+        !txQueueAllocation.physical(command, com.sc_generation) ||
+        (com.sc_flags & IWX_FLAG_SHUTDOWN))
+        return false;
+    if (!command.primary)
+        return true; // AUX/bootstrap or AP: physical station/TID, not the primary join.
+    if (command.retirement)
+        return primaryStationUses.closed && primaryStationUses.active == 0 &&
+            primaryStationContext.occupied() &&
+            primaryStationContext.owner.generation == command.generation &&
+            primaryStationContext.owner.identity.station == command.station;
+    return scanCommand.open && !primaryStationUses.closed &&
+        primaryStationContext.confirmed && !primaryStationContext.uncertain &&
+        command.use.generation == command.generation &&
+        command.use.generation == primaryStationUses.owner.generation &&
+        primaryStationContext.owner.generation == command.generation &&
+        command.use.serial == primaryStationUses.owner.serial &&
+        command.use.identity.equals(primaryStationUses.owner.identity) &&
+        command.use.identity.attempt.equals(ItlScanCommandPolicy::identityLocked(&com.sc_ic));
+}
 
-    XYLog("IWX AP TVQM begin sta=%u tid=%d size=%u\n",
-          static_cast<unsigned>(staId), tid, size);
-    
+void ItlIwx::
+finishTxQueueAllocation(struct iwx_softc *sc, ItlTxQueueAllocationCommand *command,
+                        bool quarantine)
+{
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    bool recover = false;
+    if (txQueueAllocation.matches(*command)) {
+        recover = quarantine && txQueueAllocation.physical(*command, sc->sc_generation);
+        txQueueAllocation.phase = recover ? ItlTxQueueAllocation::Phase::Quarantined :
+                                           ItlTxQueueAllocation::Phase::Idle;
+        if (!recover)
+            txQueueAllocation.current = ItlTxQueueAllocationCommand{};
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (command->use.serial != 0)
+        (void)releasePrimaryStationReader(&command->use);
+    iwx_task_gate_leave(sc);
+    if (recover && !(sc->sc_flags & IWX_FLAG_SHUTDOWN))
+        iwx_add_task(sc, systq, &sc->init_task);
+}
+
+void ItlIwx::
+resetTxQueueAllocation(struct iwx_softc *sc)
+{
+    if (wclScanLock == NULL)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (txQueueAllocation.lifecycle != UINT64_MAX)
+        ++txQueueAllocation.lifecycle;
+    const bool reclaim = txQueueAllocation.phase == ItlTxQueueAllocation::Phase::Quarantined;
+    const bool dynamic = reclaim && !txQueueAllocation.current.retirement &&
+        txQueueAllocation.current.queue < 0;
+    if (reclaim)
+        txQueueAllocation.phase = ItlTxQueueAllocation::Phase::Reclaiming;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    /* Called only after SW_RESET: firmware no longer references any ring.
+     * A still-building actor, if present, frees its own storage on exit. */
+    for (unsigned queue = 0; queue < nitems(sc->txq); ++queue) {
+        if (sc->sc_txq_locks[queue] != NULL)
+            IOSimpleLockLock(sc->sc_txq_locks[queue]);
+        sc->txq[queue].firmware = ItlTxQueueFirmwareOwner{};
+        if (sc->sc_txq_locks[queue] != NULL)
+            IOSimpleLockUnlock(sc->sc_txq_locks[queue]);
+    }
+    if (dynamic) {
+        iwx_reset_tx_ring(sc, &sc->sc_tvqm_ring);
+        iwx_free_tx_ring(sc, &sc->sc_tvqm_ring);
+        memset(&sc->sc_tvqm_ring, 0, sizeof(sc->sc_tvqm_ring));
+        sc->sc_tvqm_ring.qid = IWX_INVALID_QUEUE;
+    }
+    if (reclaim) {
+        irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        txQueueAllocation.current = ItlTxQueueAllocationCommand{};
+        txQueueAllocation.phase = ItlTxQueueAllocation::Phase::Idle;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    }
+}
+
+int ItlIwx::
+iwx_tvqm_allocate_memory(struct iwx_softc *sc, struct iwx_tx_ring *ring, uint32_t size)
+{
     memset(ring, 0, sizeof(*ring));
+    ring->qid = IWX_INVALID_QUEUE;
     iwx_tx_ring_init(sc, ring, size);
-    /* Allocate TX descriptors (256-byte aligned). */
-    err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->desc_dma, ring->ring_count * sizeof (struct iwx_tfh_tfd), 256);
-    if (err) {
-        XYLog("%s: could not allocate TX ring DMA memory\n",
-              DEVNAME(sc));
-        err = -ENOMEM;
-        goto fail;
+    int error = iwx_dma_contig_alloc(sc->sc_dmat, &ring->desc_dma,
+        ring->ring_count * sizeof(struct iwx_tfh_tfd), 256);
+    if (error != 0)
+        return error;
+    ring->desc = (struct iwx_tfh_tfd *)ring->desc_dma.vaddr;
+    error = iwx_dma_contig_alloc(sc->sc_dmat, &ring->bc_tbl,
+        sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210 ?
+            sizeof(struct iwx_gen3_bc_tbl) : sizeof(struct iwx_agn_scd_bc_tbl), 0);
+    if (error != 0)
+        return error;
+    error = iwx_dma_contig_alloc(sc->sc_dmat, &ring->cmd_dma,
+        ring->ring_count * sizeof(struct iwx_device_cmd), IWX_FIRST_TB_SIZE_ALIGN);
+    if (error != 0)
+        return error;
+    ring->cmd = (struct iwx_device_cmd *)ring->cmd_dma.vaddr;
+    bus_addr_t address = ring->cmd_dma.paddr;
+    for (unsigned i = 0; i < ring->ring_count; ++i) {
+        ring->data[i].cmd_paddr = address;
+        address += sizeof(struct iwx_device_cmd);
+        error = bus_dmamap_create(sc->sc_dmat, MCLBYTES, IWX_TFH_NUM_TBS - 2,
+            MCLBYTES, 0, BUS_DMA_NOWAIT, &ring->data[i].map);
+        if (error != 0)
+            return error;
     }
-    ring->desc = (struct iwx_tfh_tfd*)ring->desc_dma.vaddr;
-    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
-        err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->bc_tbl,
-                                   sizeof(struct iwx_gen3_bc_tbl), 0);
-    else
-        err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->bc_tbl,
-                                   sizeof(struct iwx_agn_scd_bc_tbl), 0);
-    if (err) {
-        XYLog("%s: could not allocate byte count table DMA memory\n",
-              DEVNAME(sc));
-        err = -ENOMEM;
-        goto fail;
+    return 0;
+}
+
+int ItlIwx::
+iwx_allocate_tx_queue(struct iwx_softc *sc, uint8_t station, int tid, int ssn,
+                      uint32_t size, int fixedQueue)
+{
+    (void)ssn; // Firmware returns the physical write pointer, as in the existing API.
+    if (sc == NULL || station >= IWX_STATION_COUNT || tid < 0 ||
+        (tid >= IWX_MAX_TID_COUNT && tid != IWX_MGMT_TID) ||
+        size < 16 || size > nitems(sc->sc_tvqm_ring.data) || (size & (size - 1)) != 0 ||
+        fixedQueue < -1 || fixedQueue == IWX_DQA_CMD_QUEUE ||
+        fixedQueue >= static_cast<int>(nitems(sc->txq)))
+        return -EINVAL;
+    const bool dynamic = fixedQueue < 0;
+    if (!dynamic && sc->sc_txq_locks[fixedQueue] == NULL)
+        return -ENXIO;
+    const int version = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP, IWX_SCD_QUEUE_CONFIG_CMD);
+    if (version != 0 && version != IWX_FW_CMD_VER_UNKNOWN && version != 3)
+        return -EOPNOTSUPP;
+    ItlTxQueueAllocationCommand command = {};
+    int error = beginTxQueueAllocation(sc, station, tid, fixedQueue, &command);
+    if (error != 0)
+        return -error;
+    struct iwx_tx_ring *ring = dynamic ? &sc->sc_tvqm_ring : &sc->txq[fixedQueue];
+    struct iwx_tx_ring *displaced = NULL;
+    struct iwx_host_cmd hcmd = {};
+    struct iwx_tx_queue_cfg_cmd legacy = {};
+    struct iwx_scd_queue_cfg_cmd modern = {};
+    struct iwx_tx_queue_cfg_rsp *response = NULL;
+    struct iwx_rx_packet *packet = NULL;
+    ItlTxQueueFirmwareOwner firmware = {};
+    bool physical = false, current = false, quarantine = false;
+    int queue = -1;
+    uint32_t write = 0;
+    IOInterruptState irq = 0, ownerIrq = 0;
+    IOSimpleLock *ownerLock = sc->sc_ic.ic_pae_selected_bss_lock;
+    hcmd.flags = IWX_CMD_WANT_RESP;
+    hcmd.resp_pkt_len = sizeof(*packet) + sizeof(*response);
+    hcmd.queue_allocation = &command;
+    if (dynamic) {
+        displaced = static_cast<struct iwx_tx_ring *>(malloc(sizeof(*displaced), 0, M_NOWAIT | M_ZERO));
+        if (displaced == NULL) {
+            error = ENOMEM;
+            goto out;
+        }
+        for (;;) {
+            error = iwx_tvqm_allocate_memory(sc, ring, size);
+            if (error == 0)
+                break;
+            iwx_free_tx_ring(sc, ring);
+            if (error != ENOMEM || size == 16)
+                goto out;
+            size /= 2;
+        }
+    } else {
+        IOSimpleLockLock(sc->sc_txq_locks[fixedQueue]);
+        const bool owned = ring->firmware.owned;
+        IOSimpleLockUnlock(sc->sc_txq_locks[fixedQueue]);
+        if (owned || ring->ring_count != size || ring->desc == NULL) {
+            error = owned ? EBUSY : EINVAL;
+            goto out;
+        }
+        iwx_reset_tx_ring(sc, ring);
     }
-
-    err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->cmd_dma, ring->ring_count * sizeof(struct iwx_device_cmd), IWX_FIRST_TB_SIZE_ALIGN);
-    if (err) {
-        XYLog("%s: could not allocate cmd DMA memory\n", DEVNAME(sc));
-        err = -ENOMEM;
-        goto fail;
+    if (version == 3) {
+        modern.operation = htole32(IWX_SCD_QUEUE_ADD);
+        modern.u.add.tfdq_dram_addr = htole64(ring->desc_dma.paddr);
+        modern.u.add.bc_dram_addr = htole64(ring->bc_tbl.paddr);
+        modern.u.add.cb_size = htole32(IWX_TFD_QUEUE_CB_SIZE(size));
+        modern.u.add.sta_mask = htole32(1U << station);
+        modern.u.add.tid = tid;
+        hcmd.id = IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_SCD_QUEUE_CONFIG_CMD);
+        hcmd.data[0] = &modern;
+        hcmd.len[0] = sizeof(modern);
+    } else {
+        legacy.sta_id = station;
+        legacy.tid = tid;
+        legacy.flags = htole16(IWX_TX_QUEUE_CFG_ENABLE_QUEUE);
+        legacy.cb_size = htole32(IWX_TFD_QUEUE_CB_SIZE(size));
+        legacy.byte_cnt_addr = htole64(ring->bc_tbl.paddr);
+        legacy.tfdq_addr = htole64(ring->desc_dma.paddr);
+        hcmd.id = IWX_SCD_QUEUE_CFG;
+        hcmd.data[0] = &legacy;
+        hcmd.len[0] = sizeof(legacy);
     }
-    ring->cmd = (struct iwx_device_cmd*)ring->cmd_dma.vaddr;
-
-    paddr = ring->cmd_dma.paddr;
-    for (i = 0; i < ring->ring_count; i++) {
-        struct iwx_tx_data *data = &ring->data[i];
-
-        data->cmd_paddr = paddr;
-        paddr += sizeof(struct iwx_device_cmd);
-        err = bus_dmamap_create(sc->sc_dmat, MCLBYTES,
-                                IWX_TFH_NUM_TBS - 2, MCLBYTES, 0, BUS_DMA_NOWAIT,
-                                &data->map);
-        if (err) {
-            XYLog("%s: could not create TX buf DMA map\n",
-                  DEVNAME(sc));
-            err = -EIO;
-            goto fail;
+    error = iwx_send_cmd(sc, &hcmd);
+    if (command.primary)
+        ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    physical = txQueueAllocation.physical(command, sc->sc_generation);
+    {
+        ItlTxQueueAllocationCommand validation = command;
+        validation.submitted = false;
+        current = txQueueAllocationCurrentLocked(validation);
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (command.primary)
+        IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    if (!physical || !current) {
+        error = ENXIO;
+        goto out;
+    }
+    if (error != 0)
+        goto out;
+    packet = hcmd.resp_pkt;
+    if (packet == NULL || (packet->hdr.group_id & IWX_CMD_FAILED_MSK) ||
+        iwx_rx_packet_payload_len(packet) != sizeof(*response)) {
+        error = EIO;
+        goto out;
+    }
+    response = (struct iwx_tx_queue_cfg_rsp *)packet->data;
+    if (le16toh(response->flags) != 0) {
+        error = EIO;
+        goto out;
+    }
+    queue = le16toh(response->queue_number);
+    write = le16toh(response->write_pointer);
+    if (queue == IWX_DQA_CMD_QUEUE || queue >= static_cast<int>(nitems(sc->txq)) ||
+        (!dynamic && (queue != fixedQueue || write != static_cast<uint32_t>(ring->cur)))) {
+        error = EIO;
+        goto out;
+    }
+    firmware = {command.serial, command.lifecycle, command.generation,
+                station, static_cast<uint8_t>(tid), true, false, false, false};
+    if (!dynamic)
+        IOSimpleLockLock(sc->sc_txq_locks[fixedQueue]);
+    ring->firmware = firmware;
+    ring->cur = write;
+    ring->qid = queue;
+    if (!dynamic)
+        IOSimpleLockUnlock(sc->sc_txq_locks[fixedQueue]);
+    if (dynamic) {
+        error = iwx_ap_exchange_tx_ring_carrier(sc, queue, ring, displaced);
+        if (error != 0)
+            goto out;
+        iwx_reset_tx_ring(sc, displaced);
+        iwx_free_tx_ring(sc, displaced);
+    } else if (station == IWX_STATION_ID && tid == IWX_MGMT_TID) {
+        sc->sc_tid_data[IWX_MAX_TID_COUNT].qid = queue;
+    }
+out:
+    iwx_free_resp(sc, &hcmd);
+    if (error != 0) {
+        irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        quarantine = command.submitted && txQueueAllocation.physical(command, sc->sc_generation);
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        if (quarantine) {
+            if (!dynamic)
+                IOSimpleLockLock(sc->sc_txq_locks[fixedQueue]);
+            ring->firmware = {command.serial, command.lifecycle, command.generation,
+                station, static_cast<uint8_t>(tid), true, true, true, false};
+            if (!dynamic)
+                IOSimpleLockUnlock(sc->sc_txq_locks[fixedQueue]);
+        } else if (dynamic) {
+            iwx_free_tx_ring(sc, ring);
+            memset(ring, 0, sizeof(*ring));
+            ring->qid = IWX_INVALID_QUEUE;
         }
     }
-    cmd.cb_size = htole32(IWX_TFD_QUEUE_CB_SIZE(ring->ring_count));
-    cmd.byte_cnt_addr = htole64(ring->bc_tbl.paddr);
-    cmd.tfdq_addr = htole64(ring->desc_dma.paddr);
+    if (displaced != NULL)
+        ::free(displaced);
+    finishTxQueueAllocation(sc, &command, quarantine);
+    return error == 0 ? queue : -error;
+}
 
-    hcmd.data[0] = &cmd;
-    hcmd.len[0] = sizeof(cmd);
-
-    err = iwx_send_cmd(sc, &hcmd);
-    if (err) {
-        XYLog("IWX AP TVQM SCD_QUEUE_CFG transport error=%d sta=%u tid=%d\n",
-              err, static_cast<unsigned>(staId), tid);
-        err = -err;
-        goto fail;
-    }
-
-    pkt = hcmd.resp_pkt;
-    if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
-        XYLog("IWX AP TVQM SCD_QUEUE_CFG firmware failure sta=%u tid=%d\n",
-              static_cast<unsigned>(staId), tid);
-        err = -EIO;
-        goto fail;
-    }
-
-    resp_len = iwx_rx_packet_payload_len(pkt);
-    if (resp_len != sizeof(*resp)) {
-        XYLog("IWX AP TVQM SCD_QUEUE_CFG response length=%zu expected=%zu "
-              "sta=%u tid=%d\n", resp_len, sizeof(*resp),
-              static_cast<unsigned>(staId), tid);
-        err = -EIO;
-        goto fail;
-    }
-
-    resp = (struct iwx_tx_queue_cfg_rsp *)pkt->data;
-    fwqid = le16toh(resp->queue_number);
-    wr_idx = le16toh(resp->write_pointer);
-    if (fwqid == IWX_DQA_CMD_QUEUE || fwqid >= ARRAY_SIZE(sc->txq)) {
-        XYLog("IWX AP TVQM assigned unsupported queue=%d flags=0x%x "
-              "sta=%u tid=%d\n", fwqid,
-              static_cast<unsigned>(le16toh(resp->flags)),
-              static_cast<unsigned>(staId), tid);
-        err = -EIO;
-        goto fail;
-    }
-    XYLog("IWX AP TVQM ready sta=%u tid=%d queue=%d write=%u flags=0x%x\n",
-          static_cast<unsigned>(staId), tid, fwqid,
-          static_cast<unsigned>(wr_idx),
-          static_cast<unsigned>(le16toh(resp->flags)));
-    ring->cur = wr_idx;
-    ring->qid = fwqid;
-    err = iwx_ap_exchange_tx_ring_carrier(
-        sc, static_cast<uint16_t>(fwqid), ring, displaced);
-    if (err != 0) {
-        err = -err;
-        goto fail;
-    }
-    /* The interrupt path can now observe only the new carrier. Reclaim the
-     * displaced one after the preemption-disabled publication lock is gone. */
-    iwx_reset_tx_ring(sc, displaced);
-    iwx_free_tx_ring(sc, displaced);
-    ::free(displaced);
-    iwx_free_resp(sc, &hcmd);
-    return fwqid;
-fail:
-    iwx_free_resp(sc, &hcmd);
-    iwx_reset_tx_ring(sc, ring);
-    iwx_free_tx_ring(sc, ring);
-    ::free(displaced);
-    return err;
+int ItlIwx::
+iwx_tvqm_enable_txq_for_sta(struct iwx_softc *sc, uint8_t station, int tid,
+                            int ssn, uint32_t size)
+{
+    return iwx_allocate_tx_queue(sc, station, tid, ssn, size, -1);
 }
 
 void ItlIwx::
@@ -10777,6 +11032,9 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     IOInterruptState owner_irq = 0;
     IOSimpleLock *owner_lock = sc->sc_ic.ic_pae_selected_bss_lock;
     ItlFirmwareContextCommand *context_command = hcmd->context_command;
+    ItlTxQueueAllocationCommand *queue_allocation = hcmd->queue_allocation;
+    const bool queue_live = queue_allocation != NULL && queue_allocation->primary &&
+        !queue_allocation->retirement;
     const bool context_live = context_command != NULL && !context_command->cleanup;
     const bool scan_request =
         hcmd->id == iwx_cmd_id(IWX_SCAN_REQ_UMAC, IWX_LONG_GROUP, 0);
@@ -10786,8 +11044,19 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     if ((scan_request || scan_abort) &&
         (wclScanLock == NULL || hcmd->scan_serial == 0))
         return ENXIO;
-    if ((scan_request || context_live) && owner_lock == NULL)
+    if ((scan_request || context_live || queue_live) && owner_lock == NULL)
         return ENXIO;
+    if (queue_allocation != NULL && (wclScanLock == NULL || scan_request || scan_abort ||
+        (context_command != NULL && (!queue_allocation->retirement ||
+         !context_command->cleanup || context_command->kind != ItlFirmwareContextCommand::Kind::Station ||
+         context_command->receipt.identity.station != queue_allocation->station ||
+         context_command->receipt.generation != queue_allocation->generation)) ||
+        queue_allocation->submitted ||
+        queue_allocation->generation != static_cast<uint32_t>(sc->sc_generation) ||
+        (hcmd->id != (queue_allocation->retirement ? IWX_REMOVE_STA : IWX_SCD_QUEUE_CFG) &&
+         !(queue_allocation->retirement && hcmd->id == IWX_TXPATH_FLUSH) &&
+         hcmd->id != IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_SCD_QUEUE_CONFIG_CMD))))
+        return EINVAL;
     if (context_command != NULL) {
         if (scan_request || scan_abort || wclScanLock == NULL)
             return EINVAL;
@@ -10923,8 +11192,8 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     /* q0 -> selected-BSS -> scan leaf. Callers release both before entering
      * q0. Reserve the physical receipt before transferring mbuf ownership;
      * keep it serialized through the doorbell, with no callbacks or waits. */
-    if (scan_request || scan_abort || context_command != NULL) {
-        if (scan_request || context_live) {
+    if (scan_request || scan_abort || context_command != NULL || queue_allocation != NULL) {
+        if (scan_request || context_live || queue_live) {
             owner_irq = IOSimpleLockLockDisableInterrupt(owner_lock);
             owner_locked = true;
         }
@@ -10934,6 +11203,8 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
             (sc->sc_flags & IWX_FLAG_SHUTDOWN) != 0 ||
             (context_command != NULL &&
              !firmwareContextCommandCurrentLocked(*context_command)) ||
+            (queue_allocation != NULL &&
+             !txQueueAllocationCurrentLocked(*queue_allocation)) ||
             (scan_request && !scanCommandOwnerCurrentLocked(hcmd->scan_serial, generation)) ||
             ((scan_request || scan_abort) &&
              !(scan_abort ? scanCommand.submitAbort(hcmd->scan_serial, generation) :
@@ -11029,6 +11300,8 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
     if (context_command != NULL)
         context_command->submitted = true;
+    if (queue_allocation != NULL)
+        queue_allocation->submitted = true;
     if (scan_locked) {
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, scan_irq);
         scan_locked = false;
@@ -11713,9 +11986,21 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
         return EINVAL;
     }
     ring = &sc->txq[qid];
-    if (ring->ring_count == 0) {
+    IOSimpleLock *queueLock = sc->sc_txq_locks[qid];
+    if (queueLock == NULL) {
         mbuf_freem(m);
-        return EINVAL;
+        return ENXIO;
+    }
+    IOSimpleLockLock(queueLock);
+    const bool usable = ring->ring_count != 0 &&
+        ring->firmware.accepts(stationUse.identity().identity.station,
+                               stationUse.identity().generation);
+    IOSimpleLockUnlock(queueLock);
+    /* The admitted station reader keeps this carrier stable through the
+     * complete constructor; teardown cannot begin until that reader exits. */
+    if (!usable) {
+        mbuf_freem(m);
+        return ENXIO;
     }
     idx = (ring->cur & (ring->ring_count - 1));
     desc = &ring->desc[idx];
@@ -12005,6 +12290,13 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
         return ENXIO;
     }
     struct iwx_tx_ring *ring = &sc->txq[queueId];
+    const uint8_t expectedStation = queueId == apRuntime.broadcastQueueId ? apRuntime.broadcastStaId :
+        queueId == apRuntime.multicastQueueId ? apRuntime.multicastStaId :
+        client != NULL ? client->staId : UINT8_MAX;
+    if (!ring->firmware.accepts(expectedStation, sc->sc_generation)) {
+        IOSimpleLockUnlock(txqLock);
+        return ENXIO;
+    }
     if (ring->ring_count == 0 ||
         ring->ap_queue_full ||
         ring->queued > ring->hi_mark ||
@@ -12153,7 +12445,8 @@ iwx_ap_send_raw_frame(struct iwx_softc *sc, mbuf_t m, uint16_t queueId)
 
 int ItlIwx::
 iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids,
-                   ItlFirmwareContextCommand *context)
+                   ItlFirmwareContextCommand *context,
+                   ItlTxQueueAllocationCommand *transaction)
 {
     struct iwx_rx_packet *pkt;
     struct iwx_tx_path_flush_cmd_rsp *resp;
@@ -12168,6 +12461,12 @@ iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids,
     hcmd.resp_pkt_len = sizeof(*pkt) + sizeof(*resp);
     int err, resp_len, i, num_flushed_queues;
     hcmd.context_command = context;
+    hcmd.queue_allocation = transaction;
+    if (transaction != NULL) {
+        transaction->submitted = false;
+        if (context != NULL)
+            context->submitted = false;
+    }
     
     err = iwx_send_cmd(sc, &hcmd);
     if (err)
@@ -12177,6 +12476,15 @@ iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids,
     if (context != NULL && !primaryStationCleanupCurrent(context->receipt)) {
         err = ENXIO;
         goto out;
+    }
+    if (transaction != NULL) {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        const bool current = txQueueAllocation.physical(*transaction, sc->sc_generation);
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        if (!current) {
+            err = ENXIO;
+            goto out;
+        }
     }
     if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
         err = EIO;
@@ -12679,17 +12987,10 @@ iwx_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
 int ItlIwx::
 iwx_remove_station(struct iwx_softc *sc, const ItlFirmwareContextReceipt &receipt)
 {
-    struct iwx_rm_sta_cmd command = {};
-    command.sta_id = receipt.identity.station;
     ItlFirmwareContextCommand context = {
         receipt, ItlFirmwareContextCommand::Kind::Station, true, false
     };
-    struct iwx_host_cmd hcmd = {};
-    hcmd.context_command = &context;
-    hcmd.id = IWX_REMOVE_STA;
-    hcmd.len[0] = sizeof(command);
-    hcmd.data[0] = &command;
-    return iwx_send_cmd(sc, &hcmd);
+    return iwx_retire_station_tx_queues(sc, receipt.identity.station, &context, false);
 }
 
 int ItlIwx::
@@ -12707,20 +13008,11 @@ iwx_rm_sta(struct iwx_softc *sc, struct iwx_node *in)
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
     const bool current = primaryStationContext.commandCurrent(receipt.serial, sc->sc_generation);
     const Retirement progress = primaryStationRetirement;
-    const int queue = progress.managementQueue;
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     if (!current || !progress.owns(receipt))
         return ENXIO;
     if (progress.drain) {
         err = iwx_flush_station(sc, receipt);
-        if (err == 0 && !progress.queueRetired(queue)) {
-            ItlFirmwareContextCommand context = {
-                receipt, ItlFirmwareContextCommand::Kind::Station, true, false
-            };
-            err = iwx_disable_txq(sc, receipt.identity.station, queue, IWX_MGMT_TID, &context);
-            if (err == 0 && !notePrimaryStationRetirement(receipt, 0, queue))
-                err = ENXIO;
-        }
     }
     if (err == 0 && !(progress.completed & Retirement::Removed)) {
         err = iwx_remove_station(sc, receipt);
@@ -14188,11 +14480,8 @@ iwx_ap_add_internal_sta(struct iwx_softc *sc,
         error = -assignedQueue;
         XYLog("IWX AP ADD_STA queue failure id=%u error=%d; removing sta\n",
               static_cast<unsigned>(staId), error);
-        struct iwx_rm_sta_cmd removeCommand;
-        memset(&removeCommand, 0, sizeof(removeCommand));
-        removeCommand.sta_id = staId;
-        (void)iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0,
-                               sizeof(removeCommand), &removeCommand);
+        if (iwx_retire_station_tx_queues(sc, staId, NULL, true) != 0)
+            iwx_add_task(sc, systq, &sc->init_task);
     } else {
         *queueId = (uint16_t)assignedQueue;
     }
@@ -14203,37 +14492,16 @@ int ItlIwx::
 iwx_ap_remove_internal_sta(struct iwx_softc *sc, uint8_t staId,
                            uint16_t queueId)
 {
-    if (queueId >= nitems(sc->txq) || queueId == IWX_DQA_CMD_QUEUE)
+    if (sc == NULL || queueId >= nitems(sc->txq) ||
+        queueId == IWX_DQA_CMD_QUEUE || sc->sc_txq_locks[queueId] == NULL)
         return EINVAL;
-
-    struct iwx_tx_ring *detached = static_cast<struct iwx_tx_ring *>(
-        malloc(sizeof(*detached), 0, M_NOWAIT | M_ZERO));
-    if (detached == NULL)
-        return ENOMEM;
-
-    /*
-     * SCD_QUEUE_CFG v2 assigns a dynamic queue but has no remove operation.
-     * Linux iwlwifi therefore invalidates and frees the transport queue before
-     * REMOVE_STA. Detach the published carrier under the interrupt-safe lock,
-     * then perform every mbuf, DMA-map, and IOBuffer release in this taskq
-     * context. A late completion sees ring_count == 0 in the published slot
-     * and cannot follow the detached storage.
-     */
-    const int detachError = iwx_ap_exchange_tx_ring_carrier(
-        sc, queueId, NULL, detached);
-    if (detachError != 0) {
-        ::free(detached);
-        return detachError;
-    }
-    iwx_reset_tx_ring(sc, detached);
-    iwx_free_tx_ring(sc, detached);
-    ::free(detached);
-
-    struct iwx_rm_sta_cmd command;
-    memset(&command, 0, sizeof(command));
-    command.sta_id = staId;
-    return iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0,
-                            sizeof(command), &command);
+    IOSimpleLockLock(sc->sc_txq_locks[queueId]);
+    const bool owned = sc->txq[queueId].firmware.owned &&
+        sc->txq[queueId].firmware.station == staId;
+    IOSimpleLockUnlock(sc->sc_txq_locks[queueId]);
+    if (!owned)
+        return ENOENT;
+    return iwx_retire_station_tx_queues(sc, staId, NULL, true);
 }
 
 int ItlIwx::
@@ -14591,6 +14859,13 @@ iwx_ap_remove_client_sta(struct iwx_softc *sc,
     if (runtime == NULL || client == NULL ||
         !client->clientStationInstalled)
         return 0;
+    if (client->queueId < nitems(sc->txq) && sc->sc_txq_locks[client->queueId] != NULL) {
+        IOSimpleLockLock(sc->sc_txq_locks[client->queueId]);
+        auto &owner = sc->txq[client->queueId].firmware;
+        if (owner.owned && owner.station == client->staId)
+            owner.closing = true;
+        IOSimpleLockUnlock(sc->sc_txq_locks[client->queueId]);
+    }
     int firstError = 0;
     for (uint8_t tid = 0; tid < 8; tid++) {
         if ((client->clientTxBaMask & (1U << tid)) != 0) {
@@ -14608,8 +14883,14 @@ iwx_ap_remove_client_sta(struct iwx_softc *sc,
         if (firstError == 0)
             firstError = baError;
     }
+    if (firstError != 0) {
+        iwx_add_task(sc, systq, &sc->init_task);
+        return firstError;
+    }
     const int error = iwx_ap_remove_internal_sta(sc,
         client->staId, client->queueId);
+    if (error != 0)
+        return firstError != 0 ? firstError : error;
     client->clientStationInstalled = false;
     client->clientStationQos = false;
     client->clientStationHt = false;
@@ -15622,9 +15903,19 @@ iwx_stop_ap_mode(struct iwx_softc *sc,
 {
     if (runtime == NULL || runtime->stage == kItlApFirmwareResourceIdle)
         return 0;
+    if (runtime->stage == kItlApFirmwareResourceStopping)
+        return EBUSY; // A failed physical teardown is retained until recovery.
     const uint64_t radioSerial = currentAPScanCommand();
     const uint8_t previousStage = runtime->stage;
     runtime->stage = kItlApFirmwareResourceStopping;
+    IOInterruptState queueIrq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool uncertainQueue = txQueueAllocation.phase == ItlTxQueueAllocation::Phase::Quarantined ||
+        txQueueAllocation.phase == ItlTxQueueAllocation::Phase::Reclaiming;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, queueIrq);
+    if (uncertainQueue) {
+        finishAPScanCommand(radioSerial, false);
+        return EIO; // Do not remove parents of a submitted-but-unknown queue.
+    }
     /*
      * This teardown is itself serialized on the single-threaded sc_nswq.
      * Every client task submitted before it has therefore already retired,
@@ -15641,39 +15932,56 @@ iwx_stop_ap_mode(struct iwx_softc *sc,
         if (!client->clientStationInstalled)
             continue;
         const int error = iwx_ap_remove_client_sta(sc, runtime, client);
-        if (firstError == 0)
+        if (error != 0) {
             firstError = error;
+            goto failed;
+        }
     }
     if (previousStage >= kItlApFirmwareResourceRunning) {
         const int error = iwx_ap_update_quotas(sc, runtime, false);
-        if (firstError == 0)
+        if (error != 0) {
             firstError = error;
+            goto failed;
+        }
     }
     if (previousStage >= kItlApFirmwareResourceBroadcastStation) {
         const int error = iwx_ap_remove_internal_sta(sc,
             runtime->broadcastStaId, runtime->broadcastQueueId);
-        if (firstError == 0)
+        if (error != 0) {
             firstError = error;
+            goto failed;
+        }
     }
     if (previousStage >= kItlApFirmwareResourceMulticastStation) {
         const int error = iwx_ap_remove_internal_sta(sc,
             runtime->multicastStaId, runtime->multicastQueueId);
-        if (firstError == 0)
+        if (error != 0) {
             firstError = error;
+            goto failed;
+        }
     }
     if (previousStage >= kItlApFirmwareResourceBinding) {
         const int error = iwx_ap_binding_cmd(sc, runtime, false);
-        if (firstError == 0)
+        if (error != 0) {
             firstError = error;
+            goto failed;
+        }
     }
     if (previousStage >= kItlApFirmwareResourceMac) {
         const int error = iwx_ap_mac_ctxt_cmd(
             sc, runtime, IWX_FW_CTXT_ACTION_REMOVE);
-        if (firstError == 0)
+        if (error != 0) {
             firstError = error;
+            goto failed;
+        }
     }
     itl_ap_firmware_runtime_reset(runtime);
     finishAPScanCommand(radioSerial, firstError == 0);
+    return firstError;
+failed:
+    /* Do not discard station/queue/key ownership or tear down its parent
+     * MAC/binding after a failed child removal. Actual reset owns recovery. */
+    finishAPScanCommand(radioSerial, false);
     return firstError;
 }
 

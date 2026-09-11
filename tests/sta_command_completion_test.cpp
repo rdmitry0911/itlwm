@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <HAL/ItlFirmwareContextLease.hpp>
 #include <HAL/ItlStationRxBa.hpp>
+#include <HAL/ItlTxQueueAllocation.hpp>
 using std::min;
 using u8 = uint8_t; using u16 = uint16_t; using u32 = uint32_t;
 using u64 = uint64_t; using s8 = int8_t; using s16 = int16_t;
@@ -43,6 +44,10 @@ using bus_addr_t = uint64_t;
 #define DPRINTF(...) ((void)0)
 #define nitems(a) (sizeof(a)/sizeof((a)[0]))
 #define DEVNAME(sc) "fixture"
+#define PAGE_SIZE 4096
+#define M_NOWAIT 1
+#define M_ZERO 2
+static void *malloc(size_t size,int,int) { return std::calloc(1,size); }
 #include "sta-defines.inc"
 #include "itlwm/hal_iwm/if_iwmreg.h"
 #include "itlwm/hal_iwx/if_iwxreg.h"
@@ -56,6 +61,10 @@ static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock)
 { assert(lock && (locks.empty() || locks.back() < lock->rank)); auto depth=locks.size(); locks.push_back(lock->rank); return depth; }
 static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, IOInterruptState depth)
 { assert(lock && !locks.empty() && locks.back()==lock->rank); locks.pop_back(); assert(locks.size()==depth); }
+static void IOSimpleLockLock(IOSimpleLock *lock) {
+    assert(locks.empty()); (void)IOSimpleLockLockDisableInterrupt(lock);
+}
+static void IOSimpleLockUnlock(IOSimpleLock *lock) { IOSimpleLockUnlockEnableInterrupt(lock,0); }
 
 enum { IEEE80211_M_STA, IEEE80211_M_MONITOR, IEEE80211_S_ASSOC = 3 };
 enum { IEEE80211_NODE_HT = 1, IEEE80211_NODE_VHT = 2, IEEE80211_NODE_HE = 4 };
@@ -94,7 +103,7 @@ struct ItlScanCommandPolicy {
 };
 struct iwm_node { ieee80211_node in_ni; unsigned in_id = 1, in_color = 2; uint8_t in_macaddr[6] = {2,3,4,5,6,7}; };
 struct iwx_node { ieee80211_node in_ni; unsigned in_id = 1, in_color = 2; uint8_t in_macaddr[6] = {2,3,4,5,6,7}; };
-struct iwx_tx_ring { int cur=0, ring_count=256, retired=0; };
+struct iwx_tx_ring { int cur=0, ring_count=256, retired=0; ItlTxQueueFirmwareOwner firmware{}; };
 struct Softc {
     ieee80211com sc_ic;
     uint32_t sc_flags = 0;
@@ -108,10 +117,19 @@ struct Softc {
     int first_data_qid = 4, sc_rx_ba_sessions = 2;
     struct { int start_tidmask = 1, stop_tidmask = 2; } ba_rx, ba_tx;
     iwx_tx_ring txq[64];
+    IOSimpleLock queueLock{1};
+    IOSimpleLock *sc_txq_locks[64];
     struct { int qid=IWX_INVALID_QUEUE; } sc_tid_data[IWX_MAX_TID_COUNT+1];
+    Softc() { for(auto &lock:sc_txq_locks) lock=&queueLock; }
 };
 struct iwm_softc : Softc {};
 struct iwx_softc : Softc {};
+/* Carrier/DMA lifetime is executed by test_iwx_tvqm_allocation; this suite
+ * keeps the station command graph with an explicit value-only carrier. */
+static int iwx_ap_exchange_tx_ring_carrier(iwx_softc *sc,uint16_t queue,iwx_tx_ring *,iwx_tx_ring *out) {
+    assert(locks.empty() && !sc->txq[queue].firmware.owned);
+    *out=sc->txq[queue]; sc->txq[queue]={}; return 0;
+}
 static bool iwm_mimo_enabled(iwm_softc *) { return true; }
 static bool iwx_mimo_enabled(iwx_softc *) { return true; }
 
@@ -156,6 +174,7 @@ struct DriverState {
     ItlFirmwareStationRetirement primaryStationRetirement{};
     ItlFirmwareStationUses primaryStationUses{};
     ItlStationRxBa primaryRxBa{};
+    ItlTxQueueAllocation txQueueAllocation{};
     unsigned resumeChecks = 0;
     void resumePrimaryStationUsers() { assert(locks.empty()); ++resumeChecks; }
     struct { bool open=true; } scanCommand;
@@ -227,7 +246,11 @@ static int statusCommand(Driver &d,Device *sc,Command *command,uint32_t *status,
             *status|=(baResponse<<IWM_ADD_STA_BAID_SHIFT) |
                 (baResponseKind==1?0:IWM_ADD_STA_BAID_VALID_MASK);
     }
-    return submit(d,sc,command->context_command,edge);
+    const int result=submit(d,sc,command->context_command,edge);
+    if(!baMode && edge==Add && wire.add_modify==0 && result==0 && (*status&0xff)==success)
+        sc->txq[4].firmware={command->context_command->receipt.serial,d.txQueueAllocation.lifecycle,
+            static_cast<uint32_t>(sc->sc_generation),wire.sta_id,IWX_MGMT_TID,true,false,false,false};
+    return result;
 }
 class ItlIwm : public DriverState {
 public:
@@ -278,6 +301,21 @@ public:
 class ItlIwx : public DriverState {
 public:
     iwx_softc com;
+    int beginTxQueueAllocation(iwx_softc *sc,uint8_t station,uint8_t tid,int queue,
+        ItlTxQueueAllocationCommand *command,bool retirement=false) {
+        assert(locks.empty() && retirement && primaryStationUses.closed && !primaryStationUses.active);
+        if(txQueueAllocation.phase!=ItlTxQueueAllocation::Phase::Idle) return EBUSY;
+        *command={}; command->serial=++txQueueAllocation.nextSerial;
+        command->lifecycle=txQueueAllocation.lifecycle; command->generation=sc->sc_generation;
+        command->station=station; command->tid=tid; command->queue=queue; command->retirement=true;
+        txQueueAllocation.current=*command; txQueueAllocation.phase=ItlTxQueueAllocation::Phase::Building;
+        ++sc->taskActive; return 0;
+    }
+    void finishTxQueueAllocation(iwx_softc *sc,ItlTxQueueAllocationCommand *,bool quarantine) {
+        assert(locks.empty() && sc->taskActive); --sc->taskActive;
+        txQueueAllocation.phase=quarantine?ItlTxQueueAllocation::Phase::Quarantined:ItlTxQueueAllocation::Phase::Idle;
+    }
+    int iwx_retire_station_tx_queues(iwx_softc *,uint8_t,ItlFirmwareContextCommand *,bool);
     bool iwx_task_gate_enter(iwx_softc *sc,bool) {
         assert(locks.empty());
         if(!sc->taskAdmission) return false;
@@ -318,6 +356,10 @@ public:
         return statusCommand<ItlIwx,iwx_softc,iwx_host_cmd,struct iwx_add_sta_cmd>(*this,sc,cmd,status,IWX_STA_FLG_DRAIN_FLOW,IWX_ADD_STA_SUCCESS);
     }
     int iwx_send_cmd(iwx_softc *sc,iwx_host_cmd *cmd) {
+        if(cmd->queue_allocation) {
+            assert(txQueueAllocation.physical(*cmd->queue_allocation,sc->sc_generation));
+            cmd->queue_allocation->submitted=true;
+        }
         if(cmd->id!=IWX_REMOVE_STA) {
             const bool flush=cmd->id==IWX_TXPATH_FLUSH;
             if(flush) {
@@ -359,20 +401,28 @@ public:
         const auto *wire=static_cast<const struct iwx_rm_sta_cmd *>(cmd->data[0]);
         lastStation=wire->sta_id;
         assert(wire->reserved[0]==0 && wire->reserved[1]==0 && wire->reserved[2]==0);
-        return submit(*this,sc,cmd->context_command,Remove);
+        int result=submit(*this,sc,cmd->context_command,Remove);
+        if(result==0 && replyKind!=1) {
+            auto *pkt=static_cast<iwx_rx_packet *>(std::calloc(1,sizeof(iwx_rx_packet)));
+            assert(pkt); ++packetOwners; cmd->resp_pkt=pkt;
+            pkt->len_n_flags=htole32(sizeof(pkt->hdr));
+            if(replyKind==2) pkt->hdr.group_id|=IWX_CMD_FAILED_MSK;
+        }
+        return result;
     }
     int iwx_send_cmd_pdu_status(iwx_softc *sc,int,size_t,const void *,uint32_t *status) {
         *status=statusEdge==Add ? 0 : IWX_ADD_STA_SUCCESS; edges.push_back(Add);
         if(resetEdge==Add) { ++sc->sc_generation; sc->sc_flags=unrelatedFlag; }
         return failEdge==Add ? transportError : 0;
     }
-    int iwx_flush_sta_tids(iwx_softc *,int,uint16_t,ItlFirmwareContextCommand *);
-    int iwx_disable_txq(iwx_softc *,int,int,uint8_t,ItlFirmwareContextCommand *);
+    int iwx_flush_sta_tids(iwx_softc *,int,uint16_t,ItlFirmwareContextCommand *,ItlTxQueueAllocationCommand * = nullptr);
+    int iwx_disable_txq(iwx_softc *,int,int,uint8_t,ItlFirmwareContextCommand *,ItlTxQueueAllocationCommand * = nullptr);
     int iwx_lookup_cmd_ver(iwx_softc *,int,int) { return commandVersion; }
     void iwx_free_resp(iwx_softc *,iwx_host_cmd *cmd) {
         if(cmd->resp_pkt) { assert(packetOwners); --packetOwners; std::free(cmd->resp_pkt); cmd->resp_pkt=nullptr; }
     }
     void iwx_reset_tx_ring(iwx_softc *,iwx_tx_ring *ring) { ++ring->retired; }
+    void iwx_free_tx_ring(iwx_softc *,iwx_tx_ring *) { assert(false); }
     void iwx_ampdu_txq_advance(iwx_softc *,iwx_tx_ring *,int index) { assert(index==17); ++reclaimed; }
 };
 #include "sta-commands.inc"
@@ -634,8 +684,22 @@ static void familyTests(const char *selected)
                 d.com.first_data_qid=7;
             }
             edges.clear(); failEdge=0;
+            if constexpr(!iwm) {
+                // A lost REMOVE_STA response is not permission to reissue
+                // it or reuse firmware-owned DMA without physical recovery.
+                assert(removeStation(d,static_cast<Node *>(nullptr))==EBUSY && edges.empty());
+                assert(d.com.txq[4].firmware.owned && d.com.txq[4].retired==0);
+                assert(d.txQueueAllocation.phase==ItlTxQueueAllocation::Phase::Quarantined);
+                ++d.com.sc_generation; ++d.txQueueAllocation.lifecycle;
+                d.txQueueAllocation.phase=ItlTxQueueAllocation::Phase::Idle;
+                d.primaryStationContext.clear();
+                for(auto &ring:d.com.txq) ring.firmware={};
+                prepare(d,n); assert(add(d,n)==0);
+                edges.clear();
+            }
             assert(removeStation(d,static_cast<Node *>(nullptr))==0);
-            assert(edges==std::vector<int>{Remove});
+            if constexpr(iwm) assert(edges==std::vector<int>{Remove});
+            else assert(edges==(std::vector<int>{DrainOn,Flush,DrainOff,Remove}));
             assert(!d.primaryStationContext.occupied()); ++cases;
         }
         if constexpr(iwm) {
@@ -720,6 +784,7 @@ static void familyTests(const char *selected)
         cleanFixture(); Driver d; Node n; prepare(d,n);
         if(edge!=Add) assert(add(d,n)==0);
         if(iwm && edge==DisableQueue) d.com.agg_queue_mask|=1U<<IWM_FIRST_AGG_TX_QUEUE;
+        if(!iwm && edge==DisableQueue) commandVersion=3;
         edges.clear();
         if(disturbance==0) resetEdge=edge;
         if(disturbance==1) replaceEdge=edge;
@@ -781,14 +846,19 @@ int main(int argc,char **argv)
             assert(d.beginPrimaryStationCleanup(true,&receipt)==0);
             ItlFirmwareContextCommand command{receipt,ItlFirmwareContextCommand::Kind::Station,true,false};
             commandVersion=version; replyKind=reply;
+            ItlTxQueueAllocationCommand transaction{};
+            assert(d.beginTxQueueAllocation(&d.com,receipt.identity.station,IWX_MGMT_TID,-2,&transaction,true)==0);
             if(superseded) afterSubmit=[&] { ++d.primaryStationContext.owner.serial; };
             const int result=flush ?
                 d.iwx_flush_sta_tids(&d.com,receipt.identity.station,0xffff,&command) :
-                d.iwx_disable_txq(&d.com,receipt.identity.station,4,IWX_MGMT_TID,&command);
-            assert(result==(superseded?ENXIO:reply?EIO:0));
+                d.iwx_disable_txq(&d.com,receipt.identity.station,4,IWX_MGMT_TID,&command,&transaction);
+            const bool wire=flush || version==3;
+            assert(result==(wire?(superseded?ENXIO:reply?EIO:0):0));
             assert(packetOwners==0);
-            assert(d.com.txq[4].retired==(!flush && result==0 ? 1 : 0));
+            assert(d.com.txq[4].retired==0); // No DMA reset before REMOVE_STA.
+            if(!flush) assert(d.com.txq[4].firmware.owned && d.com.txq[4].firmware.closing);
             assert(reclaimed==(flush && result==0 ? 1U : 0U));
+            d.finishTxQueueAllocation(&d.com,&transaction,false);
             ++cases;
         }
         for(int queue : {-1,IWX_DQA_CMD_QUEUE,64}) {
@@ -796,8 +866,11 @@ int main(int argc,char **argv)
             ItlFirmwareContextReceipt receipt{}; assert(d.beginPrimaryStationCleanup(true,&receipt)==0);
             ItlFirmwareContextCommand command{receipt,ItlFirmwareContextCommand::Kind::Station,true,false};
             edges.clear();
-            assert(d.iwx_disable_txq(&d.com,receipt.identity.station,queue,IWX_MGMT_TID,&command)==EINVAL);
+            ItlTxQueueAllocationCommand transaction{};
+            assert(d.beginTxQueueAllocation(&d.com,receipt.identity.station,IWX_MGMT_TID,-2,&transaction,true)==0);
+            assert(d.iwx_disable_txq(&d.com,receipt.identity.station,queue,IWX_MGMT_TID,&command,&transaction)==EINVAL);
             assert(!command.submitted && edges.empty()); ++cases;
+            d.finishTxQueueAllocation(&d.com,&transaction,false);
         }
         for(int edge : {NoEdge,DrainOn,Flush,DrainOff})
         for(int disturbance : {0,1,2}) {

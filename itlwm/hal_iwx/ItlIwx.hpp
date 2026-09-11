@@ -146,6 +146,7 @@
 #include <HAL/ItlStateTransitionLease.hpp>
 #include <HAL/ItlFirmwareContextLease.hpp>
 #include <HAL/ItlStationRxBa.hpp>
+#include <HAL/ItlTxQueueAllocation.hpp>
 #include <HAL/ItlScanCommandPolicy.hpp>
 
 enum class ItlIwxWclScanPhase : uint8_t {
@@ -436,6 +437,15 @@ public:
     int    iwx_nic_init(struct iwx_softc *);
     int    iwx_enable_txq(struct iwx_softc *, int, int, int, int);
     int     iwx_tvqm_alloc_txq(struct iwx_softc *, int, int);
+    int     iwx_allocate_tx_queue(struct iwx_softc *, uint8_t, int, int, uint32_t, int);
+    int     iwx_tvqm_allocate_memory(struct iwx_softc *, struct iwx_tx_ring *, uint32_t);
+    int     beginTxQueueAllocation(struct iwx_softc *, uint8_t, uint8_t, int,
+                                  ItlTxQueueAllocationCommand *, bool = false);
+    bool    txQueueAllocationCurrentLocked(const ItlTxQueueAllocationCommand &) const;
+    void    finishTxQueueAllocation(struct iwx_softc *, ItlTxQueueAllocationCommand *, bool);
+    void    resetTxQueueAllocation(struct iwx_softc *);
+    int     iwx_retire_station_tx_queues(struct iwx_softc *, uint8_t,
+                                        ItlFirmwareContextCommand *, bool);
     int     iwx_tvqm_enable_txq(struct iwx_softc *, int, int, uint32_t);
     int     iwx_tvqm_enable_txq_for_sta(struct iwx_softc *, uint8_t,
                                         int, int, uint32_t);
@@ -571,9 +581,10 @@ public:
     int    iwx_tx(struct iwx_softc *, mbuf_t, struct ieee80211_node *, int,
                   const struct ItlSaeAuthTxRequestV1 * = nullptr);
     int    iwx_disable_txq(struct iwx_softc *, int, int, uint8_t,
-                          ItlFirmwareContextCommand * = nullptr);
+                          ItlFirmwareContextCommand *, ItlTxQueueAllocationCommand *);
     int    iwx_flush_sta_tids(struct iwx_softc *, int, uint16_t,
-                             ItlFirmwareContextCommand * = nullptr);
+                             ItlFirmwareContextCommand * = nullptr,
+                             ItlTxQueueAllocationCommand * = nullptr);
     int    iwx_flush_sta(struct iwx_softc *, struct iwx_node *);
     int    iwx_drain_sta(struct iwx_softc *, const ItlFirmwareContextReceipt &, int);
     int    iwx_flush_station(struct iwx_softc *, const ItlFirmwareContextReceipt &);
@@ -882,6 +893,7 @@ public:
     ItlFirmwareContextLease primaryStationContext;
     ItlFirmwareStationUses primaryStationUses;
     ItlStationRxBa primaryRxBa;
+    ItlTxQueueAllocation txQueueAllocation;
     ItlFirmwareStationRetirement primaryStationRetirement;
     struct iwx_add_sta_cmd primaryStationCommand;
     struct iwx_mac_ctx_cmd primaryMacCommand;

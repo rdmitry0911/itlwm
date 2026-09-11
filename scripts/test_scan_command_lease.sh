@@ -34,6 +34,7 @@ awk '/^iwm_send_cmd\(/ { selected=1; print "int ItlIwm::" }
 "$SCAN_TEST_DIR/iwm-sender"
 "$SCAN_TEST_DIR/iwm-sender" dma-failure
 awk '/^iwx_send_cmd\(/ { selected=1; print "int ItlIwx::" }
+    /^txQueueAllocationCurrentLocked\(/ { selected=1; print "bool ItlIwx::" }
      selected { print }
      selected && /^}/ { selected=0 }' \
     "$PROJECT_DIR/itlwm/hal_iwx/ItlIwx.cpp" > "$SCAN_TEST_DIR/iwx-send-cmd.inc"
@@ -89,6 +90,7 @@ awk '
         fi | awk '
             /^[[:alnum:]_]+ ItlIw[mx]::$/ { type=$0 }
             /^(iwm_start_ap_resources|iwm_stop_ap_resources|iwx_start_ap_mode|iwx_stop_ap_mode)\(/ { selected=1; print type }
+            /^iwx_ap_(start|stop)_task\(/ { selected=1; print "static void" }
             selected { print }
             selected && /^}/ { selected=0 }
         '

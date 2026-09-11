@@ -1,5 +1,115 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Checkpoint — 2026-09-11 00:03 UTC
+
+PROGRESS: the previous user-status turn was read-only. This continuation
+implemented the physical IWX TX-queue transaction, including fixed management
+and AUX queues, dynamic TVQM, the actual q0 sender, station/AP retirement and
+the hardware-reset release edge. It is a built source checkpoint, not a newly
+qualified reconnect layer or a replacement public release.
+
+The pending transaction owns a full-width serial, hardware/reset lifecycle,
+station/TID and task admission. Primary allocation additionally retains its
+station incarnation. Size fallback is local-DMA-only; once submitted, a lost,
+failed or malformed reply quarantines the carrier and schedules recovery.
+It cannot reset/free DMA or submit another smaller queue. A returned occupied
+queue cannot replace a live carrier, while unused attach-preallocated q1/q2
+memory remains replaceable. Response flags and queue/write-pointer constraints
+are validated. Primary and AP TX check the published firmware queue owner;
+primary constructor readers and AP queue-leaf exclusion fence retirement.
+
+The old primary ENABLE_QUEUE=0 removal was not the TVQM legacy ABI. Intel
+[v6.12 station removal](https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/net/wireless/intel/iwlwifi/mvm/sta.c)
+distinguishes explicit new-API removal from older TVQM; the unrelated old DQA
+disable command is not interchangeable. Here v3 removes retained station/TID
+queues, while legacy queues remain owned until checked REMOVE_STA. Flush,
+individual removals, station completion and host reclamation share one physical
+transaction. Successful per-queue removals are retained. A missing/failed
+station reply cannot silently clear the owner or allow retry/reuse before reset.
+DMA reset/free operates on detached storage outside interrupt-side leaves;
+fixed primary storage is reinstalled for the next connection. The actual
+stop_device ring-reset loop now follows SW_RESET, not precedes it.
+
+AP teardown no longer removes parent resources or discards the client/runtime
+after a failed child removal. The outer start/stop workers were also corrected:
+they had unconditionally erased the retained runtime. A stopping runtime now
+blocks a new start and survives until the existing hardware recovery clears it.
+A quarantined queue prevents AP parent teardown. This does not claim complete
+AP key/BA/timer or real firmware-notification ordering qualification.
+
+Verification on Linux and macOS: the complete payload aggregate passes,
+including 87 TVQM allocation/retirement executions (versions 0, 3 and UNKNOWN),
+62 actual q0 sender cases, 35 AP/scan groups including the real outer AP workers,
+581 station-command cases, 254 state-worker groups, 81 RX-BA scenarios and
+118 physical-context scenarios. Existing management and three-family AP RX/TX
+contracts pass. The baseline 58d19493 retry implementation independently
+compiles and fails its executable assertion (exit 134): five submissions,
+five unsafe resets, ten freed firmware-referenced DMA regions. The corrected
+case records one submission and zero unsafe reset/free operations.
+
+DMA allocation, firmware replies, interrupt scheduling and actual reset remain
+explicit fixture boundaries. The station suite uses a value carrier/task
+boundary, while the TVQM suite separately executes the full allocation,
+retirement, exchange and physical-lease methods with allocation tracking.
+The earlier 581-case assertion requiring immediate retry of a lost IWX
+REMOVE_STA was replaced by retention/no-resubmission and fresh-epoch reconnect;
+IWM's acknowledged partial-removal retry checks remain unchanged.
+
+Equal production fingerprint on source and guest mirror:
+81687f45ebd7c0b86708046af2d0b72e8f44b405b04ff0fc0bc17b2dd83b5ce5.
+Built UUID: F23158D2-32F8-39A1-87CC-83E310634012.
+Mach-O SHA-256:
+94cfee4fd9d7742156722154c346da4d635773861ca979244ad0a510a1a36c59.
+Guest regression/build log:
+/Volumes/AIAMBuild/itlwm-88c0d3f9/DerivedData-join-failure-20260910/tvqm-final-20260911.1V6hhg,
+SHA-256 2f73c22ccbc5ae29fe576e8dbf54f0d36775ec77a6d7d948db7b930e2fa95bd5.
+Linux log: /tmp/aiam-tvqm-owner-20260911.5Z9n64,
+SHA-256 4723779b5951979c0742ad6dda544eb2d92b8289bfcaf84958b9da15455cd37f.
+All 1085 external symbols resolve; no _thread_call_cancel_wait dependency.
+The earlier d77aa14d6e17 / 6B555F9C build is superseded.
+
+Read-only guest identity remains boot 9C8DDC74 / loaded UUID 9D5A9332,
+source b5c6cfd8. No install/reboot, radio mutation, public asset change,
+physical host-22 access or unrelated-QEMU action occurred in this continuation.
+User-owned local Build/ remains untouched. No build/test process is still live.
+
+The next runtime cycle will exercise the accumulated common/IWN changes in the
+isolated 6235 guest, with a recoverable last-working image and exact loaded
+identity. That is controlled testing of a WIP candidate, not permission to
+promote it as a finished all-family layer. The prior blanket wait-for-all-HALs
+load gate must not indefinitely defer real IWN testing: IWM/IWX hardware paths
+are not executed by this device. The complete objective remains unchanged.
+
+Still required: copied TX-BA workers/main-workloop completion, the actual IWM
+producer/drain reset barrier, immutable AUTH/time-event/session-protection
+inputs, real AUTH/ASSOC/key failure producers and exact received-frame CB/D5
+publication. The adjacent AUX ADD helper also still ignores a transport error
+before queue enable; reproduce/fix that real initialization edge. Qualify
+candidate failure/progression, saved GUI profiles, open/WPA2/SAE, sleep and AP
+on the exact candidate, and continue IWM/IWX hardware qualification. Do not
+count the current IWN guest as evidence for IWX queue firmware behavior.
+
+## FIX_CANDIDATE: confirmed TVQM retirement, not invented legacy removal
+
+The September 11 status turn was read-only (no progress). The next source
+audit verified Intel v6.12 mvm/sta.c, iwl_mvm_disable_txq: new-TX firmware
+without the explicit SCD_QUEUE_CONFIG removal API does not receive a legacy
+ENABLE_QUEUE=0 command. The current local primary removal invented that
+operation; the AP path instead frees transport DMA before REMOVE_STA without
+proving this port's firmware/TX-producer retirement boundary.
+
+Use the physical queue transaction for allocation and retirement. Close packet
+admission under the actual queue leaf before removal. The explicit v3 API
+removes each retained station/TID queue; the legacy API retains the queue until
+the station-removal terminal. Check the returned command header, retain partial
+removal progress and ambiguous DMA ownership, and exclude allocation until all
+host reclamation is finished. AP failure must not forget a still-owned client
+or reclaim its DMA. Actual SW_RESET remains the other physical release edge.
+Test both wire versions, fixed/bootstrap queues, repeated station removal,
+failed/missing responses, replacement/reset during waits and adjacent owners.
+This is a continuation of the complete queue/TX-BA/reconnect layer, not runtime
+qualification or permission to load an incomplete lifetime conversion.
+
 ## Next-gate evidence — 2026-09-10 23:16 UTC
 
 The RX commit 58d19493 is confirmed on origin. Its full guest build and loaded

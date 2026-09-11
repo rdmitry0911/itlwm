@@ -45,12 +45,12 @@ for forbidden in (
         )
 
 enable = function_body(
-    r"int ItlIwx::\s*\niwx_tvqm_enable_txq_for_sta\([^)]*\)\s*\{",
-    r"\n\}\n\nvoid ItlIwx::\s*\niwx_post_alive",
+    r"int ItlIwx::\s*\niwx_allocate_tx_queue\([^)]*\)\s*\{",
+    r"\n\}\n\nint ItlIwx::\s*\niwx_tvqm_enable_txq_for_sta",
 )
 remove = function_body(
-    r"int ItlIwx::\s*\niwx_ap_remove_internal_sta\([^)]*\)\s*\{",
-    r"\n\}\n\nint ItlIwx::\s*\niwx_ap_add_client_sta",
+    r"int ItlIwx::\s*\niwx_retire_station_tx_queues\([^)]*\)\s*\{",
+    r"\n\}\n\nint ItlIwx::\s*\niwx_tvqm_alloc_txq",
 )
 
 for name, body, carrier in (
@@ -59,8 +59,17 @@ for name, body, carrier in (
 ):
     if "iwx_ap_exchange_tx_ring_carrier" not in body:
         raise SystemExit(f"FAIL: {name} does not publish through carrier exchange")
-    if "IOSimpleLockLock" in body or "IOSimpleLockUnlock" in body:
-        raise SystemExit(f"FAIL: {name} still owns a raw spinlock interval")
+    # Ownership peeks and publication may use a queue leaf; releases may not.
+    depth = 0
+    for line in body.splitlines():
+        if "IOSimpleLockLock(" in line:
+            depth += 1
+        if "IOSimpleLockUnlock(" in line:
+            depth -= 1
+        if depth < 0 or (depth and ("iwx_reset_tx_ring(" in line or "iwx_free_tx_ring(" in line)):
+            raise SystemExit(f"FAIL: {name} reclaims under queue exclusion")
+    if depth != 0:
+        raise SystemExit(f"FAIL: {name} has an unbalanced queue leaf")
     reset = f"iwx_reset_tx_ring(sc, {carrier});"
     release = f"iwx_free_tx_ring(sc, {carrier});"
     if reset not in body or release not in body:
