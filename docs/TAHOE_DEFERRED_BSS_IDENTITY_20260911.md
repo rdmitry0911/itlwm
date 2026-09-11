@@ -109,6 +109,70 @@ record its hash. Heavy decompilation must use **40 actual cores/interfaces**.
 The user's agent's successful scratch build/replays are reported evidence,
 not a claim that this session repeated them or installed a new binary.
 
+### Updated tooling admitted and used later in this cycle
+
+The initial tooling checkpoint above is superseded by an actual isolated
+build and read-only reference batch. Remote tool root:
+`/home/dima/Projects/ghidra_output/aiam-tool-5995e24caa-20260911.IBJLHp`.
+Its `install/support/analyzeHeadless` is the private updated launcher to use
+next; neither the shared checkout nor the shared installed native/JAR pair
+was replaced.
+
+The native sources were extracted with git archive from exact commit
+`5995e24caa83fa74d841c0cfc7c24f59773c3459`, not copied together with stale
+objects. Both targets built successfully between 06:51:18 and 06:51:45 UTC
+with `make -j40 DEPNAMES='com_opt/depend ghi_opt/depend' decomp_opt ghidra_opt`.
+Warnings are retained in `build.log`; this is not a warning-free-build claim.
+
+- Native source-tree manifest SHA-256:
+  `6555cedb6534740be5eff2406e023c63beace351a90a42aa87956db694f6c870`.
+- `decomp_opt` SHA-256:
+  `982ecf0b61d5e00cc713816bff9b2f45c6cee3a8a8bbcba23021c6393339765c`.
+- `ghidra_opt` / private installed `decompile` SHA-256:
+  `3b338217d5ae6a8b343dfe21b0123d76209240750188e0c3e6450978774620c5`.
+
+The exact-count patch also has a Java side. A private copy of the existing
+12.2_DEV distribution received the new native executable and freshly compiled
+JumpTable classes from the same commit (JDK 25, `--release 21`). This is an
+explicit native-plus-JumpTable overlay, not a claim of rebuilding every Java
+module from HEAD. Source JumpTable SHA-256 is
+`87bfafabaf4b52d6e50d45d4d97fddd78b17732d14ed1a461bb8c950610460b3`;
+the updated private SoftwareModeling.jar is
+`f29830550aa431caaae1c7620500074e9c05e60ab0dcc63b2ed75a66a791f350`.
+Before/after SHA-256 checks confirm the shared native/JAR pair unchanged.
+
+`AIAMUpdatedGhidraSmoke.java` asserts the actual native path and loaded
+JumpTable code-source path. It verifies the default override has no count,
+count four encodes as `basicoverride size="0x4"` with two distinct destinations,
+and rejects zero, negative, or no-override count setters. It does not establish
+the full symbol-persistence or native jump-recovery fixture matrix.
+
+The first run placed that script at the tool root, which also contains the
+installation tree; its OSGi script bundle failed to load. The wrapper correctly
+failed despite the subsequent decompilation running. No project was saved.
+Moving the smoke script into a dedicated leaf `scripts/` directory fixed its
+admission. The complete second run at 06:58:01–06:58:16 UTC passes the smoke
+and all 51 exact previously selected Core/NetAdapter/ScanAdapter/WCL functions.
+The manifest records **40 interfaces actually created**, not merely max-cpu.
+The original BootKC SHA-256 was verified and the project opened read-only;
+headless explicitly reports discarding changes.
+
+- `contract-r2/manifest.tsv` SHA-256:
+  `c112fed29f2a4d49fd07862be556a7e0f139b2c5e550deaa833f719a5be4b8da`.
+- `reassoc-headless-r2.log` SHA-256:
+  `7f5e01831b497bf63163ff2c8e9f9a23892dab0f7a38d3dd0460e87463311ce5`.
+- Local export:
+  `/tmp/aiam-roam-policy.Kj1vgE/reassoc-terminal-5995e24caa-20260911/`.
+- Comparison: **51/51 C bodies unchanged** after ignoring only `ms:` metadata;
+  **51/51 instruction listings byte-identical**. Comparison-log SHA-256:
+  `619f3a20837d707522dd5113c7ef43da8cdeeedc321ffb1e9687f79304af8c22`.
+
+Thus the updated tool is actually usable for the next disputed function;
+this bounded replay does not change the recovered reassociation contract or
+close another driver feature. The user's preparation/alias/PHI console replay
+suite was not repeated in this session. Build, overlay, smoke, batch and
+comparison scripts/logs are retained in the lab child/evidence root below.
+
 ## Exact build and loaded candidate
 
 Production commit: `52a0eeaed2da7fbe74be470d76f97e0b8559caf1`. The guest's
