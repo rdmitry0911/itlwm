@@ -108,7 +108,8 @@ Required boundaries before that candidate can qualify:
   AP comeback response, DHCP/traffic and off/on plus real-S3 recovery before
   calling this functional surface closed or replacing the release.
 
-No production change, new build or new release is claimed by this report.
+The reproduction above predates the production candidate and qualification
+sections below; it makes no claim for their newer artifact.
 
 ## Evidence
 
@@ -126,8 +127,8 @@ No AP fixture, physical `.22`, QEMU lifecycle or disk-image operation was used.
 
 ## Candidate: exact protected source departure
 
-The following is an implementation candidate, **not yet a new RF result or
-release**. The non-BTM IWN hook now builds one ordinary protected deauth using
+The following candidate was committed as `986e030be8801e6d2aad74c5bb7b3eb4c1b517d2`.
+The non-BTM IWN hook now builds one ordinary protected deauth using
 the shared management header policy and the normal software-PMF TX path. It
 does not replace driver-resident SAE with a userspace exchange. The existing
 BTM response/deauth fence and IWM/IWX implementations are unchanged.
@@ -169,6 +170,180 @@ Local candidate checks on 2026-09-11:
   three-argument stop signature (HEAD already passes `&retired`); its expected
   signature is updated without changing production AMPDU behavior.
 
-These are sanitizer/source gates, not simulated RF success. A new Tahoe build,
-loaded-UUID verification, real A->B->A source-deauth/comeback observations and
-off/on plus S3 checks remain required before qualification/release replacement.
+These are sanitizer/source gates, not simulated RF success. The separate
+actual-image observations follow.
+
+## Actual Tahoe image and source-departure observations
+
+The complete AP-capable Tahoe build passed and resolved all 1085 external
+symbols against BootKC. The 354-file production manifest was checked before
+and after the build. The macOS production-function fixtures also passed.
+
+- Source manifest SHA-256:
+  `65b657d797b571541bc1445039b67a2df111183a7a7f8cf879e9a8b7ca9ce6ff`.
+- Build log SHA-256:
+  `6cb7bb4c682d498980ec9399b04bd956e65b03f38df20fc565c7291efc246b10`.
+- Mach-O UUID: `ADABFCB9-0EE6-3FE0-AD81-01CDF616226B`.
+- Mach-O SHA-256:
+  `043c6e748cebe4ce2390df82e3428cb48121add50b4eddc0cf7d866640a21768`.
+- Guest boot: `4CBD3236-33BE-48B8-8051-05DC34A550BB`.
+
+Private preflight and the existing transactional AuxKC activation completed.
+The first reboot wrapper stopped on a non-root checksum permission error
+before reboot; the corrected sudo-guarded wrapper performed one normal lab
+guest reboot. No live kext unload or physical `.22` operation was used.
+
+The loaded image automatically joined WPA3 and later moved from BSS 02 to ca
+through its own WCL path, with departure ticket 1. The first requested test
+therefore stopped at its source-BSSID guard, before observers or another roam
+request. This is not a failed RF exchange or a controlled traffic result.
+
+| Actual run | Target result | Departure receipt | Traffic F/R | Comeback |
+| --- | --- | --- | --- | --- |
+| return q2, ca -> 02 | NO_ELIGIBLE_TARGET; stayed ca | not submitted | 250/250, 250/250 | target not attempted |
+| return q3, ca -> 02 | NO_ELIGIBLE_TARGET; stayed ca | not submitted | 250/250, 250/250 | target not attempted |
+| selection q1, ca -> 02 | target RUN | ticket 2, status 1, ACK retries 0 | not sampled as a 250-packet run | none observed |
+| depart q4, 02 -> ca | target RUN | ticket 3, status 1, ACK retries 0 | 249/250, 248/250 | none observed |
+| return q5, ca -> 02 | NO_ELIGIBLE_TARGET; stayed ca | not submitted | 250/250, 250/250 | target not attempted |
+| selection q2, ca -> 02 | target RUN | ticket 4, status 1, ACK retries 1 | not sampled as a 250-packet run | none observed |
+
+F/R here retains the reproduction's guest-to-gateway / host-to-guest paths,
+250 packets at 200 ms with 1400-byte payloads. The diagnostic selection runs
+last 35 seconds; the traffic runs use 70-second observers. Every observer
+reported zero errors. Depart q4 recorded **one encap drop**, not zero.
+
+For each observed successful transition, the actual protected-deauth builder
+and exact descriptor publication precede firmware deauth TX status and the
+departure terminal. Only after that terminal does targeted SAE retarget begin,
+followed by real authentication/association and target RUN. No status-30
+comeback appears in these successful samples. This closes the **missing
+non-BTM IWN protected source-departure fence**, not all return-to-BSS behavior,
+AP station-table cleanup or seamless roaming.
+
+Two observer/harness defects are retained explicitly. Return q2 originally
+returned zero because it lacked a final target-identity assertion, despite
+not roaming; the assertion was added before q3. The two diagnostic selection
+logs printed a bool return as a full int, including unspecified upper bits
+(`196134401` / `196115969`); the low byte is 1. Later observers cast to uint8_t.
+Neither defect converts a NO_ELIGIBLE_TARGET run into success.
+
+Fresh host scanning observed target 02 on channel 13 at -34 dBm before q3.
+The failed driver censuses logged 24-28 nodes and zero match-BSS rejections;
+that alone does not distinguish missing target discovery, the ni_fails gate,
+or an earlier WNM/WCL filter. Exact-image live-node probes are the next
+diagnostic boundary. Do not infer that the AP vanished or reset failure
+counters speculatively. Updated reference `WCLRoamManager::roamScanEnd`
+(`ffffff8002106052`) exposes candidate BSSID/RSSI/channel/age/load and current
+RSSI publication; it does not itself establish an automatic retry policy.
+
+## Off/on and real sleep: recovery, not zero-loss qualification
+
+Native `networksetup` WPA3 off/on withdrew carrier and IPv4, recovered the
+saved profile and passed 20/20 1400-byte packets in each direction. This was
+not a mouse-driven GUI test.
+
+Real Normal Sleep ran from 16:06:11 to 16:09:03 UTC, 172 seconds, with QEMU
+independently observed suspended. Diagnostic USB Ethernet and tablet were
+absent. The same boot recovered WPA3 DHCP at 16:09:11, eight seconds after
+wake. Direct Wi-Fi SSH and traffic were tested before USB management returned.
+The two strict zero-loss checks **failed**: q1 received 20/20 forward and
+19/20 reverse (missing reverse sequence 8); q2 received 19/20 forward and
+20/20 reverse. Peak RTT was 251.179 ms. These show a working recovered path,
+not lossless recovery or proof that all loss originated in the driver.
+
+The existing WindowServer 30-second sleep-acknowledgement timeout was recorded.
+Post-S3 GUI operation and already-active AP client continuity through sleep
+are not qualified by this test. No radio toggle was needed after wake.
+
+## Native AP regression after S3
+
+Before packaging/publication, native Internet Sharing was exercised after
+that same real sleep. An external AX211 associated and obtained DHCP from
+the guest in WPA3, WPA2 and open modes. WPA3 independently reported SAE,
+mandatory PMF (`pmf=2`) and BIP. WPA3 q2, WPA2 q1 and open q2 each passed
+20/20 client-to-AP packets, 10/10 AP-to-client after cold ARP, and an exact
+118-byte HTTP response routed through the guest's USB/NAT upstream. This is
+not proof of concurrent STA Wi-Fi backhaul. Each ordinary sharing stop
+retired its bridge and restored 10/10 STA-to-gateway packets; no reboot,
+radio toggle or daemon restart separated these mode checks.
+
+The first WPA3 AP run completed security, DHCP and both traffic checks but
+failed HTTP because the host loopback test server was absent. After starting
+a bounded server, q2 completed the whole path. Open q1 received all 20 replies
+plus one duplicate (sequence 10); the historical exact-string parser stopped
+before HTTP on ping's additional duplicate field. A task-local parser now
+requires all unique replies and reports duplicates separately. Open q2 had
+20/20 without duplicates and completed HTTP/stop. The q1 duplicate is retained
+as an unresolved observation, not dismissed as a parser problem. Both local
+servers were bounded; the second was stopped by its exact owned PID when the
+AP matrix finished. Host management remained on wired Ethernet.
+
+These native-producer AP checks are not a new mouse-driven GUI matrix or
+already-active AP/client sleep-continuity test.
+
+## Packaging identity
+
+The frozen preflight bundle, installed bundle and full extracted ZIP bundle
+compare equal; packaging did not rebuild the binary.
+
+- ZIP SHA-256:
+  `fddbebf1e662ffea7f98bf27e08c481648f7109f681034d27681ed5bf1109fac`.
+- ZIP size: 15,684,441 bytes.
+
+Runtime evidence is frozen under
+`/home/dima/Projects/itlwm/aiam-roam-departure-candidate-runtime.VktxXM`.
+All 280 entries of `evidence-qualified-q1.sha256` verify; manifest SHA-256:
+`f3106c820bffd438911c0d0db25b192f31dc8bda5a4eec7b881923a942e04d8d`.
+This includes the packaged image, failed runs/harness receipts, detailed
+post-S3 candidate probes and all original AP regression captures.
+The exact source-departure correction is IWN-specific. Common header-builder
+and IWM/IWX build/fixture coverage is not new IWM/IWX RF qualification.
+
+## Next-layer localization on the same post-S3 image
+
+After AP regression, the first planned 02 -> ca runner stopped before its
+observer/request because the guest was already on ca. Post-S3 return q7 then
+requested ca -> 02 at 16:28:19 UTC and reproduced NO_ELIGIBLE_TARGET. A bounded
+read-only observer used node offsets derived from this exact ADAB binary:
+`node_cmp` proves MAC at 0x35, adjacent BSSID is 0x3b, and `choose_bss` loads
+RSSI at 0x34 and ni_fails at 0xc18. Its actual RB_NEXT entry visits each live
+node before any selection-time free; candidate returns carry address values,
+not a dereferenced retired pointer.
+
+This failed census contained 23 nodes, **all ni_fails=0**, and no target
+`9a:fb:5d:97:a9:02`. The observed source ca was correctly excluded by the WCL
+filter. Both physical band submissions and the exact terminal were observed;
+there were zero observer errors/encap drops. The guest remained on ca with
+249/250 forward and 250/250 reverse traffic. After that run finished, a fresh
+host scan reported target 02 at 2472 MHz / NM signal 85. This establishes a
+missing target in that guest census, not a ni_fails rejection, and does not
+prove that every earlier missing-target run has the same cause. No target
+SAE exchange or protected source departure was attempted in q7.
+
+Post-S3 q8 found the target and reached RUN after departure ticket 12, with
+248/250 traffic in both directions and no comeback. Its new packed command
+observer incorrectly read 32-bit channel flags at a two-byte-aligned array
+position, producing 13 DTrace invalid-alignment faults; the full runner
+correctly failed the observer gate. These are observer faults, not a kernel
+panic or a valid complete channel-plan measurement. The corrected q5 probe
+decodes channel entries byte by byte (SHA-256
+`3e5b1b290bb00999452df18c4e18680a1194933b009640a52c9d7026ba9c38f5`).
+
+With that corrected observer, post-S3 q9 moved 02 -> ca using departure
+ticket 13, status 1 / ACK retries 0, then real SAE/RUN. It received 249/250
+forward and 247/250 reverse; zero observer errors, two encap drops, no comeback.
+The actual first firmware command contains 13 2.4-GHz channels: channel 13
+remains passive (flags 0x2), active dwell 36 ms, passive dwell 85 ms; channel 9
+is active (flags 0x3). The following 24-channel 5-GHz command has passive
+dwell 85 ms. Both retain max_out 112640 us and pause encoding 0x402800.
+Thus channel 13 is not omitted from the physical plan. A passive 85-ms listen
+is shorter than a 100-TU beacon period; this is a concrete timing hypothesis,
+not yet an RF proof or authorization to exceed the serving-BSS budget.
+
+Post-S3 q10 repeated ca -> 02 with this corrected command/census observer.
+It recorded channel 13 in the physical plan with the same passive flag and
+85-ms dwell, but the 27-node fresh census again lacked target 02 (all observed
+ni_fails were zero). No source departure was submitted. It remained on ca
+and passed 250/250 in both traffic directions, with zero observer errors and
+zero encap drops. This is a successful preservation of the source link during
+a **failed roam**, not a successful target connection.
