@@ -332,3 +332,28 @@ This qualifies publishing the bounded comeback-minimum correction as an
 alpha with the explicit retained limitations above. It does not close
 seamless roaming, all transition-window losses, post-S3 GUI, active-AP sleep
 continuity, broad security variants, throughput parity, or physical IWM/IWX.
+
+## Published artifact and independent readback
+
+The existing mutable
+[v2.4.0-alpha release](https://github.com/rdmitry0911/itlwm/releases/tag/v2.4.0-alpha)
+was updated with this exact archive at 14:26:32 UTC. Title:
+`AirportItlwm Tahoe v2.4.0-alpha (c9715b63)`. Asset ID `557397894`, name
+`AirportItlwm-Tahoe-v2.4.0-alpha.kext.zip`, size 15,681,564 bytes, API digest
+`sha256:feb561fc09360d9ddbea0d513f1d24b32f6108f9589b8e0a5253f0799a2f35ec`.
+The published asset was independently downloaded and compared byte-for-byte
+with the qualified local archive; the full SHA-256 matches. Release notes
+were independently read back and compared exactly, preserving earlier history
+and the explicit negative observations/limits above. The tag was not moved.
+
+Before replacement, the release body/title and exact prior asset identity
+were re-read and verified unchanged. The previous source529 ZIP with hash
+0978d134... was downloaded and verified before replacement and remains in
+the runtime root's `release-before-deadline/` for rollback. No physical-host
+installation, reboot, shared-image mutation, or unrelated QEMU action was
+part of publication.
+
+The separate 127-file cold GUI evidence manifest was verified in full:
+`cb47359b625cd880d94328e31dfcc7540c11c91e1cb4b6d4a5b1a5033907e384`.
+Later checkpoints must not rewrite those frozen files or substitute a new
+build for the published image while citing this qualification.
