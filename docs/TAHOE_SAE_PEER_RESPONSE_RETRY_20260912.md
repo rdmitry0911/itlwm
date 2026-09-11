@@ -9,8 +9,8 @@ omission, Confirm omission and forward-all controls complete SAE/DHCP
 and20/20 traffic each direction. Bounded exhaustion retires the exact owner;
 native fallback reaches saved LabAP. The planned STA/AP/S3/roam controls are
 complete with retained WPA2 scan-admission and packet-loss failures; this is
-a limited-alpha checkpoint, not full qualification. Public alpha remains
-f170870d at the prepublication checkpoint. Baseline failures below
+a limited-alpha checkpoint, not full qualification. Public alpha now contains
+477ab0af/842B, with exact download verification below. Baseline failures below
 are retained, not relabelled.
 
 ## Controlled radio experiment
@@ -498,3 +498,29 @@ metadata and exact new/old archive hashes. Publication/readback is not claimed
 until that transaction actually completes. The next functional cycle is the
 observed2GHz public scan Busy/ownership boundary; full autonomous parity work
 remains active.
+
+## Published limited alpha and independent download verification
+
+Runtime documentation and the archived prior release history were committed
+and pushed as4fed83662756666a4a9613aeae23923314436676. The guarded publication
+then completed23:46:45--23:46:56UTC on2026-09-11 (September12 local time).
+All370 frozen evidence entries reverified before any external mutation, and
+remote release metadata matched the captured predecessor exactly.
+
+Release357137705 is now titled AirportItlwm Tahoe v2.4.0-alpha (477ab0af).
+Asset558223857 is AirportItlwm-Tahoe-v2.4.0-alpha.kext.zip,15,693,832bytes,
+GitHub digestsha256:f1fa87afb14519112deccb45e7db8122b1b3eefa99f707f2d4c101b4e51f749c.
+An independent gh download byte-compares equal to the frozen tested archive;
+its SHA256 matches. Publisher17676 returns0. The replaced68F5 archive remains
+in the separate publication root as previous-68F5.kext.zip for rollback.
+
+The4262-character release body leads with the failed post-S3 data gate and
+WPA2 first-selection scan failure, retains lossy roaming and IWM/IWX limits,
+and links the complete previous history now archived in the repository.
+The old roughly65K body was not silently truncated. No rebuild, guest reload,
+physical22 mutation or extra qualification claim accompanied publication.
+The immutable370-file evidence root was not modified with these later receipts.
+
+Public release: https://github.com/rdmitry0911/itlwm/releases/tag/v2.4.0-alpha
+The next-cycle working root is separate:
+`/dev/shm/aiam-standard-scan-busy-20260912.YEu9MQ`.
