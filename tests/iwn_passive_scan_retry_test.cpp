@@ -3,6 +3,13 @@
 #include "iwn_scan_abort_owner_test.cpp"
 #undef main
 
+#if defined(__APPLE__)
+#include <libkern/OSByteOrder.h>
+#ifndef le32toh
+#define le32toh(value) OSSwapLittleToHostInt32(value)
+#endif
+#endif
+
 constexpr uint16_t IEEE80211_CHAN_2GHZ=0x80;
 static unsigned submitMode, retrySubmissions, dmaReads;
 static void iwn_scan_schedule_fatal_recovery(iwn_softc *) { ++resets; }

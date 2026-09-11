@@ -105,6 +105,10 @@ or cached BSS is used as a replacement for fresh reception.
 
 ## Local checks / remaining gate
 
+- Production candidate is `ee501d78`. The dedicated retry and queued-band
+  checks also pass on the Tahoe build guest. Their first macOS invocation
+  exposed missing userspace endian/credential-scrub fixture definitions;
+  Darwin test adapters were corrected without changing production code.
 - 65,563 scenarios compile the actual retry, receipt-switch, doorbell and
   terminal-claim bodies, including all65,536 candidate masks, one visit per
   admitted bit, no reseeding, early/stale/cancelled/zero-serial cases, malformed

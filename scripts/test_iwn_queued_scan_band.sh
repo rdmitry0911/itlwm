@@ -4,7 +4,7 @@ ulimit -c 0
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 test_root=$(mktemp -d)
 trap 'test ! -f "$test_root/test" || unlink "$test_root/test"; rmdir "$test_root"' EXIT
-python3 - "$root" <<'PY' | "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=undefined -x c++ - -o "$test_root/test"
+python3 - "$root" <<'PY' | "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=undefined -I "$root/tests" -x c++ - -o "$test_root/test"
 from pathlib import Path
 import sys
 root = Path(sys.argv[1])

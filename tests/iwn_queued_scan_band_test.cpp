@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sys/types.h>
+#include "kernel_memory_test_support.hpp"
 
 constexpr int IEEE80211_CHAN_MAX = 255;
 constexpr uint16_t IEEE80211_CHAN_2GHZ = 0x80;
