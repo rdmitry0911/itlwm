@@ -145,7 +145,8 @@ public:
     bool scanCommandReplayPending();
     void resumeScanCommand();
     bool noteStateTransitionProgress(ItlStateTransitionRequest *, uint8_t);
-    int reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly = false);
+    int reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly = false,
+                                uint64_t reassocSerial = 0);
     int waitScanCommandAbort(uint64_t serial, uint32_t generation);
     void noteScanCommandTerminal(bool, uint32_t, bool);
     bool initStateTransitions();
@@ -619,11 +620,12 @@ public:
     void    iwm_del_task(struct iwm_softc *, struct taskq *, struct task *);
     int    iwm_scan(struct iwm_softc *, const ItlStateTransitionRequest &);
     static int    iwm_bgscan(struct ieee80211com *, uint64_t = 0);
-    static int    iwm_bgscan_abort(struct ieee80211com *);
+    static int    iwm_bgscan_abort(struct ieee80211com *, uint64_t = 0);
     int    iwm_umac_scan_abort_status(struct iwm_softc *, uint32_t *, uint64_t);
     int    iwm_umac_scan_abort(struct iwm_softc *);
     int    iwm_lmac_scan_abort(struct iwm_softc *, uint64_t serial = 0);
-    int    iwm_scan_abort(struct iwm_softc *, bool backgroundOnly = false);
+    int    iwm_scan_abort(struct iwm_softc *, bool backgroundOnly = false,
+                             uint64_t reassocSerial = 0);
     int    iwm_phy_ctxt_update(struct iwm_softc *, struct iwm_phy_ctxt *,
                                struct ieee80211_channel *, uint8_t, uint8_t, uint32_t);
     int    iwm_auth(struct iwm_softc *);

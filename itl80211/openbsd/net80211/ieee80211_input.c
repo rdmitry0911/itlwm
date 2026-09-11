@@ -4088,7 +4088,7 @@ ieee80211_recv_wnm_bss_transition_req(struct ieee80211com *ic, mbuf_t m,
 		 * fences every competing retry until its terminal retires.
 		 */
 		if (ic->ic_bgscan_abort != NULL &&
-		    ic->ic_bgscan_abort(ic) == 0)
+		    ic->ic_bgscan_abort(ic, 0) == 0)
 			timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 1);
 		return;
 	}

@@ -2381,7 +2381,8 @@ reserveScanCommand(bool background, bool umac, uint64_t *serial,
         error = ECANCELED;
     else if (reassocSerial != 0 && (!background || wclGeneration != 0 ||
         !ic->ic_wcl_reassoc_owner_active ||
-        ic->ic_wcl_reassoc_owner_serial != reassocSerial))
+        ic->ic_wcl_reassoc_owner_serial != reassocSerial ||
+        ic->ic_pae_assoc_epoch != ic->ic_wcl_reassoc_source_epoch))
         error = ECANCELED;
     else
         error = ItlScanCommandPolicy::captureOwnedLocked(ic, wclGeneration,
@@ -2688,7 +2689,8 @@ noteStateTransitionProgress(ItlStateTransitionRequest *request, uint8_t step)
 }
 
 int ItlIwm::
-reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly)
+reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly,
+                        uint64_t reassocSerial)
 {
     if (serial == NULL)
         return EINVAL;
@@ -2705,6 +2707,11 @@ reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly)
         (backgroundOnly && !scanCommand.command.background)) {
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
         return 0;
+    }
+    if (reassocSerial != 0 && (!backgroundOnly ||
+        scanCommand.command.reassocSerial != reassocSerial)) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return ECANCELED;
     }
     /* The original sender must publish readiness before another caller
      * waits for its terminal. A reserved/unready census is busy, not absent. */

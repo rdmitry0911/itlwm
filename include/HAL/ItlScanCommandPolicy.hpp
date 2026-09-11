@@ -102,7 +102,8 @@ struct ItlScanCommandPolicy {
     bool currentLocked(const struct ieee80211com *ic) const
     {
         if (reassocSerial != 0 && (!ic->ic_wcl_reassoc_owner_active ||
-            ic->ic_wcl_reassoc_owner_serial != reassocSerial))
+            ic->ic_wcl_reassoc_owner_serial != reassocSerial ||
+            ic->ic_wcl_reassoc_source_epoch != identity.associationEpoch))
             return false;
         if (!identity.equals(identityLocked(ic)))
             return false;

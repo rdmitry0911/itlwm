@@ -282,7 +282,8 @@ public:
     bool scanCommandReplayPending();
     void resumeScanCommand();
     bool noteStateTransitionProgress(ItlStateTransitionRequest *, uint8_t);
-    int reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly = false);
+    int reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly = false,
+                                uint64_t reassocSerial = 0);
     int waitScanCommandAbort(uint64_t serial, uint32_t generation);
     void noteScanCommandTerminal(bool, uint32_t, bool);
     bool initStateTransitions();
@@ -698,10 +699,11 @@ public:
     void    iwx_del_task(struct iwx_softc *, struct taskq *, struct task *);
     int    iwx_scan(struct iwx_softc *, const ItlStateTransitionRequest &);
     static int    iwx_bgscan(struct ieee80211com *, uint64_t = 0);
-    static int    iwx_bgscan_abort(struct ieee80211com *);
+    static int    iwx_bgscan_abort(struct ieee80211com *, uint64_t = 0);
     int    iwx_umac_scan_abort(struct iwx_softc *);
     int    iwx_umac_scan_abort_status(struct iwx_softc *, uint32_t *, uint64_t);
-    int    iwx_scan_abort(struct iwx_softc *, bool backgroundOnly = false);
+    int    iwx_scan_abort(struct iwx_softc *, bool backgroundOnly = false,
+                             uint64_t reassocSerial = 0);
     int    iwx_rs_rval2idx(uint8_t);
     uint16_t iwx_rs_ht_rates(struct iwx_softc *, struct ieee80211_node *, int);
     uint16_t iwx_rs_fw_get_config_flags(struct iwx_softc *sc);

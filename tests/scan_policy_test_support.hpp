@@ -59,6 +59,7 @@ struct ieee80211com {
     int ic_opmode = IEEE80211_M_STA;
     uint64_t ic_pae_assoc_epoch = 41;
     uint64_t ic_wcl_reassoc_owner_serial = 0;
+    uint64_t ic_wcl_reassoc_source_epoch = 41;
     unsigned ic_wcl_reassoc_owner_active = 0;
     ieee80211_join_attempt ic_wcl_join_attempt = {};
     unsigned ic_initial_scan_census_only = 0;

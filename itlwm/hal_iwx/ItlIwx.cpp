@@ -1388,7 +1388,8 @@ reserveScanCommand(bool background, bool umac, uint64_t *serial,
         error = ECANCELED;
     else if (reassocSerial != 0 && (!background || wclGeneration != 0 ||
         !ic->ic_wcl_reassoc_owner_active ||
-        ic->ic_wcl_reassoc_owner_serial != reassocSerial))
+        ic->ic_wcl_reassoc_owner_serial != reassocSerial ||
+        ic->ic_pae_assoc_epoch != ic->ic_wcl_reassoc_source_epoch))
         error = ECANCELED;
     else
         error = ItlScanCommandPolicy::captureOwnedLocked(ic, wclGeneration,
@@ -1695,7 +1696,8 @@ noteStateTransitionProgress(ItlStateTransitionRequest *request, uint8_t step)
 }
 
 int ItlIwx::
-reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly)
+reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly,
+                        uint64_t reassocSerial)
 {
     if (serial == NULL)
         return EINVAL;
@@ -1712,6 +1714,11 @@ reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly)
         (backgroundOnly && !scanCommand.command.background)) {
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
         return 0;
+    }
+    if (reassocSerial != 0 && (!backgroundOnly ||
+        scanCommand.command.reassocSerial != reassocSerial)) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return ECANCELED;
     }
     /* The original sender must publish readiness before another caller
      * waits for its terminal. A reserved/unready census is busy, not absent. */
@@ -17109,7 +17116,7 @@ iwx_bgscan(struct ieee80211com *ic, uint64_t reassocSerial)
 }
 
 int ItlIwx::
-iwx_bgscan_abort(struct ieee80211com *ic)
+iwx_bgscan_abort(struct ieee80211com *ic, uint64_t reassocSerial)
 {
     struct iwx_softc *sc;
     ItlIwx *that;
@@ -17121,7 +17128,7 @@ iwx_bgscan_abort(struct ieee80211com *ic)
     /* The command ACK is not the terminal.  iwx_scan_abort() follows Intel's
      * native STOPPING contract: suppress the old upper completion and wait
      * for SCAN_COMPLETE_UMAC before replacement JoinAdapter work may start. */
-    return that->iwx_scan_abort(sc, true);
+    return that->iwx_scan_abort(sc, true, reassocSerial);
 }
 
 int ItlIwx::
@@ -17171,11 +17178,11 @@ iwx_umac_scan_abort(struct iwx_softc *sc)
 }
 
 int ItlIwx::
-iwx_scan_abort(struct iwx_softc *sc, bool backgroundOnly)
+iwx_scan_abort(struct iwx_softc *sc, bool backgroundOnly, uint64_t reassocSerial)
 {
     const uint32_t generation = sc->sc_generation;
     uint64_t serial = 0;
-    int error = reserveScanCommandAbort(true, &serial, backgroundOnly);
+    int error = reserveScanCommandAbort(true, &serial, backgroundOnly, reassocSerial);
     if (error != 0 || serial == 0)
         return error;
     uint32_t status = IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;

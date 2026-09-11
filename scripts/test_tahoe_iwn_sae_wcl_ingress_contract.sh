@@ -239,7 +239,7 @@ ordered(newstate, "active-scan direct SAE abort/replay",
         "ieee80211_sae_wcl_request_scan_deferred(",
         "iwn_scan_lease_defer_scan(",
         "direct_sae_scan_generation, &serial",
-        "IWN_CMD_SCAN_ABORT",
+        "iwn_scan_abort_command(\n                        sc, serial)",
         "CACHED_CANDIDATE_REFRESH_DEFERRED",
         "return EAGAIN;")
 replay = body(iwn, "iwn_scan_lease_replay_task(void *arg)",

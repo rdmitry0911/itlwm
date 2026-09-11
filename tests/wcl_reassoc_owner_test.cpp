@@ -36,6 +36,7 @@ struct ieee80211com : _ifnet {
     IOSimpleLock lock;
     IOSimpleLock *ic_pae_selected_bss_lock=&lock;
     uint64_t ic_wcl_reassoc_next_serial=0, ic_wcl_reassoc_owner_serial=0;
+    uint64_t ic_wcl_reassoc_source_epoch=0;
     uint64_t ic_wcl_reassoc_terminal_serial=0, ic_pae_assoc_epoch=11;
     uint64_t ic_wcl_reassoc_scan_accepted_serial=0;
     uint32_t ic_wcl_reassoc_owner_active=0, ic_wcl_reassoc_owner_last_leaf=0;
@@ -45,7 +46,7 @@ struct ieee80211com : _ifnet {
     ieee80211_node node;
     ieee80211_node *ic_bss=&node;
     int (*ic_bgscan_start)(ieee80211com *, uint64_t)=nullptr;
-    int (*ic_bgscan_abort)(ieee80211com *)=nullptr;
+    int (*ic_bgscan_abort)(ieee80211com *, uint64_t)=nullptr;
     void (*ic_event_handler)(ieee80211com *, int, void *)=nullptr;
 };
 static unsigned epochs, events, frees;
@@ -103,6 +104,7 @@ static void event(ieee80211com *ic,int code,void *data) {
 }
 static void admit(ieee80211com *ic,uint8_t identity,uint32_t leaf) {
     ic->ic_wcl_reassoc_owner_serial=++ic->ic_wcl_reassoc_next_serial;
+    ic->ic_wcl_reassoc_source_epoch=ic->ic_pae_assoc_epoch;
     ic->ic_wcl_reassoc_terminal_serial=0;
     ic->ic_wcl_reassoc_scan_accepted_serial=0;
     ic->ic_wcl_reassoc_owner_active=1; ic->ic_wcl_reassoc_owner_last_leaf=leaf;
@@ -119,7 +121,7 @@ static void preserved(const ieee80211com &ic) {
 }
 int main() {
     unsigned cases=0;
-    for(unsigned scenario=0;scenario<20;++scenario) {
+    for(unsigned scenario=0;scenario<22;++scenario) {
         epochs=events=frees=0; queued.clear(); deferGate=false;
         cancelContinuation={}; beforeEpoch={}; freeContinuation={};
         ieee80211com ic; admit(&ic,1,IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED);
@@ -132,7 +134,8 @@ int main() {
         } else if(scenario==2) {
             ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
             ic.ic_flags=IEEE80211_F_BGSCAN;
-            ic.ic_bgscan_abort=[](ieee80211com *v){
+            ic.ic_bgscan_abort=[](ieee80211com *v,uint64_t serial){
+                assert(serial==v->ic_wcl_reassoc_owner_serial);
                 assert(!v->lock.held); ieee80211_wcl_reassoc_post_failure(v,5); replacement(v); return 0;};
             assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,6)==EBUSY);
             preserved(ic); assert(ic.ic_flags==IEEE80211_F_BGSCAN && epochs==0 && events==1);
@@ -219,11 +222,19 @@ int main() {
             assert(!ieee80211_wcl_reassoc_scan_completion_begin(&ic,old));
             assert(!ieee80211_wcl_reassoc_scan_completion_begin(&ic,0));
             preserved(ic);
-        } else {
+        } else if(scenario==19) {
             assert(!ieee80211_wcl_reassoc_scan_completion_begin(&ic,
                 ieee80211_wcl_reassoc_serial(&ic)));
             ic.ic_wcl_reassoc_owner_active=0;
             assert(ieee80211_wcl_reassoc_scan_completion_begin(&ic,0));
+        } else {
+            ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
+            const auto serial=ieee80211_wcl_reassoc_serial(&ic);
+            if(scenario==20) ++ic.ic_pae_assoc_epoch;
+            else ++ic.ic_wcl_reassoc_source_epoch;
+            ic.ic_flags=0;
+            assert(!ieee80211_wcl_reassoc_scan_completion_begin(&ic,serial));
+            assert(ic.ic_flags==0 && ic.ic_wcl_reassoc_scan_accepted_serial==0);
         }
         ++cases;
     }

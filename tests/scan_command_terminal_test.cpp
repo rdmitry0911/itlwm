@@ -159,11 +159,11 @@ struct Itl##family { \
     } \
     bool iwx_task_gate_enter(Softc *sc, bool allow) { return iwm_sae_tx_lifecycle_enter(sc, allow); } \
     void iwx_task_gate_leave(Softc *sc) { iwm_sae_tx_lifecycle_leave(sc); } \
-    int reserveScanCommandAbort(bool, uint64_t *, bool = false); \
+    int reserveScanCommandAbort(bool, uint64_t *, bool = false, uint64_t = 0); \
     int waitScanCommandAbort(uint64_t, uint32_t); \
-    int lower##_scan_abort(Softc *, bool = false); \
-    static int lower##_bgscan_abort(ieee80211com *); \
-    int abort_background() { return lower##_bgscan_abort(&com.sc_ic); } \
+    int lower##_scan_abort(Softc *, bool = false, uint64_t = 0); \
+    static int lower##_bgscan_abort(ieee80211com *, uint64_t = 0); \
+    int abort_background(uint64_t serial = 0) { return lower##_bgscan_abort(&com.sc_ic, serial); } \
     int lower##_umac_scan_abort_status(Softc *, uint32_t *status, uint64_t serial) { \
         assert(!held); \
         *status = 2; \
@@ -255,6 +255,19 @@ template<class D> static void wcl(D &d, uint64_t generation, bool bg = false)
 template<class D> static unsigned exercise()
 {
     unsigned cases = 0;
+    reset_observers();
+    {
+        D d; const auto physical=prepare(d,0,true,UINT64_C(0x100000032));
+        assert(d.readyScanCommand(physical));
+        assert(d.abort_background(UINT64_C(0x100000031))==ECANCELED);
+        assert(!d.scanCommand.command.stopping && !abort_submissions && !waits && !resets);
+        assert(d.scanCommand.command.serial==physical);
+        assert(d.scanCommand.command.reassocSerial==UINT64_C(0x100000032));
+        sleep_hook=[&] { d.noteScanCommandTerminal(true,0,true); };
+        assert(d.abort_background(UINT64_C(0x100000032))==0);
+        assert(abort_submissions==1 && !d.scanCommand.live());
+        ++cases;
+    }
     reset_observers();
     {
         D d;

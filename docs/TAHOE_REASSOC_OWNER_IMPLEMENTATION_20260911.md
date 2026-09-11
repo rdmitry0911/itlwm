@@ -115,3 +115,65 @@ same `c2dd6a08...` ZIP. Host 10.90.10.22, radio/VM state and unrelated QEMU
 processes were not changed. User-owned local `Build/` remains untouched.
 Local pool free space is about 1.2 GiB; recheck and use only a verified,
 recoverable offline archive before a later RF/admission cycle needs more.
+
+## Next FIX_CANDIDATE — physical abort, 2026-09-11
+
+The actual IWM/IWX background-abort reservation selects the current physical
+command using only its kind. The common caller's captured roam serial does not
+reach it. IWN has the same omitted request identity and additionally issues all
+six SCAN_ABORT commands through an untagged sender after releasing the physical
+lease lock. A STOP_SCAN/replay between reservation and WRPTR can therefore make
+that old abort stop a new command.
+
+Carry the expected roam serial through the real abort API, match it under the
+physical scan leaf, then retain the resulting physical serial through command
+submission. IWN must use the existing command pre/post-doorbell mechanism for
+SCAN_ABORT too; no buffer allocation or transport wake may occur under that
+leaf. A stale pre-doorbell abort is an already-retired operation, not authority
+to reset the successor. Test the actual reservation, command sender and final
+doorbell claim across replacement, reset, terminal and duplicate abort orders.
+
+### Physical-command checkpoint, 2026-09-11 03:36 UTC
+
+Implemented the captured roam serial through the actual background-abort
+callback and IWN/IWM/IWX reservation. A mismatched expected request cannot mark
+the current command stopping or add an abort waiter. All six IWN SCAN_ABORT
+senders now retain the reserved physical serial through the complete command
+sender and the final pre/post-WRPTR hooks. Already completed/replaced/reset
+aborts are no-ops, not reasons to reset a successor. A second abort and a late
+submission-failed callback cannot undo an already submitted abort.
+
+Tagged IWN SCAN submission also validates its exact admitted roam and source
+epoch at the final doorbell, with selected-BSS outside the physical scan leaf.
+Transport wake, buffer preparation and allocation remain outside those locks.
+IWM/IWX reservation and final policy validation check the same source epoch.
+Physical IWN serial exhaustion refuses admission before consuming a staged
+SAE request. Detach now clears the scan-accepted receipt as well.
+
+Verification:
+
+- The full Linux payload aggregate passes, including the new complete IWN
+  reservation/abort/sender/doorbell fixture: 19 scenarios. The baseline whole
+  `8f5d9019` abort caller, compiled with the same complete command sender,
+  reaches the adversarial transport-wake replacement and fails the assertion
+  that no abort may be sent to its successor (exit 134). Its ordinary first
+  command passes; this is not merely an assertion about a new bookkeeping bit.
+- macOS passes those 19 scenarios, 22 common-owner cases, 104 real epoch-function
+  cases, 27 IWN physical scan receipt groups, 78 IWM/IWX admission groups and
+  62 physical terminal/replay groups. The whole Tahoe build passes and all
+  1085 undefined symbols resolve, without `thread_call_cancel_wait`.
+- Source and build mirror content digest:
+  `518de2096e613c03556ae86c7507f057dda89d65317285607cdabb10b2660767`.
+- Built UUID: `D63CF6F8-85F5-3C98-B3E6-7289BEFD5A19`; Mach-O SHA-256:
+  `9c4b3c105a3b42eda305aa780323a412a30a84bdc88578e715f423546ab9faf8`.
+- Linux log `/tmp/aiam-reassoc-physical-linux-20260911.log`, SHA-256
+  `d2af1a1368785f1421298471b6b1f929ddbf3187623a14e698e6d5fe56763bb9`.
+- macOS log `/tmp/aiam-reassoc-physical-macos-20260911.log`, SHA-256
+  `2de2b45bf28e0a151a2ecf9b8af32bb35fe9bd7c2674680074f43b1e976e121b`.
+- Negative log `/tmp/aiam-iwn-abort-negative-20260911-r2.log`, SHA-256
+  `2e1124df5f47dabc3f779e9759c87becd360bbc21feff44c1b0113e6f3293568`.
+
+This is a built WIP checkpoint, not a completed roaming layer or loaded
+qualification. The full deferred BSS/state/AUTH/key lifetime and reference
+progress/terminal producers above remain required. The loaded and released
+`97fe747c` bundle and boot `02DED0EA` are unchanged; no RF fixture was run.

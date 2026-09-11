@@ -517,6 +517,7 @@ ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
 	serial = ++ic->ic_wcl_reassoc_next_serial;
 	source_epoch = ic->ic_pae_assoc_epoch;
 	ic->ic_wcl_reassoc_owner_serial = serial;
+	ic->ic_wcl_reassoc_source_epoch = source_epoch;
 	ic->ic_wcl_reassoc_terminal_serial = 0;
 	ic->ic_wcl_reassoc_scan_accepted_serial = 0;
 	ic->ic_wcl_reassoc_request = *request;
@@ -624,7 +625,7 @@ ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *ic,
 	if (background) {
 		if (ic->ic_bgscan_abort == NULL)
 			return EOPNOTSUPP;
-		error = (*ic->ic_bgscan_abort)(ic);
+		error = (*ic->ic_bgscan_abort)(ic, serial);
 		if (error != 0)
 			return error;
 	}
@@ -817,6 +818,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     ic->ic_initial_scan_census_only = 0;
     ic->ic_wcl_reassoc_next_serial = 0;
     ic->ic_wcl_reassoc_owner_serial = 0;
+    ic->ic_wcl_reassoc_source_epoch = 0;
     ic->ic_wcl_reassoc_terminal_serial = 0;
     ic->ic_wcl_reassoc_scan_accepted_serial = 0;
     ic->ic_wcl_reassoc_owner_active = 0;
@@ -913,7 +915,9 @@ ieee80211_ifdetach(struct _ifnet *ifp)
     ieee80211_wnm_bss_transition_clear(ic);
     ieee80211_wcl_scan_plan_clear(ic, 0);
     ic->ic_wcl_reassoc_owner_serial = 0;
+    ic->ic_wcl_reassoc_source_epoch = 0;
     ic->ic_wcl_reassoc_terminal_serial = 0;
+    ic->ic_wcl_reassoc_scan_accepted_serial = 0;
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
@@ -2428,6 +2432,7 @@ ieee80211_wcl_reassoc_scan_completion_begin(struct ieee80211com *ic,
         IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
     int current = serial == 0 ? !ic->ic_wcl_reassoc_owner_active :
         (ic->ic_wcl_reassoc_owner_active && ic->ic_wcl_reassoc_owner_serial == serial &&
+         ic->ic_pae_assoc_epoch == ic->ic_wcl_reassoc_source_epoch &&
          (ic->ic_wcl_reassoc_owner_last_leaf == IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP ||
           ic->ic_wcl_reassoc_owner_last_leaf == IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED));
     if (current && serial != 0) {
@@ -2448,6 +2453,7 @@ ieee80211_wcl_reassoc_clear_locked(struct ieee80211com *ic)
 {
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_serial = 0;
+    ic->ic_wcl_reassoc_source_epoch = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
     explicit_bzero(&ic->ic_wcl_reassoc_request,

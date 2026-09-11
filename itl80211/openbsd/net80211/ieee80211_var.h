@@ -839,7 +839,7 @@ struct ieee80211com {
 				    struct ieee80211_node *, u_int8_t);
 	void			(*ic_updateprot)(struct ieee80211com *);
 	int			(*ic_bgscan_start)(struct ieee80211com *, u_int64_t);
-	int			(*ic_bgscan_abort)(struct ieee80211com *);
+	int			(*ic_bgscan_abort)(struct ieee80211com *, u_int64_t);
     /*
      * A backend may consume a state transition before the generic macro
      * advances association epoch.  It is used only to defer a SCAN request
@@ -956,6 +956,7 @@ struct ieee80211com {
     /* Host-only identity; never reset by cancellation or reused on wrap. */
     u_int64_t       ic_wcl_reassoc_next_serial;
     u_int64_t       ic_wcl_reassoc_owner_serial;
+    u_int64_t       ic_wcl_reassoc_source_epoch;
     u_int64_t       ic_wcl_reassoc_terminal_serial;
     u_int64_t       ic_wcl_reassoc_scan_accepted_serial;
     u_int32_t       ic_wcl_reassoc_owner_active;

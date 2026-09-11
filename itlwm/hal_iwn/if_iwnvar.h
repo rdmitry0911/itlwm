@@ -424,6 +424,7 @@ struct iwn_scan_lease {
     u_int8_t        wnm_target_channel;
     bool            command_submitted;
     bool            abort_requested;
+    bool            abort_submitted;
     /* An upper lifecycle may withdraw its completion ticket while the radio
      * still needs to drain the command.  That only suppresses publication;
      * a reset is the distinct condition which fences all radio work/replay. */

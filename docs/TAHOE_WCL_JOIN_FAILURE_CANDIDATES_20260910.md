@@ -1,5 +1,18 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Physical roam-scan abort checkpoint — 2026-09-11 03:36 UTC
+
+PROGRESS: the accepted roam serial now reaches real IWN/IWM/IWX abort
+reservation; all six IWN abort callers retain the exact physical serial
+through the actual command doorbell. New IWN scan doorbell and IWM/IWX policy
+checks reject changed source epochs. The full Linux aggregate, affected
+macOS suites and Tahoe build pass; UUID `D63CF6F8-85F5-3C98-B3E6-7289BEFD5A19`.
+An unchanged old IWN caller independently reproduces aborting its successor.
+This is built WIP, not loaded/released full-roam qualification. Deferred
+BSS/state/AUTH/key identity and real reference progress/completion remain
+the same active layer; the qualified release remains `97fe747c`.
+See [physical-command implementation and evidence](TAHOE_REASSOC_OWNER_IMPLEMENTATION_20260911.md).
+
 ## Accepted-roam identity implementation — 2026-09-11 03:03 UTC
 
 PROGRESS: common admission and retirement now use a distinct 64-bit roam

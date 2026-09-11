@@ -533,7 +533,8 @@ public:
                 void (*)(struct iwn_softc *, void *), void *);
     void        iwn_scan_abort(struct iwn_softc *);
     static int        iwn_bgscan(struct ieee80211com *, u_int64_t = 0);
-    static int        iwn_wnm_bgscan_abort(struct ieee80211com *);
+    static int        iwn_wnm_bgscan_abort(struct ieee80211com *, u_int64_t = 0);
+    int iwn_scan_abort_command(struct iwn_softc *, u_int64_t);
     void       iwn_rxon_configure_ht40(struct ieee80211com *,
                                         struct ieee80211_node *);
     int        iwn_rxon_ht40_enabled(struct iwn_softc *);

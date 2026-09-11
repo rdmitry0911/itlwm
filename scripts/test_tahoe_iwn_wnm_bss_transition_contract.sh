@@ -69,7 +69,7 @@ order(core_c, "BTM-only physical scan admission",
 order(input_c, "BTM preempts an older background census",
       "ieee80211_wnm_bss_transition_defer_fresh_scan(ic)",
       "ic->ic_bgscan_abort != NULL",
-      "ic->ic_bgscan_abort(ic) == 0",
+      "ic->ic_bgscan_abort(ic, 0) == 0",
       "timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 1)")
 order(core_c, "bounded fresh-scan retry",
       "ieee80211_wnm_bgscan_retry_timeout(void *arg)",
@@ -142,10 +142,20 @@ order(iwn, "BTM exact-channel terminal",
       "(sc->sc_flags & IWN_FLAG_HAS_5GHZ) &&",
       "!wnm_exact_channel")
 order(iwn, "IWN BTM aborts only a live background lease",
-      "iwn_wnm_bgscan_abort(struct ieee80211com *ic)",
+      "iwn_wnm_bgscan_abort(struct ieee80211com *ic, u_int64_t reassoc_serial)",
       "(sc->sc_flags & IWN_FLAG_BGSCAN) == 0",
       "iwn_scan_lease_mark_abort(sc, IWN_SCAN_LEASE_NONE, 0,",
-      "IWN_CMD_SCAN_ABORT")
+      "iwn_scan_abort_command(sc, serial)")
+order(iwn, "physical abort validates the reserved scan at its actual doorbell",
+      "iwn_scan_abort_prepare_doorbell(struct iwn_softc *sc, void *opaque)",
+      "sc->sc_scan_lease.serial == context->serial",
+      "!sc->sc_scan_lease.abort_submitted",
+      "sc->sc_scan_lease.abort_submitted = true;")
+order(iwn, "all aborts use the tagged command sender",
+      "iwn_scan_abort_command(struct iwn_softc *sc, u_int64_t serial)",
+      "iwn_cmd_with_doorbell_hook(sc, IWN_CMD_SCAN_ABORT,",
+      "iwn_scan_abort_prepare_doorbell,",
+      "iwn_scan_abort_finish_doorbell, &context)")
 order(iwn, "BTM retry wins the abort-terminal race",
       "ieee80211_wnm_bss_transition_scan_owns_admission(ic)",
       "if (bgscan != 0 && !wnm_scan &&",

@@ -1057,7 +1057,7 @@ iwm_bgscan(struct ieee80211com *ic, uint64_t reassocSerial)
 }
 
 int ItlIwm::
-iwm_bgscan_abort(struct ieee80211com *ic)
+iwm_bgscan_abort(struct ieee80211com *ic, uint64_t reassocSerial)
 {
     struct iwm_softc *sc;
     ItlIwm *that;
@@ -1067,7 +1067,7 @@ iwm_bgscan_abort(struct ieee80211com *ic)
     that = container_of(sc, ItlIwm, com);
     /* Claim the physical kind and abort together; a replacement foreground
      * command is never part of this cancelled background scan. */
-    return that->iwm_scan_abort(sc, true);
+    return that->iwm_scan_abort(sc, true, reassocSerial);
 }
 
 int ItlIwm::
@@ -1150,11 +1150,11 @@ iwm_lmac_scan_abort(struct iwm_softc *sc, uint64_t serial)
 }
 
 int ItlIwm::
-iwm_scan_abort(struct iwm_softc *sc, bool backgroundOnly)
+iwm_scan_abort(struct iwm_softc *sc, bool backgroundOnly, uint64_t reassocSerial)
 {
     const uint32_t generation = sc->sc_generation;
     uint64_t serial = 0;
-    int error = reserveScanCommandAbort(true, &serial, backgroundOnly);
+    int error = reserveScanCommandAbort(true, &serial, backgroundOnly, reassocSerial);
     if (error != 0 || serial == 0)
         return error;
     uint32_t status = IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;

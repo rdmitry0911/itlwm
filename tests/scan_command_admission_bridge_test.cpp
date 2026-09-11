@@ -290,7 +290,7 @@ template<class Driver, class Phase> static unsigned exercise()
 
 template<class Driver> static unsigned reassoc_admission()
 {
-    for (unsigned mutation=0; mutation<5; ++mutation) {
+    for (unsigned mutation=0; mutation<7; ++mutation) {
         Driver d; assert(d.reopenScanCommands(0,7));
         auto &ic=d.com.sc_ic;
         ic.ic_wcl_reassoc_owner_active=1;
@@ -299,18 +299,20 @@ template<class Driver> static unsigned reassoc_admission()
         const auto owner=ic.ic_wcl_reassoc_owner_serial;
         if (mutation==1) ++ic.ic_wcl_reassoc_owner_serial;
         if (mutation==2) ic.ic_wcl_reassoc_owner_active=0;
+        if (mutation==5) ++ic.ic_pae_assoc_epoch;
         assert(d.reserveScanCommand(true,true,&serial,nullptr,owner)==
-            ((mutation==1 || mutation==2)?ECANCELED:0));
-        if (mutation==1 || mutation==2) { assert(!d.scanCommand.live()); continue; }
+            ((mutation==1 || mutation==2 || mutation==5)?ECANCELED:0));
+        if (mutation==1 || mutation==2 || mutation==5) { assert(!d.scanCommand.live()); continue; }
         assert(d.scanCommand.command.reassocSerial==owner);
         assert(d.scanCommandPolicy.reassocSerial==owner);
         if (mutation==3) ++ic.ic_wcl_reassoc_owner_serial;
         if (mutation==4) ic.ic_wcl_reassoc_owner_active=0;
+        if (mutation==6) ++ic.ic_wcl_reassoc_source_epoch;
         ItlScanCommandPolicy copy{};
         assert(d.copyScanCommandPolicy(serial,&copy)==(mutation==0));
         assert(d.scanCommand.command.reassocSerial==owner);
     }
-    return 5;
+    return 7;
 }
 
 int main()

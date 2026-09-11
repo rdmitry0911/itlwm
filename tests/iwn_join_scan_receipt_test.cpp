@@ -100,6 +100,24 @@ public:
 
 int main() {
     unsigned int cases = 0;
+    for (bool directSae : {false, true}) {
+        IOSimpleLock lock;
+        iwn_softc sc;
+        sc.sc_scan_lease_lock = &lock;
+        sc.sc_ic.ic_if.if_softc = &sc;
+        sc.sc_scan_lease_next_serial = UINT64_MAX;
+        sc.sc_sae_wcl_admission_reserved = directSae;
+        sc.sc_sae_wcl_admission_requires_fresh_scan = directSae;
+        uint64_t serial = 0;
+        assert(!iwn_scan_lease_reserve(&sc, IWN_SCAN_LEASE_GENERIC_FOREGROUND,
+            0, 0, nullptr, &serial, directSae ? 17 : 0, 0));
+        assert(serial == 0 && sc.sc_scan_lease_next_serial == UINT64_MAX);
+        assert(!iwn_scan_lease_live_locked(&sc));
+        assert(sc.sc_sae_wcl_admission_reserved == directSae);
+        assert(sc.sc_sae_wcl_admission_requires_fresh_scan == directSae);
+        assert(sc.sc_sae_join_scan_block_generation == 0);
+        ++cases;
+    }
     for (unsigned int owner = IWN_SCAN_LEASE_GENERIC_FOREGROUND;
          owner <= IWN_SCAN_LEASE_STANDARD_CONTROLLER; owner++) {
         for (unsigned int outcome = 0; outcome < 5; outcome++) {
