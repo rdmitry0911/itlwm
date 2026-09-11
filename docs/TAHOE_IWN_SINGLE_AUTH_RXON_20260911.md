@@ -1,6 +1,6 @@
 # One owned target RXON for STA authentication
 
-Status: production candidate loaded; native two-direction RF pairs before
+Status: production candidate loaded and published as a limited alpha; native two-direction RF pairs before
 and after S3 pass target admission, with retained packet loss and one failed
 post-S3 discovery. Post-S3 AP, native STA and exact-image SA Query controls
 have completed. The final restored-link check failed its zero-loss gate
@@ -114,8 +114,9 @@ Trace SHA256: return
 `d669a9c7e5ed6696d37ec863fee58d947ad89147176920be6b1ff0e80a6b5042`;
 departure `dc3c4d53f286f58c5ffa503edb6dac05d141aec2f74004a3febfc8b4b9c57cba`.
 The following sections retain actual S3, repeated post-wake native roaming,
-normal open/WPA2/AP controls and the remaining failures. The current public
-release remains ee501d78; this candidate is not yet its downloadable image.
+normal open/WPA2/AP controls and the remaining failures. At this first-pair
+checkpoint the public release was still ee501d78. The eventual exact-image
+publication is recorded below; no earlier observation is relabelled.
 
 ## Real S3, post-wake roaming and guest AP
 
@@ -303,6 +304,24 @@ does not include the new recovery. The release warning must retain both the
 first-request discovery failure and all three observed lossy final/diagnostic
 checks (20/18,19/20,249/250 forward as described above), alongside the distinct
 clean q3 control. No driver code changed during the subsequent diagnostics.
+
+## Verified publication
+
+The qualification report was committed/pushed as0b8c5609. At21:29:36--21:29:51UTC
+the exact prepared ZIP replaced the asset in
+[v2.4.0-alpha](https://github.com/rdmitry0911/itlwm/releases/tag/v2.4.0-alpha),
+title `AirportItlwm Tahoe v2.4.0-alpha (f170870d)`, asset ID558047145.
+API digest/size match187a1a65cdc1e0fa5ce94c8ba067094c6e9ce057a94559c9cb0ae6d4845779cb
+and15,688,990bytes. A separate complete download compares byte-for-byte equal
+to the installed/tested archive. The current warning retains the failed
+zero-loss and discovery checks; full WPA3/reconnect qualification is not claimed.
+
+Publication/readback receipts and the previous DCCB archive are outside the
+immutable534-file evidence root:
+`/home/dima/Projects/itlwm/aiam-single-rxon-release-20260911.4dg4NN`.
+The old ZIP is preserved as previous-DCCB.kext.zip for recovery. Release history
+was retained under the new current-image section. This publication completes
+the two changes' alpha delivery, not the full functional-parity goal.
 
 Healthy trace SHA256:
 `4f724e390771ab7c9fd3a88472dbbfc8cf3c37b7a4d364998700389e7498b390`.
