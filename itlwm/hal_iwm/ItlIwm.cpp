@@ -833,7 +833,8 @@ iwm_assoc_comeback_task(void *arg)
         (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
         ic->ic_assoc_comeback_pending && ic->ic_bss != NULL &&
         ieee80211_pae_assoc_epoch_current(ic) == retry.association_epoch &&
-        IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, retry.bssid)) {
+        IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, retry.bssid) &&
+        ieee80211_assoc_comeback_retry_ready(ic, &retry) == 0) {
         in = (struct iwm_node *)ic->ic_bss;
         duration_tu = in->in_ni.ni_intval != 0 ?
             in->in_ni.ni_intval * 9U : 900U;

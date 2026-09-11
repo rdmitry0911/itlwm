@@ -3162,7 +3162,9 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
          * Preserve this exact selected BSS, association epoch, and SAE PMK
          * until the AP-advertised comeback interval expires. */
         if (ieee80211_assoc_comeback_parse(frm + 2,
-            (size_t)(efrm - (frm + 2)), &comeback)) {
+            (size_t)(efrm - (frm + 2)), &comeback) &&
+            ieee80211_assoc_comeback_set_deadline(ic,
+                comeback.timeout_tu) == 0) {
             ic->ic_assoc_comeback_tu = comeback.timeout_tu;
             ic->ic_assoc_comeback_reassoc = reassoc != 0;
             ic->ic_assoc_comeback_retries++;
@@ -3174,6 +3176,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     }
     if (status == IEEE80211_STATUS_SUCCESS) {
         ic->ic_assoc_comeback_tu = 0;
+        ic->ic_assoc_comeback_deadline = 0;
         ic->ic_assoc_comeback_pending = 0;
         ic->ic_assoc_comeback_reassoc = 0;
         ic->ic_assoc_comeback_retries = 0;

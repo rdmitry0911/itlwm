@@ -65,6 +65,7 @@ ordered(
     "status-30 preservation precedes the terminal association fence",
     "status == IEEE80211_STATUS_TRY_AGAIN_LATER",
     "ieee80211_assoc_comeback_parse",
+    "ieee80211_assoc_comeback_set_deadline(ic,",
     "ic->ic_assoc_comeback_pending = 1",
     "ic->ic_mgt_timer = (int)comeback.timeout_seconds",
     "return;",
@@ -78,10 +79,16 @@ ordered(
     watchdog,
     "immutable lower retry handoff precedes timeout cancellation",
     "ic->ic_assoc_comeback_pending",
+    "ic->ic_assoc_comeback_deadline != 0",
+    "clock_get_uptime(&now)",
+    "now < ic->ic_assoc_comeback_deadline",
+    "ic->ic_mgt_timer = 1",
+    "goto done;",
     "IEEE80211_FC0_SUBTYPE_REASSOC_REQ",
     "IEEE80211_FC0_SUBTYPE_ASSOC_REQ",
     "retry.association_epoch",
     "retry.timeout_tu",
+    "retry.not_before = ic->ic_assoc_comeback_deadline",
     "IEEE80211_ADDR_COPY(retry.bssid",
     "retry.subtype",
     "retry.retry",
@@ -91,6 +98,19 @@ ordered(
     "ieee80211_pae_assoc_epoch_begin(ic)",
     "ieee80211_wcl_reassoc_post_failure",
 )
+if "ieee80211_assoc_comeback_set_deadline" in watchdog:
+    fail("watchdog renews the AP's original minimum deadline")
+
+current = body(ieee_c, "static int\nieee80211_assoc_comeback_retry_current(",
+               "exact delayed retry identity")
+ordered(current, "deadline is part of the exact retry identity",
+        "retry->not_before == 0",
+        "retry->not_before != ic->ic_assoc_comeback_deadline")
+ready = body(ieee_c, "int\nieee80211_assoc_comeback_retry_ready(",
+             "minimum deadline admission")
+ordered(ready, "identity precedes monotonic deadline admission",
+        "ieee80211_assoc_comeback_retry_current(ic, retry)",
+        "clock_get_uptime(&now)", "now < retry->not_before ? EAGAIN : 0")
 
 complete = body(
     ieee_c,
@@ -100,9 +120,12 @@ complete = body(
 ordered(
     complete,
     "exact identity validation precedes delayed descriptor publication",
-    "ieee80211_assoc_comeback_retry_current(ic, retry)",
+    "ieee80211_assoc_comeback_retry_ready(ic, retry)",
+    "if (error != 0)",
+    "return error;",
     "ic->ic_assoc_comeback_pending = 0",
     "ic->ic_assoc_comeback_tu = 0",
+    "ic->ic_assoc_comeback_deadline = 0",
     "IEEE80211_SEND_MGMT(ic, ic->ic_bss, retry->subtype, 0)",
 )
 
@@ -126,7 +149,7 @@ retry_record = body(
     "immutable association retry record",
 )
 for token in (
-    "association_epoch", "timeout_tu", "bssid", "subtype", "retry"
+    "association_epoch", "not_before", "timeout_tu", "bssid", "subtype", "retry"
 ):
     if token not in retry_record:
         fail(f"immutable retry record missing {token}")
@@ -142,6 +165,7 @@ ordered(
     newstate,
     "state transition clears delayed comeback owner before publication",
     "ic->ic_assoc_comeback_tu = 0",
+    "ic->ic_assoc_comeback_deadline = 0",
     "ic->ic_assoc_comeback_pending = 0",
     "ic->ic_assoc_comeback_reassoc = 0",
     "ic->ic_assoc_comeback_retries = 0",

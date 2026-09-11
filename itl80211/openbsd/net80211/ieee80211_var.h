@@ -745,6 +745,7 @@ struct ItlSaeAuthPeerEventV1;
  */
 struct ieee80211_assoc_comeback_retry {
 	u_int64_t	association_epoch;
+	u_int64_t	not_before; /* kernel absolute-time deadline */
 	u_int32_t	timeout_tu;
 	u_int8_t	bssid[IEEE80211_ADDR_LEN];
 	u_int8_t	subtype;
@@ -1147,6 +1148,7 @@ struct ieee80211com {
 	/* A status-30 response may preserve the selected BSS and SAE PMK while
 	 * its bounded Association Comeback Time expires. */
 	u_int32_t		ic_assoc_comeback_tu;
+	u_int64_t		ic_assoc_comeback_deadline; /* kernel absolute time */
 	u_int8_t		ic_assoc_comeback_pending;
 	u_int8_t		ic_assoc_comeback_reassoc;
 	u_int8_t		ic_assoc_comeback_retries;

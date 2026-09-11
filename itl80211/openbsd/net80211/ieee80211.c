@@ -55,6 +55,7 @@
 #include <sys/endian.h>
 #include <sys/errno.h>
 #include <sys/sysctl.h>
+#include <kern/clock.h>
 
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -1562,6 +1563,20 @@ ieee80211_media_status(struct _ifnet *ifp, struct ifmediareq *imr)
     }
 }
 
+int
+ieee80211_assoc_comeback_set_deadline(struct ieee80211com *ic,
+    u_int32_t timeout_tu)
+{
+    u_int64_t timeout_us = (u_int64_t)timeout_tu * 1024U;
+
+    if (ic == NULL || timeout_us == 0 || timeout_us >
+        (u_int64_t)IEEE80211_ASSOC_COMEBACK_MAX_WAIT_SECONDS * 1000000U)
+        return EINVAL;
+    clock_interval_to_deadline((u_int32_t)timeout_us, kMicrosecondScale,
+        &ic->ic_assoc_comeback_deadline);
+    return 0;
+}
+
 void
 ieee80211_watchdog(struct _ifnet *ifp)
 {
@@ -1579,11 +1594,23 @@ ieee80211_watchdog(struct _ifnet *ifp)
          * ieee80211_send_mgmt() arms the ordinary response timeout. */
         if (ic->ic_opmode == IEEE80211_M_STA &&
             ic->ic_assoc_comeback_pending && ic->ic_bss != NULL &&
+            ic->ic_assoc_comeback_deadline != 0 &&
             ((!ic->ic_assoc_comeback_reassoc &&
               ic->ic_state == IEEE80211_S_ASSOC) ||
              (ic->ic_assoc_comeback_reassoc &&
               ic->ic_state == IEEE80211_S_RUN &&
               ic->ic_wcl_reassoc_owner_active))) {
+            u_int64_t now;
+
+            /* The shared watchdog tick can occur immediately after RX.
+             * Its integer tick count is not elapsed time since the AP's
+             * response. Preserve the original monotonic deadline while
+             * waiting; do not renew it on each tick or touch the SAE PMK. */
+            clock_get_uptime(&now);
+            if (now < ic->ic_assoc_comeback_deadline) {
+                ic->ic_mgt_timer = 1;
+                goto done;
+            }
             int subtype = ic->ic_assoc_comeback_reassoc ?
                 IEEE80211_FC0_SUBTYPE_REASSOC_REQ :
                 IEEE80211_FC0_SUBTYPE_ASSOC_REQ;
@@ -1593,6 +1620,7 @@ ieee80211_watchdog(struct _ifnet *ifp)
 			retry.association_epoch =
 			    ieee80211_pae_assoc_epoch_current(ic);
 			retry.timeout_tu = ic->ic_assoc_comeback_tu;
+			retry.not_before = ic->ic_assoc_comeback_deadline;
 			IEEE80211_ADDR_COPY(retry.bssid, ic->ic_bss->ni_bssid);
 			retry.subtype = (u_int8_t)subtype;
 			retry.retry = ic->ic_assoc_comeback_retries;
@@ -1606,6 +1634,7 @@ ieee80211_watchdog(struct _ifnet *ifp)
 				explicit_bzero(&retry, sizeof(retry));
 				ic->ic_assoc_comeback_pending = 0;
 				ic->ic_assoc_comeback_tu = 0;
+				ic->ic_assoc_comeback_deadline = 0;
 				ic->ic_assoc_status = 0xffff;
 				if (IEEE80211_SEND_MGMT(ic, ic->ic_bss, subtype, 0) == 0)
 					goto done;
@@ -1680,6 +1709,8 @@ ieee80211_assoc_comeback_retry_current(struct ieee80211com *ic,
 	    !ic->ic_assoc_comeback_pending || ic->ic_bss == NULL ||
 	    retry->association_epoch == 0 ||
 	    ieee80211_pae_assoc_epoch_current(ic) != retry->association_epoch ||
+	    retry->not_before == 0 ||
+	    retry->not_before != ic->ic_assoc_comeback_deadline ||
 	    retry->timeout_tu == 0 ||
 	    retry->timeout_tu != ic->ic_assoc_comeback_tu ||
 	    retry->retry == 0 || retry->retry != ic->ic_assoc_comeback_retries ||
@@ -1696,6 +1727,18 @@ ieee80211_assoc_comeback_retry_current(struct ieee80211com *ic,
 }
 
 int
+ieee80211_assoc_comeback_retry_ready(struct ieee80211com *ic,
+    const struct ieee80211_assoc_comeback_retry *retry)
+{
+	u_int64_t now;
+
+	if (!ieee80211_assoc_comeback_retry_current(ic, retry))
+		return ENOENT;
+	clock_get_uptime(&now);
+	return now < retry->not_before ? EAGAIN : 0;
+}
+
+int
 ieee80211_assoc_comeback_retry_abort(struct ieee80211com *ic,
     const struct ieee80211_assoc_comeback_retry *retry, int error)
 {
@@ -1704,6 +1747,7 @@ ieee80211_assoc_comeback_retry_abort(struct ieee80211com *ic,
 
 	ic->ic_assoc_comeback_pending = 0;
 	ic->ic_assoc_comeback_tu = 0;
+	ic->ic_assoc_comeback_deadline = 0;
 	ic->ic_assoc_status = 0xffff;
 	if (retry->subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ)
 		ieee80211_wcl_reassoc_post_failure(ic,
@@ -1719,19 +1763,22 @@ ieee80211_assoc_comeback_retry_complete(struct ieee80211com *ic,
 {
 	int error;
 
-	if (!ieee80211_assoc_comeback_retry_current(ic, retry))
-		return ENOENT;
+	error = ieee80211_assoc_comeback_retry_ready(ic, retry);
+	if (error != 0)
+		return error;
 
 	/* The lower lease is live now.  Publish the management descriptor only
 	 * after the immutable association identity has been revalidated. */
 	ic->ic_assoc_comeback_pending = 0;
 	ic->ic_assoc_comeback_tu = 0;
+	ic->ic_assoc_comeback_deadline = 0;
 	ic->ic_assoc_status = 0xffff;
 	error = IEEE80211_SEND_MGMT(ic, ic->ic_bss, retry->subtype, 0);
 	if (error != 0) {
 		/* Restore only the values required by abort()'s exact identity gate. */
 		ic->ic_assoc_comeback_pending = 1;
 		ic->ic_assoc_comeback_tu = retry->timeout_tu;
+		ic->ic_assoc_comeback_deadline = retry->not_before;
 		(void)ieee80211_assoc_comeback_retry_abort(ic, retry, error);
 	}
 	return error;

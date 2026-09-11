@@ -76,6 +76,10 @@ struct ieee80211_assoc_comeback_retry;
 
 extern	void ieee80211_proto_attach(struct _ifnet *);
 extern	void ieee80211_proto_detach(struct _ifnet *);
+extern	int ieee80211_assoc_comeback_set_deadline(struct ieee80211com *,
+	    u_int32_t);
+extern	int ieee80211_assoc_comeback_retry_ready(struct ieee80211com *,
+	    const struct ieee80211_assoc_comeback_retry *);
 extern	int ieee80211_assoc_comeback_retry_complete(struct ieee80211com *,
 	    const struct ieee80211_assoc_comeback_retry *);
 extern	int ieee80211_assoc_comeback_retry_abort(struct ieee80211com *,

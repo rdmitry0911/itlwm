@@ -84,6 +84,7 @@ for family, source, callback_marker, task_marker, protection, drain in (
         "generation == sc->sc_generation",
         "ieee80211_pae_assoc_epoch_current(ic) == retry.association_epoch",
         "IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, retry.bssid)",
+        "ieee80211_assoc_comeback_retry_ready(ic, &retry) == 0",
         "duration_tu = MAX(duration_tu, 900U)",
         protection,
         "ieee80211_assoc_comeback_retry_complete(ic, &retry)",

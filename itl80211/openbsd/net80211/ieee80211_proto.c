@@ -5860,6 +5860,7 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 	 * association request.  The watchdog retry deliberately sends directly
 	 * and therefore retains its retry count until success or failure. */
 	ic->ic_assoc_comeback_tu = 0;
+	ic->ic_assoc_comeback_deadline = 0;
 	ic->ic_assoc_comeback_pending = 0;
 	ic->ic_assoc_comeback_reassoc = 0;
 	ic->ic_assoc_comeback_retries = 0;
