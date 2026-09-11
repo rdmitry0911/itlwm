@@ -959,7 +959,10 @@ ordered(rx_done, "IWN RX trace follows FCS and length validation",
         "if (len < sizeof (*wh) &&",
         "kAirportItlwmPostPltiTraceEventAuthRxFromFirmware")
 
-end_scan = body(node, "void\nieee80211_end_scan", "net80211 scan completion")
+end_scan = body(node, "void\nieee80211_end_scan_owned(", "net80211 owned scan completion")
+ordered(end_scan, "scan trace follows exact physical-owner admission",
+        "ieee80211_wcl_reassoc_scan_completion_begin(ic, reassoc_serial)",
+        "kAirportItlwmPostPltiTraceEventScanCompleted")
 for needle in (
         "kAirportItlwmPostPltiTraceEventScanCompleted",
         "kAirportItlwmPostPltiTraceEventSelectionHeld",
@@ -1030,6 +1033,9 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventAssocEnqueued",
 ):
     require(mgmt_output, needle, "accepted management enqueue")
+ordered(mgmt_output, "discarded management neither starts TX nor arms interface timer",
+        "if (enqueue_dropped != 0)", "return ENOBUFS;",
+        "ifp->if_timer = 1;", "ifp->if_start(ifp);")
 recv_auth = body(input_source, "void\nieee80211_recv_auth", "net80211 auth RX")
 require(recv_auth, "kAirportItlwmPostPltiTraceEventAuthRxNet80211",
         "net80211 auth ingress")

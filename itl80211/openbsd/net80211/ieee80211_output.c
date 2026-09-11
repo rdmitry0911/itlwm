@@ -312,6 +312,11 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
                 (ic->ic_caps & IEEE80211_C_WNM_BSS_TRANSITION) != 0,
                 enqueue_dropped ? 0 : 1, enqueue_dropped);
         }
+        /* mq_enqueue already consumed/freed a rejected packet, but not
+         * its node reference. Return ownership to the caller's error path:
+         * no TX completion will arrive to release it or justify a timer. */
+        if (enqueue_dropped != 0)
+            return ENOBUFS;
         ifp->if_timer = 1;
         ifp->if_start(ifp);
         return 0;
