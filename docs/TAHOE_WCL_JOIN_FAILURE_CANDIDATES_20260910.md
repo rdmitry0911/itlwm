@@ -1,5 +1,25 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Loaded peer-failure checkpoint — 2026-09-11 01:33 UTC
+
+PROGRESS: `97fe747c` plus test-only `5e7a6735` is built and loaded on real
+IWN/6235, UUID `69D766FF-86F9-3337-ADE0-48361B68A59C`, boot
+`02DED0EA-E840-4DAE-BED2-1067761106C1`. Private admission and activation passed.
+Two fresh AUTH generations (2 and 4) consumed actual empty-body status-1 SAE
+Confirm rejections, completed producer/lower/SAE cleanup (1/2/4), published
+one failure each and proceeded to successful SAE on another BSS of the same
+SSID. Native DHCP publication and subsequent independent 20/20 forward and
+reverse traffic checks confirm service recovery without another join, toggle
+or reboot. The complete observer and watcher both terminated successfully.
+
+This is not full candidate-policy closure: the same run revisited the bad
+AP, and reassociation's separate 0x49 failure owner remains outstanding.
+Exact-image GUI/S3/AP regressions are next, then qualified release promotion.
+The public artifact remains `b5c6cfd8`. AUTH/ASSOC/key timeout producers and
+remaining IWM/IWX lifetimes/hardware qualification stay in the full objective.
+See [the exact-image report](TAHOE_SAE_PEER_FAILURE_20260911.md) for identities,
+actual probe scope, setup failures excluded from RF counts and evidence hashes.
+
 ## FIX_CANDIDATE — real SAE peer rejection, 2026-09-11 00:56 UTC
 
 The correctly timed `night4d-auth5` observer ran to its real 90-second terminal
