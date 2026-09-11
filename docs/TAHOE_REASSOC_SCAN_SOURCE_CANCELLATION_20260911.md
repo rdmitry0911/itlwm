@@ -289,3 +289,74 @@ discarding partial work. The retained working17b copy and all backing disks
 remain local and unchanged. A separate recovery note was saved in the remote
 archive as well as the runtime root, so the full-filesystem interval does not
 leave the procedure dependent on the live conversation alone.
+
+### Storage recovery completed
+
+The original large transfer returned zero. Its remote full length11876827136
+and SHA-256 `7e9b841dfd6b1c9fa9945beff6746b3ede9c3236b00e102360a3cd3b95e62eec`
+match the independently repeated local hash. A fresh372-image canonicalized
+backing census found no child; final fuser was empty and qemu-img reported a
+clean, non-corrupt image. Census SHA-256:
+`bf18c3cb7f5cde7e588397d0f726c4eb0a12bbc2c1522efa307c057d54bdc91c`.
+Only `/home/dima/Projects/itlwm/iwn-sae-pmf-lab-20260726a/tahoe-pmf-runtime.qcow2`
+was removed at12:57 UTC. Its exact basename and three independently verified
+companion files remain in the same remote archive; local companions, working17b
+and every backing disk remain untouched. Host available space became7.27GB.
+
+The exact owned QEMU resumed and cleared its block I/O error. After the long
+pause, Wi-Fi was inactive and the GUI was gray. The preserved serial tail
+includes firmware missed-beacon/reset recovery and association status40;
+this interrupted interval is not counted as a clean reconnect experiment.
+A normal guest reboot then loaded the unchanged candidate in boot
+`1FDDC5CE-5121-473D-85C7-40660E9336DD`. WPA3 auto-join obtained DHCP at13:00:15.
+Initial1400-byte traffic was19/20 in both directions, maximum549.761/683.251ms;
+the losses remain recorded and are not a passed zero-loss gate.
+
+Actual GUI selection of saved WPA2 at13:04:04.757 obtained DHCP at13:04:11,
+172.16.66.212, with20/20 in both directions (maximum347.921/239.908ms).
+Actual GUI return to saved WPA3 at13:05:27.336 obtained DHCP at13:05:36,
+172.16.66.219, with20/20 both ways (maximum276.447/220.925ms). No CLI join or
+radio reset initiated those selections. GUI off at13:06:13.542 was separately
+read back as Off/inactive. GUI on at13:06:59.417 automatically restored WPA3
+DHCP at13:07:07, but traffic was19/20 forward and20/20 reverse; retain that
+failed zero-loss gate separately from restored service.
+
+The controlled open AP appeared in Known Networks and was selected by its
+actual Connect button. DHCP at13:09:30 assigned192.168.73.26; security readback
+was NONE and1400-byte traffic passed20/20 in both directions, maximum
+151.706/132.765ms. Separate GUI off at13:10:25.847 was read back as Off/inactive.
+GUI on at13:11:09.531 automatically restored this same open profile with DHCP
+at13:11:11; traffic passed20/20 both ways, maximum171.185/79.962ms. No explicit
+network reselection followed either on action. The open fixture received an
+exact-controller TERM at13:12:27; its trap completed normal restoration with
+result0 at13:12:32. The controller's130 exit records that intentional TERM,
+not a cleanup failure. Host AX211 returned to172.16.66.226 and the wired
+default route remained unchanged. No post-S3 GUI claim is added.
+
+Without another join or radio toggle, WPA3 DHCP returned at13:12:40. The first
+post-removal traffic check was18/20 forward and20/20 reverse, maximum
+333.201/192.845ms. This proves restored service but is another failed zero-loss
+gate, not a seamless failover result. A frozen6702-line interval of the new
+boot has no matched driver panic, firmware fatal/error, device/watchdog timeout,
+unset-key, TX-gate or supersede-busy diagnostic. Its SHA-256 is
+`e37b1c5661f0a4aef7ab42c5941a3a1b0ac11db9f4a9d987b0659409b034d6c1`.
+The full interrupted-boot serial checkpoint remains separately preserved.
+After an ordinary quit of System Settings, a separate settled check passed
+20/20 both ways, maximum117.513/31.101ms, without another join, toggle or reboot.
+This single comparison does not establish why the preceding packets were lost.
+
+All353 production-manifest files were reverified in both canonical source
+and the macOS build mirror before packaging. The complete private preflight
+bundle byte-compares equal to the installed bundle; a normalized ZIP extracted
+into a separate stage also compares equal. Its Mach-O remains UUID412FE602
+and SHA-256883a37a2 above. Prepared ZIP SHA-256:
+`0978d13439d8907614a1ea2af2baa79ebfeee808d12ab9f71efdb6573163b93a`.
+The previous public ZIP was independently downloaded and matches its recorded
+`c2dd6a08...` hash. Preparation is not publication; the public asset is still
+unchanged at this checkpoint.
+
+The140 terminal cold-GUI, storage-recovery, readback and packaging evidence
+files are bound by `evidence-gui-cold.sha256`, SHA-256
+`709289ed0d89814c8c43f8f33e7636a46babd1a8979e85a0513599f5cbc5d692`.
+Its entries were checked again after sealing. This does not replace the
+separate pre/post-S3 STA and AP manifests or erase any earlier failed probe.
