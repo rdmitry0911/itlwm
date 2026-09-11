@@ -131,6 +131,10 @@ struct iwn_sae_engine_owner {
     u_int64_t                         association_epoch;
     u_int64_t                         relay_generation;
     u_int64_t                         in_flight_ticket;
+    u_int64_t                         join_attempt_generation;
+    /* Common JoinAdapter request, distinct from the SAE credential request.
+     * Retain it through cancellation until physical lower cleanup retires. */
+    u_int64_t                         join_failure_generation;
     struct ItlSaeSelectedJoinEventV1  selected;
     struct ItlSaeAuthActivatedEventV1 activated;
     struct ItlSaePmkContinuationIdentityV1 completion;

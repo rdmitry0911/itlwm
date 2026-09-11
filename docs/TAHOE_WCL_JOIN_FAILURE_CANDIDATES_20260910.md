@@ -1,5 +1,52 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## FIX_CANDIDATE — real SAE peer rejection, 2026-09-11 00:56 UTC
+
+The correctly timed `night4d-auth5` observer ran to its real 90-second terminal
+with zero diagnostic errors on loaded `4d979f3b`, boot
+`D946CBDB-621A-4524-9D0C-4E3FE52C1E88`. Three actual Confirm rejection frames
+reached the in-kext engine: epochs 32, 54 and 69, status 1, zero-length body,
+and return `PEER_AP_REJECT` (4). Each was followed by worker retirement with
+request_scan=1, not an AUTH join-failure producer. A distinct discovery failure
+did call the common producer with NO_NETWORKS (5). An intervening valid AP
+completed SAE at epoch 53. This rules out the proposed short-frame/6235 RX
+limitation for this reproduced rejection; it does not qualify all PMF paths.
+
+The preceding auth3 request was explicitly EBUSY. Auth4 was accepted but its
+scan ended NO_ELIGIBLE_TARGET and no authentication occurred. Neither is a
+negative SAE-delivery test. Auth5 kept the actual AP beaconing for 15 seconds
+before the accepted request and observed the whole exchange; no synthetic
+driver event or retry of an accepted request was used. All fixtures terminated
+and restored host managed Wi-Fi; the wired management route was preserved.
+
+Reference route: re-express the recovered 25C56 JoinAdapter handleAuth and
+sendConnectComplete contract using the existing local request/cleanup ledger.
+Retain the real peer status for an exactly matching fresh AUTH candidate.
+Claim it under selected-BSS then engine leaves, retain its join generation in
+the cancelled engine owner, and request the existing generation-owned lower
+cleanup instead of starting an autonomous replacement scan. Acknowledge the
+producer only after local peer/PMK/terminal values are scrubbed; lower and SAE
+owners keep their independent actual retirement acknowledgements. Test the
+complete production worker/retirement path, stale/replaced owners, malformed
+local crypto outcomes, successful traffic and deferred cleanup. Do not invent
+an AUTH failure for an ownerless reassociation: its separate 0x49 lifetime,
+actual timeouts, other AUTH/ASSOC/key producers and IWM/IWX qualification remain
+part of the full objective after this candidate-specific producer is tested.
+
+The implementation captures the distinct common join generation when the SAE
+producer is admitted, then rechecks it when consuming the real engine result.
+The complete production worker, claim, cancellation and retirement functions
+pass 19 ASan/UBSan execution scenarios on Linux: received statuses 1/77,
+local crypto/method failure without invented peer status, stale peer/BSS/SSID,
+closed admission, replacement during crypto and during credential cleanup,
+delayed TX terminal retirement, DROP/TX_READY controls and duplicate completion.
+The exact pre-fix worker from `4d979f3b` independently compiles and fails the
+missing-producer assertion with exit 134. Lower firmware completion, crypto
+outcomes and task scheduling are explicit fixture boundaries, not simulated RF
+qualification. The existing join bridge/physical cleanup/controller dispatch
+tests and complete Linux payload aggregate also pass. macOS build, admission,
+loaded-image test and publication remain pending at this source checkpoint.
+
 ## Loaded runtime checkpoint — 2026-09-11 00:37 UTC
 
 PROGRESS: source `4d979f3b` is now loaded on the real IWN/6235 in a new

@@ -3181,14 +3181,17 @@ iwn_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct ItlSaeSelectedJoinEventV1 selected;
     struct ItlSaeAuthActivatedEventV1 activated;
     struct IwnSaeEngineCancellation cancel;
+    struct ieee80211_join_failure join_request;
     struct iwn_sae_engine_owner *owner;
     u_int64_t relay_generation = 0;
+    u_int64_t join_attempt_generation = 0;
     int held = 0;
 
     explicit_bzero(&bound, sizeof(bound));
     explicit_bzero(&selected, sizeof(selected));
     explicit_bzero(&activated, sizeof(activated));
     explicit_bzero(&cancel, sizeof(cancel));
+    explicit_bzero(&join_request, sizeof(join_request));
     if (ic == NULL || ni == NULL)
         goto out;
     sc = (struct iwn_softc *)ic->ic_softc;
@@ -3237,6 +3240,16 @@ iwn_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (!itl_sae_selected_join_event_is_well_formed(&selected))
         goto leave;
 
+    /* Snapshot the separately accepted JoinAdapter request at producer
+     * admission, not when an eventual peer result is consumed. A newer
+     * request naming the same BSS cannot inherit this engine's outcome. */
+    if (ieee80211_wcl_join_copy_current(ic, bound.association_epoch,
+            &join_request) && join_request.phase == IEEE80211_JOIN_AUTH &&
+        join_request.ssid_len == selected.ssid_len &&
+        IEEE80211_ADDR_EQ(join_request.bssid, selected.bssid) &&
+        memcmp(join_request.ssid, selected.ssid, selected.ssid_len) == 0)
+        join_attempt_generation = join_request.generation;
+
     IOSimpleLockLock(sc->sc_sae_engine_lock);
     owner = &sc->sc_sae_engine_owner;
     /* A queued lower SCAN may outlive the failed worker which retained this
@@ -3271,6 +3284,7 @@ iwn_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
             owner->request_generation = selected.request_generation;
             owner->association_epoch = selected.association_epoch;
             owner->relay_generation = relay_generation;
+            owner->join_attempt_generation = join_attempt_generation;
             owner->selected = selected;
             owner->activated = activated;
             held = 1;
@@ -3296,6 +3310,7 @@ iwn_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
 leave:
     iwn_sae_engine_callback_leave(sc);
 out:
+    explicit_bzero(&join_request, sizeof(join_request));
     explicit_bzero(&cancel, sizeof(cancel));
     explicit_bzero(&activated, sizeof(activated));
     explicit_bzero(&selected, sizeof(selected));
@@ -3523,6 +3538,61 @@ iwn_sae_engine_reopen_if_current(struct iwn_softc *sc,
         expected_generation);
 }
 
+/* The crypto worker has consumed a real peer value. Claim only the fresh
+ * JoinAdapter AUTH request which still owns this exact engine/BSS/epoch.
+ * Reassociation has a separate completion owner and must not acquire a
+ * fabricated fresh-join ledger here. No callback runs under either leaf. */
+static u_int64_t
+iwn_sae_engine_claim_peer_failure(struct iwn_softc *sc,
+    struct ieee80211_sae_engine *engine,
+    const struct ItlSaeAuthPeerEventV1 *peer,
+    enum ieee80211_sae_engine_peer_result result)
+{
+    IOSimpleLock *bss_lock;
+    IOInterruptState irq;
+    u_int64_t generation = 0;
+
+    if (sc == NULL || engine == NULL || peer == NULL ||
+        sc->sc_sae_engine_lock == NULL ||
+        (bss_lock = sc->sc_ic.ic_pae_selected_bss_lock) == NULL ||
+        (result != IEEE80211_SAE_ENGINE_PEER_AP_REJECT &&
+         result != IEEE80211_SAE_ENGINE_PEER_ABORT))
+        return 0;
+    irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    auto *owner = &sc->sc_sae_engine_owner;
+    auto *attempt = &sc->sc_ic.ic_wcl_join_attempt;
+    const bool peer_rejected = result == IEEE80211_SAE_ENGINE_PEER_AP_REJECT &&
+        peer->auth_status != 0;
+    if (sc->sc_ic.ic_opmode == IEEE80211_M_STA &&
+        sc->sc_sae_engine == engine && !owner->cancelled &&
+        !owner->suppress_scan && !sc->sc_sae_engine_stopping &&
+        !sc->sc_sae_engine_detaching && !owner->completion_claimed &&
+        owner->join_failure_generation == 0 &&
+        owner->join_attempt_generation != 0 &&
+        owner->join_attempt_generation == attempt->result.generation &&
+        iwn_sae_engine_owner_matches_peer_locked(sc, peer) &&
+        iwn_sae_engine_peer_owner_current_locked(sc, owner) &&
+        attempt->phase == IEEE80211_JOIN_AUTH &&
+        attempt->result.association_epoch == owner->association_epoch &&
+        attempt->result.ssid_len == owner->selected.ssid_len &&
+        IEEE80211_ADDR_EQ(attempt->result.bssid, owner->selected.bssid) &&
+        memcmp(attempt->result.ssid, owner->selected.ssid,
+            owner->selected.ssid_len) == 0 &&
+        ieee80211_join_attempt_fail(attempt, attempt->result.generation,
+            owner->association_epoch, IEEE80211_JOIN_AUTH,
+            peer_rejected ? IEEE80211_JOIN_FAILURE_PEER_STATUS :
+                IEEE80211_JOIN_FAILURE_LOCAL,
+            peer_rejected ? peer->auth_status : 0, 0,
+            peer_rejected ? 0 : EPROTO, IEEE80211_JOIN_CLEANUP_ALL)) {
+        generation = attempt->result.generation;
+        owner->join_failure_generation = generation;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+    return generation;
+}
+
 /* This runs only on sae_engine_task after detach has drained that task.  It
  * may call generic state transitions only after it has scrubbed every local
  * SAE identity and released the engine leaf. */
@@ -3537,6 +3607,7 @@ iwn_sae_engine_worker_retire(struct iwn_softc *sc, bool request_scan)
     bool issue_scan = false;
     bool reopen_hooks = false;
     u_int32_t reopen_generation = 0;
+    u_int64_t join_failure_generation = 0;
 
     if (sc == NULL || sc->sc_sae_engine_lock == NULL)
         return;
@@ -3550,6 +3621,7 @@ iwn_sae_engine_worker_retire(struct iwn_softc *sc, bool request_scan)
         cancel.association_epoch = owner->association_epoch;
         cancel.relay_generation = owner->relay_generation;
         cancel.ticket = owner->in_flight_ticket;
+        join_failure_generation = owner->join_failure_generation;
         suppress_scan = owner->suppress_scan || sc->sc_sae_engine_stopping ||
             sc->sc_sae_engine_detaching;
         /* Preserve this cancelled public identity as an S_AUTH tombstone.
@@ -3591,7 +3663,10 @@ iwn_sae_engine_worker_retire(struct iwn_softc *sc, bool request_scan)
         (IC2IFP(&sc->sc_ic)->if_flags & IFF_RUNNING) != 0 &&
         (sc->sc_ic.ic_state == IEEE80211_S_AUTH ||
         sc->sc_ic.ic_state == IEEE80211_S_ASSOC);
-    if (issue_scan)
+    if (issue_scan && join_failure_generation != 0)
+        ItlIwn::iwn_wcl_join_failure_scan(&sc->sc_ic,
+            join_failure_generation);
+    else if (issue_scan)
         ieee80211_new_state(&sc->sc_ic, IEEE80211_S_SCAN, -1);
 
     IOSimpleLockLock(sc->sc_sae_engine_lock);
@@ -3704,6 +3779,7 @@ iwn_sae_engine_task(void *arg)
     struct ieee80211_sae_engine *engine;
     enum ieee80211_sae_engine_peer_result peer_result;
     u_int64_t wcl_cancel_generation = 0;
+    u_int64_t join_failure_generation = 0;
     bool start = false;
     bool retry_submit = false;
     bool have_terminal = false;
@@ -3901,6 +3977,8 @@ iwn_sae_engine_task(void *arg)
                 }
             } else if (peer_result == IEEE80211_SAE_ENGINE_PEER_ABORT ||
                 peer_result == IEEE80211_SAE_ENGINE_PEER_AP_REJECT) {
+                join_failure_generation = iwn_sae_engine_claim_peer_failure(
+                    sc, engine, &peer, peer_result);
                 fail = true;
             }
         }
@@ -3946,6 +4024,9 @@ out:
     explicit_bzero(&continuation, sizeof(continuation));
     explicit_bzero(&peer, sizeof(peer));
     explicit_bzero(&terminal, sizeof(terminal));
+    if (join_failure_generation != 0)
+        ieee80211_wcl_join_cleanup_done(&sc->sc_ic, join_failure_generation,
+            IEEE80211_JOIN_CLEANUP_PRODUCER);
     iwn_sae_engine_finish_join_retirement(sc);
     iwn_sae_tx_lifecycle_leave(sc);
 }

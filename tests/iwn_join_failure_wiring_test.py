@@ -57,8 +57,14 @@ assert "generation >= sc->sc_wcl_join_cleanup_generation" in queue
 assert "!sc->sc_scan_lease.hardware_invalidated" in queue
 assert "iwn_cmd" not in queue and "replay_pending =" not in queue
 worker = body(iwn, "iwn_sae_engine_task")
+hold = body(iwn, "iwn_sae_auth_hold")
+ordered(hold, "ieee80211_wcl_join_copy_current", "join_request.phase == IEEE80211_JOIN_AUTH",
+        "join_attempt_generation = join_request.generation", "IOSimpleLockLock(sc->sc_sae_engine_lock)",
+        "owner->join_attempt_generation = join_attempt_generation")
+ordered(worker, "ieee80211_sae_engine_handle_peer", "iwn_sae_engine_claim_peer_failure")
 ordered(worker[worker.rindex("out:"):], "explicit_bzero(&continuation",
         "explicit_bzero(&peer", "explicit_bzero(&terminal",
+        "IEEE80211_JOIN_CLEANUP_PRODUCER",
         "iwn_sae_engine_finish_join_retirement", "iwn_sae_tx_lifecycle_leave")
 terminal = body(iwn, "iwn_sae_tx_queue_terminal")
 assert terminal.rindex("IOSimpleLockUnlock") < terminal.index("iwn_sae_engine_wake_join_retirement")
