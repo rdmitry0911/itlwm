@@ -96,3 +96,31 @@ comment was moved into the existing description above the record; the strict
 pointer check was not removed or weakened. This is a contract/comment repair,
 not a changed runtime layout or a successful kext build. The failed q1 log is
 retained before the q2 build attempt.
+
+## Full build and private activation
+
+Source correctionc9715b63 and comment repair1f14e709 were pushed before the
+second build. All353 prior source-manifest entries were checked in the macOS
+mirror before copying the exact changed files. The new full manifest was
+verified before and after the ordinary AP-capable Tahoe build. Canonical
+macOS120, both source-order contracts and xcodebuild pass. All1085 external
+symbols resolve and there is no thread_call_cancel_wait import.
+
+- source ID: `4ec402769fb5`
+- source manifest SHA-256:
+  `4ec402769fb5dec3146a0b26f838d0307fa0a24724179502c29878ba56fe2646`
+- candidate Mach-O UUID: `BE0C8CE1-4924-39F2-BE2B-5929C1039113`
+- candidate Mach-O SHA-256:
+  `e3d8139f121fb138ad0a71091a4c0e3b06ec6404dde24d3ee0dc6de0e5551091`
+- complete q2 build/test/reverification log SHA-256:
+  `5e908f314783f437fbbc757ddbf83054e60f04f7de2e90ebd52a9e1bc9eb85d2`
+- stopped-before-build q1 log SHA-256:
+  `7efe18b4a22a1bffb5fb747c8620bd528ef371329100c191a3b574930018bb28`
+
+The exact candidate passed private AuxKC admission with five members and no
+canonical mutation. The two helper scripts were independently hash-compared
+between source and guest. Transactional activation returned READY at13:30:37
+UTC with rollback copies retained. A normal lab guest reboot was requested
+at13:32:06. This checkpoint does not yet attest the loaded image or RF result.
+Runtime root: `/home/dima/Projects/itlwm/aiam-comeback-deadline-runtime.P842eX`.
+Public release remains the qualified52951b81 bundle.
