@@ -109,9 +109,132 @@ Evidence in the private root:
 This confirms the fresh-AUTH received-SAE-rejection/cleanup/publication path,
 not complete candidate policy. The system revisited the bad BSS during the
 same observation. Reassociation's separate 0x49 completion, real timeouts and
-remaining AUTH/ASSOC/key producers remain open. Exact-image GUI/sleep/AP
-regressions and IWM/IWX hardware qualification are still required. The public
-release remains `b5c6cfd8`; the full functional objective is unchanged.
+remaining AUTH/ASSOC/key producers remain open. The selected exact-image
+GUI/security/S3/AP regressions below now pass, with their explicit limits;
+the wider GUI matrix and IWM/IWX hardware qualification remain incomplete.
+Release preparation is recorded below; the full functional goal is unchanged.
+
+## Same-image GUI security regression
+
+After an ordinary console login, System Settings was visibly usable. Selection
+was by actual GUI Connect buttons, not a command-line join or kernel-state
+setter. Each completed case below retained the same boot and loaded UUID,
+validated IPConfiguration security and a real DHCPACK, then independently
+awaited 20/20 1400-byte forward and reverse probes:
+
+| GUI action, UTC | Actual result |
+| --- | --- |
+| 01:36:27, saved OpenWrt | WPA3 to WPA2-PSK; new private MAC/address 172.16.66.212; native DHCP publication 01:36:39.478 |
+| 01:38:58, saved LabAP | WPA2 to WPA3-SAE; address 172.16.66.219; native DHCP publication 01:39:06.999 |
+| 01:40:33 off, 01:40:54 on | Off readback confirms power Off, inactive carrier and no IPv4; automatic saved WPA3 DHCP publication 01:41:03.566; no second toggle or manual selection |
+| 01:44:35, saved AIAM-UIF3-OPEN | Security NONE, external hostapd AUTH/ASSOC/AUTHORIZED without PMF, external DHCPACK 01:44:44 for 192.168.73.26 |
+
+The open BSS appeared after normal navigation away from and back to the Wi-Fi
+page; it was absent in the earlier visible list. The host fixture remained
+beaconing throughout. No radio toggle was used to discover or join it.
+These tests do not qualify all new/saved profiles or post-sleep GUI behavior.
+Open-network forward RTT reached 971.686 ms, despite all 20 replies; this is
+service recovery rather than a low-latency pass.
+
+Evidence prefixes in the private root are `peer97-gui-wpa2`,
+`peer97-gui-wpa3`, `peer97-gui-off-on` and `peer97-gui-open`, each with separate
+forward/reverse logs and the corresponding GUI screenshots/watchers.
+Complete security/off-on native log `peer97-gui-security-native.log` SHA-256:
+`f1177b202c13468b050cf8cd5937bb1878b689d9a5513ed38fb7865aed6e81cc`.
+
+## Same-image real S3 and Ethernet-free open-network recovery
+
+The working open-network case then underwent actual S3. Direct Wi-Fi SSH was
+verified before removing the exact temporary USB Ethernet and tablet while
+awake. QEMU inventory then contained only the boot keyboard; the guest guard
+independently rejected any remaining en0/en2 or QEMU tablet before requesting
+sleep at 01:46:36 UTC. The request returning was not counted as sleep: serial
+ACPI SLEEP and QEMU `paused (suspended)` observed at 01:47:15 prove the edge.
+
+One owned-monitor wake at 01:47:46 produced ACPI S3 WAKE. Without another join,
+toggle, or USB Ethernet, direct Wi-Fi SSH returned and showed the same boot,
+same loaded image and same open profile. External DHCPACK at 01:47:48 and
+native publication at 01:47:48.538 confirm a real lease after wake. Separate
+20/20 forward/reverse 1400-byte tests completed over Wi-Fi while QEMU still
+contained only its boot keyboard. USB management was restored only afterward.
+
+The framebuffer continued to display a stale 04:47 clock, so this is network
+service recovery, not a passed post-S3 GUI interaction. No display/daemon reset
+was used to relabel that limitation. The open fixture's normal stop restored
+host managed Wi-Fi at 01:49:50; the guest automatically returned to saved WPA3,
+with native DHCP publication at 01:50:08.750, without another selection.
+
+Private evidence: `peer97-s3-state-watch.log`, `peer97-wake-wifi-watch.log`,
+`peer97-s3-open-forward.log`, `peer97-s3-open-reverse.log`, external
+`peer97-open-dnsmasq.log`, and complete `peer97-open-s3-native.log` SHA-256
+`903ff7e0e2474a288a43b024952fb6241e4806b2049e3538bb559535e66872c6`.
+AP operation after this wake is a separate regression gate below; these STA
+results do not establish automatic AP-client continuity through sleep.
+
+## Same post-S3 image: native AP security and stop regressions
+
+Native Internet Sharing used the restored independent en2 upstream, service
+`44D1179D-0ED9-4D93-88B6-BC8163F2E0A7`. The existing system-framework helper
+configured and enabled WPA3, WPA2 and open sharing sequentially through the
+ordinary configd/airportd/InternetSharing path. It did not rewrite bridge
+membership or replace those daemons. The host AX211 was the real client.
+
+All three modes independently completed external-client DHCP (192.168.2.2),
+20/20 1400-byte client-to-guest probes, bridge-scoped cold-ARP reverse 10/10,
+and an HTTP 200 transfer routed through the guest upstream with exact payload
+comparison. Client supplicant state proved SAE plus required PMF for WPA3,
+WPA2-PSK for WPA2, and NONE for open. Each normal disable at 01:52:23,
+01:54:56 and 01:57:28 UTC was followed by a 15-second dwell, absent bridge100,
+zero retired-bridge I/O references and independently checked current STA
+traffic at 10/10. The actual restored STA address was 172.16.66.212, not the
+old WPA3 profile address. No guest reboot, radio toggle or manual STA selection
+separated the modes. The wired host management route was preserved throughout.
+
+Evidence prefixes under `/tmp/aiam-roam-policy.Kj1vgE`:
+`peer97-posts3-ap-wpa3`, `peer97-posts3-ap-wpa2`, `peer97-posts3-ap-open`.
+The per-file SHA-256 manifest in the private evidence root is
+`peer97-ap-evidence-sha256.txt`, hash
+`ab682715881b90cee9f9df305734156f2d8ec430576b9afc41117f4191117d3d`.
+The complete 13,858-line `peer97-serial-through-regressions.log`, hash
+`40eb701e275fe11c912c0ed4f7888cdffc7a767d98e8a4f013fd7399b247bc92`, has no
+matched panic, firmware fatal/error, device timeout, unset-key or AP TX-gate
+text. This is bounded runtime evidence, not proof of absent latent defects.
+The isolated HTTP server served all three exact-payload requests and reached
+its normal 420-second bounded lifetime (timeout exit 124) after the transfers.
+
+These are AP operation-after-S3 and stop regressions, not active-AP client
+continuity through S3 or simultaneous STA data service via Internet Sharing.
+All new hardware qualification is IWN/6235; the IWM/IWX firmware paths retain
+source/executable-test/build coverage, not equivalent new hardware evidence.
+
+### Post-S3 GUI wait localized, not fixed
+
+WindowServer's existing log enters displayDidWake at 01:47:46.022 but does not
+show its main display notification returning. A bounded three-second sample,
+after reading those logs, places all 2,272 main-thread observations at
+`displayDidWake -> IOFBAcknowledgeNotification -> IOConnectCallMethod ->
+mach_msg2_trap`. The request to open another Settings pane did not update the
+framebuffer. Background WindowServer threads and networking remained active.
+This localizes the visible wait to the framebuffer acknowledgement path; it
+does not identify the kernel-side wait owner or exclude every driver/power
+dependency. No graphics-driver change, daemon kill or reset was performed.
+
+- `peer97-windowserver-native.log` SHA-256:
+  `b6fed0c3f990c9cae3875e47f3007f11b0744efc9b333ab1341d0f8fa1c1b2e9`.
+- `peer97-windowserver-posts3.sample.txt` SHA-256:
+  `1560890bc39cf19cdaba0d21e70cf9d00a31f664c7f122fb3f85ba81e3f0a3e6`.
+
+## Prepared release artifact
+
+The exact frozen/installed bundle was copied, normalized and zipped in an
+isolated stage; extracted Mach-O and Info.plist match their installed sources.
+The prepared ZIP SHA-256 is
+`c2dd6a085d4929d733fa77f385bc0a460160caaba6f885b5405f916b368ba622`;
+its Mach-O retains SHA-256 `560a3f5b...` and UUID `69D766FF...` above.
+The previous public b5 artifact was independently downloaded and verified at
+`release-before-peer97/AirportItlwm-Tahoe-v2.4.0-alpha.kext.zip`, SHA-256
+`c2940702f7de42e797659bc59a36a0908756c35c219b9196eea19bd123815b44`.
+Publication and readback remain pending at this source checkpoint.
 
 ## Verified space reclamation and recovery copy
 
@@ -149,3 +272,31 @@ and variables from this archive only while this exact VM is stopped, preserving
 the existing backing chain. The older local read-only parent and base are
 unchanged. No physical user host,
 unrelated VM, user-owned Build directory or shared filesystem setting changed.
+
+### Additional verified offline archive before GUI/S3/AP regression
+
+GUI startup grew the candidate child and reduced local free space below the
+fixture's 1.5-GiB admission threshold. Only the old offline July-24-e qcow2
+was removed locally after a complete rsync byte copy, independent remote and
+local SHA-256/length comparison, a fresh owned-image backing census with no
+child referencing it, and final fuser verification with no open user.
+The current working image, read-only parent and base were not changed by this
+space operation. Small July-24-e companion files remain locally.
+
+- Removed local file: `pmf-live-20260724e/tahoe-pmf-runtime.qcow2` under the
+  `/home/dima/Projects/itlwm` control root; length 1,254,490,112 bytes.
+- Verified archive:
+  `10.7.6.112:/home/dima/Projects/itlwm-runtime-archive/sae-peer-regression-space-20260911.3OKFrk/`.
+- Disk SHA-256:
+  `e094ce46731bd8a10efd1c685ab1c161c26b3ef1d1b73a4096a556689d30cee1`.
+- OVMF SHA-256:
+  `807ab84edb1514729990671d6d37fdde216712e1261dfb6eda86730aa1f8d63e`.
+- Serial SHA-256:
+  `aaf0d3d29fe97a6e0d879542308f1b0dc84c40df2f0488878f93c0422a8523bf`.
+- Attestation SHA-256:
+  `6ba51c78fec8a720590077d4401494c3c0782acf69dc3d83e87c8de00eb1b133`.
+
+All four remote files match. Restore the qcow2 by rsync -aS to its original
+absent/unused path and recheck its hash before use; its backing remains the
+unchanged `/home/dima/Projects/itlwm/tahoe.qcow2`. ZFS accounted the reclaimed
+space asynchronously; subsequent free space was 2,082,078,720 bytes.

@@ -1,5 +1,26 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Qualified IWN artifact checkpoint — 2026-09-11 01:59 UTC
+
+PROGRESS: the same loaded `69D766FF` / boot `02DED0EA` candidate now passes
+actual GUI saved WPA3-to-WPA2 and reverse selections, one GUI off/on, and a
+GUI-selected open network, each with real DHCP and independent 20/20 forward
+and reverse traffic. Actual Ethernet/tablet-free S3 restores that open network
+without another selection; DHCP and both 20/20 checks pass before USB
+management returns. Native post-S3 WPA3/WPA2/open Internet Sharing each passes
+external DHCP, 20/20 forward, cold-ARP reverse 10/10, routed HTTP and a normal
+stop/dwell with zero bridge I/O references plus current STA 10/10.
+
+The complete serial audit has no matching panic/fatal/device timeout. The
+same-image archive is prepared and independently extracted/compared; public
+publication/readback is next. This remains IWN hardware qualification, not
+IWM/IWX hardware closure. Post-S3 GUI is still blocked: a bounded WindowServer
+sample now localizes its main thread to framebuffer acknowledgement on wake,
+without yet identifying the kernel-side cause. Bad-BSS reselection, separate
+reassociation failure, other real failure/timeout producers, remaining HAL
+lifetimes and the complete GUI/roam/AP matrix stay in the full goal.
+See [the completed runtime report](TAHOE_SAE_PEER_FAILURE_20260911.md).
+
 ## Loaded peer-failure checkpoint — 2026-09-11 01:33 UTC
 
 PROGRESS: `97fe747c` plus test-only `5e7a6735` is built and loaded on real
