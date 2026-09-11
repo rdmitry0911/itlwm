@@ -10,6 +10,13 @@ fixture_mode=${1:-open}
 fixture_label=${2:?unique run label required}
 fixture_monitor=${3:-1}
 fixture_config=${4:-$lab_dir/hostapd-$fixture_mode.conf}
+fixture_bssid=${5:-}
+# The optional address is the exact prior lab AP identity, not a free-form
+# impersonation target. Refuse a collision before changing host radio state.
+case "$fixture_bssid" in ''|80:e4:ba:20:ef:fa) ;; *) exit 2 ;; esac
+if [ -n "$fixture_bssid" ]; then
+    iw dev | awk -v target="$fixture_bssid" '$1 == "addr" && $2 == target { conflict=1 } END { exit conflict }'
+fi
 case "$fixture_config" in
     "$lab_dir/hostapd-$fixture_mode.conf"|/tmp/aiam-roam-policy.Kj1vgE/hostapd-failed-target.conf) ;;
     *) exit 2;;
@@ -26,6 +33,11 @@ test -d /sys/class/net/wlp0s20f3
 test "$(readlink -f /sys/bus/pci/devices/0000:25:00.0/driver)" = /sys/bus/pci/drivers/vfio-pci
 ip -4 route show default | head -1 | grep -q 'dev enx1cbfce6c92ea'
 test -z "$(ip -4 route show 192.168.73.0/24)"
+fixture_initial_sta_state=$(nmcli -g GENERAL.STATE device show wlp0s20f3)
+case "$fixture_initial_sta_state" in
+    '100 (connected)'|'30 (disconnected)') ;;
+    *) printf 'Unexpected fixture STA state: %s\n' "$fixture_initial_sta_state"; exit 2 ;;
+esac
 fixture_ap_pid=
 fixture_dhcp_pid=
 fixture_ap_created=0
@@ -70,7 +82,6 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-fixture_initial_sta_state=$(nmcli -g GENERAL.STATE device show wlp0s20f3)
 case "$fixture_initial_sta_state" in
     '100 (connected)') nmcli -w 10 device disconnect wlp0s20f3 ;;
     '30 (disconnected)') ;;
@@ -97,8 +108,13 @@ for fixture_try in $(seq 1 30); do
 done
 test "$fixture_sta_exclusive" = 1
 printf 'FIXTURE_STA_EXCLUSIVE_NM_STATE=%s\n' "$fixture_sta_state"
-iw dev wlp0s20f3 interface add uif3ap type __ap
+fixture_address_args=()
+if [ -n "$fixture_bssid" ]; then fixture_address_args=(addr "$fixture_bssid"); fi
+iw dev wlp0s20f3 interface add uif3ap type __ap "${fixture_address_args[@]}"
 fixture_ap_created=1
+if [ -n "$fixture_bssid" ]; then
+    test "$(cat /sys/class/net/uif3ap/address)" = "$fixture_bssid"
+fi
 # Let the newly announced device finish NetworkManager enumeration before
 # requesting exclusive fixture ownership. The first attempt demonstrated an
 # asynchronous supplicant acquisition after an early successful setter.
@@ -121,7 +137,7 @@ done
 test "$fixture_unmanaged" = 1
 printf 'FIXTURE_EXCLUSIVE_NM_STATE=%s\n' "$fixture_nm_state"
 ip addr add 192.168.73.1/24 dev uif3ap
-hostapd -dd "$fixture_config" >"$lab_dir/$fixture_label-hostapd.log" 2>&1 &
+hostapd -t -dd "$fixture_config" >"$lab_dir/$fixture_label-hostapd.log" 2>&1 &
 fixture_ap_pid=$!
 fixture_ready=0
 for fixture_try in $(seq 1 25); do

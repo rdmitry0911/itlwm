@@ -391,3 +391,61 @@ Continue the user-frequency-prioritized first-selection/scan comparison and
 the distinct deferred source-drain/reassociation owner implementation. The
 original autonomous goal, full GUI/S3/AP matrix and IWM/IWX hardware gates
 remain open; the public kext is not replaced by this fixture-only update.
+
+## Matched BSSID / 12-second first-open controls
+
+The tracked fixture now optionally pins the exact previous lab AP address
+`80:e4:ba:20:ef:fa`, rejects an existing interface-address collision before
+changing radio state, and timestamps hostapd events. The initial host STA
+state is checked before installing the restoration trap. The accepted
+address is deliberately not a free-form target. Both actual pinned WPA2
+seeds and both open controls used channel 9; no guest image or reboot changed.
+
+The smaller read-only observer is retained as
+`scripts/capture_tahoe_iwn_first_scan_20dd.d`. Its rxinfo channel offset 12 is
+verified against the exact loaded object's DWARF; it must not be reused on
+another build without checking that layout. It emits only the exact public
+fixture SSID match, channel/candidate markers and scan lifecycle values.
+Constructor channel calls may repeat and are not the submitted vector count.
+The firmware-terminal bool is read as uint8_t; the first smoke trace's int
+cast included undefined upper return-register bits. The observer terminates
+after 60 seconds. Actual execution, not merely `dtrace -e`, now succeeds.
+
+| Control | AP ready observed (UTC) | One selection requested | Actual result |
+| --- | --- | --- | --- |
+| open12-q1 | 08:09:19.081 | 08:09:31.084 | NONE association; runner stopped too early for DHCP qualification |
+| open12-q2 | 08:13:42.327 | 08:13:54.330 | NONE, DHCPACK 08:14:02, 10/10 packets each direction |
+
+For q1, native selection returned zero and the immediate readback showed an
+active NONE link. The runner incorrectly treated the not-yet-present DHCP
+packet as fatal under `set -e`, then normally stopped its AP. This is a test
+runner defect, not a driver failure or a passing DHCP/traffic test. The exact
+open advertisement was received at 08:09:31.574 after selection. The bounded
+observer completed with zero errors. Cleanup restored host Wi-Fi at 08:09:49.
+
+Before q2, a second pinned WPA2 seed was actually associated with DHCP, then
+stopped normally, so the same address again changed from WPA2 to open. The
+runner now tolerates a transient missing DHCP packet in immediate/settled
+readbacks; it does not repeat selection. q2 obtained `192.168.73.26`, security
+NONE, and 1400-byte traffic passed 10/10 forward and 10/10 reverse, maximum
+RTTs 84.433 / 89.682 ms. The exact open advertisement was already received at
+08:13:43.618, before the selection command; this is **not a cold-cache proof**.
+The trace recorded 486 accepted channel-9 candidates (not all necessarily
+the fixture) and ended with zero errors at 08:14:39. Hostapd contains zero
+`NL80211_CMD_TRIGGER_SCAN` events. Host restoration finished at 08:14:44 with
+`FIXTURE_RESTORE_RESULT=0`.
+
+At 08:18:29 independent readback confirmed the same boot and loaded UUID,
+guest address `172.16.66.219`, no DTrace process, and host managed/connected
+to its original LabAP profile, without uif3ap/uif3mon. The wired management
+route was retained. Physical host 10.90.10.22 was not touched.
+
+Evidence root: `/home/dima/Projects/itlwm/aiam-iwn-first-selection.kBxdIB/`.
+The verified `matched-first-open-evidence.sha256` includes successful and
+failed runs, executed runner/observer, external hostapd/DHCP logs and fixture.
+Manifest SHA-256:
+`cb526d801f31db3d6335ffac68168d48cac2e00b2523c883298f349bbe2b9bd3`.
+These controls reduce uncertainty about host RF interference and demonstrate
+first-command open association at the original address/dwell; they do not
+close all discovery/cache scheduling defects, GUI coverage or reassociation
+ownership. No new driver fix or public release is claimed by this test commit.
