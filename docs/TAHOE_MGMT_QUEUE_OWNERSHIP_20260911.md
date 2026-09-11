@@ -4,6 +4,8 @@ Latest: production `20dd3d8a` is pushed, built and loaded on the disposable
 IWN/6235 guest. Actual WPA3/S3/SAE-failure/WPA2/open checks below preserve
 service, but include packet loss, long RTTs and a first open-selection miss.
 They do not qualify the whole reconnect surface or a replacement release.
+The subsequent same-image host-scan-isolation control removes the long RTTs
+in its WPA2/open windows; it does not retroactively erase the original results.
 
 ## Scope and actual correction
 
@@ -290,3 +292,102 @@ file to its original absent/unused path with rsync -aS, retaining the original
 backing chain, and recheck its hash before use. The archive directory is not
 an independent boot kit. Working parent/base disks and user-owned `Build/`
 were not removed or modified.
+
+## Follow-up: isolate host AP scans before blaming guest latency
+
+The original WPA2 and open hostapd logs contain respectively **9 and 10**
+`NL80211_CMD_TRIGGER_SCAN` events for the separate managed interface, ifindex 6
+(`wlp0s20f3`), on the same AX211 radio as uif3ap. Disconnecting that interface
+had not stopped its NetworkManager scan producer. The open log also contains
+a real guest directed probe naming the open fixture on 2452 MHz and a host
+probe-response TX status `ack=0`; these log lines lack per-event timestamps,
+so they cannot establish which failed selection or lost packet they explain.
+They nevertheless identify a concrete host-radio interference confound that
+the original fixture's AP-only NetworkManager exclusion missed.
+
+The fixture now temporarily marks **both** interfaces unmanaged and verifies
+that wpa_supplicant no longer owns the host STA before starting the AP. On
+cleanup it re-enables management, waits for NetworkManager's asynchronous
+unavailable-to-disconnected transition, then restores the original profile.
+Only the existing lab AX211 is affected; the wired management route remains
+unchanged. Configurations and credentials are unchanged. No guest source,
+loaded image, reboot, driver property or firmware parameter was changed.
+
+The executed private fixture remains
+`/tmp/aiam-roam-policy.Kj1vgE/fixture-carrier.sh`; its final SHA-256 is
+`c76903785be37912ba6920e66983e054bbeac47715ae7d41cb2c1afa151d9025`.
+Original hash `4b2786517ff12e2a58ee5719c8f81d96bf97e6bd0d10fc066079454b548682aa`
+and both full script copies are retained in the evidence root. The tracked
+machine-specific counterpart is `scripts/lab_tahoe_ax211_fixture_carrier.sh`,
+SHA-256 `f3701e86d734d65d925c1aba0c3c210b9f2a8773940849bb524f857f3ff32c7d`.
+Its body compares byte-for-byte with the executed final private fixture after
+removing the four added provenance comments; `bash -n` passes. Invoke it via
+bash only on this explicitly owned lab, with the existing private configs.
+This is a test-fixture correction, **not a second functional driver fix**.
+
+### Same-image control results
+
+All probes again use 1400-byte payloads. External hostapd/dnsmasq and native
+guest readback confirm the expected security, actual association and DHCP.
+
+| No host-STA scan producer | Forward / reverse | Maximum RTT, ms |
+| --- | --- | --- |
+| WPA2 native selection | 30/30, 30/30 | 15.063 / 13.150 |
+| Same WPA2 after one off/on | 30/30, 30/30 | 21.842 / 20.482 |
+| Open native selection | 30/30, 30/30 | 7.059 / 20.102 |
+| Final restored WPA3 | 10/10, 10/10 | 20.696 / 80.522 |
+
+Neither quiet hostapd log contains a foreign scan-trigger event. These
+results strongly support host-AP scan interference as a contributor to the
+previous long RTTs. They are bounded controls, not a proof that all previous
+loss originated on the host or that guest roaming/scan scheduling is correct.
+The post-S3 reverse loss through the ordinary external LabAP is a different
+path and remains recorded separately.
+
+The quiet AP used BSSID `80:e4:ba:20:ef:f9`, rather than the earlier `...:fa`;
+that address was assigned by the host interface lifecycle, not manually
+pinned. Quiet WPA2 and open shared the new BSSID. Open was ready at 07:54:19,
+selected at 07:55:27, and obtained DHCPACK at 07:55:38. No extra directed
+scan or repeat selection preceded this successful request. However the
+68-second pre-selection dwell differs from the earlier 12-second dwell,
+and cache/address history also differs. Therefore the first-open-discovery
+defect is **not closed** by this successful control.
+
+### Preserved failed diagnostics and cleanup correction
+
+The first quiet WPA2 cleanup re-enabled NetworkManager and immediately
+requested the original profile. That raced the device's unavailable state
+and failed. The following open fixture stopped at its initial disconnect
+guard with exit 6, without starting an AP or making a guest selection; its
+normal cleanup successfully restored the host profile at 07:53:21.
+Only after checking that terminal state was the cleanup wait added and a
+separately labelled open-r2 fixture launched. Its cleanup completed at
+07:57:08 with `FIXTURE_RESTORE_RESULT=0`, no test AP/monitor left, and the
+host independently verified managed and connected. No Ethernet management
+outage occurred. These preflight/cleanup failures are not driver failures or
+successful first-open attempts.
+
+A read-only attempt to combine the existing scan-channel and receive-channel
+DTrace programs passed `dtrace -e`, but actual enable failed with
+`DIF program content is invalid`, exit 1. It supplied **no accepted scan/RX
+runtime evidence**; no observer remains. Current object DWARF independently
+confirms `ieee80211_rxinfo.rxi_chan` at offset 0x0c, and the loaded FBT function
+names match, but those checks do not make the failed trace a passing one.
+Use a smaller separately validated observer for the next matched first-scan
+comparison instead of treating compilation as successful execution.
+
+Final guest readback retains boot `C7693AA2-C5CD-4515-B7AA-508BAB9344F6`,
+loaded UUID `4B2B526E-9D1D-3C51-9509-0C11C7BE30E9`, WPA3_SAE and DHCP
+172.16.66.219. The final traffic row ran after all quiet fixtures stopped.
+The follow-up evidence manifest `host-scan-control-evidence.sha256` verifies
+and has SHA-256
+`c12e4c11e65fe6b3585f21433bac2377706a2589207286da16f07a9c8f20a46b`.
+External quiet hostapd SHA-256:
+
+- WPA2: `f3908f449e5d9cb9d5acc74d267eddd3ef73e034e75b5200458f0ea7f474af4d`.
+- Open-r2: `c7ba464acb395beacf47d8a791cb1d9574a31e8a92a4e0f550f3581806bf1477`.
+
+Continue the user-frequency-prioritized first-selection/scan comparison and
+the distinct deferred source-drain/reassociation owner implementation. The
+original autonomous goal, full GUI/S3/AP matrix and IWM/IWX hardware gates
+remain open; the public kext is not replaced by this fixture-only update.
