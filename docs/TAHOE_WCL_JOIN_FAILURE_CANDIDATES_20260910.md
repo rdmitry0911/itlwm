@@ -1,5 +1,29 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Reassociation reconstruction checkpoint — 2026-09-11 02:24 UTC
+
+PROGRESS, not a new functional closure: exact raw 25C56 data now distinguishes
+command-start failure `0xcf` from actual reassociation status `0x49`, AUTH
+status `0x4a` and overall roam completion `0x50`. All 60 roam-FSM cells and
+31 subscriptions were independently read from the fileset. A corrected
+51-function batch completed with 40 actual decompiler interfaces; separate
+raw-byte disassembly verifies every selected function interval. Current local
+accepted-roam progress/completion producers are incomplete, so changing the
+SAE rejection's selector alone would not implement the reference lifecycle.
+
+An extracted complete production failure helper reproduces two additional
+retirement defects: cancellation callbacks can admit a new owner which the old
+helper then erases, or reenter retirement and publish twice. Ordinary controls
+pass; both desired-behavior assertions fail with exit 134. The new pending
+regression is intentionally red by default, separate from the passing aggregate.
+The explicit expected-defect mode is negative evidence, not a fix/pass.
+
+See [the exact contract and implementation obligations](TAHOE_REASSOC_FAILURE_LIFECYCLE_20260911.md).
+Production, loaded IWN image and verified release remain `97fe747c` / `5e7a6735`.
+No RF fixture, install/reboot or physical-host operation accompanied this
+reconstruction. The next step is immutable accepted-roam ownership and the real
+lower-to-WCL result lifecycle, keeping fresh JoinAdapter failure separate.
+
 ## Published checkpoint — 2026-09-11 02:03 UTC
 
 PROGRESS: `v2.4.0-alpha` now serves the qualified `5e7a6735` / production
