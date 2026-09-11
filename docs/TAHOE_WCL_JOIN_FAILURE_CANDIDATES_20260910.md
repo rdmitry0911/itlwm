@@ -1,5 +1,16 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Loaded physical scan checkpoint — 2026-09-11 04:10 UTC
+
+PROGRESS: `52dd156d` is loaded on real IWN/6235, UUID `D63CF6F8`, boot
+`19C91793`. Automatic WPA3/SAE and real DHCP pass; a controlled bad-password
+AP reproduces two fresh-AUTH rejection/cleanup/publication/recovery sequences,
+with subsequent independent 20/20 forward/reverse traffic. The bad BSS is still
+reselected. This is not completed roaming or new-image GUI/S3/AP qualification;
+public release remains `97fe747c`. The previous working image is preserved
+read-only; two obsolete offline overlays have verified recoverable archives.
+See [loaded runtime and rollback evidence](TAHOE_ROAM_SCAN_PHYSICAL_RUNTIME_20260911.md).
+
 ## Physical roam-scan abort checkpoint — 2026-09-11 03:32 UTC
 
 PROGRESS: the accepted roam serial now reaches real IWN/IWM/IWX abort

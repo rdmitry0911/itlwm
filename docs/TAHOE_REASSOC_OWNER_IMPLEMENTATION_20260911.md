@@ -1,5 +1,10 @@
 # Accepted-roam identity implementation — 2026-09-11
 
+Latest state: the `52dd156d` physical scan candidate is now loaded and has
+[bounded real SAE/DHCP/traffic evidence](TAHOE_ROAM_SCAN_PHYSICAL_RUNTIME_20260911.md).
+The built-only/old-boot statements below record their earlier checkpoints;
+full accepted-roam ownership and new-image GUI/S3/AP qualification remain open.
+
 ## Current result, not a completed roaming release
 
 This follows the exact-reference FIX_CANDIDATE in

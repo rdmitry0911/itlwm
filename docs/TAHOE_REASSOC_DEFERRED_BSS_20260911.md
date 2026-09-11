@@ -2,9 +2,10 @@
 
 ## Result and scope
 
-The physical abort/SCAN-doorbell correction is pushed as `52dd156d` and builds
-on Tahoe. Its built UUID is `D63CF6F8-85F5-3C98-B3E6-7289BEFD5A19`; it is not
-yet loaded. The lab still runs the qualified `97fe747c` image and public asset.
+The physical abort/SCAN-doorbell correction is pushed as `52dd156d` and loaded
+on Tahoe with UUID `D63CF6F8-85F5-3C98-B3E6-7289BEFD5A19`; its later
+[bounded live runtime](TAHOE_ROAM_SCAN_PHYSICAL_RUNTIME_20260911.md) preserves
+SAE failure recovery. Public release remains the qualified `97fe747c` image.
 This next checkpoint adds executable negative evidence for the same open
 reconnect/roaming layer, not a completed fix or another release.
 
