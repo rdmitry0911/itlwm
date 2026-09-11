@@ -741,11 +741,12 @@ struct ItlSaeAuthPeerEventV1;
  * Immutable identity for one delayed status-30 association retry.  A lower
  * driver may copy this value into process-context work, renew its firmware
  * channel/session lease, and then hand the same value back to net80211.  No
- * node pointer or credential crosses that deferred boundary.
+ * node pointer or credential crosses that deferred boundary. The not_before
+ * value is a deadline in the kernel absolute-time domain.
  */
 struct ieee80211_assoc_comeback_retry {
 	u_int64_t	association_epoch;
-	u_int64_t	not_before; /* kernel absolute-time deadline */
+	u_int64_t	not_before;
 	u_int32_t	timeout_tu;
 	u_int8_t	bssid[IEEE80211_ADDR_LEN];
 	u_int8_t	subtype;

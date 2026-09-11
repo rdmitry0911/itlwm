@@ -88,3 +88,11 @@ This harness correction is not counted as a production fix.
 Full new-image kext build, activation and actual RF comeback/reconnect plus
 STA/S3/AP regressions remain required. Public v2.4.0-alpha remains the
 qualified52951b81 image; this next correction is not yet released.
+
+The first canonical macOS run passed all120 cases but stopped before xcodebuild:
+the source-order contract treated an inline `/* ... */` field comment as a
+pointer because it rejects every asterisk in the retry-record body. The units
+comment was moved into the existing description above the record; the strict
+pointer check was not removed or weakened. This is a contract/comment repair,
+not a changed runtime layout or a successful kext build. The failed q1 log is
+retained before the q2 build attempt.
