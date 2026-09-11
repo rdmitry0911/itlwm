@@ -191,6 +191,32 @@ Updated-Ghidra exact WCL recovery subset is retained in
 `reference-wcl-loss-ready/`; its source export manifest SHA256 is
 `c112fed29f2a4d49fd07862be556a7e0f139b2c5e550deaa833f719a5be4b8da`.
 
+## Same-SSID replay after S3
+
+Three bounded80s native-WCL traces retained250-packet streams each way:
+
+| Control | Intended transition | Actual traffic received | First attempt |
+| --- | --- | --- | --- |
+| sa-query-depart-q1 | LabAP02/ch13 -> ca/ch9 |224/250 F,222/250 R| SAE1/2 and target RUN; about4.9s from AUTH entry to engine start |
+| sa-query-return-q1 | ca/ch9 ->02/ch13 |249/250 F,247/250 R| Target RUN, no persistent outage |
+| sa-query-depart-q2 |02/ch13 ->ca/ch9|206/250 F,206/250 R| **Failed** at5s before target SAE started; native recovery first joined02, then a later automatic roam reachedca |
+
+All observers ended with errors0. Final ca/ch9/WPA3/DHCP does not turn the
+failed first attempt into a pass. The added worker probes in depart-q2 show
+that its initial SAE worker was only scheduled during cancellation; the
+nearly5s wait was **before** crypto-worker activation, not a measured slow
+SAE calculation. Subsequent fresh-join SAE completed normally. No SA Query
+trigger occurred in these three runs; they do not reproduce or close the
+earlier post-RUN plaintext-reason7 persistent outage. New remaining focus:
+IWN AUTH command/beacon readiness, followed by the existing SAE peer-response
+loss/retry gap. The current image is not asserted to have complete WPA3 roaming.
+
+The collected q4 power log also identifies sleep-notification delays:
+`loginwindow timed out(30000 ms)` and `powerd is slow(28001 ms)`.
+Thus the long S3 entry cannot currently be attributed to IWN; userland power
+coordination and the laboratory login state must be distinguished from RF
+recovery. The measured WiFi-only wake pass remains valid.
+
 Working evidence:
 `/dev/shm/aiam-sae-peer-response-20260911.X7eeBs`, mirrored to
 `/home/dima/Projects/itlwm/aiam-sae-peer-response-runtime.djZ0wV` (not frozen).
