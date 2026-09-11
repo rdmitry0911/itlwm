@@ -1,6 +1,6 @@
 # WCL failed-join candidate progression — 2026-09-10
 
-## Physical roam-scan abort checkpoint — 2026-09-11 03:36 UTC
+## Physical roam-scan abort checkpoint — 2026-09-11 03:32 UTC
 
 PROGRESS: the accepted roam serial now reaches real IWN/IWM/IWX abort
 reservation; all six IWN abort callers retain the exact physical serial

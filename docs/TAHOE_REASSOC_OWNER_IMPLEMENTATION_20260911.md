@@ -133,7 +133,7 @@ leaf. A stale pre-doorbell abort is an already-retired operation, not authority
 to reset the successor. Test the actual reservation, command sender and final
 doorbell claim across replacement, reset, terminal and duplicate abort orders.
 
-### Physical-command checkpoint, 2026-09-11 03:36 UTC
+### Physical-command checkpoint, 2026-09-11 03:32 UTC
 
 Implemented the captured roam serial through the actual background-abort
 callback and IWN/IWM/IWX reservation. A mismatched expected request cannot mark
@@ -177,3 +177,9 @@ This is a built WIP checkpoint, not a completed roaming layer or loaded
 qualification. The full deferred BSS/state/AUTH/key lifetime and reference
 progress/terminal producers above remain required. The loaded and released
 `97fe747c` bundle and boot `02DED0EA` are unchanged; no RF fixture was run.
+
+The next production boundary is independently reproduced by
+[the deferred BSS lifetime regression](TAHOE_REASSOC_DEFERRED_BSS_20260911.md).
+It includes a liveness failure, not just missing request tags: the permanent
+`ic_bss` reference prevents the currently armed zero-reference callback from
+running when transient TX references have drained.
