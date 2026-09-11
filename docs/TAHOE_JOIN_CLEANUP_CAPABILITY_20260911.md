@@ -132,3 +132,54 @@ After that archive completes, preserve the current working disk offline,
 create its separate writable child/variables, activate the already-frozen
 candidate there, and verify the exact loaded UUID before IWN regression.
 Keep the original autonomous objective and IWM/IWX cleanup integration open.
+
+## Full MVM SAE worker negative controls
+
+While that same archive transfer remained live, the next full parity gate
+was reproduced with **each actual complete** IWM/IWX SAE worker, cancellation,
+owner predicates and retirement helper. `scripts/test_mvm_sae_peer_failure.sh`
+takes `iwm` or `iwx`, extracts the exact family owner structure and functions,
+then normalizes family spelling only. Crypto outcome, task admission,
+scheduling and lower hardware completion are explicit boundaries. It does
+not invent the absent join-generation slot in the real MVM owner structure.
+The required assertion is intentionally red, excluded from the passing
+aggregate; it is not a legacy-behavior PASS switch.
+
+On both Linux and macOS, a consumed empty-body status-1 Confirm rejection
+destroys the engine and requests generic SCAN, but leaves the accepted fresh
+JoinAdapter in AUTH: `phase=2 generic_scan=1 owned_cleanup=0 producer_ack=0
+destroyed=1 published=0`. All four actual executions fail the required
+FAILING-state assertion with exit 134. The first IWX compile attempt lacked
+its distinct task-admission boundary double and yielded no execution evidence;
+the corrected r2 executes and reproduces the same production gap. This is
+not an on-air IWM/IWX observation and does not establish the later cleanup
+behavior that has not been implemented.
+
+Evidence hashes:
+
+- Linux IWM `/tmp/aiam-iwm-sae-peer-failure-baseline-20260911.log`:
+  `667790d265cab63ee45d6c8bdf0c1a6630fc0d6eac2fc5b63fac5eb812fe457e`.
+- Linux IWX `/tmp/aiam-iwx-sae-peer-failure-baseline-20260911-r2.log`:
+  `5a724078efb770c3ebe67118828d4962ef2a2c100ecb2cc5a12342bd8d6593d1`.
+- macOS IWM `/tmp/aiam-iwm-sae-peer-failure-macos-20260911.log`:
+  `63439a344065158984eac716150f346104cbc6d6faf36bec43eb6dbee2097128`.
+- macOS IWX `/tmp/aiam-iwx-sae-peer-failure-macos-20260911.log`:
+  `3636a658d34ab497ce6b5f3a6a97f8ab649857637cccd157a80a1dd8701e7234`.
+
+The implementation must capture the accepted join at real AUTH admission,
+retain its failure through asynchronous state work, retire actual station /
+BA / command / DMA and crypto owners, and only then publish once. The full
+admission path and real lower-retirement continuations need additional
+executable coverage; setting a synthetic generation in this fixture is not
+a replacement. In particular, the existing MVM state request has immutable
+epoch/join identity and real station-user draining, but its SCAN worker
+unconditionally starts a physical scan and its generic commit can reenter.
+Do not enroll the callback or call `cleanup_done(ALL)` merely to make these
+negative tests green. `17b63574` is the compatibility guard during this work,
+not the desired final failed-join implementation.
+
+The prepared IWN runtime rejection runner in the new evidence root now uses
+the tracked host-exclusive AP fixture and explicitly pins `80:e4:ba:20:ef:fa`,
+matching the native directed request. It retains the bounded single observer
+and only retries an explicitly rejected EBUSY request. It has not yet run on
+the new image. The test-only changes do not alter that frozen candidate.
