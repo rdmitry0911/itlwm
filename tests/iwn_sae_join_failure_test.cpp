@@ -148,7 +148,7 @@ static bool ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(ieee80211co
 
 int main() {
     unsigned cases = 0;
-    for (unsigned scenario = 0; scenario < 19; ++scenario) {
+    for (unsigned scenario = 0; scenario < 21; ++scenario) {
         ItlIwn device;
         auto &sc = device.com;
         auto &ic = sc.sc_ic;
@@ -188,6 +188,31 @@ int main() {
         producerAcks = credentialRetired = 0; lowerGeneration = 0;
         duringPeer = {}; duringCancel = {};
         cryptoResult = IEEE80211_SAE_ENGINE_PEER_AP_REJECT;
+        if (scenario >= 19) {
+            // AUTH preparation can fail before generic AUTH starts crypto.
+            // Execute the real retirement request/worker with no engine,
+            // including a pre-existing transport terminal still in flight.
+            owner = {};
+            sc.sc_sae_engine = nullptr;
+            assert(ieee80211_join_attempt_fail(&attempt,gen,41,IEEE80211_JOIN_AUTH,
+                IEEE80211_JOIN_FAILURE_LOCAL,0,0,EIO,IEEE80211_JOIN_CLEANUP_ALL));
+            assert(ieee80211_join_attempt_cleanup_done(&attempt,gen,IEEE80211_JOIN_CLEANUP_PRODUCER));
+            assert(ieee80211_join_attempt_cleanup_done(&attempt,gen,IEEE80211_JOIN_CLEANUP_LOWER));
+            ic.ic_state=IEEE80211_S_SCAN;
+            if (scenario==20) sc.sc_sae_tx_event_count=1;
+            iwn_sae_engine_request_join_retirement(&sc,gen);
+            ItlIwn::iwn_sae_engine_task(&sc);
+            if (scenario==20) {
+                assert(delivered==0);
+                sc.sc_sae_tx_event_count=0;
+                ItlIwn::iwn_sae_engine_task(&sc);
+            }
+            assert(delivered==1 && destroyed==0 && genericScans==0 && producerAcks==0);
+            ItlIwn::iwn_sae_engine_task(&sc);
+            assert(delivered==1 && leaves==0 && !workerLive);
+            ++cases;
+            continue;
+        }
         bool claim = true;
         switch (scenario) {
         case 1: peer.auth_status = 77; break;

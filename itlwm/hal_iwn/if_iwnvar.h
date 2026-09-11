@@ -227,6 +227,8 @@ struct iwn_tx_data {
      */
     uint64_t wnm_tx_fence_generation;
     uint8_t  wnm_tx_fence_kind;
+    /* Host identity of the one AUTH RXON enrolled before this doorbell. */
+    uint64_t auth_rxon_serial;
 };
 
 struct iwn_tx_ring {
@@ -714,6 +716,7 @@ struct iwn_softc {
     uint8_t            bss_node_addr[IEEE80211_ADDR_LEN];
 
     struct iwn_rx_stat    last_rx_stat;
+    uint64_t       last_rx_auth_serial;
     int            last_rx_valid;
 #define IWN_LAST_RX_VALID    0x01
 #define IWN_LAST_RX_AMPDU    0x02

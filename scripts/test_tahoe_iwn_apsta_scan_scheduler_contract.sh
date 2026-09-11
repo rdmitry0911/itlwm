@@ -77,7 +77,7 @@ auth = iwn[
     iwn.index("iwn_auth(struct iwn_softc *sc, int arg)"):
     iwn.index("int ItlIwn::\niwn_run(")
 ]
-unassociated_rxon = auth.index("iwn_cmd(sc, IWN_CMD_RXON")
+unassociated_rxon = auth.index("iwn_auth_rxon(sc)")
 priority = auth.index("iwn_set_ap_sta_auth_priority(true)")
 txpower = auth.index("ops->set_txpower(sc, 1)")
 assert unassociated_rxon < priority < txpower, \

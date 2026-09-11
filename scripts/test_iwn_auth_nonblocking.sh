@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Required gate, intentionally red until the real AUTH admission stops
-# busy-waiting. Kept outside the passing aggregate while implementation is open.
+# Execute the entire production AUTH preparation with counted delay boundaries.
+# IWN_AUTH_SOURCE may select the predecessor for the negative regression gate.
 set -euo pipefail
 ulimit -c 0
 PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"

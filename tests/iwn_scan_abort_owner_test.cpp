@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cerrno>
 #include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -33,7 +34,9 @@ struct Cursor { unsigned getPhysicalSegmentsWithCoalesce(mbuf_t,IOPhysicalSegmen
 struct Map { unsigned dm_nsegs; Cursor *cursor; };
 struct iwn_tx_cmd { uint8_t code,flags,qid,idx,data[128]; };
 struct iwn_tx_desc { int nsegs; struct {uint32_t addr; uint16_t len;} segs[1]; };
-struct iwn_tx_data { Map *map; mbuf_t m; uint64_t cmd_paddr; };
+struct iwn_tx_data { Map *map; mbuf_t m; uint64_t cmd_paddr; uint64_t auth_rxon_serial; };
+struct iwn_node_info { uint8_t id; };
+struct iwn_cmd_link_quality { uint8_t id; };
 constexpr unsigned IWN_TX_RING_COUNT=8;
 struct iwn_tx_ring {
     iwn_tx_cmd cmd[IWN_TX_RING_COUNT]{};
@@ -64,10 +67,12 @@ struct iwn_softc {
     iwn_ops ops{};
     iwn_tx_ring txq[1];
     unsigned command_queue=0,sc_flags=0;
+    uint8_t broadcast_id=15;
     task init_task;
 };
 constexpr unsigned IWN_FLAG_BGSCAN=1,IWN_FLAG_FATAL_RECOVERY=2,IWN_FLAG_SCANNING=4;
 constexpr int IWN_CMD_SCAN_ABORT=0x81,IWN_CMD_SCAN=0x80,IWN_HBUS_TARG_WRPTR=1;
+constexpr int IWN_CMD_ADD_NODE=24,IWN_CMD_LINK_QUALITY=78;
 constexpr int MCLBYTES=2048,MBUF_WAITOK=0,PCATCH=0;
 #define SEC_TO_NSEC(x) (uint64_t(x)*1000000000ULL)
 #define XYLog(...) do {} while(0)
@@ -119,6 +124,9 @@ public:
     }
     void iwn_clear_cmd_in_flight(iwn_softc *sc){assert(!sc->lock.held);++clears;}
     int iwn_cmd(iwn_softc *,int,const void *,int,int);
+    int iwn_auth_preparation_cmd(iwn_softc *sc,int code,const void *buf,int size,int async) {
+        return iwn_cmd_with_doorbell_hook(sc,code,buf,size,async,nullptr,nullptr,nullptr);
+    }
     int iwn_cmd_with_doorbell_hook(iwn_softc *,int,const void *,int,int,
         bool (*)(iwn_softc *,void *),void (*)(iwn_softc *,void *),void *);
     int iwn_scan_abort_command(iwn_softc *,uint64_t);

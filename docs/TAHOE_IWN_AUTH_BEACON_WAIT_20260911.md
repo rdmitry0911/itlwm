@@ -1,5 +1,8 @@
 # IWN roam packet loss and AUTH beacon admission — 2026-09-11
 
+Implementation follow-up: [owned nonblocking AUTH preparation](TAHOE_IWN_AUTH_BEACON_CONTINUATION_20260911.md).
+The evidence below remains the immutable predecessor result.
+
 ## Observed result, not a completed correction
 
 The running `17b63574` candidate reconnects with native WPA3/SAE and DHCP,

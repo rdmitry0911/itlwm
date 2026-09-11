@@ -55,6 +55,7 @@
 
 #include "if_iwnreg.h"
 #include "if_iwnvar.h"
+#include "IwnAuthBeaconLease.hpp"
 #include <sys/pcireg.h>
 
 #include <IOKit/network/IOEthernetController.h>
@@ -68,6 +69,7 @@
 #include <libkern/OSKextLib.h>
 #include <libkern/c++/OSMetaClass.h>
 #include <IOKit/IOFilterInterruptEventSource.h>
+#include <IOKit/IOTimerEventSource.h>
 
 #include <HAL/ItlHalService.hpp>
 #include <HAL/ItlDriverInfo.hpp>
@@ -414,7 +416,7 @@ public:
     int        iwn_media_change(struct _ifnet *);
     static int        iwn_newstate(struct ieee80211com *, enum ieee80211_state, int);
     static int        iwn_newstate_impl(struct ieee80211com *, enum ieee80211_state,
-                                        int, u_int64_t);
+                                      int, u_int64_t, uint64_t = 0);
     static void       iwn_wcl_join_failure_scan(struct ieee80211com *, u_int64_t);
     static int        iwn_newstate_preflight(struct ieee80211com *,
                     enum ieee80211_state, int);
@@ -539,6 +541,22 @@ public:
                                         struct ieee80211_node *);
     int        iwn_rxon_ht40_enabled(struct iwn_softc *);
     int        iwn_auth(struct iwn_softc *, int);
+    bool iwn_auth_beacon_init();
+    void iwn_auth_beacon_shutdown();
+    void iwn_auth_beacon_cancel(bool = false);
+    bool iwn_auth_beacon_pending();
+    bool iwn_auth_beacon_current(const IwnAuthBeaconRequest &);
+    int iwn_auth_beacon_enqueue(int, int);
+    void iwn_auth_beacon_kick();
+    void iwn_auth_beacon_drain();
+    void iwn_auth_beacon_fail(IwnAuthBeaconRequest, int);
+    int iwn_auth_rxon(struct iwn_softc *);
+    int iwn_auth_preparation_cmd(struct iwn_softc *, int, const void *, int, int);
+    void iwn_auth_beacon_note_command(struct iwn_rx_desc *, uint64_t);
+    uint64_t iwn_auth_beacon_rx_owner();
+    void iwn_auth_beacon_note_rx(const struct ieee80211_frame *, size_t, uint16_t, uint64_t);
+    static void iwn_auth_beacon_event(OSObject *, IOInterruptEventSource *, int);
+    static void iwn_auth_beacon_timeout(OSObject *, IOTimerEventSource *);
     int        iwn_run(struct iwn_softc *);
     static IOReturn iwn_sae_tx_gate_action(OSObject *, void *, void *,
                 void *, void *);
@@ -665,6 +683,12 @@ public:
     IOInterruptEventSource* fInterrupt;
     /* Private driver workloop gate; never AirportItlwm's policy gate. */
     IOCommandGate *fSaeTxGate;
+    IOSimpleLock *authBeaconLock;
+    IOInterruptEventSource *authBeaconSource;
+    IOTimerEventSource *authBeaconTimer;
+    bool authBeaconSourceAdded;
+    bool authBeaconTimerAdded;
+    IwnAuthBeaconLease authBeacon;
     bool apFirmwareTransitionActive;
     bool apFirmwareDeactivationReplySeen;
     bool apFirmwareDeactivationNotificationSeen;

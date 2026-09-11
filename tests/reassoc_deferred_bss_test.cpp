@@ -192,6 +192,7 @@ struct iwn_tx_data {
     uint8_t diag_subtype = 0xff, diag_peer[6]{};
     unsigned diag_auth_seq = 0xffff;
     uint64_t wnm_tx_fence_generation = 0;
+    uint64_t auth_rxon_serial = 0;
     uint8_t wnm_tx_fence_kind = 0;
     void *map = nullptr;
 };

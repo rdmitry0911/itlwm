@@ -107,6 +107,10 @@ bash "$(dirname "$0")/test_reassoc_tx_retirement.sh"
 bash "$(dirname "$0")/test_iwn_scan_abort_owner.sh"
 bash "$(dirname "$0")/test_net80211_join_attempt.sh"
 bash "$(dirname "$0")/test_iwn_sae_join_failure.sh"
+bash "$(dirname "$0")/test_iwn_auth_beacon.sh"
+for auth_case in roam cold incoming retry command-failure; do
+    bash "$(dirname "$0")/test_iwn_auth_nonblocking.sh" "$auth_case"
+done
 bash "$(dirname "$0")/test_scan_command_lease.sh"
 bash "$(dirname "$0")/test_scan_command_policy.sh"
 bash "$(dirname "$0")/test_state_transition_request.sh"

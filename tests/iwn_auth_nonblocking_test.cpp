@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <cstring>
 
-static constexpr unsigned IEEE80211_DUR_TU = 1024;
+[[maybe_unused]] static constexpr unsigned IEEE80211_DUR_TU = 1024;
 static constexpr unsigned IEEE80211_F_USEPROT = 1;
 static constexpr unsigned IEEE80211_F_SHSLOT = 2;
 static constexpr unsigned IEEE80211_F_SHPREAMBLE = 4;
@@ -47,7 +47,7 @@ struct iwn_softc {
     uint8_t bss_node_addr[6];
     struct { const char *dv_xname; } sc_dev;
 };
-static const uint8_t etheranyaddr[6] = {};
+[[maybe_unused]] static const uint8_t etheranyaddr[6] = {};
 #define IEEE80211_ADDR_EQ(a, b) (memcmp((a), (b), 6) == 0)
 #define IEEE80211_ADDR_COPY(a, b) memcpy((a), (b), 6)
 #define IEEE80211_IS_CHAN_2GHZ(c) (!(c)->five)
@@ -60,7 +60,7 @@ static const uint8_t etheranyaddr[6] = {};
 static uint64_t busyMicroseconds;
 static unsigned commandStep;
 static int failStep;
-static void countedDelay(uint64_t usec) { busyMicroseconds += usec; }
+[[maybe_unused]] static void countedDelay(uint64_t usec) { busyMicroseconds += usec; }
 #define DELAY(usec) countedDelay(usec)
 static unsigned ieee80211_chan2ieee(ieee80211com *, ieee80211_channel *c) {
     return c->number;
@@ -77,6 +77,9 @@ class ItlIwn {
 public:
     bool apStaBssAssociated = true;
     int iwn_auth(iwn_softc *, int);
+    int iwn_auth_rxon(iwn_softc *sc) {
+        return iwn_cmd(sc, IWN_CMD_RXON, &sc->rxon, sc->rxonsz, 1);
+    }
     void iwn_rxon_configure_ht40(ieee80211com *, ieee80211_node *) {}
     int iwn_cmd(iwn_softc *sc, int code, const void *payload, int size, int async) {
         assert(code == IWN_CMD_RXON && payload == &sc->rxon);

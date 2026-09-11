@@ -5110,6 +5110,12 @@ bool ItlIwn::attach(IOPCIDevice *device)
     com.sc_scan_lease_lock = NULL;
     com.sc_ap_transition_scan_blocked = false;
     fSaeTxGate = NULL;
+    authBeaconLock = NULL;
+    authBeaconSource = NULL;
+    authBeaconTimer = NULL;
+    authBeaconSourceAdded = false;
+    authBeaconTimerAdded = false;
+    authBeacon = IwnAuthBeaconLease{};
     bzero(apClients, sizeof(apClients));
     apClientContext = &apClients[0];
     apMaxStations = kItlApFirmwareMaxClients;
@@ -8200,6 +8206,7 @@ bool ItlIwn::iwn_handle_ap_data(mbuf_t packet, size_t frameLength,
 void ItlIwn::
 detach(IOPCIDevice *device)
 {
+    iwn_auth_beacon_cancel(true);
     iwn_purge_ap_ps_queue();
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     struct iwn_softc *sc = &com;
@@ -8256,6 +8263,7 @@ detach(IOPCIDevice *device)
      * Removing this source synchronously acknowledges that action before any
      * PMF lock, DMA ring, or net80211 state below is released. */
     iwn_interrupt_teardown(sc);
+    iwn_auth_beacon_shutdown();
     /* No hardware RX producer remains.  Drop the closing auth-owned hook
      * before generic ifdetach destroys its selected-BSS leaf. */
     iwn_sae_engine_callback_close(sc);
@@ -8298,6 +8306,10 @@ detach(IOPCIDevice *device)
     if (sc->sc_sae_tx_lifecycle_lock != NULL) {
         IOLockFree(sc->sc_sae_tx_lifecycle_lock);
         sc->sc_sae_tx_lifecycle_lock = NULL;
+    }
+    if (authBeaconLock != NULL) {
+        IOSimpleLockFree(authBeaconLock);
+        authBeaconLock = NULL;
     }
     releaseAll();
 }
@@ -11649,6 +11661,8 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
         __atomic_store_n(&sc->sc_sae_engine_task_admission_state, 0,
             __ATOMIC_RELEASE);
     sc->sc_mfp_pae_task_ready = sc->sc_mfp_pae_lock != NULL;
+    if (!iwn_auth_beacon_init())
+        return false;
     iwn_publish_mfp_capability(sc);
 
     iwx_auth_diag_init();
@@ -12507,6 +12521,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
         data->ap_data = false;
         iwn_sae_tx_data_clear(data);
         paddr += sizeof (struct iwn_tx_cmd);
+        data->auth_rxon_serial = 0;
 
         error = bus_dmamap_create(sc->sc_dmat, MCLBYTES,
             IWN_MAX_SCATTER - 1, MCLBYTES, 0, BUS_DMA_NOWAIT,
@@ -12560,6 +12575,8 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         iwn_sae_tx_data_clear(data);
     }
     /* Clear TX descriptors. */
+    for (i = 0; i < IWN_TX_RING_COUNT; i++)
+        ring->data[i].auth_rxon_serial = 0;
     memset(ring->desc, 0, ring->desc_dma.size);
     if (ring->first_tb != NULL)
         memset(ring->first_tb, 0, ring->first_tb_dma.size);
@@ -14524,6 +14541,8 @@ invalidateWclBackgroundScan()
     IOSimpleLockUnlock(com.sc_scan_lease_lock);
 }
 
+#include "IwnAuthBeacon.inc"
+
 int ItlIwn::
 iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 {
@@ -14557,7 +14576,7 @@ iwn_wcl_join_failure_scan(struct ieee80211com *ic, u_int64_t generation)
 
 int ItlIwn::
 iwn_newstate_impl(struct ieee80211com *ic, enum ieee80211_state nstate, int arg,
-                  u_int64_t join_failure_generation)
+                  u_int64_t join_failure_generation, uint64_t auth_serial)
 {
     struct _ifnet *ifp = &ic->ic_if;
     struct iwn_softc *sc = (struct iwn_softc *)ifp->if_softc;
@@ -14593,6 +14612,32 @@ iwn_newstate_impl(struct ieee80211com *ic, enum ieee80211_state nstate, int arg,
     if (join_failure_generation == 0 && nstate == IEEE80211_S_SCAN &&
         iwn_wcl_initial_scan_pending_blocks_generic(sc))
         return 0;
+
+    if (auth_serial != 0) {
+        IwnAuthBeaconRequest request = {};
+        if (that->authBeaconLock == NULL || !that->getMainWorkLoop()->inGate())
+            return ECANCELED;
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(that->authBeaconLock);
+        const bool owned = that->authBeacon.stage ==
+            IwnAuthBeaconLease::Stage::Programming &&
+            that->authBeacon.request.serial == auth_serial;
+        if (owned)
+            request = that->authBeacon.request;
+        IOSimpleLockUnlockEnableInterrupt(that->authBeaconLock, irq);
+        if (!owned || request.state != nstate || request.argument != arg ||
+            !that->iwn_auth_beacon_current(request))
+            return ECANCELED;
+    } else if (join_failure_generation == 0 && ic->ic_opmode == IEEE80211_M_STA &&
+        (nstate == IEEE80211_S_AUTH ||
+         (nstate == IEEE80211_S_ASSOC && ic->ic_state == IEEE80211_S_RUN))) {
+        /* Accepted lower work is queued, not executed recursively from the
+         * last source TX/RX callback. The continuation owns copied identity. */
+        return that->iwn_auth_beacon_enqueue(nstate, arg);
+    } else {
+        /* Only an admitted state edge supersedes pending AUTH. Rejected
+         * scans above must not revoke the target's preparation. */
+        that->iwn_auth_beacon_cancel();
+    }
 
     if (nstate == IEEE80211_S_SCAN) {
         AirportItlwmPostPltiTraceRecord(
@@ -14788,7 +14833,8 @@ iwn_newstate_impl(struct ieee80211com *ic, enum ieee80211_state nstate, int arg,
         if ((error = that->iwn_auth(sc, arg)) != 0) {
             XYLog("%s: could not move to auth state\n",
                 sc->sc_dev.dv_xname);
-            ieee80211_roam_link_failed(ic, roam_epoch);
+            if (auth_serial == 0)
+                ieee80211_roam_link_failed(ic, roam_epoch);
             return error;
         }
         break;
@@ -14809,7 +14855,8 @@ iwn_newstate_impl(struct ieee80211com *ic, enum ieee80211_state nstate, int arg,
         break;
     }
 
-    return sc->sc_newstate(ic, nstate, arg);
+    /* AUTH's sole generic commit follows the real command/beacon receipts. */
+    return auth_serial != 0 ? 0 : sc->sc_newstate(ic, nstate, arg);
 }
 
 void ItlIwn::
@@ -14913,6 +14960,9 @@ iwn_rx_phy(struct iwn_softc *sc, struct iwn_rx_desc *desc,
 
     /* Save RX statistics, they will be used on MPDU_RX_DONE. */
     memcpy(&sc->last_rx_stat, stat, sizeof (*stat));
+    /* A cached PHY observation preceding RXON must not qualify a later
+     * MPDU as the new target's post-RXON regulatory beacon. */
+    sc->last_rx_auth_serial = iwn_auth_beacon_rx_owner();
     sc->last_rx_valid = IWN_LAST_RX_VALID;
     /*
      * The firmware does not send separate RX_PHY
@@ -15087,6 +15137,9 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         mbuf_freem(m);
         return;
     }
+    iwn_auth_beacon_note_rx(wh, len, letoh16(stat->chan),
+        desc->type == IWN_MPDU_RX_DONE ? sc->last_rx_auth_serial :
+        iwn_auth_beacon_rx_owner());
     /*
      * APSTA owns a distinct PAN MAC context.  Do not feed frames addressed
      * to that role into the concurrently-live station net80211 state
@@ -16578,6 +16631,9 @@ iwn_notif_intr(struct iwn_softc *sc)
                 &sc->txq[sc->command_queue];
             struct iwn_tx_data *commandData =
                 &commandRing->data[desc->idx];
+            const uint64_t authSerial = commandData->auth_rxon_serial;
+            commandData->auth_rxon_serial = 0;
+            iwn_auth_beacon_note_command(desc, authSerial);
             const struct iwn_tx_cmd *completedCommand =
                 commandData->m != NULL ?
                 mtod(commandData->m, const struct iwn_tx_cmd *) :
@@ -18160,6 +18216,11 @@ _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
     if (!(ifp->if_flags & IFF_RUNNING) || ifq_is_oactive(&ifp->if_snd))
         return kIOReturnError;
 
+    /* Keep all primary frames queued until the prepared target is allowed
+     * to enter AUTH. The direct SAE producer is not started before then. */
+    if (that->iwn_auth_beacon_pending())
+        return kIOReturnSuccess;
+
     for (;;) {
         if (sc->qfullmsk != 0) {
             ifq_set_oactive(&ifp->if_snd);
@@ -18218,6 +18279,9 @@ _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
 #ifndef AIRPORT
             ic->ic_state != IEEE80211_S_RUN ||
 #endif
+            (ic->ic_opmode == IEEE80211_M_STA &&
+             (ic->ic_state == IEEE80211_S_AUTH ||
+              ic->ic_state == IEEE80211_S_ASSOC)) ||
             (ic->ic_xflags & IEEE80211_F_TX_MGMT_ONLY))
             break;
 
@@ -18686,6 +18750,15 @@ iwn_clear_cmd_in_flight(struct iwn_softc *sc)
 int ItlIwn::
 iwn_cmd(struct iwn_softc *sc, int code, const void *buf, int size, int async)
 {
+    /* These two host-only receipts complete AUTH's broadcast TX context.
+     * The common prefix containing ADD_NODE.id is identical on 4965/5000. */
+    if ((code == IWN_CMD_ADD_NODE &&
+         size > static_cast<int>(offsetof(struct iwn_node_info, id)) &&
+         static_cast<const struct iwn_node_info *>(buf)->id == sc->broadcast_id) ||
+        (code == IWN_CMD_LINK_QUALITY &&
+         size >= static_cast<int>(sizeof(struct iwn_cmd_link_quality)) &&
+         static_cast<const struct iwn_cmd_link_quality *>(buf)->id == sc->broadcast_id))
+        return iwn_auth_preparation_cmd(sc, code, buf, size, async);
     return iwn_cmd_with_doorbell_hook(sc, code, buf, size, async,
                                       NULL, NULL, NULL);
 }
@@ -18758,6 +18831,7 @@ iwn_cmd_with_doorbell_hook(struct iwn_softc *sc, int code, const void *buf,
     cmd->flags = 0;
     cmd->qid = ring->qid;
     cmd->idx = ring->cur;
+    data->auth_rxon_serial = 0;
     if (size != 0)
         memcpy(cmd->data, buf, size);
 
@@ -20286,7 +20360,7 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
      * generic background owner is deliberately included: it does not set
      * prearm_background, and used to retune APSTA between Association
      * Response and EAPOL M1. */
-    if (iwn_rsn_join_scan_blocked(ic))
+    if (iwn_auth_beacon_pending() || iwn_rsn_join_scan_blocked(ic))
         return EBUSY;
     if (prearm_background && (ic->ic_state != IEEE80211_S_RUN ||
                               ic->ic_mgt_timer != 0 ||
@@ -21040,9 +21114,7 @@ iwn_auth(struct iwn_softc *sc, int arg)
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_node *ni = ic->ic_bss;
     int error, ridx;
-    int bss_switch =
-        (!IEEE80211_ADDR_EQ(sc->bss_node_addr, etheranyaddr) &&
-        !IEEE80211_ADDR_EQ(sc->bss_node_addr, ni->ni_macaddr));
+    (void)arg; // The copied AUTH owner chooses its beacon requirement.
 
     /*
      * Authentication is the other DVM "active but unassociated" BSS case.
@@ -21107,7 +21179,7 @@ iwn_auth(struct iwn_softc *sc, int arg)
      */
     IEEE80211_ADDR_COPY(sc->rxon.myaddr, ic->ic_myaddr);
     IEEE80211_ADDR_COPY(sc->rxon.wlap, ic->ic_myaddr);
-    error = iwn_cmd(sc, IWN_CMD_RXON, &sc->rxon, sc->rxonsz, 1);
+    error = iwn_auth_rxon(sc);
     if (error != 0) {
         XYLog("%s: RXON command failed\n", sc->sc_dev.dv_xname);
         return error;
@@ -21152,19 +21224,8 @@ iwn_auth(struct iwn_softc *sc, int arg)
      * data TX FIFO.
      */
 
-    /*
-     * Make sure the firmware gets to see a beacon before we send
-     * the auth request. Otherwise the Tx attempt can fail due to
-     * the firmware's built-in regulatory domain enforcement.
-     * Delaying here for every incoming deauth frame can result in a DoS.
-     * Don't delay if we're here because of an incoming frame (arg != -1)
-     * or if we're already waiting for a response (ic_mgt_timer != 0).
-     * If we are switching APs after a background scan then net80211 has
-     * just faked the reception of a deauth frame from our old AP, so it
-     * is safe to delay in that case.
-     */
-    if ((arg == -1 || bss_switch) && ic->ic_mgt_timer == 0)
-        DELAY(ni->ni_intval * 3 * IEEE80211_DUR_TU);
+    /* The owned workloop continuation waits for the RXON receipt and an
+     * actual target beacon. Never busy-wait in the source RX/TX callback. */
 
     /* We can now clear the cached address of our previous AP. */
     memset(sc->bss_node_addr, 0, sizeof(sc->bss_node_addr));
@@ -23561,6 +23622,7 @@ void ItlIwn::
 iwn_hw_stop(struct iwn_softc *sc)
 {
     ItlIwn *that = container_of(sc, ItlIwn, com);
+    that->iwn_auth_beacon_cancel(true);
     struct ieee80211com *ic = &sc->sc_ic;
     struct ItlSaeAuthTransportEventV1 reset_event;
     struct ieee80211_wcl_scan_invalidation wcl_invalidation;
@@ -23747,6 +23809,20 @@ iwn_init(struct _ifnet *ifp)
     iwn_sae_tx_reopen(sc);
     iwn_sae_engine_reopen(sc);
 
+    if (authBeaconLock == NULL) {
+        error = ENXIO;
+        goto fail;
+    }
+    {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(authBeaconLock);
+        const bool reopened = authBeacon.reopen();
+        IOSimpleLockUnlockEnableInterrupt(authBeaconLock, irq);
+        if (!reopened) {
+            error = EOVERFLOW;
+            goto fail;
+        }
+    }
+
     if (ic->ic_opmode != IEEE80211_M_MONITOR) {
         /* A cold power-on census must never synthesize an association.  An
          * unexpected firmware epoch is different: Tahoe broadcasts
@@ -23792,6 +23868,7 @@ iwn_stop(struct _ifnet *ifp)
     struct iwn_softc *sc = (struct iwn_softc *)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
 
+    iwn_auth_beacon_cancel(true);
     timeout_del(&sc->calib_to);
     __atomic_store_n(&ic->ic_initial_scan_census_only, 0,
                      __ATOMIC_RELEASE);
