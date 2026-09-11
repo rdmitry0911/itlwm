@@ -196,3 +196,40 @@ tests; its first SSH banner probe timed out and remains separate evidence.
 
 The post-S3 AP security matrix and remaining native STA/GUI regression are
 still pending; the public release remains source52951b81.
+
+## Post-S3 native AP security matrix
+
+All three ordinary CoreWLAN/Internet Sharing AP cycles completed on the same
+BE0C8CE1 image and 2F68EDF1 boot, without another sleep or reboot. External
+host AX211 independently negotiated SAE with mandatory PMF (`pmf=2`, BIP),
+WPA2-PSK, and NONE respectively and obtained DHCP address 192.168.2.2.
+Each passed 20/20 client-to-AP 1400-byte packets, 10/10 AP-to-client packets
+after clearing the bridge ARP entry, and the exact HTTP payload through the
+guest's Internet Sharing/NAT path. After ordinary sharing disable, bridge100
+was absent, the retired bridge's ioref was zero, and native STA traffic to
+172.16.66.1 passed 10/10. Host restoration returned zero each time; the wired
+management default route was unchanged.
+
+| Mode | Cycle UTC | Maximum RTT forward / cold reverse / restored STA |
+| --- | --- | --- |
+| WPA3 | 13:50:19–13:52:07 | 26.540 / 106.746 / 11.313 ms |
+| WPA2 | 13:52:35–13:54:23 | 26.581 / 103.593 / 66.281 ms |
+| Open | 13:54:53–13:56:41 | 20.226 / 111.591 / 74.125 ms |
+
+Each external DHCP capture has two packets, each ARP/ICMP capture has 24,
+and all six report zero kernel capture drops. The cold-traffic trace includes
+real q11 data TX completions; WPA3 also retains four unacknowledged q7
+management completions (status 0x83, ackfail 4). The successful payload checks
+are not a claim of universally error-free management traffic or throughput
+parity. This matrix starts AP after S3; it does not attest keeping an already
+active AP across S3, post-wake GUI usability, or physical IWM/IWX behavior.
+
+The 45-file external AP evidence manifest was verified in full:
+`de708a96cecf5ca6cef6ecafd2486bcd7e765dcd6d91763ff4b523ff6ad80c76`.
+
+The frozen preflight bundle was compared recursively with the installed kext,
+then packaged without rebuilding. The extracted normalized archive matches
+the full frozen bundle and the exact loaded Mach-O UUID/hash. The downloaded
+candidate archive SHA-256 is
+`feb561fc09360d9ddbea0d513f1d24b32f6108f9589b8e0a5253f0799a2f35ec`.
+It remains unpublished pending the current native STA and cold GUI regressions.
