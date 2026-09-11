@@ -96,3 +96,95 @@ the guest BootKC and no `_thread_call_cancel_wait` dependency exists.
 
 Real failure/recovery qualification remains required. Do not promote this
 source/build correction to a public release before those checks.
+
+## Exact-image runtime follow-up
+
+Source commit `52951b81` was pushed before activation. The owned QEMU
+PID/name and writable lab overlay are unchanged; the latest working 17b copy
+and all backing images remain untouched. Runtime evidence for this candidate:
+`/home/dima/Projects/itlwm/aiam-reassoc-source-runtime.sE0SPZ`.
+
+Private preflight passed with five AuxKC members and no canonical mutation.
+The first activation invocation incorrectly named the source snapshot instead
+of the preflight snapshot; it failed its path check before mutation. The
+corrected invocation returned READY at 11:31:19 UTC. Ordinary guest reboot
+loaded UUID `412FE602-291C-3683-877A-823470E766D1`, boot
+`D53B731D-A453-49CF-80A0-46E6DD3E0956`. Native boot auto-join reached
+WPA3/SAE and DHCP. The unsigned private candidate is not a signing claim.
+
+| 1400-byte ICMP observation | Forward | Reverse | Maximum RTT, ms |
+| --- | ---: | ---: | ---: |
+| Boot WPA3 | 20/20 | 19/20 | 59.412 / 34.271 |
+| Native WPA2 selection | 20/20 | 20/20 | 64.946 / 118.914 |
+| WPA2 after radio off/on | 20/20 | 20/20 | 114.588 / 18.309 |
+| Automatic WPA3 return after WPA2 AP removal | 20/20 | 20/20 | 59.551 / 1077.238 |
+| Native open-network selection | 20/20 | 20/20 | 119.742 / 172.847 |
+
+Boot's lost reverse packet and the 1.077-second return-path outlier remain
+recorded; this is not a claim that all data-path loss/latency is fixed.
+
+The WPA2 fixture was removed and host restoration finished at 11:37:00.
+At 1789126621503035113 ns the exact new helper saw scan owner 3,
+SCAN_STARTED, source epoch 36 while cancellation advanced to 37. Its return
+at 1789126621503040096 ns shows active=0, serial=0, BGSCAN cleared. The
+following scans were admitted normally, and WPA3 DHCP's lease began at
+11:37:08 UTC. No post-failure manual network selection or radio toggle was
+issued. After the open fixture, WPA3 also returned automatically (DHCP lease
+11:40:10). Fixture host restoration returned zero and the wired default route
+was unchanged in both experiments.
+
+The 300-second read-only observer ended with zero errors, SHA-256
+`21407ecd788f567c585ba018ee75a02b8be0453a28e772228df7b754db6eb77b`.
+No `SUPERSEDE_RESULT=16` was observed. Its field offsets were rechecked
+against this exact image. One preliminary symbol spelling had length 44
+instead of 46 and produced no helper disassembly; the corrected result is
+retained separately as `cancel-layout-q2.log`.
+
+The predecessor's frozen stuck-state evidence manifest is
+`a2af19313a9e6d0cf2dfbb00dfc4a1fde42888699213b6ff1994f4196ddb2e6e`.
+Its missing-permission disassembly attempt was empty; a separate sudo
+read-only extraction was added afterward and is bound by this candidate's
+`predecessor-evidence.sha256`. The original manifest was not overwritten.
+
+## Same-image S3 and repeated source-loss recovery
+
+The diagnostic USB Ethernet was removed while awake, and direct Wi-Fi SSH
+independently verified its absence. A sleep request at 11:41:26 UTC reached
+actual ACPI S3 at 11:41:56; the owned QEMU was observed `paused (suspended)`.
+One monitor wake at 11:42:36 ended 40 seconds of actual sleep. The boot UUID
+and loaded image were unchanged. Saved WPA3 DHCP started at 11:42:42, without
+another network selection or radio toggle. Both 1400-byte traffic directions
+completed 20/20 before diagnostic USB restoration; maximum RTTs were
+68.856 / 32.120 ms. The first immediate post-wake SSH attempt timed out before
+DHCP; the later successful readback is not substituted for that failed probe.
+
+The same post-S3 boot then repeated native WPA2, off/on and controlled AP
+removal. No reboot separates these observations:
+
+| Post-S3 1400-byte ICMP observation | Forward | Reverse | Maximum RTT, ms |
+| --- | ---: | ---: | ---: |
+| Native WPA2 selection | 20/20 | 20/20 | 90.838 / 91.316 |
+| WPA2 after radio off/on | 20/20 | 20/20 | 35.522 / 22.094 |
+| Automatic WPA3 return after WPA2 AP removal | 20/20 | 20/20 | 82.224 / 57.723 |
+
+At 1789127208437255861 ns the helper retired scan owner 9, SCAN_STARTED,
+source epoch 132 after advancement to 133. Return at 1789127208437260053 ns
+shows active=0, serial=0 and BGSCAN cleared. The host fixture finished restoring
+at 11:46:48 UTC, and the guest's automatic WPA3 DHCP lease started at 11:46:54.
+No post-failure manual join or radio toggle was issued. The 180-second observer
+ended normally with zero errors and no `SUPERSEDE_RESULT=16`, SHA-256
+`08528b2fc314a558bc818f73e8b69580538e21feb5e728e4c2016cb9494d40b9`.
+
+This closes the reproduced stranded logical scan-owner failure on actual
+IWN/6235 before and after S3. It does not close all candidate policy, timeout,
+MVM physical-retirement or data-path loss/latency issues. The read-only VNC
+capture after S3 reports that the guest has not initialized the display;
+pmset also records WindowServer's 30-second sleep acknowledgement timeout.
+Thus the Wi-Fi results do not qualify post-S3 GUI availability. No graphics
+or daemon reset was used to relabel this limitation.
+
+The terminal STA evidence, scripts and a frozen serial checkpoint are bound by
+`evidence-sta-posts3.sha256` in the runtime root, manifest SHA-256
+`298eccf4a8307ae21a85906cf050c2aa57ea672907a7a4d86bd3d665d6187f57`.
+GUI and AP-role regression of this candidate remain required before public
+release promotion. Physical host .22 and unrelated VMs remain untouched.
