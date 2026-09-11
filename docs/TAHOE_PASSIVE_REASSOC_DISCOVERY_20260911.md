@@ -201,3 +201,13 @@ Frozen evidence (including failed trials):
 `INVESTIGATION.md` records every retained run, observer revision and limitation;
 all573 files verify against `EVIDENCE.sha256`, whose SHA256 is
 `ccf4652625c5d2b608d3292590547f9193a81fab9c1995f961865f8365aedc40`.
+
+## Published alpha receipt
+
+The same [v2.4.0-alpha release](https://github.com/rdmitry0911/itlwm/releases/tag/v2.4.0-alpha)
+was updated at18:30:27UTC, title`AirportItlwm Tahoe v2.4.0-alpha (ee501d78)`.
+Asset557779468 has the15,685,533-byte/0f17c3bf... identity above. Independent
+GitHub download at18:30:30UTC compares byte-for-byte with the frozen tested ZIP.
+The release begins with the q5 SAE failure and final19/20 reverse-traffic
+limitation; neither is promoted to a pass. Prior ADAB archive and metadata
+are retained in`aiam-passive-discovery-release-20260911.ROevPG` for rollback.
