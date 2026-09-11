@@ -290,6 +290,15 @@ compare equal; packaging did not rebuild the binary.
   `fddbebf1e662ffea7f98bf27e08c481648f7109f681034d27681ed5bf1109fac`.
 - ZIP size: 15,684,441 bytes.
 
+Published at 16:38 UTC to
+[`v2.4.0-alpha`](https://github.com/rdmitry0911/itlwm/releases/tag/v2.4.0-alpha),
+title `AirportItlwm Tahoe v2.4.0-alpha (986e030b)`, asset ID `557611652`.
+API digest/size and a complete independent download were verified; the
+download byte-compares equal to the tested archive. Prior release notes were
+preserved as explicitly historical sections, including their limitations.
+Publication receipts are separate from the frozen qualification manifest:
+`/home/dima/Projects/itlwm/aiam-sae-departure-release-20260911.GNXEkK`.
+
 Runtime evidence is frozen under
 `/home/dima/Projects/itlwm/aiam-roam-departure-candidate-runtime.VktxXM`.
 All 280 entries of `evidence-qualified-q1.sha256` verify; manifest SHA-256:
