@@ -1,9 +1,11 @@
 # IWN passive roaming discovery: measured miss and bounded candidate
 
-Status: candidate implemented and locally tested; **not yet built, loaded or
-RF-qualified**. The published artifact is still the qualified source-departure
-image from [the preceding cycle](TAHOE_SAE_ROAM_SOURCE_DEPARTURE_20260911.md),
-production `986e030b`, UUID `ADABFCB9-0EE6-3FE0-AD81-01CDF616226B`.
+Status: production `ee501d78` is built and loaded; actual passive-channel
+recovery is demonstrated twice in the radio, with off/on and real S3 recovery.
+**This does not close general SAE roaming:** an authentication timeout in
+depart-q5 remains a separate serious failure. All three post-S3 AP regression
+modes have completed. This is a narrowly qualified passive-discovery fix,
+not a declaration that WPA3/multi-AP reconnection is fully reliable.
 
 ## Reproduction and reference
 
@@ -123,14 +125,79 @@ or cached BSS is used as a replacement for fresh reception.
   The later zero-serial guard and additional terminal assertions pass the
   dedicated test again. No IWM/IWX radio qualification is claimed.
 
-Next required gate: build/activate this exact candidate in the disposable
-guest; recalibrate the observer after the image/boot changes; reproduce real
-ca->02 discovery with an actual recovery command, source departure, SAE/PMF,
-DHCP and bidirectional traffic. Then exercise off/on, real S3 recovery and AP
-regressions before updating the public kext. This document does not close that
-runtime gate or claim the intermittent discovery surface is already fixed.
+## Loaded-image receipts and remaining surface
 
-Evidence working copy:
+Test-only portability commit `cdb2850c` does not change production identity.
+All354 production files match manifest
+`7c82cbd8d19c16c2e74784360bc74b07d6a51f5f69ac748ddcf4815fc2fbbe33`.
+Tahoe build succeeds, all1085 imports resolve against BootKC. Mach-O UUID:
+`DCCB5E44-25AE-30BE-930F-8975BFC10A6D`; SHA256:
+`976c2addfe9dcc9d161f83502d999350da218f8f5ed699ba1fa4a0ed88d94f16`.
+Private and installed AuxKC contain the exact five-member set. The sealed
+bundle, installed bundle and extracted candidate ZIP are byte-identical.
+The ZIP is15,685,533bytes, SHA256:
+`0f17c3bf2d7a54942fa8677b9a46cc18c3a6e48a9792a601c75e77720f002040`.
+Normal guest reboot gives boot`24A7472D-52A0-4F57-89F0-4EBFE68D38E6`;
+observer direct-callsite calibration was repeated for this image/boot.
+
+Three ca->02 returns were planned and completed; no repeat-until-green loop.
+The initial depart-q1 source guard failed before any observer/request because
+macOS had already moved from02 to ca after boot. Counts below are received
+guest->gateway/external AX211->guest out of250 in each direction.
+
+| Run | First channel13 / actual retries | Result | F/R | Encap drops |
+| --- | --- | --- | --- | --- |
+| return-q2 | target fresh/CRC15; retry12 | target02 RUN, ticket2 ACK |249/247|0|
+| depart-q3 | retry12 | target ca RUN, ticket3 ACK |249/248|1|
+| return-q4 | no target/CRC0; retry13 | fresh target/CRC11, ticket4 ACK,02 RUN |249/248|1|
+| depart-q5 | no passive retry | first auth fails; macOS reconnects then roams to ca |203/208|0|
+| return-q6 | no target/CRC0; retry12,13 | fresh target/CRC35, ticket7 ACK,02 RUN |248/248|2|
+
+All five observers finish with zero DTrace errors. In q4 and q6, actual target
+frames appear only in the standalone channel13 recovery command. Original
+serials22/44 survive the continuations; normal5GHz follows and exactly one
+upper terminal is claimed. Source departure, SAE/association and target RUN
+then occur. This closes the **observed zero-reception fragmented passive
+visit** mechanism, not every possible missed BSS and not lossless roaming.
+
+Depart-q5 is deliberately retained as failed first-attempt roaming even
+though the runner's final-target check returns0. Target ca was selected,
+source-departure ticket5 was ACKed and the auth-beacon fence succeeded. Two
+Algorithm3 TX descriptors were ACKed, but no association followed; about4.51s
+later authentication timed out, IPv4 disappeared temporarily and native
+recovery rejoined02 before a separate macOS-initiated roam(ticket6) reached ca.
+No passive retry occurred in this failing request. The shared SAE engine
+files are unchanged from986e030b and currently have no sent-Commit/Confirm
+peer-response retransmission timer. This is a plausible recovery gap, **not
+yet proof of which AP frame was lost**. Exact peer-phase observation and
+bounded driver-owned retransmission are the next functional layer.
+
+The final payload aggregate passes after all changes; SHA256:
+`ef2e141e30ba8d52a0dd45f08d0a8a779c1d2d2ae96a616399692909cf3d498d`.
+
+Native off/on rejoined WPA3/DHCP and passed20/20 packets each direction.
+Real S3 was independently witnessed as QEMU suspended; guest pmset records
+18:10:18->18:11:56UTC (98seconds). Same boot/UUID; WiFi DHCP starts18:12:02
+(+6s). The premature initial SSH probe timed out before traffic. Once ready,
+the WiFi-only check passed20/20 each direction while USB diagnostics were
+absent; no off/on or reboot was needed. Exact USB devices were restored after
+this receipt. GUI-after-sleep and AP-through-sleep are not claimed.
+
+Post-S3 AP WPA3, WPA2 and open each pass external AX211 negotiation, DHCP,
+20 forward/10 reverse packets, HTTP118bytes through guest USB/NAT backhaul,
+normal stop/bridge retirement and10 STA gateway packets. WPA3 records
+`key_mgmt=SAE, pmf=2`. All three normal-stop and exact host-profile restoration
+receipts pass; open finishes at18:20:31UTC. This is not
+simultaneous STA-radio backhaul. IWM/IWX are source/contract tested only;
+their radio behavior is not covered by this6235 run.
+
+A separate final STA health check after all AP modes retains a non-clean
+traffic result:20/20 guest->AX211 and19/20 AX211->guest, with WPA3/DHCP intact.
+Its strict runner returns1. It is not relabelled as a full bidirectional pass;
+the earlier off/on and WiFi-only post-S3 checks remain distinct20/20 receipts.
+
+Frozen evidence (including failed trials):
 `/home/dima/Projects/itlwm/aiam-passive-roam-discovery-runtime.frmZ3s`.
 `INVESTIGATION.md` records every retained run, observer revision and limitation;
-this cycle's evidence is not yet frozen as a qualified release manifest.
+all573 files verify against `EVIDENCE.sha256`, whose SHA256 is
+`ccf4652625c5d2b608d3292590547f9193a81fab9c1995f961865f8365aedc40`.
