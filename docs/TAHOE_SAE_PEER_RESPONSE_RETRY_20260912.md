@@ -2,10 +2,16 @@
 
 Status: the single-Commit omission reproduces failed native connection on the
 published f170870d image; its unchanged pass-through control completes SAE,
-DHCP and traffic. A driver-resident retry candidate now passes actual core,
+DHCP and traffic. Driver-resident retry477ab0af passes actual core,
 all-family worker and timer tests on Linux and Tahoe, including both complete
-payload aggregates. It has not yet been built, loaded or radio-qualified.
-The production-candidate section below does not relabel the baseline runs.
+payload aggregates. Its exact842B image is now loaded: the single-Commit
+omission, Confirm omission and forward-all controls complete SAE/DHCP
+and20/20 traffic each direction. Bounded exhaustion retires the exact owner;
+native fallback reaches saved LabAP. The planned STA/AP/S3/roam controls are
+complete with retained WPA2 scan-admission and packet-loss failures; this is
+a limited-alpha checkpoint, not full qualification. Public alpha remains
+f170870d at the prepublication checkpoint. Baseline failures below
+are retained, not relabelled.
 
 ## Controlled radio experiment
 
@@ -238,7 +244,257 @@ Tahoe selected/aggregate SHA256:
 `c5a6ec1722298cc94cf27e344052c07261fd49da0da972637ef1f5f6e25962dd`,
 `ab514a9b8ae319351aa0b9ee4d7d119f33b25317cc47247b3f596b4a7e2ebe98`.
 
-Next: commit/push this candidate, build and load its exact source manifest,
-repeat the single-Commit omission and forward-all controls, add Confirm-loss
-and bounded exhaustion controls, then S3/off-on/STA/AP security regression.
-Only those new RF receipts can justify publishing a replacement kext.
+At that source-only checkpoint, build/load and all new RF controls remained
+next. The following sections record their actual execution; broad radio
+qualification and replacement publication still require the remaining gates.
+
+## Exact production build and ordinary guest boot
+
+477ab0af139c96ff485d5f2a3c69152ee82aacb6 was pushed before build. The357-file
+production manifest1135a508616b0b89620b114a067280fcc561bf5ee862f234e894053973f98eed
+was verified before and after xcodebuild in the existing build mirror. All1088
+imports resolve against the actual BootKC. The new Mach-O has UUID
+842B08A6-AB1B-394A-9490-C10EB1F1D9D2 and SHA256
+0e0aa25caca2f9ce9b630ad37aa9d9c53730ee939128d4fe30031b86927fcf80.
+The previous68F5 bundle was preserved before copying source/building.
+
+Private admission and activation-20260911T230116Z preserve the exact five
+AuxKC members and timestamped rollback copies. Normal reboot of only the
+owned guest began23:02:09UTC. Boot1FB8BDE2-E95D-4B56-8948-A4FCE549D6BD
+loads842B; saved LabAP returns automatically with DHCP172.16.66.219 and
+20/20 packets each direction. No physical22, unrelated QEMU or base disk
+was changed. The public alpha asset is still the previousf170870d image.
+
+## New-image single-Commit omission and forward-all controls
+
+The same fixture configuration, SSID, BSSID, SAE group19/HnP and mandatory
+PMF are retained. Each run requires an empty AP station table before exactly
+one native networksetup request. A fresh bounded observer additionally records
+the actual queue-terminal entry and retry API ticket/result. It reads no
+private engine/node/credential offsets. Complete authentication capture is
+decoded independently of tcpdump's unsupported algorithm label.
+
+retry-commit-q1 (23:06:37UTC request) starts epoch18/relay3. Original Commit
+ticket9223372036854775813 succeeds at the actual event enqueue. The retry
+API consumes that exact ticket2000.539561ms later, prepares ticket5814
+(same high-bit prefix), and the same epoch/relay/BSSID remains active.
+Hostapd intentionally omits only the first Commit; the monitor records two
+complete Commit bodies with identical SHA256
+14a57e51b329d899e5bec3d0593843365daa863d1fb2f97c060456789ef55ff1.
+The second reaches hostapd, followed by peer Commit, client Confirm5815,
+validated peer Confirm and RUN. No replacement engine intervenes.
+DHCP192.168.73.28 and20/20 packets each direction pass; maximum RTTs10.658
+and10.683ms. Five authentication frames, no capture drops, observererrors0
+and encap_drops0. Controller and exact host-profile restoration return0;
+cleanup finishes23:08:34UTC. This closes this one previously failing control,
+not every natural timeout or unsuccessful/no-ACK TX case.
+
+retry-forward-q2 (23:14:30UTC request) forwards every management frame and
+actual TX status. Epoch43/relay6 uses Commit5820 and Confirm5821, both real
+TX successes, without a peer retry. Four complete authentication frames,
+SAE/RUN/DHCP192.168.73.28 and20/20 packets each way pass. Observererrors0
+and encap_drops0; maximum RTTs9.936/8.916ms. Native background replacement
+scans still report unsuccessful roam searches while the target remains
+connected; those are not counted as successful roaming. Controller and host
+restoration return0; cleanup finishes23:16:26UTC.
+
+Commit control trace/pcap SHA256:
+c7f68e977048773f543ad7bc2fbef81d6224f75d07f3c8c5f695e8325743cb0e,
+deff993f5dd3cd94c7649086d8bffbaf8eefe76134bc918b1e2d02787ab6600d.
+Forward-all trace/pcap SHA256:
+ea5b99430104a82ac7ec0bb07603d7205bea434a6cff786345fad2656b81e6e8,
+d9eead2629b4167d53642fe06df2d83dfd847bd9d18764fe008e31c583091e8b.
+
+## Confirm omission and bounded exhaustion on the same image
+
+retry-confirm-q1 starts with one native request23:17:19UTC, epoch68/relay9.
+Commit5826 passes; hostapd omits only Confirm5827. The driver invokes retry
+2000.483760ms after that successful TX enqueue. Prepared ticket5828 is
+rejected before hardware submission and explicitly rolled back. The existing
+private-gate retry prepares5829, which actually transmits successfully; both
+the original and repeated on-air Confirm have the exact public-body digest
+3b6925611cf485a8d8cbd9b655de62d9a6767f9c50a239971cbfb61fc6d5aa68.
+This is one protocol retransmission, not two:5828 has no on-air frame or
+successful TX terminal. Peer Confirm validates in the original epoch, followed
+by RUN and DHCP192.168.73.28.20/20 packets each direction pass, maxima9.199
+and5.820ms. Five complete auth frames, capture drops0, observererrors0 and
+encap_drops0. Controller and exact host restoration return0 at23:19:17UTC.
+
+retry-exhaust-q1 makes one native request23:19:58UTC while its bounded
+hostapd controller omits every received Commit. Epoch93/relay12 transmits
+exactly three identical Commits, tickets5834--5836, each with an actual
+successful terminal. Retry after the third returns-2,6006.382355ms after the
+first receipt; the ordinary timeout retires the owner364.451307ms later.
+No fourth same-epoch transmission occurs. Native policy starts another target
+attempt, epoch113/relay13, with a new Commit body and tickets5837--5839.
+It also stops at three and retires313.925129ms after its exhausted result.
+The host capture contains exactly these six complete auth frames, two groups
+of three identical bodies; no fixture AP_CONNECTED or fake success occurs.
+
+The system client reports failed join/error-3912 even though its process
+status is0. Later automatic policy connects to saved LabAP02 at epoch128,
+then moves to LabAPca at129. These are separate exchanges, not success of the
+requested silent fixture. Final DHCP is172.16.66.219; the diagnostic wrapper
+and host restoration return0 at23:21:33UTC, observererrors0/encap_drops0.
+The independent subsequent restored-link check passes20/20 each direction,
+without explicit guest selection or off/on. This proves bounded retry and
+native fallback for this omission control, not same-profile/seamless recovery.
+
+Confirm trace/pcap SHA256:
+2b9f7a95e938b7e418a04be5ea89e468d5ea4f40229edd8be000d9223fa6ae34,
+39dca7f0916ecb0164c86efcb0d9bab85f1d9e77c77f999c7414f533611e1503.
+Exhaustion trace/pcap SHA256:
+d856ceb704b76cf85dc06f50547f8529ed92e321e06ce7b1d3380fe95cce3172,
+b75c2ea4ae9e102503b18a603f477e1f457934865ddb4d004d82b4c832e09c8f.
+
+The first generated Confirm runner failed bash syntax validation before
+execution because a text-substitution replacement interpreted shell dollar
+syntax. It was corrected with a literal callback replacement and all final
+script snapshots parsed before execution. No live runner/shared fixture was
+edited. The preserved controls above are the actual runs, not parser tests.
+
+## Actual S3: native link returns, strict data gate fails
+
+The independent pres3-q1 baseline passes20/20 each direction on restored
+LabAP, with no new network selection or off/on. The controller removes the
+exact diagnostic USB NIC and tablet, confirms their guest interfaces absent,
+and arms one normal sleep. QEMU actually reaches suspended state23:23:41UTC,
+is held five seconds and woken once23:23:46. macOS records Normal Sleep
+23:23:38 ->23:23:47UTC. The arming/request delay is not counted as sleep.
+
+The same boot1FB8 and image842B return on Wi-Fi alone, with WPA3 and DHCP
+172.16.66.219. The strict20-packet test fails: guest-to-host19/20 (missing
+sequence12), reverse20/20. Maximum RTTs255.184/198.859ms. Controller23567
+returns1 and restores both exact USB devices in its failure cleanup; no repeat
+replaces this result. The final guest power receipt is collected separately
+over the restored diagnostic interface because the failed data gate precedes
+that step. This proves actual wake/link recovery, not a zero-loss S3 pass.
+No endpoint packet captures covered this specific loss, so its location is
+not retrospectively assigned to the earlier firmware failure or bridge.
+
+On this same post-S3 image, the first native Internet Sharing regression
+(WPA3) completes at23:26:44UTC. External AX211 negotiates SAE/group19/HnP,
+required PMF and BIP, gets DHCP192.168.2.2, passes20/20 forward and10/10
+cold-ARP reverse1400-byte packets, and fetches the exact118-byte HTTP payload
+through guest USB/NAT backhaul. Normal AP stop removes bridge100 and the
+restored STA passes10/10 gateway packets. Host-profile restoration returns0;
+wired management is unchanged. WPA2 completes at23:28:53UTC and open at
+23:31:12UTC, with the same20/20 forward,10/10 cold-ARP reverse,118-byte
+HTTP/NAT and10/10 restored-STA checks. AX211 negotiates WPA2-PSK and NONE
+respectively and obtains192.168.2.2. All three wrappers and exact host-profile
+restorations return0, without duplicates in their forward summaries. The
+remaining STA/roam controls are still separate pending gates. This tests AP start
+after sleep, not continuity of an already active AP through sleep or GUI clicks.
+
+The ordinary packaging step archives the installed, tested bundle without
+rebuilding. Full357-file source manifest, equality with the build bundle and
+extracted-archive equality all verify. Prepared archive size15,693,832bytes,
+SHA256f1fa87afb14519112deccb45e7db8122b1b3eefa99f707f2d4c101b4e51f749c;
+its Mach-O retains UUID842B and SHA0e0aa25caca2f9ce9b630ad37aa9d9c53730ee939128d4fe30031b86927fcf80.
+The copied host archive has the same digest. This is not publication: public
+alpha still containsf170870d/68F5, and its prior archive is retained separately.
+
+## Native client regression: open/WPA3 pass, WPA2 scan admission fails
+
+Saved WPA3 off/on returns DHCP172.16.66.219 without an explicit selection;
+the separate after-off-on-q1 check passes20/20 each direction. Native open
+selection23:33:09UTC obtains192.168.73.26 and passes20/20 each direction,
+maxima176.456/170.520ms. Native WPA3 selection23:36:22UTC obtains192.168.73.30
+and passes20/20 each direction, maxima180.301/123.717ms. Both fixture wrappers
+and host restoration return0. These are native system-client requests, not
+mouse-driven GUI qualification or proof of every first-selection timing edge.
+
+The intervening WPA2 request23:34:20UTC reports "Could not find network
+AIAM-UIF3-WPA2" at23:34:23. Its process status0 does not mean success.
+The target/security gate never passes; the last poll still shows saved
+WPA3 LabAP. Wrapper43771 returns1 and restores the host23:35:35UTC. The AP
+was ENABLED and shows no station authentication, association or pairwise
+handshake. This is a retained failure before WPA2 authentication, not a
+failed password/key exchange and not a WPA2 STA pass.
+
+Read-only airportd logs for the exact request narrow this failure further.
+At23:34:21.003, the first live networksetup scan of the2GHz subset (including
+channel9) gets APPLE80211_IOC_SCAN_REQ return0xe00002d5/kIOReturnBusy within
+1.479ms. The framework then proceeds to the24-channel5GHz subset; that scan
+finishes2.755473s later with zero results. The successful second subset does
+not replace the rejected2GHz census where this AP actually resides. Logging
+explicitly permits SSID access for Apple-signed networksetup; BSSID privacy
+redaction is not proof of the previous custom-helper entitlement failure.
+
+The current setter can return Busy for source state, BGSCAN, management timer,
+closed RSN port, controller reservation or lower admission. Those actual
+ownership branches were not instrumented in this run, so no specific branch
+is guessed and no fence is removed. Priority for the next functional cycle:
+capture exact transient scan ownership and compare reference admission/queue
+behavior, then preserve this requested2GHz census through the real terminal.
+Changing retry limits or treating5GHz-only completion as a successful full
+scan would not fix this observed first-selection failure.
+
+WPA2 controller/airportd SHA256:
+cacabf6408d6512cef3f08825ff70ed6e07a513df191fda42820c3d6e59a17b5,
+5649590cdd8bdce87792895f1c566c15c017ececbeaa88d29396a57d756ee956.
+WPA3 controller SHA256:
+fa4ca172ccb38d69ed069a5baec18202de8a8485ce4bdf208e7c832a8a528568.
+
+## Native two-BSS post-S3 roaming: target success with retained losses
+
+The first planned02->ca control stops at its source guard before any observer,
+traffic or native request: automatic policy has already reachedca. Its exit1
+is not an on-air failure. The subsequent pair is separately labelled and
+does not force a source selection or toggle the radio.
+
+retry-roam-return-q1 requests ca/channel9 ->02/channel13 at23:38:12UTC.
+Source departure gets actual TX success, then epoch282/relay29 sends Commit
+5870 and Confirm5871, accepts both peer phases and reaches target RUN with
+one reassociation-success event. No peer timeout/retry or replacement exchange
+intervenes. The fixed traffic streams receive248/250 guest-to-gateway and
+244/250 host-to-guest; reverse maximum RTT2100.055ms. There is one observed
+encapsulation drop, errors0 and no endpoint capture drops.
+
+retry-roam-depart-q2 requests02 ->ca at23:40:09UTC. Epoch283/relay30 uses
+Commit5872 and Confirm5873, accepts both peer phases and reaches target RUN
+with one reassociation-success event. Fixed traffic is247/250 each direction,
+with two encapsulation drops, observererrors0 and no endpoint capture drops.
+Both90-second controls finish their requested-target/security gate and return0.
+Their wrapper explicitly says final-target success alone is not proof of
+first-attempt success; the phase observations above are checked separately.
+Neither controller is a zero-loss or seamless-roaming pass.
+
+Return trace/guest pcap/host pcap SHA256:
+5f53c32f9883ce3a5990a251dba3a5c737791937574d8b16b9a9535bacff9271,
+1e203f00b11cf3476f4f8b1604181506c5f2cb746a3193eae505f388f6cbbf16,
+c1b1e3b5925edede9b16932db421ac22211a567ecd2503b372cdf3a18e87b4da.
+Departure trace/guest pcap/host pcap SHA256:
+1b0d6435ba1496ecda3d328e94c6a0064b5c37bd1f733c7f3fc74b303f6d1ec1,
+626ff46af94d477fa7482224912df474afee014871ade8401d447361796f9aab,
+0d926eeed4e65da1687e78cd95a429b0ac6812c37af660da642666fe9e71c5f4.
+
+## Final restored link and immutable evidence
+
+The separately labelled final-restored-q1 check passes20/20 each direction
+on saved WPA3 LabAP172.16.66.219. It does not erase the failed post-S3 test,
+failed WPA2 first selection or either lossy roam. Host AX211 returns to its
+exact original profile with power saving on; the wired management route is
+unchanged. Both diagnostic USB devices are restored and no dtrace/tcpdump
+process remains in the owned guest. Same boot1FB8 and UUID842B are verified
+at23:44:39UTC. Physical22, other QEMU and backing disks were not changed.
+
+Frozen complete implementation/runtime evidence, including unsuccessful
+controls, observers, packet captures, hostapd/DHCP logs, source/build/admission
+receipts and the exact packaged kext:
+`/home/dima/Projects/itlwm/aiam-sae-peer-implementation-runtime.9PiKmZ`.
+All370 entries verify both in the durable copy and against the RAM original.
+EVIDENCE.sha256 SHA256:
+`ac15d066b7ad16f51f778b85fa1af44bf57891a33efceb60ffe835073f2da64e`.
+The durable directory is read-only and frozen; do not append publication or
+next-cycle evidence. RAM originalsoPlBh is also now a read/copy-only record.
+
+Publication work is separate:
+`/home/dima/Projects/itlwm/aiam-sae-peer-release-20260912.aMuDtS`.
+The previous68F5 archive and exact prepublication metadata are retained there.
+The guarded publisher requires the frozen manifest, each claimed gate, both
+known failures, a clean pushed documentation HEAD, unchanged remote release
+metadata and exact new/old archive hashes. Publication/readback is not claimed
+until that transaction actually completes. The next functional cycle is the
+observed2GHz public scan Busy/ownership boundary; full autonomous parity work
+remains active.
