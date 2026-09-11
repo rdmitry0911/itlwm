@@ -360,3 +360,18 @@ files are bound by `evidence-gui-cold.sha256`, SHA-256
 `709289ed0d89814c8c43f8f33e7636a46babd1a8979e85a0513599f5cbc5d692`.
 Its entries were checked again after sealing. This does not replace the
 separate pre/post-S3 STA and AP manifests or erase any earlier failed probe.
+
+## Published exact-image release
+
+After the qualification documentation was pushed as31b0b97f, the existing
+`v2.4.0-alpha` Tahoe ZIP was replaced at2026-09-11 13:17:07 UTC. Its size is
+15,681,473 bytes, and its release title identifies production52951b81. The
+published ZIP was independently downloaded into `release-readback-source529`
+and byte-compares equal to the prepared ZIP. ZIP SHA-2560978d134 and extracted
+Mach-O SHA-256883a37a2 match the full identities above. The previous public ZIP
+remains recoverable in `release-before-source529`, SHA-256c2dd6a08 above.
+
+Release notes explicitly retain all observed loss, incomplete post-S3 GUI and
+IWM/IWX RF qualification limits. The new comeback-deadline prototype is not
+in this published bundle. No physical-host installation, physical-host reboot,
+tag relocation or unrelated-VM mutation accompanied publication.
