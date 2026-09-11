@@ -291,7 +291,7 @@ for token in (
     "IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED",
     "IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED",
     "ic_sae_wcl_roam_start",
-    "source->ni_unref_cb = ieee80211_node_switch_bss",
+    "ieee80211_node_defer_bss_switch(ic, source, selbs,",
 ):
     require(completion, token, "real target switch path")
 
@@ -315,7 +315,7 @@ run_pae = newstate_target.find("sae_wcl_defer_link_up =", run_terminal)
 if run_terminal < 0 or run_pae < 0 or run_terminal >= run_pae:
     fail("reassociation terminal must precede local PAE link policy")
 
-failure = body(core, "void\nieee80211_wcl_reassoc_post_failure_owned(",
+failure = body(core, "u_int64_t\nieee80211_wcl_reassoc_post_failure_owned(",
                "WCL async failure")
 require(failure, "LEAF_SCAN_FAILED", "source-preserving no-target failure")
 require(failure, "ieee80211_pae_assoc_epoch_begin_reassoc(",

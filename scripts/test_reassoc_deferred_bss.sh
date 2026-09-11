@@ -17,6 +17,9 @@ awk '/^ieee80211_node_incref\(/ { selected=1; print "static inline void" }
 awk '/^struct ieee80211_node_switch_bss_arg/ { structure=1 }
      structure { print } structure && /^};/ { structure=0 }
      /^ieee80211_node_(lateattach|switch_bss|copy|cleanup_internal)\(/ { selected=1; print "void" }
+     /^ieee80211_bss_switch_identity_(current_locked|capture|current)\(/ { selected=1; print "int" }
+     /^ieee80211_node_switch_bss_fail\(/ { selected=1; print "void" }
+     /^ieee80211_node_defer_bss_switch\(/ { selected=1; print "int" }
      /^ieee80211_release_node\(/ { selected=1; print "void" }
      selected { print } selected && /^}/ { selected=0 }' \
     "$BSS_SWITCH_ROOT/itl80211/openbsd/net80211/ieee80211_node.c" \
@@ -40,11 +43,14 @@ awk '/^iwn_(tx_done(_free_txdata)?|reset_tx_ring|free_tx_ring)\(/ { selected=1; 
 "$BSS_SWITCH_TEST/test" 8
 "$BSS_SWITCH_TEST/test" 6
 for scenario in 9 10 11 12; do "$BSS_SWITCH_TEST/test" "$scenario"; done
+for scenario in 2 3 13 14 15 16 17 18 19 20 21 22 23 25 26; do
+    "$BSS_SWITCH_TEST/test" "$scenario"
+done
 if [ "${BSS_SWITCH_PASSING_ONLY:-0}" = 1 ]; then
     printf 'Callback detach/rearm and actual-copy controls pass; full deferred BSS/TX gate remains separately red.\n'
     exit 0
 fi
-for scenario in 1 2 3; do
+for scenario in 1 24; do
     result=0
     "$BSS_SWITCH_TEST/test" "$scenario" || result=$?
     printf 'deferred BSS scenario=%s exit=%s\n' "$scenario" "$result"
@@ -55,5 +61,5 @@ for scenario in 1 2 3; do
     fi
 done
 if [ "${BSS_SWITCH_EXPECT_DEFECTS:-0}" = 1 ]; then
-    printf 'Three BSS identity/liveness requirements still fail; physical TX retirement passes, NOT a passing roaming implementation.\n'
+    printf 'Pre-copy and terminal-before-arm liveness remain red; immutable deferred identity passes, NOT a full source-drain or roaming qualification.\n'
 fi

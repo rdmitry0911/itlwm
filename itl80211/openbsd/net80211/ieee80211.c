@@ -2526,14 +2526,14 @@ ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_DONE, &completion);
 }
 
-void
+u_int64_t
 ieee80211_wcl_reassoc_post_failure_owned(struct ieee80211com *ic,
     u_int64_t serial, u_int32_t result)
 {
     struct ieee80211_wcl_reassoc_completion completion = {};
     u_int32_t leaf;
     if (!ieee80211_wcl_reassoc_take_completion(ic, serial, 0, &completion, &leaf))
-        return;
+        return 0;
     completion.result = result != 0 ? result : (u_int32_t)EIO;
     /* A failed census leaves its source association alive. Once switching
      * started, fence only the retired serial and its captured epoch. */
@@ -2542,10 +2542,14 @@ ieee80211_wcl_reassoc_post_failure_owned(struct ieee80211com *ic,
         completion.association_epoch = ieee80211_pae_assoc_epoch_begin_reassoc(
             ic, serial, completion.association_epoch);
         if (completion.association_epoch == 0)
-            return;
+            return 0;
     }
     if (ic->ic_event_handler)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_FAIL, &completion);
+    /* This is the retired owner's epoch, not a read of potentially replaced
+     * current state after the public callback. A lower continuation must
+     * still match its original join/reassociation sequences before acting. */
+    return completion.association_epoch;
 }
 
 void

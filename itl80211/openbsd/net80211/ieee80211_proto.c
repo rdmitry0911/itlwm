@@ -2586,7 +2586,8 @@ ieee80211_roam_link_cancel(struct ieee80211com *ic)
 static u_int64_t
 ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
     int preserve_unbound_public_initial_bssid_pin,
-    u_int64_t reassoc_serial, u_int64_t expected_epoch)
+    u_int64_t reassoc_serial, u_int64_t expected_epoch,
+    const struct ieee80211_bss_switch_identity *bss_switch = NULL)
 {
 	u_int64_t epoch;
 	u_int64_t prior_epoch;
@@ -2607,6 +2608,15 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 		irq = IOSimpleLockLockDisableInterrupt(lock);
 	prior_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch,
 	    __ATOMIC_ACQUIRE);
+	/* Source leave may follow AMPDU/TX callbacks. It can advance only the
+	 * identity captured before those callbacks, not whichever join is now
+	 * current. This check and the advance share the selected-BSS leaf. */
+	if (bss_switch != NULL && (lock == NULL ||
+	    !ieee80211_bss_switch_identity_current_locked(ic, bss_switch))) {
+		if (lock != NULL)
+			IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		return 0;
+	}
 	/* A detached roam retirement may arrive here after a new admission or
 	 * an independent association cancellation. Check inside the same leaf
 	 * that advances the epoch, never across the callback boundary. */
@@ -2683,6 +2693,15 @@ u_int64_t
 ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 {
 	return ieee80211_pae_assoc_epoch_begin_internal(ic, 0, 0, 0);
+}
+
+u_int64_t
+ieee80211_pae_assoc_epoch_begin_bss_switch(struct ieee80211com *ic,
+    const struct ieee80211_bss_switch_identity *identity)
+{
+	if (identity == NULL)
+		return 0;
+	return ieee80211_pae_assoc_epoch_begin_internal(ic, 0, 0, 0, identity);
 }
 
 u_int64_t

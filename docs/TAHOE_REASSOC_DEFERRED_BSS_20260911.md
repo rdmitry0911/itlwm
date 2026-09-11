@@ -1,5 +1,11 @@
 # Deferred BSS switch: real lifetime failures — 2026-09-11
 
+Newer source checkpoint: [immutable origin identity](TAHOE_DEFERRED_BSS_IDENTITY_20260911.md)
+corrects the two obsolete-owner/failure-reentry cases on Linux/macOS. The
+full gate retains pre-copy liveness plus a newly executed established-source
+terminal-before-arm failure. Historical checkpoints below are not current
+full-roaming qualification.
+
 Latest checkpoint: production `5aad4f68` is now loaded, with
 [real SAE/DHCP/two-way traffic preservation](TAHOE_NODE_CALLBACK_RUNTIME_20260911.md).
 That pure-SAE run observed six node copies and zero legacy BSS callbacks;

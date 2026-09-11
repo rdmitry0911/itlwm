@@ -358,7 +358,7 @@ ordered(watchdog, "timeout terminal fence before WCL callback",
         "ieee80211_wcl_reassoc_post_failure")
 require(watchdog, "ic->ic_wcl_reassoc_owner_active",
         "RUN-state WCL timeout fence")
-wcl_failure = body(core_c, "void\nieee80211_wcl_reassoc_post_failure_owned",
+wcl_failure = body(core_c, "u_int64_t\nieee80211_wcl_reassoc_post_failure_owned",
                    "WCL reassociation failure")
 ordered(wcl_failure, "WCL terminal failure fence before publication",
         "ieee80211_wcl_reassoc_take_completion",
@@ -416,10 +416,18 @@ ordered(wpapsk, "direct PSK replacement fence",
         "ieee80211_pae_assoc_epoch_begin(ic)", "if (psk->i_enabled)")
 
 roam = body(node_c, "void\nieee80211_end_scan_owned(", "background roam")
-ordered(roam, "deferred roaming fence",
-        "IEEE80211_SEND_MGMT(ic, ic->ic_bss,",
-        "ieee80211_pae_assoc_epoch_begin(ic)",
-        "ic->ic_bss->ni_unref_cb = ieee80211_node_switch_bss")
+defer_switch = body(node_c, "ieee80211_node_defer_bss_switch(",
+                    "owned deferred roaming producer")
+ordered(defer_switch, "deferred roaming fence",
+        "ieee80211_bss_switch_identity_capture",
+        "malloc(sizeof(*arg), 0, 0)",
+        "ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY",
+        "ieee80211_stop_ampdu_tx",
+        "IEEE80211_SEND_MGMT(ic, source,",
+        "ieee80211_pae_assoc_epoch_begin_bss_switch(ic, &identity)",
+        "source->ni_unref_cb = ieee80211_node_switch_bss")
+require(roam, "ieee80211_node_defer_bss_switch(ic, ic->ic_bss, selbs, 0)",
+        "legacy same-ESS caller retains captured identity")
 
 assoc_resp = body(input_c, "void\nieee80211_recv_assoc_resp",
                   "association response")

@@ -33,7 +33,8 @@ if [ -z "${WCL_REASSOC_NEGATIVE_REF:-}" ] && [ "${WCL_REASSOC_EXPECT_DEFECTS:-0}
          /^ieee80211_wcl_reassoc_(current|claim_completion|scan_completion_begin)\(/ { selected=1; print "int" }
          /^ieee80211_wcl_reassoc_clear_locked\(/ { selected=1; print "static void" }
          /^ieee80211_wcl_reassoc_take_completion\(/ { selected=1; print "static int" }
-         /^ieee80211_wcl_reassoc_post_(failure|failure_owned|success)\(/ { selected=1; print "void" }
+         /^ieee80211_wcl_reassoc_post_(failure|success)\(/ { selected=1; print "void" }
+         /^ieee80211_wcl_reassoc_post_failure_owned\(/ { selected=1; print "u_int64_t" }
          selected { print } selected && /^}/ { selected=0 }' \
         "$REASSOC_TEST_DIR/source.c" > "$REASSOC_TEST_DIR/failure.inc"
     awk '/^ieee80211_(begin|cancel)_wcl_reassoc_bgscan\(/ { selected=1; print "int" }

@@ -96,6 +96,7 @@
 #include <net80211/ieee80211_crypto.h>
 #include <net80211/ieee80211_ioctl.h>		/* for ieee80211_stats */
 #include <net80211/ieee80211_node.h>
+#include <net80211/ieee80211_bss_switch.h>
 #include <net80211/ieee80211_pae_selected_bss.h>
 #include <net80211/ieee80211_proto.h>
 
@@ -1540,7 +1541,7 @@ int ieee80211_wcl_reassoc_current(struct ieee80211com *, u_int64_t);
 int ieee80211_wcl_reassoc_scan_completion_begin(struct ieee80211com *, u_int64_t);
 int ieee80211_wcl_reassoc_claim_completion(struct ieee80211com *,
     const struct ieee80211_wcl_reassoc_completion *);
-void ieee80211_wcl_reassoc_post_failure_owned(struct ieee80211com *,
+u_int64_t ieee80211_wcl_reassoc_post_failure_owned(struct ieee80211com *,
     u_int64_t, u_int32_t);
 void	ieee80211_wcl_reassoc_post_failure(struct ieee80211com *, u_int32_t);
 void	ieee80211_wcl_reassoc_post_success(struct ieee80211com *);

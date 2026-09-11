@@ -1214,9 +1214,109 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
 }
 
 struct ieee80211_node_switch_bss_arg {
-    u_int8_t cur_macaddr[IEEE80211_ADDR_LEN];
-    u_int8_t sel_macaddr[IEEE80211_ADDR_LEN];
+    struct ieee80211_bss_switch_identity identity;
 };
+
+int
+ieee80211_bss_switch_identity_current_locked(struct ieee80211com *ic,
+    const struct ieee80211_bss_switch_identity *identity)
+{
+    if (ic == NULL || identity == NULL || identity->source_epoch == 0 ||
+        identity->continuation_epoch == 0 || ic->ic_bss == NULL ||
+        ic->ic_opmode != IEEE80211_M_STA || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_pae_assoc_epoch != identity->continuation_epoch ||
+        ic->ic_wcl_join_attempt.next_generation != identity->join_sequence ||
+        ic->ic_wcl_reassoc_next_serial != identity->reassoc_sequence ||
+        !IEEE80211_ADDR_EQ(ic->ic_bss->ni_macaddr, identity->source_macaddr) ||
+        !IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, identity->source_bssid))
+        return 0;
+    if (identity->reassoc_serial == 0)
+        return ic->ic_wcl_reassoc_owner_active == 0;
+    return ic->ic_wcl_reassoc_owner_active &&
+        ic->ic_wcl_reassoc_owner_serial == identity->reassoc_serial &&
+        ic->ic_wcl_reassoc_source_epoch == identity->source_epoch &&
+        ic->ic_wcl_reassoc_owner_last_leaf ==
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED &&
+        IEEE80211_ADDR_EQ(ic->ic_wcl_reassoc_source_bssid,
+            identity->source_bssid) &&
+        IEEE80211_ADDR_EQ(ic->ic_wcl_reassoc_target_bssid,
+            identity->target_bssid);
+}
+
+static int
+ieee80211_bss_switch_identity_capture(struct ieee80211com *ic,
+    struct ieee80211_node *source, struct ieee80211_node *target,
+    u_int64_t reassoc_serial, struct ieee80211_bss_switch_identity *identity)
+{
+    if (ic == NULL || source == NULL || target == NULL || identity == NULL ||
+        ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    explicit_bzero(identity, sizeof(*identity));
+    identity->source_epoch = ic->ic_pae_assoc_epoch;
+    identity->continuation_epoch = identity->source_epoch;
+    identity->join_sequence = ic->ic_wcl_join_attempt.next_generation;
+    identity->reassoc_sequence = ic->ic_wcl_reassoc_next_serial;
+    identity->reassoc_serial = reassoc_serial;
+    IEEE80211_ADDR_COPY(identity->source_macaddr, source->ni_macaddr);
+    IEEE80211_ADDR_COPY(identity->source_bssid, source->ni_bssid);
+    IEEE80211_ADDR_COPY(identity->target_macaddr, target->ni_macaddr);
+    IEEE80211_ADDR_COPY(identity->target_bssid, target->ni_bssid);
+    const int current = source == ic->ic_bss && source->ni_unref_cb == NULL &&
+        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 &&
+        ieee80211_bss_switch_identity_current_locked(ic, identity);
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    return current;
+}
+
+static int
+ieee80211_bss_switch_identity_current(struct ieee80211com *ic,
+    const struct ieee80211_bss_switch_identity *identity)
+{
+    if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const int current = ieee80211_bss_switch_identity_current_locked(ic, identity);
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    return current;
+}
+
+/* Error delivery can synchronously admit another join. In particular, never
+ * read its new epoch and call SCAN on its behalf after publishing old failure. */
+static void
+ieee80211_node_switch_bss_fail(struct ieee80211com *ic,
+    const struct ieee80211_bss_switch_identity *identity, u_int32_t error,
+    int source_left)
+{
+    if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL)
+        return;
+    struct ieee80211_bss_switch_identity continuation = *identity;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const int current = ieee80211_bss_switch_identity_current_locked(ic, identity);
+    if (current) {
+        ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+            IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+        ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
+        /* Allocation or pre-submission failure did not leave the source.
+         * Preserve its epoch/keys instead of reporting a lost link. */
+        if (!source_left && identity->reassoc_serial != 0)
+            ic->ic_wcl_reassoc_owner_last_leaf =
+                IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+    }
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    if (!current)
+        return;
+    if (identity->reassoc_serial != 0) {
+        continuation.continuation_epoch = ieee80211_wcl_reassoc_post_failure_owned(
+            ic, identity->reassoc_serial, error);
+        continuation.reassoc_serial = 0;
+    }
+    if (source_left && ieee80211_bss_switch_identity_current(ic, &continuation))
+        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+}
 
 /* Implements ni->ni_unref_cb(). */
 void
@@ -1227,50 +1327,90 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
         (struct ieee80211_node_switch_bss_arg *)argument;
     struct ieee80211_node *curbs, *selbs;
 
-    (void)ni;
-    
     splassert(IPL_NET);
-    
-    if ((ic->ic_flags & IEEE80211_F_BGSCAN) == 0) {
-        free(sba);
-        if (ic->ic_wcl_reassoc_owner_active &&
-            ic->ic_wcl_reassoc_owner_last_leaf ==
-                IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)
-            ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)ECANCELED);
+    if (sba == NULL)
         return;
-    }
-    
-    ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
-    
-    selbs = ieee80211_find_node(ic, sba->sel_macaddr);
-    if (selbs == NULL) {
-        free(sba);
-        ic->ic_flags &= ~IEEE80211_F_BGSCAN;
-        if (ic->ic_wcl_reassoc_owner_active &&
-            ic->ic_wcl_reassoc_owner_last_leaf ==
-                IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)
-            ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)ENOENT);
-        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
-        return;
-    }
-    
-    curbs = ieee80211_find_node(ic, sba->cur_macaddr);
-    if (curbs == NULL) {
-        free(sba);
-        ic->ic_flags &= ~IEEE80211_F_BGSCAN;
-        if (ic->ic_wcl_reassoc_owner_active &&
-            ic->ic_wcl_reassoc_owner_last_leaf ==
-                IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)
-            ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)ENOENT);
-        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
-        return;
-    }
-    
-    ieee80211_node_newstate(curbs, IEEE80211_STA_CACHE);
-    /* release_node transferred this argument, not the node's next callback.
-     * Dispose it before join can reenter or replace the selected node. */
+    const struct ieee80211_bss_switch_identity identity = sba->identity;
     free(sba);
+    if (ic == NULL || ni != ic->ic_bss ||
+        !ieee80211_bss_switch_identity_current(ic, &identity))
+        return;
+    if ((ic->ic_flags & IEEE80211_F_BGSCAN) == 0) {
+        ieee80211_node_switch_bss_fail(ic, &identity, ECANCELED, 1);
+        return;
+    }
+    selbs = ieee80211_find_node(ic, identity.target_macaddr);
+    curbs = ieee80211_find_node(ic, identity.source_macaddr);
+    if (selbs == NULL || curbs == NULL ||
+        !IEEE80211_ADDR_EQ(selbs->ni_bssid, identity.target_bssid) ||
+        !IEEE80211_ADDR_EQ(curbs->ni_bssid, identity.source_bssid)) {
+        ieee80211_node_switch_bss_fail(ic, &identity, ENOENT, 1);
+        return;
+    }
+    if (!ieee80211_bss_switch_identity_current(ic, &identity))
+        return;
+    ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
+    ieee80211_node_newstate(curbs, IEEE80211_STA_CACHE);
     ieee80211_node_join_bss(ic, selbs);
+}
+
+/* Both explicit WCL and legacy same-ESS background selection use the same
+ * captured handoff. Capture precedes even allocation/AMPDU-stop callbacks.
+ * This still uses the historical node completion trigger: full asynchronous
+ * source-command/TX drain and terminal-before-arm handling are separate gates. */
+static int
+ieee80211_node_defer_bss_switch(struct ieee80211com *ic,
+    struct ieee80211_node *source, struct ieee80211_node *target,
+    u_int64_t reassoc_serial)
+{
+    struct ieee80211_bss_switch_identity identity;
+    if (!ieee80211_bss_switch_identity_capture(ic, source, target,
+            reassoc_serial, &identity))
+        return ECANCELED;
+    struct ieee80211_node_switch_bss_arg *arg =
+        (struct ieee80211_node_switch_bss_arg *)malloc(sizeof(*arg), 0, 0);
+    if (arg == NULL) {
+        ieee80211_node_switch_bss_fail(ic, &identity, ENOMEM, 0);
+        return ENOMEM;
+    }
+    arg->identity = identity;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const int current = ieee80211_bss_switch_identity_current_locked(ic, &identity);
+    if (current)
+        ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    if (!current) {
+        free(arg);
+        return ECANCELED;
+    }
+    ieee80211_stop_ampdu_tx(ic, source, IEEE80211_FC0_SUBTYPE_DEAUTH);
+    if (!ieee80211_bss_switch_identity_current(ic, &identity)) {
+        free(arg);
+        return ECANCELED;
+    }
+    const int error = IEEE80211_SEND_MGMT(ic, source,
+        IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
+    if (error != 0) {
+        free(arg);
+        ieee80211_node_switch_bss_fail(ic, &identity, EIO, 0);
+        return error;
+    }
+    identity.continuation_epoch =
+        ieee80211_pae_assoc_epoch_begin_bss_switch(ic, &identity);
+    irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const int arm = ieee80211_bss_switch_identity_current_locked(ic, &identity) &&
+        (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 && source->ni_unref_cb == NULL;
+    if (arm) {
+        arg->identity = identity;
+        source->ni_unref_arg = arg;
+        source->ni_unref_arg_size = sizeof(*arg);
+        source->ni_unref_cb = ieee80211_node_switch_bss;
+    }
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    if (!arm)
+        free(arg);
+    return arm ? 0 : ECANCELED;
 }
 
 /* Implements ni->ni_unref_cb() for a confirmed 802.11v target.  The source
@@ -1821,7 +1961,6 @@ ieee80211_end_scan_owned(struct _ifnet *ifp,
 
     selbs = ieee80211_node_choose_bss(ic, bgscan, &curbs);
     if (bgscan) {
-        struct ieee80211_node_switch_bss_arg *arg;
         u_int8_t wnm_dialog_token = 0;
         u_int8_t wnm_target_bssid[IEEE80211_ADDR_LEN];
         struct ieee80211_node *wnm_source;
@@ -1875,37 +2014,8 @@ ieee80211_end_scan_owned(struct _ifnet *ifp,
                 return;
             }
 
-            arg = (struct ieee80211_node_switch_bss_arg *)malloc(
-                sizeof(*arg), 0, 0);
-            if (arg == NULL) {
-                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
-                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
-                ic->ic_wcl_reassoc_owner_last_leaf =
-                    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
-                ieee80211_wcl_reassoc_post_failure(ic,
-                    (u_int32_t)ENOMEM);
-                return;
-            }
-            ieee80211_stop_ampdu_tx(ic, source,
-                                    IEEE80211_FC0_SUBTYPE_DEAUTH);
-            if (IEEE80211_SEND_MGMT(ic, source,
-                    IEEE80211_FC0_SUBTYPE_DEAUTH,
-                    IEEE80211_REASON_AUTH_LEAVE) != 0) {
-                free(arg);
-                ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
-                                  IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
-                ic->ic_wcl_reassoc_owner_last_leaf =
-                    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
-                ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)EIO);
-                return;
-            }
-            (void)ieee80211_pae_assoc_epoch_begin(ic);
-            ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
-            IEEE80211_ADDR_COPY(arg->cur_macaddr, source->ni_macaddr);
-            IEEE80211_ADDR_COPY(arg->sel_macaddr, selbs->ni_macaddr);
-            source->ni_unref_arg = arg;
-            source->ni_unref_arg_size = sizeof(*arg);
-            source->ni_unref_cb = ieee80211_node_switch_bss;
+            (void)ieee80211_node_defer_bss_switch(ic, source, selbs,
+                reassoc_serial);
             return;
         }
 
@@ -2020,42 +2130,8 @@ ieee80211_end_scan_owned(struct _ifnet *ifp,
             return;
         }
         
-        arg = (struct ieee80211_node_switch_bss_arg *)malloc(sizeof(*arg), 0, 0);
-        if (arg == NULL) {
-            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
-            return;
-        }
-        
         ic->ic_bgscan_fail = 0;
-        
-        /*
-         * We are going to switch APs. Stop A-MPDU Tx and
-         * queue a de-auth frame addressed to our current AP.
-         */
-        ieee80211_stop_ampdu_tx(ic, ic->ic_bss,
-                                IEEE80211_FC0_SUBTYPE_DEAUTH);
-        if (IEEE80211_SEND_MGMT(ic, ic->ic_bss,
-                                IEEE80211_FC0_SUBTYPE_DEAUTH,
-                                IEEE80211_REASON_AUTH_LEAVE) != 0) {
-            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
-            free(arg);
-            return;
-        }
-        /* The accepted roam has a deferred BSS-switch callback. */
-        (void)ieee80211_pae_assoc_epoch_begin(ic);
-        
-        /* Prevent dispatch of additional data frames to hardware. */
-        ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
-        
-        /*
-         * Install a callback which will switch us to the new AP once
-         * all dispatched frames have been processed by hardware.
-         */
-        IEEE80211_ADDR_COPY(arg->cur_macaddr, curbs->ni_macaddr);
-        IEEE80211_ADDR_COPY(arg->sel_macaddr, selbs->ni_macaddr);
-        ic->ic_bss->ni_unref_arg = arg;
-        ic->ic_bss->ni_unref_arg_size = sizeof(*arg);
-        ic->ic_bss->ni_unref_cb = ieee80211_node_switch_bss;
+        (void)ieee80211_node_defer_bss_switch(ic, ic->ic_bss, selbs, 0);
         /* F_BGSCAN flag gets cleared in ieee80211_node_join_bss(). */
         return;
     } else if (selbs == NULL)

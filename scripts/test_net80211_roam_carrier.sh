@@ -5,12 +5,15 @@ PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 ROAM_TEST_DIR="$(mktemp -d)"
 trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/test"; rm -rf "$ROAM_TEST_DIR/test.dSYM"; rmdir "$ROAM_TEST_DIR"' EXIT
 PROTO="$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
-awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST)[ \t]/' \
+awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST|WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)[ \t]/' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211.h" \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_node.h" > "$ROAM_TEST_DIR/constants.inc"
 sed -n '/^struct ieee80211_roam_link_loss {/,/^};/p' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
+awk '/^ieee80211_bss_switch_identity_current_locked\(/ { selected=1; print "int" }
+    selected { print } selected && /^}/ { selected=0 }' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_node.c" > "$ROAM_TEST_DIR/production.inc"
 awk -v baseline="${ROAM_LOSS_BASELINE:-}" '
     /^ieee80211_bssid_is_unicast_nonzero\(/ { selected=1; print "int" }
     /^ieee80211_roam_link_(take_loss_locked|take_loss|loss_current)\(/ { selected=1; print "int" }
@@ -24,7 +27,7 @@ awk -v baseline="${ROAM_LOSS_BASELINE:-}" '
     /^ieee80211_set_link_state\(/ { selected=1; print "void" }
     selected { print }
     selected && /^}/ { selected=0 }
-' "$PROTO" > "$ROAM_TEST_DIR/production.inc"
+' "$PROTO" >> "$ROAM_TEST_DIR/production.inc"
 if [ -n "${ROAM_LOSS_BASELINE:-}" ]; then
     # Replace only this exact production function with the unchanged old one.
     # The new helper/consumer fixture is retained, so failure must be semantic.

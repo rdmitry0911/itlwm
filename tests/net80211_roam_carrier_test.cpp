@@ -15,6 +15,7 @@ using u_int8_t = uint8_t;
 #define IEEE80211_ADDR_EQ(a,b) (std::memcmp(a,b,6)==0)
 #define IEEE80211_ADDR_COPY(a,b) std::memcpy(a,b,6)
 #include "constants.inc"
+#include "../itl80211/openbsd/net80211/ieee80211_bss_switch.h"
 enum ieee80211_phymode { ModeA };
 enum ieee80211_state { IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH,
                        IEEE80211_S_ASSOC, IEEE80211_S_RUN };
@@ -72,6 +73,10 @@ struct ieee80211com {
     uint8_t ic_des_essid[32]={'n','e','t'};
     uint64_t ic_pae_assoc_epoch=7, ic_roam_link_epoch=0;
     uint64_t ic_wcl_reassoc_next_serial=0, ic_wcl_reassoc_terminal_serial=0;
+    uint64_t ic_wcl_reassoc_owner_serial=0, ic_wcl_reassoc_source_epoch=0;
+    unsigned ic_wcl_reassoc_owner_active=0, ic_wcl_reassoc_owner_last_leaf=0;
+    uint8_t ic_wcl_reassoc_source_bssid[6]={}, ic_wcl_reassoc_target_bssid[6]={};
+    struct { uint64_t next_generation=0; } ic_wcl_join_attempt;
     uint64_t ic_pae_assoc_replace_epoch=0, ic_sae_wcl_policy_generation=0;
     IOSimpleLock *ic_pae_selected_bss_lock=nullptr;
     struct { uint64_t epoch=0; uint8_t bssid[6]={}; } ic_pae_selected_bss;
@@ -98,11 +103,15 @@ void ieee80211_set_link_state(ieee80211com *, int);
 uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *, int);
 #else
 uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *, int,
-    uint64_t=0, uint64_t=0);
+    uint64_t, uint64_t, const ieee80211_bss_switch_identity *);
 #endif
 void ieee80211_pae_assoc_epoch_note_newstate(ieee80211com *, ieee80211_state, int);
 static uint64_t ieee80211_pae_assoc_epoch_begin(ieee80211com *ic) {
+#ifdef ROAM_LOSS_BASELINE
     return ieee80211_pae_assoc_epoch_begin_internal(ic,0);
+#else
+    return ieee80211_pae_assoc_epoch_begin_internal(ic,0,0,0,nullptr);
+#endif
 }
 static uint64_t ieee80211_pae_assoc_epoch_advance_locked(ieee80211com *ic) {
     if (++ic->ic_pae_assoc_epoch==0) ++ic->ic_pae_assoc_epoch;
@@ -458,6 +467,54 @@ int main() {
         ++cases;
     }
 #ifndef ROAM_LOSS_BASELINE
+    for (unsigned change=0; change<14; ++change) {
+        Fixture f;
+        ieee80211_bss_switch_identity identity{};
+        identity.source_epoch=identity.continuation_epoch=7;
+        identity.reassoc_sequence=identity.reassoc_serial=31;
+        identity.source_macaddr[0]=identity.source_bssid[0]=2;
+        identity.target_macaddr[0]=identity.target_bssid[0]=4;
+        f.ic.ic_wcl_reassoc_next_serial=f.ic.ic_wcl_reassoc_owner_serial=31;
+        f.ic.ic_wcl_reassoc_source_epoch=7;
+        f.ic.ic_wcl_reassoc_owner_active=1;
+        f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+        f.ic.ic_wcl_reassoc_source_bssid[0]=2;
+        f.ic.ic_wcl_reassoc_target_bssid[0]=4;
+        switch (change) {
+        case 1: ++f.ic.ic_pae_assoc_epoch; break;
+        case 2: ++f.ic.ic_wcl_join_attempt.next_generation; break;
+        case 3: ++f.ic.ic_wcl_reassoc_next_serial; break;
+        case 4: ++f.ic.ic_wcl_reassoc_owner_serial; break;
+        case 5: f.ic.ic_wcl_reassoc_owner_active=0; break;
+        case 6: f.source.ni_bssid[1]=1; break;
+        case 7: f.source.ni_macaddr[1]=1; break;
+        case 8: ++f.ic.ic_wcl_reassoc_source_epoch; break;
+        case 9: f.ic.ic_wcl_reassoc_target_bssid[1]=1; break;
+        case 10: f.ic.ic_state=IEEE80211_S_SCAN; break;
+        case 11: f.ic.ic_pae_selected_bss_lock=nullptr; break;
+        case 12: // Legacy background roam has no WCL serial but keeps the census sequence.
+            identity.reassoc_serial=0; f.ic.ic_wcl_reassoc_owner_active=0; break;
+        case 13:
+            onRevoke=[](ieee80211com *ic) {
+                ++ic->ic_wcl_join_attempt.next_generation;
+                ic->ic_pae_assoc_epoch=10;
+            }; break;
+        }
+        const auto oldEpoch=f.ic.ic_pae_assoc_epoch;
+        const auto selected=f.ic.ic_pae_selected_bss.epoch;
+        const auto result=ieee80211_pae_assoc_epoch_begin_internal(&f.ic,0,0,0,&identity);
+        if (change==0 || change==12) assert(result==8 && f.ic.ic_pae_assoc_epoch==8);
+        else if (change==13) {
+            assert(result==8 && f.ic.ic_pae_assoc_epoch==10);
+            identity.continuation_epoch=result;
+            const auto irq=IOSimpleLockLockDisableInterrupt(&f.lock);
+            assert(!ieee80211_bss_switch_identity_current_locked(&f.ic,&identity));
+            IOSimpleLockUnlockEnableInterrupt(&f.lock,irq);
+        } else assert(result==0 && f.ic.ic_pae_assoc_epoch==oldEpoch &&
+            f.ic.ic_pae_selected_bss.epoch==selected);
+        onRevoke={};
+        ++cases;
+    }
     for (unsigned change=0; change<5; ++change) {
         Fixture f;
         f.ic.ic_wcl_reassoc_next_serial=31;
