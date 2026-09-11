@@ -188,3 +188,49 @@ The terminal STA evidence, scripts and a frozen serial checkpoint are bound by
 `298eccf4a8307ae21a85906cf050c2aa57ea672907a7a4d86bd3d665d6187f57`.
 GUI and AP-role regression of this candidate remain required before public
 release promotion. Physical host .22 and unrelated VMs remain untouched.
+
+## Same post-S3 image: native AP regression
+
+Without another guest reboot, native Internet Sharing configured WPA3, WPA2
+and open APs using the existing CoreWLAN/SystemConfiguration helper. The
+restored independent en2 was upstream; AX211 on the host was the external
+client. No bridge membership rewrite, daemon replacement or kernel-state
+setter was used. Each mode negotiated the expected security and received
+192.168.2.2 by DHCP. WPA3 readback explicitly shows SAE, pmf=2, BIP, group 19.
+
+| AP mode | Host-to-guest, 1400 bytes | Cold-ARP guest-to-host | Maximum RTTs, ms | Native disable, UTC |
+| --- | ---: | ---: | ---: | --- |
+| WPA3 | 20/20 | 10/10 | 45.532 / 116.732 | 11:58:22 |
+| WPA2 | 20/20 | 10/10 | 41.072 / 100.512 | 12:00:29 |
+| Open | 20/20 | 10/10 | 32.310 / 102.571 | 12:02:44 |
+
+All modes also completed HTTP 200 through the guest's upstream with exact
+payload comparison. After each ordinary disable and a 15-second dwell,
+bridge100 was absent, its retired object had ioref=0, and automatic STA
+restoration reached 172.16.66.219 with 10/10 current-address traffic. Maximum
+STA RTTs were 148.333, 5.178 and 7.360 ms respectively. All three controllers
+and host-profile restorations returned zero; the wired default route did not
+change. Observer stderr was empty and the bounded data observers ended.
+
+These qualify AP operation after S3 and sequential stop/start for this exact
+IWN image, not client continuity with an active AP across S3, concurrent STA
+data service or new IWM/IWX RF behavior. The new serial interval has no matched
+panic, firmware fatal/error, device timeout, unset-key or AP TX-gate report;
+three AMFI messages explicitly marked non-fatal are retained.
+
+The external evidence prefixes are
+`/tmp/aiam-roam-policy.Kj1vgE/scan-source-posts3-ap-{wpa3,wpa2,open}-q1`.
+Their manifest `ap-external-evidence.sha256` has SHA-256
+`8e7db62a3c149f7f12de353730c484b9812fe2df86e6139a637167e65620c9c8`.
+The terminal AP checkpoint in the runtime root is
+`evidence-ap-posts3.sha256`, SHA-256
+`635ca4840934fe38184cc8a14fb33ef977e077d2cc3fb8dc244e6d4d8ac070fb`.
+The still-bounded HTTP server log is excluded from that frozen checkpoint.
+
+A three-second read-only WindowServer sample independently places all 555
+main-thread samples in displayDidWake -> IOFBAcknowledgeNotification ->
+IOConnectCallMethod -> mach_msg2_trap. This agrees with the prior qualified
+image's display wait, but is not a proof of its kernel-side cause. Sample
+SHA-256: `94e6d2b0d4cb742e5aa39412a293fbf593d254b42cb47804e46aa9f7b98c4dba`.
+Post-S3 GUI remains unqualified. Next is cold-boot GUI regression of this same
+image before public release promotion; no physical-host operation is needed.
