@@ -273,3 +273,62 @@ sample SHA-256:
 `152fed939051edc8c2b0c3decf250e8b7cbe24663c2cad96fc0e13bcca3aa5c7`.
 This repeats the lab framebuffer/wake limitation; cold GUI qualification must
 remain separate. No physical-host operation or driver unload was performed.
+
+## Cold GUI qualification of the exact archive
+
+After every post-S3 observer terminated, normal guest reboot at 14:05:19 UTC
+loaded the same BE0C8CE1 image in boot
+`A2F0698F-FF16-449D-AC40-E3E4117D4CF9`. Native WPA3 DHCP began at 14:06:14;
+initial 1400-byte traffic passed 20/20 both ways, maximum 118.774/37.420 ms.
+The GUI became usable after this reboot. No other kext build or installation
+occurred between these tests and the prepared archive.
+
+The following network selections and radio toggles used real VNC mouse clicks
+in System Settings. SSH only read identity/state/DHCP and ran traffic probes.
+Action times below are bounded controller intervals (including hover and
+post-click capture), not exact kernel request timestamps.
+
+| GUI action UTC | Result | Traffic forward / reverse; maximum RTT |
+| --- | --- | --- |
+| WPA2 OpenWrt 14:12:26–14:12:30 | DHCP 14:12:34, .212 | 20/20, 20/20; 333.370/264.021 ms |
+| WPA3 LabAP 14:13:43–14:13:47 | DHCP 14:13:51, .219 | 20/20, 20/20; 376.986/233.075 ms |
+| WPA3 off 14:14:45–14:14:50; on 14:15:20–14:15:24 | Off/inactive/no IPv4 verified; returns to WPA3 | 20/20, 19/20; 301.484/284.832 ms |
+| Open 14:18:14–14:18:19 | DHCP 14:18:23, .26 | 20/20, 20/20; 151.974/167.051 ms |
+| Open off 14:19:16–14:19:20; on 14:19:43–14:19:47 | Off/inactive/no IPv4 verified; DHCP 14:19:45 | 20/20, 20/20; 182.477/161.645 ms |
+
+The first WPA2 controller attempt clicked (0,0), opening the Apple menu: a new
+VNC connection resets its own mouse coordinates. Its 30 readback polls stayed
+WPA3 and it returned 1 before the corrected, separately labelled attempt.
+The new helper sets coordinates in the same connection as each click. This
+initial harness error is retained and is not a failed driver association.
+
+The WPA3 off/on probe also returned 1 and is retained. Its first state snapshot
+still exposed the previous 14:13:51 DHCP lease, so it began traffic before the
+fresh DHCP exchange at 14:15:29 (confirmed by later independent readback).
+The missing reverse packet was sequence 1. This is not a zero-loss recovery
+pass, but neither does this early probe alone attribute a datapath defect to
+the driver. The later readback was not a replacement traffic run.
+
+The exact open fixture was terminated at 14:21:12.182 UTC; cleanup returned
+host STA at 14:21:18 and the guest obtained native WPA3 DHCP at 14:21:23 without
+a join request or remedial toggle. Recovery traffic passed 20/20 both ways,
+maximum 375.434/210.968 ms. The fixture's exit 130 was the requested SIGTERM;
+its host-restoration result was zero. Wired management/default route remained
+unchanged. All radio-test controllers are terminal.
+
+The final installed Mach-O hash remains e3d8139f...; the archive's extracted
+Mach-O independently matches that complete SHA-256 on the Linux side too.
+Host AX211 power saving was on; these two-hop RTTs must not all be assigned
+to the guest driver without a separate peer-power-save control.
+
+The 145-file pre-cold evidence manifest was fully verified, including again
+after reboot:
+`45888272923e3d98e65f54e686ea74b4026e17c8fcd13834c1d0c0d21798616d`.
+The first generated manifest mistakenly included itself; its sole failed
+checksum and the failed verification log are retained, and the corrected
+manifest excludes its own output. It is not counted as a passing manifest.
+
+This qualifies publishing the bounded comeback-minimum correction as an
+alpha with the explicit retained limitations above. It does not close
+seamless roaming, all transition-window losses, post-S3 GUI, active-AP sleep
+continuity, broad security variants, throughput parity, or physical IWM/IWX.
