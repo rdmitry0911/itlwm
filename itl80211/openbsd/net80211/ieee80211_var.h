@@ -1539,6 +1539,8 @@ struct ieee80211_wcl_reassoc_completion {
 u_int64_t ieee80211_wcl_reassoc_serial(struct ieee80211com *);
 int ieee80211_wcl_reassoc_current(struct ieee80211com *, u_int64_t);
 int ieee80211_wcl_reassoc_scan_completion_begin(struct ieee80211com *, u_int64_t);
+/* Caller holds ic_pae_selected_bss_lock at the source-epoch cancellation. */
+void ieee80211_wcl_reassoc_cancel_scan_epoch_locked(struct ieee80211com *, u_int64_t);
 int ieee80211_wcl_reassoc_claim_completion(struct ieee80211com *,
     const struct ieee80211_wcl_reassoc_completion *);
 u_int64_t ieee80211_wcl_reassoc_post_failure_owned(struct ieee80211com *,

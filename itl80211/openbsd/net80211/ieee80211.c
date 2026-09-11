@@ -2464,6 +2464,32 @@ ieee80211_wcl_reassoc_clear_locked(struct ieee80211com *ic)
                    sizeof(ic->ic_wcl_reassoc_target_bssid));
 }
 
+/* Logical source cancellation, not a firmware scan terminal. The caller
+ * holds the selected-BSS leaf while advancing this exact source epoch.
+ * A real link-down/leave owns its existing WCL notification; do not invent
+ * an additional 0xcf command-start failure or an on-air reassociation result.
+ * The lower tagged scan lease remains alive until its real abort/terminal.
+ */
+void
+ieee80211_wcl_reassoc_cancel_scan_epoch_locked(struct ieee80211com *ic,
+    u_int64_t source_epoch)
+{
+    if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL ||
+        source_epoch == 0 || !ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_serial == 0 ||
+        ic->ic_wcl_reassoc_owner_serial != ic->ic_wcl_reassoc_next_serial ||
+        ic->ic_wcl_reassoc_source_epoch != source_epoch ||
+        (ic->ic_wcl_reassoc_owner_last_leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP &&
+         ic->ic_wcl_reassoc_owner_last_leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+         ic->ic_wcl_reassoc_owner_last_leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED))
+        return;
+    ieee80211_wcl_reassoc_clear_locked(ic);
+    ic->ic_wcl_reassoc_terminal_serial = 0;
+    ic->ic_flags &= ~(IEEE80211_F_BGSCAN | IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+    /* Keep the monotonic sequence and the historical accepted-scan receipt.
+     * Neither grants a late physical callback ownership of a successor. */
+}
+
 static int
 ieee80211_wcl_reassoc_take_completion(struct ieee80211com *ic,
     u_int64_t serial, int success,

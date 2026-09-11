@@ -100,3 +100,100 @@ UUID, WPA3 auto-reconnect and bidirectional traffic; repeat the same roam
 capture, open/WPA2/off-on, real S3 and timeout/replacement checks. Retain losses
 and incomplete GUI/AP/IWM/IWX coverage. Do not touch physical host
 10.90.10.22, unrelated QEMU or shared backing disks.
+
+## Runtime follow-up (same candidate, source commit bb142d93)
+
+The source commit was pushed before activation. An ordinary offline byte
+copy of the working 17b guest and its OVMF variables was verified; the
+working source remains local and unmodified. Runtime root:
+`/home/dima/Projects/itlwm/aiam-iwn-auth-beacon-runtime.yIJOEP`.
+Preserved disk SHA-256 `7c8c42cf2411df625f2dd75e54dbf422430cde52f274bb89965ae23baa16cb3e`,
+variables `8ad9e6e16f7edb6d31b388b62d51cec4fc293d8733590111f134a099ab9a2686`.
+Owned QEMU PID 1406911, name `aiam-iwn-after-scd-control`.
+
+Private AuxKC preflight and transactional five-member activation passed.
+The test artifact is unsigned (codesign verification exit 1); private
+admission PASS is not a production signing claim. Reboot at 10:45:47 UTC
+loaded the exact candidate UUID above. Current boot:
+`C17BA719-545D-4127-B44A-8632DF5C52E0`. Native WPA3/SAE auto-connect to LabAP
+(`82:c3:97:84:51:ca`, channel 9) received DHCP `172.16.66.219` at 10:46:22.
+Both initial AUTH continuations reported zero error.
+
+1400-byte ICMP observations, with host AX211 as the independent reverse end:
+
+| Run | Guest → router | Host → guest | Max RTT, forward / reverse |
+| --- | ---: | ---: | ---: |
+| Boot auto-connect | 20/20 | 20/20 | 25.466 / 28.229 ms |
+| Native roam ca:9 → 02:13, q1 | 239/250 | 237/250 | 135.493 / 206.568 ms |
+| Native roam 02:13 → ca:9, q2 | 242/250 | 242/250 | 139.747 / 145.652 ms |
+
+The roam counts are **not an improvement claim** over predecessor 247/250
+and 246/250. They retain a real association outage. Neither run toggled the
+radio or resubmitted its accepted native roam request. Both capture pairs
+and DTrace observers finished naturally, with zero kernel capture drops and
+zero DTrace errors. q1 captures: guest 979 / host 497 packets; q2: 988 / 504.
+
+The complete `iwn_auth` calls now measured 6478 ns (q1) and 7571 ns (q2),
+instead of the old 307200 us busy wait. Firmware receipts then arrived
+asynchronously. q1's SAE-to-ASSOC continuation occurred at
+1789123740114037398 ns and RUN at 1789123742070742847 ns: the remaining
+1.9567-second interval is **after** SAE, not the removed AUTH wait.
+
+q2 adds an exact typed return probe of `ieee80211_assoc_comeback_parse`:
+the AP returned status 30 with 1000 TU, parsed as 2 integer seconds, at
+1789124022000851173 ns. The real retry was sent at
+1789124023051756987 ns (1.0509 seconds later), followed by Association
+Response and RUN. This proves an AP-directed comeback in q2; q1 had no
+such probe and its cause must not be retroactively asserted as proven.
+q1 additionally retained two guest-BPF replies absent at host (reverse
+sequence 82 and 248). q2 retained one `ieee80211_encap` rejection and a
+separate missing host request at sequence 93. These remain open.
+
+The existing watchdog rounds 1000 TU up to two ticks and depends on the
+phase of an unrelated second tick. Exact monotonic comeback timing is the
+next reconnect issue to test, not a reason to ignore the AP's interval.
+Updated reference `AppleBCMWLANCore::handleAssocEvent` at
+`ffffff800159f976` reports status/reason via 0x4e and delegates extended
+data; this host-side function does not prove the firmware's comeback timing.
+Pinned [mac80211 handling](https://github.com/torvalds/linux/blob/v6.18/net/mac80211/mlme.c#L6005-L6022)
+uses the AP interval to set a future deadline, without a whole-second
+countdown. No new timing correction is implemented at this checkpoint.
+
+For space, the inactive, childless historical 20dd leaf was archived and
+hash-verified on `10.7.6.112`, then removed locally at 10:49:40. Archive:
+`/home/dima/Projects/itlwm-runtime-archive/auth-beacon-space-20260911.Ko6sy2/`.
+Disk `tahoe-mgmt-queue.qcow2`, 1174077440 bytes, SHA-256
+`fcc7a8ace06bd0146416d1b557e600b4f2232b3a54ac7384d7751668fc3eef1d`;
+OVMF SHA-256 `281ec757b967ea88d53537d0fabf29842d9358b09ad758c55cd605cc825f0ed9`.
+The 374-image census had no child using that leaf; fuser was empty. Its
+shared backing and the latest working 17b recovery copy remain local.
+
+## S3, WPA2 and a retained hard-loss failure
+
+The same bb142d93 image entered real S3 at 10:58:53 UTC and woke at
+10:59:39, with QEMU observed suspended and one `system_wakeup`. The boot UUID
+did not change. WindowServer's 30-second sleep-ack timeout is recorded, not
+attributed to Wi-Fi. WPA3/SAE and DHCP recovered; before restoring diagnostic
+USB, 1400-byte ICMP passed 20/20 in each direction (maximum RTT 19.325 /
+22.911 ms). The first sleep attempt stopped on an incompletely removed USB
+interface and did not request sleep; it is not counted as an S3 test.
+
+Post-S3 native selection of the controlled WPA2 AP and a subsequent radio
+off/on both recovered DHCP 192.168.73.35 and passed 20/20 packets each way.
+Maximum RTT was 77.344 / 90.600 ms after selection and 84.068 / 163.256 ms
+after off/on. This does not qualify post-S3 GUI or active-AP-role sleep.
+
+After that AP was removed at 11:03:38, automatic return to saved WPA3 LabAP
+**failed**. The guest remained powered on but inactive with no Wi-Fi IPv4;
+diagnostic USB remained healthy. No manual selection or on/off was used to
+hide this failure. Exact-image read-only probes subsequently found logical
+reassociation owner 6 still in SCAN_STARTED, common BGSCAN set, while IWN's
+physical BGSCAN was clear (`sc_flags=0x1cf`). Its source epoch was 59 while
+the current epoch reached 220. New physical scans completed, but their
+common completion was rejected by the stranded owner. See
+[the next correction](TAHOE_REASSOC_SCAN_SOURCE_CANCELLATION_20260911.md).
+
+Consequently this candidate is not public-release qualified. Open/AP-role
+regression on this image has not been completed; retained roaming loss,
+precise association-comeback timing and IWM/IWX hardware coverage remain
+open. The public release remains unchanged.

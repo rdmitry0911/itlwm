@@ -2634,6 +2634,14 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 		return 0;
 	}
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
+	/* A background census belongs to the departing source association.
+	 * Rejecting its eventual old-epoch result is necessary but insufficient:
+	 * an active logical owner would otherwise block every future WCL join
+	 * after the physical backend has already retired its scan. Retire only
+	 * the pre-target scan owner under this same leaf, before callbacks can
+	 * admit a successor. ROAM_STARTED and on-air reassociation keep their
+	 * separate target/terminal lifetime. Never clear a physical HAL lease. */
+	ieee80211_wcl_reassoc_cancel_scan_epoch_locked(ic, prior_epoch);
 	/* The selected value still belongs to prior_epoch here. Capture it
 	 * before revocation, not from a mutable BSS after a yielding callback. */
 	(void)ieee80211_roam_link_take_loss_locked(ic, prior_epoch, epoch,

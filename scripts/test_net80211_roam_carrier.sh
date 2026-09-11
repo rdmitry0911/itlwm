@@ -3,22 +3,42 @@ set -euo pipefail
 ulimit -c 0
 PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 ROAM_TEST_DIR="$(mktemp -d)"
-trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/test"; rm -rf "$ROAM_TEST_DIR/test.dSYM"; rmdir "$ROAM_TEST_DIR"' EXIT
+trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/epoch.inc" "$ROAM_TEST_DIR/test"; rm -rf "$ROAM_TEST_DIR/test.dSYM"; rmdir "$ROAM_TEST_DIR"' EXIT
 PROTO="$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
-awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST|WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)[ \t]/' \
+awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST|WCL_REASSOC_OWNER_LEAF_[A-Z_]+)[ \t]/' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211.h" \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_node.h" > "$ROAM_TEST_DIR/constants.inc"
 sed -n '/^struct ieee80211_roam_link_loss {/,/^};/p' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
+awk '/^#define IEEE80211_WCL_REASSOC_MAX_/ { print }
+     /^struct ieee80211_wcl_reassoc_(candidate|request) \{/ { selected=1 }
+     selected { print } selected && /^};/ { selected=0 }' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
 awk '/^ieee80211_bss_switch_identity_current_locked\(/ { selected=1; print "int" }
     selected { print } selected && /^}/ { selected=0 }' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_node.c" > "$ROAM_TEST_DIR/production.inc"
-awk -v baseline="${ROAM_LOSS_BASELINE:-}" '
+awk '/^ieee80211_wcl_reassoc_clear_locked\(/ { selected=1; print "static void" }
+     /^ieee80211_wcl_reassoc_cancel_scan_epoch_locked\(/ { selected=1; print "void" }
+     /^ieee80211_wcl_reassoc_scan_completion_begin\(/ { selected=1; print "int" }
+     selected { print } selected && /^}/ { selected=0 }' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211.c" >> "$ROAM_TEST_DIR/production.inc"
+if [ -n "${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" ]; then
+    # Substitute the unchanged complete function at its original position;
+    # its default argument must be visible to later production callers.
+    git -C "$PROJECT_DIR" show "${ROAM_LOSS_BASELINE:-$ROAM_EPOCH_BASELINE}:itl80211/openbsd/net80211/ieee80211_proto.c" |
+        awk '/^ieee80211_pae_assoc_epoch_begin_internal\(/ { selected=1; print "uint64_t" }
+             selected { print } selected && /^}/ { selected=0 }' > "$ROAM_TEST_DIR/epoch.inc"
+fi
+awk -v baseline="${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" -v replacement="$ROAM_TEST_DIR/epoch.inc" '
     /^ieee80211_bssid_is_unicast_nonzero\(/ { selected=1; print "int" }
     /^ieee80211_roam_link_(take_loss_locked|take_loss|loss_current)\(/ { selected=1; print "int" }
     /^ieee80211_roam_link_(loss_deliver|cancel)\(/ { selected=1; print "void" }
     /^ieee80211_pae_assoc_epoch_begin_internal\(/ && baseline == "" { selected=1; print "uint64_t" }
+    /^ieee80211_pae_assoc_epoch_begin_internal\(/ && baseline != "" {
+        while ((getline saved < replacement) > 0) print saved
+        close(replacement)
+    }
     /^ieee80211_pae_assoc_epoch_note_newstate\(/ { selected=1; print "void" }
     /^ieee80211_sae_wcl_fresh_carrier_accepted\(/ { selected=1; print "void" }
     /^ieee80211_roam_link_source_epoch\(/ { selected=1; print "uint64_t" }
@@ -28,13 +48,6 @@ awk -v baseline="${ROAM_LOSS_BASELINE:-}" '
     selected { print }
     selected && /^}/ { selected=0 }
 ' "$PROTO" >> "$ROAM_TEST_DIR/production.inc"
-if [ -n "${ROAM_LOSS_BASELINE:-}" ]; then
-    # Replace only this exact production function with the unchanged old one.
-    # The new helper/consumer fixture is retained, so failure must be semantic.
-    git -C "$PROJECT_DIR" show "$ROAM_LOSS_BASELINE:itl80211/openbsd/net80211/ieee80211_proto.c" |
-        awk '/^ieee80211_pae_assoc_epoch_begin_internal\(/ { selected=1; print "uint64_t" }
-             selected { print } selected && /^}/ { selected=0 }' >> "$ROAM_TEST_DIR/production.inc"
-fi
 sed -n '/^struct TahoeWclLinkChangedPayload {/,/^} __attribute__((packed));/p' \
     "$PROJECT_DIR/AirportItlwm/AirportItlwmV2.cpp" >> "$ROAM_TEST_DIR/constants.inc"
 awk '/^static IOReturn postTahoeWclRoamLinkLossGated\(/ { selected=1 }

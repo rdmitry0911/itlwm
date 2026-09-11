@@ -5,8 +5,11 @@
 #include <functional>
 #include <limits>
 #include <vector>
+#include "kernel_memory_test_support.hpp"
 using u_int64_t = uint64_t;
 using u_int8_t = uint8_t;
+using u_int16_t = uint16_t;
+using u_int32_t = uint32_t;
 #define IEEE80211_ADDR_LEN 6
 #define IEEE80211_STA_ONLY
 #define __IO80211_TARGET 260000
@@ -73,8 +76,10 @@ struct ieee80211com {
     uint8_t ic_des_essid[32]={'n','e','t'};
     uint64_t ic_pae_assoc_epoch=7, ic_roam_link_epoch=0;
     uint64_t ic_wcl_reassoc_next_serial=0, ic_wcl_reassoc_terminal_serial=0;
+    uint64_t ic_wcl_reassoc_scan_accepted_serial=0;
     uint64_t ic_wcl_reassoc_owner_serial=0, ic_wcl_reassoc_source_epoch=0;
     unsigned ic_wcl_reassoc_owner_active=0, ic_wcl_reassoc_owner_last_leaf=0;
+    ieee80211_wcl_reassoc_request ic_wcl_reassoc_request{};
     uint8_t ic_wcl_reassoc_source_bssid[6]={}, ic_wcl_reassoc_target_bssid[6]={};
     struct { uint64_t next_generation=0; } ic_wcl_join_attempt;
     uint64_t ic_pae_assoc_replace_epoch=0, ic_sae_wcl_policy_generation=0;
@@ -547,5 +552,90 @@ int main() {
         ++cases;
     }
 #endif
+    for (unsigned leaf : {IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP,
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED,
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED}) {
+        Fixture f;
+        f.ic.ic_mgt_timer=0;
+        f.ic.ic_wcl_reassoc_next_serial=31;
+        f.ic.ic_wcl_reassoc_owner_serial=31;
+        f.ic.ic_wcl_reassoc_source_epoch=7;
+        f.ic.ic_wcl_reassoc_owner_active=1;
+        f.ic.ic_wcl_reassoc_owner_last_leaf=leaf;
+        f.ic.ic_wcl_reassoc_source_bssid[0]=2;
+        f.ic.ic_wcl_reassoc_scan_accepted_serial=31;
+        f.ic.ic_wcl_reassoc_request.feature_flags=0x34;
+        f.ic.ic_flags |= IEEE80211_F_BGSCAN | IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+        const auto result=ieee80211_pae_assoc_epoch_begin(&f.ic);
+        assert(result==8 && f.ic.ic_pae_assoc_epoch==8);
+        // Real source cancellation must not strand the old scan's logical
+        // owner. The lower scan/command lease is an independent boundary.
+        assert(!f.ic.ic_wcl_reassoc_owner_active);
+        assert(f.ic.ic_wcl_reassoc_owner_serial==0);
+        assert(f.ic.ic_wcl_reassoc_source_epoch==0);
+        assert(f.ic.ic_wcl_reassoc_next_serial==31);
+        assert(f.ic.ic_wcl_reassoc_scan_accepted_serial==31);
+        assert(f.ic.ic_wcl_reassoc_request.feature_flags==0);
+        assert((f.ic.ic_flags & (IEEE80211_F_BGSCAN |
+            IEEE80211_F_DISABLE_BG_AUTO_CONNECT))==0);
+        assert(losses.empty());
+        assert(!ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,31));
+        assert(ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,0));
+        assert(ieee80211_pae_assoc_epoch_begin(&f.ic)==9);
+        assert(!f.ic.ic_wcl_reassoc_owner_active && losses.empty());
+        ++cases;
+    }
+    for (unsigned change=0; change<8; ++change) {
+        Fixture f;
+        f.ic.ic_wcl_reassoc_next_serial=31;
+        f.ic.ic_wcl_reassoc_owner_serial=31;
+        f.ic.ic_wcl_reassoc_source_epoch=7;
+        f.ic.ic_wcl_reassoc_owner_active=1;
+        f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
+        f.ic.ic_wcl_reassoc_request.feature_flags=0x34;
+        switch(change) {
+        case 0: f.ic.ic_wcl_reassoc_source_epoch=8; break;
+        case 1: f.ic.ic_wcl_reassoc_next_serial=32; break;
+        case 2: f.ic.ic_wcl_reassoc_owner_serial=0; break;
+        case 3: f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED; break;
+        case 4: f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT; break;
+        case 5: f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_TIMEOUT; break;
+        case 6: f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE; break;
+        case 7: f.ic.ic_pae_selected_bss_lock=nullptr; break;
+        }
+        const auto flags=f.ic.ic_flags;
+        assert(ieee80211_pae_assoc_epoch_begin(&f.ic)==8);
+        assert(f.ic.ic_wcl_reassoc_owner_active);
+        assert(f.ic.ic_wcl_reassoc_request.feature_flags==0x34);
+        assert(f.ic.ic_flags==flags && losses.empty());
+        ++cases;
+    }
+    {
+        Fixture f;
+        f.ic.ic_wcl_reassoc_next_serial=31;
+        f.ic.ic_wcl_reassoc_owner_serial=31;
+        f.ic.ic_wcl_reassoc_source_epoch=7;
+        f.ic.ic_wcl_reassoc_owner_active=1;
+        f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
+        onRevoke=[](ieee80211com *ic) {
+            assert(!ic->ic_pae_selected_bss_lock->held);
+            assert(!ic->ic_wcl_reassoc_owner_active && !(ic->ic_flags & IEEE80211_F_BGSCAN));
+            ic->ic_wcl_reassoc_next_serial=32;
+            ic->ic_wcl_reassoc_owner_serial=32;
+            ic->ic_wcl_reassoc_source_epoch=ic->ic_pae_assoc_epoch;
+            ic->ic_wcl_reassoc_owner_active=1;
+            ic->ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
+            ic->ic_flags |= IEEE80211_F_BGSCAN;
+            ic->ic_wcl_reassoc_request.feature_flags=0x78;
+        };
+        assert(ieee80211_pae_assoc_epoch_begin(&f.ic)==8);
+        onRevoke={};
+        assert(!ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,31));
+        assert(!ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,0));
+        assert(f.ic.ic_wcl_reassoc_owner_serial==32 && (f.ic.ic_flags & IEEE80211_F_BGSCAN));
+        assert(f.ic.ic_wcl_reassoc_request.feature_flags==0x78 && losses.empty());
+        assert(ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,32));
+        ++cases;
+    }
     std::printf("PASS: %u actual roam carrier ownership/bridge and BSS replacement cases\n",cases);
 }
