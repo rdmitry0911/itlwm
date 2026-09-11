@@ -126,3 +126,8 @@ or capture, host profile/PS restored and unchanged wired management route.
 No new production change or replacement kext is justified by these diagnostic
 runs alone. Intermittent first-request BSS discovery, full GUI/profile/sleep
 combinations and IWM/IWX RF parity remain independent open functional layers.
+
+The [subsequent TX-policy control](TAHOE_IWN_TX_POLICY_20260912.md) retained
+two end-to-end losses with successful matching firmware outcomes. The earlier
+0x82 packet is therefore not a universal cause. It also corrects the diagnostic
+wireseq print-width assumption; packet identity/status correlation is intact.
