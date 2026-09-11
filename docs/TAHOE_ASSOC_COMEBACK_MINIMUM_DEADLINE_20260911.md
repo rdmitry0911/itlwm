@@ -167,3 +167,32 @@ enabling probes; explicit BEGIN initialization fixed it. Its source/log are
 retained separately. The corrected observer compiled before either RF run.
 Real S3 and remaining STA/AP/GUI regressions are the next qualification steps;
 this candidate is not the public release yet.
+
+## Same-image real S3, Wi-Fi-only recovery
+
+The exact BE0C8CE1 image remained in boot 2F68EDF1 through real Normal Sleep
+from 13:40:36 to 13:42:28 UTC (112 seconds in pmset). QEMU independently
+reported suspended before the explicit wake. The diagnostic USB Ethernet and
+USB tablet were removed before sleep; guest interface census before and after
+the data test contained only lo0/gif0/XHC1/stf0/ap1/en1. No radio toggle,
+network selection, driver reload or guest reboot was used for recovery.
+
+Native WPA3 obtained a fresh DHCP ACK for 172.16.66.219 at 13:42:35 UTC.
+Direct Wi-Fi SSH and independent 1400-byte traffic passed 20/20 in both
+directions, maximum RTT 128.922/16.594 ms. The initial immediate post-wake SSH
+probe failed with No route to host/255 and is retained; the successful data
+test was a later, separately labelled observation, not an instantaneous
+availability claim. Its state readback began at 13:43:10 UTC.
+
+pmset also records a 30-second WindowServer sleep-notification timeout. This
+is not a post-S3 GUI qualification. Diagnostic USB was re-added only after
+the Wi-Fi-only traffic and same-boot readback completed, for subsequent AP
+tests; its first SSH banner probe timed out and remains separate evidence.
+
+- Wi-Fi-only terminal log SHA-256:
+  `a55af09d9666265a2a193a858be2e73af327ba5b4b1dda8c7a3705846f61c20b`
+- same-boot, interface-absence and pmset readback SHA-256:
+  `8623121eeb937877c5261acda38c1f8cb367754ad76ca2882bd8049f5fbe8b1c`
+
+The post-S3 AP security matrix and remaining native STA/GUI regression are
+still pending; the public release remains source52951b81.
