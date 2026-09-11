@@ -123,3 +123,52 @@ the filters include ARP, so these are not counts of successful echo replies.
 All four report zero kernel drops. Controllers and observers are terminal;
 the guest is back on BSS 02/channel 13 with WPA3 and its original address.
 No AP fixture, physical `.22`, QEMU lifecycle or disk-image operation was used.
+
+## Candidate: exact protected source departure
+
+The following is an implementation candidate, **not yet a new RF result or
+release**. The non-BTM IWN hook now builds one ordinary protected deauth using
+the shared management header policy and the normal software-PMF TX path. It
+does not replace driver-resident SAE with a userspace exchange. The existing
+BTM response/deauth fence and IWM/IWX implementations are unchanged.
+
+A value-only ticket carries source epoch, credential generation, WCL owner
+serial, join/reassoc sequence counters, source/target BSSID and STA address.
+It is armed before submission, attached to the exact descriptor before its
+doorbell, and consumed only after that descriptor and its node reference
+retire. Scheduler publication takes lifecycle -> credential -> selected-BSS
+locks, repeats the current ACTIVE source/public identity checks, then releases
+all locks before any callback. No second password owner is introduced.
+
+The direct producer explicitly checks queue pressure and slot ownership. Data
+is held during source departure; ordinary hardware stop cancels the pending
+value without resetting its monotonic ticket or erasing the existing
+sleep/reconnect ACTIVE credential. Stale/duplicate completions cannot advance
+a successor. A terminal TX failure may still permit roaming to an available
+target; it is not recorded as successful delivery to the source AP. A failed
+target start after departure publishes an owned failure and requests recovery
+only if no reentrant successor was admitted.
+
+Local candidate checks on 2026-09-11:
+
+- 34 complete management-queue/header/builder cases, including the production
+  protected deauth body, invalid PMF state and allocation/prepend failures.
+- 27 cases execute all six new departure orchestration functions with explicit
+  hardware/frame-allocation/target-join boundaries. They cover pre-doorbell
+  cancellation, immediate completion, TX failure, stale source/owner/credential,
+  stop and reentrant recovery; the value primitive also rejects mismatched
+  identities, duplicate completion and ticket wrap.
+- The existing complete IWN TX-completion fixture now checks exact departure
+  identity capture before clear and callback after packet/node/slot retirement.
+- `test_payload_builders.sh` passes, including existing AP, PMF key lifetime,
+  deadline, IWM/IWX retirement, state-transition and firmware-owner fixtures.
+  The first candidate run failed because its IWN descriptor double lacked the
+  new field/callback; this was repaired and a real retirement assertion added.
+- SAE transport, software PMF, WCL credential, WCL roam-scan and queue-topology
+  contracts pass. The standalone DVM AMPDU contract had a pre-existing stale
+  three-argument stop signature (HEAD already passes `&retired`); its expected
+  signature is updated without changing production AMPDU behavior.
+
+These are sanitizer/source gates, not simulated RF success. A new Tahoe build,
+loaded-UUID verification, real A->B->A source-deauth/comeback observations and
+off/on plus S3 checks remain required before qualification/release replacement.

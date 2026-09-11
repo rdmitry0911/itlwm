@@ -38,6 +38,7 @@
 #include <HAL/ItlSaeAuthTransportV1.h>
 #include <HAL/ItlSaePmkContinuationV1.h>
 #include <HAL/ItlSaeWclCredentialV1.h>
+#include "IwnSaeRoamDeparture.hpp"
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
@@ -197,6 +198,7 @@ struct iwn_tx_data {
     uint32_t sae_lifecycle_generation;
     uint8_t  sae_bssid[IEEE80211_ADDR_LEN];
     uint8_t  sae_sta[IEEE80211_ADDR_LEN];
+    struct IwnSaeRoamDepartureIdentity sae_roam_departure;
 
     /*
      * Diagnostic identity captured by iwn_tx() BEFORE the
@@ -606,6 +608,10 @@ struct iwn_softc {
     bool                sc_sae_tx_lifecycle_closed;
     bool                sc_sae_tx_detaching;
     bool                sc_sae_tx_task_ready;
+
+    /* Selected-BSS leaf owns this value-only source-deauth fence. The
+     * monotonic ticket survives cancellation and hardware stop/reopen. */
+    struct IwnSaeRoamDepartureState sc_sae_roam_departure;
 
     /*
      * This short leaf is used by firmware completion, reset and cancellation.

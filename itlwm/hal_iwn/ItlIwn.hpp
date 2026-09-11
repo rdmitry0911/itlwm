@@ -473,7 +473,15 @@ public:
                 int, int, int, uint8_t, uint16_t);
     int        iwn_tx(struct iwn_softc *, mbuf_t,
                 struct ieee80211_node *,
-                const struct ItlSaeAuthTxRequestV1 * = nullptr);
+                const struct ItlSaeAuthTxRequestV1 * = nullptr,
+                const struct IwnSaeRoamDepartureIdentity * = nullptr);
+    int        iwn_sae_roam_departure_start(struct ieee80211com *,
+                const struct ieee80211_node *, const uint8_t *);
+    bool       iwn_sae_roam_departure_commit(struct iwn_softc *,
+                struct iwn_tx_ring *, int, uint8_t, uint16_t,
+                const struct IwnSaeRoamDepartureIdentity *);
+    void       iwn_sae_roam_departure_terminal(struct iwn_softc *,
+                const struct IwnSaeRoamDepartureIdentity *, bool);
     int        iwn_rval2ridx(int);
     static void        iwn_start(struct _ifnet *);
     static void        iwn_watchdog(struct _ifnet *);

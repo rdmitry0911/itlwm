@@ -43,7 +43,7 @@ awk '/^iwn_(tx_done(_free_txdata)?|reset_tx_ring|free_tx_ring)\(/ { selected=1; 
 "$BSS_SWITCH_TEST/test" 8
 "$BSS_SWITCH_TEST/test" 6
 for scenario in 9 10 11 12; do "$BSS_SWITCH_TEST/test" "$scenario"; done
-for scenario in 2 3 13 14 15 16 17 18 19 20 21 22 23 25 26; do
+for scenario in 2 3 13 14 15 16 17 18 19 20 21 22 23 25 26 27; do
     "$BSS_SWITCH_TEST/test" "$scenario"
 done
 if [ "${BSS_SWITCH_PASSING_ONLY:-0}" = 1 ]; then

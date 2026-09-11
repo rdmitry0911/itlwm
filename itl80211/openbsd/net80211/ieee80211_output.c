@@ -205,15 +205,11 @@ ieee80211_action_name(struct ieee80211_frame *wh)
  * dispatched to the driver, then it is responsible for freeing the
  * reference (and potentially free'ing up any associated storage).
  */
-int
-ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
+static mbuf_t
+ieee80211_mgmt_frame_prepend(struct ieee80211com *ic, struct ieee80211_node *ni,
     mbuf_t m, int type)
 {
-	struct ieee80211com *ic = (struct ieee80211com *)ifp;
 	struct ieee80211_frame *wh;
-	uint16_t auth_seq = 0xffff;
-	size_t frame_len;
-	int enqueue_dropped;
 
 	if (ni == NULL)
             panic("null node");
@@ -228,7 +224,7 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
          */
     mbuf_prepend(&m, sizeof(struct ieee80211_frame), MBUF_DONTWAIT);
         if (m == NULL)
-            return ENOMEM;
+            return NULL;
     mbuf_pkthdr_setrcvif(m, (ifnet_t)ni);
 
         wh = mtod(m, struct ieee80211_frame *);
@@ -260,6 +256,24 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
                 (ni->ni_flags & IEEE80211_NODE_TXMGMTPROT))
                 wh->i_fc[1] |= IEEE80211_FC1_PROTECTED;
         }
+
+        return m;
+}
+
+int
+ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
+    mbuf_t m, int type)
+{
+	struct ieee80211com *ic = (struct ieee80211com *)ifp;
+	struct ieee80211_frame *wh;
+	uint16_t auth_seq = 0xffff;
+	size_t frame_len;
+	int enqueue_dropped;
+
+	m = ieee80211_mgmt_frame_prepend(ic, ni, m, type);
+	if (m == NULL)
+		return ENOMEM;
+	wh = mtod(m, struct ieee80211_frame *);
 
 		#ifndef IEEE80211_STA_ONLY
 			if (ic->ic_opmode == IEEE80211_M_HOSTAP &&
@@ -1711,6 +1725,30 @@ ieee80211_get_deauth(struct ieee80211com *ic, struct ieee80211_node *ni,
     *mtod(m, u_int16_t *) = htole16(reason);
 
 	return m;
+}
+
+/* Build, but do not enqueue, one protected source-leave frame. The caller
+ * owns a node reference and serializes the source epoch through its exact
+ * descriptor publication. Reuse the ordinary management header/protection
+ * policy; the HAL still performs normal CCMP encryption, never a raw
+ * unprotected transmission or a second implementation of PMF. */
+mbuf_t
+ieee80211_protected_deauth_frame_build(struct ieee80211com *ic,
+    struct ieee80211_node *ni, u_int16_t reason)
+{
+	mbuf_t m;
+
+	if (ic == NULL || ni == NULL || ic->ic_bss != ni ||
+	    ic->ic_opmode != IEEE80211_M_STA || ic->ic_state != IEEE80211_S_RUN ||
+	    !ni->ni_port_valid || (ic->ic_caps & IEEE80211_C_MFP) == 0 ||
+	    (ni->ni_flags & (IEEE80211_NODE_MFP | IEEE80211_NODE_TXMGMTPROT)) !=
+	    (IEEE80211_NODE_MFP | IEEE80211_NODE_TXMGMTPROT))
+		return NULL;
+	m = ieee80211_get_deauth(ic, ni, reason);
+	if (m == NULL)
+		return NULL;
+	return ieee80211_mgmt_frame_prepend(ic, ni, m,
+	    IEEE80211_FC0_SUBTYPE_DEAUTH);
 }
 
 /*-

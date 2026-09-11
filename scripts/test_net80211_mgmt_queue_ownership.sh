@@ -20,14 +20,16 @@ awk '/^ieee80211_release_node\(/ { selected=1; print "void" }
      selected { print } selected && /^}/ { selected=0 }' \
     "$MGMT_QUEUE_ROOT/itl80211/openbsd/net80211/ieee80211_node.c" > "$MGMT_QUEUE_TEST/release.inc"
 awk '/^ieee80211_(mgmt_output|send_mgmt|send_bss_transition_response)\(/ { selected=1; print "int" }
+     /^ieee80211_mgmt_frame_prepend\(/ { selected=1; print "static mbuf_t" }
+     /^ieee80211_(get_deauth|protected_deauth_frame_build)\(/ { selected=1; print "mbuf_t" }
      /^ieee80211_tx_compressed_bar\(/ { selected=1; print "void" }
      selected { print } selected && /^}/ { selected=0 }' \
     "$MGMT_QUEUE_ROOT/itl80211/openbsd/net80211/ieee80211_output.c" > "$MGMT_QUEUE_TEST/output.inc"
 "${CXX:-clang++}" -std=c++17 -g -Wall -Wextra -Werror \
-    -fsanitize=address,undefined -fno-omit-frame-pointer -I "$MGMT_QUEUE_TEST" \
+    -fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-parameter -I "$MGMT_QUEUE_TEST" \
     "$MGMT_QUEUE_ROOT/tests/net80211_mgmt_queue_ownership_test.cpp" -o "$MGMT_QUEUE_TEST/test"
 case "${MGMT_QUEUE_EXPECT_DEFECTS:-0}" in
-0) for scenario in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21; do
+0) for scenario in {0..33}; do
        "$MGMT_QUEUE_TEST/test" "$scenario"
    done ;;
 1) "$MGMT_QUEUE_TEST/test" 0

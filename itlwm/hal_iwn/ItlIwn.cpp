@@ -127,6 +127,7 @@ static enum iwn_scan_lease_owner iwn_scan_lease_begin_hardware_invalidation(
     struct iwn_softc *, struct ieee80211_wcl_scan_invalidation *,
     struct ieee80211_standard_scan_invalidation *, u_int64_t *);
 static void iwn_scan_lease_retire_after_hardware_stop(struct iwn_softc *);
+static void iwn_sae_roam_departure_stop(struct iwn_softc *);
 static bool iwn_scan_lease_live_locked(const struct iwn_softc *);
 static bool iwn_scan_lease_owner_is_wcl(u_int8_t);
 static int iwn_wcl_scan_initial_band(struct iwn_softc *, uint16_t *);
@@ -276,6 +277,7 @@ iwn_sae_tx_data_clear(struct iwn_tx_data *data)
     data->sae_lifecycle_generation = 0;
     explicit_bzero(data->sae_bssid, sizeof(data->sae_bssid));
     explicit_bzero(data->sae_sta, sizeof(data->sae_sta));
+    data->sae_roam_departure = IwnSaeRoamDepartureIdentity{};
     data->wnm_tx_fence_generation = 0;
     data->wnm_tx_fence_kind = 0;
 }
@@ -1879,6 +1881,7 @@ iwn_sae_tx_stop_begin(struct iwn_softc *sc)
 
     /* Do not wait here: iwn_hw_stop() is also a calibration-reset edge. */
     iwn_sae_tx_lifecycle_close(sc, false);
+    iwn_sae_roam_departure_stop(sc);
     if (sc->sc_sae_tx_lock == NULL)
         return;
     IOSimpleLockLock(sc->sc_sae_tx_lock);
@@ -3017,6 +3020,100 @@ out:
     return started;
 }
 
+/* Caller holds the selected-BSS leaf. The credential-free descriptor value
+ * must still name this exact source and WCL attempt, not merely the same
+ * ic_bss allocation after another node copy. */
+static bool
+iwn_sae_roam_source_current_locked(struct iwn_softc *sc,
+    const struct IwnSaeRoamDepartureIdentity *identity, bool require_bound)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    const struct ieee80211_node *source = ic->ic_bss;
+    if (identity == NULL || identity->association_epoch == 0 ||
+        identity->reassoc_serial == 0 || source == NULL ||
+        ic->ic_opmode != IEEE80211_M_STA || ic->ic_state != IEEE80211_S_RUN ||
+        source->ni_port_valid == 0 ||
+        ic->ic_pae_assoc_epoch != identity->association_epoch ||
+        ic->ic_pae_assoc_replace_epoch != 0 ||
+        ic->ic_wcl_join_attempt.next_generation != identity->join_sequence ||
+        ic->ic_wcl_reassoc_next_serial != identity->reassoc_sequence ||
+        !ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_serial != identity->reassoc_serial ||
+        ic->ic_wcl_reassoc_source_epoch != identity->association_epoch ||
+        ic->ic_wcl_reassoc_owner_last_leaf !=
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED ||
+        !IEEE80211_ADDR_EQ(source->ni_bssid, identity->source_bssid) ||
+        !IEEE80211_ADDR_EQ(source->ni_macaddr, identity->source_bssid) ||
+        !IEEE80211_ADDR_EQ(ic->ic_myaddr, identity->sta) ||
+        !IEEE80211_ADDR_EQ(ic->ic_wcl_reassoc_source_bssid,
+            identity->source_bssid) ||
+        !IEEE80211_ADDR_EQ(ic->ic_wcl_reassoc_target_bssid,
+            identity->target_bssid))
+        return false;
+    if (!require_bound)
+        return true;
+    const struct ieee80211_sae_wcl_request *request = &ic->ic_sae_wcl_request;
+    return request->phase == IEEE80211_SAE_WCL_REQUEST_BOUND &&
+        request->generation == identity->source_generation &&
+        request->association_epoch == identity->association_epoch &&
+        ic->ic_sae_wcl_policy_generation == identity->source_generation &&
+        IEEE80211_ADDR_EQ(request->bssid, identity->source_bssid);
+}
+
+/* No publication/callback under this leaf. A new association can reuse the
+ * slot after epoch cancellation; its ticket is never reused by an old TX. */
+static void
+iwn_sae_roam_departure_stop(struct iwn_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    if (ic->ic_pae_selected_bss_lock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const IwnSaeRoamDepartureIdentity identity =
+        sc->sc_sae_roam_departure.identity;
+    if (iwn_sae_roam_departure_cancel(sc->sc_sae_roam_departure, identity) &&
+        iwn_sae_roam_source_current_locked(sc, &identity, false))
+        ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+}
+
+static void
+iwn_sae_roam_departure_fail(struct iwn_softc *sc,
+    const IwnSaeRoamDepartureIdentity *identity, int error, bool source_left)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const bool current = iwn_sae_roam_source_current_locked(sc, identity, false);
+    if (current) {
+        ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+            IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+        ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
+        if (!source_left)
+            ic->ic_wcl_reassoc_owner_last_leaf =
+                IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+    }
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    if (!current)
+        return;
+    const uint64_t continuation = ieee80211_wcl_reassoc_post_failure_owned(
+        ic, identity->reassoc_serial, static_cast<uint32_t>(error));
+    /* Failure publication may synchronously admit another request. Never
+     * send SCAN on behalf of that successor, even if it has not copied BSS. */
+    irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const bool recover = source_left && continuation != 0 &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+        ic->ic_pae_assoc_epoch == continuation &&
+        ic->ic_wcl_join_attempt.next_generation == identity->join_sequence &&
+        ic->ic_wcl_reassoc_next_serial == identity->reassoc_sequence &&
+        !ic->ic_wcl_reassoc_owner_active &&
+        IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, identity->source_bssid);
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    if (recover)
+        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+}
+
 int ItlIwn::
 iwn_sae_targeted_roam_start(struct ieee80211com *ic,
     const struct ieee80211_node *source,
@@ -3169,7 +3266,204 @@ iwn_sae_wcl_roam_start(struct ieee80211com *ic,
     const struct ieee80211_node *source,
     const u_int8_t target_bssid[IEEE80211_ADDR_LEN])
 {
-    return iwn_sae_targeted_roam_start(ic, source, target_bssid, false);
+    if (ic == NULL || ic->ic_softc == NULL)
+        return 0;
+    struct iwn_softc *sc = (struct iwn_softc *)ic->ic_softc;
+    ItlIwn *that = container_of(sc, ItlIwn, com);
+    return that->iwn_sae_roam_departure_start(ic, source, target_bssid);
+}
+
+int ItlIwn::
+iwn_sae_roam_departure_start(struct ieee80211com *ic,
+    const struct ieee80211_node *source, const uint8_t *target_bssid)
+{
+    struct iwn_softc *sc = &com;
+    struct _ifnet *ifp = NULL;
+    IwnSaeRoamDepartureIdentity identity{};
+    struct ieee80211_node *ni = NULL;
+    struct ieee80211_node *candidate;
+    mbuf_t m = NULL;
+    bool armed = false;
+    int error = ECANCELED;
+    int handled = 0;
+
+    /* Physical scan completion already owns the IWN workloop. Do not wait
+     * for a gate while holding a callback lease that stop could drain. */
+    if (ic != &sc->sc_ic || source == NULL || target_bssid == NULL ||
+        getMainWorkLoop() == NULL || !getMainWorkLoop()->inGate() ||
+        ic->ic_pae_selected_bss_lock == NULL ||
+        !iwn_sae_engine_callback_enter(sc))
+        return 0;
+    ifp = IC2IFP(ic);
+    if (!iwn_sae_tx_lifecycle_enter(sc, false))
+        goto leave_callback;
+    if (!iwn_sae_engine_runtime_enabled(sc) ||
+        sc->sc_sae_wcl_credential_lock == NULL ||
+        !(ifp->if_flags & IFF_RUNNING) || source != ic->ic_bss ||
+        (ic->ic_flags & (IEEE80211_F_RSNON | IEEE80211_F_MFPR)) !=
+            (IEEE80211_F_RSNON | IEEE80211_F_MFPR) ||
+        (ic->ic_flags & IEEE80211_F_PSK) != 0 ||
+        ic->ic_rsnakms != IEEE80211_AKM_SAE ||
+        (source->ni_flags & (IEEE80211_NODE_MFP | IEEE80211_NODE_TXMGMTPROT)) !=
+            (IEEE80211_NODE_MFP | IEEE80211_NODE_TXMGMTPROT))
+        goto leave;
+    candidate = ieee80211_find_node(ic, target_bssid);
+    if (candidate == NULL || candidate == source || candidate->ni_fails != 0 ||
+        candidate->ni_chan == IEEE80211_CHAN_ANYC ||
+        candidate->ni_esslen != source->ni_esslen || source->ni_esslen == 0 ||
+        source->ni_esslen > IEEE80211_NWID_LEN ||
+        memcmp(candidate->ni_essid, source->ni_essid, source->ni_esslen) != 0)
+        goto leave;
+
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_wcl_credential_active &&
+        !sc->sc_sae_wcl_credential_staged && !sc->sc_sae_wcl_credential_pending &&
+        itl_sae_wcl_credential_is_well_formed(&sc->sc_sae_wcl_credential) &&
+        IEEE80211_ADDR_EQ(sc->sc_sae_wcl_credential.bssid, source->ni_bssid) &&
+        sc->sc_sae_wcl_credential.ssid_len == source->ni_esslen &&
+        memcmp(sc->sc_sae_wcl_credential.ssid, source->ni_essid,
+            source->ni_esslen) == 0)
+        identity.source_generation = sc->sc_sae_wcl_credential.request_generation;
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    if (identity.source_generation == 0)
+        goto leave;
+
+    {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+        identity.association_epoch = ic->ic_pae_assoc_epoch;
+        identity.reassoc_serial = ic->ic_wcl_reassoc_owner_serial;
+        identity.join_sequence = ic->ic_wcl_join_attempt.next_generation;
+        identity.reassoc_sequence = ic->ic_wcl_reassoc_next_serial;
+        IEEE80211_ADDR_COPY(identity.source_bssid, source->ni_bssid);
+        IEEE80211_ADDR_COPY(identity.target_bssid, target_bssid);
+        IEEE80211_ADDR_COPY(identity.sta, ic->ic_myaddr);
+        const IwnSaeRoamDepartureIdentity previous =
+            sc->sc_sae_roam_departure.identity;
+        if (!iwn_sae_roam_source_current_locked(sc, &previous, true))
+            (void)iwn_sae_roam_departure_cancel(sc->sc_sae_roam_departure, previous);
+        armed = iwn_sae_roam_source_current_locked(sc, &identity, true) &&
+            iwn_sae_roam_departure_arm(sc->sc_sae_roam_departure, identity);
+        if (armed)
+            ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    }
+    if (!armed)
+        goto leave;
+    handled = 1;
+    ieee80211_stop_ampdu_tx(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH);
+    {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+        if (iwn_sae_roam_source_current_locked(sc, &identity, true))
+            ni = ieee80211_ref_node(ic->ic_bss);
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    }
+    if (ni == NULL)
+        goto failed;
+    m = ieee80211_protected_deauth_frame_build(ic, ni, IEEE80211_REASON_AUTH_LEAVE);
+    if (m == NULL) {
+        error = ENOMEM;
+        goto failed;
+    }
+    error = iwn_tx(sc, m, ni, NULL, &identity);
+    m = NULL; /* iwn_tx consumes the packet on every return. */
+    if (error != 0)
+        goto failed;
+    ni = NULL; /* The exact accepted descriptor owns the node reference. */
+    if (ifp->netStat != NULL)
+        ifp->netStat->outputPackets++;
+    sc->sc_tx_timer = 5;
+    ifp->if_timer = 1;
+    XYLog("iwn_sae_roam SOURCE_DEAUTH_SUBMITTED ticket=%llu\n", identity.ticket);
+    goto leave;
+failed:
+    if (m != NULL)
+        mbuf_freem(m);
+    if (ni != NULL)
+        ieee80211_release_node(ic, ni);
+    {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+        (void)iwn_sae_roam_departure_cancel(sc->sc_sae_roam_departure, identity);
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    }
+    iwn_sae_roam_departure_fail(sc, &identity, error, false);
+leave:
+    iwn_sae_tx_lifecycle_leave(sc);
+leave_callback:
+    iwn_sae_engine_callback_leave(sc);
+    return handled;
+}
+
+bool ItlIwn::
+iwn_sae_roam_departure_commit(struct iwn_softc *sc, struct iwn_tx_ring *ring,
+    int descriptor_idx, uint8_t station_id, uint16_t length,
+    const struct IwnSaeRoamDepartureIdentity *identity)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    bool committed = false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching &&
+        sc->sc_sae_wcl_credential_lock != NULL) {
+        /* The only added nesting is lifecycle -> credential -> selected.
+         * Credential erase/stage never takes selected while holding its
+         * leaf elsewhere. Keep the exact ACTIVE source generation alive
+         * through publication, including a concurrent explicit carrier. */
+        IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+        if (identity != NULL && sc->sc_sae_wcl_credential_active &&
+            !sc->sc_sae_wcl_credential_staged && !sc->sc_sae_wcl_credential_pending &&
+            sc->sc_sae_wcl_credential.request_generation == identity->source_generation &&
+            IEEE80211_ADDR_EQ(sc->sc_sae_wcl_credential.bssid, identity->source_bssid) &&
+            iwn_sae_roam_source_current_locked(sc, identity, true) &&
+            iwn_sae_roam_departure_publish(sc->sc_sae_roam_departure, *identity)) {
+            ring->data[descriptor_idx].sae_roam_departure = *identity;
+            sc->ops.update_sched(sc, ring->qid, descriptor_idx, station_id, length);
+            ring->cur = (descriptor_idx + 1) % IWN_TX_RING_COUNT;
+            IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+            committed = true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+        IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return committed;
+}
+
+void ItlIwn::
+iwn_sae_roam_departure_terminal(struct iwn_softc *sc,
+    const struct IwnSaeRoamDepartureIdentity *identity, bool txfail)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    bool current = false;
+    if (identity == NULL || identity->ticket == 0 ||
+        !iwn_sae_engine_callback_enter(sc))
+        return;
+    if (!iwn_sae_tx_lifecycle_enter(sc, false))
+        goto leave_callback;
+    {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+        current = iwn_sae_roam_source_current_locked(sc, identity, true);
+        current = iwn_sae_roam_departure_complete(sc->sc_sae_roam_departure,
+            *identity) && current;
+        if (current)
+            ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    }
+    if (current) {
+        /* Retry exhaustion on an unreachable old AP must not forbid roaming
+         * to the selected target. It is a terminal, not an ACK-success claim. */
+        XYLog("iwn_sae_roam SOURCE_DEAUTH_TERMINAL ticket=%llu txfail=%u\n",
+            identity->ticket, txfail ? 1U : 0U);
+        if (!iwn_sae_targeted_roam_start(ic, ic->ic_bss, identity->target_bssid, false))
+            iwn_sae_roam_departure_fail(sc, identity, EIO, true);
+    }
+    iwn_sae_tx_lifecycle_leave(sc);
+leave_callback:
+    iwn_sae_engine_callback_leave(sc);
 }
 
 int ItlIwn::
@@ -16411,6 +16705,7 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     struct iwn_tx_data *data = &ring->data[desc->idx];
     struct iwn_node *wn = (struct iwn_node *)data->ni;
     struct ieee80211_node *wnm_tx_fence_node = NULL;
+    IwnSaeRoamDepartureIdentity roam_departure{};
     u_int64_t wnm_tx_fence_generation = 0;
     u_int8_t wnm_tx_fence_kind = 0;
     struct mbuf_list retired = MBUF_LIST_INITIALIZER();
@@ -16557,6 +16852,7 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         wnm_tx_fence_generation = data->wnm_tx_fence_generation;
         wnm_tx_fence_kind = data->wnm_tx_fence_kind;
     }
+    roam_departure = data->sae_roam_departure;
     iwn_tx_done_free_txdata(sc, data, &retired);
     ring->queued--;
     iwn_clear_oactive(sc, ring);
@@ -16564,6 +16860,8 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     /* A WNM callback can copy the next BSS and its reference counter. Retire
      * the old packet reference before that callback, as on the original path. */
     ieee80211_tx_node_retire_drain(ic, &retired);
+    if (roam_departure.ticket != 0)
+        that->iwn_sae_roam_departure_terminal(sc, &roam_departure, txfail != 0);
     if (wnm_tx_fence_node != NULL)
         ieee80211_wnm_bss_transition_tx_fence_complete(ic,
             wnm_tx_fence_node, wnm_tx_fence_generation,
@@ -17468,7 +17766,8 @@ iwn_post_plti_trace_record_completion(struct ieee80211com *ic,
 
 int ItlIwn::
 iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
-    const struct ItlSaeAuthTxRequestV1 *sae_request)
+    const struct ItlSaeAuthTxRequestV1 *sae_request,
+    const struct IwnSaeRoamDepartureIdentity *roam_departure)
 {
     struct iwn_ops *ops = &sc->ops;
     struct ieee80211com *ic = &sc->sc_ic;
@@ -17507,6 +17806,25 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
         hdrlen = sizeof(struct ieee80211_frame_min);
     else
         hdrlen = ieee80211_get_hdrlen(wh);
+
+    /* This is a distinct direct protected-deauth path, never a fabricated
+     * Algorithm-3 request. The explicit value argument follows this one
+     * packet through encryption and descriptor publication; no classifier
+     * can accidentally claim an unrelated user's deauthentication frame. */
+    if (roam_departure != NULL &&
+        (sae_request != NULL || roam_departure->ticket == 0 ||
+        type != IEEE80211_FC0_TYPE_MGT ||
+        subtype != IEEE80211_FC0_SUBTYPE_DEAUTH ||
+        hdrlen != sizeof(struct ieee80211_frame) ||
+        mbuf_len(m) < hdrlen + 2 || mbuf_pkthdr_len(m) != hdrlen + 2 ||
+        (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) == 0 ||
+        !IEEE80211_ADDR_EQ(wh->i_addr1, roam_departure->source_bssid) ||
+        !IEEE80211_ADDR_EQ(wh->i_addr2, roam_departure->sta) ||
+        !IEEE80211_ADDR_EQ(wh->i_addr3, roam_departure->source_bssid) ||
+        LE_READ_2((const uint8_t *)wh + hdrlen) != IEEE80211_REASON_AUTH_LEAVE)) {
+        mbuf_freem(m);
+        return EINVAL;
+    }
 
     /*
      * The private direct path transports exactly one public Algorithm-3
@@ -17604,7 +17922,7 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
                            (auth_body[3] << 8));
         }
     }
-    if (sae_request == NULL)
+    if (sae_request == NULL && roam_departure == NULL)
         (void)ieee80211_wnm_bss_transition_tx_fence_classify(
             ic, ni, wh, mbuf_len(m), &wnm_tx_fence_generation,
             &wnm_tx_fence_kind);
@@ -17642,6 +17960,17 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
     ring = &sc->txq[qid];
     desc = &ring->desc[ring->cur];
     data = &ring->data[ring->cur];
+
+    /* This direct producer does not pass through iwn_start's queue-full
+     * admission. Reject before crypto/DMA or touching an occupied slot. */
+    if (roam_departure != NULL &&
+        ((sc->qfullmsk & (1 << qid)) != 0 ||
+        ring->queued > IWN_TX_RING_HIMARK ||
+        ring->queued >= IWN_TX_RING_COUNT - 1 ||
+        data->m != NULL || data->ni != NULL)) {
+        mbuf_freem(m);
+        return ENOBUFS;
+    }
 
     /* Choose a TX rate index. */
     if (IEEE80211_IS_MULTICAST(wh->i_addr1) ||
@@ -18038,6 +18367,28 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
             explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
             iwn_sae_tx_data_clear(data);
             return EIO;
+        }
+    } else if (roam_departure != NULL) {
+        if (!iwn_sae_roam_departure_commit(sc, ring, ring->cur,
+            tx->id, totlen, roam_departure)) {
+            explicit_bzero(desc, sizeof(*desc));
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->ni = NULL;
+            data->totlen = 0;
+            data->ampdu_nframes = 0;
+            data->ampdu_txmcs = 0;
+            data->ampdu_rate_generation = 0;
+            data->ampdu_rate_rflags = 0;
+            data->ampdu_rate_feedback_valid = 0;
+            data->tx_apple_nrate = 0;
+            data->tx_apple_nrate_valid = 0;
+            data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
+            data->diag_subtype = 0xff;
+            data->diag_auth_seq = 0xffff;
+            explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
+            iwn_sae_tx_data_clear(data);
+            return ECANCELED;
         }
     } else if (sae_assoc_tx == IWN_SAE_ASSOC_TX_ADMITTED) {
         const int descriptor_idx = ring->cur;

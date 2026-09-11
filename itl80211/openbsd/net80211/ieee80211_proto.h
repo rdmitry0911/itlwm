@@ -163,6 +163,8 @@ extern	int ieee80211_send_mgmt(struct ieee80211com *, struct ieee80211_node *,
  * The caller retains one reference on ni until the backend accepts m and
  * assumes that reference on successful TX submission.
  */
+extern	mbuf_t ieee80211_protected_deauth_frame_build(struct ieee80211com *,
+	    struct ieee80211_node *, u_int16_t);
 extern	mbuf_t ieee80211_sae_auth_frame_build(struct ieee80211com *,
 		struct ieee80211_node *,
 		const struct ItlSaeAuthTxRequestV1 *);

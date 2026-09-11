@@ -83,7 +83,7 @@ for needle, label in (
     ("sc->sc_tx_ba[tid].wn = wn", "hardware RA/TID commit"),
     ("error = that->iwn_set_link_quality(sc, ni)",
      "post-ADDBA LQ update"),
-    ("ops->ampdu_tx_stop(sc, tid, ba->ba_winstart)",
+    ("ops->ampdu_tx_stop(sc, tid, ba->ba_winstart, &retired)",
      "failed-LQ scheduler rollback"),
     ("sc->sc_tx_ba[tid].wn = NULL", "failed-LQ owner rollback"),
 ):

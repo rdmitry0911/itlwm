@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <initializer_list>
 #include "kernel_memory_test_support.hpp"
+#include "../itlwm/hal_iwn/IwnSaeRoamDeparture.hpp"
 using u_int8_t = uint8_t;
 using u_int64_t = uint64_t;
 using u_int32_t = uint32_t;
@@ -192,6 +193,7 @@ struct iwn_tx_data {
     uint8_t diag_subtype = 0xff, diag_peer[6]{};
     unsigned diag_auth_seq = 0xffff;
     uint64_t wnm_tx_fence_generation = 0;
+    IwnSaeRoamDepartureIdentity sae_roam_departure{};
     uint64_t auth_rxon_serial = 0;
     uint8_t wnm_tx_fence_kind = 0;
     void *map = nullptr;
@@ -223,7 +225,11 @@ static void mbuf_freem(Packet *) { ++packetFrees; }
 static void bus_dmamap_destroy(void *, void *) { ++mapFrees; }
 static void iwn_dma_contig_free(IwnDma *dma) { *dma = {}; }
 #include "tx-node-retire.inc"
-static void iwn_sae_tx_data_clear(iwn_tx_data *data) { data->sae_active = false; }
+static void iwn_sae_tx_data_clear(iwn_tx_data *data) {
+    data->sae_active = false;
+    data->sae_roam_departure = {};
+}
+static unsigned departureTerminals;
 static void iwn_post_plti_trace_record_completion(ieee80211com *, unsigned) {}
 static void ieee80211_wnm_bss_transition_tx_fence_complete(
     ieee80211com *, ieee80211_node *, uint64_t, uint8_t) { assert(false); }
@@ -258,6 +264,15 @@ struct ItlIwn {
     static void iwn_set_link_quality(iwn_softc *, ieee80211_node *) {}
     void iwn_sae_tx_report_terminal(iwn_softc *, iwn_tx_data *data, int error) {
         assert(error == EIO); data->sae_active = false;
+    }
+    void iwn_sae_roam_departure_terminal(iwn_softc *sc,
+        const IwnSaeRoamDepartureIdentity *identity, bool failed) {
+        assert(identity->ticket == 41 && !failed);
+        const auto &ring = sc->txq[0];
+        assert(ring.queued == 0 && ring.data[0].ni == nullptr &&
+            ring.data[0].m == nullptr && ring.data[0].sae_roam_departure.ticket == 0);
+        assert(sc->sc_ic.ic_bss->ni_refcnt == 0 && joins == 0);
+        ++departureTerminals;
     }
 };
 #include "iwn-terminal.inc"
@@ -391,10 +406,10 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "actual post-copy release: refs=%u joins=%u\n",
             f.source.ni_refcnt, joins);
         assert(joins == 1 && f.source.ni_refcnt == 0);
-    } else if (scenario == 6) {
+    } else if (scenario == 6 || scenario == 27) {
         ieee80211_node_copy(&f.ic, &f.source, &f.cached);
         assert(f.source.ni_refcnt == 0);
-        f.arm();
+        if (scenario == 6) f.arm();
         ItlIwn driver;
         Statistics stats;
         driver.com.sc_ic = f.ic;
@@ -405,6 +420,7 @@ int main(int argc, char **argv) {
         data.m = &packet;
         data.ni = ieee80211_ref_node(&f.source);
         data.totlen = 1400;
+        if (scenario == 27) data.sae_roam_departure.ticket = 41;
         ring.queued = 1;
         bool retiredAtSwitch = false;
         onJoin = [&] {
@@ -414,8 +430,11 @@ int main(int argc, char **argv) {
         };
         iwn_rx_desc done;
         driver.iwn_tx_done(&driver.com, &done, 0, 0, 0, 0, 0, 1400);
-        assert(joins == 1 && ring.queued == 0 && data.ni == nullptr && data.totlen == 0);
-        assert(retiredAtSwitch && "BSS switch reenters before the source TX descriptor retires");
+        assert(ring.queued == 0 && data.ni == nullptr && data.totlen == 0);
+        if (scenario == 6) {
+            assert(joins == 1);
+            assert(retiredAtSwitch && "BSS switch reenters before the source TX descriptor retires");
+        } else assert(departureTerminals == 1 && joins == 0);
     } else if (scenario == 7) {
         f.arm();
         onCleanup = [&] {

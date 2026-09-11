@@ -1,5 +1,5 @@
 // Complete production mq_enqueue/send_mgmt/mgmt_output/ref/release paths.
-// Allocation, frame construction and physical TX delivery are explicit boundaries.
+// Allocation, unrelated frame builders and physical TX are explicit boundaries.
 #include <cassert>
 #include <cerrno>
 #include <cstdint>
@@ -44,7 +44,7 @@ static void fixture_log(const char *, ...) {}
 struct ieee80211com;
 struct ieee80211_node {
     unsigned ni_refcnt = 0, ni_inact = 0, ni_txseq = 0, ni_flags = 0;
-    int ni_state = 0;
+    int ni_state = 0, ni_port_valid = 1;
     uint8_t ni_macaddr[6] = {2}, ni_bssid[6] = {2};
     void (*ni_unref_cb)(ieee80211com *, ieee80211_node *, void *) = nullptr;
     void *ni_unref_arg = nullptr;
@@ -72,6 +72,8 @@ static mbuf_t mbuf_nextpkt(mbuf_t packet) { return packet->next; }
 static unsigned packetLive, packetFreed, traces, starts, callbacks, nodeFrees;
 static bool prependFail, builderFail, completeInline;
 static mbuf_t allocate() { if (builderFail) return nullptr; ++packetLive; return new Packet; }
+static void mbuf_gethdr(int, int, mbuf_t *packet) { *packet = allocate(); }
+static void mbuf_align_32(mbuf_t, unsigned) {}
 static void mbuf_freem(mbuf_t packet) { assert(packet && packetLive); --packetLive; ++packetFreed; delete packet; }
 static void mbuf_prepend(mbuf_t *packet, size_t count, int) {
     if (prependFail) { mbuf_freem(*packet); *packet = nullptr; return; }
@@ -107,7 +109,6 @@ static void AirportItlwmPostPltiTraceRecord(ieee80211com *, int) { ++traces; }
 #include "release.inc"
 static mbuf_t ieee80211_get_probe_req(ieee80211com *, ieee80211_node *) { return allocate(); }
 static mbuf_t ieee80211_get_auth(ieee80211com *, ieee80211_node *, int, int) { return allocate(); }
-static mbuf_t ieee80211_get_deauth(ieee80211com *, ieee80211_node *, int) { return allocate(); }
 static mbuf_t ieee80211_get_assoc_req(ieee80211com *, ieee80211_node *, int) { return allocate(); }
 static mbuf_t ieee80211_get_disassoc(ieee80211com *, ieee80211_node *, int) { return allocate(); }
 static mbuf_t ieee80211_get_action(ieee80211com *, ieee80211_node *, int, int, int) { return allocate(); }
@@ -137,6 +138,7 @@ static void callback(ieee80211com *ic, ieee80211_node *, void *) {
 int main(int argc, char **argv) {
     assert(argc == 2);
     const int scenario = std::atoi(argv[1]);
+    assert(scenario >= 0 && scenario <= 33);
     IORecursiveLock lock;
     ieee80211com ic{};
     ic.ic_if.if_start = start;
@@ -164,7 +166,44 @@ int main(int argc, char **argv) {
         IEEE80211_FC0_SUBTYPE_REASSOC_REQ, IEEE80211_FC0_SUBTYPE_ACTION,
         IEEE80211_FC0_SUBTYPE_PROBE_REQ, IEEE80211_FC0_SUBTYPE_DISASSOC};
     const int type = scenario < 8 ? types[scenario] : IEEE80211_FC0_SUBTYPE_AUTH;
-    if (scenario >= 15) {
+    if (scenario >= 22) {
+        // Execute the real body + shared header builder, without queue ownership.
+        node.ni_refcnt = 2;
+        node.ni_txseq = 0xfff;
+        node.ni_inact = 9;
+        ic.ic_mgt_timer = 17;
+        if (scenario == 23) ic.ic_caps &= ~IEEE80211_C_MFP;
+        if (scenario == 24) node.ni_flags &= ~IEEE80211_NODE_MFP;
+        if (scenario == 25) node.ni_flags &= ~IEEE80211_NODE_TXMGMTPROT;
+        if (scenario == 26) ic.ic_bss = &queuedNode;
+        if (scenario == 27) ic.ic_state = 0;
+        if (scenario == 28) node.ni_port_valid = 0;
+        if (scenario == 29) ic.ic_opmode = 2;
+        builderFail = scenario == 30;
+        prependFail = scenario == 31;
+        mbuf_t packet = ieee80211_protected_deauth_frame_build(
+            scenario == 32 ? nullptr : &ic, scenario == 33 ? nullptr : &node, 3);
+        assert((packet != nullptr) == (scenario == 22));
+        if (packet) {
+            assert(packet->length == 26 && packet->peer == &node);
+            const auto *frame = mtod(packet, const ieee80211_frame *);
+            assert(frame->i_fc[0] == IEEE80211_FC0_SUBTYPE_DEAUTH);
+            assert(frame->i_fc[1] == IEEE80211_FC1_PROTECTED);
+            assert(std::memcmp(frame->i_addr1, node.ni_macaddr, 6) == 0);
+            assert(std::memcmp(frame->i_addr2, ic.ic_myaddr, 6) == 0);
+            assert(std::memcmp(frame->i_addr3, node.ni_bssid, 6) == 0);
+            assert(frame->i_seq[0] == 0xf0 && frame->i_seq[1] == 0xff);
+            assert(packet->bytes[24] == 3 && packet->bytes[25] == 0);
+            assert(node.ni_txseq == 0 && node.ni_inact == 0);
+            mbuf_freem(packet);
+        }
+        assert(packetLive == 0 && packetFreed == (scenario == 22 || scenario == 31 ? 1U : 0U));
+        assert(node.ni_refcnt == 2 && callbacks == 0 && nodeFrees == 0);
+        assert(starts == 0 && traces == 0 && mq_len(&ic.ic_mgtq) == 0);
+        assert(ic.ic_mgt_timer == 17 && ic.ic_if.if_timer == 0 && lock.depth == 0);
+        std::printf("protected deauth builder scenario %d PASS\n", scenario);
+        return 0;
+    } else if (scenario >= 15) {
         if (scenario == 19) ic.ic_state = 0;
         uint8_t target[6] = {6};
         const uint8_t status = scenario == 16 || scenario == 18 ? 1 : IEEE80211_WNM_BSS_TM_ACCEPT;
