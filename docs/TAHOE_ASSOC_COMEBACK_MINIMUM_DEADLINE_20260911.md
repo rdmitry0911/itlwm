@@ -233,3 +233,43 @@ the full frozen bundle and the exact loaded Mach-O UUID/hash. The downloaded
 candidate archive SHA-256 is
 `feb561fc09360d9ddbea0d513f1d24b32f6108f9589b8e0a5253f0799a2f35ec`.
 It remains unpublished pending the current native STA and cold GUI regressions.
+
+## Post-S3 native STA and source-loss observations
+
+Ordinary networksetup selection (not a GUI click) connected the temporary
+WPA2 AP: request 13:57:22 UTC, DHCP 13:57:33, address 192.168.73.35, then
+20/20 packets both ways (maximum 136.555/124.142 ms). Native radio off at
+13:58:04 and on at 13:58:05 restored the same profile with DHCP at 13:58:07,
+then 20/20 both ways (maximum 129.388/122.363 ms).
+
+Removing that exact host fixture and restoring host STA completed at 13:58:32.
+The actual production source-cancellation helper retired logical scan owner 9,
+leaf 2, source epoch 108 to active=0/serial=0. Guest WPA3 DHCP returned at
+13:58:41 with no resubmitted join or remedial radio toggle; recovery traffic
+passed 20/20 each way, but maximum RTT was 354.690/589.817 ms. The 180-second
+observer terminated with zero errors and the controller returned zero.
+
+The separate open-AP request at 14:00:48 obtained 192.168.73.26 and passed
+20/20 each way (maximum 58.310/86.476 ms). Fixture removal/host restoration
+completed at 14:01:39, with automatic WPA3 DHCP at 14:01:43. This recovery
+failed the strict zero-loss traffic gate: 19/20 forward (missing sequence 18,
+maximum 326.607 ms), 20/20 reverse (maximum 168.256 ms). The controller
+therefore returned 1; no repeat replaced that result. Its separate 180-second
+observer still completed with zero errors. It did not observe an active
+logical scan owner at source cancellation, so the earlier WPA2 run—not this
+open run—is the physical exercise of that specific retirement branch.
+
+The new-image cancellation disassembly binds the read-only observer offsets
+to the installed Mach-O; it does not reuse offsets merely on source similarity.
+That disassembly SHA-256 is
+`75ba033f790bc5e32ae082d23ed0081730b1fe536aa808fd46df8134b0951b29`.
+The WPA2 terminal trace SHA-256 is
+`8a29ed79ae3968b1ef5d68a6de06bf9d9cf3b8e4d15c9afabe26a1dd15f81793`.
+
+Post-S3 VNC remains at the 16:40 lock-screen clock. A one-second WindowServer
+sample after the traffic test shows all 96 main-thread samples blocked along
+displayDidWake -> IOFBAcknowledgeNotification -> IOConnectCallMethod. Full
+sample SHA-256:
+`152fed939051edc8c2b0c3decf250e8b7cbe24663c2cad96fc0e13bcca3aa5c7`.
+This repeats the lab framebuffer/wake limitation; cold GUI qualification must
+remain separate. No physical-host operation or driver unload was performed.
