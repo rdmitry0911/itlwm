@@ -1,6 +1,7 @@
 # STA PMF liveness and native reconnect
 
-Status: implementation built; **new-image radio qualification is pending**.
+Status: implementation loaded; healthy protected-query and timeout/native
+recovery edges measured on RF. **Full radio qualification remains open**.
 This is recovery from a lost protected association, not a claim that the
 underlying AP/STA state divergence or all SAE roaming failures are fixed.
 
@@ -85,7 +86,9 @@ Build source manifest (356files) SHA256:
 `302cf0827ea29c6fe4e372a9a14805514eed5d83a24225ab1fe2e37abf21552f`.
 Candidate UUID:`59448436-3947-3A8D-8738-402DF8FED85C`;
 Mach-O SHA256:`43f24ef98f6384a62800012bad7dd5ba384e9c7290f23c0bb8dc9a0eadbaa213`.
-All1088 imports resolve against the actual guest BootKC. Not yet installed.
+All1088 imports resolve against the actual guest BootKC. Installed through
+the five-member AuxKC transaction `activation-20260911T192210Z`; loaded in
+boot `6886D4CD-BC3A-45BE-8D73-4ACC65414EF7` after a normal guest reboot.
 Private AuxKC admission passes with the exact five-member set and no canonical
 mutation. Aggregate log SHA256:
 `cfeb296c2e80ad18da99e2cd31799d5f5c9b0a252d1d6d57f751266fbd51ae61`;
@@ -99,6 +102,94 @@ while keeping AP beacons, and require bounded query timeout, native leave,
 fresh SAE/keys, DHCP and bidirectional traffic without on/off. These exact
 hostap_2_10 test/tx flags were read in src/ap/ctrl_iface_ap.c. Repeat bounded
 controls after real S3 and check normal WPA2/open paths; retain every failure.
+
+## First candidate radio receipts (19:26–19:41UTC)
+
+Owned AX211 AP `AIAM-UIF3-WPA3`, BSSID `80:e4:ba:20:ef:f9`, channel9,
+SAE/group19/CCMP/PMF-required. CoreWLAN joined the real guest driver; hostapd
+reported AUTH/ASSOC/AUTHORIZED/MFP, AKM8. This profile uses guest private MAC
+`7a:b8:96:a9:d2:25` and DHCP `192.168.73.30`. Baseline five packets each way
+passed. No GUI click is claimed for this helper-driven selection.
+
+Fixture mistakes are retained separately: the initial forward-q1 used a
+guessed `.20` address and sent no valid probe. Healthy-q1 observed idle state
+only. Healthy-q2 passed `reason=7 test=0` as separate CLI arguments; this
+hostapd_cli discarded the third argument, and AP log/monitor confirmed an
+ordinary protected Deauth with station removal. This is not an SA Query
+failure or pass. After its native recovery to LabAP, the helper explicitly
+rejoined the fixture for a corrected independent control.
+
+Healthy-q3 used the exact raw control command
+`DEAUTHENTICATE 7a:b8:96:a9:d2:25 reason=7 test=0`.
+The AP log confirmed both flags. At19:35:54, one plaintext reason7 triggered
+generation1/epoch43/transaction27531. Snapshot and actual HAL doorbell
+accepted it, and the verified CCMP/PN response edge consumed the matching
+transaction about60ms later. No timeout or new association followed the
+stimulus through the observer end. Traffic was10/10 each way. The trace
+also contains the earlier, explicitly requested fixture join; do not count
+those pre-stimulus transitions as query-driven reconnects. DTrace errors0.
+
+Forgot-q1 used the exact raw command
+`DEAUTHENTICATE 7a:b8:96:a9:d2:25 reason=7 tx=0` at19:36:57.
+The AP removed only that station, without sending the command's Deauth.
+Subsequent guest data elicited plaintext reason7. Generation2/epoch43 sent
+five protected queries and committed all five doorbells; no verified response
+arrived. Failure was claimed once about1.026s after the first submission,
+and the controller posted its local-loss carrier. WCL immediately issued its
+ordinary leave, then fresh SAE peer phases1/2, association and RUN about3.73s
+after timeout. No radio toggle, forced join or reboot was used during recovery.
+
+Native policy selected the already-saved **LabAP**, not the original fixture.
+DHCP returned to `172.16.66.219`; recovered gateway traffic was20/20.
+The original fixture-bound streams were0/35 forward and0/44 reverse after
+the profile/address changed: they must not be presented as successful traffic
+continuity or same-AP recovery. The first later host->guest check was20/29;
+steady bidirectional1400-byte checks were20/20 forward and20/21 reverse.
+Thus the persistent outage cleared in this control, but lossless recovery,
+same-profile choice and the original multi-AP reproduction remain open.
+Linux ping with both `-c` and `-w` can transmit beyond the requested count
+while awaiting replies; subsequent harness uses an external hard deadline
+and `-c` alone. Actual transmitted counts above are preserved, not normalized.
+
+Forgot-q1's trace ended with errors0. The AP monitor capture ended when the
+720-second fixture removed its own monitor, with zero capture drops; it is
+not a complete independent beacon census or an untouched ciphertext capture.
+The fixture restored the exact host NetworkManager profile at19:38:11UTC;
+wired management and the guest boot identity were unchanged. Public release
+is still `ee501d78`/DCCB with its persistent-outage warning, **not** this image.
+
+## Sleep qualification in progress
+
+The first real Normal Sleep lasted75s (19:43:08–19:44:23UTC), same boot and
+loaded image. Its controller looked for `VM status: suspended`, but this QEMU
+reports `VM status: paused (suspended)`. The bounded observer failed and
+restored USB before manual `system_wakeup`; this is **not** WiFi-only wake
+qualification. Immediate SSH probes failed; later DHCP/WiFi returned.
+
+The corrected second controller exhausted its55s observation window while
+QEMU still reported running; macOS logged sleep entry and then DarkWake when
+USB was restored. That DarkWake later re-entered sleep. The third controller's
+background AND-list kept the SSH channel open through that sleep; cleanup
+performed a full wake and restored USB. Its delayed helper then saw `en2`
+and exited **before requesting a new sleep**, as intended by its safety gate.
+These are preserved fixture/control failures, not three successful S3 tests.
+The fourth controller used a simple fully redirected background command and
+a120s observation window. At19:52:58UTC it observed actual QEMU suspended
+state, held it for5s and woke once at19:53:03. Before USB restoration, the
+same boot and UUID returned through WiFi, DHCP was `.219`, WPA3_SAE, and
+1400-byte traffic was **20/20 each way**. Its controller and WiFi-only gates
+passed; only then were the exact diagnostic USB NIC and tablet restored.
+This proves one strict post-S3 data-path recovery, not all sleep combinations.
+The roughly105s from arming to actual S3 is retained as a separate latency
+investigation; the earlier failed controls and lossy baseline are not erased.
+
+Healthy-q3 trace SHA256:
+`a4204234565f647b078186e441f935ccf22ad27c0fb977aa6be78eb1b818a71d`.
+Forgot-q1 trace SHA256:
+`f125aee89aafdf7ed76df906c33c82f3292fb1435726ccc56c3fd2e77976e3af`.
+Updated-Ghidra exact WCL recovery subset is retained in
+`reference-wcl-loss-ready/`; its source export manifest SHA256 is
+`c112fed29f2a4d49fd07862be556a7e0f139b2c5e550deaa833f719a5be4b8da`.
 
 Working evidence:
 `/dev/shm/aiam-sae-peer-response-20260911.X7eeBs`, mirrored to
