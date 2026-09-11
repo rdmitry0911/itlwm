@@ -32,19 +32,36 @@ struct ieee80211com {
     int ic_opmode = IEEE80211_M_STA;
     int ic_state = IEEE80211_S_SCAN;
     uint32_t ic_initial_scan_census_only = 0;
+    unsigned ic_caps = 1, ic_flags = 0, ic_scan_count = 0;
+    struct Ifnet {} ic_if;
     IOSimpleLock *ic_pae_selected_bss_lock = nullptr;
     uint64_t ic_pae_assoc_epoch = 71;
     ieee80211_join_attempt ic_wcl_join_attempt{};
     void (*ic_event_handler)(ieee80211com *, int, void *) = nullptr;
+    void (*ic_wcl_join_failure_scan)(ieee80211com *, uint64_t) = nullptr;
 };
 int ieee80211_wcl_join_fail(ieee80211com *, const ieee80211_join_failure *,
     ieee80211_join_failure_cause, uint16_t, uint16_t, uint32_t, unsigned int);
 #include "join-bridge.inc"
 
+// Exact production notfound branch; physical rescan is an explicit boundary.
+static unsigned rescans, scanResets;
+enum { IEEE80211_C_SCANALLBAND = 1, IEEE80211_MODE_AUTO = 0,
+       IEEE80211_F_BGSCAN = 2, IEEE80211_F_DISABLE_BG_AUTO_CONNECT = 4 };
+#define AirportItlwmPostPltiTraceRecord(...) ((void)0)
+static void ieee80211_reset_scan(ieee80211com::Ifnet *) { ++scanResets; }
+static int ieee80211_next_mode(ieee80211com::Ifnet *) { return IEEE80211_MODE_AUTO; }
+static void ieee80211_next_scan(ieee80211com::Ifnet *) { ++rescans; }
+#define IEEE80211_STA_ONLY
+#include "join-no-candidate.inc"
+
 static constexpr uint8_t bssid[] = { 2, 4, 6, 8, 10, 12 };
 static constexpr uint8_t ssid[] = { 'l', 'a', 'b' };
 static unsigned int callbacks, accepted;
 static ieee80211_join_failure delivered;
+static void cleanup_capability(ieee80211com *, uint64_t) {
+    assert(false); // Admission must not invoke lower cleanup under the leaf.
+}
 static void event(ieee80211com *ic, int code, void *data) {
     assert(!ic->ic_pae_selected_bss_lock->held);
     assert(code == IEEE80211_EVT_STA_JOIN_FAILED && data);
@@ -66,6 +83,7 @@ int main() {
     ieee80211com ic;
     ic.ic_pae_selected_bss_lock = &lock;
     ic.ic_event_handler = event;
+    ic.ic_wcl_join_failure_scan = cleanup_capability;
     for (unsigned int staleBoundary = 0; staleBoundary < 4; staleBoundary++) {
         const uint64_t generation = ieee80211_wcl_join_begin(&ic,
             bssid, ssid, sizeof(ssid));
@@ -153,6 +171,42 @@ int main() {
         }
         ic.ic_opmode = IEEE80211_M_STA;
     }
+    // IWM/IWX carry exact scan generations, but have not yet installed the
+    // three-part failure retirement path. No-candidate must leave DISCOVERY
+    // usable by the existing next-scan path instead of stranding FAILING.
+    for (unsigned removedAfterAdmission = 0; removedAfterAdmission < 2;
+         ++removedAfterAdmission) {
+        ic.ic_wcl_join_failure_scan = removedAfterAdmission ?
+            cleanup_capability : nullptr;
+        const uint64_t admitted = ieee80211_wcl_join_begin(&ic,
+            bssid, ssid, sizeof(ssid));
+        assert(ieee80211_wcl_join_scan_generation(&ic) == admitted);
+        ic.ic_wcl_join_failure_scan = nullptr;
+        const ieee80211_join_attempt before = ic.ic_wcl_join_attempt;
+        const unsigned priorCallbacks = callbacks;
+        assert(!ieee80211_wcl_join_scan_failed(&ic, admitted));
+        assert(std::memcmp(&before, &ic.ic_wcl_join_attempt, sizeof(before)) == 0);
+        assert(ieee80211_wcl_join_scan_current(&ic, admitted));
+        assert(ieee80211_wcl_join_scan_generation(&ic) == admitted);
+        assert(!ieee80211_wcl_join_failure_pending(&ic, admitted));
+        assert(callbacks == priorCallbacks);
+        const unsigned priorScans = rescans, priorResets = scanResets;
+        complete_no_candidate(&ic, false, admitted);
+        assert(rescans == priorScans + 1 && scanResets == priorResets + 1);
+        assert(std::memcmp(&before, &ic.ic_wcl_join_attempt, sizeof(before)) == 0);
+        // A later real selected BSS can still bind this exact attempt.
+        bind(&ic, admitted);
+        assert(ic.ic_wcl_join_attempt.phase == IEEE80211_JOIN_AUTH);
+    }
+    assert(!ieee80211_wcl_join_scan_failed(nullptr, 1));
+    ic.ic_wcl_join_failure_scan = cleanup_capability;
+    // Enrolled IWN still stops the autonomous rescan and waits for its real
+    // cleanup participants; no compatibility path may bypass that fence.
+    const uint64_t enrolled = ieee80211_wcl_join_begin(&ic, bssid, ssid, sizeof(ssid));
+    const unsigned priorScans = rescans;
+    complete_no_candidate(&ic, false, enrolled);
+    assert(rescans == priorScans);
+    assert(ieee80211_wcl_join_failure_pending(&ic, enrolled));
     uint64_t sequence = 99, stateGeneration = 99, epoch = 99;
     const uint64_t stateRequest = ieee80211_wcl_join_begin(&ic,
         bssid, ssid, sizeof(ssid));
@@ -185,4 +239,5 @@ int main() {
     assert(!ieee80211_wcl_join_begin(&ic, bssid, ssid, sizeof(ssid)));
     ieee80211_wcl_join_cleanup_done(&ic, generation, 1);
     std::puts("PASS: production join bridge leaf locking, exact epoch, cleanup participants and reentrant replacement");
+    std::puts("PASS: unenrolled no-candidate backend preserves the attempt and permits a later real candidate");
 }

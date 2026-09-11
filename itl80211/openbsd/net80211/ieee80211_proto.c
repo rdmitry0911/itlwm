@@ -2133,7 +2133,12 @@ ieee80211_wcl_join_scan_failed(struct ieee80211com *ic, u_int64_t generation)
 {
 	struct ieee80211_join_failure request;
 
-	if (generation == 0 ||
+	/* A physical scan generation proves census ownership, not enrollment in
+	 * the three-part failure retirement protocol. Until a HAL installs its
+	 * lower-cleanup callback, leave DISCOVERY intact so end_scan can use its
+	 * existing next-scan path. Otherwise IWM/IWX strand a live request in
+	 * FAILING with nobody able to acknowledge LOWER/SAE or publish a terminal. */
+	if (ic == NULL || ic->ic_wcl_join_failure_scan == NULL || generation == 0 ||
 	    !ieee80211_wcl_join_copy_current(ic, 0, &request) ||
 	    request.generation != generation)
 		return 0;
