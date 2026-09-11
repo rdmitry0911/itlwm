@@ -129,7 +129,8 @@ public:
     uint64_t scanCommandResetEpoch();
     bool reopenScanCommands(uint64_t, uint32_t);
     int reserveScanCommand(bool, bool, uint64_t *,
-                           const ItlStateTransitionRequest * = nullptr);
+                           const ItlStateTransitionRequest * = nullptr,
+                           uint64_t reassocSerial = 0);
     bool copyScanCommandPolicy(uint64_t, ItlScanCommandPolicy *);
     bool scanCommandOwnerCurrentLocked(uint64_t, uint32_t) const;
     void rejectScanCommand(uint64_t);
@@ -617,7 +618,7 @@ public:
     void    iwm_add_task(struct iwm_softc *, struct taskq *, struct task *);
     void    iwm_del_task(struct iwm_softc *, struct taskq *, struct task *);
     int    iwm_scan(struct iwm_softc *, const ItlStateTransitionRequest &);
-    static int    iwm_bgscan(struct ieee80211com *);
+    static int    iwm_bgscan(struct ieee80211com *, uint64_t = 0);
     static int    iwm_bgscan_abort(struct ieee80211com *);
     int    iwm_umac_scan_abort_status(struct iwm_softc *, uint32_t *, uint64_t);
     int    iwm_umac_scan_abort(struct iwm_softc *);

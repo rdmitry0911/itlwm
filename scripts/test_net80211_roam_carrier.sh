@@ -47,7 +47,12 @@ fi | awk '
     selected { print }
     selected && /^}/ { selected=0 }
 ' >> "$ROAM_TEST_DIR/production.inc"
+ROAM_BASELINE_FLAGS=(-DROAM_CURRENT_EPOCH)
+if [ -n "${ROAM_LOSS_BASELINE:-}" ]; then
+    ROAM_BASELINE_FLAGS=(-DROAM_LOSS_BASELINE)
+fi
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -g \
+    "${ROAM_BASELINE_FLAGS[@]}" \
     -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I "$ROAM_TEST_DIR" "$PROJECT_DIR/tests/net80211_roam_carrier_test.cpp" \
     -o "$ROAM_TEST_DIR/test"

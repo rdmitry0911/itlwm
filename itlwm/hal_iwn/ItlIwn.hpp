@@ -522,7 +522,7 @@ public:
     int        iwn_scan(struct iwn_softc *, uint16_t, int, u_int64_t);
     int        iwn_scan_start(struct iwn_softc *, uint16_t, int,
                 enum iwn_scan_lease_owner, u_int64_t, u_int64_t,
-                u_int32_t *, u_int64_t);
+                u_int32_t *, u_int64_t, u_int64_t reassoc_serial = 0);
     int        iwn_scan_continue(struct iwn_softc *, uint16_t, int);
     int        iwn_scan_submit(struct iwn_softc *, uint16_t, int, u_int64_t,
                                bool, bool, bool, u_int64_t, u_int32_t,
@@ -532,7 +532,7 @@ public:
                 bool (*)(struct iwn_softc *, void *),
                 void (*)(struct iwn_softc *, void *), void *);
     void        iwn_scan_abort(struct iwn_softc *);
-    static int        iwn_bgscan(struct ieee80211com *);
+    static int        iwn_bgscan(struct ieee80211com *, u_int64_t = 0);
     static int        iwn_wnm_bgscan_abort(struct ieee80211com *);
     void       iwn_rxon_configure_ht40(struct ieee80211com *,
                                         struct ieee80211_node *);

@@ -391,7 +391,7 @@ ieee80211_begin_bgscan(struct _ifnet *ifp)
         return;
     }
     
-    if (ic->ic_bgscan_start != NULL && ic->ic_bgscan_start(ic) == 0) {
+    if (ic->ic_bgscan_start != NULL && ic->ic_bgscan_start(ic, 0) == 0) {
         /*
          * Free the nodes table to ensure we get an up-to-date view
          * of APs around us. In particular, we need to kick out the
@@ -481,24 +481,44 @@ ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *ic,
 	return -1;
 }
 
+static void ieee80211_wcl_reassoc_clear_locked(struct ieee80211com *);
+
 int
 ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
     const struct ieee80211_wcl_reassoc_request *request)
 {
 	struct ieee80211com *ic = (struct ieee80211com *)ifp;
 	int error;
+	u_int64_t serial, source_epoch;
+	IOInterruptState irq;
 
-	if (ic == NULL || request == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+	if (ic == NULL || request == NULL || ic->ic_pae_selected_bss_lock == NULL)
+		return EINVAL;
+	irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+	if (ic->ic_opmode != IEEE80211_M_STA ||
 	    ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL ||
 	    ic->ic_mgt_timer != 0 || (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
 	    ic->ic_bgscan_start == NULL || ic->ic_wcl_reassoc_owner_active ||
 	    request->channel_count > IEEE80211_WCL_REASSOC_MAX_CHANSPECS ||
-	    request->candidate_count > IEEE80211_WCL_REASSOC_MAX_CANDIDATES)
+	    request->candidate_count > IEEE80211_WCL_REASSOC_MAX_CANDIDATES) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 		return EBUSY;
+	}
 	if ((ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
-	    !ic->ic_bss->ni_port_valid)
+	    !ic->ic_bss->ni_port_valid) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 		return EBUSY;
+	}
+	if (ic->ic_wcl_reassoc_next_serial == ~(u_int64_t)0) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+		return EOVERFLOW;
+	}
 
+	serial = ++ic->ic_wcl_reassoc_next_serial;
+	source_epoch = ic->ic_pae_assoc_epoch;
+	ic->ic_wcl_reassoc_owner_serial = serial;
+	ic->ic_wcl_reassoc_terminal_serial = 0;
+	ic->ic_wcl_reassoc_scan_accepted_serial = 0;
 	ic->ic_wcl_reassoc_request = *request;
 	IEEE80211_ADDR_COPY(ic->ic_wcl_reassoc_source_bssid,
 	    ic->ic_bss->ni_bssid);
@@ -507,29 +527,55 @@ ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
 	ic->ic_wcl_reassoc_owner_active = 1;
 	ic->ic_wcl_reassoc_owner_last_leaf =
 	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP;
+	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+
+	/* Discard the old census before the command can observe fresh candidates.
+	 * Node-release callbacks may replace this admission, so check afterward. */
+	ieee80211_free_allnodes(ic, 0);
+	irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+	if (!ic->ic_wcl_reassoc_owner_active ||
+	    ic->ic_wcl_reassoc_owner_serial != serial ||
+	    ic->ic_pae_assoc_epoch != source_epoch) {
+		if (ic->ic_wcl_reassoc_owner_serial == serial)
+			ieee80211_wcl_reassoc_clear_locked(ic);
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+		return ECANCELED;
+	}
+	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 
 	/* Explicit WCL reassociation is user/airportd intent and is therefore not
 	 * suppressed by the autonomous-roam preference.  Every HAL already owns
 	 * a real associated background scan through this callback. */
-	error = (*ic->ic_bgscan_start)(ic);
+	error = (*ic->ic_bgscan_start)(ic, serial);
+	irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+	/* A real tagged physical terminal may already have selected the target,
+	 * retired the request and advanced the association epoch. Do not rearm it
+	 * when the submitting callback eventually returns. */
+	if (ic->ic_wcl_reassoc_next_serial == serial &&
+	    ic->ic_wcl_reassoc_scan_accepted_serial == serial) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+		return 0;
+	}
+	if (!ic->ic_wcl_reassoc_owner_active ||
+	    ic->ic_wcl_reassoc_owner_serial != serial ||
+	    ic->ic_pae_assoc_epoch != source_epoch) {
+		/* A returned lower result cannot commit or erase another admission. */
+		if (ic->ic_wcl_reassoc_owner_serial == serial)
+			ieee80211_wcl_reassoc_clear_locked(ic);
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+		return ECANCELED;
+	}
 	if (error != 0) {
-		ic->ic_wcl_reassoc_owner_active = 0;
-		ic->ic_wcl_reassoc_owner_last_leaf =
-		    IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
-		explicit_bzero(&ic->ic_wcl_reassoc_request,
-		    sizeof(ic->ic_wcl_reassoc_request));
-		explicit_bzero(ic->ic_wcl_reassoc_source_bssid,
-		    sizeof(ic->ic_wcl_reassoc_source_bssid));
+		ieee80211_wcl_reassoc_clear_locked(ic);
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 		return error;
 	}
-
-	/* Keep only the live source BSS.  A candidate is eligible only when this
-	 * newly accepted physical scan observes it again. */
-	ieee80211_free_allnodes(ic, 0);
 	ic->ic_flags |= IEEE80211_F_BGSCAN;
 	ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
 	ic->ic_wcl_reassoc_owner_last_leaf =
 	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
+	ic->ic_wcl_reassoc_scan_accepted_serial = serial;
+	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 	XYLog("wcl_reassoc REAL_SCAN_STARTED channels=%u candidates=%u flags=0x%x prune=%d\n",
 	    request->channel_count, request->candidate_count,
 	    request->feature_flags, request->prune_rssi_dbm);
@@ -553,40 +599,58 @@ ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *ic,
     u_int32_t result)
 {
 	int error;
+	u_int64_t serial;
+	IOInterruptState irq;
+	int background;
 
-	if (ic == NULL)
+	if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL)
 		return EINVAL;
-	if (!ic->ic_wcl_reassoc_owner_active)
+	irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+	if (!ic->ic_wcl_reassoc_owner_active) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 		return 0;
+	}
 	if (ic->ic_wcl_reassoc_owner_last_leaf !=
 	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
 	    ic->ic_wcl_reassoc_owner_last_leaf !=
-	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED)
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 		return EBUSY;
+	}
+	serial = ic->ic_wcl_reassoc_owner_serial;
+	background = (ic->ic_flags & IEEE80211_F_BGSCAN) != 0;
+	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 
-	if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0) {
+	if (background) {
 		if (ic->ic_bgscan_abort == NULL)
 			return EOPNOTSUPP;
 		error = (*ic->ic_bgscan_abort)(ic);
 		if (error != 0)
 			return error;
-		/* The final scan event can win before the abort reservation.  In
-		 * that ordering it owns the reassociation terminal; never overwrite
-		 * a selected target or post the same failure twice. */
-		if (!ic->ic_wcl_reassoc_owner_active)
-			return 0;
-		if (ic->ic_wcl_reassoc_owner_last_leaf !=
-		    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
-		    ic->ic_wcl_reassoc_owner_last_leaf !=
-		    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED)
-			return EBUSY;
+	}
+	irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+	/* An abort can complete the old scan and admit a same-phase successor.
+	 * Its flags and request belong to that successor even on the same BSSID. */
+	if (!ic->ic_wcl_reassoc_owner_active ||
+	    ic->ic_wcl_reassoc_owner_serial != serial) {
+		const int replaced = ic->ic_wcl_reassoc_owner_active != 0;
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+		return replaced ? EBUSY : 0;
+	}
+	if (ic->ic_wcl_reassoc_owner_last_leaf !=
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+	    ic->ic_wcl_reassoc_owner_last_leaf !=
+	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+		return EBUSY;
 	}
 	ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
 	    IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
 	ic->ic_wcl_reassoc_owner_last_leaf =
 	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 	XYLog("wcl_reassoc SUPERSEDED_BY_WCL_REQUEST\n");
-	ieee80211_wcl_reassoc_post_failure(ic,
+	ieee80211_wcl_reassoc_post_failure_owned(ic, serial,
 	    result != 0 ? result : (u_int32_t)ECANCELED);
 	return 0;
 }
@@ -613,7 +677,7 @@ ieee80211_begin_cache_bgscan(struct _ifnet *ifp)
     }
     ic->ic_last_cache_scan_ts = tv.tv_sec;
     
-    if (ic->ic_bgscan_start != NULL && ic->ic_bgscan_start(ic) == 0) {
+    if (ic->ic_bgscan_start != NULL && ic->ic_bgscan_start(ic, 0) == 0) {
         ic->ic_flags |= IEEE80211_F_BGSCAN;
     }
 }
@@ -640,7 +704,7 @@ ieee80211_begin_wnm_bgscan(struct _ifnet *ifp)
 
 	if (!ieee80211_wnm_bss_transition_scan_start(ic))
 		return EBUSY;
-	error = ic->ic_bgscan_start(ic);
+	error = ic->ic_bgscan_start(ic, 0);
 	ieee80211_wnm_bss_transition_scan_end(ic);
 	if (error != 0)
 		return error;
@@ -751,6 +815,10 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     ic->ic_wcl_scan_active = 0;
     memset(&ic->ic_wcl_scan_plan, 0, sizeof(ic->ic_wcl_scan_plan));
     ic->ic_initial_scan_census_only = 0;
+    ic->ic_wcl_reassoc_next_serial = 0;
+    ic->ic_wcl_reassoc_owner_serial = 0;
+    ic->ic_wcl_reassoc_terminal_serial = 0;
+    ic->ic_wcl_reassoc_scan_accepted_serial = 0;
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
@@ -844,6 +912,8 @@ ieee80211_ifdetach(struct _ifnet *ifp)
     ieee80211_public_initial_bssid_pin_disarm(ic);
     ieee80211_wnm_bss_transition_clear(ic);
     ieee80211_wcl_scan_plan_clear(ic, 0);
+    ic->ic_wcl_reassoc_owner_serial = 0;
+    ic->ic_wcl_reassoc_terminal_serial = 0;
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
@@ -2325,40 +2395,59 @@ ieee80211_plcp2rate(u_int8_t plcp, enum ieee80211_phymode mode)
     return 0;
 }
 
-/*
- * Host-owned WCL reassociation owner publication helpers.
- *
- * The recovered Apple contract reserves the terminal WCL selectors
- * (0x49 success, 0xcf failure) for events that follow an actual lower
- * host-owner reassociation request send/attempt. Publication is gated
- * on ic_wcl_reassoc_owner_active and on either a transparent same-BSS
- * firmware-parity leaf or a leaf state that proves the lower owner had
- * reached at least the REASSOC_REQ_SENT stage (or one of the
- * post-send-attempt failure leaves SEND_FAIL/TIMEOUT). Pre-send producer
- * abandonment must close the owner state without firing any terminal
- * selector; the gate below enforces that invariant.
- */
-void
-ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
+/* Host-only accepted-roam ownership. These helpers retain the existing wire
+ * event mapping while protecting admission/retirement/publication identity.
+ * The distinct reference progress, AUTH and overall-completion carriers are
+ * still required; 0xcf is NOT the reference's general roam-failure event. */
+u_int64_t
+ieee80211_wcl_reassoc_serial(struct ieee80211com *ic)
 {
-    if (ic == NULL)
-        return;
-    if (!ic->ic_wcl_reassoc_owner_active)
-        return;
-    if (!ieee80211_wcl_reassoc_leaf_is_post_send(
-            ic->ic_wcl_reassoc_owner_last_leaf))
-        return;
-    /* Scan acceptance is progress, not reassociation completion. */
-    if (ic->ic_wcl_reassoc_owner_last_leaf ==
-            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED ||
-        ic->ic_wcl_reassoc_owner_last_leaf ==
-            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED)
-        return;
-    /*
-     * Close the owner state before publishing so the terminal selector
-     * cannot be re-emitted by a subsequent unrelated state change.
-     */
+    if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const u_int64_t serial = ic->ic_wcl_reassoc_owner_active ?
+        ic->ic_wcl_reassoc_owner_serial : 0;
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    return serial;
+}
+
+int
+ieee80211_wcl_reassoc_current(struct ieee80211com *ic, u_int64_t serial)
+{
+    return serial != 0 && ieee80211_wcl_reassoc_serial(ic) == serial;
+}
+
+int
+ieee80211_wcl_reassoc_scan_completion_begin(struct ieee80211com *ic,
+    u_int64_t serial)
+{
+    if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    int current = serial == 0 ? !ic->ic_wcl_reassoc_owner_active :
+        (ic->ic_wcl_reassoc_owner_active && ic->ic_wcl_reassoc_owner_serial == serial &&
+         (ic->ic_wcl_reassoc_owner_last_leaf == IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP ||
+          ic->ic_wcl_reassoc_owner_last_leaf == IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED));
+    if (current && serial != 0) {
+        /* Only an actual physical terminal calls this entry. It proves the
+         * lower scan was accepted even if its sender has not returned yet. */
+        ic->ic_wcl_reassoc_scan_accepted_serial = serial;
+        ic->ic_wcl_reassoc_owner_last_leaf = IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
+        ic->ic_flags |= IEEE80211_F_BGSCAN;
+        ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+    }
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    return current;
+}
+
+/* The caller holds the selected-BSS leaf; no lower or upper callback here. */
+static void
+ieee80211_wcl_reassoc_clear_locked(struct ieee80211com *ic)
+{
     ic->ic_wcl_reassoc_owner_active = 0;
+    ic->ic_wcl_reassoc_owner_serial = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
     explicit_bzero(&ic->ic_wcl_reassoc_request,
@@ -2367,41 +2456,97 @@ ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
                    sizeof(ic->ic_wcl_reassoc_source_bssid));
     explicit_bzero(ic->ic_wcl_reassoc_target_bssid,
                    sizeof(ic->ic_wcl_reassoc_target_bssid));
+}
+
+static int
+ieee80211_wcl_reassoc_take_completion(struct ieee80211com *ic,
+    u_int64_t serial, int success,
+    struct ieee80211_wcl_reassoc_completion *completion, u_int32_t *leaf)
+{
+    if (ic == NULL || serial == 0 || completion == NULL || leaf == NULL ||
+        ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    *leaf = ic->ic_wcl_reassoc_owner_last_leaf;
+    const int scan = *leaf == IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED ||
+        *leaf == IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED;
+    if (!ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_serial != serial ||
+        !ieee80211_wcl_reassoc_leaf_is_post_send(*leaf) || (success && scan)) {
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+        return 0;
+    }
+    completion->serial = serial;
+    completion->association_epoch = ic->ic_pae_assoc_epoch;
+    IEEE80211_ADDR_COPY(completion->source_bssid, ic->ic_wcl_reassoc_source_bssid);
+    IEEE80211_ADDR_COPY(completion->target_bssid, ic->ic_wcl_reassoc_target_bssid);
+    /* Retire before epoch cancellation releases its leaf and invokes SAE,
+     * credential, MFP and WCL callbacks. A nested retirement then has no owner. */
+    ieee80211_wcl_reassoc_clear_locked(ic);
+    ic->ic_wcl_reassoc_terminal_serial = serial;
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    return 1;
+}
+
+int
+ieee80211_wcl_reassoc_claim_completion(struct ieee80211com *ic,
+    const struct ieee80211_wcl_reassoc_completion *completion)
+{
+    if (ic == NULL || completion == NULL || completion->serial == 0 ||
+        ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const int current =
+        ic->ic_wcl_reassoc_next_serial == completion->serial &&
+        ic->ic_wcl_reassoc_terminal_serial == completion->serial &&
+        ic->ic_pae_assoc_epoch == completion->association_epoch;
+    if (current)
+        ic->ic_wcl_reassoc_terminal_serial = 0;
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    return current;
+}
+
+void
+ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
+{
+    struct ieee80211_wcl_reassoc_completion completion = {};
+    u_int32_t leaf;
+    const u_int64_t serial = ieee80211_wcl_reassoc_serial(ic);
+    if (!ieee80211_wcl_reassoc_take_completion(ic, serial, 1, &completion, &leaf))
+        return;
     if (ic->ic_event_handler)
-        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_DONE, NULL);
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_DONE, &completion);
+}
+
+void
+ieee80211_wcl_reassoc_post_failure_owned(struct ieee80211com *ic,
+    u_int64_t serial, u_int32_t result)
+{
+    struct ieee80211_wcl_reassoc_completion completion = {};
+    u_int32_t leaf;
+    if (!ieee80211_wcl_reassoc_take_completion(ic, serial, 0, &completion, &leaf))
+        return;
+    completion.result = result != 0 ? result : (u_int32_t)EIO;
+    /* A failed census leaves its source association alive. Once switching
+     * started, fence only the retired serial and its captured epoch. */
+    if (leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+        leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED) {
+        completion.association_epoch = ieee80211_pae_assoc_epoch_begin_reassoc(
+            ic, serial, completion.association_epoch);
+        if (completion.association_epoch == 0)
+            return;
+    }
+    if (ic->ic_event_handler)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_FAIL, &completion);
 }
 
 void
 ieee80211_wcl_reassoc_post_failure(struct ieee80211com *ic, u_int32_t result)
 {
-    u_int32_t leaf;
-
-    if (ic == NULL)
-        return;
-    if (!ic->ic_wcl_reassoc_owner_active)
-        return;
-    if (!ieee80211_wcl_reassoc_leaf_is_post_send(
-            ic->ic_wcl_reassoc_owner_last_leaf))
-        return;
-    leaf = ic->ic_wcl_reassoc_owner_last_leaf;
-    /* A roam scan which finds no eligible target is an asynchronous command
-     * failure in the reference and must leave the source association alive.
-     * Once radio switching or an OTA reassociation has started, the ordinary
-     * association epoch is no longer reusable and must be fenced. */
-    if (leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
-        leaf != IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED)
-        (void)ieee80211_pae_assoc_epoch_begin(ic);
-    ic->ic_wcl_reassoc_owner_active = 0;
-    ic->ic_wcl_reassoc_owner_last_leaf =
-        IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
-    explicit_bzero(&ic->ic_wcl_reassoc_request,
-                   sizeof(ic->ic_wcl_reassoc_request));
-    explicit_bzero(ic->ic_wcl_reassoc_source_bssid,
-                   sizeof(ic->ic_wcl_reassoc_source_bssid));
-    explicit_bzero(ic->ic_wcl_reassoc_target_bssid,
-                   sizeof(ic->ic_wcl_reassoc_target_bssid));
-    if (ic->ic_event_handler)
-        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_FAIL, &result);
+    ieee80211_wcl_reassoc_post_failure_owned(ic,
+        ieee80211_wcl_reassoc_serial(ic), result);
 }
 
 void

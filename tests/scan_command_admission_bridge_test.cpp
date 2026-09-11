@@ -68,7 +68,7 @@ struct Itl##family { \
     uint64_t scanCommandResetEpoch(); \
     bool reopenScanCommands(uint64_t, uint32_t); \
     int prepareStateTransition(int, int, ItlStateTransitionRequest *); \
-    int reserveScanCommand(bool, bool, uint64_t *, const ItlStateTransitionRequest * = nullptr); \
+    int reserveScanCommand(bool, bool, uint64_t *, const ItlStateTransitionRequest * = nullptr, uint64_t = 0); \
     bool scanCommandOwnerCurrentLocked(uint64_t, uint32_t) const; \
     bool copyScanCommandPolicy(uint64_t, ItlScanCommandPolicy *); \
     void rejectScanCommand(uint64_t); \
@@ -288,9 +288,35 @@ template<class Driver, class Phase> static unsigned exercise()
     return cases;
 }
 
+template<class Driver> static unsigned reassoc_admission()
+{
+    for (unsigned mutation=0; mutation<5; ++mutation) {
+        Driver d; assert(d.reopenScanCommands(0,7));
+        auto &ic=d.com.sc_ic;
+        ic.ic_wcl_reassoc_owner_active=1;
+        ic.ic_wcl_reassoc_owner_serial=UINT64_C(0x100000031);
+        uint64_t serial=0;
+        const auto owner=ic.ic_wcl_reassoc_owner_serial;
+        if (mutation==1) ++ic.ic_wcl_reassoc_owner_serial;
+        if (mutation==2) ic.ic_wcl_reassoc_owner_active=0;
+        assert(d.reserveScanCommand(true,true,&serial,nullptr,owner)==
+            ((mutation==1 || mutation==2)?ECANCELED:0));
+        if (mutation==1 || mutation==2) { assert(!d.scanCommand.live()); continue; }
+        assert(d.scanCommand.command.reassocSerial==owner);
+        assert(d.scanCommandPolicy.reassocSerial==owner);
+        if (mutation==3) ++ic.ic_wcl_reassoc_owner_serial;
+        if (mutation==4) ic.ic_wcl_reassoc_owner_active=0;
+        ItlScanCommandPolicy copy{};
+        assert(d.copyScanCommandPolicy(serial,&copy)==(mutation==0));
+        assert(d.scanCommand.command.reassocSerial==owner);
+    }
+    return 5;
+}
+
 int main()
 {
     const unsigned count = exercise<ItlIwm, ItlIwmWclScanPhase>() +
-        exercise<ItlIwx, ItlIwxWclScanPhase>();
+        exercise<ItlIwx, ItlIwxWclScanPhase>() +
+        reassoc_admission<ItlIwm>() + reassoc_admission<ItlIwx>();
     std::printf("actual IWM/IWX scan admission bridge: %u scenario groups passed\n", count);
 }

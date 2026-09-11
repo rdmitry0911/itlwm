@@ -358,12 +358,19 @@ ordered(watchdog, "timeout terminal fence before WCL callback",
         "ieee80211_wcl_reassoc_post_failure")
 require(watchdog, "ic->ic_wcl_reassoc_owner_active",
         "RUN-state WCL timeout fence")
-wcl_failure = body(core_c, "void\nieee80211_wcl_reassoc_post_failure",
+wcl_failure = body(core_c, "void\nieee80211_wcl_reassoc_post_failure_owned",
                    "WCL reassociation failure")
 ordered(wcl_failure, "WCL terminal failure fence before publication",
-        "ieee80211_wcl_reassoc_leaf_is_post_send",
-        "ieee80211_pae_assoc_epoch_begin(ic)",
-        "ic->ic_wcl_reassoc_owner_active = 0", "ic->ic_event_handler")
+        "ieee80211_wcl_reassoc_take_completion",
+        "ieee80211_pae_assoc_epoch_begin_reassoc",
+        "ic->ic_event_handler")
+reassoc_take = body(core_c, "ieee80211_wcl_reassoc_take_completion(",
+                    "atomic reassociation retirement")
+ordered(reassoc_take, "retirement is claimed under the selected-BSS leaf",
+        "IOSimpleLockLockDisableInterrupt", "ic_wcl_reassoc_owner_serial != serial",
+        "ieee80211_wcl_reassoc_clear_locked(ic)",
+        "ic->ic_wcl_reassoc_terminal_serial = serial",
+        "IOSimpleLockUnlockEnableInterrupt")
 
 join = body(node_c, "void\nieee80211_node_join_bss", "BSS selection")
 ordered(join, "controlled BSS replacement fence",
@@ -380,7 +387,8 @@ ordered(join, "controlled replacement timer and state submission",
         "ic->ic_mgt_timer = 0;",
         "ic->ic_newstate_preflight(ic, IEEE80211_S_AUTH, mgt)",
         "AirportItlwmPostPltiTraceNoteStateRequest(",
-        "ic->ic_newstate(ic, IEEE80211_S_AUTH, mgt);")
+        "ic->ic_newstate(ic, IEEE80211_S_AUTH, mgt) != 0",
+        "ieee80211_roam_link_failed(ic, replacement_epoch)")
 if "ieee80211_new_state(ic, IEEE80211_S_AUTH, mgt);" in join:
     fail("controlled BSS replacement must not invalidate its new epoch a second time")
 for source, label in ((input_c, "scan parser"),
@@ -407,7 +415,7 @@ ordered(wpapsk, "direct PSK replacement fence",
         "psk = (struct ieee80211_wpapsk *)data;",
         "ieee80211_pae_assoc_epoch_begin(ic)", "if (psk->i_enabled)")
 
-roam = body(node_c, "void\nieee80211_end_scan", "background roam")
+roam = body(node_c, "void\nieee80211_end_scan_owned(", "background roam")
 ordered(roam, "deferred roaming fence",
         "IEEE80211_SEND_MGMT(ic, ic->ic_bss,",
         "ieee80211_pae_assoc_epoch_begin(ic)",
@@ -491,7 +499,7 @@ wcl_scan = body(core_c, "ieee80211_begin_wcl_reassoc_bgscan(",
                 "WCL real roam scan")
 ordered(wcl_scan, "WCL scan lower-owner admission",
         "ic->ic_wcl_reassoc_owner_last_leaf =",
-        "(*ic->ic_bgscan_start)(ic)",
+        "(*ic->ic_bgscan_start)(ic, serial)",
         "IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED")
 forbid(wcl_scan, "airportItlwmIsRoamLocked",
        "explicit WCL request suppressed by autonomous roam preference")

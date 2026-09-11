@@ -111,7 +111,7 @@ forbid(producer, "clearExternalPmkEligibilityLocked",
 scan = body(core, "ieee80211_begin_wcl_reassoc_bgscan(",
             "common WCL roam scan")
 for token in (
-    "(*ic->ic_bgscan_start)(ic)",
+    "(*ic->ic_bgscan_start)(ic, serial)",
     "ieee80211_free_allnodes(ic, 0)",
     "IEEE80211_F_BGSCAN",
     "IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED",
@@ -313,10 +313,10 @@ run_pae = newstate_target.find("sae_wcl_defer_link_up =", run_terminal)
 if run_terminal < 0 or run_pae < 0 or run_terminal >= run_pae:
     fail("reassociation terminal must precede local PAE link policy")
 
-failure = body(core, "void\nieee80211_wcl_reassoc_post_failure(",
+failure = body(core, "void\nieee80211_wcl_reassoc_post_failure_owned(",
                "WCL async failure")
 require(failure, "LEAF_SCAN_FAILED", "source-preserving no-target failure")
-require(failure, "ieee80211_pae_assoc_epoch_begin(ic)",
+require(failure, "ieee80211_pae_assoc_epoch_begin_reassoc(",
         "post-switch failure epoch fence")
 
 admit = body(proto,

@@ -2348,7 +2348,7 @@ reopenScanCommands(uint64_t resetEpoch, uint32_t hardwareGeneration)
 
 int ItlIwm::
 reserveScanCommand(bool background, bool umac, uint64_t *serial,
-                   const ItlStateTransitionRequest *request)
+                   const ItlStateTransitionRequest *request, uint64_t reassocSerial)
 {
     if (serial == NULL)
         return EINVAL;
@@ -2379,16 +2379,21 @@ reserveScanCommand(bool background, bool umac, uint64_t *serial,
          wclScanPhase != (background ? ItlIwmWclScanPhase::BackgroundStarting :
                                       ItlIwmWclScanPhase::InitialStarting)))
         error = ECANCELED;
+    else if (reassocSerial != 0 && (!background || wclGeneration != 0 ||
+        !ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_serial != reassocSerial))
+        error = ECANCELED;
     else
         error = ItlScanCommandPolicy::captureOwnedLocked(ic, wclGeneration,
                                                          request, &policy);
     if (error == 0) {
         *serial = scanCommand.reserve(com.sc_generation, policy.joinGeneration,
-                                      umac, background, 0);
+                                      umac, background, 0, reassocSerial);
         if (*serial == 0)
             error = EBUSY;
         else {
             policy.homeAwayMs = homeAwayMs;
+            policy.reassocSerial = reassocSerial;
             scanCommandPolicy = policy;
         }
     }

@@ -253,7 +253,7 @@ ordered(note_newstate, "tagged scan hop preserves only through internal fence",
         "AirportItlwmPostPltiTraceNoteStateRequest",
         "ic->ic_state == IEEE80211_S_SCAN && nstate == IEEE80211_S_SCAN",
         "arg == IEEE80211_NEWSTATE_ARG_SCAN_HOP",
-        "ieee80211_pae_assoc_epoch_begin_internal(ic, 1);")
+        "ieee80211_pae_assoc_epoch_begin_internal(ic, 1, 0, 0);")
 require(note_newstate, "ieee80211_pae_assoc_epoch_begin(ic);",
         "untagged state requests retain ordinary epoch cancellation")
 backend_macro_start = proto_h.find("#define IEEE80211_NEWSTATE_BACKEND_ARG")
@@ -464,7 +464,7 @@ forbid(epoch_begin_internal, "ic->ic_flags &= ~IEEE80211_F_DESBSSID",
        "ordinary reset silently weakening explicit pin")
 epoch_begin = body(proto_c, "ieee80211_pae_assoc_epoch_begin(",
                    "ordinary epoch wrapper")
-require(epoch_begin, "ieee80211_pae_assoc_epoch_begin_internal(ic, 0);",
+require(epoch_begin, "ieee80211_pae_assoc_epoch_begin_internal(ic, 0, 0, 0);",
         "ordinary reset marker teardown")
 replacement = body(proto_c, "ieee80211_pae_assoc_epoch_begin_replacement(",
                    "controlled replacement")

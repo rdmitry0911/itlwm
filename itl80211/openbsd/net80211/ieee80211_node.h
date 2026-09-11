@@ -680,7 +680,7 @@ enum ieee80211_scan_completion_mode {
 void ieee80211_end_scan_controlled(struct _ifnet *,
                                    enum ieee80211_scan_completion_mode);
 void ieee80211_end_scan_owned(struct _ifnet *,
-    enum ieee80211_scan_completion_mode, u_int64_t);
+    enum ieee80211_scan_completion_mode, u_int64_t, u_int64_t reassoc_serial = 0);
 void ieee80211_end_scan(struct _ifnet *);
 void ieee80211_reset_scan(struct _ifnet *);
 struct ieee80211_node *ieee80211_alloc_node(struct ieee80211com *,

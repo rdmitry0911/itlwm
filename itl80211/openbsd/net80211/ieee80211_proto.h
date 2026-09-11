@@ -470,6 +470,8 @@ extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 		enum ieee80211_state, int);
 extern	int ieee80211_wcl_join_state_identity(struct ieee80211com *,
 	    u_int64_t *, u_int64_t *, u_int64_t *);
+extern u_int64_t ieee80211_pae_assoc_epoch_begin_reassoc(struct ieee80211com *,
+    u_int64_t, u_int64_t);
 extern	void ieee80211_roam_link_cancel(struct ieee80211com *);
 extern	int ieee80211_roam_link_loss_current(const struct ieee80211com *,
 	    const struct ieee80211_roam_link_loss *);

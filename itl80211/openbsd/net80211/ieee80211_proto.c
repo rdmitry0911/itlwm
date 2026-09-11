@@ -2585,7 +2585,8 @@ ieee80211_roam_link_cancel(struct ieee80211com *ic)
  * initial-BSSID marker; every asynchronous association owner is invalidated. */
 static u_int64_t
 ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
-    int preserve_unbound_public_initial_bssid_pin)
+    int preserve_unbound_public_initial_bssid_pin,
+    u_int64_t reassoc_serial, u_int64_t expected_epoch)
 {
 	u_int64_t epoch;
 	u_int64_t prior_epoch;
@@ -2606,6 +2607,17 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 		irq = IOSimpleLockLockDisableInterrupt(lock);
 	prior_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch,
 	    __ATOMIC_ACQUIRE);
+	/* A detached roam retirement may arrive here after a new admission or
+	 * an independent association cancellation. Check inside the same leaf
+	 * that advances the epoch, never across the callback boundary. */
+	if (reassoc_serial != 0 &&
+	    (lock == NULL || ic->ic_wcl_reassoc_next_serial != reassoc_serial ||
+	     ic->ic_wcl_reassoc_terminal_serial != reassoc_serial ||
+	     prior_epoch != expected_epoch)) {
+		if (lock != NULL)
+			IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		return 0;
+	}
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
 	/* The selected value still belongs to prior_epoch here. Capture it
 	 * before revocation, not from a mutable BSS after a yielding callback. */
@@ -2670,7 +2682,17 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 u_int64_t
 ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 {
-	return ieee80211_pae_assoc_epoch_begin_internal(ic, 0);
+	return ieee80211_pae_assoc_epoch_begin_internal(ic, 0, 0, 0);
+}
+
+u_int64_t
+ieee80211_pae_assoc_epoch_begin_reassoc(struct ieee80211com *ic,
+    u_int64_t serial, u_int64_t expected_epoch)
+{
+	if (serial == 0)
+		return 0;
+	return ieee80211_pae_assoc_epoch_begin_internal(ic, 0, serial,
+	    expected_epoch);
 }
 
 /* Begin the one controlled current-BSS replacement owner token. */
@@ -2872,7 +2894,7 @@ ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
 	     arg == IEEE80211_NEWSTATE_ARG_SCAN_HOP) ||
 	    (nstate == IEEE80211_S_SCAN &&
 	     arg == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE)) {
-		(void)ieee80211_pae_assoc_epoch_begin_internal(ic, 1);
+		(void)ieee80211_pae_assoc_epoch_begin_internal(ic, 1, 0, 0);
 		return;
 	}
 	(void)ieee80211_pae_assoc_epoch_begin(ic);

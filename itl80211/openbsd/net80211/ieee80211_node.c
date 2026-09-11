@@ -1555,16 +1555,22 @@ ieee80211_end_scan_controlled(struct _ifnet *ifp,
 
 void
 ieee80211_end_scan_owned(struct _ifnet *ifp,
-    enum ieee80211_scan_completion_mode mode, u_int64_t join_generation)
+    enum ieee80211_scan_completion_mode mode, u_int64_t join_generation,
+    u_int64_t reassoc_serial)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
+    /* The physical scan, not whichever common owner is current at callback
+     * time, supplies this identity. Even an untagged old census must not
+     * select for a newly accepted WCL roam. */
+    if (!ieee80211_wcl_reassoc_scan_completion_begin(ic, reassoc_serial))
+        return;
     struct ieee80211_node *ni, *selbs = NULL, *curbs = NULL;
     int bgscan = ((ic->ic_flags & IEEE80211_F_BGSCAN) &&
                   ic->ic_opmode == IEEE80211_M_STA &&
                   ic->ic_state == IEEE80211_S_RUN);
     int roamscan = bgscan &&
                 (ic->ic_flags & IEEE80211_F_DISABLE_BG_AUTO_CONNECT) == 0;
-    int wcl_reassoc_scan = bgscan && ic->ic_wcl_reassoc_owner_active &&
+    int wcl_reassoc_scan = bgscan && reassoc_serial != 0 &&
         ic->ic_wcl_reassoc_owner_last_leaf ==
             IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
 
@@ -1580,6 +1586,9 @@ ieee80211_end_scan_owned(struct _ifnet *ifp,
                             __ATOMIC_ACQ_REL) != 0;
     if (generic_terminal && ic->ic_event_handler && !suppress_generic_scan_done)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_SCAN_DONE, NULL);
+
+    if (reassoc_serial != ieee80211_wcl_reassoc_serial(ic))
+        return;
     
     if (ic->ic_scan_count)
         ic->ic_flags &= ~IEEE80211_F_ASCAN;

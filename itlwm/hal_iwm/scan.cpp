@@ -1018,7 +1018,7 @@ iwm_scan(struct iwm_softc *sc, const ItlStateTransitionRequest &request)
 }
 
 int ItlIwm::
-iwm_bgscan(struct ieee80211com *ic)
+iwm_bgscan(struct ieee80211com *ic, uint64_t reassocSerial)
 {
     struct iwm_softc *sc = (struct iwm_softc *)IC2IFP(ic)->if_softc;
     ItlIwm *that = container_of(sc, ItlIwm, com);
@@ -1031,11 +1031,11 @@ iwm_bgscan(struct ieee80211com *ic)
     }
     
     if (sc->sc_flags & IWM_FLAG_SCANNING)
-        return 0;
+        return reassocSerial != 0 ? EBUSY : 0;
     
     uint64_t scanSerial = 0;
     const bool umac = isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_UMAC_SCAN);
-    err = that->reserveScanCommand(true, umac, &scanSerial);
+    err = that->reserveScanCommand(true, umac, &scanSerial, nullptr, reassocSerial);
     if (err != 0) {
         return err;
     }

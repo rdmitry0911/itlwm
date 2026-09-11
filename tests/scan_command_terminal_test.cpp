@@ -47,6 +47,7 @@ static bool isset(unsigned flags, unsigned bit) { return (flags & bit) != 0; }
 constexpr unsigned IFF_UP = 1, IFF_RUNNING = 2;
 constexpr unsigned IEEE80211_F_BGSCAN = 1, IEEE80211_F_DISABLE_BG_AUTO_CONNECT = 2;
 constexpr unsigned IEEE80211_SCAN_COMPLETION_WCL_HANDOFF = 1;
+constexpr unsigned IEEE80211_SCAN_COMPLETION_GENERIC = 0;
 constexpr unsigned IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND = 2;
 constexpr unsigned IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED = 1;
 constexpr unsigned IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE = 2;
@@ -90,6 +91,14 @@ static void run_upper()
     if (upper_hook) { auto hook = upper_hook; upper_hook = {}; hook(); }
 }
 static void ieee80211_end_scan(Ifnet *) { ++generic; run_upper(); }
+static uint64_t completedReassocSerial, completedJoinGeneration;
+static void ieee80211_end_scan_owned(Ifnet *ifp, unsigned mode,
+    uint64_t joinGeneration, uint64_t reassocSerial) {
+    assert(mode == 0);
+    completedJoinGeneration = joinGeneration;
+    completedReassocSerial = reassocSerial;
+    ieee80211_end_scan(ifp);
+}
 static void ieee80211_end_scan_controlled(Ifnet *, unsigned mode)
 { ++controlled; last_mode = mode; run_upper(); }
 static void ieee80211_begin_scan(Ifnet *) { assert(!held); ++begins; }
@@ -225,12 +234,13 @@ static void reset_observers()
     abort_submissions = 0; aborted_serial = 0; abort_hook = {};
     sleep_result = 0;
 }
-template<class D> static uint64_t prepare(D &d, uint64_t join = 91, bool bg = false)
+template<class D> static uint64_t prepare(D &d, uint64_t join = 91, bool bg = false,
+    uint64_t reassocSerial = 0)
 {
     if (!d.scanCommand.open)
         assert(d.scanCommand.reopen(d.scanCommand.resetEpoch, d.com.sc_generation));
     const auto serial = d.scanCommand.reserve(d.com.sc_generation, bg ? 0 : join,
-                                              true, bg, 0);
+                                              true, bg, 0, reassocSerial);
     assert(serial && d.scanCommand.submit(serial, d.com.sc_generation));
     assert(d.activateScanCommand(serial, bg));
     return serial;
@@ -245,6 +255,22 @@ template<class D> static void wcl(D &d, uint64_t generation, bool bg = false)
 template<class D> static unsigned exercise()
 {
     unsigned cases = 0;
+    reset_observers();
+    {
+        D d;
+        const auto serial=prepare(d,0,true,UINT64_C(0x100000031));
+        assert(d.readyScanCommand(serial));
+        uint64_t replacement=0;
+        upper_hook=[&] { replacement=prepare(d,0,true,UINT64_C(0x100000032)); };
+        d.noteScanCommandTerminal(true,0,false);
+        assert(completedReassocSerial==UINT64_C(0x100000031));
+        assert(completedJoinGeneration==0 && generic==1);
+        assert(d.scanCommand.command.serial==replacement);
+        assert(d.scanCommand.command.reassocSerial==UINT64_C(0x100000032));
+        d.finish(serial);
+        assert(d.scanCommand.command.serial==replacement && generic==1);
+        ++cases;
+    }
     reset_observers();
     { D d; auto serial = prepare(d); wcl(d, 5);
       d.noteScanCommandTerminal(true, 1, false);

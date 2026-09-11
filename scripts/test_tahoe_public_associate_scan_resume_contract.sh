@@ -75,7 +75,7 @@ for token in required_header:
 epoch = body(proto, "ieee80211_pae_assoc_epoch_note_newstate(")
 if "arg == IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE" not in epoch:
     fail("public restart does not preserve the newly armed BSSID provenance")
-if "ieee80211_pae_assoc_epoch_begin_internal(ic, 1);" not in epoch:
+if "ieee80211_pae_assoc_epoch_begin_internal(ic, 1, 0, 0);" not in epoch:
     fail("public restart does not use the narrow preservation owner")
 
 preflight = body(iwn, "iwn_newstate_preflight(")

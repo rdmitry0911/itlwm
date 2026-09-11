@@ -19,6 +19,7 @@ static void IOSimpleLockUnlock(IOSimpleLock *l) { assert(l->held); l->held = fal
 struct ieee80211com {
     struct { void *if_softc = nullptr; unsigned int if_flags = IFF_UP | IFF_RUNNING; } ic_if;
     uint64_t generation = 9;
+    uint64_t reassocSerial = 0;
     bool failing = false;
 };
 struct iwn_softc {
@@ -51,6 +52,9 @@ struct iwn_softc {
     uint64_t sc_sae_tx_join_failure_generation = 0;
 };
 static std::function<void()> afterCapture, afterPending;
+static int ieee80211_wcl_reassoc_current(ieee80211com *ic, uint64_t serial) {
+    return serial != 0 && ic->reassocSerial == serial;
+}
 static uint64_t ieee80211_wcl_join_scan_generation(ieee80211com *ic) {
     const auto *sc = static_cast<iwn_softc *>(ic->ic_if.if_softc);
     assert(!sc->sc_scan_lease_lock->held);
@@ -105,12 +109,17 @@ int main() {
             sc.sc_ic.ic_if.if_softc = &sc;
             sc.sc_scan_lease_next_serial = UINT64_C(0x100000000);
             const uint64_t join = sc.sc_ic.generation;
+            const uint64_t reassoc = owner == IWN_SCAN_LEASE_GENERIC_BACKGROUND ?
+                UINT64_C(0x100000031) : 0;
+            sc.sc_ic.reassocSerial = reassoc;
             uint64_t serial = 0;
             uint32_t backend = 0;
             afterCapture = [&] { sc.sc_ic.generation++; };
             assert(iwn_scan_lease_reserve(&sc,
                 static_cast<iwn_scan_lease_owner>(owner), 71, 0,
-                &backend, &serial, 0, 0));
+                &backend, &serial, 0, 0, reassoc));
+            sc.sc_ic.reassocSerial++;
+            assert(sc.sc_scan_lease.reassoc_serial == reassoc);
             afterCapture = {};
             const uint64_t receipt = owner == IWN_SCAN_LEASE_GENERIC_FOREGROUND ? join : 0;
             assert(sc.sc_scan_lease.join_generation == receipt);
@@ -123,11 +132,13 @@ int main() {
             bool wcl = false;
             assert(iwn_scan_lease_begin_continuation(&sc, &continued, &wcl));
             assert(continued == serial && sc.sc_scan_lease.join_generation == receipt);
+            assert(sc.sc_scan_lease.reassoc_serial == reassoc);
             assert(!iwn_scan_lease_claim_terminal(&sc, &terminal));
             assert(iwn_scan_lease_restore_continuation(&sc, continued, outcome == 1));
             assert(sc.sc_scan_lease.join_generation == receipt);
             assert(iwn_scan_lease_claim_terminal(&sc, &terminal));
             assert(terminal.join_generation == receipt && terminal.aborted == (outcome == 1));
+            assert(terminal.reassoc_serial == reassoc);
             iwn_scan_lease_terminal duplicate;
             assert(!iwn_scan_lease_claim_terminal(&sc, &duplicate));
             sc.sc_wcl_join_cleanup_generation = join;

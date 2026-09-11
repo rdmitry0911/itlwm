@@ -838,7 +838,7 @@ struct ieee80211com {
 	void			(*ic_ampdu_rx_stop)(struct ieee80211com *,
 				    struct ieee80211_node *, u_int8_t);
 	void			(*ic_updateprot)(struct ieee80211com *);
-	int			(*ic_bgscan_start)(struct ieee80211com *);
+	int			(*ic_bgscan_start)(struct ieee80211com *, u_int64_t);
 	int			(*ic_bgscan_abort)(struct ieee80211com *);
     /*
      * A backend may consume a state transition before the generic macro
@@ -953,6 +953,11 @@ struct ieee80211com {
      * post-send gate that decides whether terminal 0x49/0xcf selector
      * publication is permitted.
      */
+    /* Host-only identity; never reset by cancellation or reused on wrap. */
+    u_int64_t       ic_wcl_reassoc_next_serial;
+    u_int64_t       ic_wcl_reassoc_owner_serial;
+    u_int64_t       ic_wcl_reassoc_terminal_serial;
+    u_int64_t       ic_wcl_reassoc_scan_accepted_serial;
     u_int32_t       ic_wcl_reassoc_owner_active;
     u_int32_t       ic_wcl_reassoc_owner_last_leaf;
     struct ieee80211_wcl_reassoc_request ic_wcl_reassoc_request;
@@ -1520,6 +1525,22 @@ ieee80211_wcl_reassoc_leaf_is_post_send(u_int32_t leaf)
     }
 }
 
+/* Detached host event, not an Apple wire carrier. The controller gate must
+ * claim this exact serial/epoch before publishing its copied result. */
+struct ieee80211_wcl_reassoc_completion {
+    u_int64_t serial;
+    u_int64_t association_epoch;
+    u_int32_t result;
+    u_int8_t source_bssid[IEEE80211_ADDR_LEN];
+    u_int8_t target_bssid[IEEE80211_ADDR_LEN];
+};
+u_int64_t ieee80211_wcl_reassoc_serial(struct ieee80211com *);
+int ieee80211_wcl_reassoc_current(struct ieee80211com *, u_int64_t);
+int ieee80211_wcl_reassoc_scan_completion_begin(struct ieee80211com *, u_int64_t);
+int ieee80211_wcl_reassoc_claim_completion(struct ieee80211com *,
+    const struct ieee80211_wcl_reassoc_completion *);
+void ieee80211_wcl_reassoc_post_failure_owned(struct ieee80211com *,
+    u_int64_t, u_int32_t);
 void	ieee80211_wcl_reassoc_post_failure(struct ieee80211com *, u_int32_t);
 void	ieee80211_wcl_reassoc_post_success(struct ieee80211com *);
 void	ieee80211_wcl_reassoc_target_running(struct ieee80211com *,

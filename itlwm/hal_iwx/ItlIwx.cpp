@@ -1355,7 +1355,7 @@ reopenScanCommands(uint64_t resetEpoch, uint32_t hardwareGeneration)
 
 int ItlIwx::
 reserveScanCommand(bool background, bool umac, uint64_t *serial,
-                   const ItlStateTransitionRequest *request)
+                   const ItlStateTransitionRequest *request, uint64_t reassocSerial)
 {
     if (serial == NULL)
         return EINVAL;
@@ -1386,16 +1386,21 @@ reserveScanCommand(bool background, bool umac, uint64_t *serial,
          wclScanPhase != (background ? ItlIwxWclScanPhase::BackgroundStarting :
                                       ItlIwxWclScanPhase::InitialStarting)))
         error = ECANCELED;
+    else if (reassocSerial != 0 && (!background || wclGeneration != 0 ||
+        !ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_serial != reassocSerial))
+        error = ECANCELED;
     else
         error = ItlScanCommandPolicy::captureOwnedLocked(ic, wclGeneration,
                                                          request, &policy);
     if (error == 0) {
         *serial = scanCommand.reserve(com.sc_generation, policy.joinGeneration,
-                                      umac, background, 0);
+                                      umac, background, 0, reassocSerial);
         if (*serial == 0)
             error = EBUSY;
         else {
             policy.homeAwayMs = homeAwayMs;
+            policy.reassocSerial = reassocSerial;
             scanCommandPolicy = policy;
         }
     }
@@ -17070,7 +17075,7 @@ iwx_scan(struct iwx_softc *sc, const ItlStateTransitionRequest &request)
 }
 
 int ItlIwx::
-iwx_bgscan(struct ieee80211com *ic)
+iwx_bgscan(struct ieee80211com *ic, uint64_t reassocSerial)
 {
     struct iwx_softc *sc = (struct iwx_softc *)IC2IFP(ic)->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
@@ -17083,10 +17088,10 @@ iwx_bgscan(struct ieee80211com *ic)
     }
     
     if (sc->sc_flags & IWX_FLAG_SCANNING)
-        return 0;
+        return reassocSerial != 0 ? EBUSY : 0;
     
     uint64_t scanSerial = 0;
-    err = that->reserveScanCommand(true, true, &scanSerial);
+    err = that->reserveScanCommand(true, true, &scanSerial, nullptr, reassocSerial);
     if (err != 0)
         return err;
     err = that->iwx_umac_scan(sc, 1, scanSerial);
@@ -18446,7 +18451,8 @@ iwx_endscan(struct iwx_softc *sc, uint64_t serial)
         if (wclTerminal == ItlIwxWclScanTerminalKind::Background)
             __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once, 1,
                              __ATOMIC_RELEASE);
-        ieee80211_end_scan(&ic->ic_if);
+        ieee80211_end_scan_owned(&ic->ic_if, IEEE80211_SCAN_COMPLETION_GENERIC,
+            physical.joinGeneration, physical.reassocSerial);
     }
     if (wclTerminal == ItlIwxWclScanTerminalKind::Foreground ||
         wclTerminal == ItlIwxWclScanTerminalKind::Background)

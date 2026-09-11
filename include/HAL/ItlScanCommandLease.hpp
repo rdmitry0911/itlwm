@@ -9,6 +9,7 @@
 struct ItlScanCommandTerminal {
     uint64_t serial;
     uint64_t joinGeneration;
+    uint64_t reassocSerial;
     uint32_t hardwareGeneration;
     uint32_t uid;
     bool umac;
@@ -62,14 +63,17 @@ struct ItlScanCommandLease {
     }
 
     uint64_t reserve(uint32_t generation, uint64_t joinGeneration,
-                     bool umac, bool background, uint32_t uid)
+                     bool umac, bool background, uint32_t uid,
+                     uint64_t reassocSerial = 0)
     {
         if (!open || live() || apSerial != 0 || generation != hardwareGeneration ||
-            nextSerial == UINT64_MAX || (background && joinGeneration != 0))
+            nextSerial == UINT64_MAX || (background && joinGeneration != 0) ||
+            (reassocSerial != 0 && (!background || joinGeneration != 0)))
             return 0;
         clearCommand();
         command.serial = ++nextSerial;
         command.joinGeneration = joinGeneration;
+        command.reassocSerial = reassocSerial;
         command.hardwareGeneration = generation;
         command.uid = uid;
         command.umac = umac;

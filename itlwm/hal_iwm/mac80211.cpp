@@ -5179,7 +5179,8 @@ iwm_endscan(struct iwm_softc *sc, uint64_t serial)
         if (wclTerminal == ItlIwmWclScanTerminalKind::Background)
             __atomic_store_n(&ic->ic_wcl_scan_suppress_scan_done_once, 1,
                              __ATOMIC_RELEASE);
-        ieee80211_end_scan(&ic->ic_if);
+        ieee80211_end_scan_owned(&ic->ic_if, IEEE80211_SCAN_COMPLETION_GENERIC,
+            physical.joinGeneration, physical.reassocSerial);
     }
     if (wclTerminal == ItlIwmWclScanTerminalKind::Foreground ||
         wclTerminal == ItlIwmWclScanTerminalKind::Background)

@@ -71,6 +71,7 @@ struct ieee80211com {
         ic_mgt_timer=5, ic_bgscan_timeout=0;
     uint8_t ic_des_essid[32]={'n','e','t'};
     uint64_t ic_pae_assoc_epoch=7, ic_roam_link_epoch=0;
+    uint64_t ic_wcl_reassoc_next_serial=0, ic_wcl_reassoc_terminal_serial=0;
     uint64_t ic_pae_assoc_replace_epoch=0, ic_sae_wcl_policy_generation=0;
     IOSimpleLock *ic_pae_selected_bss_lock=nullptr;
     struct { uint64_t epoch=0; uint8_t bssid[6]={}; } ic_pae_selected_bss;
@@ -93,7 +94,12 @@ static uint64_t ieee80211_pae_assoc_epoch_current(const ieee80211com *ic) {
  * carrier fixture does not arm an ordinary join. */
 static void ieee80211_wcl_join_cancel(ieee80211com *, uint64_t) {}
 void ieee80211_set_link_state(ieee80211com *, int);
+#ifdef ROAM_LOSS_BASELINE
 uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *, int);
+#else
+uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *, int,
+    uint64_t=0, uint64_t=0);
+#endif
 void ieee80211_pae_assoc_epoch_note_newstate(ieee80211com *, ieee80211_state, int);
 static uint64_t ieee80211_pae_assoc_epoch_begin(ieee80211com *ic) {
     return ieee80211_pae_assoc_epoch_begin_internal(ic,0);
@@ -451,5 +457,38 @@ int main() {
         assert(losses.empty());
         ++cases;
     }
+#ifndef ROAM_LOSS_BASELINE
+    for (unsigned change=0; change<5; ++change) {
+        Fixture f;
+        f.ic.ic_wcl_reassoc_next_serial=31;
+        f.ic.ic_wcl_reassoc_terminal_serial=31;
+        if (change==1) f.ic.ic_wcl_reassoc_next_serial=32;
+        if (change==2) f.ic.ic_wcl_reassoc_terminal_serial=0;
+        if (change==3) f.ic.ic_pae_assoc_epoch=8;
+        if (change==4) f.ic.ic_pae_selected_bss_lock=nullptr;
+        const auto oldEpoch=f.ic.ic_pae_assoc_epoch;
+        const auto selected=f.ic.ic_pae_selected_bss.epoch;
+        const auto result=ieee80211_pae_assoc_epoch_begin_internal(&f.ic,0,31,7);
+        if (change==0) assert(result==8 && f.ic.ic_pae_assoc_epoch==8);
+        else assert(result==0 && f.ic.ic_pae_assoc_epoch==oldEpoch &&
+            f.ic.ic_pae_selected_bss.epoch==selected);
+        assert(losses.empty());
+        ++cases;
+    }
+    {
+        Fixture f;
+        f.ic.ic_wcl_reassoc_next_serial=31;
+        f.ic.ic_wcl_reassoc_terminal_serial=31;
+        onRevoke=[](ieee80211com *ic) {
+            ic->ic_wcl_reassoc_next_serial=32;
+            ic->ic_wcl_reassoc_terminal_serial=0;
+            ic->ic_pae_assoc_epoch=9;
+        };
+        assert(ieee80211_pae_assoc_epoch_begin_internal(&f.ic,0,31,7)==8);
+        assert(f.ic.ic_pae_assoc_epoch==9 && f.ic.ic_wcl_reassoc_next_serial==32);
+        onRevoke={};
+        ++cases;
+    }
+#endif
     std::printf("PASS: %u actual roam carrier ownership/bridge and BSS replacement cases\n",cases);
 }

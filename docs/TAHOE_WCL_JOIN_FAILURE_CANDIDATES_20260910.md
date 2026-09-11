@@ -1,5 +1,21 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Accepted-roam identity implementation — 2026-09-11 03:03 UTC
+
+PROGRESS: common admission and retirement now use a distinct 64-bit roam
+serial, retained by actual IWN/IWM/IWX scan commands and their terminals.
+Old cancellation no longer erases a successor or publishes twice; detached
+controller-gate results reject replacement and duplicate delivery. Early real
+scan completion cannot be rearmed by the later sender return. The complete
+Linux aggregate passes; new macOS tests and Tahoe build pass (UUID
+`72E678CD-2AB3-3F64-BF6B-12790E86CCFC`, all 1085 symbols resolved).
+
+This is built WIP, not a loaded/released roaming fix. Exact physical abort,
+deferred BSS/state/AUTH ownership and the reference progress/overall completion
+carriers remain part of the same active layer. No new on-air result is claimed.
+Loaded and released production remains qualified `97fe747c`.
+See [implementation, evidence and required continuation](TAHOE_REASSOC_OWNER_IMPLEMENTATION_20260911.md).
+
 ## Reassociation reconstruction checkpoint — 2026-09-11 02:24 UTC
 
 PROGRESS, not a new functional closure: exact raw 25C56 data now distinguishes

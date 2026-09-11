@@ -12996,6 +12996,7 @@ struct iwn_scan_lease_terminal {
     u_int64_t serial;
     u_int64_t upper_generation;
     u_int64_t join_generation;
+    u_int64_t reassoc_serial;
     u_int32_t backend_generation;
 };
 
@@ -13122,6 +13123,8 @@ iwn_sae_join_scan_block_promote(struct iwn_softc *sc,
         !sc->sc_ap_transition_scan_blocked &&
         !sc->sc_wcl_initial_scan_pending.queued &&
         ic->ic_wcl_reassoc_owner_active &&
+        sc->sc_scan_lease.reassoc_serial != 0 &&
+        sc->sc_scan_lease.reassoc_serial == ic->ic_wcl_reassoc_owner_serial &&
         ic->ic_wcl_reassoc_owner_last_leaf ==
             IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
     completing_bss_loss =
@@ -13339,7 +13342,8 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
                        u_int32_t *out_backend_generation,
                        u_int64_t *out_serial,
                        u_int64_t direct_sae_scan_generation,
-                       u_int8_t wnm_target_channel)
+                       u_int8_t wnm_target_channel,
+                       u_int64_t reassoc_serial = 0)
 {
     u_int64_t serial;
     u_int64_t join_generation = 0;
@@ -13361,6 +13365,10 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
      * make this copied token stale; it cannot retag the admitted command. */
     if (owner == IWN_SCAN_LEASE_GENERIC_FOREGROUND)
         join_generation = ieee80211_wcl_join_scan_generation(&sc->sc_ic);
+    if (reassoc_serial != 0 &&
+        (owner != IWN_SCAN_LEASE_GENERIC_BACKGROUND ||
+         !ieee80211_wcl_reassoc_current(&sc->sc_ic, reassoc_serial)))
+        return false;
 
     IOSimpleLockLock(sc->sc_scan_lease_lock);
     const bool initial_pending = sc->sc_wcl_initial_scan_pending.queued;
@@ -13400,6 +13408,7 @@ iwn_scan_lease_reserve(struct iwn_softc *sc, enum iwn_scan_lease_owner owner,
     sc->sc_scan_lease.wnm_target_channel = wnm_target_channel;
     sc->sc_scan_lease.upper_generation = upper_generation;
     sc->sc_scan_lease.join_generation = join_generation;
+    sc->sc_scan_lease.reassoc_serial = reassoc_serial;
     sc->sc_scan_lease.wcl_initial_handoff_serial =
         required_initial_handoff_serial;
     if (tagged_controller_owner) {
@@ -13660,6 +13669,7 @@ iwn_scan_lease_claim_terminal(struct iwn_softc *sc,
         terminal->aborted = sc->sc_scan_lease.abort_requested;
         terminal->upper_generation = sc->sc_scan_lease.upper_generation;
         terminal->join_generation = sc->sc_scan_lease.join_generation;
+        terminal->reassoc_serial = sc->sc_scan_lease.reassoc_serial;
         terminal->backend_generation = sc->sc_scan_lease.backend_generation;
         sc->sc_scan_lease.terminal_claimed = true;
         sc->sc_scan_lease.phase = IWN_SCAN_LEASE_DRAINING;
@@ -16821,7 +16831,7 @@ iwn_notif_intr(struct iwn_softc *sc)
             else
                 ieee80211_end_scan_owned(ifp,
                     IEEE80211_SCAN_COMPLETION_GENERIC,
-                    terminal.join_generation);
+                    terminal.join_generation, terminal.reassoc_serial);
             if (terminal.standard && terminal.publish_standard_terminal &&
                 ic->ic_event_handler != NULL) {
                 struct ieee80211_standard_scan_terminal standard_terminal;
@@ -20106,7 +20116,7 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
                enum iwn_scan_lease_owner owner, u_int64_t upper_generation,
                u_int64_t required_initial_handoff_serial,
                u_int32_t *out_backend_generation,
-               u_int64_t direct_sae_scan_generation)
+               u_int64_t direct_sae_scan_generation, u_int64_t reassoc_serial)
 {
     struct ieee80211com *ic;
     u_int64_t serial = 0;
@@ -20180,7 +20190,7 @@ iwn_scan_start(struct iwn_softc *sc, uint16_t flags, int bgscan,
                                 required_initial_handoff_serial,
                                 &backend_generation, &serial,
                                 direct_sae_scan_generation,
-                                wnm_target_channel))
+                                wnm_target_channel, reassoc_serial))
         return EBUSY;
     if (out_backend_generation != NULL)
         *out_backend_generation = backend_generation;
@@ -20810,7 +20820,7 @@ iwn_wnm_bgscan_abort(struct ieee80211com *ic)
 }
 
 int ItlIwn::
-iwn_bgscan(struct ieee80211com *ic)
+iwn_bgscan(struct ieee80211com *ic, u_int64_t reassoc_serial)
 {
     struct iwn_softc *sc = (struct iwn_softc *)ic->ic_softc;
     ItlIwn *that = container_of(sc, ItlIwn, com);
@@ -20829,7 +20839,8 @@ iwn_bgscan(struct ieee80211com *ic)
     if (ieee80211_wnm_bss_transition_target_channel(ic,
             &wnm_target_channel) != 0 && wnm_target_channel > 14)
         flags = IEEE80211_CHAN_5GHZ;
-    error = that->iwn_scan(sc, flags, 1, 0);
+    error = that->iwn_scan_start(sc, flags, 1,
+        IWN_SCAN_LEASE_GENERIC_BACKGROUND, 0, 0, NULL, 0, reassoc_serial);
     if (error)
         XYLog("%s: could not initiate background scan\n",
             sc->sc_dev.dv_xname);

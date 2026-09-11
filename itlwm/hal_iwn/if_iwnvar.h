@@ -409,6 +409,7 @@ struct iwn_scan_lease {
     /* Ordinary join identity captured before this command, retained across
      * both bands. Zero for controller discovery/background scans. */
     u_int64_t       join_generation;
+    u_int64_t       reassoc_serial;
     /* A queued WCL initial handoff carries the retiring generic lease serial
      * only until its own first command crosses WRPTR.  The token lets the
      * replay worker prove that cancellation/reset/detach has not withdrawn

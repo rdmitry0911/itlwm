@@ -64,7 +64,7 @@ order(proto_c, "exact Neighbor Report channel snapshot",
       "*target_channel = transition->target_channel;")
 order(core_c, "BTM-only physical scan admission",
       "if (!ieee80211_wnm_bss_transition_scan_start(ic))",
-      "error = ic->ic_bgscan_start(ic);",
+      "error = ic->ic_bgscan_start(ic, 0);",
       "ieee80211_wnm_bss_transition_scan_end(ic);")
 order(input_c, "BTM preempts an older background census",
       "ieee80211_wnm_bss_transition_defer_fresh_scan(ic)",

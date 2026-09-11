@@ -13,6 +13,7 @@ struct ItlScanCommandPolicy {
     ItlStateTransitionIdentity identity;
     uint64_t stateSerial;
     uint64_t joinGeneration;
+    uint64_t reassocSerial;
 
     /* All *Locked methods require the selected-BSS leaf. Callers which
      * also hold the HAL scan leaf always acquire it second. No callback,
@@ -100,6 +101,9 @@ struct ItlScanCommandPolicy {
 
     bool currentLocked(const struct ieee80211com *ic) const
     {
+        if (reassocSerial != 0 && (!ic->ic_wcl_reassoc_owner_active ||
+            ic->ic_wcl_reassoc_owner_serial != reassocSerial))
+            return false;
         if (!identity.equals(identityLocked(ic)))
             return false;
         if (plan.active != 0 && (ic->ic_wcl_scan_plan.active == 0 ||
