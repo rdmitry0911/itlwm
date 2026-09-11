@@ -168,6 +168,11 @@ Verification:
   `9c4b3c105a3b42eda305aa780323a412a30a84bdc88578e715f423546ab9faf8`.
 - Linux log `/tmp/aiam-reassoc-physical-linux-20260911.log`, SHA-256
   `d2af1a1368785f1421298471b6b1f929ddbf3187623a14e698e6d5fe56763bb9`.
+- Full Linux aggregate repeated after both final source-epoch test cases were
+  added: `/tmp/aiam-reassoc-physical-linux-20260911-r2.log`, SHA-256
+  `3a915186de13f86b443e0909032a240d0689937c82edeb54f0366e0c479273f8`.
+  This run includes all 22 common-owner cases; the earlier aggregate had 20,
+  followed by a separate passing 22-case run before the successful macOS run.
 - macOS log `/tmp/aiam-reassoc-physical-macos-20260911.log`, SHA-256
   `2de2b45bf28e0a151a2ecf9b8af32bb35fe9bd7c2674680074f43b1e976e121b`.
 - Negative log `/tmp/aiam-iwn-abort-negative-20260911-r2.log`, SHA-256
