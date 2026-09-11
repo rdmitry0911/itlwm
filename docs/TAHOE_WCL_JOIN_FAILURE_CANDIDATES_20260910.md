@@ -1,5 +1,17 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Deferred callback ownership checkpoint — 2026-09-11 04:28 UTC
+
+PROGRESS: release and node cleanup now detach callback/argument before reentry;
+a successor's callback and reacquired node reference survive. Complete
+production tests and the Tahoe build pass in that bounded scope, UUID
+`42D77FC7`. The expanded actual node-copy/IWN-TX test corrects the earlier
+pre-copy-only diagnosis: node_copy overwrites the initial reference counter,
+and the switch can execute while the old descriptor still has queued=1 and
+its node/length fields. Full physical drain and immutable deferred attempt
+ownership remain open and explicitly red. See
+[the corrected evidence and built candidate](TAHOE_REASSOC_DEFERRED_BSS_20260911.md).
+
 ## Loaded physical scan checkpoint — 2026-09-11 04:10 UTC
 
 PROGRESS: `52dd156d` is loaded on real IWN/6235, UUID `D63CF6F8`, boot

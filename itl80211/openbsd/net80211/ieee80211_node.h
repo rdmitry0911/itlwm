@@ -500,9 +500,12 @@ struct ieee80211_node {
 #define IEEE80211_NODE_VHT_SGI160   0x100000    /* SGI on 160 MHz negotiated */
 #define IEEE80211_NODE_HE       0x200000    /* HE negotiated */
 
-	/* If not NULL, this function gets called when ni_refcnt hits zero. */
+	/* Zero-reference notification. release_node detaches all three fields
+	 * before delivery; the callback owns its explicit argument and may arm a
+	 * successor without the old release clearing it afterwards. This is not
+	 * a firmware-TX retirement guarantee. */
 	void			(*ni_unref_cb)(struct ieee80211com *,
-					struct ieee80211_node *);
+					struct ieee80211_node *, void *);
 	void *			ni_unref_arg;
 	size_t 			ni_unref_arg_size;
     

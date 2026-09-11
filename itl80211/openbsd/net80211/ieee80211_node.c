@@ -86,7 +86,7 @@ void ieee80211_node_set_timeouts(struct ieee80211_node *);
 void ieee80211_setup_node(struct ieee80211com *, struct ieee80211_node *,
                           const u_int8_t *);
 struct ieee80211_node *ieee80211_alloc_node_helper(struct ieee80211com *);
-void ieee80211_node_switch_bss(struct ieee80211com *, struct ieee80211_node *);
+void ieee80211_node_switch_bss(struct ieee80211com *, struct ieee80211_node *, void *);
 void ieee80211_node_addba_request(struct ieee80211_node *, int);
 void ieee80211_node_addba_request_ac_be_to(void *);
 void ieee80211_node_addba_request_ac_bk_to(void *);
@@ -1220,10 +1220,14 @@ struct ieee80211_node_switch_bss_arg {
 
 /* Implements ni->ni_unref_cb(). */
 void
-ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
+ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
+    void *argument)
 {
-    struct ieee80211_node_switch_bss_arg *sba = (struct ieee80211_node_switch_bss_arg *)ni->ni_unref_arg;
+    struct ieee80211_node_switch_bss_arg *sba =
+        (struct ieee80211_node_switch_bss_arg *)argument;
     struct ieee80211_node *curbs, *selbs;
+
+    (void)ni;
     
     splassert(IPL_NET);
     
@@ -1263,7 +1267,10 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
     }
     
     ieee80211_node_newstate(curbs, IEEE80211_STA_CACHE);
-    ieee80211_node_join_bss(ic, selbs); /* frees arg and ic->ic_bss */
+    /* release_node transferred this argument, not the node's next callback.
+     * Dispose it before join can reenter or replace the selected node. */
+    free(sba);
+    ieee80211_node_join_bss(ic, selbs);
 }
 
 /* Implements ni->ni_unref_cb() for a confirmed 802.11v target.  The source
@@ -2170,10 +2177,19 @@ ieee80211_node_cleanup_internal(struct ieee80211com *ic,
     if (ni == NULL) {
         return;
     }
+    /* Detach before epoch/key/BA cleanup can invoke another owner. The old
+     * cleanup must not subsequently clear or free a reentrant callback. */
+    void *unref_arg = ni->ni_unref_arg;
+    ni->ni_unref_cb = NULL;
+    ni->ni_unref_arg = NULL;
+    ni->ni_unref_arg_size = 0;
+    if (unref_arg != NULL)
+        free(unref_arg);
     /* Only destruction/replacement of the current STA BSS cancels its PAE. */
     if (cancel_current_bss && ic != NULL &&
-        ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss)
+        ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss) {
         (void)ieee80211_pae_assoc_epoch_begin(ic);
+    }
 	/* A normal RSN leave reaches the driver's delete callback, but final node
 	 * destruction can run after the HAL rings have already gone away.  Ask the
 	 * PAE owner under its leaf lock instead of probing LIVE here: publication
@@ -2202,12 +2218,6 @@ ieee80211_node_cleanup_internal(struct ieee80211com *ic,
     }
     ieee80211_ba_del(ni);
     ieee80211_ba_free(ni);
-    if (ni->ni_unref_arg != NULL) {
-        free(ni->ni_unref_arg);
-        ni->ni_unref_arg = NULL;
-        ni->ni_unref_arg_size = 0;
-    }
-    
 #ifndef IEEE80211_STA_ONLY
     mq_purge(&ni->ni_savedq);
 #endif
@@ -2719,13 +2729,18 @@ ieee80211_release_node(struct ieee80211com *ic, struct ieee80211_node *ni)
     s = splnet();
     if (ieee80211_node_decref(ni) == 0) {
         if (ni->ni_unref_cb) {
-            (*ni->ni_unref_cb)(ic, ni);
+            void (*callback)(struct ieee80211com *,
+                struct ieee80211_node *, void *) = ni->ni_unref_cb;
+            void *argument = ni->ni_unref_arg;
+            /* Detach before any callback can install a successor or copy a
+             * new BSS into this node. No old field write may follow delivery. */
             ni->ni_unref_cb = NULL;
-            /* Freed by callback if necessary: */
             ni->ni_unref_arg = NULL;
             ni->ni_unref_arg_size = 0;
+            (*callback)(ic, ni, argument);
         }
-        if (ni->ni_state == IEEE80211_STA_COLLECT)
+        /* A callback may have acquired a new lifetime reference. */
+        if (ni->ni_state == IEEE80211_STA_COLLECT && ni->ni_refcnt == 0)
             ieee80211_free_node(ic, ni);
     }
     splx(s);

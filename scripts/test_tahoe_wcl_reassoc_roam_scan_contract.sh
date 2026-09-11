@@ -145,9 +145,9 @@ cached = body(sky, "tahoeFindJoinableCachedWclCandidate(\n    struct ieee80211co
 for token in ("IEEE80211_F_BGSCAN", "ic_wcl_reassoc_owner_active"):
     require(cached, token, "scan-owner fence on cached direct join")
 
-iwx_abort = body(iwx_hal, "iwx_bgscan_abort(struct ieee80211com *ic)",
+iwx_abort = body(iwx_hal, "iwx_bgscan_abort(struct ieee80211com *ic, uint64_t reassocSerial)",
                  "IWX reassoc scan abort")
-for token in ("return EINVAL", "iwx_scan_abort(sc, true)"):
+for token in ("return EINVAL", "iwx_scan_abort(sc, true, reassocSerial)"):
     require(iwx_abort, token, "IWX lower abort ownership")
 require(iwx_hal, "ic->ic_bgscan_abort = iwx_bgscan_abort",
         "IWX lower abort hook publication")
@@ -159,10 +159,10 @@ for token in ("ic_wcl_reassoc_owner_active",
               "iwx_umac_scan(sc, 0, scanSerial)"):
     require(iwx_replace, token, "IWX paired replacement owner")
 
-iwx_stop = body(iwx_hal, "iwx_scan_abort(struct iwx_softc *sc, bool backgroundOnly)",
+iwx_stop = body(iwx_hal, "iwx_scan_abort(struct iwx_softc *sc, bool backgroundOnly, uint64_t reassocSerial)",
                 "IWX native stopping UID wait")
 for token in (
-    "reserveScanCommandAbort(true, &serial, backgroundOnly)",
+    "reserveScanCommandAbort(true, &serial, backgroundOnly, reassocSerial)",
     "iwx_umac_scan_abort_status",
     "IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND",
     "waitScanCommandAbort(serial, generation)",
@@ -182,9 +182,9 @@ for token in ("noteScanCommandTerminal(true, le32toh(notif->uid)",
               "notif->status != IWX_SCAN_OFFLOAD_COMPLETED"):
     require(complete, token, "final UMAC identity and outcome own completion")
 
-iwm_abort = body(iwm_scan, "iwm_bgscan_abort(struct ieee80211com *ic)",
+iwm_abort = body(iwm_scan, "iwm_bgscan_abort(struct ieee80211com *ic, uint64_t reassocSerial)",
                  "IWM reassoc scan abort")
-for token in ("return EINVAL", "iwm_scan_abort(sc, true)"):
+for token in ("return EINVAL", "iwm_scan_abort(sc, true, reassocSerial)"):
     require(iwm_abort, token, "IWM lower abort ownership")
 require(iwm_mac, "ic->ic_bgscan_abort = iwm_bgscan_abort",
         "IWM lower abort hook publication")
@@ -196,10 +196,10 @@ for token in ("ic_wcl_reassoc_owner_active",
               "iwm_umac_scan(sc, 0, scanSerial)"):
     require(iwm_replace, token, "IWM paired replacement owner")
 
-iwm_stop = body(iwm_scan, "iwm_scan_abort(struct iwm_softc *sc, bool backgroundOnly)",
+iwm_stop = body(iwm_scan, "iwm_scan_abort(struct iwm_softc *sc, bool backgroundOnly, uint64_t reassocSerial)",
                 "IWM native stopping UID wait")
 for token in (
-    "reserveScanCommandAbort(true, &serial, backgroundOnly)",
+    "reserveScanCommandAbort(true, &serial, backgroundOnly, reassocSerial)",
     "iwm_umac_scan_abort_status",
     "IWM_UMAC_SCAN_ABORT_STATUS_NOT_FOUND",
     "waitScanCommandAbort(serial, generation)",
@@ -217,11 +217,13 @@ for family, hal, terminal_source, abort in (
 ):
     lower, upper = family.lower(), family.upper()
     forbid(abort, f"{upper}_FLAG_BGSCAN", "racy legacy-only abort precheck")
-    reserve = body(hal, "reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly)",
+    reserve = body(hal, "reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly,",
                    f"{upper} exact abort admission")
     ordered(reserve, "kind/readiness admission before exact STOPPING owner",
             "IOSimpleLockLockDisableInterrupt(wclScanLock)",
             "backgroundOnly && !scanCommand.command.background",
+            "reassocSerial != 0 && (!backgroundOnly ||",
+            "scanCommand.command.reassocSerial != reassocSerial",
             "backgroundOnly && !scanCommand.upperReady",
             "scanCommand.beginAbort(current, com.sc_generation)",
             "scanCommandAbortSerial = current")
