@@ -124,3 +124,46 @@ UTC with rollback copies retained. A normal lab guest reboot was requested
 at13:32:06. This checkpoint does not yet attest the loaded image or RF result.
 Runtime root: `/home/dima/Projects/itlwm/aiam-comeback-deadline-runtime.P842eX`.
 Public release remains the qualified52951b81 bundle.
+
+## Loaded-image and real AP-directed retry observations
+
+The reboot loaded the exactBE0C8CE1 candidate in boot
+`2F68EDF1-FC47-4653-872C-568F99E15DAD`. Native WPA3 DHCP started at13:32:45 UTC
+on LabAP BSS9a:fb:5d:97:a9:02/channel13. Independent1400-byte boot traffic
+passed20/20 both ways, maximum170.066/20.279ms. Before directed testq1, the
+system had automatically moved to82:c3:97:84:51:ca/channel9; the exact-source
+precondition stoppedq1 before any observer or roam request. It is not an RF run.
+
+Two subsequent ordinary Apple80211 framework requests each returned0 and
+completed the requested BSS transition without radio toggling or resubmission:
+
+| Run | Direction | Received AP comeback | Actual production retry elapsed | Traffic forward/reverse |
+| --- | --- | --- | --- | --- |
+| q2 | ca:9 to02:13 | status30,1000TU | 1,075,541,811ns | 242/250,241/250 |
+| q3 | 02:13 toca:9 | status30,1000TU | 1,103,180,254ns | 243/250,243/250 |
+
+Both exceed the1,024,000,000ns AP interval and reach RUN/reassociation success.
+The observer binds a successful real deadline-setter call to management send
+inside the actual watchdog/continuation stack. It uses monotonic timestamps,
+not guessed ieee80211com offsets or kernel writes. It measures real management
+submission, not a monitor-captured on-air frame timestamp; data pcaps here use
+Ethernet BPF. Neither observed phase proves the new early-tick rearm branch
+executed on hardware. That phase-specific regression remains established by
+the unchanged/new actual-function negative/positive tests above.
+
+Both70-second observers ended with zero DTrace errors and no early submission.
+Guest/host capture counts were986/499 forq2 and989/501 forq3, all with zero
+kernel capture drops. q2 has one real encap rejection; q3 has none. Forward/
+reverse maximum RTTs were175.531/210.677ms and97.729/196.593ms respectively.
+The losses are not an improvement or seamless-roaming claim.
+
+- q2 terminal trace SHA-256:
+  `d6cb86ad65cc389ef4ced56a489cbd1c262d591c82ea7cf8471cb941aed46b34`
+- q3 terminal trace SHA-256:
+  `776805b2d6478bc2fbd884b25a33422f48a6a32b1f8b73743b85f0d8bc8e9ed3`
+
+The first observer compile stopped on an uninitialized += counter before
+enabling probes; explicit BEGIN initialization fixed it. Its source/log are
+retained separately. The corrected observer compiled before either RF run.
+Real S3 and remaining STA/AP/GUI regressions are the next qualification steps;
+this candidate is not the public release yet.
