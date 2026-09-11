@@ -1,5 +1,13 @@
 # Deferred BSS switch: real lifetime failures — 2026-09-11
 
+Latest checkpoint: production `5aad4f68` is now loaded, with
+[real SAE/DHCP/two-way traffic preservation](TAHOE_NODE_CALLBACK_RUNTIME_20260911.md).
+That pure-SAE run observed six node copies and zero legacy BSS callbacks;
+it is not legacy-roam RF qualification. Complete
+[IWM/IWX retirement tests](TAHOE_REASSOC_TX_RETIREMENT_20260911.md) now reproduce
+early callback delivery and ordinary-STA reset/free reference omissions.
+Built-only statements below are historical; full accepted roaming stays open.
+
 ## Result and scope
 
 Correction from the complete post-copy/TX execution below: lateattach's one

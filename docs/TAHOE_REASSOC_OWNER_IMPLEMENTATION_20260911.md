@@ -190,6 +190,8 @@ progress/terminal producers above remain required. The loaded and released
 
 The next production boundary is independently reproduced by
 [the deferred BSS lifetime regression](TAHOE_REASSOC_DEFERRED_BSS_20260911.md).
-It includes a liveness failure, not just missing request tags: the permanent
-`ic_bss` reference prevents the currently armed zero-reference callback from
-running when transient TX references have drained.
+The original pre-copy fixture included a one-reference liveness failure.
+The later complete node-copy/TX execution corrects its scope: node_copy also
+copies the cache reference count, and an established-BSS callback can run
+before IWN retires its descriptor. Neither count is a hardware drain fence;
+the linked report retains both the corrected evidence and remaining defects.

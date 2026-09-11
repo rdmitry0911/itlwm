@@ -1,5 +1,22 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Loaded callback candidate and all-family retirement evidence — 2026-09-11 04:54 UTC
+
+PROGRESS: loaded `5aad4f68` / UUID `42D77FC7` preserves two real fresh-SAE
+rejection/cleanup/recovery cycles, DHCP and subsequent independent 20/20
+forward/reverse traffic. Six actual node copies but zero legacy switch calls
+were observed: this is not a passed legacy callback/complete-roam RF gate.
+Bad-BSS reselection remains. The fixture ended normally and public release
+remains qualified `97fe747c`; no new GUI/S3/AP qualification is claimed.
+See [runtime, exact identities and recoverable archive](TAHOE_NODE_CALLBACK_RUNTIME_20260911.md).
+
+New complete IWM/IWX aggregate/reset/free execution reproduces eight remaining
+requirements on Linux and macOS: early callback delivery (inside the IWX TX
+leaf), ordinary STA references left by reset/free, and pre-retirement delivery
+on SAE-marked reset. These are explicit red requirements, not passing driver
+tests or a new fix. They extend the same full source-TX/immutable accepted-roam
+implementation, with [concrete obligations](TAHOE_REASSOC_TX_RETIREMENT_20260911.md).
+
 ## Deferred callback ownership checkpoint — 2026-09-11 04:28 UTC
 
 PROGRESS: release and node cleanup now detach callback/argument before reentry;
