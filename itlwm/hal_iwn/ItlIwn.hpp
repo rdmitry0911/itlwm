@@ -534,6 +534,7 @@ public:
                 enum iwn_scan_lease_owner, u_int64_t, u_int64_t,
                 u_int32_t *, u_int64_t, u_int64_t reassoc_serial = 0);
     int        iwn_scan_continue(struct iwn_softc *, uint16_t, int);
+    bool       iwn_scan_retry_passive_2ghz(struct iwn_softc *);
     int        iwn_scan_submit(struct iwn_softc *, uint16_t, int, u_int64_t,
                                bool, bool, bool, u_int64_t, u_int32_t,
                                bool *, bool *);

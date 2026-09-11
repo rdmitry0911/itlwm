@@ -49,6 +49,9 @@ struct ItlIwn {
     static void iwn_scan_lease_replay_task(void *);
     int iwn_scan_start(iwn_softc *, uint16_t, int, int, uint64_t,
                        uint64_t, uint32_t *, bool);
+    static int iwn_newstate_impl(ieee80211com *, ieee80211_state, int, uint64_t) {
+        assert(false); return EINVAL;
+    }
     void releaseSaeWclCredentialAdmission() {}
 };
 #define container_of(ptr, type, member) \
@@ -74,6 +77,19 @@ static int ieee80211_sae_wcl_request_resume_scan(ieee80211com *, uint64_t) {
     return IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED;
 }
 static void ieee80211_new_state(ieee80211com *, ieee80211_state, int) {}
+// Join-failure cleanup was added to the production worker independently of
+// these queued-band cases. They have no join-cleanup ticket; unexpected
+// admission to that branch must fail the fixture, not silently emulate it.
+static uint64_t iwn_scan_lease_take_join_cleanup(iwn_softc *) { return 0; }
+static bool ieee80211_wcl_join_failure_pending(ieee80211com *, uint64_t) {
+    assert(false); return false;
+}
+static void ieee80211_pae_assoc_epoch_note_newstate(ieee80211com *, ieee80211_state, int) {
+    assert(false);
+}
+static void iwn_sae_engine_request_join_retirement(iwn_softc *, uint64_t) {
+    assert(false);
+}
 
 // PRODUCTION_FUNCTIONS
 

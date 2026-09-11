@@ -58,6 +58,7 @@ struct ieee80211com {
 };
 struct iwn_softc {
     ieee80211com sc_ic;
+    void *sc_dmat=nullptr;
     void *driver=nullptr;
     IOSimpleLock lock;
     IOSimpleLock ownerLock{false,1};
@@ -218,4 +219,5 @@ int main() {
         ++cases;
     }
     printf("PASS: %u complete IWN abort/reservation/command-doorbell scenarios\n",cases);
+    return 0;
 }

@@ -416,6 +416,7 @@ struct iwn_rx_desc {
 #define IWN5000_CALIBRATION_RESULT    102
 #define IWN5000_CALIBRATION_DONE    103
 #define IWN_START_SCAN            130
+#define IWN_SCAN_RESULTS          131
 #define IWN_STOP_SCAN            132
 #define IWN_RX_STATISTICS        156
 #define IWN_BEACON_STATISTICS        157
@@ -1478,6 +1479,19 @@ struct iwn_start_scan {
     uint8_t        band;
     uint16_t    reserved;
     uint32_t    status;
+} __packed;
+
+/* DVM REPLY_SCAN_RESULTS_NOTIFICATION: one completed channel. The CRC
+ * counter may cover only the final fragment after firmware home service;
+ * zero therefore admits a bounded recovery visit, not a claim of AP absence. */
+struct iwn_scan_results {
+    uint8_t channel;
+    uint8_t band;
+    uint8_t probe_status;
+    uint8_t probes_not_sent;
+    uint32_t tsf_low;
+    uint32_t tsf_high;
+    uint32_t good_crc;
 } __packed;
 
 /* Structure for IWN_STOP_SCAN notification. */

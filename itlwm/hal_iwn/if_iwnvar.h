@@ -426,6 +426,14 @@ struct iwn_scan_lease {
      * protected BTM Neighbor Report.  A request arriving after reservation
      * cannot retag or truncate the already-owned scan. */
     u_int8_t        wnm_target_channel;
+    /* One finite recovery pass for an explicit associated roam's empty
+     * passive 2GHz channels. The original physical command alone seeds this
+     * bitmap; each bit can produce at most one single-channel continuation.
+     * Owned by sc_scan_lease_lock and retired with this exact lease. */
+    u_int16_t       passive_retry_pending;
+    u_int8_t        passive_retry_channel;
+    bool            passive_retry_enabled;
+    bool            passive_retry_in_progress;
     bool            command_submitted;
     bool            abort_requested;
     bool            abort_submitted;

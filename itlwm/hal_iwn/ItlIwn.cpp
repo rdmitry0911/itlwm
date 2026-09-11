@@ -13345,6 +13345,8 @@ struct iwn_scan_doorbell_context {
     IOInterruptState owner_irq;
     bool background;
     bool publish_wcl_initial_started;
+    u_int16_t passive_retry_candidates;
+    u_int8_t passive_retry_channel;
     bool lock_held;
     bool committed;
 };
@@ -13852,6 +13854,8 @@ iwn_scan_lease_prepare_doorbell(struct iwn_softc *sc, void *opaque)
     if (iwn_scan_lease_live_locked(sc) &&
         sc->sc_scan_lease.serial == context->serial &&
         sc->sc_scan_lease.reassoc_serial == context->reassoc_serial &&
+        sc->sc_scan_lease.passive_retry_channel ==
+            context->passive_retry_channel &&
         (context->reassoc_serial == 0 ||
          sc->sc_scan_lease.owner == IWN_SCAN_LEASE_GENERIC_BACKGROUND) &&
         sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ARMING &&
@@ -13867,6 +13871,14 @@ iwn_scan_lease_prepare_doorbell(struct iwn_softc *sc, void *opaque)
          * is either rejected before this point or observes a doorbelled scan. */
         sc->sc_scan_lease.command_submitted = true;
         sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ACTIVE;
+        if (context->reassoc_serial != 0 && context->background &&
+            !sc->sc_scan_lease.passive_retry_in_progress &&
+            context->passive_retry_candidates != 0) {
+            sc->sc_scan_lease.passive_retry_pending =
+                context->passive_retry_candidates & 0x7ffeU;
+            sc->sc_scan_lease.passive_retry_enabled =
+                sc->sc_scan_lease.passive_retry_pending != 0;
+        }
         /* Publish the net80211-facing scan flags in this same pre-doorbell
          * leaf.  STOP_SCAN may be delivered immediately after WRPTR; it must
          * never clear the flags only for submit() to set them again later. */
@@ -14177,6 +14189,93 @@ iwn_scan_lease_restore_continuation(struct iwn_softc *sc, u_int64_t serial,
     }
     IOSimpleLockUnlock(sc->sc_scan_lease_lock);
     return restored;
+}
+
+static u_int8_t
+iwn_scan_lease_passive_retry_channel(struct iwn_softc *sc, u_int64_t serial)
+{
+    u_int8_t channel = 0;
+    if (sc == NULL || serial == 0 || sc->sc_scan_lease_lock == NULL)
+        return 0;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (sc->sc_scan_lease.serial == serial &&
+        sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ARMING &&
+        sc->sc_scan_lease.passive_retry_in_progress)
+        channel = sc->sc_scan_lease.passive_retry_channel;
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return channel;
+}
+
+static void
+iwn_scan_lease_note_passive_result(struct iwn_softc *sc,
+    u_int8_t channel, u_int8_t band, u_int32_t good_crc)
+{
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || band != 1 ||
+        channel == 0 || channel > 14 || good_crc == 0)
+        return;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (sc->sc_scan_lease.owner == IWN_SCAN_LEASE_GENERIC_BACKGROUND &&
+        sc->sc_scan_lease.reassoc_serial != 0 &&
+        sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ACTIVE &&
+        sc->sc_scan_lease.command_submitted &&
+        sc->sc_scan_lease.passive_retry_enabled &&
+        !sc->sc_scan_lease.passive_retry_in_progress &&
+        !sc->sc_scan_lease.abort_requested &&
+        !sc->sc_scan_lease.hardware_invalidated &&
+        !sc->sc_scan_lease.publication_invalidated &&
+        !sc->sc_scan_lease.terminal_claimed)
+        sc->sc_scan_lease.passive_retry_pending &=
+            static_cast<u_int16_t>(~(1U << channel));
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+}
+
+/* Consume one original passive-channel bit and the current STOP_SCAN in the
+ * same leaf transaction. Never introduce a channel from a notification or
+ * reseed the bitmap from a retry command. The final doorbell separately
+ * revalidates the exact WCL owner and source epoch. */
+static bool
+iwn_scan_lease_begin_passive_retry(struct iwn_softc *sc,
+    u_int64_t *out_serial)
+{
+    if (out_serial != NULL)
+        *out_serial = 0;
+    if (sc == NULL || sc->sc_scan_lease_lock == NULL || out_serial == NULL)
+        return false;
+    bool continuing = false;
+    IOSimpleLockLock(sc->sc_scan_lease_lock);
+    if (sc->sc_scan_lease.serial != 0 &&
+        sc->sc_scan_lease.owner == IWN_SCAN_LEASE_GENERIC_BACKGROUND &&
+        sc->sc_scan_lease.reassoc_serial != 0 &&
+        sc->sc_scan_lease.phase == IWN_SCAN_LEASE_ACTIVE &&
+        sc->sc_scan_lease.command_submitted &&
+        sc->sc_scan_lease.passive_retry_enabled &&
+        !sc->sc_scan_lease.abort_requested &&
+        !sc->sc_scan_lease.hardware_invalidated &&
+        !sc->sc_scan_lease.publication_invalidated &&
+        !sc->sc_scan_lease.terminal_claimed) {
+        u_int8_t channel = 1;
+        for (; channel <= 14; channel++) {
+            if ((sc->sc_scan_lease.passive_retry_pending &
+                    (1U << channel)) != 0)
+                break;
+        }
+        if (channel <= 14) {
+            sc->sc_scan_lease.passive_retry_pending &=
+                static_cast<u_int16_t>(~(1U << channel));
+            sc->sc_scan_lease.passive_retry_channel = channel;
+            sc->sc_scan_lease.passive_retry_in_progress = true;
+            sc->sc_scan_lease.command_submitted = false;
+            sc->sc_scan_lease.phase = IWN_SCAN_LEASE_ARMING;
+            *out_serial = sc->sc_scan_lease.serial;
+            continuing = true;
+        } else {
+            sc->sc_scan_lease.passive_retry_channel = 0;
+            sc->sc_scan_lease.passive_retry_enabled = false;
+            /* Keep in_progress sticky to forbid any later reseeding. */
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_scan_lease_lock);
+    return continuing;
 }
 
 static bool
@@ -17220,6 +17319,23 @@ iwn_notif_intr(struct iwn_softc *sc)
             ic->ic_bss->ni_chan = &ic->ic_channels[scan->chan];
             break;
         }
+        case IWN_SCAN_RESULTS:
+        {
+            /* len includes the four-byte firmware command header, not the
+             * preceding length word. Reject other payload shapes before
+             * reading packed notification fields. */
+            if ((desc->qid & 0x80) == 0 ||
+                (le32toh(desc->len) & IWN_RX_DESC_LEN_MASK) !=
+                    4 + sizeof(struct iwn_scan_results))
+                break;
+            struct iwn_scan_results *result =
+                (struct iwn_scan_results *)(desc + 1);
+            bus_dmamap_sync(sc->sc_dmat, data->map, sizeof(*desc),
+                sizeof(*result), BUS_DMASYNC_POSTREAD);
+            iwn_scan_lease_note_passive_result(sc, result->channel,
+                result->band, le32toh(result->good_crc));
+            break;
+        }
         case IWN_STOP_SCAN:
         {
             struct iwn_stop_scan *scan =
@@ -17235,6 +17351,16 @@ iwn_notif_intr(struct iwn_softc *sc)
 
             bus_dmamap_sync(sc->sc_dmat, data->map, sizeof (*desc),
                 sizeof (*scan), BUS_DMASYNC_POSTREAD);
+
+            /* A resumed passive DVM dwell can end after a short final
+             * fragment without receiving anything. Give only the original
+             * explicit roam's empty, non-DFS passive 2GHz channels one
+             * standalone visit each, retaining this physical lease and its
+             * single upper completion. No new scan/cached BSS is fabricated. */
+            if (scan->status == 1 && scan->chan <= 14 &&
+                (sc->sc_flags & IWN_FLAG_BGSCAN) != 0 &&
+                iwn_scan_retry_passive_2ghz(sc))
+                break;
 
             if (scan->status == 1 && scan->chan <= 14 &&
                 (sc->sc_flags & IWN_FLAG_HAS_5GHZ) &&
@@ -20883,6 +21009,29 @@ iwn_scan_continue(struct iwn_softc *sc, uint16_t flags, int bgscan)
     return error;
 }
 
+/* true means this STOP_SCAN is consumed by a retry or by a reset/successor.
+ * false leaves the existing terminal owner in charge (including an exact
+ * no-doorbell retry failure restored as ABORTING). */
+bool ItlIwn::
+iwn_scan_retry_passive_2ghz(struct iwn_softc *sc)
+{
+    u_int64_t serial = 0;
+    if (!iwn_scan_lease_begin_passive_retry(sc, &serial))
+        return false;
+    bool command_attempted = false;
+    const int error = iwn_scan_submit(sc, IEEE80211_CHAN_2GHZ, 1,
+        serial, false, false, false, 0, 0, &command_attempted, NULL);
+    if (error == 0)
+        return true;
+    if (command_attempted) {
+        iwn_scan_schedule_fatal_recovery(sc);
+        return true;
+    }
+    /* An obsolete return must not let the caller consume a successor's
+     * terminal. Only the still-owned failed attempt can restore this STOP. */
+    return !iwn_scan_lease_restore_continuation(sc, serial, true);
+}
+
 int ItlIwn::
 iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
                 u_int64_t lease_serial, bool prepare_controller_foreground,
@@ -20902,6 +21051,9 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     struct ieee80211_wcl_scan_plan wclPlan;
     uint8_t *buf, *frm;
     u_int8_t wnm_target_channel = 0;
+    const u_int8_t passive_retry_channel =
+        iwn_scan_lease_passive_retry_channel(sc, lease_serial);
+    u_int16_t passive_retry_candidates = 0;
     uint16_t rxchain, dwell_active, dwell_passive;
     uint8_t txant;
     struct iwn_scan_doorbell_context doorbell;
@@ -21161,6 +21313,9 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
         if (wnm_exact_channel &&
             ieee80211_chan2ieee(ic, c) != wnm_target_channel)
             continue;
+        if (passive_retry_channel != 0 &&
+            ieee80211_chan2ieee(ic, c) != passive_retry_channel)
+            continue;
 
         chan->chan = htole16(ieee80211_chan2ieee(ic, c));
         chan->flags = 0;
@@ -21223,6 +21378,20 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
 
         chan->active = htole16(dwell_active);
         chan->passive = htole16(dwell_passive);
+
+        /* Eligibility comes from this actual admitted plan and EEPROM
+         * restrictions, never from an untrusted result's channel byte.
+         * HostAP/PAN, BTM and foreground scans retain their existing policy.
+         * The exact doorbell enables recovery only for tagged WCL roaming. */
+        if (bgscan && !apContextRunning && !wnm_exact_channel &&
+            (flags & IEEE80211_CHAN_2GHZ) != 0 &&
+            (c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0 &&
+            (c->ic_flags & IEEE80211_CHAN_DFS) == 0) {
+            const unsigned number = ieee80211_chan2ieee(ic, c);
+            if (number >= 1 && number <= 14)
+                passive_retry_candidates |=
+                    static_cast<u_int16_t>(1U << number);
+        }
 
         chan->dsp_gain = 0x6e;
         if (IEEE80211_IS_CHAN_5GHZ(c)) {
@@ -21309,6 +21478,8 @@ iwn_scan_submit(struct iwn_softc *sc, uint16_t flags, int bgscan,
     doorbell.upper_generation = upper_generation;
     doorbell.backend_generation = backend_generation;
     doorbell.background = bgscan != 0;
+    doorbell.passive_retry_channel = passive_retry_channel;
+    doorbell.passive_retry_candidates = passive_retry_candidates;
     doorbell.publish_wcl_initial_started = publish_wcl_initial_started;
     if (lease_serial != 0) {
         error = iwn_cmd_with_doorbell_hook(sc, IWN_CMD_SCAN, buf, buflen, 1,
