@@ -30,6 +30,7 @@
 #include <IOKit/IOFilterInterruptEventSource.h>
 
 #include <HAL/ItlHalService.hpp>
+#include <HAL/ItlSaePeerTimer.hpp>
 #include <HAL/ItlApFirmwareRuntime.hpp>
 #include <HAL/ItlApOpenRuntime.hpp>
 #include <HAL/ItlDriverInfo.hpp>
@@ -498,6 +499,10 @@ public:
         struct iwm_tx_ring *, int, uint8_t, uint16_t,
         const struct ieee80211_node *, const struct IwmSaeAssocTxClaim *);
     static void iwm_sae_engine_task(void *);
+    ItlSaePeerTimer saePeerTimer;
+    void iwm_sae_peer_timer_drain();
+    static void iwm_sae_peer_timer_event(OSObject *, IOInterruptEventSource *, int);
+    static void iwm_sae_peer_timer_timeout(OSObject *, IOTimerEventSource *);
     void iwm_sae_engine_stop_begin(struct iwm_softc *);
     void iwm_sae_engine_reopen(struct iwm_softc *);
     void iwm_sae_engine_detach_begin(struct iwm_softc *);

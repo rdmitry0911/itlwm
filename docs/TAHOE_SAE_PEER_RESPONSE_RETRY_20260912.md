@@ -1,10 +1,11 @@
 # Missing same-exchange SAE peer-response retry
 
-Status: an actual single-Commit omission reproduces failed native connection
-on the published f170870d image; the unchanged pass-through control completes
-SAE, DHCP and bidirectional traffic. No production retry implementation has
-been committed, built or released yet. This is the next functional correction,
-not a new successful-reconnect claim.
+Status: the single-Commit omission reproduces failed native connection on the
+published f170870d image; its unchanged pass-through control completes SAE,
+DHCP and traffic. A driver-resident retry candidate now passes actual core,
+all-family worker and timer tests on Linux and Tahoe, including both complete
+payload aggregates. It has not yet been built, loaded or radio-qualified.
+The production-candidate section below does not relabel the baseline runs.
 
 ## Controlled radio experiment
 
@@ -163,3 +164,81 @@ Q2/Q3 monitor pcap SHA256:
 
 The driver and public release remain f170870d/UUID68F5. This diagnosis does
 not warrant rebuilding the same code or publishing a new kext without a fix.
+
+## Production candidate and executed source checks
+
+The shared opaque core retains its current public serialized Commit/Confirm
+after successful terminal TX. An exact last-terminal-ticket retry prepares
+that same body, without reloading a password, regenerating scalar/element,
+incrementing Confirm or changing the BSSID/epoch/relay. A new monotonic ticket
+is required even after pre-doorbell rollback. The limit is three actual
+successful transmissions per serialized body; one anti-clogging response can
+replace that body and start its own bounded budget. Failure/completion/destroy
+scrub the retained body. Nonzero TX terminals still fail closed: this change
+does not reclassify no-ACK, reset or cancellation as success or retry them as
+though a frame had been ACKed.
+
+IWN, IWM and IWX record an absolute two-second peer deadline at the actual
+terminal-event enqueue. Delayed crypto-worker execution does not renew it.
+The worker signals a retained interrupt event source; only the main workloop
+arms the timer. Timer callbacks only inspect the current public owner and
+schedule the serialized worker, never execute crypto or wait for a private
+gate. Queued peer progress wins before timeout claim; duplicate/dropped peer
+frames do not restart the deadline. Timeout claims revalidate selected-BSS,
+credential, epoch and peer-RX admission under the established leaf order.
+Old timers re-read the successor deadline rather than transmit for the old
+exchange. Stop/S3/detach flags close admission; detach drains worker scheduling
+and workers before removing both event sources and destroying the engine leaf.
+
+After exhaustion the exact current AUTH owner arms the existing native
+watchdog for one tick. That preserves ordinary owned AUTH timeout handling
+instead of inventing an AP status or directly issuing SCAN from the crypto
+worker. Final failure publication can therefore follow up to one watchdog
+tick later than the two-second peer deadline; exact Apple firmware timer
+parity is not claimed. A genuine late peer response can still win before
+native timeout consumes the AUTH epoch.
+
+Executed checks on Linux and Tahoe:
+
+- 30 scenarios compile and link the complete production core plus vendored
+  hostap/mbedTLS: HnP/H2E, zero/one/two Commit and Confirm omissions, unchanged
+  bodies, actual token-bearing crypto continuation, stale/duplicate completion,
+  ticket reuse, pre-doorbell rollback, exhaustion, failed TX and destruction.
+- 26 scenarios per IWN/IWM/IWX compile each complete actual worker, terminal
+  receipt, identity, timeout claim and main-workloop timer-drain body. Only
+  hardware, crypto results, scheduling and kernel leaves are explicit doubles.
+  They check receipt-anchored timing, exact deadline, peer priority, cancellation,
+  replacement, no obsolete-timeout busy loop and native timeout publication.
+- 12 scenarios execute the complete timer helper with IOKit/clock doubles,
+  including each allocation/add-source failure, rounded-up delay, invalid gate,
+  retained objects, callback during removal and repeated shutdown.
+- Existing 21 IWN failure/retirement scenarios and both full payload aggregates
+  pass. This is source execution, not new on-air evidence.
+
+The first core-test fixture used a four-byte token that the chosen hostap peer
+parser cannot consume as an HnP token. The corrected peer uses its supported
+32-byte token and additionally checks that the original scalar/element are
+unchanged. This fixture failure is not a driver retry failure. The actual
+driver serializer remains bounded by its existing variable-token contract.
+
+The independent existing IWM/IWX peer-rejection retirement gates were rerun:
+both still fail their original semantic assertion (exit134), retaining
+generic_scan1, owned_cleanup0 and producer_ack0. This candidate does not claim
+to fix that separate all-family failure-integration surface.
+
+Fresh working evidence (not the frozen baseline root):
+`/dev/shm/aiam-sae-peer-implementation-20260912.soPlBh`.
+Tahoe tests run in a separate source tree
+`/private/var/tmp/sae-peer-implementation-tests.vya2G9`; the build mirror and
+loaded kext are unchanged at this checkpoint. Source-test archive SHA256:
+`093149edc0b55d71d916d17dcdc9909fb12570b89990dc453385071c055ed815`.
+Linux aggregate SHA256:
+`8c23f5ffff6e1d48c814ae71fe20dadc048644f980a414f54fd0ab4a6ab71898`.
+Tahoe selected/aggregate SHA256:
+`c5a6ec1722298cc94cf27e344052c07261fd49da0da972637ef1f5f6e25962dd`,
+`ab514a9b8ae319351aa0b9ee4d7d119f33b25317cc47247b3f596b4a7e2ebe98`.
+
+Next: commit/push this candidate, build and load its exact source manifest,
+repeat the single-Commit omission and forward-all controls, add Confirm-loss
+and bounded exhaustion controls, then S3/off-on/STA/AP security regression.
+Only those new RF receipts can justify publishing a replacement kext.

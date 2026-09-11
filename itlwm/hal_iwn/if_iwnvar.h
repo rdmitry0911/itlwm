@@ -132,6 +132,10 @@ struct iwn_sae_engine_owner {
     u_int64_t                         association_epoch;
     u_int64_t                         relay_generation;
     u_int64_t                         in_flight_ticket;
+    /* Public last-TX identity and absolute peer deadline, no crypto state. */
+    u_int64_t                         terminal_peer_deadline;
+    u_int64_t                         peer_reply_deadline;
+    u_int64_t                         peer_reply_ticket;
     u_int64_t                         join_attempt_generation;
     /* Common JoinAdapter request, distinct from the SAE credential request.
      * Retain it through cancellation until physical lower cleanup retires. */

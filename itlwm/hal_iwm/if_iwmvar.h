@@ -579,6 +579,10 @@ struct iwm_sae_engine_owner {
     u_int64_t                         association_epoch;
     u_int64_t                         relay_generation;
     u_int64_t                         in_flight_ticket;
+    /* Public last-TX identity and absolute peer deadline, no crypto state. */
+    u_int64_t                         terminal_peer_deadline;
+    u_int64_t                         peer_reply_deadline;
+    u_int64_t                         peer_reply_ticket;
     struct ItlSaeSelectedJoinEventV1  selected;
     struct ItlSaeAuthActivatedEventV1 activated;
     struct ItlSaePmkContinuationIdentityV1 completion;

@@ -15,8 +15,8 @@ awk -v name="${family}_sae_engine_owner" '
     "$PROJECT_DIR/itlwm/hal_$family/if_${family}var.h" | normalize > "$MVM_JOIN_TEST_DIR/owner.inc"
 awk -v family="$family" -v mixed="$mixed" '
     $0 ~ "^struct " mixed "SaeEngineCancellation " { selected=1 }
-    $0 ~ "^" family "_sae_engine_(owner_clear_locked|cancel_owned|worker_retire)\\(" { selected=1; print "static void" }
-    $0 ~ "^" family "_sae_engine_(owner_matches_peer_locked|peer_owner_current_locked)\\(" { selected=1; print "static bool" }
+    $0 ~ "^" family "_sae_engine_(owner_clear_locked|cancel_owned|worker_retire|peer_exhausted)\\(" { selected=1; print "static void" }
+    $0 ~ "^" family "_sae_engine_(owner_matches_peer_locked|peer_owner_current_locked|take_peer_retry)\\(" { selected=1; print "static bool" }
     $0 ~ "^" family "_sae_engine_task\\(" { selected=1; print "void Itl" mixed "::" }
     selected { print }
     selected && /^};?$/ { selected=0 }' \

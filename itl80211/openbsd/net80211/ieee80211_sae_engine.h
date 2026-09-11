@@ -30,6 +30,9 @@ extern "C" {
 #define IEEE80211_SAE_ENGINE_PASSPHRASE_MAX 63u
 #define IEEE80211_SAE_ENGINE_HNP_COMMIT_BODY_LEN 98u
 #define IEEE80211_SAE_ENGINE_CONFIRM_BODY_LEN 34u
+/* Per serialized Commit/Confirm, including its first actual transmission. */
+#define IEEE80211_SAE_ENGINE_PEER_TX_LIMIT 3u
+#define IEEE80211_SAE_ENGINE_PEER_TIMEOUT_MS 2000u
 /*
  * An HnP anti-clogging response carries the selected group followed by an
  * opaque, AP-chosen token.  Its length is not fixed at 32 bytes: the only
@@ -109,6 +112,19 @@ int ieee80211_sae_engine_tx_rollback_unsubmitted(
  */
 int ieee80211_sae_engine_tx_complete(struct ieee80211_sae_engine *engine,
 	const struct ItlSaeAuthTransportEventV1 *event);
+
+/*
+ * Worker-only peer-response timeout, distinct from pre-doorbell rollback.
+ * The caller must establish the elapsed monotonic deadline and current owner,
+ * and process already queued peer progress first. completed_ticket must be the
+ * exact last successful terminal, not a pending or superseded transmission.
+ * Return 0 with the SAME serialized body prepared, -2 when its three actual
+ * transmissions are exhausted, or -1 for an invalid/stale request. Neither
+ * stale nor exhausted requests mutate the session. prepare_tx still requires
+ * a new lifetime-monotonic ticket. No password or scalar is regenerated.
+ */
+int ieee80211_sae_engine_retry_peer(struct ieee80211_sae_engine *engine,
+	uint64_t completed_ticket);
 
 /*
  * Consume one exact selected-BSS peer Commit/Confirm.  A TX_READY result
@@ -218,6 +234,15 @@ ieee80211_sae_engine_tx_complete(struct ieee80211_sae_engine *engine,
 {
     (void)engine;
     (void)event;
+    return -1;
+}
+
+static inline int
+ieee80211_sae_engine_retry_peer(struct ieee80211_sae_engine *engine,
+    uint64_t completed_ticket)
+{
+    (void)engine;
+    (void)completed_ticket;
     return -1;
 }
 

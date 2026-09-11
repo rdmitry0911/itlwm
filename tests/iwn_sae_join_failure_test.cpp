@@ -17,6 +17,12 @@ using u_int8_t = uint8_t;
 using u_int32_t = uint32_t;
 using u_int64_t = uint64_t;
 using IOInterruptState = unsigned;
+static uint64_t testNow;
+static void clock_get_uptime(uint64_t *now) { *now = testNow; }
+enum { kMillisecondScale = 1 };
+static void clock_interval_to_deadline(unsigned interval, unsigned scale, uint64_t *deadline) {
+    assert(scale == kMillisecondScale); *deadline = testNow + interval;
+}
 enum { IEEE80211_M_STA = 1, IEEE80211_S_SCAN = 1, IEEE80211_S_AUTH = 2,
     IEEE80211_S_ASSOC = 3, IEEE80211_S_RUN = 4, IFF_RUNNING = 2,
     IEEE80211_SAE_WCL_REQUEST_BOUND = 2, IEEE80211_STATUS_SUCCESS = 0,
@@ -50,7 +56,8 @@ struct ieee80211_sae_wcl_request {
 struct ieee80211com {
     int ic_state = IEEE80211_S_AUTH;
     int ic_opmode = IEEE80211_M_STA;
-    struct { unsigned if_flags = IFF_RUNNING; } ic_if;
+    struct { unsigned if_flags = IFF_RUNNING, if_timer = 0; } ic_if;
+    unsigned ic_mgt_timer = 0;
     ieee80211_node *ic_bss = nullptr;
     IOSimpleLock *ic_pae_selected_bss_lock = nullptr;
     uint64_t ic_pae_assoc_epoch = 41, ic_pae_assoc_replace_epoch = 0;
@@ -119,6 +126,21 @@ static int ieee80211_new_state(ieee80211com *ic, int state, int) { outsideLeaves
 class ItlIwn {
 public:
     iwn_softc com;
+    struct {
+        unsigned signals = 0, arms = 0;
+        uint64_t deadline = 0;
+        void signal() { outsideLeaves(); ++signals; }
+        void arm(uint64_t value, uint64_t now) {
+            outsideLeaves(); assert(value > now); deadline = value; ++arms;
+        }
+    } saePeerTimer;
+    struct WorkLoop { bool gated = true; bool inGate() { return gated; } } workloop;
+    WorkLoop *getMainWorkLoop() { return &workloop; }
+    void iwn_sae_peer_timer_drain();
+    bool iwn_task_gate_enter(iwn_softc *sc, bool closed) {
+        return iwn_sae_tx_lifecycle_enter(sc, closed);
+    }
+    void iwn_task_gate_leave(iwn_softc *sc) { iwn_sae_tx_lifecycle_leave(sc); }
     static void iwn_sae_engine_task(void *);
     static void iwn_wcl_join_failure_scan(ieee80211com *ic, uint64_t gen) {
         outsideLeaves(); if (ieee80211_wcl_join_failure_pending(ic, gen)) { ++ownedScans; lowerGeneration = gen; }
@@ -132,11 +154,21 @@ public:
 static void IOSleep(unsigned) { outsideLeaves(); }
 static unsigned iwn_sae_engine_submit_retry_delay_ms(uint8_t) { return 0; }
 static int iwn_sae_engine_start(iwn_softc *) { return 0; }
-static int iwn_sae_engine_submit_prepared(iwn_softc *) { return 0; }
-int ieee80211_sae_engine_tx_complete(ieee80211_sae_engine *, const ItlSaeAuthTransportEventV1 *) { return 0; }
+static unsigned retryCoreCalls, submitCalls, terminalCoreCalls, peerCoreCalls;
+static int retryCoreResult, terminalCoreResult;
+static uint64_t retryCoreTicket;
+static int iwn_sae_engine_submit_prepared(iwn_softc *) {
+    outsideLeaves(); ++submitCalls; return 0;
+}
+int ieee80211_sae_engine_retry_peer(ieee80211_sae_engine *, uint64_t ticket) {
+    outsideLeaves(); ++retryCoreCalls; retryCoreTicket = ticket; return retryCoreResult;
+}
+int ieee80211_sae_engine_tx_complete(ieee80211_sae_engine *, const ItlSaeAuthTransportEventV1 *) {
+    outsideLeaves(); ++terminalCoreCalls; return terminalCoreResult;
+}
 ieee80211_sae_engine_peer_result ieee80211_sae_engine_handle_peer(
     ieee80211_sae_engine *, const ItlSaeAuthPeerEventV1 *peer, ItlSaePmkContinuationV1 *pmk) {
-    outsideLeaves(); borrowedPeer = peer; borrowedPmk = pmk;
+    outsideLeaves(); ++peerCoreCalls; borrowedPeer = peer; borrowedPmk = pmk;
     auto action = std::move(duringPeer); duringPeer = {}; if (action) action();
     return cryptoResult;
 }
@@ -144,8 +176,17 @@ static bool iwn_sae_engine_owner_matches_pmk_identity_locked(iwn_softc *, iwn_sa
 static bool ieee80211_sae_wcl_request_pmk_claim_locked(ieee80211com *, const ItlSaePmkContinuationV1 *) { return false; }
 static int ieee80211_sae_wcl_request_pmk_continue_assoc(ieee80211com *, const ItlSaePmkContinuationIdentityV1 *) { return 0; }
 static bool ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(ieee80211com *, ieee80211_node *, const ItlSaePmkContinuationIdentityV1 *) { return false; }
+#ifdef SAE_PEER_RETRY_ONLY
+static void iwn_sae_engine_queue_wcl_cancel_locked(iwn_softc *sc, uint64_t generation) {
+    assert(leaves != 0); sc->sc_sae_engine_wcl_cancel_generation = generation;
+}
+static void iwn_sae_engine_fence_inflight_ticket_locked(iwn_softc *, const iwn_sae_engine_owner *) {
+    assert(leaves != 0);
+}
+#endif
 #include "worker.inc"
 
+#ifndef SAE_PEER_RETRY_ONLY
 int main() {
     unsigned cases = 0;
     for (unsigned scenario = 0; scenario < 21; ++scenario) {
@@ -281,3 +322,4 @@ int main() {
     }
     printf("PASS: %u complete IWN SAE worker failure/retirement scenarios\n", cases);
 }
+#endif

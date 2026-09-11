@@ -13,8 +13,8 @@ awk '/^struct iwn_sae_engine_owner / { selected=1 }
      selected { print } selected && /^};/ { exit }' \
     "$PROJECT_DIR/itlwm/hal_iwn/if_iwnvar.h" > "$SAE_JOIN_TEST_DIR/owner.inc"
 awk '/^struct IwnSaeEngineCancellation / { selected=1 }
-     /^iwn_sae_engine_(owner_clear_locked|cancel_owned|worker_retire|request_join_retirement|finish_join_retirement)\(/ { selected=1; print "static void" }
-     /^iwn_sae_engine_(owner_matches_peer_locked|peer_owner_current_locked)\(/ { selected=1; print "static bool" }
+     /^iwn_sae_engine_(owner_clear_locked|cancel_owned|worker_retire|request_join_retirement|finish_join_retirement|peer_exhausted)\(/ { selected=1; print "static void" }
+     /^iwn_sae_engine_(owner_matches_peer_locked|peer_owner_current_locked|take_peer_retry)\(/ { selected=1; print "static bool" }
      /^iwn_sae_engine_claim_peer_failure\(/ { selected=1; print "static u_int64_t" }
      /^iwn_sae_engine_task\(/ { selected=1; print "void ItlIwn::" }
      selected { print }

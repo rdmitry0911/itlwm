@@ -9,13 +9,11 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
-#include <sys/param.h>
-#include <sys/systm.h>
+#include "utils/includes.h"
 
 #include <net80211/ieee80211_sae_engine.h>
 #include <net80211/ieee80211_sae_platform.h>
 
-#include "utils/includes.h"
 #include "utils/common.h"
 #include "utils/wpabuf.h"
 #include "common/defs.h"
@@ -47,6 +45,9 @@ struct ieee80211_sae_engine {
 	uint16_t method;
 	enum ieee80211_sae_engine_state state;
 	uint8_t anti_clogging_retries;
+	uint8_t prepared_tx_count;
+	uint64_t last_prepared_ticket;
+	uint64_t last_sent_ticket;
 	uint16_t prepared_phase;
 	uint32_t prepared_body_len;
 	uint8_t prepared_body[kItlSaeAuthTransportV1MaxBodyLength];
@@ -74,6 +75,8 @@ ieee80211_sae_engine_clear_prepared(struct ieee80211_sae_engine *engine)
 		return;
 	engine->prepared_phase = 0;
 	engine->prepared_body_len = 0;
+	engine->prepared_tx_count = 0;
+	engine->last_sent_ticket = 0;
 	ieee80211_sae_secure_zero(engine->prepared_body,
 	    sizeof(engine->prepared_body));
 }
@@ -291,6 +294,7 @@ ieee80211_sae_engine_prepare_tx(struct ieee80211_sae_engine *engine,
 	uint64_t ticket, struct ItlSaeAuthTxRequestV1 *out)
 {
 	if (engine == NULL || out == NULL || ticket == 0 ||
+	    ticket <= engine->last_prepared_ticket ||
 	    (engine->state != IEEE80211_SAE_ENGINE_COMMIT_PREPARED &&
 	     engine->state != IEEE80211_SAE_ENGINE_CONFIRM_PREPARED) ||
 	    engine->prepared_body_len == 0 ||
@@ -319,6 +323,7 @@ ieee80211_sae_engine_prepare_tx(struct ieee80211_sae_engine *engine,
 		return -1;
 	}
 	engine->in_flight = *out;
+	engine->last_prepared_ticket = ticket;
 	if (engine->state == IEEE80211_SAE_ENGINE_COMMIT_PREPARED)
 		engine->state = IEEE80211_SAE_ENGINE_COMMIT_IN_FLIGHT;
 	else
@@ -378,7 +383,33 @@ ieee80211_sae_engine_tx_complete(struct ieee80211_sae_engine *engine,
 		engine->state = IEEE80211_SAE_ENGINE_CONFIRM_SENT;
 	}
 	ieee80211_sae_engine_clear_in_flight(engine);
-	ieee80211_sae_engine_clear_prepared(engine);
+	engine->last_sent_ticket = event->ticket;
+	engine->prepared_tx_count++;
+	/* Retain the public wire body until real peer progress replaces it.
+	 * Re-serializing Confirm would advance send_confirm, and preparing a
+	 * new exchange would replace the Commit scalar/element. Neither is a
+	 * retransmission of the current Authentication transaction. */
+	return 0;
+}
+
+int
+ieee80211_sae_engine_retry_peer(struct ieee80211_sae_engine *engine,
+	uint64_t completed_ticket)
+{
+	if (engine == NULL || completed_ticket == 0 ||
+	    engine->last_sent_ticket != completed_ticket ||
+	    (engine->state != IEEE80211_SAE_ENGINE_COMMIT_SENT &&
+	     engine->state != IEEE80211_SAE_ENGINE_CONFIRM_SENT) ||
+	    engine->prepared_tx_count == 0 ||
+	    engine->prepared_body_len == 0 ||
+	    engine->prepared_body_len > sizeof(engine->prepared_body))
+		return -1;
+	if (engine->prepared_tx_count >= IEEE80211_SAE_ENGINE_PEER_TX_LIMIT)
+		return -2;
+	engine->state = engine->state == IEEE80211_SAE_ENGINE_COMMIT_SENT ?
+	    IEEE80211_SAE_ENGINE_COMMIT_PREPARED :
+	    IEEE80211_SAE_ENGINE_CONFIRM_PREPARED;
+	engine->last_sent_ticket = 0;
 	return 0;
 }
 
@@ -536,6 +567,7 @@ ieee80211_sae_engine_handle_confirm(struct ieee80211_sae_engine *engine,
 	}
 	engine->sae.state = SAE_ACCEPTED;
 	ieee80211_sae_engine_clear_crypto(engine);
+	ieee80211_sae_engine_clear_prepared(engine);
 	engine->state = IEEE80211_SAE_ENGINE_COMPLETE;
 	return IEEE80211_SAE_ENGINE_PEER_COMPLETE;
 }

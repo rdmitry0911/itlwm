@@ -72,6 +72,7 @@
 #include <IOKit/IOTimerEventSource.h>
 
 #include <HAL/ItlHalService.hpp>
+#include <HAL/ItlSaePeerTimer.hpp>
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
@@ -611,6 +612,10 @@ public:
         const struct ieee80211_node *,
         const u_int8_t [IEEE80211_ADDR_LEN], bool);
     static void iwn_sae_engine_task(void *);
+    ItlSaePeerTimer saePeerTimer;
+    void iwn_sae_peer_timer_drain();
+    static void iwn_sae_peer_timer_event(OSObject *, IOInterruptEventSource *, int);
+    static void iwn_sae_peer_timer_timeout(OSObject *, IOTimerEventSource *);
     void       iwn_sae_engine_stop_begin(struct iwn_softc *);
     void       iwn_sae_engine_reopen(struct iwn_softc *);
     void       iwn_sae_engine_detach_begin(struct iwn_softc *);

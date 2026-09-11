@@ -8,7 +8,9 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __APPLE__
 #include <sys/random.h>
+#endif
 
 #include <net80211/ieee80211_sae_platform.h>
 
@@ -65,6 +67,13 @@ mbedtls_platform_zeroize(void *ptr, size_t len)
 int
 os_get_random(unsigned char *buf, size_t len)
 {
+#ifdef __APPLE__
+	if (buf == NULL && len != 0)
+		return -1;
+	if (len != 0)
+		arc4random_buf(buf, len);
+	return 0;
+#else
 	unsigned char *position = buf;
 
 	if (buf == NULL && len != 0)
@@ -83,6 +92,7 @@ os_get_random(unsigned char *buf, size_t len)
 		len -= (size_t)received;
 	}
 	return 0;
+#endif
 }
 
 int

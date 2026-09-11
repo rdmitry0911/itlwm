@@ -7111,6 +7111,9 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_tx_task_ready = true;
     task_set(&sc->sae_engine_task, iwm_sae_engine_task, sc,
         "iwm_sae_engine_task");
+    if (!saePeerTimer.init(this, getMainWorkLoop(),
+        &ItlIwm::iwm_sae_peer_timer_event, &ItlIwm::iwm_sae_peer_timer_timeout))
+        goto fail4;
     sc->sc_sae_engine_task_ready = sc->sc_sae_engine_lock != NULL;
     if (sc->sc_sae_engine_task_ready)
         __atomic_store_n(&sc->sc_sae_engine_task_admission_state, 0,

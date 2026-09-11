@@ -2546,6 +2546,10 @@ iwn_sae_engine_queue_terminal(struct iwn_softc *sc,
         } else {
             owner->terminal = *event;
             owner->terminal_valid = true;
+            owner->terminal_peer_deadline = 0;
+            if (event->result == 0)
+                clock_interval_to_deadline(IEEE80211_SAE_ENGINE_PEER_TIMEOUT_MS,
+                    kMillisecondScale, &owner->terminal_peer_deadline);
         }
     }
     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
@@ -3679,6 +3683,8 @@ iwn_sae_engine_submit_prepared(struct iwn_softc *sc)
         ticket = IWN_SAE_ENGINE_TICKET_DIRECT_BIT |
             ++sc->sc_sae_engine_next_ticket;
         owner->in_flight_ticket = ticket;
+        owner->peer_reply_ticket = 0;
+        owner->peer_reply_deadline = 0;
     }
     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
     if (ticket == 0 || ieee80211_sae_engine_prepare_tx(engine, ticket,
@@ -4062,6 +4068,110 @@ iwn_sae_engine_finish_join_retirement(struct iwn_softc *sc)
             IEEE80211_JOIN_CLEANUP_SAE);
 }
 
+namespace {
+
+/* Worker-only claim. RX queued before this leaf wins over the timeout. */
+static bool
+iwn_sae_engine_take_peer_retry(struct iwn_softc *sc, uint64_t ticket,
+    struct ItlSaeAuthActivatedEventV1 *identity)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    IOSimpleLock *bss_lock = ic->ic_pae_selected_bss_lock;
+    if (bss_lock == NULL || sc->sc_sae_engine_lock == NULL || ticket == 0)
+        return false;
+    uint64_t now;
+    clock_get_uptime(&now);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    struct iwn_sae_engine_owner *owner = &sc->sc_sae_engine_owner;
+    const bool current = iwn_sae_engine_peer_owner_current_locked(sc, owner);
+    const bool take = !owner->cancelled && !owner->suppress_scan &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        !owner->completion_claimed && owner->peer_count == 0 &&
+        owner->in_flight_ticket == 0 && owner->peer_reply_ticket == ticket &&
+        owner->peer_reply_deadline != 0 && now >= owner->peer_reply_deadline &&
+        current;
+    if (take) {
+        *identity = owner->activated;
+        owner->peer_reply_ticket = 0;
+        owner->peer_reply_deadline = 0;
+    } else if (!current && owner->peer_reply_ticket == ticket) {
+        /* Epoch/credential cancellation owns retirement; do not spin on an
+         * obsolete timer while that asynchronous cancellation is queued. */
+        owner->peer_reply_ticket = 0;
+        owner->peer_reply_deadline = 0;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+    return take;
+}
+
+/* Use the ordinary AUTH timeout/owned JoinAdapter or reassoc failure path.
+ * No fabricated AP status, direct SCAN or worker-side generic callback.
+ * The native one-second watchdog cadence bounds this final notification. */
+static void
+iwn_sae_engine_peer_exhausted(struct iwn_softc *sc,
+    const struct ItlSaeAuthActivatedEventV1 *identity)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    IOSimpleLock *bss_lock = ic->ic_pae_selected_bss_lock;
+    if (bss_lock == NULL || sc->sc_sae_engine_lock == NULL)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    const struct iwn_sae_engine_owner *owner = &sc->sc_sae_engine_owner;
+    if (!owner->cancelled && !owner->suppress_scan &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        !owner->completion_claimed && owner->in_flight_ticket == 0 &&
+        memcmp(identity, &owner->activated, sizeof(*identity)) == 0 &&
+        iwn_sae_engine_peer_owner_current_locked(sc, owner)) {
+        ic->ic_mgt_timer = 1;
+        ic->ic_if.if_timer = 1;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+}
+
+} // namespace
+
+void ItlIwn::iwn_sae_peer_timer_drain()
+{
+    struct iwn_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+    IOSimpleLock *bss_lock = ic->ic_pae_selected_bss_lock;
+    if (!getMainWorkLoop()->inGate() || bss_lock == NULL ||
+        sc->sc_sae_engine_lock == NULL)
+        return;
+    uint64_t now, deadline = 0;
+    clock_get_uptime(&now);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    const struct iwn_sae_engine_owner *owner = &sc->sc_sae_engine_owner;
+    if (!owner->cancelled && !owner->suppress_scan &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching &&
+        !owner->completion_claimed && owner->in_flight_ticket == 0 &&
+        owner->peer_reply_ticket != 0 &&
+        iwn_sae_engine_peer_owner_current_locked(sc, owner))
+        deadline = owner->peer_reply_deadline;
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+    if (deadline != 0 && now >= deadline)
+        iwn_sae_engine_schedule_task(sc);
+    else if (deadline != 0)
+        saePeerTimer.arm(deadline, now);
+}
+
+void ItlIwn::iwn_sae_peer_timer_event(OSObject *owner,
+    IOInterruptEventSource *, int)
+{
+    static_cast<ItlIwn *>(owner)->iwn_sae_peer_timer_drain();
+}
+
+void ItlIwn::iwn_sae_peer_timer_timeout(OSObject *owner, IOTimerEventSource *)
+{
+    static_cast<ItlIwn *>(owner)->iwn_sae_peer_timer_drain();
+}
+
 void ItlIwn::
 iwn_sae_engine_task(void *arg)
 {
@@ -4073,6 +4183,9 @@ iwn_sae_engine_task(void *arg)
     struct ieee80211_sae_engine *engine;
     enum ieee80211_sae_engine_peer_result peer_result;
     u_int64_t wcl_cancel_generation = 0;
+    uint64_t retry_peer_ticket = 0;
+    uint64_t peer_now = 0;
+    struct ItlSaeAuthActivatedEventV1 retry_identity = {};
     u_int64_t join_failure_generation = 0;
     bool start = false;
     bool retry_submit = false;
@@ -4095,6 +4208,7 @@ iwn_sae_engine_task(void *arg)
     if (sc->sc_sae_engine_lock == NULL)
         goto out;
 
+    clock_get_uptime(&peer_now);
     IOSimpleLockLock(sc->sc_sae_engine_lock);
     owner = &sc->sc_sae_engine_owner;
     /* A generic callback can revoke a staged password before selected-BSS
@@ -4127,6 +4241,11 @@ iwn_sae_engine_task(void *arg)
                 IWN_SAE_ENGINE_PEERQ_LEN;
             owner->peer_count--;
             have_peer = true;
+        } else if (!cancel && !owner->completion_claimed &&
+            owner->in_flight_ticket == 0 && owner->peer_reply_ticket != 0 &&
+            owner->peer_reply_deadline != 0 &&
+            peer_now >= owner->peer_reply_deadline) {
+            retry_peer_ticket = owner->peer_reply_ticket;
         }
     }
     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
@@ -4155,6 +4274,21 @@ iwn_sae_engine_task(void *arg)
             IOSleep(iwn_sae_engine_submit_retry_delay_ms(retry_count));
         submit_result = start ? iwn_sae_engine_start(sc) :
             iwn_sae_engine_submit_prepared(sc);
+    } else if (retry_peer_ticket != 0) {
+        if (iwn_sae_engine_take_peer_retry(sc, retry_peer_ticket,
+            &retry_identity)) {
+            IOSimpleLockLock(sc->sc_sae_engine_lock);
+            engine = sc->sc_sae_engine;
+            IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+            const int retry_result = ieee80211_sae_engine_retry_peer(engine,
+                retry_peer_ticket);
+            if (retry_result == 0)
+                submit_result = iwn_sae_engine_submit_prepared(sc);
+            else if (retry_result == -2)
+                iwn_sae_engine_peer_exhausted(sc, &retry_identity);
+            else
+                fail = true;
+        }
     } else if (have_terminal) {
         IOSimpleLockLock(sc->sc_sae_engine_lock);
         engine = sc->sc_sae_engine;
@@ -4172,9 +4306,14 @@ iwn_sae_engine_task(void *arg)
             }
             IOSimpleLockLock(sc->sc_sae_engine_lock);
             owner = &sc->sc_sae_engine_owner;
-            if (owner->active && owner->in_flight_ticket == terminal.ticket)
+            if (owner->active && owner->in_flight_ticket == terminal.ticket) {
                 owner->in_flight_ticket = 0;
+                owner->peer_reply_ticket = terminal.ticket;
+                owner->peer_reply_deadline = owner->terminal_peer_deadline;
+                owner->terminal_peer_deadline = 0;
+            }
             IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+            container_of(sc, ItlIwn, com)->saePeerTimer.signal();
         }
     } else if (have_peer) {
         IOSimpleLockLock(sc->sc_sae_engine_lock);
@@ -4185,6 +4324,15 @@ iwn_sae_engine_task(void *arg)
         } else {
             peer_result = ieee80211_sae_engine_handle_peer(engine, &peer,
                 &continuation);
+            if (peer_result != IEEE80211_SAE_ENGINE_PEER_DROP &&
+                peer_result != IEEE80211_SAE_ENGINE_PEER_NONE) {
+                IOSimpleLockLock(sc->sc_sae_engine_lock);
+                if (sc->sc_sae_engine == engine) {
+                    sc->sc_sae_engine_owner.peer_reply_ticket = 0;
+                    sc->sc_sae_engine_owner.peer_reply_deadline = 0;
+                }
+                IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+            }
             if (peer_result == IEEE80211_SAE_ENGINE_PEER_TX_READY) {
                 /* `PEER_TX_READY` also covers an anti-clogging token retry,
                  * which prepares a second local Commit but has not accepted
@@ -4307,10 +4455,14 @@ iwn_sae_engine_task(void *arg)
 
     IOSimpleLockLock(sc->sc_sae_engine_lock);
     owner = &sc->sc_sae_engine_owner;
+    clock_get_uptime(&peer_now);
     more = owner->active && (owner->cancelled || owner->start_pending ||
         owner->submit_retry_pending || owner->terminal_valid ||
         owner->assoc_tx_accepted ||
-        (owner->peer_count != 0 && owner->in_flight_ticket == 0));
+        (owner->peer_count != 0 && owner->in_flight_ticket == 0) ||
+        (!owner->completion_claimed && owner->in_flight_ticket == 0 &&
+         owner->peer_reply_ticket != 0 && owner->peer_reply_deadline != 0 &&
+         peer_now >= owner->peer_reply_deadline));
     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
     if (more)
         iwn_sae_engine_schedule_task(sc);
@@ -4522,6 +4674,9 @@ iwn_sae_engine_detach_begin(struct iwn_softc *sc)
         (void)task_del(systq, &sc->sae_engine_task);
         taskq_barrier(systq);
     }
+    /* Both callback kinds can still inspect the engine leaf, so remove
+     * their event sources before owner/lock destruction, after worker drain. */
+    saePeerTimer.shutdown();
 
     if (sc->sc_sae_engine_lock != NULL) {
         IOSimpleLockLock(sc->sc_sae_engine_lock);
@@ -11944,6 +12099,9 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     task_set(&sc->sae_tx_task, iwn_sae_tx_task, sc, "iwn_sae_tx_task");
     task_set(&sc->sae_engine_task, iwn_sae_engine_task, sc,
         "iwn_sae_engine_task");
+    if (!saePeerTimer.init(this, getMainWorkLoop(),
+        &ItlIwn::iwn_sae_peer_timer_event, &ItlIwn::iwn_sae_peer_timer_timeout))
+        return false;
     task_set(&sc->mfp_pae_task, iwn_mfp_pae_task, sc, "iwn_mfp_pae_task");
     sc->sc_sae_tx_task_ready = true;
     sc->sc_scan_lease_replay_task_ready = true;

@@ -23519,6 +23519,9 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
              "iwx_sae_tx_task");
     task_set(&sc->sae_engine_task, iwx_sae_engine_task, sc,
              "iwx_sae_engine_task");
+    if (!saePeerTimer.init(this, getMainWorkLoop(),
+        &ItlIwx::iwx_sae_peer_timer_event, &ItlIwx::iwx_sae_peer_timer_timeout))
+        goto fail;
     sc->sc_sae_engine_task_ready = true;
     task_set(&sc->mfp_pae_task, iwx_mfp_pae_task_dispatch, sc,
              "iwx_mfp_pae_task");
