@@ -46,6 +46,10 @@ outcomes and task scheduling are explicit fixture boundaries, not simulated RF
 qualification. The existing join bridge/physical cleanup/controller dispatch
 tests and complete Linux payload aggregate also pass. macOS build, admission,
 loaded-image test and publication remain pending at this source checkpoint.
+The first macOS fixture compile exposed its user-space SDK's missing
+`explicit_bzero` declaration, before the driver build was invoked. The fixture
+now uses the existing portable kernel-memory test support; production scrubbing
+is unchanged. That failed compiler run is not counted as a passing macOS test.
 
 ## Loaded runtime checkpoint — 2026-09-11 00:37 UTC
 

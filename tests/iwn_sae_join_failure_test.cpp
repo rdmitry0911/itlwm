@@ -8,6 +8,7 @@
 #include <cstring>
 #include <functional>
 #include <utility>
+#include "tests/kernel_memory_test_support.hpp"
 #include "itl80211/openbsd/net80211/ieee80211_join_attempt.h"
 #define ITL_SAE_DRIVER_CRYPTO 1
 #define __IO80211_TARGET 260000
