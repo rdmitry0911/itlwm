@@ -350,7 +350,7 @@ struct iwn_ops {
     void        (*ampdu_tx_start)(struct iwn_softc *,
                 struct ieee80211_node *, uint8_t, uint16_t);
     void        (*ampdu_tx_stop)(struct iwn_softc *, uint8_t,
-                uint16_t);
+                uint16_t, struct mbuf_list *);
 };
 
 /*

@@ -2722,6 +2722,41 @@ ieee80211_free_node(struct ieee80211com *ic, struct ieee80211_node *ni)
 }
 
 void
+ieee80211_tx_node_retire_append(struct mbuf_list *retired, mbuf_t packet,
+    struct ieee80211_node *ni)
+{
+    if (packet == NULL) {
+        KASSERT(ni == NULL, "node-owned TX has a retirement packet");
+        return;
+    }
+    if (ni == NULL) {
+        mbuf_freem(packet);
+        return;
+    }
+    /* This packet has completed hardware use and is detached from its TFD.
+     * Keep its existing node reference in the packet's private retirement
+     * cookie. No allocation and no node callback under a hardware leaf. */
+    mbuf_pkthdr_setrcvif(packet, (ifnet_t)ni);
+    ml_enqueue(retired, packet);
+}
+
+void
+ieee80211_tx_node_retire_drain(struct ieee80211com *ic,
+    struct mbuf_list *retired)
+{
+    mbuf_t packet;
+    while ((packet = ml_dequeue(retired)) != NULL) {
+        struct ieee80211_node *ni =
+            (struct ieee80211_node *)mbuf_pkthdr_rcvif(packet);
+        mbuf_pkthdr_setrcvif(packet, NULL);
+        mbuf_freem(packet);
+        /* Descriptor, scheduler, queue counters and cursor are already
+         * retired. A reentrant callback cannot inspect/reuse a half-TFD. */
+        ieee80211_release_node(ic, ni);
+    }
+}
+
+void
 ieee80211_release_node(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
     int s;

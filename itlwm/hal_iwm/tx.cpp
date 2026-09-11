@@ -125,55 +125,77 @@ void ItlIwm::
 iwm_free_tx_ring(iwm_softc *sc, struct iwm_tx_ring *ring)
 {
     int i;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
     
     iwm_dma_contig_free(&ring->desc_dma);
     iwm_dma_contig_free(&ring->cmd_dma);
+    ring->desc = NULL;
+    ring->cmd = NULL;
     
     for (i = 0; i < IWM_TX_RING_COUNT; i++) {
         struct iwm_tx_data *data = &ring->data[i];
 
         if (data->sae_active) {
             iwm_sae_tx_report_terminal(sc, data, EIO);
-            if (data->in != NULL) {
-                ieee80211_release_node(&sc->sc_ic, &data->in->in_ni);
-                data->in = NULL;
-            }
         }
         
         if (data->m != NULL) {
-            mbuf_freem(data->m);
+            struct ieee80211_node *ni = data->in != NULL ?
+                &data->in->in_ni : NULL;
+            mbuf_t packet = data->m;
             data->m = NULL;
+            data->in = NULL;
+            ieee80211_tx_node_retire_append(&retired, packet, ni);
         }
         if (data->map != NULL) {
             bus_dmamap_destroy(sc->sc_dmat, data->map);
             data->map = NULL;
         }
+        data->totlen = data->txmcs = data->txrate = data->fc = data->sta_id = 0;
+        data->ap_frame = false;
+        bzero(data->diag_peer, sizeof(data->diag_peer));
+        memset(&data->info, 0, sizeof(data->info));
     }
+    ring->queued = ring->cur = ring->tail = 0;
+    /* Include orphan references left by an earlier partial/reset path. */
+    for (i = 0; i < IWM_TX_RING_COUNT; i++) {
+        struct ieee80211_node *ni = ring->data[i].in != NULL ?
+            &ring->data[i].in->in_ni : NULL;
+        ring->data[i].in = NULL;
+        if (ni != NULL)
+            ieee80211_release_node(&sc->sc_ic, ni);
+    }
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 void ItlIwm::
 iwm_reset_tx_ring(struct iwm_softc *sc, struct iwm_tx_ring *ring)
 {
     int i;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
     
     for (i = 0; i < IWM_TX_RING_COUNT; i++) {
         struct iwm_tx_data *data = &ring->data[i];
 
         if (data->sae_active) {
             iwm_sae_tx_report_terminal(sc, data, EIO);
-            if (data->in != NULL) {
-                ieee80211_release_node(&sc->sc_ic, &data->in->in_ni);
-                data->in = NULL;
-            }
         }
 
         if (data->m != NULL) {
 //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
 //                data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
 //            bus_dmamap_unload(sc->sc_dmat, data->map);
-            mbuf_freem(data->m);
+            struct ieee80211_node *ni = data->in != NULL ?
+                &data->in->in_ni : NULL;
+            mbuf_t packet = data->m;
             data->m = NULL;
+            data->in = NULL;
+            ieee80211_tx_node_retire_append(&retired, packet, ni);
         }
+        data->totlen = data->txmcs = data->txrate = data->fc = data->sta_id = 0;
+        data->ap_frame = false;
+        bzero(data->diag_peer, sizeof(data->diag_peer));
+        memset(&data->info, 0, sizeof(data->info));
     }
     /* Clear TX descriptors. */
     memset(ring->desc, 0, ring->desc_dma.size);
@@ -188,6 +210,14 @@ iwm_reset_tx_ring(struct iwm_softc *sc, struct iwm_tx_ring *ring)
     ring->queued = 0;
     ring->cur = 0;
     ring->tail = 0;
+    for (i = 0; i < IWM_TX_RING_COUNT; i++) {
+        struct ieee80211_node *ni = ring->data[i].in != NULL ?
+            &ring->data[i].in->in_ni : NULL;
+        ring->data[i].in = NULL;
+        if (ni != NULL)
+            ieee80211_release_node(&sc->sc_ic, ni);
+    }
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 int ItlIwm::

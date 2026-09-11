@@ -1,5 +1,12 @@
 # Reassociation source-TX retirement across IWM/IWX — 2026-09-11
 
+Latest source: [physical retirement correction](TAHOE_TX_NODE_RETIREMENT_FIX_20260911.md)
+now passes the selected requirements on Linux/macOS; build and loaded runtime
+are next. The negative results below describe the preceding `e102badd` source.
+The earlier minimal fixture included an IWM-style length field in IWX too;
+that was not a real IWX field and is removed in the corrected fixture. IWX's
+descriptor/node/counter and held-lock observations do not depend on it.
+
 ## Result: reproduced defects, not a production fix
 
 The previous status turn added no functional progress. This continuation

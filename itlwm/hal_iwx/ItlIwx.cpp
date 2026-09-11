@@ -6293,6 +6293,7 @@ void ItlIwx::
 iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
 {
     int i;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
 
     /* q0 reaches reset only after iwx_cmdq_stop() drained all senders. */
     
@@ -6302,30 +6303,27 @@ iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
         /* A ring reset has no firmware response; it is fail-closed only. */
         if (data->sae_active) {
             iwx_sae_tx_report_terminal(sc, data, EIO);
-            if (data->in != NULL) {
-                ieee80211_release_node(&sc->sc_ic, &data->in->in_ni);
-                data->in = NULL;
-            }
         }
         
         if (data->m != NULL) {
             //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
             //                data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
             //            bus_dmamap_unload(sc->sc_dmat, data->map);
-            mbuf_freem(data->m);
+            struct ieee80211_node *ni = data->in != NULL ?
+                &data->in->in_ni : NULL;
+            mbuf_t packet = data->m;
             data->m = NULL;
+            data->in = NULL;
+            ieee80211_tx_node_retire_append(&retired, packet, ni);
         }
+        data->ap_frame = false;
     }
 
-    if (ring->qid == IWX_INVALID_QUEUE || !ring->desc) {
-        return;
+    /* Even a partial allocation can own software references. */
+    if (ring->qid != IWX_INVALID_QUEUE && ring->desc != NULL) {
+        memset(ring->bc_tbl.vaddr, 0, ring->bc_tbl.size);
+        memset(ring->desc, 0, ring->desc_dma.size);
     }
-    
-    /* Clear byte count table. */
-    memset(ring->bc_tbl.vaddr, 0, ring->bc_tbl.size);
-    
-    /* Clear TX descriptors. */
-    memset(ring->desc, 0, ring->desc_dma.size);
     //    bus_dmamap_sync(sc->sc_dmat, ring->desc_dma.map, 0,
     //        ring->desc_dma.size, BUS_DMASYNC_PREWRITE);
     if (ring->qid >= 0 &&
@@ -6335,18 +6333,30 @@ iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     ring->queued = 0;
     ring->cur = 0;
     ring->tail = 0;
+    for (i = 0; i < ring->ring_count; i++) {
+        struct ieee80211_node *ni = ring->data[i].in != NULL ?
+            &ring->data[i].in->in_ni : NULL;
+        ring->data[i].in = NULL;
+        if (ni != NULL)
+            ieee80211_release_node(&sc->sc_ic, ni);
+    }
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 void ItlIwx::
 iwx_free_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
 {
     int i;
+    const int count = ring->ring_count;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
 
     /* Detach/failure unwind removes IRQs and drains tasks before q0 free. */
     
     iwx_dma_contig_free(&ring->desc_dma);
     iwx_dma_contig_free(&ring->cmd_dma);
     iwx_dma_contig_free(&ring->bc_tbl);
+    ring->desc = NULL;
+    ring->cmd = NULL;
     
     for (i = 0; i < ring->ring_count; i++) {
         struct iwx_tx_data *data = &ring->data[i];
@@ -6354,29 +6364,39 @@ iwx_free_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
         /* Attach-unwind/detach may reclaim without a firmware completion. */
         if (data->sae_active) {
             iwx_sae_tx_report_terminal(sc, data, EIO);
-            if (data->in != NULL) {
-                ieee80211_release_node(&sc->sc_ic, &data->in->in_ni);
-                data->in = NULL;
-            }
         }
         
         if (data->m != NULL) {
             //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
             //                data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
             //            bus_dmamap_unload(sc->sc_dmat, data->map);
-            mbuf_freem(data->m);
+            struct ieee80211_node *ni = data->in != NULL ?
+                &data->in->in_ni : NULL;
+            mbuf_t packet = data->m;
             data->m = NULL;
+            data->in = NULL;
+            ieee80211_tx_node_retire_append(&retired, packet, ni);
         }
         if (data->map != NULL) {
             bus_dmamap_destroy(sc->sc_dmat, data->map);
             data->map = NULL;
         }
+        data->ap_frame = false;
     }
     ring->qid = IWX_INVALID_QUEUE;
     ring->hi_mark = 0;
     ring->low_mark = 0;
     ring->ap_queue_full = false;
     ring->ring_count = 0;
+    ring->queued = ring->cur = ring->tail = 0;
+    for (i = 0; i < count; i++) {
+        struct ieee80211_node *ni = ring->data[i].in != NULL ?
+            &ring->data[i].in->in_ni : NULL;
+        ring->data[i].in = NULL;
+        if (ni != NULL)
+            ieee80211_release_node(&sc->sc_ic, ni);
+    }
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 void ItlIwx::
@@ -9955,6 +9975,7 @@ bool ItlIwx::
 iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
                      struct iwx_tx_ring *ring, int ssn)
 {
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = IC2IFP(ic);
     struct iwx_tx_resp *tx_resp = (struct iwx_tx_resp *)pkt->data;
@@ -10050,7 +10071,7 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
                     frame_failed ? (status != 0 ? status : EIO) : 0);
             }
 
-            iwx_txd_done(sc, txd);
+            iwx_txd_done(sc, txd, &retired);
             iwx_clear_tx_desc(sc, ring, ring->tail);
             ring->queued--;
         }
@@ -10058,11 +10079,11 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
     }
 
     IOSimpleLockUnlock(txqLock);
+    ieee80211_tx_node_retire_drain(ic, &retired);
     /* Local RSN may immediately enqueue EAPOL M1 on this same queue. */
     if (ap_assoc_complete_pending)
         iwx_ap_assoc_tx_complete(sc, ap_assoc_peer,
                                  ap_assoc_acknowledged);
-
     return was_ap_frame;
 }
 
@@ -10086,9 +10107,11 @@ iwx_clear_tx_desc(struct iwx_softc *sc, struct iwx_tx_ring *ring, int idx)
 }
 
 void ItlIwx::
-iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd)
+iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd,
+    struct mbuf_list *retired)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
+    mbuf_t packet = txd->m;
+    struct ieee80211_node *ni = txd->in != NULL ? &txd->in->in_ni : NULL;
 
     /* BA/flush reclaim without a single-TX response can never mean success. */
     if (txd->sae_active) {
@@ -10099,16 +10122,13 @@ iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd)
     //    bus_dmamap_sync(sc->sc_dmat, txd->map, 0, txd->map->dm_mapsize,
     //        BUS_DMASYNC_POSTWRITE);
     //    bus_dmamap_unload(sc->sc_dmat, txd->map);
-    mbuf_freem(txd->m);
     txd->m = NULL;
-    
-    if (txd->in != NULL) {
-        ieee80211_release_node(ic, &txd->in->in_ni);
-        txd->in = NULL;
-    } else {
+    txd->in = NULL;
+    if (ni == NULL) {
         KASSERT(txd->ap_frame, "txd->in || txd->ap_frame");
     }
     txd->ap_frame = false;
+    ieee80211_tx_node_retire_append(retired, packet, ni);
 }
 
 void ItlIwx::
@@ -10217,6 +10237,7 @@ void ItlIwx::
 iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int ssn)
 {
     struct iwx_tx_data *txd;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
     IOSimpleLock *txqLock = iwx_txq_lock_for_ring(sc, ring);
 
     if (txqLock == NULL)
@@ -10230,13 +10251,14 @@ iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int ssn)
     while (ring->tail != idx) {
         txd = &ring->data[ring->tail];
         if (txd->m != NULL) {
-            iwx_txd_done(sc, txd);
+            iwx_txd_done(sc, txd, &retired);
             iwx_clear_tx_desc(sc, ring, ring->tail);
             ring->queued--;
         }
         ring->tail = (ring->tail + 1) % ring->ring_count;
     }
     IOSimpleLockUnlock(txqLock);
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 #define IWX_AGG_TX_STATE_(x) case IWX_AGG_TX_STATE_ ## x: return #x

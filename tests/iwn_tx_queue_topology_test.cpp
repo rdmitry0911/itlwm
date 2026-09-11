@@ -17,11 +17,22 @@ struct ieee80211_tx_ba {
 struct ieee80211_node { ieee80211_tx_ba ni_tx_ba[16]; };
 struct iwn_node { ieee80211_node ni; uint16_t disable_tid = 0xffff; uint8_t id = 0; };
 struct ieee80211com { void *ic_softc = nullptr; };
+#ifdef IWN_TOPOLOGY_RETIRE_BATCH
+// Packet retirement is covered by the full TX fixture; this topology test
+// executes successful starts and never enters the failed-start unwind.
+struct mbuf_list {};
+#define MBUF_LIST_INITIALIZER() {}
+static void ieee80211_tx_node_retire_drain(ieee80211com *, mbuf_list *) { assert(false); }
+#endif
 struct iwn_node_info { uint8_t id, control; uint32_t flags; uint16_t disable_tid; };
 struct iwn_ops {
     int (*add_node)(iwn_softc *, iwn_node_info *, int);
     void (*ampdu_tx_start)(iwn_softc *, ieee80211_node *, uint8_t, uint16_t);
-    void (*ampdu_tx_stop)(iwn_softc *, uint8_t, uint16_t);
+    void (*ampdu_tx_stop)(iwn_softc *, uint8_t, uint16_t
+#ifdef IWN_TOPOLOGY_RETIRE_BATCH
+        , mbuf_list *
+#endif
+    );
 };
 struct iwn_tx_ring { int cur = 0, read = 0, queued = 0; };
 struct iwn_softc {
@@ -49,7 +60,11 @@ static int add_node(iwn_softc *sc, iwn_node_info *node, int async) {
     ++sc->nodeCalls;
     return 0;
 }
-static void unused_stop(iwn_softc *, uint8_t, uint16_t) { assert(false); }
+static void unused_stop(iwn_softc *, uint8_t, uint16_t
+#ifdef IWN_TOPOLOGY_RETIRE_BATCH
+    , mbuf_list *
+#endif
+) { assert(false); }
 class ItlIwn {
 public:
     iwn_softc com;

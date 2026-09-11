@@ -236,7 +236,8 @@ for name in ("iwn4965_tx_done", "iwn5000_tx_done"):
 common_done = iwn_method("iwn_tx_done")
 ordered(common_done, "common SAE terminal before release",
         "iwn_sae_tx_report_terminal(sc, data, txfail ? EIO : 0)",
-        "iwn_tx_done_free_txdata(sc, data)")
+        "iwn_tx_done_free_txdata(sc, data, &retired)",
+        "ring->queued--", "ieee80211_tx_node_retire_drain(ic, &retired)")
 for name in ("iwn_ampdu_txq_advance", "iwn_reset_tx_ring", "iwn_free_tx_ring"):
     reclaim = iwn_method(name)
     require(reclaim, "iwn_sae_tx_report_terminal(sc", f"{name} reset/reclaim terminal")

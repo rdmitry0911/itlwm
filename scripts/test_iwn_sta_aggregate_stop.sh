@@ -57,7 +57,8 @@ lines = [line for line in registers.splitlines()
          if line.startswith('#define ') and
          line.split()[1].split('(')[0] in selected]
 assert len(lines) == len(selected), (len(lines), len(selected))
-(out / 'registers.inc').write_text('\n'.join(lines) + '\n')
+(out / 'registers.inc').write_text('\n'.join(lines) + '\n#define IWN_STA_STOP_BATCH ' +
+    ('1' if 'int idx, struct mbuf_list *outer_retired)' in source else '0') + '\n')
 PY
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \

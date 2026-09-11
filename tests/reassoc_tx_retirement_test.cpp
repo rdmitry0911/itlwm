@@ -9,6 +9,7 @@
 #include <cstring>
 #include <strings.h>
 #include <functional>
+#include <type_traits>
 #if defined(__APPLE__)
 #include <libkern/OSByteOrder.h>
 #define le16toh(x) OSSwapLittleToHostInt16(x)
@@ -38,9 +39,8 @@ static int splnet() { return 0; }
 static void splx(int) {}
 static void ieee80211_free_node(ieee80211com *, ieee80211_node *) { assert(false); }
 #include "node-ref.inc"
-#include "node-release.inc"
-
-struct Packet {};
+#include "tx_node_retirement_test_support.hpp"
+void ieee80211_release_node(ieee80211com *, ieee80211_node *);
 struct HwNode { ieee80211_node in_ni; };
 struct ieee80211_tx_info { unsigned flags = 0; };
 struct TxFields {
@@ -48,11 +48,12 @@ struct TxFields {
     HwNode *in = nullptr;
     void *map = nullptr;
     bool sae_active = false, ap_frame = false;
+};
+struct iwm_tx_data : TxFields {
     unsigned totlen = 0, txmcs = 0, txrate = 0, fc = 0, sta_id = 0;
     uint8_t diag_peer[6]{};
     ieee80211_tx_info info;
 };
-struct iwm_tx_data : TxFields {};
 struct iwx_tx_data : TxFields {};
 struct Dma { void *vaddr = nullptr; size_t size = 0; };
 struct iwx_tfh_tb { uint64_t value = 0; };
@@ -61,6 +62,7 @@ struct iwm_tx_ring {
     int qid = 3, queued = 0, cur = 0, tail = 0;
     iwm_tx_data data[IWM_TX_RING_COUNT];
     unsigned *desc = nullptr;
+    void *cmd = nullptr;
     Dma desc_dma, cmd_dma;
 };
 struct iwx_tx_ring {
@@ -69,6 +71,7 @@ struct iwx_tx_ring {
     bool ap_queue_full = false;
     iwx_tx_data data[2];
     iwx_tfh_tfd *desc = nullptr;
+    void *cmd = nullptr;
     Dma desc_dma, cmd_dma, bc_tbl;
 };
 struct iwm_softc {
@@ -95,6 +98,7 @@ static IOSimpleLock *iwx_txq_lock_for_ring(iwx_softc *, iwx_tx_ring *) {
     return &txLock;
 }
 static void mbuf_freem(Packet *m) { assert(m); ++packetFrees; }
+#include "node-release.inc"
 static void bus_dmamap_destroy(void *, void *) { ++mapFrees; }
 static void iwm_dma_contig_free(Dma *dma) {
     ++dmaFrees; dma->vaddr = nullptr; dma->size = 0;
@@ -107,7 +111,7 @@ static void iwm_reset_sched(iwm_softc *sc, int, int index, unsigned) {
 }
 struct ItlIwm {
     iwm_softc com;
-    void iwm_txd_done(iwm_softc *, iwm_tx_data *);
+    void iwm_txd_done(iwm_softc *, iwm_tx_data *, mbuf_list *);
     void iwm_ampdu_txq_advance(iwm_softc *, iwm_tx_ring *, int);
     void iwm_reset_tx_ring(iwm_softc *, iwm_tx_ring *);
     void iwm_free_tx_ring(iwm_softc *, iwm_tx_ring *);
@@ -118,7 +122,7 @@ struct ItlIwm {
 struct ItlIwx {
     iwx_softc com;
     ItlIwx() { com.owner = this; }
-    void iwx_txd_done(iwx_softc *, iwx_tx_data *);
+    void iwx_txd_done(iwx_softc *, iwx_tx_data *, mbuf_list *);
     void iwx_ampdu_txq_advance(iwx_softc *, iwx_tx_ring *, int);
     void iwx_reset_tx_ring(iwx_softc *, iwx_tx_ring *);
     void iwx_free_tx_ring(iwx_softc *, iwx_tx_ring *);
@@ -146,7 +150,8 @@ template<class Ring> static void populate(Ring &ring, HwNode &node,
     for (unsigned i = 0; i < 2; ++i) {
         ring.data[i].m = &packets[i];
         ring.data[i].in = &node;
-        ring.data[i].totlen = 1400;
+        if constexpr (std::is_same_v<Ring, iwm_tx_ring>)
+            ring.data[i].totlen = 1400;
         ring.data[i].sae_active = sae;
         ring.data[i].map = &packets[i];
         ieee80211_ref_node(&node.in_ni);
@@ -163,15 +168,17 @@ int main(int argc, char **argv) {
     assert(argc == 2);
     setvbuf(stdout, nullptr, _IONBF, 0);
     const int scenario = std::atoi(argv[1]);
-    assert(scenario >= 0 && scenario <= 9);
+    assert(scenario >= 0 && scenario <= 15);
     HwNode node;
     Packet packets[2];
     const bool iwx = scenario == 2 || scenario == 4 || scenario == 6 ||
-        scenario == 8 || scenario == 9;
-    const bool reset = scenario == 3 || scenario == 4 || scenario == 7 || scenario == 8;
-    const bool freeRing = scenario == 5 || scenario == 6;
+        scenario == 8 || scenario == 9 || scenario == 11 || scenario == 13 || scenario == 15;
+    const bool reset = scenario == 3 || scenario == 4 || scenario == 7 ||
+        scenario == 8 || scenario == 10 || scenario == 11 || scenario == 14 || scenario == 15;
+    const bool freeRing = scenario == 5 || scenario == 6 || scenario == 12 || scenario == 13;
+    const bool orphan = scenario >= 10;
     const bool sae = scenario == 7 || scenario == 8;
-    const bool pendingCallback = scenario == 1 || scenario == 2 || sae;
+    const bool pendingCallback = scenario != 0 && scenario != 9;
     if (pendingCallback)
         node.in_ni.ni_unref_cb = callback;
     if (!iwx) {
@@ -182,11 +189,12 @@ int main(int argc, char **argv) {
         ring.desc_dma = {descriptors, sizeof(descriptors)};
         driver.com.ring = &ring;
         populate(ring, node, packets, sae);
+        if (orphan) for (auto &data : ring.data) data.m = nullptr;
         observeCallback = [&] {
             callbackQueued = ring.queued; callbackTail = ring.tail;
             callbackNodeLive = ring.data[1].in != nullptr;
             callbackLength = ring.data[1].totlen;
-            callbackDescriptorLive = descriptors[1] != 0;
+            callbackDescriptorLive = freeRing ? ring.desc != nullptr : descriptors[1] != 0;
         };
         if (reset) driver.iwm_reset_tx_ring(&driver.com, &ring);
         else if (freeRing) driver.iwm_free_tx_ring(&driver.com, &ring);
@@ -198,7 +206,7 @@ int main(int argc, char **argv) {
             driver.iwm_ampdu_txq_advance(&driver.com, &ring, 0);
         }
         printObservation("IWM", node.in_ni.ni_refcnt);
-        assert(packetFrees == 2);
+        assert(packetFrees == (orphan ? 0 : 2));
         if (freeRing) assert(mapFrees == 2 && dmaFrees == 2);
         assert(node.in_ni.ni_refcnt == 0 && ring.data[0].in == nullptr &&
                ring.data[1].in == nullptr && "normal STA refs must retire too");
@@ -214,11 +222,13 @@ int main(int argc, char **argv) {
         ring.desc_dma = {descriptors, sizeof(descriptors)};
         ring.bc_tbl = {byteCounts, sizeof(byteCounts)};
         populate(ring, node, packets, sae);
+        if (orphan) for (auto &data : ring.data) data.m = nullptr;
+        if (scenario == 15) { ring.qid = IWX_INVALID_QUEUE; ring.desc = nullptr; }
         observeCallback = [&] {
             callbackQueued = ring.queued; callbackTail = ring.tail;
             callbackNodeLive = ring.data[1].in != nullptr;
-            callbackLength = ring.data[1].totlen;
-            callbackDescriptorLive = descriptors[1].num_tbs != 0;
+            callbackDescriptorLive = freeRing || scenario == 15 ?
+                ring.desc != nullptr : descriptors[1].num_tbs != 0;
             callbackLockDepth = txLock.depth;
         };
         if (reset) driver.iwx_reset_tx_ring(&driver.com, &ring);
@@ -229,7 +239,7 @@ int main(int argc, char **argv) {
             driver.iwx_ampdu_txq_advance(&driver.com, &ring, 0);
         }
         printObservation("IWX", node.in_ni.ni_refcnt);
-        assert(packetFrees == 2 && txLock.depth == 0);
+        assert(packetFrees == (orphan ? 0 : 2) && txLock.depth == 0);
         if (freeRing) assert(mapFrees == 2 && dmaFrees == 3);
         assert(node.in_ni.ni_refcnt == 0 && ring.data[0].in == nullptr &&
                ring.data[1].in == nullptr && "normal STA refs must retire too");

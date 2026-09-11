@@ -1009,6 +1009,7 @@ void ItlIwm::
 iwm_ampdu_txq_advance(struct iwm_softc *sc, struct iwm_tx_ring *ring, int idx)
 {
     struct iwm_tx_data *txd;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
 
     while (ring->tail != idx) {
         txd = &ring->data[ring->tail];
@@ -1017,11 +1018,12 @@ iwm_ampdu_txq_advance(struct iwm_softc *sc, struct iwm_tx_ring *ring, int idx)
                 DPRINTF(("%s: missed Tx completion: tail=%d "
                          "idx=%d\n", __func__, ring->tail, idx));
             iwm_reset_sched(sc, ring->qid, ring->tail, txd->sta_id);
-            iwm_txd_done(sc, txd);
+            iwm_txd_done(sc, txd, &retired);
             ring->queued--;
         }
         ring->tail = (ring->tail + 1) % IWM_TX_RING_COUNT;
     }
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 void ItlIwm::
@@ -1260,6 +1262,7 @@ void ItlIwm::
 iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
                      int qid, int idx)
 {
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
     u32 status = le16toh(iwl_mvm_get_agg_status(sc, tx_resp)->status);
     u16 ssn = iwl_mvm_get_scd_ssn(sc, tx_resp);
     int tid = IWL_MVM_TX_RES_GET_TID(tx_resp->ra_tid);
@@ -1294,7 +1297,7 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
                           DEVNAME(sc), qid,
                           (unsigned)(status & IWM_TX_STATUS_MSK));
                 iwm_reset_sched(sc, ring->qid, ring->tail, txd->sta_id);
-                iwm_txd_done(sc, txd);
+                iwm_txd_done(sc, txd, &retired);
                 ring->queued--;
                 iwm_clear_oactive(sc, ring);
                 ItlIwm *that = container_of(sc, ItlIwm, com);
@@ -1399,17 +1402,20 @@ iwm_rx_tx_cmd_single(struct iwm_softc *sc, struct iwm_tx_resp *tx_resp,
             ieee80211_tx_status(sc, info, tid, txd->fc, ssn);
 
             iwm_reset_sched(sc, ring->qid, ring->tail, txd->sta_id);
-            iwm_txd_done(sc, txd);
+            iwm_txd_done(sc, txd, &retired);
             ring->queued--;
         }
         ring->tail = (ring->tail + 1) % IWM_TX_RING_COUNT;
     }
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 void ItlIwm::
-iwm_txd_done(struct iwm_softc *sc, struct iwm_tx_data *txd)
+iwm_txd_done(struct iwm_softc *sc, struct iwm_tx_data *txd,
+    struct mbuf_list *retired)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
+    mbuf_t packet = txd->m;
+    struct ieee80211_node *ni = txd->in != NULL ? &txd->in->in_ni : NULL;
 
     /* A reclaim without the matching single-frame TX response is failure. */
     if (txd->sae_active)
@@ -1418,15 +1424,9 @@ iwm_txd_done(struct iwm_softc *sc, struct iwm_tx_data *txd)
     //    bus_dmamap_sync(sc->sc_dmat, txd->map, 0, txd->map->dm_mapsize,
     //        BUS_DMASYNC_POSTWRITE);
     //    bus_dmamap_unload(sc->sc_dmat, txd->map);
-    if (txd->m) {
-        mbuf_freem(txd->m);
-        txd->m = NULL;
-    }
-    
-    if (txd->in != NULL) {
-        ieee80211_release_node(ic, &txd->in->in_ni);
-        txd->in = NULL;
-    } else {
+    txd->m = NULL;
+    txd->in = NULL;
+    if (ni == NULL) {
         KASSERT(txd->ap_frame, "txd->in || txd->ap_frame");
     }
     txd->totlen = 0;
@@ -1437,6 +1437,7 @@ iwm_txd_done(struct iwm_softc *sc, struct iwm_tx_data *txd)
     txd->ap_frame = false;
     bzero(txd->diag_peer, sizeof(txd->diag_peer));
     memset(&txd->info, 0, sizeof(struct ieee80211_tx_info));
+    ieee80211_tx_node_retire_append(retired, packet, ni);
 }
 
 void ItlIwm::

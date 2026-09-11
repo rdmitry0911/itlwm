@@ -704,7 +704,12 @@ struct ieee80211_node *ieee80211_find_rxnode(struct ieee80211com *,
 struct ieee80211_node *ieee80211_find_txnode(struct ieee80211com *,
 		const u_int8_t *);
 void ieee80211_release_node(struct ieee80211com *,
-		struct ieee80211_node *);
+    struct ieee80211_node *);
+/* Retain completed TX references without allocation until the entire physical
+ * reclaim/cursor update has left its leaf lock. These are not a full roam fence. */
+void ieee80211_tx_node_retire_append(struct mbuf_list *, mbuf_t,
+    struct ieee80211_node *);
+void ieee80211_tx_node_retire_drain(struct ieee80211com *, struct mbuf_list *);
 void ieee80211_node_cleanup(struct ieee80211com *, struct ieee80211_node *);
 /* A tagged backend scanner callback already advanced its association epoch
  * through ieee80211_pae_assoc_epoch_note_newstate().  It alone may clean the

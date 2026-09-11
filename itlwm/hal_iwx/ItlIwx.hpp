@@ -528,7 +528,8 @@ public:
                         struct mbuf_list *apMl);
     bool    iwx_rx_tx_cmd_single(struct iwx_softc *, struct iwx_rx_packet *,
             struct iwx_tx_ring *, int);
-    void iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd);
+    void iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd,
+        struct mbuf_list *retired);
     void iwx_clear_oactive(struct iwx_softc *sc, struct iwx_tx_ring *ring);
     void iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int idx);
     void iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_rx_data *data);

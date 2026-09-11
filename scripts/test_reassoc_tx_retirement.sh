@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Full production lower bodies. Default is deliberately red, not in the green
-# aggregate until the source-TX/reset/BSS continuation lifetime is implemented.
+# Full production physical reclaim bodies. This passing scope does not close
+# the separately red immutable BSS/whole-source/asynchronous roam lifetime.
 set -euo pipefail
 ulimit -c 0
 TX_RETIRE_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -12,7 +12,7 @@ awk '/^ieee80211_node_incref\(/ { selected=1; print "static inline void" }
      /^ieee80211_ref_node\(/ { selected=1; print "static inline struct ieee80211_node *" }
      selected { print } selected && /^}/ { selected=0 }' \
     "$TX_RETIRE_ROOT/itl80211/openbsd/net80211/ieee80211_node.h" > "$TX_RETIRE_TEST/node-ref.inc"
-awk '/^ieee80211_release_node\(/ { selected=1; print "void" }
+awk '/^ieee80211_(release_node|tx_node_retire_append|tx_node_retire_drain)\(/ { selected=1; print "void" }
      selected { print } selected && /^}/ { selected=0 }' \
     "$TX_RETIRE_ROOT/itl80211/openbsd/net80211/ieee80211_node.c" > "$TX_RETIRE_TEST/node-release.inc"
 awk '/^iwm_(txd_done|ampdu_txq_advance|reset_tx_ring|free_tx_ring)\(/ { selected=1; print "void ItlIwm::" }
@@ -41,4 +41,7 @@ for scenario in 1 2 3 4 5 6 7 8; do
 done
 if [ "${TX_RETIRE_EXPECT_DEFECTS:-0}" = 1 ]; then
     printf 'Eight physical-retirement requirements remain RED; expected failures are NOT driver qualification.\n'
+else
+    for scenario in 10 11 12 13 14 15; do "$TX_RETIRE_TEST/test" "$scenario"; done
+    printf 'Physical retirement passes; immutable full-source BSS handoff remains a separate red gate.\n'
 fi

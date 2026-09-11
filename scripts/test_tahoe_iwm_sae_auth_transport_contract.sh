@@ -95,7 +95,7 @@ completion = body(mac, "iwm_rx_tx_cmd_single")
 require(completion, "if (txd->sae_active)", "firmware TX response ignores SAE descriptor")
 require(completion, "iwm_sae_tx_report_terminal", "firmware TX response lacks terminal publication")
 report_at = completion.index("iwm_sae_tx_report_terminal")
-reclaim_at = completion.find("iwm_txd_done(sc, txd)", report_at)
+reclaim_at = completion.find("iwm_txd_done(sc, txd, &retired)", report_at)
 if reclaim_at < 0 or report_at > reclaim_at:
     fail("terminal identity is published after descriptor reclaim")
 

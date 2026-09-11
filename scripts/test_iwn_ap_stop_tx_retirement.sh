@@ -70,7 +70,9 @@ stage_start = current.index('enum {\n    IWN_AP_STAGE_IDLE')
 stage_end = current.index('};', stage_start) + 2
 wire = block(registers, 'struct iwn_txfifo_flush_cmd {') + ' __attribute__((packed));'
 (out / 'registers.inc').write_text(
-    '\n'.join(defines) + '\n' + current[stage_start:stage_end] + '\n' + wire)
+    '\n'.join(defines) + '\n' + current[stage_start:stage_end] + '\n' + wire +
+    '\n#define IWN_AP_STOP_BATCH ' +
+    ('1' if 'int idx, struct mbuf_list *outer_retired)' in old else '0') + '\n')
 
 if not baseline:
     assert current.index('void iwn_mem_set_region_4(struct iwn_softc *, uint32_t, uint32_t, int);') < current.index('void ItlIwn::iwn_ap_ampdu_tx_stop(')

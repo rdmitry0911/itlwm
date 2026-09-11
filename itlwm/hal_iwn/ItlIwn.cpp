@@ -12528,6 +12528,7 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
 {
     ItlIwn *that = container_of(sc, ItlIwn, com);
     int i;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
 
     for (i = 0; i < IWN_TX_RING_COUNT; i++) {
         struct iwn_tx_data *data = &ring->data[i];
@@ -12535,19 +12536,19 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         /* Reset has no native TX_DONE; retire an accepted SAE descriptor. */
         if (data->sae_active) {
             that->iwn_sae_tx_report_terminal(sc, data, EIO);
-            if (data->ni != NULL) {
-                ieee80211_release_node(&sc->sc_ic, data->ni);
-                data->ni = NULL;
-            }
         }
 
         if (data->m != NULL) {
 //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
 //                data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
 //            bus_dmamap_unload(sc->sc_dmat, data->map);
-            mbuf_freem(data->m);
+            mbuf_t packet = data->m;
+            struct ieee80211_node *ni = data->ni;
             data->m = NULL;
+            data->ni = NULL;
+            ieee80211_tx_node_retire_append(&retired, packet, ni);
         }
+        data->totlen = data->txrate = data->ampdu_nframes = data->ampdu_txmcs = 0;
         data->ampdu_rate_generation = 0;
         data->ampdu_rate_rflags = 0;
         data->ampdu_rate_feedback_valid = 0;
@@ -12570,6 +12571,13 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
     ring->queued = 0;
     ring->cur = 0;
     ring->read = 0;
+    for (i = 0; i < IWN_TX_RING_COUNT; i++) {
+        struct ieee80211_node *ni = ring->data[i].ni;
+        ring->data[i].ni = NULL;
+        if (ni != NULL)
+            ieee80211_release_node(&sc->sc_ic, ni);
+    }
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 void ItlIwn::
@@ -12577,11 +12585,14 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
 {
     ItlIwn *that = container_of(sc, ItlIwn, com);
     int i;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
 
     iwn_dma_contig_free(&ring->desc_dma);
     iwn_dma_contig_free(&ring->cmd_dma);
     iwn_dma_contig_free(&ring->first_tb_dma);
     iwn_dma_contig_free(&ring->ap_payload_dma);
+    ring->desc = NULL;
+    ring->cmd = NULL;
     ring->first_tb = NULL;
     ring->ap_payload = NULL;
 
@@ -12591,18 +12602,17 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         /* Detach/unwind may reclaim without a firmware completion. */
         if (data->sae_active) {
             that->iwn_sae_tx_report_terminal(sc, data, EIO);
-            if (data->ni != NULL) {
-                ieee80211_release_node(&sc->sc_ic, data->ni);
-                data->ni = NULL;
-            }
         }
 
         if (data->m != NULL) {
 //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
 //                data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
 //            bus_dmamap_unload(sc->sc_dmat, data->map);
-            mbuf_freem(data->m);
+            mbuf_t packet = data->m;
+            struct ieee80211_node *ni = data->ni;
             data->m = NULL;
+            data->ni = NULL;
+            ieee80211_tx_node_retire_append(&retired, packet, ni);
         }
         data->ampdu_rate_generation = 0;
         data->ampdu_rate_rflags = 0;
@@ -12618,6 +12628,14 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
             data->map = NULL;
         }
     }
+    ring->queued = ring->cur = ring->read = 0;
+    for (i = 0; i < IWN_TX_RING_COUNT; i++) {
+        struct ieee80211_node *ni = ring->data[i].ni;
+        ring->data[i].ni = NULL;
+        if (ni != NULL)
+            ieee80211_release_node(&sc->sc_ic, ni);
+    }
+    ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
 void ItlIwn::
@@ -15684,9 +15702,12 @@ iwn_ampdu_txq_can_advance(const struct iwn_tx_ring *txq, int idx) const
 
 bool ItlIwn::
 iwn_ampdu_txq_advance(struct iwn_softc *sc, struct iwn_tx_ring *txq, int qid,
-    int idx)
+    int idx, struct mbuf_list *outer_retired)
 {
     struct iwn_ops *ops = &sc->ops;
+    struct mbuf_list local_retired = MBUF_LIST_INITIALIZER();
+    struct mbuf_list *retired = outer_retired != NULL ?
+        outer_retired : &local_retired;
 
     idx &= IWN_TX_RING_COUNT - 1;
     if (!iwn_ampdu_txq_can_advance(txq, idx)) {
@@ -15718,7 +15739,7 @@ iwn_ampdu_txq_advance(struct iwn_softc *sc, struct iwn_tx_ring *txq, int qid,
                 ItlIwn *that = container_of(sc, ItlIwn, com);
                 that->iwn_sae_tx_report_terminal(sc, txdata, EIO);
             }
-            iwn_tx_done_free_txdata(sc, txdata);
+            iwn_tx_done_free_txdata(sc, txdata, retired);
             if (txq->queued > 0)
                 txq->queued--;
             if (transferredApPsMbuf) {
@@ -15735,6 +15756,8 @@ iwn_ampdu_txq_advance(struct iwn_softc *sc, struct iwn_tx_ring *txq, int qid,
         }
         txq->read = (txq->read + 1) % IWN_TX_RING_COUNT;
     }
+    if (outer_retired == NULL)
+        ieee80211_tx_node_retire_drain(&sc->sc_ic, retired);
     return true;
 }
 
@@ -16221,20 +16244,19 @@ iwn5000_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
 }
 
 void ItlIwn::
-iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
+iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data,
+    struct mbuf_list *retired)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
+    (void)sc;
+    mbuf_t packet = data->m;
+    struct ieee80211_node *ni = data->ni;
 
 //    bus_dmamap_sync(sc->sc_dmat, data->map, 0, data->map->dm_mapsize,
 //        BUS_DMASYNC_POSTWRITE);
 //    bus_dmamap_unload(sc->sc_dmat, data->map);
-    if (data->m != NULL)
-        mbuf_freem(data->m);
     data->m = NULL;
-    if (data->ni != NULL) {
-        ieee80211_release_node(ic, data->ni);
-        data->ni = NULL;
-    } else {
+    data->ni = NULL;
+    if (ni == NULL) {
         KASSERT(data->ap_mgmt || data->ap_data,
                 "iwn tx data has node or AP owner");
     }
@@ -16251,6 +16273,7 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
     data->ap_mgmt = false;
     data->ap_data = false;
     iwn_sae_tx_data_clear(data);
+    ieee80211_tx_node_retire_append(retired, packet, ni);
 }
 
 void ItlIwn::
@@ -16337,6 +16360,7 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     struct ieee80211_node *wnm_tx_fence_node = NULL;
     u_int64_t wnm_tx_fence_generation = 0;
     u_int8_t wnm_tx_fence_kind = 0;
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
 
     if (data->ap_mgmt || data->ap_data) {
         struct IwnApClientRuntime *client =
@@ -16480,15 +16504,18 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         wnm_tx_fence_generation = data->wnm_tx_fence_generation;
         wnm_tx_fence_kind = data->wnm_tx_fence_kind;
     }
-    iwn_tx_done_free_txdata(sc, data);
+    iwn_tx_done_free_txdata(sc, data, &retired);
+    ring->queued--;
+    iwn_clear_oactive(sc, ring);
+    iwn_refresh_tx_timer(sc);
+    /* A WNM callback can copy the next BSS and its reference counter. Retire
+     * the old packet reference before that callback, as on the original path. */
+    ieee80211_tx_node_retire_drain(ic, &retired);
     if (wnm_tx_fence_node != NULL)
         ieee80211_wnm_bss_transition_tx_fence_complete(ic,
             wnm_tx_fence_node, wnm_tx_fence_generation,
             wnm_tx_fence_kind);
 
-    ring->queued--;
-    iwn_clear_oactive(sc, ring);
-    iwn_refresh_tx_timer(sc);
 }
 
 /*
@@ -22174,8 +22201,9 @@ iwn_ampdu_tx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
 
     /* net80211 treats an error as an ADDBA refusal and does not call the
      * driver's stop callback, so undo the queue transition here. */
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
     if (iwn_nic_lock(sc) == 0) {
-        ops->ampdu_tx_stop(sc, tid, ba->ba_winstart);
+        ops->ampdu_tx_stop(sc, tid, ba->ba_winstart, &retired);
         iwn_nic_unlock(sc);
     }
     sc->agg_queue_mask &= ~(1 << qid);
@@ -22188,6 +22216,7 @@ iwn_ampdu_tx_start(struct ieee80211com *ic, struct ieee80211_node *ni,
     node.flags = IWN_FLAG_SET_DISABLE_TID;
     node.disable_tid = htole16(wn->disable_tid);
     (void)ops->add_node(sc, &node, 1);
+    ieee80211_tx_node_retire_drain(ic, &retired);
     return error;
 }
 
@@ -22195,6 +22224,7 @@ void ItlIwn::
 iwn_ampdu_tx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
     uint8_t tid)
 {
+    struct mbuf_list retired = MBUF_LIST_INITIALIZER();
     struct ieee80211_tx_ba *ba = (struct ieee80211_tx_ba *)&ni->ni_tx_ba[tid];
     struct iwn_softc *sc = (struct iwn_softc *)ic->ic_softc;
     ItlIwn *that = container_of(sc, ItlIwn, com);
@@ -22208,7 +22238,7 @@ iwn_ampdu_tx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
     /* The backend stops the scheduler and drains the actual submitted
      * descriptors before retiring queue ownership. ba_winend is a logical
      * admission limit, not an exclusive transport completion pointer. */
-    ops->ampdu_tx_stop(sc, tid, ba->ba_winstart);
+    ops->ampdu_tx_stop(sc, tid, ba->ba_winstart, &retired);
     iwn_nic_unlock(sc);
 
     sc->agg_queue_mask &= ~(1 << qid);
@@ -22224,6 +22254,8 @@ iwn_ampdu_tx_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
     node.disable_tid = htole16(wn->disable_tid);
     ops->add_node(sc, &node, 1);
     (void)that->iwn_set_link_quality(sc, ni);
+    /* No old BA/node access follows a potentially reentrant last release. */
+    ieee80211_tx_node_retire_drain(ic, &retired);
 }
 
 void ItlIwn::
@@ -22267,7 +22299,8 @@ iwn4965_ampdu_tx_start(struct iwn_softc *sc, struct ieee80211_node *ni,
 }
 
 void ItlIwn::
-iwn4965_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
+iwn4965_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn,
+    struct mbuf_list *retired)
 {
     ItlIwn *that = container_of(sc, ItlIwn, com);
     int qid = IWN4965_FIRST_AGG_TXQUEUE + tid;
@@ -22280,7 +22313,7 @@ iwn4965_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
 
     /* As in Intel's transport queue-disable path, retain read/write
      * ownership until every submitted descriptor has been released. */
-    that->iwn_ampdu_txq_advance(sc, ring, qid, ring->cur);
+    that->iwn_ampdu_txq_advance(sc, ring, qid, ring->cur, retired);
 
     /* Set starting sequence number from the ADDBA request. */
     sc->txq[qid].cur = sc->txq[qid].read = idx;
@@ -22345,7 +22378,8 @@ iwn5000_ampdu_tx_start(struct iwn_softc *sc, struct ieee80211_node *ni,
 }
 
 void ItlIwn::
-iwn5000_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
+iwn5000_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn,
+    struct mbuf_list *retired)
 {
     ItlIwn *that = container_of(sc, ItlIwn, com);
     int qid = sc->first_agg_txq + tid;
@@ -22367,7 +22401,7 @@ iwn5000_ampdu_tx_stop(struct iwn_softc *sc, uint8_t tid, uint16_t ssn)
     /* A short queue need not extend to ba_winend.  Reclaim only the
      * submitted interval after deactivation. The next start, not stop,
      * assigns the successor sequence and writes the hardware pointers. */
-    that->iwn_ampdu_txq_advance(sc, ring, qid, ring->cur);
+    that->iwn_ampdu_txq_advance(sc, ring, qid, ring->cur, retired);
 
     /* Disable interrupts for the queue. */
     iwn_prph_clrbits(sc, IWN5000_SCHED_INTR_MASK, 1 << qid);

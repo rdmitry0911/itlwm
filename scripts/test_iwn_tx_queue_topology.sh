@@ -61,7 +61,8 @@ lines = [line for line in registers.splitlines()
 assert len(lines) == len(selected), (len(lines), len(selected))
 pan_flag = next(line for line in registers.splitlines()
                 if line.strip().startswith('IWN_UCODE_TLV_FLAGS_PAN ') and '=' in line)
-(out / 'registers.inc').write_text('\n'.join(lines) + '\nenum {\n' + pan_flag + '\n};\n')
+batch = '#define IWN_TOPOLOGY_RETIRE_BATCH 1\n' if 'struct mbuf_list retired' in parts[1] else ''
+(out / 'registers.inc').write_text(batch + '\n'.join(lines) + '\nenum {\n' + pan_flag + '\n};\n')
 if not baseline:
     init = function(current, 'int ItlIwn::\niwn_init(')
     assert init.index('iwn_read_firmware(sc)') < init.index(

@@ -254,11 +254,11 @@ for token in ("IWX_TX_STATUS_SUCCESS", "IWX_TX_STATUS_DIRECT_DONE",
               "struct iwx_tx_data *txd = &ring->data[ring->tail]",
               "const bool frame_failed = txfail && reclaimed == 0",
               "was_ap_frame |= txd->ap_frame", "txd->sae_active",
-              "iwx_sae_tx_report_terminal", "iwx_txd_done(sc, txd)",
+              "iwx_sae_tx_report_terminal", "iwx_txd_done(sc, txd, &retired)",
               "iwx_clear_tx_desc(sc, ring, ring->tail)"):
     require(rx_single, token, "firmware terminal TX result")
 ordered(rx_single, "IWX SAE result-before-reclaim",
-        "iwx_sae_tx_report_terminal", "iwx_txd_done(sc, txd)",
+        "iwx_sae_tx_report_terminal", "iwx_txd_done(sc, txd, &retired)",
         "iwx_clear_tx_desc(sc, ring, ring->tail)")
 rx_cmd = iwx_method("iwx_rx_tx_cmd")
 for token in ("ssn = le32toh(ssn) & 0xfff",

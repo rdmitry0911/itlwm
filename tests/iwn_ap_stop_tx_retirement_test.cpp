@@ -18,6 +18,9 @@ using IOReturn = int;
 constexpr int kIOReturnSuccess = 0, kIOReturnError = 1;
 constexpr int kIOReturnBusy = 2, kIOReturnNotReady = 3;
 struct iwn_softc;
+struct mbuf_list {};
+#define MBUF_LIST_INITIALIZER() {}
+[[maybe_unused]] static void ieee80211_tx_node_retire_drain(int *, mbuf_list *) {}
 struct ItlApTxBaRuntime { bool active = true; };
 static void itl_ap_tx_ba_reset(ItlApTxBaRuntime *ba) { ba->active = false; }
 struct IwnApClientRuntime {
@@ -40,6 +43,7 @@ struct iwn_tx_ring {
 struct iwn_rxon { uint8_t bssid[6] = {}, wlap[6] = {}; uint32_t filter = 0; int mode = 0; };
 struct iwn_ops { void (*reset_sched)(iwn_softc *, int, int); };
 struct iwn_softc {
+    int sc_ic = 0;
     iwn_ops ops;
     struct { char dv_xname[8] = "test"; } sc_dev;
     int command_queue = IWN_IPAN_CMD_QUEUE, ntxqs = 20, first_agg_txq = 10;
@@ -83,7 +87,11 @@ public:
     }
     ~ItlIwn() { for (auto &ring : com.txq) for (auto &data : ring.data) delete data.m; }
     bool iwn_ampdu_txq_can_advance(const iwn_tx_ring *, int) const;
-    bool iwn_ampdu_txq_advance(iwn_softc *, iwn_tx_ring *, int, int);
+    bool iwn_ampdu_txq_advance(iwn_softc *, iwn_tx_ring *, int, int
+#if IWN_AP_STOP_BATCH
+        , mbuf_list * = nullptr
+#endif
+    );
     void iwn_ap_ampdu_tx_stop(int, uint8_t, uint16_t);
     int iwn_ap_stop_tx_queue_mask(uint32_t *) const;
     int iwn_retire_flushed_ap_tx();
@@ -136,7 +144,11 @@ public:
             assert(data.m == nullptr && !data.ap_data && !data.ap_mgmt);
     }
     static void iwn_sae_tx_report_terminal(iwn_softc *, iwn_tx_data *, int) { assert(false); }
-    static void iwn_tx_done_free_txdata(iwn_softc *sc, iwn_tx_data *data) {
+    static void iwn_tx_done_free_txdata(iwn_softc *sc, iwn_tx_data *data
+#if IWN_AP_STOP_BATCH
+        , mbuf_list *
+#endif
+    ) {
         assert(data->ap_data || data->ap_mgmt);
         if (data->m) { delete data->m; ++sc->freed; }
         *data = {};

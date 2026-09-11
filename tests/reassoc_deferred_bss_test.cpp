@@ -123,7 +123,7 @@ struct iwn_node : ieee80211_node {
     unsigned lq_rate_mismatch = 0;
     struct { unsigned amn_txcnt = 0, amn_retrycnt = 0; } amn;
 };
-struct Packet {};
+#include "tx_node_retirement_test_support.hpp"
 struct iwn_tx_data {
     Packet *m = nullptr;
     ieee80211_node *ni = nullptr;
@@ -137,21 +137,35 @@ struct iwn_tx_data {
     unsigned diag_auth_seq = 0xffff;
     uint64_t wnm_tx_fence_generation = 0;
     uint8_t wnm_tx_fence_kind = 0;
+    void *map = nullptr;
 };
-struct iwn_tx_ring { iwn_tx_data data[2]; unsigned queued = 0; };
+constexpr int IWN_TX_RING_COUNT = 2;
+struct IwnDma { void *vaddr = nullptr; size_t size = 0; };
+struct iwn_tx_ring {
+    iwn_tx_data data[2];
+    unsigned queued = 0, cur = 0, read = 0, qid = 0;
+    void *desc = nullptr, *cmd = nullptr, *first_tb = nullptr, *ap_payload = nullptr;
+    IwnDma desc_dma, cmd_dma, first_tb_dma, ap_payload_dma;
+};
 struct iwn_rx_desc { unsigned idx = 0; };
 struct iwn_softc {
     ieee80211com sc_ic;
     iwn_tx_ring txq[2];
     struct { const char *dv_xname = "fixture"; } sc_dev;
     void *owner = nullptr;
+    void *sc_dmat = nullptr;
+    unsigned qfullmsk = 0;
 };
 struct IwnApClientRuntime {
     bool associated = false;
     uint8_t mac[6]{};
     struct { uint32_t generation = 0; } rateControl;
 };
-static void mbuf_freem(Packet *) {}
+static unsigned packetFrees, mapFrees;
+static void mbuf_freem(Packet *) { ++packetFrees; }
+static void bus_dmamap_destroy(void *, void *) { ++mapFrees; }
+static void iwn_dma_contig_free(IwnDma *dma) { *dma = {}; }
+#include "tx-node-retire.inc"
 static void iwn_sae_tx_data_clear(iwn_tx_data *data) { data->sae_active = false; }
 static void iwn_post_plti_trace_record_completion(ieee80211com *, unsigned) {}
 static void ieee80211_wnm_bss_transition_tx_fence_complete(
@@ -160,7 +174,9 @@ struct ItlIwn {
     iwn_softc com;
     struct { unsigned rsnIELength = 0; } apFirmwareConfig;
     ItlIwn() { com.owner = this; }
-    static void iwn_tx_done_free_txdata(iwn_softc *, iwn_tx_data *);
+    static void iwn_tx_done_free_txdata(iwn_softc *, iwn_tx_data *, mbuf_list *);
+    void iwn_reset_tx_ring(iwn_softc *, iwn_tx_ring *);
+    void iwn_free_tx_ring(iwn_softc *, iwn_tx_ring *);
     void iwn_tx_done(iwn_softc *, iwn_rx_desc *, uint8_t, uint8_t, uint8_t,
                      int, int, uint16_t);
     IwnApClientRuntime *iwn_find_ap_client(const uint8_t *) { return nullptr; }
@@ -183,7 +199,9 @@ struct ItlIwn {
     static void iwn_ht_single_rate_control(iwn_softc *, ieee80211_node *, uint8_t,
                                            uint8_t, uint8_t, int) {}
     static void iwn_set_link_quality(iwn_softc *, ieee80211_node *) {}
-    void iwn_sae_tx_report_terminal(iwn_softc *, iwn_tx_data *, int) { assert(false); }
+    void iwn_sae_tx_report_terminal(iwn_softc *, iwn_tx_data *data, int error) {
+        assert(error == EIO); data->sae_active = false;
+    }
 };
 #include "iwn-terminal.inc"
 
@@ -360,6 +378,39 @@ int main(int argc, char **argv) {
         collected.ni_state = IEEE80211_STA_CACHE;
         ieee80211_release_node(&f.ic, &collected);
         assert(callbacks == 1 && collected.ni_refcnt == 0);
+    } else if (scenario >= 9 && scenario <= 12) {
+        ieee80211_node_copy(&f.ic, &f.source, &f.cached);
+        ItlIwn driver;
+        driver.com.sc_ic = f.ic;
+        auto &ring = driver.com.txq[0];
+        unsigned descriptors[2] = {1, 1};
+        Packet packets[2];
+        ring.desc = descriptors;
+        ring.desc_dma = {descriptors, sizeof(descriptors)};
+        ring.queued = 2; ring.cur = ring.read = 1;
+        const bool orphan = scenario == 12;
+        const bool freeRing = scenario == 10;
+        packetFrees = mapFrees = 0;
+        for (unsigned i = 0; i < 2; ++i) {
+            auto &data = ring.data[i];
+            data.m = orphan ? nullptr : &packets[i];
+            data.ni = ieee80211_ref_node(&f.source);
+            data.map = &packets[i];
+            data.totlen = 1400;
+            data.sae_active = scenario == 11;
+        }
+        f.arm();
+        onJoin = [&] {
+            assert(ring.queued == 0 && ring.cur == 0 && ring.read == 0);
+            for (const auto &data : ring.data)
+                assert(data.ni == nullptr && data.m == nullptr);
+            if (!freeRing) assert(descriptors[0] == 0 && descriptors[1] == 0);
+        };
+        if (freeRing) driver.iwn_free_tx_ring(&driver.com, &ring);
+        else driver.iwn_reset_tx_ring(&driver.com, &ring);
+        assert(joins == 1 && f.source.ni_refcnt == 0);
+        assert(packetFrees == (orphan ? 0 : 2));
+        if (freeRing) assert(mapFrees == 2);
     } else assert(false);
     std::printf("deferred BSS scenario %d PASS\n", scenario);
 }

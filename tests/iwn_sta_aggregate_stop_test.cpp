@@ -17,6 +17,8 @@ struct ieee80211_tx_ba { uint16_t ba_winstart = 0, ba_winend = 0; uint64_t ba_bi
 struct ieee80211_node { ieee80211_tx_ba ni_tx_ba[16]; };
 struct iwn_node { ieee80211_node ni; uint16_t disable_tid = 0; uint8_t id = 0; };
 struct ieee80211com { void *ic_softc = nullptr; };
+struct mbuf_list { std::vector<int *> packets; };
+#define MBUF_LIST_INITIALIZER() {}
 struct iwn_tx_data {
     int *m = nullptr;
     ieee80211_node *ni = nullptr;
@@ -29,7 +31,11 @@ struct iwn_tx_ring {
 struct iwn_node_info { uint8_t id, control; uint32_t flags; uint16_t disable_tid; };
 struct iwn_ops {
     void (*reset_sched)(iwn_softc *, int, int);
-    void (*ampdu_tx_stop)(iwn_softc *, uint8_t, uint16_t);
+    void (*ampdu_tx_stop)(iwn_softc *, uint8_t, uint16_t
+#if IWN_STA_STOP_BATCH
+        , mbuf_list *
+#endif
+    );
     int (*add_node)(iwn_softc *, iwn_node_info *, int);
 };
 struct iwn_softc {
@@ -53,6 +59,17 @@ static void reset_sched(iwn_softc *sc, int qid, int idx) {
     ++sc->resets;
 }
 static int add_node(iwn_softc *, iwn_node_info *, int) { return 0; }
+[[maybe_unused]] static void ieee80211_tx_node_retire_drain(
+    ieee80211com *ic, mbuf_list *retired) {
+    auto *sc = static_cast<iwn_softc *>(ic->ic_softc);
+    assert(sc && !sc->locked);
+    for (auto *packet : retired->packets) {
+        delete packet;
+        ++sc->freed;
+        ++sc->nodeReleases;
+    }
+    retired->packets.clear();
+}
 class ItlIwn {
 public:
     iwn_softc com;
@@ -61,10 +78,22 @@ public:
             com.scheduler[word] = 0x5ca00000U + word;
     }
     bool iwn_ampdu_txq_can_advance(const iwn_tx_ring *, int) const;
-    bool iwn_ampdu_txq_advance(iwn_softc *, iwn_tx_ring *, int, int);
+    bool iwn_ampdu_txq_advance(iwn_softc *, iwn_tx_ring *, int, int
+#if IWN_STA_STOP_BATCH
+        , mbuf_list * = nullptr
+#endif
+    );
     static void iwn_ampdu_tx_stop(ieee80211com *, ieee80211_node *, uint8_t);
-    static void iwn4965_ampdu_tx_stop(iwn_softc *, uint8_t, uint16_t);
-    static void iwn5000_ampdu_tx_stop(iwn_softc *, uint8_t, uint16_t);
+    static void iwn4965_ampdu_tx_stop(iwn_softc *, uint8_t, uint16_t
+#if IWN_STA_STOP_BATCH
+        , mbuf_list *
+#endif
+    );
+    static void iwn5000_ampdu_tx_stop(iwn_softc *, uint8_t, uint16_t
+#if IWN_STA_STOP_BATCH
+        , mbuf_list *
+#endif
+    );
     static int iwn_nic_lock(iwn_softc *sc) {
         if (sc->failLock) return EIO;
         sc->locked = true;
@@ -110,13 +139,21 @@ public:
     static void iwn_sae_tx_report_terminal(iwn_softc *, iwn_tx_data *, int) {
         assert(false && "STA data must not acquire a synthetic SAE terminal");
     }
-    static void iwn_tx_done_free_txdata(iwn_softc *sc, iwn_tx_data *data) {
+    static void iwn_tx_done_free_txdata([[maybe_unused]] iwn_softc *sc, iwn_tx_data *data
+#if IWN_STA_STOP_BATCH
+        , mbuf_list *retired
+#endif
+    ) {
         assert(data->m != nullptr && data->ni != nullptr);
+#if IWN_STA_STOP_BATCH
+        retired->packets.push_back(data->m);
+#else
         delete data->m;
-        data->m = nullptr;
-        data->ni = nullptr;
         ++sc->freed;
         ++sc->nodeReleases;
+#endif
+        data->m = nullptr;
+        data->ni = nullptr;
     }
     int iwn_set_link_quality(iwn_softc *, ieee80211_node *) { return 0; }
 };

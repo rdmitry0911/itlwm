@@ -441,7 +441,7 @@ public:
                 struct iwn_rx_data *);
     bool        iwn_ampdu_txq_can_advance(const struct iwn_tx_ring *, int) const;
     bool        iwn_ampdu_txq_advance(struct iwn_softc *, struct iwn_tx_ring *,
-                    int, int);
+                int, int, struct mbuf_list * = NULL);
     void        iwn_ampdu_tx_done(struct iwn_softc *, struct iwn_tx_ring *,
                 struct iwn_rx_desc *, uint16_t, uint8_t, uint8_t, uint8_t,
                 int, uint32_t, struct iwn_txagg_status *);
@@ -450,7 +450,7 @@ public:
     static void        iwn5000_tx_done(struct iwn_softc *, struct iwn_rx_desc *,
                 struct iwn_rx_data *);
     void        iwn_tx_done_free_txdata(struct iwn_softc *,
-                struct iwn_tx_data *);
+                struct iwn_tx_data *, struct mbuf_list *);
     void        iwn_clear_oactive(struct iwn_softc *, struct iwn_tx_ring *);
     bool        iwn_tx_pending(struct iwn_softc *);
     void        iwn_refresh_tx_timer(struct iwn_softc *);
@@ -622,11 +622,11 @@ public:
     static void        iwn4965_ampdu_tx_start(struct iwn_softc *,
                 struct ieee80211_node *, uint8_t, uint16_t);
     static void        iwn4965_ampdu_tx_stop(struct iwn_softc *,
-                uint8_t, uint16_t);
+                uint8_t, uint16_t, struct mbuf_list *);
     static void        iwn5000_ampdu_tx_start(struct iwn_softc *,
                 struct ieee80211_node *, uint8_t, uint16_t);
     static void        iwn5000_ampdu_tx_stop(struct iwn_softc *,
-                uint8_t, uint16_t);
+                uint8_t, uint16_t, struct mbuf_list *);
     static void        iwn_update_chw(struct ieee80211com *);
     static int        iwn5000_query_calibration(struct iwn_softc *);
     static int        iwn5000_send_calibration(struct iwn_softc *);
