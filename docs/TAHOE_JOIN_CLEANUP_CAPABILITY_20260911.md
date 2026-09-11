@@ -183,3 +183,145 @@ the tracked host-exclusive AP fixture and explicitly pins `80:e4:ba:20:ef:fa`,
 matching the native directed request. It retains the bounded single observer
 and only retries an explicitly rejected EBUSY request. It has not yet run on
 the new image. The test-only changes do not alter that frozen candidate.
+
+## Completed offline copy, activation and IWN runtime
+
+This later checkpoint supersedes the pending archive/activation statements
+above; those statements describe their original timestamps, not current state.
+
+The compressed archive completed at 08:48:40 UTC. Remote length and SHA-256
+matched the exact fixture leaf, followed by a new 373-image backing census,
+local hash and open-user recheck. Only that now-recoverable local leaf was
+removed at 08:49:10. Its parent was retained. The verified archive remains at
+the exact `10.7.6.112` path recorded above.
+
+The working `20dd3d8a` guest shut down normally. Its disk and UEFI variables
+were copied offline with ordinary `cp` and verified with `cmp` and hashes;
+**no extra backing-chain level was added**. The preserved working disk is
+`aiam-iwn-mgmt-queue-runtime.5zvejm/tahoe-mgmt-queue.qcow2`, length
+1,174,077,440 bytes, SHA-256
+`fcc7a8ace06bd0146416d1b557e600b4f2232b3a54ac7384d7751668fc3eef1d`.
+Its variables hash is
+`281ec757b967ea88d53537d0fabf29842d9358b09ad758c55cd605cc825f0ed9`.
+Both still match after the new runtime suite. The existing underlying
+`aiam-iwn-bss-identity-runtime.mbFA1U` disk/variables also retain their
+previous `421daa36...` / `8334cff9...` hashes.
+
+Only owned QEMU PID 1346908 uses the writable copy
+`aiam-iwn-cleanup-cap-runtime.gL7vxS/tahoe-cleanup-cap.qcow2`, separate
+variables, IWN VFIO `0000:25:00.0` and management SSH 3338. It first booted
+the copied old image as `5DEB9292-2813-415C-B385-9AB5D6348C44`.
+Transactional activation `activation-20260911T085738Z` validated the exact
+five-member AuxKC and reached READY. One normal guest reboot at 08:58:11
+loaded the frozen candidate:
+
+- Boot `E8E936A5-94B0-44A1-9C16-736EAB2470F5`.
+- UUID `7B77B2CB-D2B3-3B72-BCBF-5EFF73B5F53A`.
+- Mach-O SHA-256 remains
+  `681d9f223e1dbc032e8c8681316b0d3a73082ac32ba9555e5d238cbbd611b0ae`.
+- Saved WPA3 recovered automatically, DHCP lease at 08:58:47 UTC, without
+  another selection or radio toggle.
+
+### Traffic and profile matrix on that exact image
+
+Payload is 1400-byte ICMP. Forward is guest to router/AP; reverse is physical
+host AX211 to guest. Native profile requests are **not GUI qualification**.
+
+| Case | Forward / reverse | Maximum RTT, ms | Boundary |
+| --- | --- | --- | --- |
+| Initial saved WPA3 | 20/20, 20/20 | 25.047 / 31.657 | Automatic after reboot |
+| Recovery after controlled SAE rejection | 20/20, 20/20 | 17.961 / 20.267 | Valid BSS; repeated bad-BSS selection remains |
+| WPA3 after actual S3 | **19/20, 19/20** | 26.983 / 20.682 | Wi-Fi only; losses coincide with a subsequent roam |
+| WPA2 selection after S3 | 20/20, 20/20 | 94.244 / 182.480 | First native request, real RSN handshake and DHCP |
+| WPA2 off/on | 20/20, 20/20 | 94.764 / 93.640 | Same profile and address, no second join request |
+| Open selection after S3 | 20/20, 20/20 | 59.531 / 154.515 | First native request; not a proven cold scan cache |
+| Final automatic WPA3 return | 10/10, **7/10** | 8.160 / **1046.074** | Initial reverse-path loss remains unexplained |
+
+The later separate control from the same host to router and guest returned
+20/20 each (max 54.569 / 22.829 ms). No profile change, toggle or ARP flush
+was used between the failed initial reverse run and that control. This does
+not erase the first result or identify which radio/bridge segment lost it.
+The final short airportd window contains only the delayed auto-join metric,
+not a demonstrated concurrent guest roam. Host NetworkManager has no entries
+in that initial traffic window. Neighbor MACs match at the later readback.
+
+WPA2 fixture ready/first request were 09:08:14/26. Its first actual RSN
+completion was 09:08:33 and DHCPACK 09:08:37 (`192.168.73.35`). Native off
+at 09:09:12 explicitly reached Off/inactive/no IPv4, on at 09:09:13 recovered
+the same profile; external second handshake 09:09:15 and DHCPACK 09:09:17.
+Open fixture ready/first request were 09:10:16/28; DHCPACK at 09:10:39
+(`192.168.73.26`). No additional scan/retry was inserted into either first
+selection. Both use the tracked host-exclusive fixture, pinned BSSID
+`80:e4:ba:20:ef:fa`, channel 9 and 12-second readiness dwell. These success
+runs do not close the earlier matched cold-cache discovery question.
+
+### Real SAE rejection, still-distinct roam ownership
+
+The wrong-password SAE/required-PMF fixture was ready at 09:00:21. One
+directed native request was accepted at 09:00:36; no resubmission occurred.
+The real peer observer ended normally at 09:01:48 with errors=0:
+
+- 09:00:41, epoch 11/relay 3: empty Confirm, status 1, engine AP_REJECT,
+  fresh-join claim 0 and generic scan.
+- 09:00:54, epoch 30/relay 4: same rejection, fresh generation 2, actual
+  cleanup participants 1/2/4 and one failure publication returning zero.
+- 09:01:26, epoch 36/relay 6: another generation-zero bad-BSS attempt.
+- 09:01:35, epoch 53/relay 7: fresh generation 4, the same three cleanup
+  participants and one successful failure publication.
+
+The valid BSS `9a:fb:5d:97:a9:02` completed SAE at epochs 35 and 58.
+The second bad-BSS cycle required no second manual request. Thus this is a
+regression check of enrolled IWN retirement, **not** closure of bad-BSS
+selection or accepted-roam AUTH/completion. The separate exact-reference
+`0x4a` and `0x50` lifetimes remain required. The updated-Ghidra full Core
+AUTH/build/post and WCL roam-done consumers were re-read during this suite;
+the 168-byte roam-done event triggers the FSM and deferred `tryReassoc`,
+whereas the existing timer is not equivalent completion.
+
+### Real S3 and the observed roaming loss
+
+The first sleep helper exited 1 at its Ethernet guard: device removal landed
+after its 20-second window. It never requested sleep and is not a sleep
+failure/pass. The separate r2 helper ran after direct Wi-Fi SSH confirmed no
+en0/en2 and no USB tablet. It requested sleep at 09:05:20. Native pmset
+records entry at 09:05:50, a 30-second WindowServer acknowledgement timeout,
+and one Normal Sleep/Wake. Owned monitor `s3-status-r5.log` confirms
+`paused (suspended)`; serial confirms `ACPI SLEEP`. One `system_wakeup` at
+09:06:42 produced `ACPI S3 WAKE`; DHCP was republished at 09:06:49. The same
+boot/UUID and Wi-Fi-only interface inventory were verified before traffic.
+USB management was restored only after both traffic probes ended.
+
+Both post-S3 probes lost sequence 3. Their host log birth times are
+09:07:15.079 / 09:07:16.260 UTC, placing those losses near 09:07:18.
+The retained airportd log records `APPLE80211_M_ROAMED` at 09:07:18.294 and
+the associated channel changing from 13 to 9; serial also records a real
+WCL scan and target-RUN transition. This is a useful correlation with an
+actual BSS transition, **not proof of the exact packet-drop site** or a
+claim that S3 itself corrupts the radio. No GUI-after-S3 or active-AP-through-
+S3 success is claimed; the WindowServer timeout remains visible.
+
+### Evidence and next functional layer
+
+The 75-file manifest in the runtime evidence root is
+`sta-runtime-evidence.sha256`, SHA-256
+`4c0fdef7176a2cf2f1c01bc272f5dc774fd08051e9c3d144fe4a8a924a1ab389`;
+all entries verify. It includes the exact helper sources, activation and
+boot records, both rejected/actual sleep attempts, peer observer, private-
+fixture hostapd/DHCP outputs, all traffic results and bounded airportd logs.
+The live serial writer is excluded; `serial-sta-checkpoint.log` is an
+immutable snapshot. Credentials were not embedded in scripts or reports.
+
+At the end of the suite, owned guest and host both returned automatically
+to LabAP; guest is WPA3/DHCP `172.16.66.219`, same boot/UUID, management en2
+restored. No fixture process or observer remains live. Physical `.22`, other
+QEMU, base images, PCI bridge and the user's `Build/` were not changed.
+
+`17b63574` has now completed build/activation/IWN ordinary-path regression,
+with all adverse results retained. No actual IWN no-candidate failure was
+forced by this matrix, and IWM/IWX remain source-tested only. Their real SAE
+worker negatives are still red. The next user-facing priorities are the
+reproducible BSS-transition interruption and accepted-roam failure lifecycle,
+alongside complete MVM lower/producer/crypto retirement—not another static
+selector inventory. The public qualified release was **not replaced** by
+this mixed, incompletely qualified stack. The full autonomous goal remains
+active; this checkpoint does not reduce its scope.
