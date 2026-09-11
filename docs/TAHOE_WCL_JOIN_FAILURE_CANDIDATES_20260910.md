@@ -1,5 +1,30 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Loaded runtime checkpoint — 2026-09-11 00:37 UTC
+
+PROGRESS: source `4d979f3b` is now loaded on the real IWN/6235 in a new
+recoverable child overlay, UUID `F23158D2-32F8-39A1-87CC-83E310634012`, boot
+`6CCFA730-B7E2-4E23-A4B5-CCA40BA6B447`. Private admission and transactional
+activation passed. The earlier built-only/loaded-b5 statements below describe
+their historical checkpoints, not current lab state.
+
+Actual wrong-password SAE target failures retain prompt WCL link teardown
+(14 ms) and automatic fallback to saved WPA2, with 20/20 subsequent packets.
+Native recovery still takes about 24.9 seconds and revisits the bad WPA3 BSS;
+full failed-candidate progression is NOT closed. Real S3 preserves the boot
+and image; automatic WPA3/DHCP restoration passes separately awaited 20/20
+forward and reverse packets. Full GUI/AP and IWM/IWX hardware coverage are
+not inferred from those results. The initial post-boot check lost 2/10 packets.
+
+Full identities, timing, rollback parent, evidence hashes and excluded FBT/
+command-line selection attempts are in
+[the night runtime report](TAHOE_NIGHT_CANDIDATE_RUNTIME_20260911.md).
+The next most-used functional boundary remains actual AUTH failure/timeout
+publication and native next-candidate progression. Do not revert to indefinite
+IWN load deferral while accumulating unrelated IWX initialization work.
+Keep all remaining IWM/IWX lifetime and qualification work in the full goal.
+The public release remains `b5c6cfd8`; this is not a qualified replacement.
+
 ## Checkpoint — 2026-09-11 00:03 UTC
 
 PROGRESS: the previous user-status turn was read-only. This continuation
