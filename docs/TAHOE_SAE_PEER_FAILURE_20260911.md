@@ -224,7 +224,7 @@ dependency. No graphics-driver change, daemon kill or reset was performed.
 - `peer97-windowserver-posts3.sample.txt` SHA-256:
   `1560890bc39cf19cdaba0d21e70cf9d00a31f664c7f122fb3f85ba81e3f0a3e6`.
 
-## Prepared release artifact
+## Published release artifact
 
 The exact frozen/installed bundle was copied, normalized and zipped in an
 isolated stage; extracted Mach-O and Info.plist match their installed sources.
@@ -234,7 +234,13 @@ its Mach-O retains SHA-256 `560a3f5b...` and UUID `69D766FF...` above.
 The previous public b5 artifact was independently downloaded and verified at
 `release-before-peer97/AirportItlwm-Tahoe-v2.4.0-alpha.kext.zip`, SHA-256
 `c2940702f7de42e797659bc59a36a0908756c35c219b9196eea19bd123815b44`.
-Publication and readback remain pending at this source checkpoint.
+The `v2.4.0-alpha` Tahoe asset was updated at 2026-09-11 02:01:40 UTC,
+asset ID `556261698`, size 15,668,268 bytes. The published ZIP was downloaded
+again to `release-readback-peer97/`: byte comparison and ZIP/Mach-O SHA-256
+match the exact prepared/installed image. Release-note readback also matches,
+including all explicit qualification limits and preserved prior history.
+No physical-host install, user-host reboot or unrelated VM change accompanied
+publication. Wider reconnect/roam/GUI/AP and IWM/IWX work remains active.
 
 ## Verified space reclamation and recovery copy
 

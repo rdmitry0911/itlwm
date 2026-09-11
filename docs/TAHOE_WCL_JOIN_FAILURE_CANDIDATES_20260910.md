@@ -1,5 +1,19 @@
 # WCL failed-join candidate progression — 2026-09-10
 
+## Published checkpoint — 2026-09-11 02:03 UTC
+
+PROGRESS: `v2.4.0-alpha` now serves the qualified `5e7a6735` / production
+`97fe747c` image, UUID `69D766FF-86F9-3337-ADE0-48361B68A59C`. Asset
+`556261698` was independently downloaded and byte-compared after publication;
+ZIP SHA-256 is `c2dd6a085d4929d733fa77f385bc0a460160caaba6f885b5405f916b368ba622`.
+Release notes match readback and explicitly retain hardware/GUI/roam limits.
+The source, build, loaded runtime, regressions and release loop for the fresh
+SAE peer-failure producer is complete, not the full functional objective.
+Next priority is the separately owned failed reassociation/roam attempt and
+native candidate progression; no new fresh-join ledger may be invented for it.
+The live lab remains on the same boot/image with recovered STA and no active
+RF fixture or test HTTP server. Host 10.90.10.22 remains untouched.
+
 ## Qualified IWN artifact checkpoint — 2026-09-11 01:59 UTC
 
 PROGRESS: the same loaded `69D766FF` / boot `02DED0EA` candidate now passes
