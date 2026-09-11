@@ -15106,8 +15106,7 @@ iwn_newstate_impl(struct ieee80211com *ic, enum ieee80211_state nstate, int arg,
     if (ic->ic_state >= IEEE80211_S_ASSOC &&
         nstate <= IEEE80211_S_ASSOC) {
         const bool authWillCommitRxon =
-            that->apFirmwareTransitionActive &&
-            that->apFirmwareStage == IWN_AP_STAGE_RUNNING &&
+            ic->ic_opmode == IEEE80211_M_STA && auth_serial != 0 &&
             (nstate == IEEE80211_S_AUTH ||
              (nstate == IEEE80211_S_ASSOC &&
               ic->ic_state == IEEE80211_S_RUN));
@@ -15142,15 +15141,16 @@ iwn_newstate_impl(struct ieee80211com *ic, enum ieee80211_state nstate, int arg,
                 XYLog("%s: RXON command failed\n",
                     sc->sc_dev.dv_xname);
         } else {
-            /* iwlagn_commit_rxon() owns one unassociated RXON transaction.
-             * The generic net80211 reset above and iwn_auth() historically
-             * emitted two back-to-back full BSS RXON commands.  With a live
-             * PAN context, the first one invalidates outstanding primary
-             * descriptors without rebuilding its broadcast station or PAN
-             * scheduler; a later reconnect then wedges an ordinary AC queue.
-             * Keep the logical reset, but let iwn_auth() commit the candidate
-             * RXON and immediately follow it with broadcast/PAN restoration. */
-            XYLog("%s: APSTA auth coalesced duplicate reset RXON\n",
+            /* Intel DVM's commit_rxon() disconnects using the candidate
+             * channel/BSSID, then restores station/PAN state. The owned AUTH
+             * continuation below performs that transaction for ordinary STA
+             * as well as APSTA. Do not precede it with an unowned full RXON
+             * on the old channel: that resets firmware reception and station
+             * state a second time while the target operation is starting.
+             * Preserve the logical cleanup above; only iwn_auth() commits the
+             * target RXON, and the existing real command/beacon fence still
+             * controls generic AUTH admission. INIT/SCAN retain their reset. */
+            XYLog("%s: owned STA auth coalesced duplicate reset RXON\n",
                   sc->sc_dev.dv_xname);
         }
     }

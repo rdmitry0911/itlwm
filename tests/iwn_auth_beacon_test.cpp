@@ -225,6 +225,7 @@ public:
     int iwn_tx(iwn_softc *,Packet *,ieee80211_node *) { ++transmitted; return 0; }
     static IOReturn _iwn_start_task(OSObject *,void *,void *,void *,void *);
     unsigned commands=0, lowerCalls=0, genericCalls=0, scans=0, initCalls=0, cleanupRequests=0;
+    unsigned unownedRxons=0, ownedRxons=0;
     uint64_t cleanupGeneration=0;
     int lowerError=0;
     bool eagerReceipt=false,eagerBeacon=false,replaceDuringGeneric=false,replaceDuringInit=false;
@@ -338,10 +339,15 @@ int ItlIwn::iwn_cmd_with_doorbell_hook(iwn_softc *sc,int code,const void *,int,i
     bool (*pre)(iwn_softc *,void *),void (*post)(iwn_softc *,void *),void *context) {
     assert(heldLocks==0);
     if (lowerError) return lowerError;
-    if (!pre) { ++commands; return 0; }
+    if (!pre) {
+        ++commands;
+        if (code==IWN_CMD_RXON) ++unownedRxons;
+        return 0;
+    }
     if (!pre(sc,context)) return ECANCELED;
     assert(heldLocks==2 && sc->txq[9].data[sc->txq[9].cur].auth_rxon_serial==authBeacon.request.serial);
     ++commands; // The physical WRPTR operation is a boundary double.
+    if (code==IWN_CMD_RXON) ++ownedRxons;
     post(sc,context); assert(heldLocks==0);
     if (code==IWN_CMD_RXON) {
         if (eagerBeacon) beacon();
@@ -375,6 +381,41 @@ void ItlIwn::iwn_wcl_join_failure_scan(ieee80211com *,uint64_t generation) {
 
 int main() {
     unsigned cases=0;
+    // A RUN replacement has one owned unassociated target RXON, not an
+    // unowned reset on the old channel followed by the target transaction.
+    // Exercise the actual lower function for plain STA and live APSTA, and
+    // both AUTH and RUN-to-ASSOC ingress. Firmware remains a boundary double.
+    for (unsigned variant=0;variant<4;++variant) {
+        ItlIwn d; d.setup(false);
+        d.com.sc_ic.ic_state=IEEE80211_S_RUN;
+        d.com.rxon.associd=37;
+        d.com.rxon.filter=IWN_FILTER_BSS|IWN_FILTER_NODECRYPT|0x800;
+        d.apFirmwareTransitionActive=(variant&1)!=0;
+        d.apFirmwareStage=IWN_AP_STAGE_RUNNING;
+        d.apStaBssAssociated=true;
+        const auto target=(variant&2) ? IEEE80211_S_ASSOC:IEEE80211_S_AUTH;
+        assert(ItlIwn::iwn_newstate_impl(&d.com.sc_ic,target,-1,0,0)==0);
+        assert(d.commands==0 && d.iwn_auth_beacon_pending());
+        d.iwn_auth_beacon_drain();
+        assert(d.unownedRxons==0 && d.ownedRxons==1 && d.commands==3);
+        assert(d.com.rxon.associd==0 && d.com.rxon.filter==0x800);
+        assert(d.genericCalls==0);
+        d.rxonReply(); d.beacon(); d.iwn_auth_beacon_drain();
+        assert(d.genericCalls==1 && d.com.sc_ic.ic_state==target);
+        d.iwn_auth_beacon_drain();
+        assert(d.ownedRxons==1 && d.genericCalls==1);
+        d.teardown(); ++cases;
+    }
+    {
+        ItlIwn d; d.setup(false);
+        d.com.sc_ic.ic_state=IEEE80211_S_RUN;
+        d.com.rxon.associd=37;
+        d.com.rxon.filter=IWN_FILTER_BSS|IWN_FILTER_NODECRYPT|0x800;
+        assert(ItlIwn::iwn_newstate_impl(&d.com.sc_ic,IEEE80211_S_INIT,-1,0,0)==0);
+        assert(d.unownedRxons==1 && d.ownedRxons==0);
+        assert(d.com.rxon.associd==0 && d.com.rxon.filter==0x800);
+        d.teardown(); ++cases;
+    }
     {
         ItlIwn d; d.setup();
         assert(d.iwn_auth_beacon_enqueue(IEEE80211_S_AUTH,-1)==0);
