@@ -234,3 +234,58 @@ image's display wait, but is not a proof of its kernel-side cause. Sample
 SHA-256: `94e6d2b0d4cb742e5aa39412a293fbf593d254b42cb47804e46aa9f7b98c4dba`.
 Post-S3 GUI remains unqualified. Next is cold-boot GUI regression of this same
 image before public release promotion; no physical-host operation is needed.
+
+## Cold GUI follow-up and host storage interruption
+
+Ordinary lab guest reboot at 12:04:49 UTC loaded the same image into boot
+`DFF0EF81-9D9E-4C28-9D37-8A8259BB1B7B`. WPA3 auto-join obtained a new DHCP
+lease at 12:05:57. After normal console login the Wi-Fi Settings page was
+visibly usable. A temporary USB tablet was added at xhci.0 port3 only for
+these GUI actions; it was absent during the preceding S3 qualification.
+
+The actual GUI Connect button for saved OpenWrt was clicked at
+12:08:56.405 UTC. WPA2-PSK DHCP began at 12:09:03 with address172.16.66.212.
+Read-only state checks and separate 1400-byte traffic probes passed20/20 in
+both directions, with maximum RTT257.705 /219.291ms. The settled screenshot
+shows OpenWrt Connected. No command-line join or radio toggle initiated this
+selection. Evidence prefix: `gui-wpa2-q1`, plus `gui-wpa2-action.log` and
+the before/clicked/settled screenshots in the same runtime root.
+
+The GUI LabAP Connect button was then clicked at 12:10:15.258 UTC. Host storage
+became full during that trial. QEMU independently reports `paused (io-error)`
+and MacHDD `I/O status: nospace`. This is an interrupted test, not a passed
+WPA3 GUI transition or evidence of a Wi-Fi kernel panic. The owned VM remains
+paused until adequate capacity is restored; physical .22 and other VMs are
+untouched. The public artifact remains unchanged.
+
+### Recoverable storage reclamation
+
+Archive directory on `dima@10.7.6.112`:
+`/home/dima/Projects/itlwm-runtime-archive/gui-source-space-20260911.aHWtXZ`.
+Only the following old local artifacts have been removed so far, after exact
+remote length/SHA-256 comparison, repeated unchanged local SHA-256, and an
+empty final fuser check:
+
+- `/home/dima/Projects/itlwm/aiam-runtime-recover-58063b5/AirportItlwm-iwn-sta-dvm-ampdu-wip27.zip`,
+  length15552985, SHA-256
+  `3dcb43a168d17b2629d615b92cc8f433f49b1b55a10085b934cf0292cefa6630`.
+- `/home/dima/Projects/itlwm/overlays/overlay-live-bb7366b-20260721T012732Z.qcow2`,
+  length787218432, SHA-256
+  `5cc7c8eb0633b8465c66ac4ed26c6a34536a1190828833f3576b96781f3b43fc`.
+  The clean offline image has no child in a fresh373-image census, including
+  canonicalization of backing paths. Final census SHA-256:
+  `360e2ba35c111de063740a943c77afe7d8ecf87f403d05acb1cec3718d3c022c`.
+
+Both exact basenames are retained in the archive. Restore with an ordinary
+file copy to the original absent/unused path and recheck the listed hash.
+The qcow2's original backing `/home/dima/Projects/itlwm/tahoe.qcow2` was not
+changed. ZFS eventually reported about427MB available; this is enough for
+evidence but not a safe VM qualification margin.
+
+The larger July26a archive transfer remains in progress; its source has NOT
+been removed. Its verified process was temporarily SIGSTOPped while the small
+overlay copied, then SIGCONT resumed the same process without restarting or
+discarding partial work. The retained working17b copy and all backing disks
+remain local and unchanged. A separate recovery note was saved in the remote
+archive as well as the runtime root, so the full-filesystem interval does not
+leave the procedure dependent on the live conversation alone.
