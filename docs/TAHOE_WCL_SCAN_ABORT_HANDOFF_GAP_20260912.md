@@ -1,8 +1,10 @@
 # WCL discovery lost between roam cancellation and physical scan retirement
 
 Status: **the exact lost-census handoff now passes twice on loaded092a7479/9B5B;
-stable WPA2 and open-to-WPA2 controls also pass. Further off/on, S3, AP and
-roaming regression is still pending; public alpha remains477ab0af/842B.**
+stable WPA2 and open-to-WPA2 controls also pass. Native WPA3, off/on and actual
+S3 recovery pass. AP/WPA3 passes; AP/WPA2 serves its client but its subsequent
+STA restoration fails with a stranded post-target roam owner. AP/open and
+the final roaming pair were not run; public alpha remains477ab0af/842B.**
 Initial new-image steady traffic retains20/20 forward but19/20 reverse.
 The baseline failure was reproduced twice on477ab0af/842B. The immediate
 cause is the live lower scan lease after successful logical
@@ -10,6 +12,11 @@ roam cancellation, not an unknown generic Device Busy branch. This affects an
 ordinary new-network selection while native roaming is searching. Historical
 diagnosis/source/build checkpoints below are followed by actual loaded-image
 receipts; they do not imply that all other reconnect failures are closed.
+
+The later failure and exact-image read-only observations are recorded in
+[post-target cancellation](TAHOE_REASSOC_POST_TARGET_CANCELLATION_20260912.md).
+It is distinct from the repaired physical scan handoff. Its attribution to
+092a7479 as a regression is not established. Do not publish9B5B as qualified.
 
 ## Same-image controls before provoking the overlap
 

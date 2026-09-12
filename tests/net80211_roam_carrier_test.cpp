@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -254,6 +255,43 @@ struct Fixture {
 };
 
 int main() {
+    if (std::getenv("ROAM_CANCEL_REQUIRE") != nullptr) {
+        // Reproduce the radio failure without an AP/authentication double:
+        // a selected target has crossed the controlled replacement epoch,
+        // then an ordinary INIT/SCAN cancellation invalidates that attempt.
+        // The complete production epoch/newstate functions run here. The
+        // fixture does not claim to execute firmware or the AP controller.
+        for (auto state : {IEEE80211_S_RUN, IEEE80211_S_AUTH,
+                           IEEE80211_S_ASSOC}) {
+            for (auto next : {IEEE80211_S_INIT, IEEE80211_S_SCAN}) {
+                Fixture f;
+                f.ic.ic_state=state;
+                f.ic.ic_pae_assoc_epoch=242;
+                f.ic.ic_wcl_reassoc_next_serial=17;
+                f.ic.ic_wcl_reassoc_owner_serial=17;
+                f.ic.ic_wcl_reassoc_source_epoch=241;
+                f.ic.ic_wcl_reassoc_owner_active=1;
+                f.ic.ic_wcl_reassoc_owner_last_leaf=
+                    IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+                f.ic.ic_wcl_reassoc_request.feature_flags=0x34;
+                ieee80211_pae_assoc_epoch_note_newstate(&f.ic,next,-1);
+                std::printf("POST_TARGET_CANCEL state=%u next=%u active=%u serial=%llu source=%llu current=%llu\n",
+                    unsigned(state),unsigned(next),f.ic.ic_wcl_reassoc_owner_active,
+                    static_cast<unsigned long long>(f.ic.ic_wcl_reassoc_owner_serial),
+                    static_cast<unsigned long long>(f.ic.ic_wcl_reassoc_source_epoch),
+                    static_cast<unsigned long long>(f.ic.ic_pae_assoc_epoch));
+                std::fflush(stdout);
+                assert(f.ic.ic_pae_assoc_epoch==243);
+                assert(!f.ic.ic_wcl_reassoc_owner_active);
+                assert(f.ic.ic_wcl_reassoc_owner_serial==0);
+                assert(f.ic.ic_wcl_reassoc_next_serial==17);
+                assert(f.ic.ic_wcl_reassoc_request.feature_flags==0);
+                assert(losses.empty());
+            }
+        }
+        std::puts("PASS: post-target cancellation requirements (six state edges)");
+        return 0;
+    }
     unsigned cases=0;
     for (bool protectedNet : {false,true}) {
         for (unsigned mutation=0; mutation<17; ++mutation) {
