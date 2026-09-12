@@ -204,3 +204,46 @@ Manifest SHA256 `ce2cac9db82eed8be5e9138ba8de9e7cca14a4c206a2aa0cb8f1654538760d6
 `/home/dima/Projects/ghidra_input/BootKC_guest_25C56.kc` (точный guest-build KC),
 `itlwm_guest_source_snapshot_cr479_*` (снапшот исходников), исчерпывающие
 скрипты в `/home/dima/Projects/ghidra_additional` (AIAMWiFiExhaustiveDecompile.java).
+
+## Roam-event terminал-контракт эталона (drill, первичное чтение)
+
+Консюмеры WCLRoamManager (bulletin-коды → FSM), сверено с исходными .c:
+
+| код (12/168B) | консюмер | действие |
+|---|---|---|
+| `0x89` (12B) | `handleRoamStartEvent` → `FUN_…0e6974(this,2)` → `roamStart` | FSM→ROAM_SCAN; `p+0x60`=ts; protection timer **10000мс**; НЕ трогает `p+0x3c/0x40` |
+| `0x8b` (12B) | `handleRoamPrepEvent` (prep) | подготовка target |
+| `0x49` (8B) | `handleReassocEvent` → `FUN_…0e6974(this,5)` при success | reassoc-reply, НЕ терминал roam |
+| `0x50` (168B) | `handleRoamDoneEvent` → `roamDone` | **полный терминал**: чистит `p+0x3c/0x3d/0x40`; `buildRoamCompletionStatus`; `WCLAdaptiveRoam::handleRoamEventConfiguration`; `printRoamStatus`; снимает protection timer; на fail с кодами `-0x1f7df3eb/-0x1f7df3ed` → retry-путь `FUN_…210699c("roam fail")` |
+| force-roam | `setForceRoamMsg`/`setForceRoam` | ставит окно 3000мс `p+0x3c/0x3d/0x40` |
+| — | `setReassocFail` | чистит ТОЛЬКО `p+0x3c`(2B)/`p+0x40` — **частичный teardown, НЕ терминал roam** |
+
+## Доказанный вывод по идентичности scan-over-roam
+
+Доказано из эталона:
+1. Драйверный scan-setter (`startScan`/`startEventScan`) НЕ арбитрирует roam;
+   весь gate — в `WCLScanManager::sendRequest`→`isScanAllowedByOtherActivity`.
+2. Для обычного (не-force, не-low-RSSI) roam gate РАЗРЕШАЕТ скан.
+3. Полный терминал roam-FSM — `0x50`→`roamDone` (снимает protection timer,
+   отдаёт status/policy). `0x49/0xcf` и `setReassocFail` — НЕ терминал.
+4. Селекторы WIP (`0x89/0x8b/0x50`) совпадают с консюмерами эталона
+   (`handleRoamStartEvent/handleRoamPrepEvent/handleRoamDoneEvent`) — WIP на
+   пути идентичности для roam-event-контракта.
+
+Воспроизведённый дефект itlwm: `setWCL_SCAN_REQ`→cancel→WCL получает
+`setReassocFail` (только чистит окно), а НЕ `0x50/roamDone`. Значит принятый
+roam уничтожается частичным teardown, а protection timer 10с остаётся висеть, и
+target-переход теряется.
+
+**Доказанные дивергенции контакт-surface (что чинить для идентичности):**
+- (D1) itlwm scan-setter уничтожает roam (эталонный startScan — нет).
+- (D2) прерванный/завершённый roam обязан давать `0x50/roamDone`, а не
+  `setReassocFail`-only, чтобы FSM снял protection timer и отдал status.
+
+**Остаётся гипотезой (нужен runtime на эталон-эквиваленте, лаборатория):**
+что ИМЕННО делает эталон с roam, когда scan разрешён и забирает единственный
+Intel scan-engine — retry roam после скана (firmware-autonomous), либо
+координация scan/roam так, что roam доходит до `0x50`. Реализацию D1/D2 не
+кодировать, пока это не измерено в лаборатории (single-engine — внутренняя
+реализация, но контакт-surface обязан совпасть: `0x89…0x50`, без
+`setReassocFail`-обрыва).
