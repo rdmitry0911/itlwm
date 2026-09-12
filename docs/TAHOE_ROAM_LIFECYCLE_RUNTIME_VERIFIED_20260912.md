@@ -88,3 +88,33 @@ JOIN_MANAGER JOIN_REQ→IN_PROGRESS→(TRY_NEXT_CANDIDATE)→ASSOC_DONE→CONNEC
 →IDLE; NET_MANAGER→WAITING_FOR_CONNECT_COMPLETE→WAITING_FOR_IP; ROAM_MANAGER→LINK_UP.
 Handoff §7 reselect-потери здесь не воспроизводятся как сбой контракта. Тул
 /tmp/aiamdis (CoreWLAN disassociate).
+
+## ДОКАЗАНО: S3 sleep/wake + Wi-Fi recovery (handoff §7 open item — для Wi-Fi закрыт)
+
+QEMU 10.2.50 корректно исполняет S3 гостя. Механика (проверено):
+`sudo pmset sleepnow` → гость входит в S3 → QEMU `VM status: paused (suspended)`,
+RIP заморожен. Пробуждение: QEMU HMP `system_wakeup` ПОСЛЕ полного suspend (+
+`sendkey spc` как nudge; первый wakeup на 12с мог не сработать — гость ещё
+входил в S3). После wake — ТОТ ЖЕ boot session UUID `7D5B03FE` = настоящий
+resume, НЕ reboot.
+
+Post-S3 на WIP: en1 active, DHCP `172.16.66.212`, ping OK (латентность
+восстанавливается). pmset log: `0x100=MAGICWAKE ... en1 owner=
+IOSkywalkNetworkBSDClient` → **WoWLAN magic-wake itlwm работает**. Wi-Fi
+восстанавливается чисто. (Handoff §7 «GUI застревал в WindowServer/IOFB» —
+это графика, НЕ Wi-Fi; Wi-Fi-контракт S3 удовлетворён.)
+
+Монитор QEMU (root): `/home/dima/Projects/itlwm/aiam-iwn-profile-reset.bhi2aO/
+qemu-scd-control-monitor.sock` (HMP; `system_wakeup`, `info status`, `sendkey`).
+
+## setWCL_ARP_MODE: путь к идентичности теперь ясен (S3 verifiable), но = firmware-фича
+
+itlwm имеет WoWLAN command-инфраструктуру (IWx/IWM_WOWLAN_CONFIGURATION 0xe1,
+patterns, KEK/KCK) и magic-wake, НО НЕ имеет proto/ARP-offload (`PROT_OFFLOAD`
+отсутствует). Эталон = firmware ARP-offload (`configureARPOffload` → `arpoe`
+iovar): firmware отвечает на ARP во сне, хост не просыпается. itlwm без offload
+просыпается на ARP (magic-wake) — хуже по питанию во сне. Идентичность =
+реализовать Intel proto-offload cmd (iwl_proto_offload: IPv4 для ARP-resp, IPv6
+для NS-resp) в D3-конфиге + wire setWCL_ARP_MODE. НЕ костыль (blind-success рвёт
+сон). Верификация = внешний same-L2 host ARP'ит гостя во сне (offload vs wake).
+Крупная firmware-фича низкого пользовательского приоритета (фоновое питание сна).
