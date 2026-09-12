@@ -7,7 +7,29 @@ then the same paths after explicit off/on and real S3. Keep first failures,
 DHCP and bidirectional service evidence; never hide an intermediate join or
 recovery toggle. A stalled post-S3 GUI remains open. Standalone scan/roam
 analysis and mixed AP work cannot displace the remaining eligible STA cells.
-Latest strict saved-security cycle:
+Latest open saved-security cycle:
+`docs/TAHOE_GUI_OPEN_SAVED_RECOVERY_20260912.md`. Real GUI saved open selection,
+manual disconnect/reselect and open-start off/on auto-recovery pass DHCP,
+60/60 each way and HTTP/hash. Unjoin reaches airportd in 11 ms; native DHCP
+BOUND is about 3 seconds after power-on. First subsequent open-to-SAE has
+60/60 forward, 59/60 reverse; request17 is absent in guest capture during
+BEST CONNECTED SCAN activity. Preserve this loss without claiming scan/driver
+causality. Return to open passes; a later open-to-SAE repeat passes with all
+60 reverse requests/replies matched in both source and guest captures.
+Six controls: five PASS, one retained loss; second return to open unexecuted.
+The 900-second fixture ends 09:42:33 and restores the host; at 09:44:06 guest
+is LabAP/SAE, 9a:fb:5d:97:a9:02/ch13, .219, same boot/AF16 and healthy native
+WiFiAgent 5894/runs 576. No fixture/capture process remains active.
+Next eligible P0.1: remaining SAE-to-open return, actual-security-checked
+open/WPA2 repetitions and both GUI frontends. Keep loss attribution as a
+GUI-observed dependency; full real-S3 GUI recovery stays open.
+Archive 120 files verifies at
+`/home/dima/Projects/itlwm/aiam-gui-open-recovery-runtime-20260912.KEtvcn`,
+manifest `49331994688c2339c2f61f906fa7dc6c32ea596df2d72c5b3e0534143544067d`.
+Archive and RAM source are immutable; use a new scratch next cycle.
+Production/release remains 5e98d640; no driver bytes changed.
+
+Preceding strict saved-security cycle:
 `docs/TAHOE_GUI_STRICT_SAVED_SECURITY_20260912.md`. On the unchanged AF16
 image/boot, the previously saved WPA2-only fixture passes actual GUI
 selection, manual disconnect/reselect, and automatic recovery after GUI

@@ -9,7 +9,23 @@ sleep/wake separately, with actual GUI actions, DHCP and bidirectional traffic.
 Preserve first failures; do not call an intervening automatic fallback a direct
 transition. Follow the active GUI ledger for unavailable/untested cells.
 
-Latest strict saved-security controls are in
+Latest open saved-security controls are in
+`docs/TAHOE_GUI_OPEN_SAVED_RECOVERY_20260912.md`: saved open selection,
+manual disconnect/reselect and open-start GUI off/on auto-recovery pass
+DHCP, 60/60 each way and HTTP/hash. First subsequent open-to-SAE retains
+60/60 forward, 59/60 reverse; request17 is missing from guest capture during
+scan activity, without proof of a scan/driver cause. Return to open passes;
+later open-to-SAE passes with its 60 reverse request/reply pairs matched
+between source and guest. Six controls, five PASS and one loss; second
+return to open still unexecuted. Fixture ends 09:42:33 with host restored;
+guest ends LabAP/SAE/ch13/.219, same boot/AF16 and native WiFiAgent 5894.
+Next: remaining SAE-to-open return, actual-security-checked open/WPA2 pairs
+and both GUI frontends. Keep the observed loss attribution and real-S3 GUI
+failure open. Archive 120 files verifies, manifest
+`49331994688c2339c2f61f906fa7dc6c32ea596df2d72c5b3e0534143544067d`.
+No production driver or release bytes change in this cycle.
+
+Preceding strict saved-security controls are in
 `docs/TAHOE_GUI_STRICT_SAVED_SECURITY_20260912.md`: real saved WPA2-only
 selection, manual disconnect/reselect, WPA2-start GUI off/on auto-recovery,
 and two direct WPA2-only/LabAP-SAE round trips all pass. Seven minute controls
