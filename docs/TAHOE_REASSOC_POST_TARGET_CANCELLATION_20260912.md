@@ -2,9 +2,9 @@
 
 Status: persistent RF failure and a production-function negative requirement
 reproduced on Linux and Tahoe. A common lifecycle correction is implemented;
-source checks, build and activation pass as described below. Public alpha
-remains477ab0af/842B; loaded
-image is nowc123d132/D636. The first AP/WPA2 regression did not exercise the
+source checks, build and activation pass as described below. Public alpha and
+the loaded image are now c123d132/D636; publication and independent download
+verification completed at 03:26:59 UTC. The first AP/WPA2 regression did not exercise the
 post-target edge. A subsequent controlled native leave now observes exact
 phase4 retirement and a successful successor roam on radio, but its restored
 traffic is19/20 forward,20/20 reverse. Its complete observer ends without
@@ -474,3 +474,22 @@ notes, and guarded publication/download comparison. The prepared new notes
 explicitly retain the failed reverse target transition and data gates. This
 is LIMITED_ALPHA_KNOWN_FAILURES, not full parity or a silently relaxed green
 matrix. Publication has not occurred at this frozen checkpoint.
+
+## Publication after the frozen checkpoint
+
+The guarded publisher completed at 03:26:59 UTC with
+POST_TARGET_ALPHA_PUBLISHED_AND_READBACK_VERIFIED. The public v2.4.0-alpha
+release is titled AirportItlwm Tahoe v2.4.0-alpha (c123d132), release357137705,
+updated03:26:56 UTC. Its replacement asset558521967 is the tested
+15,695,042-byte ZIP, SHA256:
+0ac3048d7df273c298d45efa16ac62056668794999617c10815c9103b618054a.
+The independently downloaded asset byte-compares equal to the prepared ZIP.
+The prior477ab0af asset remains recoverable in the publication root; its
+archived release notes are tracked under docs/releases. No runtime evidence
+or frozen checkpoint was modified for publication.
+
+Publication controller log SHA256:
+1b44c412d4e5509c4a7da800c62e701110ea7e32b96ebed1ac062ea5bc3e46c1.
+The later read-only status check confirms origin at f04b3430 and the same
+public asset identity. This receipt does not close the retained reverse-roam,
+packet-loss, GUI, active-AP-sleep or IWM/IWX qualification gaps.

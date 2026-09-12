@@ -1,6 +1,6 @@
 # WCL discovery lost between roam cancellation and physical scan retirement
 
-Status: **the exact lost-census handoff now passes twice on loaded092a7479/9B5B;
+Historical handoff-only checkpoint: **the exact lost-census handoff passes twice on loaded092a7479/9B5B;
 stable WPA2 and open-to-WPA2 controls also pass. Native WPA3, off/on and actual
 S3 recovery pass. AP/WPA3 passes; AP/WPA2 serves its client but its subsequent
 STA restoration fails with a stranded post-target roam owner. AP/open and
@@ -17,6 +17,10 @@ The later failure and exact-image read-only observations are recorded in
 [post-target cancellation](TAHOE_REASSOC_POST_TARGET_CANCELLATION_20260912.md).
 It is distinct from the repaired physical scan handoff. Its attribution to
 092a7479 as a regression is not established. Do not publish9B5B as qualified.
+The subsequent c123d132/D636 image includes both corrections and was published
+at03:26:56 UTC; use the linked post-target report for its final positive and
+retained-negative runtime results and publication receipt, not this historical
+handoff-only checkpoint.
 
 ## Same-image controls before provoking the overlap
 
