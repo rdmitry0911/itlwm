@@ -9,7 +9,20 @@ sleep/wake separately, with actual GUI actions, DHCP and bidirectional traffic.
 Preserve first failures; do not call an intervening automatic fallback a direct
 transition. Follow the active GUI ledger for unavailable/untested cells.
 
-Latest open saved-security controls are in
+Latest System Settings controls are in
+`docs/TAHOE_GUI_SETTINGS_SECURITY_PAIRS_20260912.md`: SAE-to-open,
+open-to-WPA2 and WPA2-to-open pass60/60 each way. Repeat open-to-WPA2 is
+60/60 forward,59/60 reverse during autonomous same-SSID ch161-to1 roaming.
+Source seq25 exists but guest en1 lacks it; overlapping RSN completion and
+later ROAMED do not establish a lower-layer cause. Three PASS/one loss;
+second return to open unexecuted. Fixture terminal10:09:40, host restored;
+guest10:13:26 OpenWrt/WPA2/ch1/.212, same boot/AF16/nativeWiFiAgent5894.
+Next: single-BSS WPA2/System Settings repeats and explicit off/on cross-profile
+recovery. Full six-edge/S3 GUI recovery stays open. Archive92 files verifies,
+manifest1278927e67e9e524048254a06b6d6477064978020b51fbb9af3ac2bf5978a414.
+No production/release byte changes.
+
+Preceding open saved-security controls are in
 `docs/TAHOE_GUI_OPEN_SAVED_RECOVERY_20260912.md`: saved open selection,
 manual disconnect/reselect and open-start GUI off/on auto-recovery pass
 DHCP, 60/60 each way and HTTP/hash. First subsequent open-to-SAE retains

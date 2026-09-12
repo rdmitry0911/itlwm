@@ -43,7 +43,18 @@ DHCP and bidirectional traffic, with first-attempt latency/loss retained.
 Opening the settings pane alone is not a connection test. Never insert a
 hidden off/on or API-based join to turn a failed GUI cell green.
 
-Latest P0.1 open saved-security control:
+Latest P0.1 System Settings controls:
+[`TAHOE_GUI_SETTINGS_SECURITY_PAIRS_20260912.md`](TAHOE_GUI_SETTINGS_SECURITY_PAIRS_20260912.md).
+Actual SAE-to-open, open-to-WPA2 and WPA2-to-open service controls pass60/60
+each way (HTTP/hash on open). Repeated open-to-WPA2 joins/gets DHCP but has
+60/60 forward,59/60 reverse during autonomous same-SSID channel161-to1 roaming.
+Missing reverse seq25 exists in source capture and not guest en1; native
+RSN completion overlaps it, followed by ROAMED. Exact lower-layer cause is
+not established. Four controls: three PASS, one retained loss; second return
+to open unexecuted. Continue single-BSS WPA2/System Settings repetitions and
+off/on cross-profile recovery, recording initial/final BSSID separately.
+
+Preceding P0.1 open saved-security control:
 [`TAHOE_GUI_OPEN_SAVED_RECOVERY_20260912.md`](TAHOE_GUI_OPEN_SAVED_RECOVERY_20260912.md).
 Actual saved open selection, manual disconnect/reselect, and open-start GUI
 off/on auto-recovery pass DHCP, 60/60 each way and HTTP/hash. Open unjoin

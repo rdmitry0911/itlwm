@@ -7,7 +7,26 @@ then the same paths after explicit off/on and real S3. Keep first failures,
 DHCP and bidirectional service evidence; never hide an intermediate join or
 recovery toggle. A stalled post-S3 GUI remains open. Standalone scan/roam
 analysis and mixed AP work cannot displace the remaining eligible STA cells.
-Latest open saved-security cycle:
+Latest System Settings cycle:
+`docs/TAHOE_GUI_SETTINGS_SECURITY_PAIRS_20260912.md`. Actual SAE-to-open,
+open-to-WPA2 and WPA2-to-open pass60/60 each way; open also HTTP/hash.
+Repeat open-to-WPA2 joins/DHCP but is60/60 forward,59/60 reverse. It starts
+e4:3a:65:44:e4:dd/ch161 and ends e4:3a:65:44:e4:dc/ch1: autonomous same-SSID
+roam. Source seq25 emission10:04:50.387922 is absent in guest en1; native RSN
+completion10:04:50.554, ROAMED10:04:54.408. Preserve correlation without
+asserting a lower-layer cause. Four controls, three PASS/one loss; second
+return to open unexecuted. Fixture terminal10:09:40, restore0. Final10:13:26
+same boot/AF16, OpenWrt/WPA2/ch1/.212, WiFiAgent5894 healthy. Next eligible:
+single-BSS WPA2/System Settings repeats and explicit off/on cross-profile
+recovery; retain post-S3 GUI and loss attribution as open dependencies.
+Archive92 files verifies at
+`/home/dima/Projects/itlwm/aiam-gui-settings-pair-runtime-20260912.tdpaOJ`,
+manifest1278927e67e9e524048254a06b6d6477064978020b51fbb9af3ac2bf5978a414.
+Original RAM source PSNy6T and archive are terminal/immutable. New scratch
+`/dev/shm/aiam-gui-local-pair-recovery-20260912.QqnCv6` is allocated for next
+controls. Production/release unchanged5e98d640; no new driver bytes.
+
+Preceding open saved-security cycle:
 `docs/TAHOE_GUI_OPEN_SAVED_RECOVERY_20260912.md`. Real GUI saved open selection,
 manual disconnect/reselect and open-start off/on auto-recovery pass DHCP,
 60/60 each way and HTTP/hash. Unjoin reaches airportd in 11 ms; native DHCP
