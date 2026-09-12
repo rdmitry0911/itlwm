@@ -33,3 +33,14 @@ Transmit Rate=6/MCS 0 (idle) → под нагрузкой MCS 1 (13 Mbps). Bulk
 Отдельно: `SLOW_WIFI_FEATURE_ENABLED`(0x187) и `setBYPASS_TX_POWER_CAP` — itlwm
 их реализует (getSLOW_WIFI_FEATURE_ENABLED@6315, setBYPASS_TX_POWER_CAP@6459);
 сверка их значений с эталоном — отдельный selector-audit item.
+
+## Изоляция (flood-ping к СВОЕМУ AP-gw 172.16.66.1)
+
+3000×1400B: 3.7% loss, RTT min 2.2ms / avg 49ms / max 188ms. Т.е. link МОЖЕТ
+2ms (min), но congested-всплески до 188ms + потери. Гость на **ch5 (2.4GHz)** —
+перегруженная полоса (scan: десятки WPA2 AP рядом). Вывод: деградация
+throughput/latency = **окружение (congested 2.4GHz + вероятно VFIO-passthrough
+overhead)**, НЕ драйверная contact-surface дивергенция. getRATE честен. На 5GHz
+(менее загруженном) throughput был бы существенно выше (гость ранее бывал на
+ch100/5GHz). Band/AP-выбор гостя автономный; форсировать 5GHz для чистого iperf —
+отдельный контролируемый тест. НЕ в зоне contact-surface-identity.
