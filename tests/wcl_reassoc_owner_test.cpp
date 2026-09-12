@@ -4,11 +4,13 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <utility>
 #include <vector>
 #include "tests/kernel_memory_test_support.hpp"
+#include "tests/reference_roam_fsm.hpp"
 using u_int8_t = uint8_t;
 using u_int16_t = uint16_t;
 using u_int32_t = uint32_t;
@@ -72,6 +74,7 @@ constexpr int kIOReturnSuccess=0, kIOReturnNotReady=-1;
 struct OSObject { virtual ~OSObject()=default; };
 #define OSDynamicCast(type,object) dynamic_cast<type *>(object)
 struct Hal { ieee80211com *ic; ieee80211com *get80211Controller(){ return ic; } };
+static std::function<void(uint32_t, const void *, size_t)> wireObserver;
 struct AirportItlwm : OSObject {
     Hal *fHalService; void *fNetIf=this;
     std::vector<uint8_t> payload; uint32_t selector=0;
@@ -79,6 +82,7 @@ struct AirportItlwm : OSObject {
         assert(!fHalService->ic->lock.held); selector=code;
         const auto *bytes=static_cast<uint8_t *>(data);
         payload.assign(bytes,bytes+length); ++events;
+        if (wireObserver) wireObserver(code, data, length);
     }
 };
 #include "controller.inc"
@@ -119,7 +123,43 @@ static void preserved(const ieee80211com &ic) {
     assert(ic.ic_wcl_reassoc_owner_active && ic.ic_wcl_reassoc_request.feature_flags==7 &&
         ic.ic_wcl_reassoc_target_bssid[0]==8);
 }
-int main() {
+static int lifecycleRequirement(unsigned scenario) {
+    assert(scenario >= 1 && scenario <= 4);
+    ReferenceRoamFsm model;
+    wireObserver = [&model](uint32_t selector, const void *data, size_t length) {
+        model.receive(selector, data, length);
+    };
+    ieee80211com ic;
+    ic.ic_event_handler = event;
+    ic.ic_bgscan_start = [](ieee80211com *, uint64_t) { return 0; };
+    ieee80211_wcl_reassoc_request request{};
+    assert(ieee80211_begin_wcl_reassoc_bgscan(&ic, &request) == 0);
+    if (scenario != 1) {
+        // Isolate actual terminal production from the independently tested
+        // missing progress producer. The oracle alone gets this precondition.
+        model.seedStarted(scenario >= 3);
+        if (scenario >= 3)
+            ic.ic_wcl_reassoc_owner_last_leaf = IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+        if (scenario == 3) ieee80211_wcl_reassoc_post_success(&ic);
+        else ieee80211_wcl_reassoc_post_failure(&ic, scenario == 2 ? ENOENT : EACCES);
+    }
+    std::printf("lifecycle=%u state=%u timer=%u pending=%u starts=%u done=%u command_errors=%u wire_events=%u\n",
+        scenario, unsigned(model.state), model.timer, model.pending,
+        model.starts, model.completions, model.commandFailures, events);
+    std::fflush(stdout);
+    if (scenario == 1)
+        assert(model.state == ReferenceRoamFsm::Scan && model.timer && model.starts == 1);
+    else
+        assert(model.state == ReferenceRoamFsm::LinkUp && !model.timer &&
+            !model.pending && model.completions == 1);
+    wireObserver = {};
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    ReferenceRoamFsm::calibrate();
+    if (argc == 2) return lifecycleRequirement(unsigned(std::strtoul(argv[1], nullptr, 10)));
+    assert(argc == 1);
     unsigned cases=0;
     for(unsigned scenario=0;scenario<22;++scenario) {
         epochs=events=frees=0; queued.clear(); deferGate=false;

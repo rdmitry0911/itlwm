@@ -7,6 +7,12 @@ REASSOC_PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 REASSOC_TEST_DIR="$(mktemp -d)"
 trap 'rm -f "$REASSOC_TEST_DIR/source.c" "$REASSOC_TEST_DIR/leaves.inc" "$REASSOC_TEST_DIR/failure.inc" "$REASSOC_TEST_DIR/controller.inc" "$REASSOC_TEST_DIR/test"; rm -rf "$REASSOC_TEST_DIR/test.dSYM"; rmdir "$REASSOC_TEST_DIR"' EXIT
 case "${WCL_REASSOC_EXPECT_DEFECTS:-0}" in 0|1) ;; *) exit 2 ;; esac
+case "${WCL_REASSOC_REQUIRE_LIFECYCLE:-0}" in 0|1) ;; *) exit 2 ;; esac
+if [ "${WCL_REASSOC_REQUIRE_LIFECYCLE:-0}" = 1 ] &&
+   { [ -n "${WCL_REASSOC_NEGATIVE_REF:-}" ] || [ "${WCL_REASSOC_EXPECT_DEFECTS:-0}" != 0 ]; }; then
+    printf 'Lifecycle requirements must execute current production.\n' >&2
+    exit 2
+fi
 if [ -n "${WCL_REASSOC_NEGATIVE_REF:-}" ]; then
     git -C "$REASSOC_PROJECT_DIR" show \
         "$WCL_REASSOC_NEGATIVE_REF:itl80211/openbsd/net80211/ieee80211.c" \
@@ -50,6 +56,17 @@ if [ -z "${WCL_REASSOC_NEGATIVE_REF:-}" ] && [ "${WCL_REASSOC_EXPECT_DEFECTS:-0}
         "$REASSOC_PROJECT_DIR/tests/wcl_reassoc_owner_test.cpp" \
         -o "$REASSOC_TEST_DIR/test"
     "$REASSOC_TEST_DIR/test"
+    if [ "${WCL_REASSOC_REQUIRE_LIFECYCLE:-0}" = 1 ]; then
+        lifecycle_failures=0
+        for scenario in 1 2 3 4; do
+            result=0
+            "$REASSOC_TEST_DIR/test" "$scenario" || result=$?
+            printf 'Required lifecycle scenario=%s exit=%s\n' "$scenario" "$result"
+            if [ "$result" -ne 0 ]; then lifecycle_failures=$((lifecycle_failures + 1)); fi
+        done
+        printf 'Required lifecycle failures=%s/4\n' "$lifecycle_failures"
+        test "$lifecycle_failures" -eq 0
+    fi
     exit 0
 fi
 awk '/^ieee80211_wcl_reassoc_post_failure\(/ { selected=1; print "void" }
