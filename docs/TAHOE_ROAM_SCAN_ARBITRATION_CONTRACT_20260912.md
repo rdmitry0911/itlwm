@@ -165,3 +165,42 @@ AKMs, phyMode, channelsScanned.
 - сопутствующие: `handleScanRequest`, `scanRequestHandler`, `abortScan`,
   `handleReassocEvent`, `handleRoamDoneEvent`, `startRoamScan`, `sendReassocToDriver`.
 Manifest SHA256 `ce2cac9db82eed8be5e9138ba8de9e7cca14a4c206a2aa0cb8f1654538760d6d`.
+
+## ДОБАВЛЕНО (reference-first, по указанию: только идентичность, никаких костылей)
+
+Прочитан драйверный контакт-surface эталона
+`AppleBCMWLANScanAdapter::startScan` (ffffff80016aca5a):
+
+- startScan НЕ арбитрирует roam-vs-scan. Он отклоняет только при
+  action-frame-in-progress (`*(core+0x128)+0x4478 & 1` → 0xe00002d5
+  «Action frame in progress. Rejecting escan request!»), иначе выполняет escan
+  (`startEventScan`, когда mode==2). Никаких проверок roam/reassoc в драйвере.
+- Весь roam-vs-scan gate живёт ВЫШЕ драйвера — в
+  `WCLScanManager::isScanAllowedByOtherActivity`.
+
+**Следствие для идентичности (важно):** то, что itlwm `setWCL_SCAN_REQ`
+самостоятельно отменяет принятый roam (`ieee80211_cancel_wcl_reassoc_bgscan`),
+— это ДИВЕРГЕНЦИЯ контакт-surface: эталонный драйвер так не делает. Идея
+«defer scan behind roam» в драйвере — ТОЖЕ не подтверждена эталоном (startScan
+не откладывает и не арбитрирует). Поэтому НИ отмену, НИ отложенную очередь в
+драйвере реализовывать нельзя как «политику».
+
+**Настоящая цель = идентичность контакт-surface**: itlwm должен предъявлять
+верхнему WCL-слою те же селекторы/события/состояние, что и AppleBCMWLAN, чтобы
+арбитраж делал ТОТ ЖЕ верхний слой (isScanAllowedByOtherActivity/getRoamState),
+а `setWCL_SCAN_REQ` вёл себя как startScan (выполнял скан, без своей отмены).
+
+**Открытый исследовательский вопрос (следующий этап, proof-first):**
+хостит ли itlwm реальные WCLScanManager/WCLRoamManager (как AppleBCMWLAN), или
+переизобретает их? От этого зависит, где именно достигать идентичности:
+- если WCL-менеджеры общие/выше — фикс в том, чтобы itlwm правильно кормил их
+  roam-состоянием (getRoamState/bulletin), и убрать драйверную самоотмену;
+- физическое ограничение Intel (один scan-engine) — это ВНУТРЕННЯЯ реализация,
+  но она обязана давать идентичный контакт-surface (какие события видит
+  WCLRoamManager, когда скан пересекается с roam на эталоне — читать далее).
+
+Ресурс (по указанию пользователя, на 10.7.6.112, НЕ 10.7.6.11 — недоступен):
+`/home/dima/Projects/ghidra_decompiler_optimization` (пофикшенная Ghidra),
+`/home/dima/Projects/ghidra_input/BootKC_guest_25C56.kc` (точный guest-build KC),
+`itlwm_guest_source_snapshot_cr479_*` (снапшот исходников), исчерпывающие
+скрипты в `/home/dima/Projects/ghidra_additional` (AIAMWiFiExhaustiveDecompile.java).
