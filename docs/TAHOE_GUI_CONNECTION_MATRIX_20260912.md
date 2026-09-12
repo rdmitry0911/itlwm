@@ -43,7 +43,19 @@ DHCP and bidirectional traffic, with first-attempt latency/loss retained.
 Opening the settings pane alone is not a connection test. Never insert a
 hidden off/on or API-based join to turn a failed GUI cell green.
 
-Latest P0.1 System Settings controls:
+Latest P0.1 single-BSS/recovery controls:
+[`TAHOE_GUI_SETTINGS_WPA2_SAE_RECOVERY_20260912.md`](TAHOE_GUI_SETTINGS_WPA2_SAE_RECOVERY_20260912.md).
+System Settings different-saved WPA2 selection, two SAE-to-WPA2 returns,
+one repeated WPA2-to-SAE and WPA2 off/on recovery pass60/60 each way;
+all four WPA2 controls also pass HTTP/hash. Native power-on to DHCP BOUND
+is3.150s. First WPA2-to-SAE and the later post-off/on WPA2-to-SAE each retain
+59/60 forward during SAE ch13-to9 roaming. In the latter, marked endpoint
+capture proves the server emitted the missing reply, absent in guest en1.
+No exact lower-layer cause is claimed; fixture cleanup overlaps that run.
+Seven controls, five PASS/two failures. Next: same-L2 endpoint GUI recovery
+controls, keeping remaining cross-security and actual-S3 cells open.
+
+Preceding P0.1 System Settings controls:
 [`TAHOE_GUI_SETTINGS_SECURITY_PAIRS_20260912.md`](TAHOE_GUI_SETTINGS_SECURITY_PAIRS_20260912.md).
 Actual SAE-to-open, open-to-WPA2 and WPA2-to-open service controls pass60/60
 each way (HTTP/hash on open). Repeated open-to-WPA2 joins/gets DHCP but has

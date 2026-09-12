@@ -9,7 +9,22 @@ sleep/wake separately, with actual GUI actions, DHCP and bidirectional traffic.
 Preserve first failures; do not call an intervening automatic fallback a direct
 transition. Follow the active GUI ledger for unavailable/untested cells.
 
-Latest System Settings controls are in
+Latest single-BSS/recovery controls are in
+`docs/TAHOE_GUI_SETTINGS_WPA2_SAE_RECOVERY_20260912.md`: seven actual
+System Settings controls, five PASS/two retained SAE forward59/60 losses.
+Saved WPA2 profile change, two SAE-to-WPA2 returns, repeated WPA2-to-SAE,
+and WPA2 off/on pass60/60 both ways (WPA2 also HTTP/hash). Native power-on
+to DHCP BOUND3.150s. First and post-off/on SAE transitions lose a reply
+during ch13-to9 roaming; marked lp7 endpoint capture proves server reply
+emission but not exact lower-layer drop location. Fixture cleanup overlaps
+lp7; no isolated RF interval is claimed. Final10:34:57 same boot/AF16,
+guestSAE/ch9/.219, hostmanagedLabAP/.226, WiFiAgent5894 healthy, all terminal.
+Next same-L2 endpoint GUI saved-network/recovery tests remove routed/NAT
+ambiguity; remaining cross-security and actual-S3 cells remain P0.1.
+Archive171 files, manifest61c7b1b95db2d2746905c3f0b3aad1b75519c742dccc6d91deb777cc489e6286.
+No production/release byte changes.
+
+Preceding System Settings controls are in
 `docs/TAHOE_GUI_SETTINGS_SECURITY_PAIRS_20260912.md`: SAE-to-open,
 open-to-WPA2 and WPA2-to-open pass60/60 each way. Repeat open-to-WPA2 is
 60/60 forward,59/60 reverse during autonomous same-SSID ch161-to1 roaming.

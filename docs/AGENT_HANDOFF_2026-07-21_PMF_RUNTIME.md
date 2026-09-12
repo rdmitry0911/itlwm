@@ -7,7 +7,33 @@ then the same paths after explicit off/on and real S3. Keep first failures,
 DHCP and bidirectional service evidence; never hide an intermediate join or
 recovery toggle. A stalled post-S3 GUI remains open. Standalone scan/roam
 analysis and mixed AP work cannot displace the remaining eligible STA cells.
-Latest System Settings cycle:
+Latest single-BSS System Settings/recovery cycle:
+`docs/TAHOE_GUI_SETTINGS_WPA2_SAE_RECOVERY_20260912.md`. Seven controls:
+five PASS, two retained SAE forward59/60 failures. Same-security different
+saved WPA2 selection, two SAE-to-WPA2 returns, repeated WPA2-to-SAE and
+WPA2-start off/on recovery pass60/60 both ways; WPA2 also HTTP/hash.
+Native power-on to DHCP BOUND3.150s. First WPA2-to-SAE and post-off/on
+WPA2-to-SAE lose one forward reply during observed SAE ch13-to9 roaming.
+lp7 marker capture proves seq24 reply emitted at server10:33:04.119309,
+absent in guest en1; not an unanswered server probe or an exact RF/driver
+drop location. lp7 spans fixture cleanup/restoration10:33:08; retain that
+confounder. lp4 all240 packets match each endpoint, independently PASS.
+Final10:34:57 same boot/AF16/WiFiAgent5894, guestLabAP/SAE/ch9/.219,
+hostLabAP/ch153/.226, no fixture/collector remains, management intact.
+Archive171 files verifies at
+`/home/dima/Projects/itlwm/aiam-gui-local-recovery-runtime-20260912.lMETmO`,
+manifest61c7b1b95db2d2746905c3f0b3aad1b75519c742dccc6d91deb777cc489e6286.
+Original RAM QqnCv6/archive immutable. Production/release unchanged5e98d640.
+Next scratch `/dev/shm/aiam-gui-l2-recovery-20260912.dgvxIG`: same-L2 host
+STA .226/guest .219 interface-bound prerequisite, then actual saved-SAE GUI
+recovery/reselection with both endpoint captures, no AP teardown/NAT hop.
+Keep remaining open/WPA2 recovery pairs and real-S3 GUI open and prioritized.
+The next scratch same-L2 prerequisite is already terminal PASS10:38:21:
+three1400-byte packets each direction, explicitwlp0s20f3/en1, no GUI action
+or profile/route change. It is not an additional GUI service cell. Use a
+new helper with fail-closed identity checks; preserve the executed preflight.
+
+Preceding System Settings cycle:
 `docs/TAHOE_GUI_SETTINGS_SECURITY_PAIRS_20260912.md`. Actual SAE-to-open,
 open-to-WPA2 and WPA2-to-open pass60/60 each way; open also HTTP/hash.
 Repeat open-to-WPA2 joins/DHCP but is60/60 forward,59/60 reverse. It starts
