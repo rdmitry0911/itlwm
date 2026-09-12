@@ -1,7 +1,8 @@
 # WCL discovery lost between roam cancellation and physical scan retirement
 
 Status: **reproduced twice on the published477ab0af/842B image; production
-candidate passes Linux/Tahoe source execution, not yet built or radio-qualified**.
+candidate passes Linux/Tahoe source execution and builds, not yet loaded or
+radio-qualified**.
 The immediate cause is now the live lower scan lease after successful logical
 roam cancellation, not an unknown generic Device Busy branch. This affects an
 ordinary new-network selection while native roaming is searching. The source
@@ -249,3 +250,27 @@ Next: commit/push candidate, build and activate the exact image in the owned
 guest, repeat both overlap failures and stable/open-to-WPA2 controls, then
 STA/AP/off-on/real-S3/roaming regression. The scan-abort gap is not counted
 as a radio-qualified closure until those controls execute.
+
+## Exact candidate build; activation remains next
+
+Source092a7479da8193b40158340f86f2ce76064f7145 was committed and pushed
+before build. The unchanged357-file production input set was hashed again;
+manifest/source identity:
+`410a9b148ba58a872a07b118c148d22a50d1c1546e48ca2a133f680c977f29ea`.
+All inputs match before and after xcodebuild in the existing guest mirror.
+The ordinary AP-capable Tahoe build succeeds; all1088 imports resolve against
+the actual BootKC, with no thread_call_cancel_wait dependency.
+
+Candidate Mach-O UUID: `9B5BCA7A-32FE-393C-ABE6-AD3A83937A9E`.
+SHA256: `0a30b252e3536e25b078e83fcab84f9e34a33ca75012a71564d3009e02d1de37`.
+Build log SHA256:
+`b1b7f855b99136023b95f4c1ddb793cb48557e06c607bf63c316eceb2b684289`.
+
+Before replacing the mirror's staged build output, its verified842B bundle
+was preserved as DerivedData-join-failure-20260910/handoff-prior-842b.kext.
+Its unchanged binary digest0e0aa25caca2f9ce9b630ad37aa9d9c53730ee939128d4fe30031b86927fcf80
+was rechecked afterward. Only build-mirror source and generated artifacts
+changed: the guest still loads842B in boot1FB8BDE2-E95D-4B56-8948-A4FCE549D6BD.
+No activation, reboot, public release replacement or new radio pass is claimed.
+The immediate next gate is private AuxKC admission, then exact-image activation
+and the retained overlap/stable/S3/AP regression plan above.
