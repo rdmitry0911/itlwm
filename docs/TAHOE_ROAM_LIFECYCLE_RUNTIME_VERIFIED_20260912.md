@@ -118,3 +118,21 @@ iovar): firmware отвечает на ARP во сне, хост не просы
 для NS-resp) в D3-конфиге + wire setWCL_ARP_MODE. НЕ костыль (blind-success рвёт
 сон). Верификация = внешний same-L2 host ARP'ит гостя во сне (offload vs wake).
 Крупная firmware-фича низкого пользовательского приоритета (фоновое питание сна).
+
+## Точная архитектура сна: itlwm full-stop vs эталон D3/WoWLAN
+
+`AirportItlwm::setPowerStateOff()` = `disableAdapter(fNetIf)` — itlwm ПОЛНОСТЬЮ
+ОСТАНАВЛИВАЕТ адаптер на сон; `setPowerStateOn()` = `enableAdapter` (переподключение
+на wake). itlwm НЕ входит в D3/WoWLAN (firmware не держит связь во сне).
+Команды определены (IWX/IWM_D3_CONFIG_CMD 0xd3, PROT_OFFLOAD_CONFIG_CMD 0xd4,
+PROT_OFFLOAD_GROUP 0xb) но НЕ используются (нет construction). Эталон
+(AppleBCMWLAN) держит связь в D3 + ARP/NS offload + wake-triggers.
+
+Следствие: `setWCL_ARP_MODE`(Unsupported) — симптом отсутствия D3/WoWLAN, а не
+отдельный пробел. Пользовательский исход (после wake — переподключено) itlwm
+ДОСТИГАЕТ через reconnect (проверено: S3→wake→SAE+DHCP+ping OK). Разница с
+эталоном = скорость wake + доступность во сне (ARP offload). Это КРУПНАЯ
+firmware-фича (полный D3/WoWLAN flow: D3 entry/exit, wake filters, proto-offload,
+GTK rekey offload), низкого пользовательского приоритета относительно verified
+GUI/connect/scan/roam surface. Не костыль оставить reconnect-on-wake — это
+работающая функция; D3 = оптимизация к идентичности.
