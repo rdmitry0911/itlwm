@@ -168,3 +168,24 @@ preparation. AP/open, the final9B5B roaming pair, new-image loaded recovery and
 repeatable controlled post-target cancellation/AP regression are still open.
 IWM/IWX share the common correction, not IWN hardware evidence; their separate
 SAE failure-cleanup requirements and other deferred-BSS liveness gaps remain.
+
+## Built candidate, before activation
+
+Productionc123d132aad014356aa6a8864a731c58ae4f6764 is committed and pushed.
+The full357-file9B5B predecessor was verified in the Tahoe build mirror before
+copying the exact changed files. The old9B5B bundle is retained at
+DerivedData-join-failure-20260910/post-target-prior-9b5b.kext. The new full
+production manifest verifies before and after an ordinary AP-capable build.
+All1088 imports resolve against the actual BootKC; no thread_call_cancel_wait.
+
+- Source manifestSHA256:775c161be6c13198f639d9bc05c076a190fc713198d4dbc8c7a2f374b314610f.
+- Embedded source ID:775c161be6c1.
+- Mach-O UUID:D636A28B-6A9B-3CCE-AF28-5779C5F980C8.
+- Mach-O SHA256:9e06b1aab08ff2297d2951be20cd26a8fc19f8923aef5cb4700e86576ce5c6d8.
+- Build wrapper logSHA256:7b2cb1530dbc10f2268901dd44e326979f2a81827ba4d6071ed7b0541e015dc6.
+
+Build session20649 exits0. This is not a loaded-image or RF correction claim.
+New runtime working root:/dev/shm/aiam-post-target-runtime-20260912.TpUKkd;
+durable working copy:/home/dima/Projects/itlwm/aiam-post-target-runtime.0ybGDl.
+Private activation root:/private/var/tmp/aiam-iwn-post-target-activation.iixXcs.
+The prior source/RF evidence root remains separate and not yet frozen.
