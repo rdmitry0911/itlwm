@@ -1,5 +1,12 @@
 # Tahoe IWX PMF/BIP runtime-gate plan
 
+Latest transfer2026-09-12 11:31UTC:
+`docs/AGENT_HANDOFF_2026-09-12_GUI_ROAM_WIP.md` is authoritative.
+User requested a commit/push checkpoint followed by agent handoff.
+WIP source83a2f617 is pushed; production/release remains5e98d640/AF16.
+Do not install/publish the WIP as qualified. Remaining source/test/queue,
+build and actualGUI runtime steps are recorded explicitly in the transfer.
+
 ## P0.1 — repeated GUI STA combinations and recovery
 
 Latest user directive2026-09-12: all directed open/WPA2/WPA3 transitions,
@@ -18,7 +25,9 @@ NAT ambiguity, not driver/AP/RF uncertainty. All resources terminal; same
 boot/AF16/WiFiAgent5894, guestSAE/.219/ch9, hostLabAP/.226/ch153.
 Next coherent driver boundary is separately reproduced accepted-roam/public-
 scan cancellation and its exact reference lifecycle, not an assumed cause
-of every packet gap. Current full-lifecycle baseline fails4/4. Preserve
+of every packet gap. The historical full-lifecycle baseline fails4/4;
+WIP83a2f617 passes those source requirements, but is not a full build/runtime
+qualification and leaves scan arbitration unfinished. Preserve
 other eligible repeated GUI pairs and actual-S3 cells as P0.1/open.
 Archive73 files, manifest4692ea2a1d31ad30be2c9f7db1ebcb77359f1e323b9714e28f6aa77e6baaf256.
 No production/release byte changes.

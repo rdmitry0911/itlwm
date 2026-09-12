@@ -1,5 +1,12 @@
 # Agent handoff — Tahoe PMF/BIP runtime gate
 
+**Latest transfer, 2026-09-12 11:31 UTC:** read
+[`AGENT_HANDOFF_2026-09-12_GUI_ROAM_WIP.md`](AGENT_HANDOFF_2026-09-12_GUI_ROAM_WIP.md)
+first. User requested commit/push and handoff. Source WIP `83a2f617` is pushed;
+production/release remains `5e98d640`/AF16. New lifecycle requirements pass,
+but scan arbitration, two test integrations, full build and on-air validation
+remain unfinished. This supersedes the historical next-action text below.
+
 **P0.1 — repeated GUI open/WPA2/WPA3 transitions, saved-profile reuse and
 recovery now come first (latest user directive, 2026-09-12).** Cover all six
 directed cross-security pairs plus same-security saved-profile reselection,
@@ -25,9 +32,9 @@ RAM dgvxIG/archive immutable. Production/release unchanged5e98d640.
 Next implementation scratch `/dev/shm/aiam-gui-roam-lifecycle-20260912.2AEEv7`:
 coherent correction of separately reproduced accepted-roam/public-scan
 conflict and recovered0x89/0x8b/0x50 progress/terminal lifecycle. Current
-WCL_REASSOC_REQUIRE_LIFECYCLE baseline is terminal exit1,4/4 requirement
-failures; no source correction yet. Read exact reference producers/consumers
-before code edits; no blind D636/old-boot wrapper reuse. Keep GUI-first
+WCL_REASSOC_REQUIRE_LIFECYCLE historical baseline is terminal exit1,4/4
+failures. WIP83a2f617 now passes those four requirements, not runtime or the
+full regression gate; see the newer transfer. No blind D636/old-boot wrapper reuse. Keep GUI-first
 priorities, first packet losses, remaining pairs and real-S3 GUI open.
 
 Preceding single-BSS System Settings/recovery cycle:
