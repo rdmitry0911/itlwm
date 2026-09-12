@@ -78,3 +78,13 @@ off/on безопасен для управления. Инструменты н
 Остаток GUI-дивергенций (по handoff §7): пакетные потери в ОКНЕ reconnect
 (saved-SAE reselect, off/on) — это НЕ сбой контракта FSM (контракт чист), а
 потери в переходном окне; локализация RF/AP/driver требует endpoint-capture.
+
+## ДОКАЗАНО: saved-SAE reselect recovery контракт
+
+CoreWLAN `disassociate` → авто-rejoin (saved SAE): восстановление с новым DHCP
+(172.16.66.212) за ~12с, **потери 0.8% (1/120 ping)** — почти бесшовно. FSM чист:
+NET_MANAGER LINK_UP→LEAVE_NETWORK→DEAUTH→LINK_DOWN; ROAM_MANAGER→LINK_DOWN;
+JOIN_MANAGER JOIN_REQ→IN_PROGRESS→(TRY_NEXT_CANDIDATE)→ASSOC_DONE→CONNECT_COMPLETE
+→IDLE; NET_MANAGER→WAITING_FOR_CONNECT_COMPLETE→WAITING_FOR_IP; ROAM_MANAGER→LINK_UP.
+Handoff §7 reselect-потери здесь не воспроизводятся как сбой контракта. Тул
+/tmp/aiamdis (CoreWLAN disassociate).
