@@ -1,7 +1,7 @@
 # GUI WPA3 discovery after a previously connected BSSID changes — 2026-09-12
 
-Status: production correction and source tests ready; new-binary runtime
-qualification and publication pending. This is a concrete GUI-matrix P0
+Status: production correction committed/pushed as 5e98d640; exact-new-image
+GUI runtime qualification PASS, publication pending. This is a GUI-matrix P0
 dependency, not an independently selected static surface item.
 
 ## Live failure on the published binary
@@ -71,9 +71,70 @@ and 145 roam-carrier cases including 30 post-target cancellation edges.
 The adjacent carrier fixture has no scan tree; it uses a documented boundary
 adapter for cleanup while the dedicated test executes the actual function.
 
-Next: commit/push; exact-manifest guest build; private AuxKC admission;
-transactional install and exact UUID boot readback. A fresh boot clears the
-cache, so seeing WPA3 immediately is insufficient. Repeat GUI WPA2 join →
-GUI return to SAE LabAP → same BSSID changes SSID/security → fresh GUI WPA3
-discovery → GUI password/join → DHCP and bidirectional traffic. Retain first
-results and add open/WPA2 regressions. Publish only after qualification.
+The original runtime gate required the complete precondition after the new
+boot: GUI WPA2 join → GUI return to SAE LabAP → same BSSID changes SSID/security
+→ GUI WPA3 discovery/password/join → DHCP and bidirectional traffic. A fresh
+boot alone clears the cache and is not a passing reproduction.
+
+## Exact new-image runtime result, 05:16–05:35 UTC
+
+Build, private AuxKC admission and transactional activation passed. The other
+four auxiliary members were preserved. A graceful owned-guest reboot loaded
+UUID `AF169180-05E8-33CF-960A-166E5DB901BB`, boot
+`870616E6-4A67-4106-947C-F20DEDD08A2B`. All357 production hashes verify;
+manifest SHA256 `5dbe5aae76fa07ade6a22dd9c4c23e7df39b53850cc745e11f9d75d1c0280b3e`,
+embedded source-id `5dbe5aae76fa`. All1088 undefined symbols resolve.
+
+At05:20:30, the actual GUI selects saved WPA2. DHCP .27 and20/20 packets
+each direction pass. At05:21:33, GUI selection returns to SAE LabAP on
+9a:fb:5d:97:a9:02/ch13 with DHCP .219; source-bound router traffic is20/20.
+Only afterward is the WPA2 fixture stopped. The same host BSSID begins
+advertising AIAM-GUI-WPA3-0912 at05:24:22. The next screenshot shows its
+correct new name and no stale WPA2 name, without a radio toggle/API join.
+
+The exact AF16 layout was revalidated with LLDB. A60-second read-only trace
+records12 advertisements with node_state0/CACHE, correct cached SSID and raw
+TLV identity, zero errors. It observes the post-retirement state, not the
+first old-name-to-new-name mutation or uninterrupted node allocation.
+Trace SHA256 `4269e359d4865181fcfb4fcfff9b6ce7be5f5564c4e1e9787ddfae17897adc23`.
+
+At05:24:56 GUI Connect opens the standard WPA3 Personal password dialog;
+password entry05:25:37 gives DHCP ACK05:25:46, address192.168.73.33.
+The external AP reports AUTH/ASSOC/AUTHORIZED/MFP, AKM00-0f-ac-8,
+SAE group19 and CCMP. The first independent traffic pair passes20/20 each
+direction (1400-byte payload), with no DTrace still active during traffic.
+
+Further same-image actual-GUI controls pass:
+
+- WPA3→LabAP→saved WPA3, no repeated password dialog,20/20 each direction.
+- Explicit Wi-Fi off05:28:06: inactive/noIPv4; on05:28:35 automatically
+  restores the same WPA3 profile, DHCP and20/20 each direction, AP MFP set.
+- Same BSSID changes from WPA3 to open: correct unprotected GUI entry,
+  selection05:31:51, DHCP .34 and20/20 each direction.
+- GUI return to LabAP05:33:01 precedes open-fixture stop. Router traffic20/20;
+  final peer traffic after normal host profile restoration20/20 both ways.
+
+Initial automatic LabAP on AF16 also passes20/20 each direction. This does
+not erase the retained D636 first-attempt losses or establish all roaming
+policy/sleep combinations. All six old/new fixtures and all observers are
+terminal; host management/profile restored; physical .22 not accessed.
+
+Durable evidence: `/home/dima/Projects/itlwm/aiam-gui-cache-runtime-20260912.gHMjC3`.
+All251 entries verify; `EVIDENCE.sha256` SHA256:
+`85114d00ecc731280dea44e9216e2c4f77814bafec15fc8aedc8dd5d2ff5b129`.
+The transient hostapd control socket directory is excluded; logs are included.
+
+Installed/build/extracted bundles compare identically; no packaging rebuild.
+Mach-O SHA256 `ab06be973d3ae72aa6544b28e834285d2a6e1e02e8b8633c8fb78f14d2b1bf2b`.
+ZIP15695095bytes, SHA256
+`b0473b4633b46c13f0e271ce1757a5f6431c5302bd51c8957aecf9837dd5048d`.
+
+## Remaining GUI work
+
+The password-dialog screenshot labels the new WPA3 target Connected behind
+the dialog before credentials are entered. Simultaneous readback still shows
+LabAP BSSID02/ch13 and DHCP172.16.66.219, while the test AP has no associated
+station. This is a real UI identity/status inconsistency; its ownership is
+not yet established and it is not fixed by cache retirement. GUI after true
+S3 still has the preserved framebuffer wake-ack prerequisite failure. AP/ad
+hoc UI and the remaining profile/security/recovery combinations remain open.

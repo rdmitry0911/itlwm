@@ -30,11 +30,11 @@ hidden off/on or API-based join to turn a failed GUI cell green.
 
 | UI path | Normal awake | After real S3 | After UI off/on |
 | --- | --- | --- | --- |
-| Select saved WPA3 LabAP / reconnect | PARTIAL: GUI return associates/DHCP; first peer traffic 14/20 each way | GUI unavailable | NOT TESTED |
-| Open network selection / reconnect | First selection PASS; reconnect NOT TESTED | GUI unavailable | NOT TESTED |
-| WPA2 selection / reconnect | First selection and saved return PASS | GUI unavailable | WPA2 recovery PASS |
-| Open → WPA2 → WPA3 and reverse | PARTIAL; new WPA3 discovery FAIL after previously used BSSID rename | GUI unavailable | NOT TESTED |
-| Multiple saved networks / return to prior network | WPA2 → LabAP → saved WPA2 PASS for target WPA2; full matrix open | GUI unavailable | NOT TESTED |
+| Select saved WPA3 / reconnect | AF16 first fixture join, saved reselect and final LabAP service PASS; full matrix open | GUI unavailable on D636 | AF16 same WPA3 recovery PASS |
+| Open network selection / reconnect | D636 first and AF16 saved selection PASS; repeated return still open | GUI unavailable on D636 | NOT TESTED |
+| WPA2 selection / reconnect | D636 first/saved return PASS; AF16 saved selection PASS | GUI unavailable on D636 | D636 WPA2 recovery PASS |
+| Open → WPA2 → WPA3 and reverse | PARTIAL; WPA2→WPA3→open renamed-BSSID discovery/service fixed on AF16, via LabAP between fixtures | GUI unavailable on D636 | NOT TESTED |
+| Multiple saved networks / return to prior network | WPA2 and WPA3 target reselect controls PASS; full matrix open | GUI unavailable on D636 | AF16 same WPA3 recovery PASS |
 | AP UI enable/disable, external-client service | NOT TESTED | NOT TESTED | NOT TESTED |
 | Ad hoc UI create/join | NOT TESTED | NOT TESTED | NOT TESTED |
 
@@ -132,9 +132,22 @@ Live trace identifies the new-WPA3 discovery failure in the driver, not just
 the GUI: fresh WPA3 SSID TLVs coexist with the old WPA2 cached SSID because
 the former BSSID remains `IEEE80211_STA_BSS` after a transition to SAE.
 See `TAHOE_GUI_STALE_BSS_CACHE_20260912.md` for exact evidence, production
-correction and negative/positive tests. Source tests pass; candidate build,
-installation and the same full GUI precondition are still pending. No new
-runtime pass or release update is claimed at this checkpoint.
+correction5e98d640 and negative/positive tests. The AF16 candidate is now
+built, installed and runtime-qualified after recreating the full GUI
+precondition. WPA3/PMF first join, saved reconnect and UI off/on pass DHCP
+and20/20 each way. WPA2/open GUI regressions and final LabAP service also
+pass. These AF16 tests are awake tests, not a new S3/GUI qualification.
+Publication is pending at this documentation checkpoint.
+
+The next GUI-observed discrepancy is premature Connected/target identity
+behind the WPA3 password dialog while the live radio/DHCP remain on LabAP.
+Its driver-versus-userspace ownership is not yet established. AP/ad hoc UI
+and post-S3 GUI availability remain open alongside the full combination
+matrix; do not let unrelated static work displace these GUI paths.
+
+AF16 evidence: `/home/dima/Projects/itlwm/aiam-gui-cache-runtime-20260912.gHMjC3`,
+251 verified files, manifest SHA256
+`85114d00ecc731280dea44e9216e2c4f77814bafec15fc8aedc8dd5d2ff5b129`.
 
 ## Preserved roam work
 
