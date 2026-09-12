@@ -43,7 +43,20 @@ DHCP and bidirectional traffic, with first-attempt latency/loss retained.
 Opening the settings pane alone is not a connection test. Never insert a
 hidden off/on or API-based join to turn a failed GUI cell green.
 
-Latest P0.1 GUI-service dependency:
+Latest P0.1 strict saved-security control:
+[`TAHOE_GUI_STRICT_SAVED_SECURITY_20260912.md`](TAHOE_GUI_STRICT_SAVED_SECURITY_20260912.md).
+After preserving and correcting a wrong-password laboratory AP configuration,
+the existing WPA2-only saved profile passes real GUI selection, manual menu
+disconnect/reselect and automatic recovery after explicit off/on. Each of
+these controls passes DHCP, 60/60 packets each way and an HTTP file/hash
+check. Two direct WPA2-only/LabAP-SAE round trips also pass 60/60 each way,
+with HTTP/hash on both returns to WPA2, separately from OpenWrt's mixed SSID.
+All seven service controls pass; open-start same-profile/off-on controls are
+next, while the full six-edge recovery matrix remains open. No driver bytes
+change in this runtime-verification cycle; earlier first failures remain in
+their ledgers.
+
+Preceding P0.1 GUI-service dependency:
 [`TAHOE_GUI_WIFIAGENT_READINESS_20260912.md`](TAHOE_GUI_WIFIAGENT_READINESS_20260912.md).
 The native WiFiAgent startup/read-permission defect in the laboratory guest is
 repaired without a driver change, reboot or daemon restart. Two actual menu
@@ -82,7 +95,7 @@ label those cells lossless.
 | --- | --- | --- | --- |
 | Select saved WPA3 / reconnect | AF16 first fixture join, saved reselect and final LabAP service PASS; full matrix open | GUI unavailable on D636 and AF16; AF16 auto Wi-Fi20/20 each way | AF16 same WPA3 recovery PASS |
 | Open network selection / reconnect | AF16 saved returns from WPA2/WPA3 each60/60 both ways; same-security/manual-disconnect cell open | GUI unavailable on D636 and AF16 | Two AF16 saved returns60/60 both ways after WPA3 off/on; off/on starting on open NOT TESTED |
-| WPA2 selection / reconnect | D636 first/saved return PASS; AF16 direct saved selections60/60 both ways | GUI unavailable on D636 and AF16 | D636 WPA2 recovery PASS; earlier AF16 reverse19/20 retained; latest two saved selections60/60 both ways after WPA3 off/on |
+| WPA2 selection / reconnect | AF16 strict WPA2-only saved selection and manual disconnect/reselect: DHCP,60/60 each way,HTTP/hash PASS after fixture credential correction | GUI unavailable on D636 and AF16 | AF16 strict WPA2-only auto-recovery within14s: DHCP,60/60 each way,HTTP/hash PASS; earlier reverse19/20 remains retained |
 | Open → WPA2 → WPA3 and reverse | All six direct edges measured with simultaneous SSIDs on AF16: DHCP6/6; four60/60+60/60, both WPA3 targets59/60+59/60; repetitions remain open | GUI unavailable on D636 and AF16 | Second six-edge round: five60/60+60/60; open→WPA3 joins/gets DHCP then delayed ControlCenter disconnect interrupts service; not a clean six-edge pass |
 | Multiple saved networks / return to prior network | WPA2 and WPA3 target reselect controls PASS; full matrix open | GUI unavailable on D636 and AF16 | AF16 same WPA3 recovery PASS; cross-profile first reverse19/20 retained |
 | AP UI enable/disable, external-client service | AF16 GUI WPA2 DHCP/20+20/cold-ARP/NAT PASS after corrected credential entry; WPA3/mixed selector gap open | NOT TESTED | NOT TESTED |

@@ -7,7 +7,26 @@ then the same paths after explicit off/on and real S3. Keep first failures,
 DHCP and bidirectional service evidence; never hide an intermediate join or
 recovery toggle. A stalled post-S3 GUI remains open. Standalone scan/roam
 analysis and mixed AP work cannot displace the remaining eligible STA cells.
-Latest GUI-service cycle:
+Latest strict saved-security cycle:
+`docs/TAHOE_GUI_STRICT_SAVED_SECURITY_20260912.md`. On the unchanged AF16
+image/boot, the previously saved WPA2-only fixture passes actual GUI
+selection, manual disconnect/reselect, and automatic recovery after GUI
+off/on. Two subsequent direct WPA2-only/LabAP-SAE round trips also pass.
+All seven service controls are 60/60 both ways; all five WPA2 targets also
+pass HTTP 200/exact payload hash. The first attempt's AP-side wrong password
+and native failure/fallback are preserved, not relabelled as a driver fix.
+The WPA2 menu unjoin reaches airportd in 11 ms; native WiFiAgent remains
+5894/runs 576 with readable 0644 preferences. Fixture terminates 09:19:13,
+host profile restored; guest ends LabAP/SAE, 9a:fb:5d:97:a9:02/ch13, .219.
+No AP/monitor fixture remains active. Next eligible P0.1 phase: saved open
+manual disconnect/reselect, open-start off/on and repeated open/SAE pairs.
+Full post-S3 GUI and all six-edge recovery combinations remain open.
+Use a fresh scratch; terminal archive contains 187 verified files at
+`/home/dima/Projects/itlwm/aiam-gui-strict-security-runtime-20260912.bXIHBe`,
+manifest `9612f68f5f498299f0e75aacd49f4f1e030426695c8af1ebd18737dc6fbcaca1`.
+Production/release is still 5e98d640; this cycle does not change driver bytes.
+
+Preceding GUI-service cycle:
 `docs/TAHOE_GUI_WIFIAGENT_READINESS_20260912.md`. The delayed ControlCenter
 path is localized to repeated 80-second diagnostic waits: native WiFiAgent
 cannot initialize because the airport preferences plist is root-only 0600.
@@ -23,7 +42,7 @@ read-only `scripts/check_tahoe_gui_service_readiness.sh` as the console user
 before further GUI tests. Explicit off/on starting from OpenWrt/SAE also
 auto-recovers that profile in about 12 seconds; the delayed minute control
 passes 60/60 each way. WiFiAgent PID and repaired read mode survive the writes.
-Current guest remains connected to OpenWrt/SAE, BSSID 50:4f:3b:cd:dd:67/ch100,
+At that preceding cycle's terminal, guest is OpenWrt/SAE, BSSID 50:4f:3b:cd:dd:67/ch100,
 IPv4 172.16.66.212, with independent USB management. No host AP fixture is
 running. Production/release remains 5e98d640/AF16. Durable cycle evidence:
 `/home/dima/Projects/itlwm/aiam-gui-unjoin-runtime-20260912.zvNP4h`.

@@ -9,7 +9,20 @@ sleep/wake separately, with actual GUI actions, DHCP and bidirectional traffic.
 Preserve first failures; do not call an intervening automatic fallback a direct
 transition. Follow the active GUI ledger for unavailable/untested cells.
 
-Latest GUI dependency is resolved for the tested laboratory path in
+Latest strict saved-security controls are in
+`docs/TAHOE_GUI_STRICT_SAVED_SECURITY_20260912.md`: real saved WPA2-only
+selection, manual disconnect/reselect, WPA2-start GUI off/on auto-recovery,
+and two direct WPA2-only/LabAP-SAE round trips all pass. Seven minute controls
+are 60/60 each way; five WPA2 controls also pass HTTP 200/payload hash. Preserve
+the first AP-side wrong-password failure and its native fallback separately.
+No driver bytes changed. Fixture is terminal 09:19:13 with host restored;
+guest ends on LabAP/SAE/ch13/.219, same boot and WiFiAgent 5894/runs 576.
+Next: saved open manual-disconnect/reselect, open-start off/on and repeated
+open/SAE pairs, in a fresh scratch. Keep full six-edge recovery and real-S3
+GUI cells open. All 187 archive files verify, manifest
+`9612f68f5f498299f0e75aacd49f4f1e030426695c8af1ebd18737dc6fbcaca1`.
+
+The preceding GUI dependency is resolved for the tested laboratory path in
 `docs/TAHOE_GUI_WIFIAGENT_READINESS_20260912.md`: exact reference init requires
 unprivileged reading of the airport preferences plist. Root-only 0600 prevents
 native WiFiAgent initialization and causes repeated 80-second ControlCenter
@@ -23,7 +36,7 @@ The new read-only GUI-service prerequisite must precede these tests. No new
 production kext or release identity is claimed for this environment repair.
 Explicit off/on from OpenWrt/SAE auto-recovers it in about 12 seconds, followed
 by a delayed 60/60+60/60 service control. Same native WiFiAgent PID and readable
-preferences survive. Current guest is OpenWrt/SAE on channel 100, IPv4
+preferences survive. That preceding cycle ended OpenWrt/SAE on channel 100, IPv4
 172.16.66.212; no AP fixture is running. This is not a WPA2-only off/on pass.
 
 The preceding executed result is in
