@@ -137,13 +137,15 @@ built, installed and runtime-qualified after recreating the full GUI
 precondition. WPA3/PMF first join, saved reconnect and UI off/on pass DHCP
 and20/20 each way. WPA2/open GUI regressions and final LabAP service also
 pass. These AF16 tests are awake tests, not a new S3/GUI qualification.
-Publication is pending at this documentation checkpoint.
+The existing alpha was updated to5e98d640 at05:41 UTC; public download is
+byte-identical to the tested archive (asset558697358,15695095bytes).
 
-The next GUI-observed discrepancy is premature Connected/target identity
+Another GUI-observed discrepancy is premature Connected/target identity
 behind the WPA3 password dialog while the live radio/DHCP remain on LabAP.
 Its driver-versus-userspace ownership is not yet established. AP/ad hoc UI
 and post-S3 GUI availability remain open alongside the full combination
 matrix; do not let unrelated static work displace these GUI paths.
+Next functional cell: system-UI AP enable/disable and external-client service.
 
 AF16 evidence: `/home/dima/Projects/itlwm/aiam-gui-cache-runtime-20260912.gHMjC3`,
 251 verified files, manifest SHA256

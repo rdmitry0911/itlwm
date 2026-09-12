@@ -1,7 +1,7 @@
 # GUI WPA3 discovery after a previously connected BSSID changes — 2026-09-12
 
 Status: production correction committed/pushed as 5e98d640; exact-new-image
-GUI runtime qualification PASS, publication pending. This is a GUI-matrix P0
+GUI runtime qualification PASS, alpha published/readback verified. This is a GUI-matrix P0
 dependency, not an independently selected static surface item.
 
 ## Live failure on the published binary
@@ -131,6 +131,15 @@ ZIP15695095bytes, SHA256
 
 ## Remaining GUI work
 
+Publication completed05:41:52 UTC in the existing `v2.4.0-alpha` release.
+Title: AirportItlwm Tahoe v2.4.0-alpha (5e98d640); asset ID558697358,
+15695095bytes, ZIP SHA256 as recorded above. The downloaded public asset
+compares byte-for-byte with the frozen installed/tested archive. The previous
+c123d132 asset was preserved before replacement. Publication receipts:
+`/home/dima/Projects/itlwm/aiam-gui-cache-release-20260912.IIURgq`;
+publisher log SHA256
+`33a3b71713597375e1d7fdf20cf4ed30e096dc5e760e228bacaec9a1c058e40e`.
+
 The password-dialog screenshot labels the new WPA3 target Connected behind
 the dialog before credentials are entered. Simultaneous readback still shows
 LabAP BSSID02/ch13 and DHCP172.16.66.219, while the test AP has no associated
@@ -138,3 +147,7 @@ station. This is a real UI identity/status inconsistency; its ownership is
 not yet established and it is not fixed by cache retirement. GUI after true
 S3 still has the preserved framebuffer wake-ack prerequisite failure. AP/ad
 hoc UI and the remaining profile/security/recovery combinations remain open.
+The next functional GUI cell is system-UI AP enable and external-client
+service. Do not turn the premature label alone into a speculative driver fix:
+source inspection shows getSSID/compactSSID already read the actual RUN BSS,
+not desired network intent. Additional ownership evidence would be required.

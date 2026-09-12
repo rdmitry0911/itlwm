@@ -37,6 +37,13 @@ or a necessary safety prerequisite. Use the owned laboratory guest and protect
 independent management connectivity; do not modify/reboot physical10.90.10.22.
 The current matrix ledger is `docs/TAHOE_GUI_CONNECTION_MATRIX_20260912.md`.
 
+GUI checkpoint2026-09-12:5e98d640 closes the live stale former-BSS ownership
+fault after WPA2→SAE. Exact AF16 GUI WPA3 first join/reconnect/off-on plus
+open/WPA2 regressions pass; the alpha is published with public readback
+verification. See `docs/TAHOE_GUI_STALE_BSS_CACHE_20260912.md`. Continue with
+system-UI AP enable/external-client service, while keeping post-S3 GUI,
+ad hoc and the remaining profile/security combinations explicitly open.
+
 ### General selection rule
 
 When choosing the next layer that reduces surface mismatch with the reference,
