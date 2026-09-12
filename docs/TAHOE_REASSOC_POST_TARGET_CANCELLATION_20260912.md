@@ -8,7 +8,9 @@ image is nowc123d132/D636. The first AP/WPA2 regression did not exercise the
 post-target edge. A subsequent controlled native leave now observes exact
 phase4 retirement and a successful successor roam on radio, but its restored
 traffic is19/20 forward,20/20 reverse. Its complete observer ends without
-errors. Full recovery/regression qualification remains open.
+errors. The completed limited-alpha regression below includes native STA,
+off/on, strict S3 and all three post-S3 AP modes, with a failed reverse roam
+and packet losses retained. Full recovery/reference qualification remains open.
 Physical10.90.10.22 was not touched.
 
 ## Qualification before the failure
@@ -331,3 +333,144 @@ successful subsequent native admissions; broader D636 regression continues.
 Controller/readbackSHA256:
 f0487952a01a8a749c5c357b9b25ea47fe5fb363a3401b3452a5363e4e8b011a,
 56bba1348c5d93e24db1a1b99688763cc3ee9c01b1c4cc4f7ee63ecbfb1a82c4.
+
+## Same-image scan/security regression after exact cancellation
+
+The original roam-scan-abort/native-WPA2 overlap is repeated on D636 at
+03:00:09UTC. New upper128 retains superseded roam10/source108 while physical
+scan152 remains live. Its exact real terminal schedules replay1; the worker
+submits new2GHz physical153 and publishes STARTED only across its actual
+doorbell. Target WPA2 gets DHCP192.168.73.35 and20/20 packets each way.
+The complete90-second observer ends errors0/calls35/busy0; controller33452
+and ordinary host-profile restoration return0. This is coverage of the actual
+deferred handoff, not merely an unrelated successful WPA2 selection.
+Trace/controllerSHA256:
+6f96e2cafced00331f4fc9c6a41d404d0655d17c0a31770ab59e758c5fcda233,
+f2633e57a71e6607b1aceddf107721c4bc7810827309648abba9aff9478fe2b0.
+
+The separate open->WPA2 sequence completes on the same image: open selection
+03:02:11 gets DHCP.26 and20/20 each way; after ordinary fixture teardown,
+WPA2 selection03:03:07 gets DHCP.35 and20/20 each way. No forced LabAP request,
+off/on or reboot is inserted between them. A fresh180-second version of the
+same scalar observer covers both selections and ends errors0/calls55/busy0.
+Controller14817 and both host restorations return0. Native WPA3 selection
+03:05:32 then gets DHCP.30/20x20, with observererrors0/calls21/busy0 and
+controller45819 returning0. Ordinary teardown automatically restores
+LabAP02/channel13, WPA3/DHCP.219, before the off/on and sleep controls.
+Open-to-WPA2 trace and open/WPA2/WPA3 controllerSHA256:
+a4ec5c6b22b8f31c9efde41d00431468d1d40880c26f741669efa431667cd25d,
+92307dda45fdab924a2f1bb69cef78d040a6a6919e9f813aa7e06aee9914a4e0,
+e385c1930c4eda3c7087a3264021294db58dcff57e611c211df276eb41a93dcf,
+09f244c5539bddb5a3b37d9317baa05e662f3eede7e2eaeae287a5308a936164.
+
+The installed D636 bundle has also been packaged without rebuilding while
+the completed data window's observer finished. Installed/build/extracted
+bundles compare identically and all357 production hashes verify. Packaging
+82395 and download75834 return0. Guest archive directory:
+/private/var/tmp/post-target-release.q1Tsz4. The local ZIP is15,695,042bytes,
+SHA2560ac3048d7df273c298d45efa16ac62056668794999617c10815c9103b618054a.
+This is an artifact-integrity result, not publication or completed RF matrix.
+
+## Same-image off/on and actual S3 recovery
+
+Native WPA3 off/on32963 returns0: power-off/address withdrawal is verified
+03:07:15, power-on03:07:16 and automatic same-profile DHCP.219 at03:07:25.
+Separate pre-S3 data check40478 passes20/20 each way; it does not erase the
+earlier reconnect losses. Diagnostic USB Ethernet and tablet are then removed.
+Actual suspended state is observed03:09:04, held5s and woken03:09:09. macOS
+records Normal Sleep03:09:01->03:09:10UTC. Same boot and D636 return through
+WiFi alone with WPA3/DHCP.219 and20/20 bidirectional1400-byte traffic. Only
+after that check are the two exact USB devices restored. Controller41450
+returns0, including both strict S3/data gates. This is not active-AP-through-
+sleep, GUI-after-sleep or zero-loss-roaming qualification.
+Off/on, pre-S3 and S3 controllerSHA256:
+cc0d973ef7ee201cf67a9a593b1a48c567adc3a1617ed10b6bb18a2a79cfedef,
+64ce9c88951b6f41742079b693ed9ede8c044c97c9e6cea72d6d1620b9e24f46,
+fc311194e411af482cdeb4e75224e40ea227b3c700b612515b20bdd6714d3289.
+
+## Post-S3 AP security matrix
+
+On that same boot/image, ordinary Internet Sharing starts sequential WPA3,
+WPA2 and open APs at03:10:30,03:12:17 and03:14:04UTC. The real external AX211
+negotiates SAE/mandatoryPMF, WPA2-PSK and NONE respectively, obtains192.168.2.2,
+and passes20/20 forward,10/10 cold-ARP reverse and exact118-byte HTTP through
+the guest USB/NAT backhaul in every mode. Each normal stop removes bridge100
+and restores STA with10/10 gateway traffic. Exact host-profile restoration
+returns0 each time and wired management remains unchanged. Open finishes
+03:15:48; the matrix returns0/all_three. No AP forward duplicates are reported.
+The complete380-second observer ends errors0/calls39/retired0; all three AP
+cycles and owning controller42147 return0. These ordinary cycles do not hit
+the held-target cancellation edge; the independent q3/q4 observations above
+establish that edge. A later ordinary successor21 completes successfully.
+This is not an active AP through sleep or concurrent WiFi STA backhaul.
+WPA3/WPA2/open controllerSHA256:
+5fad25a0caa9a3b8a35d6585e99077de1d387d867f0fab70db3b61956217afd6,
+d8da83876c97b5f3455ed3b941033b0add1dbc2337846c237fa145c9f17399cb,
+0b29d7770c7fe4de9fe0c412b00cb94d5c1640d887cd7abf0e7daa5f970a9c02.
+Complete AP observerSHA256:
+d208009658031cdc771d270180137aef4a925803d5a008d509f1b88ff3b998ef.
+
+## Final post-S3 native roaming: one target success, reverse request fails
+
+Return q1 requests ca/channel9->02/channel13 at03:17:30UTC. The first target
+SAE exchange (epoch321/relay33, Commit/Confirm tickets5873/5874 with the
+direct-ticket high bit) accepts both real peer phases, then ASSOC/RUN on02.
+Its observer ends errors0/encap_drops0. Traffic is249/250 forward and245/250
+reverse, reverse maximum1043.707ms. The target gate/controller4677 returns0,
+but these losses explicitly prevent a seamless-roaming claim.
+
+The reverse q1 requests02->ca at03:19:34.729. It starts physical scan403,
+including2GHz and5GHz portions. At03:19:39.336 the owned reassociation failure
+is published, followed immediately by scans404/405. There is no target AUTH,
+SAE preparation/peer or RUN in this90-second observer. Final BSSID is still02;
+controller17857 returns1 at the requested-target assertion. Source traffic is
+250/250 each direction; both endpoint captures report zero capture drops.
+This is a failed target transition with preserved source service, not a pass.
+
+The serial tail records SUPERSEDED_BY_WCL_REQUEST for this latest attempt,
+not NO_ELIGIBLE_TARGET. Thus neither AP RF absence nor an SAE timeout is
+established. The exact newer public scan's origin, priority and framework
+deadline require further attribution. A bounded historical airportd log query
+returned no matching lines (exit1) and cannot answer that question. No second
+reverse request is issued merely to replace the failure. Whether this is a
+regression from the latest correction is not established; earlier candidates
+also retained intermittent post-S3 native-discovery failures, but that does
+not identify this exact cause. This real user-facing overlap is the next layer.
+
+Final-restored-q1 is a separate read-only/data control: same D636/boot900A,
+WPA3/DHCP.219 and20/20 each way, controller40632 returning0. No radio toggle,
+network selection or reboot is used to recover from the reverse failure.
+Return/reverse traceSHA256:
+0726d371814bfca8c4a12dc411f6f302c5c6ff01051e10e7eeef7188ee1d270c,
+0cef59d37cc04f4d2b07a2feb4b526946b5395c340da9bad4d1f8b437ede3cd0.
+
+## Frozen qualification and prepared publication
+
+Final03:23:42 readback confirms the same loaded D636/boot900A, WPA3/DHCP.219
+on02/channel13, diagnostic USB networking restored, bridge100 absent and no
+guest dtrace/tcpdump. The host's exact managed profile is connected and wired
+management is unchanged. No test/tool handle remains live.
+
+Working evidence and its durable copy are now read/copy-only:
+/dev/shm/aiam-post-target-runtime-20260912.TpUKkd and
+/home/dima/Projects/itlwm/aiam-post-target-runtime.0ybGDl.
+The completed predecessor/source/build evidence is included as the explicitly
+historical implementation-and-prior-runtime subtree. All746 manifest entries
+verify in both copies; EVIDENCE.sha256 SHA256:
+9a2cce23cd70d1e488857150b0e06f126a0b78d07c1ca9fe9cab5f240359a250.
+The first manifest generator accidentally included its own newly created file;
+both verifiers correctly rejected that sole entry. The failed manifest/logs
+are retained in the separate publication root. Excluding the root manifest
+from its own payload list produces the fully verified manifest above; no
+runtime evidence was edited to obtain a passing check.
+
+Final serial-tail and restored-link controllerSHA256:
+e17bd72b5bc324bc09873ca07c18e7c3023c3dd7ffc09c7c10f8f8a42e9782fb,
+031f441c8181cd10a6462e4b8df4c4cb42581c480838139453a769b3302f52bd.
+Publication preparation is separate at
+/home/dima/Projects/itlwm/aiam-post-target-release-20260912.tLPwIs.
+It preserves the verified old477ab0af ZIP, exact prior release metadata and
+notes, and guarded publication/download comparison. The prepared new notes
+explicitly retain the failed reverse target transition and data gates. This
+is LIMITED_ALPHA_KNOWN_FAILURES, not full parity or a silently relaxed green
+matrix. Publication has not occurred at this frozen checkpoint.
