@@ -4,9 +4,12 @@ Status: persistent RF failure and a production-function negative requirement
 reproduced on Linux and Tahoe. A common lifecycle correction is implemented;
 source checks, build and activation pass as described below. Public alpha
 remains477ab0af/842B; loaded
-image is nowc123d132/D636, with one successful AP/WPA2 regression but no
-observed post-target cancellation in that control. The exact correction
-gate remains open. Physical10.90.10.22 was not touched.
+image is nowc123d132/D636. The first AP/WPA2 regression did not exercise the
+post-target edge. A subsequent controlled native leave now observes exact
+phase4 retirement and a successful successor roam on radio, but its restored
+traffic is19/20 forward,20/20 reverse. Its complete observer ends without
+errors. Full recovery/regression qualification remains open.
+Physical10.90.10.22 was not touched.
 
 ## Qualification before the failure
 
@@ -232,3 +235,99 @@ Trace/controller/initial-loss logSHA256:
 18e377c7b4b4b538bbf8b31bb8c7d0fc62e73f2acac68c2fd42de0057df5a6d0,
 460dbdee89a6b3d100ec878157d1aebb9667325152fd766463f0a607276fd61a,
 eabf2d8fb65b9687279335f156a114e896e407652c96fcd0036d89fe0d8c344f.
+
+## Controlled held-peer cancellation: AP noncoverage and native-leave evidence
+
+The unchanged D636 image and boot900A are retained. The owned AX211 advertises
+LabAP/channel9, SAE/group19/CCMP/PMF-required with the existing LabAP credential.
+Its external-management controller omits received Commits only from the exact
+guest MAC4e:bc:8d:ff:50:23, forwarding other management frames and actual TX
+statuses. It does not manufacture auth bodies, driver owners or terminals.
+The existing framework-roam helper requests its real BSSID80:e4:ba:20:ef:f9.
+Wired management and guest USB diagnostics remain independent of both radios.
+
+AP overlap q2 starts the roam02:47:32.805UTC. The driver admits its target;
+hostapd receives and holds the first Commit02:47:38.640. Ordinary Internet
+Sharing enable is requested02:47:38.723; bridge100/ap1 are active02:47:42.
+Two identical Commits are captured on the monitor and reported by hostapd.
+Nevertheless the full240-second observer ends errors0/calls19/retired0:
+no active post-target owner reaches the new hard-cancel helper. Therefore the
+controller returns1 at its exact-coverage assertion before any AP client test.
+Failure cleanup disables Sharing, restores the host profile and leaves guest
+WiFi recovered. This is a missed cancellation edge, not an AP service pass
+or a demonstrated hard-cancellation failure. The trace does not locate the
+other retirement path and cannot establish why AP enable omitted this edge.
+
+Native-leave q3 replaces that ambiguous AP action with the ordinary public
+CoreWLAN disassociate method on en1. The small userland helper links the installed
+Foundation/CoreWLAN SDK; it does not call private driver functions or report
+its void return as successful recovery. SourceSHA256:
+e0b89854a631c5c9e035404049f06a497eef006b91f11b735ab9b16295b70bc3.
+
+- Target start returns1 at02:52:04.236UTC; hostapd holds the actual guest
+  Commit02:52:04.393. The controller requests native leave02:52:04.401.
+- At02:52:04.661 the actual setWCL_LEAVE_NETWORK enters; the selected-lock
+  snapshot reads active1/serial5/phase4/source51/current52/expected52.
+  clear_locked is called by cancel_target_epoch_locked, and its return reads
+  active0/serial0/phase0. Thus historical-source/current-target cancellation
+  is now observed on the real loaded driver.
+- Without off/on or reboot, native recovery obtains WPA3/DHCP172.16.66.212
+  at02:52:30 using a different private MAC. The later real roam serial6
+  completes successfully at02:52:53.551; readback identifies BSSID
+  50:4f:3b:cd:dd:66/channel5. This is a successor-admission success, not proof
+  that the original LabAP profile was recovered. The check helper only gates
+  security/subnet, so its labap argument must not be treated as an SSID check.
+- Restored1400-byte traffic is19/20 forward and20/20 reverse; forward seq0
+  is missing. The strict data gate fails. This loss is retained independently
+  of the exact logical-retirement success.
+- The monitor ends with0 captured,1 received-by-filter,0 dropped: stopping
+  it immediately after the short exchange did not drain the buffered record.
+  Hostapd's received-management event is real RF evidence, but q3 has no
+  independent captured Authentication body. A later separate control must
+  allow the monitor buffer to drain; q3 is not relabelled.
+
+Q2 complete traceSHA256:
+d5143e8ef383ab4503944bd57ba2c3728cc0687033e4f68e4ace3eb02bd3d7e2.
+Q3 peer log/data-gateSHA256:
+aa20831deab735718016b58aad0d3de3a863c2eb2ba2c47678cf5ebfd79cb967,
+38431dffdc71fbac2b5ab3ed0f776237b6af6779f7586e33162d3ecb065c9144.
+Q3 observer/controller66226 is now terminal: observer0, errors0/calls16/
+retired1; overall controller1 preserves the failed strict data gate. No new
+stimulus was issued during the remainder of its240-second observation.
+Complete traceSHA256:
+eb420ddcc4a3498fa660c3d5496a2a1e5671572b1fbc59f4100dd6fcf09244c3.
+A separately labelled ordinary LabAP request at02:56:14->02:56:23 restores
+DHCP.219 and02/channel13 before the next control; it is not retroactively
+part of q3's automatic recovery. The next separately labelled control tests
+an explicit successor LabAP selection after exact cancellation and verifies
+its BSSID/address as well as traffic.
+
+Q4 also reaches an actual held target Commit and native leave: at
+02:56:52.548UTC the helper clears active1/serial7/phase4/source78/current79.
+The complete120-second observer ends0, errors0/calls18/retired1. A subsequent
+ordinary roam serial8 completes successfully at02:57:38.218. However the
+initial framework-roam process reports16/Busy: the actual target attempt was
+already admitted independently. Its nonzero wait triggers controller cleanup
+before the planned successor networksetup request. The overall controller is1,
+not a passing explicit-roam-request or successor-selection test. The proposed
+two-second monitor drain is also not reached on that failure path, so the
+empty capture is retained. Q4 supplies another actual hard-cancel/successor
+observation, but cannot substitute for the separately planned explicit request.
+Trace/request logSHA256:
+53ff942a8e33d79b987f840db6a163f4c44bd8b325f2f2dccecc1454f45406da,
+82c156887e47df2232c37e7be983a4263b073053dfd54fa901a1d59fa4172a1e.
+
+After q4's terminal, the separately labelled explicit-successor-q1 issues one
+ordinary networksetup LabAP request02:58:59->02:59:07. No off/on, second request
+or reboot is used. WPA3/DHCP.219 returns; the post-data readback confirms
+02/channel13 on the same boot/image. Traffic is20/20 forward with one packet
+outside the one-second wait threshold (maximum1130.395ms),19/20 reverse.
+Thus the target-selection/DHCP result succeeds but the strict data controller
+returns1. Its later in-script BSSID assertion was not reached after that
+failure; a separate read-only02:59:51 snapshot establishes the actual BSSID.
+Neither this follow-up nor q3/q4 qualifies lossless reconnect or all saved
+profile policy. They do establish real post-target logical retirement and
+successful subsequent native admissions; broader D636 regression continues.
+Controller/readbackSHA256:
+f0487952a01a8a749c5c357b9b25ea47fe5fb363a3401b3452a5363e4e8b011a,
+56bba1348c5d93e24db1a1b99688763cc3ee9c01b1c4cc4f7ee63ecbfb1a82c4.
