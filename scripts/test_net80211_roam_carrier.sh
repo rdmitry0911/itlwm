@@ -19,7 +19,7 @@ awk '/^ieee80211_bss_switch_identity_current_locked\(/ { selected=1; print "int"
     selected { print } selected && /^}/ { selected=0 }' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_node.c" > "$ROAM_TEST_DIR/production.inc"
 awk '/^ieee80211_wcl_reassoc_clear_locked\(/ { selected=1; print "static void" }
-     /^ieee80211_wcl_reassoc_cancel_scan_epoch_locked\(/ { selected=1; print "void" }
+     /^ieee80211_wcl_reassoc_cancel_(scan|target)_epoch_locked\(/ { selected=1; print "void" }
      /^ieee80211_wcl_reassoc_scan_completion_begin\(/ { selected=1; print "int" }
      selected { print } selected && /^}/ { selected=0 }' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211.c" >> "$ROAM_TEST_DIR/production.inc"
@@ -40,6 +40,7 @@ awk -v baseline="${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" -v replacement
         close(replacement)
     }
     /^ieee80211_pae_assoc_epoch_note_newstate\(/ { selected=1; print "void" }
+    /^ieee80211_pae_assoc_epoch_begin_replacement\(/ { selected=1; print "uint64_t" }
     /^ieee80211_sae_wcl_fresh_carrier_accepted\(/ { selected=1; print "void" }
     /^ieee80211_roam_link_source_epoch\(/ { selected=1; print "uint64_t" }
     /^ieee80211_roam_link_(begin|failed|note_terminal)\(/ { selected=1; print "void" }

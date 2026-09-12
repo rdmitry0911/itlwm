@@ -32,6 +32,7 @@ if [ -z "${WCL_REASSOC_NEGATIVE_REF:-}" ] && [ "${WCL_REASSOC_EXPECT_DEFECTS:-0}
     awk '/^ieee80211_wcl_reassoc_serial\(/ { selected=1; print "u_int64_t" }
          /^ieee80211_wcl_reassoc_(current|claim_completion|scan_completion_begin)\(/ { selected=1; print "int" }
          /^ieee80211_wcl_reassoc_clear_locked\(/ { selected=1; print "static void" }
+         /^ieee80211_wcl_reassoc_cancel_target_epoch_locked\(/ { selected=1; print "void" }
          /^ieee80211_wcl_reassoc_take_completion\(/ { selected=1; print "static int" }
          /^ieee80211_wcl_reassoc_post_(failure|success)\(/ { selected=1; print "void" }
          /^ieee80211_wcl_reassoc_post_failure_owned\(/ { selected=1; print "u_int64_t" }

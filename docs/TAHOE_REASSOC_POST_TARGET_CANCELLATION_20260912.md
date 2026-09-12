@@ -1,9 +1,10 @@
 # Post-target reassociation stranded by ordinary cancellation
 
 Status: persistent RF failure and a production-function negative requirement
-reproduced on Linux and Tahoe. No production correction or radio recovery is
-claimed at this checkpoint. Public alpha remains477ab0af/842B; loaded candidate
-is092a7479/9B5B. Physical10.90.10.22 was not touched.
+reproduced on Linux and Tahoe. A common lifecycle correction is implemented;
+executed source checks are described below. Build, activation and the radio
+correction gate remain required. Public alpha remains477ab0af/842B; loaded
+candidate is092a7479/9B5B. Physical10.90.10.22 was not touched.
 
 ## Qualification before the failure
 
@@ -106,3 +107,64 @@ Durable working copy: /home/dima/Projects/itlwm/aiam-wcl-background-handoff-runt
 The16,414,777-byte serial prefixSHA256 is
 8649f4c028b27a83fa61af03c7aae039bd76379a340ceec7a11e808dd97f331c.
 Neither working root is frozen yet. Old completed archives remain read-only.
+
+## Candidate and executed cancellation boundary
+
+ieee80211_wcl_reassoc_cancel_target_epoch_locked retires only the currently
+admitted serial in a known post-target phase, with expected-current-epoch
+equality under the selected-BSS leaf. The ordinary epoch invalidation calls
+it before advancing/revoking credentials. No historical source-epoch equality
+is required after controlled target replacement. Logical request/BSSID/phase
+and common background markers are cleared; monotonic serial and the real
+accepted-scan receipt are retained. No firmware lease or descriptor is cleared.
+
+The identity-checked bss_switch source-leave path explicitly skips this hard
+cancellation. The separate controlled replacement helper and forward
+SCAN->AUTH->ASSOC->RUN chain also preserve the admitted target. Existing
+scan-only cancellation retains its exact source-epoch rules. There is no
+change to authentication success, protocol status mapping or a new synthetic
+0x49/0xcf publication; independent leave/link-loss still owns its notification.
+
+New executable coverage:
+
+- 30 post-target phase/state hard-cancellation combinations, exercising the
+ complete actual epoch and newstate-boundary functions. The original negative
+ now passes; replacing only the epoch function with unchangedc4fc9c40 makes
+ the same assertion fail again (exit134).
+- 145 carrier/bridge/replacement cases, including nine stale/missing identity
+ exclusions, real controlled replacement followed by cancellation, nested
+ cancellation, successor admission during revocation and forward state-chain
+ preservation. The fixture now executes the complete actual replacement
+ epoch helper, replacing its former one-line double. Credential/PMF callbacks,
+ controller transport and firmware remain explicit fixture boundaries.
+- 25 complete common reassociation admission/abort/retirement/controller-gate
+ cases. New cases compose hard cancellation with actual successor admission,
+ reject the old scan/owned failure and reject an already queued old controller
+ completion. The separate epoch fixture covers the full epoch implementation.
+
+The old eight scan-only exclusion cases now call that actual narrow helper
+directly under its lock. They no longer incorrectly require an ordinary hard
+cancellation to preserve a post-target request. The controlled source-leave
+tests explicitly assert preservation and continued identity validity instead.
+This is a corrected distinction between two operations, not a relaxed
+requirement that allows a stranded owner.
+
+Linux and Tahoe final lifecycle and trace gates all pass, each including its
+complete payload aggregate. Final native rerun79652 exits0, including the
+three delayed-controller cases. All1022 native input hashes match before
+and after those tests. Native final logSHA256:
+aca75ac4d093607c13b68d14023bc07405f52559a6b5d93eb5dac46ee4c3ab1c.
+Final source/test/dependency manifest (1022 inputs) SHA256:
+c9360d2af789b092d2c8a98f2160425cb405bb349859a6de0675747be816fac5.
+Native isolated full tree: /private/var/tmp/post-target-cancel-full.g3ve0C.
+Linux final lifecycle/trace log SHA256:
+6d923389a168f14f38b3b27a40f348eb5beb11f10bc1167aa075ed65e3db694c,
+cab58a563d2dfa73cf8c07ecdcafc58d48a430b932f9c95e8f57d8d2e7d591b8.
+Negative epoch-only replaySHA256:
+26d898dd7957e44ac501fc9ac40ff45df4dbe90977f5950f091d3584fd953f14.
+
+The live failed guest is intentionally unchanged during source tests/build
+preparation. AP/open, the final9B5B roaming pair, new-image loaded recovery and
+repeatable controlled post-target cancellation/AP regression are still open.
+IWM/IWX share the common correction, not IWN hardware evidence; their separate
+SAE failure-cleanup requirements and other deferred-BSS liveness gaps remain.

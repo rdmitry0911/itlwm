@@ -35,6 +35,9 @@ enum { kAirportItlwmPostPltiTraceEventBssSelected,
        kAirportItlwmPostPltiTraceEventJoinBssEntered };
 enum { kIONetworkLinkValid=1, kIONetworkLinkActive=2 };
 enum { IEEE80211_SAE_WCL_REQUEST_BOUND=4,
+       IEEE80211_SAE_WCL_REQUEST_PENDING=1,
+       IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED=2,
+       IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED=3,
        IEEE80211_NEWSTATE_ARG_SCAN_HOP=1000,
        IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE=1001 };
 struct IOSimpleLock { bool held=false; };
@@ -90,7 +93,7 @@ struct ieee80211com {
         int active=0, binding_pending=0; uint8_t bssid[6]={};
     } ic_public_initial_bssid_pin;
     uint8_t ic_des_bssid[6]={};
-    struct { int phase=0; uint64_t generation=0; } ic_sae_wcl_request;
+    struct { int phase=0; uint64_t generation=0, association_epoch=0; } ic_sae_wcl_request;
     int ic_sae_wcl_fresh_carrier_required=0, ic_sae_wcl_request_policy_starting=0;
     void (*ic_pae_mfp_txn_cancel)(ieee80211com *, uint64_t)=nullptr;
     void (*ic_event_handler)(ieee80211com *, int, void *)=nullptr;
@@ -158,9 +161,15 @@ static void ieee80211_stop_ampdu_tx(ieee80211com *ic, ieee80211_node *, int) {
     ++stops;
     if (cancelDuringStop) ++ic->ic_pae_assoc_epoch;
 }
-static uint64_t ieee80211_pae_assoc_epoch_begin_replacement(ieee80211com *ic) {
-    if (++ic->ic_pae_assoc_epoch == 0) ++ic->ic_pae_assoc_epoch;
-    return ic->ic_pae_assoc_epoch;
+uint64_t ieee80211_pae_assoc_epoch_begin_replacement(ieee80211com *);
+static void ieee80211_sae_wcl_pmk_claim_retire_replacement_locked(ieee80211com *ic, uint64_t epoch) {
+    assert(ic->ic_pae_selected_bss_lock->held && ic->ic_pae_assoc_epoch==epoch);
+}
+static bool ieee80211_sae_wcl_request_scan_issued_locked(ieee80211com *ic, uint64_t generation) {
+    return generation!=0 && ic->ic_sae_wcl_request.phase==IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED;
+}
+static bool ieee80211_sae_wcl_request_run_retarget_issued_locked(ieee80211com *ic, uint64_t generation) {
+    return generation!=0 && ic->ic_sae_wcl_request.phase==IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED;
 }
 static void copy_node(ieee80211com *, ieee80211_node *dst, const ieee80211_node *src) {
     ++copies; *dst=*src; dst->ni_port_valid=0;
@@ -255,12 +264,17 @@ struct Fixture {
 };
 
 int main() {
-    if (std::getenv("ROAM_CANCEL_REQUIRE") != nullptr) {
+    {
         // Reproduce the radio failure without an AP/authentication double:
         // a selected target has crossed the controlled replacement epoch,
         // then an ordinary INIT/SCAN cancellation invalidates that attempt.
         // The complete production epoch/newstate functions run here. The
         // fixture does not claim to execute firmware or the AP controller.
+        for (auto phase : {IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED,
+                           IEEE80211_WCL_REASSOC_OWNER_LEAF_SAME_BSS_TRANSPARENT,
+                           IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT,
+                           IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL,
+                           IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_TIMEOUT}) {
         for (auto state : {IEEE80211_S_RUN, IEEE80211_S_AUTH,
                            IEEE80211_S_ASSOC}) {
             for (auto next : {IEEE80211_S_INIT, IEEE80211_S_SCAN}) {
@@ -271,12 +285,11 @@ int main() {
                 f.ic.ic_wcl_reassoc_owner_serial=17;
                 f.ic.ic_wcl_reassoc_source_epoch=241;
                 f.ic.ic_wcl_reassoc_owner_active=1;
-                f.ic.ic_wcl_reassoc_owner_last_leaf=
-                    IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+                f.ic.ic_wcl_reassoc_owner_last_leaf=phase;
                 f.ic.ic_wcl_reassoc_request.feature_flags=0x34;
                 ieee80211_pae_assoc_epoch_note_newstate(&f.ic,next,-1);
-                std::printf("POST_TARGET_CANCEL state=%u next=%u active=%u serial=%llu source=%llu current=%llu\n",
-                    unsigned(state),unsigned(next),f.ic.ic_wcl_reassoc_owner_active,
+                std::printf("POST_TARGET_CANCEL phase=%u state=%u next=%u active=%u serial=%llu source=%llu current=%llu\n",
+                    unsigned(phase),unsigned(state),unsigned(next),f.ic.ic_wcl_reassoc_owner_active,
                     static_cast<unsigned long long>(f.ic.ic_wcl_reassoc_owner_serial),
                     static_cast<unsigned long long>(f.ic.ic_wcl_reassoc_source_epoch),
                     static_cast<unsigned long long>(f.ic.ic_pae_assoc_epoch));
@@ -287,10 +300,13 @@ int main() {
                 assert(f.ic.ic_wcl_reassoc_next_serial==17);
                 assert(f.ic.ic_wcl_reassoc_request.feature_flags==0);
                 assert(losses.empty());
+                assert(!ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,17));
             }
         }
-        std::puts("PASS: post-target cancellation requirements (six state edges)");
-        return 0;
+        }
+        std::puts("PASS: post-target cancellation requirements (30 phase/state edges)");
+        if (std::getenv("ROAM_CANCEL_REQUIRE") != nullptr)
+            return 0;
     }
     unsigned cases=0;
     for (bool protectedNet : {false,true}) {
@@ -546,7 +562,14 @@ int main() {
         const auto oldEpoch=f.ic.ic_pae_assoc_epoch;
         const auto selected=f.ic.ic_pae_selected_bss.epoch;
         const auto result=ieee80211_pae_assoc_epoch_begin_internal(&f.ic,0,0,0,&identity);
-        if (change==0 || change==12) assert(result==8 && f.ic.ic_pae_assoc_epoch==8);
+        if (change==0 || change==12) {
+            assert(result==8 && f.ic.ic_pae_assoc_epoch==8);
+            assert(f.ic.ic_wcl_reassoc_owner_active==(change==0 ? 1U : 0U));
+            identity.continuation_epoch=result;
+            const auto irq=IOSimpleLockLockDisableInterrupt(&f.lock);
+            assert(ieee80211_bss_switch_identity_current_locked(&f.ic,&identity));
+            IOSimpleLockUnlockEnableInterrupt(&f.lock,irq);
+        }
         else if (change==13) {
             assert(result==8 && f.ic.ic_pae_assoc_epoch==10);
             identity.continuation_epoch=result;
@@ -642,7 +665,14 @@ int main() {
         case 7: f.ic.ic_pae_selected_bss_lock=nullptr; break;
         }
         const auto flags=f.ic.ic_flags;
-        assert(ieee80211_pae_assoc_epoch_begin(&f.ic)==8);
+        // These are the narrow scan-only helper's unchanged exclusions,
+        // not an assertion that hard cancellation preserves target owners.
+        if (f.ic.ic_pae_selected_bss_lock != nullptr) {
+            const auto irq=IOSimpleLockLockDisableInterrupt(&f.lock);
+            ieee80211_wcl_reassoc_cancel_scan_epoch_locked(&f.ic,7);
+            IOSimpleLockUnlockEnableInterrupt(&f.lock,irq);
+        } else ieee80211_wcl_reassoc_cancel_scan_epoch_locked(&f.ic,7);
+        assert(f.ic.ic_pae_assoc_epoch==7);
         assert(f.ic.ic_wcl_reassoc_owner_active);
         assert(f.ic.ic_wcl_reassoc_request.feature_flags==0x34);
         assert(f.ic.ic_flags==flags && losses.empty());
@@ -673,6 +703,100 @@ int main() {
         assert(f.ic.ic_wcl_reassoc_owner_serial==32 && (f.ic.ic_flags & IEEE80211_F_BGSCAN));
         assert(f.ic.ic_wcl_reassoc_request.feature_flags==0x78 && losses.empty());
         assert(ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,32));
+        ++cases;
+    }
+    for (unsigned change=0; change<9; ++change) {
+        Fixture f;
+        f.ic.ic_wcl_reassoc_next_serial=f.ic.ic_wcl_reassoc_owner_serial=31;
+        f.ic.ic_wcl_reassoc_owner_active=1;
+        f.ic.ic_wcl_reassoc_source_epoch=7;
+        f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+        f.ic.ic_wcl_reassoc_request.feature_flags=0x34;
+        uint64_t expected=7;
+        switch (change) {
+        case 0: expected=0; break;
+        case 1: expected=6; break;
+        case 2: expected=8; break;
+        case 3: f.ic.ic_wcl_reassoc_owner_serial=0; break;
+        case 4: f.ic.ic_wcl_reassoc_next_serial=32; break;
+        case 5: f.ic.ic_wcl_reassoc_owner_active=0; break;
+        case 6: f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE; break;
+        case 7: f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED; break;
+        case 8: f.ic.ic_pae_selected_bss_lock=nullptr; break;
+        }
+        const auto active=f.ic.ic_wcl_reassoc_owner_active;
+        const auto serial=f.ic.ic_wcl_reassoc_owner_serial;
+        if (f.ic.ic_pae_selected_bss_lock) {
+            const auto irq=IOSimpleLockLockDisableInterrupt(&f.lock);
+            ieee80211_wcl_reassoc_cancel_target_epoch_locked(&f.ic,expected);
+            IOSimpleLockUnlockEnableInterrupt(&f.lock,irq);
+        } else ieee80211_wcl_reassoc_cancel_target_epoch_locked(&f.ic,expected);
+        assert(f.ic.ic_wcl_reassoc_owner_active==active);
+        assert(f.ic.ic_wcl_reassoc_owner_serial==serial);
+        assert(f.ic.ic_wcl_reassoc_request.feature_flags==0x34);
+        assert(f.ic.ic_pae_assoc_epoch==7 && losses.empty());
+        ++cases;
+    }
+    for (unsigned reentry=0; reentry<3; ++reentry) {
+        Fixture f;
+        f.ic.ic_wcl_reassoc_next_serial=f.ic.ic_wcl_reassoc_owner_serial=31;
+        f.ic.ic_wcl_reassoc_owner_active=1;
+        f.ic.ic_wcl_reassoc_source_epoch=7;
+        f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+        f.ic.ic_wcl_reassoc_request.feature_flags=0x34;
+        f.ic.ic_sae_wcl_request.phase=IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED;
+        f.ic.ic_sae_wcl_request.generation=19;
+        f.ic.ic_sae_wcl_request.association_epoch=7;
+        // Execute the complete real replacement-epoch helper, not the old
+        // one-line double. Credential/PMF callbacks remain explicit doubles.
+        assert(ieee80211_pae_assoc_epoch_begin_replacement(&f.ic)==8);
+        assert(f.ic.ic_pae_assoc_epoch==8 && f.ic.ic_pae_assoc_replace_epoch==8);
+        assert(f.ic.ic_wcl_reassoc_owner_active && f.ic.ic_wcl_reassoc_owner_serial==31);
+        assert(f.ic.ic_wcl_reassoc_source_epoch==7);
+        assert(f.ic.ic_sae_wcl_request.association_epoch==0);
+        assert(f.ic.ic_sae_wcl_request.generation==19);
+        f.ic.ic_state=IEEE80211_S_AUTH;
+        if (reentry) onRevoke=[reentry](ieee80211com *ic) {
+            assert(!ic->ic_wcl_reassoc_owner_active);
+            if (reentry==1) {
+                // One nested ordinary cancellation must not re-publish or
+                // revive the retired owner after the outer callback returns.
+                onRevoke={};
+                assert(ieee80211_pae_assoc_epoch_begin(ic)==10);
+            } else {
+                ic->ic_wcl_reassoc_next_serial=32;
+                ic->ic_wcl_reassoc_owner_serial=32;
+                ic->ic_wcl_reassoc_source_epoch=ic->ic_pae_assoc_epoch;
+                ic->ic_wcl_reassoc_owner_active=1;
+                ic->ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
+                ic->ic_wcl_reassoc_request.feature_flags=0x78;
+                ic->ic_flags |= IEEE80211_F_BGSCAN;
+            }
+        };
+        assert(ieee80211_pae_assoc_epoch_begin(&f.ic)==9);
+        onRevoke={};
+        assert(!ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,31));
+        if (reentry==2) {
+            assert(f.ic.ic_wcl_reassoc_owner_serial==32 && f.ic.ic_wcl_reassoc_owner_active);
+            assert(f.ic.ic_wcl_reassoc_request.feature_flags==0x78);
+            assert(f.ic.ic_flags & IEEE80211_F_BGSCAN);
+            assert(ieee80211_wcl_reassoc_scan_completion_begin(&f.ic,32));
+        } else assert(!f.ic.ic_wcl_reassoc_owner_active &&
+            f.ic.ic_pae_assoc_epoch==(reentry==1 ? 10U : 9U));
+        assert(losses.empty());
+        ++cases;
+    }
+    for (auto state : {IEEE80211_S_SCAN, IEEE80211_S_AUTH, IEEE80211_S_ASSOC}) {
+        Fixture f;
+        f.ic.ic_state=state;
+        f.ic.ic_wcl_reassoc_next_serial=f.ic.ic_wcl_reassoc_owner_serial=31;
+        f.ic.ic_wcl_reassoc_owner_active=1;
+        f.ic.ic_wcl_reassoc_source_epoch=6;
+        f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+        const auto next=static_cast<ieee80211_state>(unsigned(state)+1);
+        ieee80211_pae_assoc_epoch_note_newstate(&f.ic,next,-1);
+        assert(f.ic.ic_pae_assoc_epoch==7 && f.ic.ic_wcl_reassoc_owner_active);
+        assert(f.ic.ic_wcl_reassoc_owner_serial==31 && losses.empty());
         ++cases;
     }
     std::printf("PASS: %u actual roam carrier ownership/bridge and BSS replacement cases\n",cases);

@@ -238,5 +238,42 @@ int main() {
         }
         ++cases;
     }
+    for (unsigned scenario=0;scenario<3;++scenario) {
+        epochs=events=frees=0; queued.clear(); deferGate=false;
+        cancelContinuation={}; beforeEpoch={}; freeContinuation={};
+        ieee80211com ic;
+        admit(&ic,1,IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED);
+        const auto original=ic.ic_wcl_reassoc_owner_serial;
+        if (scenario==2) {
+            deferGate=true;
+            ieee80211_wcl_reassoc_post_failure_owned(&ic,original,EIO);
+            assert(queued.size()==1 && !ic.ic_wcl_reassoc_owner_active);
+        }
+        // The companion carrier suite executes the complete ordinary epoch
+        // function; this suite composes its real locked target retirement
+        // with actual admission and delayed controller publication.
+        const auto irq=IOSimpleLockLockDisableInterrupt(&ic.lock);
+        ieee80211_wcl_reassoc_cancel_target_epoch_locked(&ic,ic.ic_pae_assoc_epoch);
+        ++ic.ic_pae_assoc_epoch;
+        IOSimpleLockUnlockEnableInterrupt(&ic.lock,irq);
+        assert(!ic.ic_wcl_reassoc_owner_active && events==0);
+        assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,ECANCELED)==0);
+        assert(ieee80211_wcl_reassoc_post_failure_owned(&ic,original,EIO)==0);
+        ieee80211_wcl_reassoc_post_success(&ic);
+        assert(events==0);
+        if (scenario) {
+            ic.ic_bgscan_start=[](ieee80211com *,uint64_t) { return 0; };
+            ieee80211_wcl_reassoc_request request{};
+            assert(ieee80211_begin_wcl_reassoc_bgscan(&ic,&request)==0);
+            assert(ic.ic_wcl_reassoc_owner_serial==original+1);
+            assert(!ieee80211_wcl_reassoc_scan_completion_begin(&ic,original));
+            assert(ieee80211_wcl_reassoc_post_failure_owned(&ic,original,EIO)==0);
+            if (scenario==2)
+                assert(dispatch(&ic,queued[0].first,queued[0].second)!=0);
+            assert(ic.ic_wcl_reassoc_owner_serial==original+1 && events==0);
+            assert(ieee80211_wcl_reassoc_scan_completion_begin(&ic,original+1));
+        }
+        ++cases;
+    }
     printf("PASS: %u actual reassoc admission/abort/retirement/controller-gate cases\n",cases);
 }

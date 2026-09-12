@@ -2513,6 +2513,39 @@ ieee80211_wcl_reassoc_clear_locked(struct ieee80211com *ic)
                    sizeof(ic->ic_wcl_reassoc_target_bssid));
 }
 
+/* Hard cancellation of the current association, not controlled source leave
+ * or target replacement. Those two continuation paths deliberately retain
+ * the admitted roam. Once the whole attempt is invalidated, however, a
+ * post-target owner cannot wait for a result from the now-revoked target.
+ * Its source epoch is historical after replacement; match the current epoch
+ * inside the same leaf that is about to invalidate it, not that old source.
+ * No lower scan/command/TX ownership or on-air result is manufactured here.
+ */
+void
+ieee80211_wcl_reassoc_cancel_target_epoch_locked(struct ieee80211com *ic,
+    u_int64_t expected_epoch)
+{
+    if (ic == NULL || ic->ic_pae_selected_bss_lock == NULL ||
+        expected_epoch == 0 || ic->ic_pae_assoc_epoch != expected_epoch ||
+        !ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_serial == 0 ||
+        ic->ic_wcl_reassoc_owner_serial != ic->ic_wcl_reassoc_next_serial)
+        return;
+    switch (ic->ic_wcl_reassoc_owner_last_leaf) {
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED:
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_SAME_BSS_TRANSPARENT:
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT:
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL:
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_TIMEOUT:
+        break;
+    default:
+        return;
+    }
+    ieee80211_wcl_reassoc_clear_locked(ic);
+    ic->ic_wcl_reassoc_terminal_serial = 0;
+    ic->ic_flags &= ~(IEEE80211_F_BGSCAN | IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+}
+
 /* Logical source cancellation, not a firmware scan terminal. The caller
  * holds the selected-BSS leaf while advancing this exact source epoch.
  * A real link-down/leave owns its existing WCL notification; do not invent
