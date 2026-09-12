@@ -198,6 +198,12 @@ static void ieee80211_new_state(ieee80211com *ic, ieee80211_state state, int arg
 static void ieee80211_fix_rate(ieee80211com *, ieee80211_node *, int) {}
 static void ieee80211_choose_rsnparams(ieee80211com *) {}
 static void ieee80211_node_newstate(ieee80211_node *, int) {}
+/* This carrier fixture has no scan-cache tree. The complete production
+ * retirement helper and its join ordering are exercised separately by
+ * net80211_join_bss_tx_teardown_test.cpp. */
+static void ieee80211_clean_sta_bss_node(ieee80211com *ic) {
+    assert(ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss);
+}
 static void timeout_del(int *) {}
 #include "production.inc"
 

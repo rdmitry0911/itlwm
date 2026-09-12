@@ -1486,6 +1486,15 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     /* Own the cleanup nested in this exact controlled BSS replacement. */
     replacement_epoch = ieee80211_pae_assoc_epoch_begin_replacement(ic);
     (*ic->ic_node_copy)(ic, ic->ic_bss, selbs);
+    /* The selected-BSS copy commits retirement of the old association.
+     * Its tree entry must now be an ordinary cache record: a later AP
+     * reconfiguration may change both its SSID and security IEs.  The
+     * legacy AUTH path performs this cleanup below its SAE early return,
+     * so it cannot own cleanup for driver-resident SAE transitions.
+     * Keep the current BSSID and authenticated/associated/retiring peers
+     * protected; do not weaken the beacon-side SSID ownership guard. */
+    if (ic->ic_opmode == IEEE80211_M_STA)
+        ieee80211_clean_sta_bss_node(ic);
     ni = ic->ic_bss;
     /* Capture the actual post-copy BSS, never request-side candidate intent. */
     sae_profile = ieee80211_sae_selected_bss_profile(ni);

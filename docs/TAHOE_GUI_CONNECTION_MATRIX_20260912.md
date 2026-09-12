@@ -30,11 +30,11 @@ hidden off/on or API-based join to turn a failed GUI cell green.
 
 | UI path | Normal awake | After real S3 | After UI off/on |
 | --- | --- | --- | --- |
-| Select saved WPA3 LabAP / reconnect | NOT TESTED | NOT TESTED | NOT TESTED |
-| Open network selection / reconnect | NOT TESTED | NOT TESTED | NOT TESTED |
-| WPA2 selection / reconnect | NOT TESTED | NOT TESTED | NOT TESTED |
-| Open → WPA2 → WPA3 and reverse | NOT TESTED | NOT TESTED | NOT TESTED |
-| Multiple saved networks / return to prior network | NOT TESTED | NOT TESTED | NOT TESTED |
+| Select saved WPA3 LabAP / reconnect | PARTIAL: GUI return associates/DHCP; first peer traffic 14/20 each way | GUI unavailable | NOT TESTED |
+| Open network selection / reconnect | First selection PASS; reconnect NOT TESTED | GUI unavailable | NOT TESTED |
+| WPA2 selection / reconnect | First selection and saved return PASS | GUI unavailable | WPA2 recovery PASS |
+| Open → WPA2 → WPA3 and reverse | PARTIAL; new WPA3 discovery FAIL after previously used BSSID rename | GUI unavailable | NOT TESTED |
+| Multiple saved networks / return to prior network | WPA2 → LabAP → saved WPA2 PASS for target WPA2; full matrix open | GUI unavailable | NOT TESTED |
 | AP UI enable/disable, external-client service | NOT TESTED | NOT TESTED | NOT TESTED |
 | Ad hoc UI create/join | NOT TESTED | NOT TESTED | NOT TESTED |
 
@@ -85,6 +85,56 @@ All seven files pass `sha256sum -c SHA256SUMS`; manifest SHA-256:
 The before/after PNGs both hash to
 `d97e9c4979ad88c4838402ed7aa1ff4cf49289fc730d25de5339c49c1c0dbd41`.
 No production source, installed kext, or release artifact changed.
+
+## Awake GUI controls, 04:27–04:57 UTC
+
+After preserving the failure, one graceful reboot of the exact owned guest
+restored the display. New boot: `702D27E1-61A2-415C-ACFC-EFB9DC9DCF50`.
+Loaded production remained c123d132 / D636A28B-6A9B-3CCE-AF28-5779C5F980C8.
+The devops console session was logged in through VNC; all selections below
+used the real System Settings Wi-Fi pane. Command-line tools only observed
+state/DHCP and generated traffic. No physical .22 access occurred.
+
+Working evidence: `/dev/shm/aiam-gui-awake-baseline-20260912.ol9Hax`.
+The controlled host AP used BSSID `80:e4:ba:20:ef:f9`, channel 9,
+subnet 192.168.73.0/24. Traffic controls are 20 ICMP packets with 1400-byte
+payload in each direction; they prove local data service, not Internet access.
+
+| Actual GUI action (UTC) | First measured result |
+| --- | --- |
+| 04:32:55 Connect to new AIAM-GUI-OPEN-0912 | DHCP .34 at 04:33:03; 20/20 both ways; PASS |
+| 04:34:48 Return to saved LabAP | WPA3, BSSID 9a:fb:5d:97:a9:02/ch13 and DHCP .219 before fixture stop; first peer test after host restoration 14/20 both ways; later unchanged steady test 20/20 both ways |
+| 04:40:46 Connect to new AIAM-GUI-WPA2-0912; 04:41:22 enter password | WPA2/PSK, DHCP .27; 20/20 both ways; PASS |
+| 04:42:59 Return to LabAP while WPA2 fixture stays up | WPA3/ch13, DHCP .219; guest-to-router 20/20; no independent reverse peer test in this substep |
+| 04:44:07 Select saved WPA2 again | No password dialog; DHCP .27; 20/20 both ways; PASS |
+| 04:45:01 UI off, 04:45:28 UI on | Off readback inactive/no IPv4; automatic WPA2 recovery, DHCP .27; 20/20 both ways; PASS |
+| 04:46:06 Return to LabAP, then same fixture BSSID advertises AIAM-GUI-WPA3-0912 at 04:47:15 | GUI retains old WPA2 name and omits new WPA3 through fresh scans; FAIL before password/join |
+
+The first LabAP loss is retained, not replaced by the later pass. Host profile
+restoration/ARP remains a possible confound. The initial automatic LabAP
+baseline also measured 20/20 forward, 19/20 reverse. Separately, airportd's
+04:35:26 BEST CONNECTED ROAM selected a weaker ch9 BSS despite the connected
+ch13 BSS; candidate-policy analysis remains open, not proven as the loss cause.
+
+All three bounded fixtures ended and restored the original host managed
+profile. All logstream and DTrace observers are terminal. No hidden power
+toggle or API join was used to repair the WPA3 discovery failure.
+
+The display spindump resolves the wake wait through
+`IOFramebuffer::extAcknowledgeNotification` / `_extEntry` and
+`IOGraphicsControllerWorkLoop::sleepGate` with the exact installed KDK UUID.
+This narrows the outstanding GUI-after-S3 prerequisite; an awake reboot is
+not a post-sleep GUI pass.
+
+## Active GUI fix: stale former-BSS cache ownership
+
+Live trace identifies the new-WPA3 discovery failure in the driver, not just
+the GUI: fresh WPA3 SSID TLVs coexist with the old WPA2 cached SSID because
+the former BSSID remains `IEEE80211_STA_BSS` after a transition to SAE.
+See `TAHOE_GUI_STALE_BSS_CACHE_20260912.md` for exact evidence, production
+correction and negative/positive tests. Source tests pass; candidate build,
+installation and the same full GUI precondition are still pending. No new
+runtime pass or release update is claimed at this checkpoint.
 
 ## Preserved roam work
 
