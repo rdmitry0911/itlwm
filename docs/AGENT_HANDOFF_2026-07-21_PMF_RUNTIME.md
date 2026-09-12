@@ -22,6 +22,23 @@ Date: 2026-07-21
 
 ## Persistent prioritization rule (user directive, 2026-07-22)
 
+### Highest priority: GUI matrix (user directive, 2026-09-12)
+
+The GUI connection/reconnection matrix is the first functional priority.
+Exercise actual macOS UI selection of saved and newly presented networks,
+repeated connections and changes between open/WPA2/WPA3, then the same paths
+after real sleep/wake and Wi-Fi off/on. Include ad hoc and AP UI paths in the
+coverage ledger; an untested or unavailable cell remains open. Native API or
+command-line selection is diagnostic evidence, not a GUI cell pass.
+
+Preserve and diagnose failed first attempts before any recovery toggle.
+Reference/decomp work takes precedence only for a concrete GUI-observed fault
+or a necessary safety prerequisite. Use the owned laboratory guest and protect
+independent management connectivity; do not modify/reboot physical10.90.10.22.
+The current matrix ledger is `docs/TAHOE_GUI_CONNECTION_MATRIX_20260912.md`.
+
+### General selection rule
+
 When choosing the next layer that reduces surface mismatch with the reference,
 first choose the eligible layer that unblocks the most frequently used
 user-facing function. Do not prefer a lower-frequency evidence, diagnostic,
