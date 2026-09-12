@@ -7,8 +7,23 @@ then the same paths after explicit off/on and real S3. Keep first failures,
 DHCP and bidirectional service evidence; never hide an intermediate join or
 recovery toggle. A stalled post-S3 GUI remains open. Standalone scan/roam
 analysis and mixed AP work cannot displace the remaining eligible STA cells.
-Active repeated-matrix scratch:
+Latest repeated-matrix result: all six awake direct GUI pairs associate/get
+DHCP; four60/60+60/60, both WPA3-target first checks59/60+59/60. After explicit
+WPA3 off/on, recovery and five repeated directed pairs pass60/60+60/60.
+The final open→WPA3 joins/gets DHCP then is disconnected by ControlCenter:
+GUI unjoin entries07:56:09.271/07:56:33.987 arrive at airportd as DISASSOC
+only08:06:29.688/.744. Guest remains inactive with USB management intact;
+fixture ended08:10:17, host profile restored. Investigate this observed
+GUI-action queue/lifecycle delay using existing reference evidence next;
+do not call it a spontaneous SAE failure or silently repair/relabel the cell.
+See `docs/TAHOE_GUI_REPEATED_SECURITY_MATRIX_20260912.md`.
+Repeated-matrix scratch:
 `/dev/shm/aiam-gui-repeat-matrix-20260912.Z2kWqj`.
+This cycle is terminal and immutable; all336 archived files verify in
+`/home/dima/Projects/itlwm/aiam-gui-repeat-security-runtime-20260912.59gN8F`.
+Manifest4100c668cf447955b424714a3a1666be23717f0d7892890412bb8bb896b92f38.
+Start the next cycle in a fresh scratch root; do not replay fixture/UI scripts
+without revalidating their guards and current screen.
 
 **P0 — actual GUI connection/reconnection matrix (user priority reaffirmed
 2026-09-12).** Start with

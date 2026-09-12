@@ -9,6 +9,18 @@ sleep/wake separately, with actual GUI actions, DHCP and bidirectional traffic.
 Preserve first failures; do not call an intervening automatic fallback a direct
 transition. Follow the active GUI ledger for unavailable/untested cells.
 
+Latest executed result is in
+`docs/TAHOE_GUI_REPEATED_SECURITY_MATRIX_20260912.md`: awake six-pair round
+has DHCP6/6, four lossless minute controls and two WPA3-target59/60+59/60
+controls. After explicit off/on, recovery and five repeated pairs pass;
+last open→WPA3 joins/gets DHCP then delayed ControlCenter user-disconnect
+requests interrupt service. The next observed GUI dependency is the roughly
+10-minute interval from ControlCenter unjoin entry to airportd DISASSOC
+receipt, not a proven spontaneous SAE failure. Resolve its queue/lifecycle
+against reference evidence, then retest the interrupted pair and continue
+same-security, saved-profile and recovery combinations. Guest remains
+disconnected with USB management intact; no physical .22 or guest reboot.
+
 ## P0 — actual GUI matrix (user priority reaffirmed 2026-09-12)
 
 The first work item is
