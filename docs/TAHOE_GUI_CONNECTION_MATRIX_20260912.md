@@ -43,7 +43,19 @@ DHCP and bidirectional traffic, with first-attempt latency/loss retained.
 Opening the settings pane alone is not a connection test. Never insert a
 hidden off/on or API-based join to turn a failed GUI cell green.
 
-Latest P0.1 single-BSS/recovery controls:
+Latest P0.1 same-L2 saved-SAE controls:
+[`TAHOE_GUI_SAE_LOCAL_L2_RECOVERY_20260912.md`](TAHOE_GUI_SAE_LOCAL_L2_RECOVERY_20260912.md).
+Actual menu disconnect/reselect and System Settings off/on automatically
+recover SAE/DHCP and each pass40-second continuous HTTP/hash.600-probe
+controls retain600/600+598/600 and593/600+593/600 respectively; neither passes
+the zero-loss gate. First has no observed BSS change; second roams13-to9.
+Both endpoints locate missing ingress/egress packets without routed/NAT
+ambiguity, but not a specific lower-layer cause. Next coherent driver boundary
+is the separately reproduced accepted-roam/public-scan conflict and full
+reference lifecycle; it is not automatically the cause of these packet gaps.
+Remaining cross-security and real-S3 GUI cells stay open/P0.1.
+
+Preceding P0.1 single-BSS/recovery controls:
 [`TAHOE_GUI_SETTINGS_WPA2_SAE_RECOVERY_20260912.md`](TAHOE_GUI_SETTINGS_WPA2_SAE_RECOVERY_20260912.md).
 System Settings different-saved WPA2 selection, two SAE-to-WPA2 returns,
 one repeated WPA2-to-SAE and WPA2 off/on recovery pass60/60 each way;

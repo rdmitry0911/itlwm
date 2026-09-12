@@ -9,7 +9,21 @@ sleep/wake separately, with actual GUI actions, DHCP and bidirectional traffic.
 Preserve first failures; do not call an intervening automatic fallback a direct
 transition. Follow the active GUI ledger for unavailable/untested cells.
 
-Latest single-BSS/recovery controls are in
+Latest same-L2 controls are in
+`docs/TAHOE_GUI_SAE_LOCAL_L2_RECOVERY_20260912.md`: menu saved-SAE
+disconnect/reselect and System Settings off/on restore SAE/DHCP and pass
+40-second HTTP/hash.600-probe results600/600+598/600 and593/600+593/600
+retain first losses; no full lossless/S3 matrix pass. Endpoint capture removes
+NAT ambiguity, not driver/AP/RF uncertainty. All resources terminal; same
+boot/AF16/WiFiAgent5894, guestSAE/.219/ch9, hostLabAP/.226/ch153.
+Next coherent driver boundary is separately reproduced accepted-roam/public-
+scan cancellation and its exact reference lifecycle, not an assumed cause
+of every packet gap. Current full-lifecycle baseline fails4/4. Preserve
+other eligible repeated GUI pairs and actual-S3 cells as P0.1/open.
+Archive73 files, manifest4692ea2a1d31ad30be2c9f7db1ebcb77359f1e323b9714e28f6aa77e6baaf256.
+No production/release byte changes.
+
+Preceding single-BSS/recovery controls are in
 `docs/TAHOE_GUI_SETTINGS_WPA2_SAE_RECOVERY_20260912.md`: seven actual
 System Settings controls, five PASS/two retained SAE forward59/60 losses.
 Saved WPA2 profile change, two SAE-to-WPA2 returns, repeated WPA2-to-SAE,

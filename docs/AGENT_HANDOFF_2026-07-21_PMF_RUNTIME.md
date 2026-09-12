@@ -7,7 +7,30 @@ then the same paths after explicit off/on and real S3. Keep first failures,
 DHCP and bidirectional service evidence; never hide an intermediate join or
 recovery toggle. A stalled post-S3 GUI remains open. Standalone scan/roam
 analysis and mixed AP work cannot displace the remaining eligible STA cells.
-Latest single-BSS System Settings/recovery cycle:
+Latest same-L2 GUI cycle:
+`docs/TAHOE_GUI_SAE_LOCAL_L2_RECOVERY_20260912.md`. Actual menu saved-SAE
+disconnect/reselect and System Settings off/on recover SAE/DHCP, each passing
+40-second continuous HTTP/hash.600-probe controls retain600/600+598/600 and
+593/600+593/600. First has no observed BSS change; second roams13-to9.
+Both endpoint captures localize individual missing packets, not exact
+driver/AP/RF causes. Neither control passes the zero-loss gate; successful
+TCP/DHCP remain distinct. Menu unjoin reaches airportd in12ms.
+Host stays LabAP/c9/ch153/.226, guest ends LabAP/ca/ch9/.219, same
+boot7A5FAA36/AF16/WiFiAgent5894. HTTP PID2279872 stopped10:54:48, controller143;
+all captures/collectors terminal, port18089 free, no AP/monitor fixture.
+Archive73 files verifies at
+`/home/dima/Projects/itlwm/aiam-gui-l2-recovery-runtime-20260912.8T5CMX`,
+manifest4692ea2a1d31ad30be2c9f7db1ebcb77359f1e323b9714e28f6aa77e6baaf256.
+RAM dgvxIG/archive immutable. Production/release unchanged5e98d640.
+Next implementation scratch `/dev/shm/aiam-gui-roam-lifecycle-20260912.2AEEv7`:
+coherent correction of separately reproduced accepted-roam/public-scan
+conflict and recovered0x89/0x8b/0x50 progress/terminal lifecycle. Current
+WCL_REASSOC_REQUIRE_LIFECYCLE baseline is terminal exit1,4/4 requirement
+failures; no source correction yet. Read exact reference producers/consumers
+before code edits; no blind D636/old-boot wrapper reuse. Keep GUI-first
+priorities, first packet losses, remaining pairs and real-S3 GUI open.
+
+Preceding single-BSS System Settings/recovery cycle:
 `docs/TAHOE_GUI_SETTINGS_WPA2_SAE_RECOVERY_20260912.md`. Seven controls:
 five PASS, two retained SAE forward59/60 failures. Same-security different
 saved WPA2 selection, two SAE-to-WPA2 returns, repeated WPA2-to-SAE and
