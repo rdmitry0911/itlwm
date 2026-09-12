@@ -41,3 +41,30 @@ LINK_STATE_UPDATE/LINK_UP_DONE/ROAM_PROFILE_CONFIG/SET_ROAM_LOCK/QOS_PARAMS/
 UPDATE_FAST_LANE/ACTION_FRAME/CONFIG_BG*/SET_SCAN_HOME_AWAY_TIME/TRIGGER_CC`,
 `getWCL_BSS_INFO/EXTENDED_BSS_INFO/CHANNELS_INFO/BGSCAN_CACHE_RESULT/
 TRAFFIC_COUNTERS/LOW_LATENCY_INFO/GET_TX_BLANKING_STATUS`.
+
+## dtrace: реально ВЫЗЫВАЕМАЯ WCL-поверхность (observed, не статическая)
+
+dtrace `fbt:com.zxystd.AirportItlwm::entry` по `setWCL_*/getWCL_*` за 40с активной
+работы (сканы + disassoc/rejoin) на загруженном WIP. ОС реально вызвала только:
+
+| selector | calls | статус |
+|---|---:|---|
+| setWCL_SCAN_REQ | 17 | реализован |
+| setWCL_SET_SCAN_HOME_AWAY_TIME | 16 | реализован |
+| getWCL_BSS_INFO | 3 | реализован |
+| getWCL_LOW_LATENCY_INFO | 3 | реализован |
+| getWCL_TRAFFIC_COUNTERS | 3 | реализован |
+| setWCL_LEAVE_NETWORK / LINK_STATE_UPDATE / ROAM_PROFILE_CONFIG / SET_ROAM_LOCK | 1 each | реализованы |
+| **setWCL_ARP_MODE** | **1** | **Unsupported — ЕДИНСТВЕННАЯ triggered дивергенция** |
+
+Остальные Unsupported-селекторы (BCN_MUTE/WNM/REAL_TIME/SOI/ASSOC_SLEEP/ULOFDMA)
+за это окно НЕ вызывались → не входят в наблюдаемую поверхность при обычной работе.
+
+**Вывод:** наблюдаемая (реально вызываемая) WCL-поверхность почти идентична —
+9/10 селекторов реализованы; единственная активная дивергенция = **setWCL_ARP_MODE**.
+Эталон = `AppleBCMWLANCore::configureARPOffload` (firmware ARP-offload command,
+async callback @0xffffff80015b1fe6). Intel firmware поддерживает ARP-offload
+(WoWLAN/D3 proto-offload), поэтому это ПОЧИНИМАЯ дивергенция, НО: (1) требует
+реальной реализации firmware ARP-offload (не blind-success — иначе обрыв связи в
+sleep = наблюдаемый сбой = костыль); (2) верифицируется ТОЛЬКО при рабочем S3 sleep
+(открытый вопрос лаборатории). → блокирована на sleep-инфраструктуре.
