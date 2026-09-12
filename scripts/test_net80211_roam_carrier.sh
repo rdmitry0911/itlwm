@@ -5,14 +5,14 @@ PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 ROAM_TEST_DIR="$(mktemp -d)"
 trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/epoch.inc" "$ROAM_TEST_DIR/test"; rm -rf "$ROAM_TEST_DIR/test.dSYM"; rmdir "$ROAM_TEST_DIR"' EXIT
 PROTO="$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
-awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST|WCL_REASSOC_OWNER_LEAF_[A-Z_]+)[ \t]/' \
+awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST|WCL_REASSOC_OWNER_LEAF_[A-Z_]+|WCL_REASSOC_STAGE_[A-Z_]+)[ \t]/' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211.h" \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_node.h" > "$ROAM_TEST_DIR/constants.inc"
 sed -n '/^struct ieee80211_roam_link_loss {/,/^};/p' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
 awk '/^#define IEEE80211_WCL_REASSOC_MAX_/ { print }
-     /^struct ieee80211_wcl_reassoc_(candidate|request) \{/ { selected=1 }
+     /^struct ieee80211_wcl_reassoc_(candidate|request|observation) \{/ { selected=1 }
      selected { print } selected && /^};/ { selected=0 }' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
 awk '/^ieee80211_bss_switch_identity_current_locked\(/ { selected=1; print "int" }

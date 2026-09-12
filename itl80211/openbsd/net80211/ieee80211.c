@@ -2730,25 +2730,6 @@ ieee80211_wcl_reassoc_publication_current(struct ieee80211com *ic,
     return current;
 }
 
-int
-ieee80211_wcl_reassoc_claim_completion(struct ieee80211com *ic,
-    const struct ieee80211_wcl_reassoc_completion *completion)
-{
-    if (ic == NULL || completion == NULL || completion->serial == 0 ||
-        ic->ic_pae_selected_bss_lock == NULL)
-        return 0;
-    IOInterruptState irq =
-        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
-    const int current =
-        ic->ic_wcl_reassoc_next_serial == completion->serial &&
-        ic->ic_wcl_reassoc_terminal_serial == completion->serial &&
-        ic->ic_pae_assoc_epoch == completion->association_epoch;
-    if (current)
-        ic->ic_wcl_reassoc_terminal_serial = 0;
-    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
-    return current;
-}
-
 void
 ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
 {

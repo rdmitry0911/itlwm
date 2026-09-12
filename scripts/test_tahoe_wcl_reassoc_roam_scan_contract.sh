@@ -289,11 +289,23 @@ completion = body(node, "void\nieee80211_end_scan_owned(",
 for token in (
     "wcl_reassoc_scan",
     "IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_FAILED",
-    "IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED",
+    "ieee80211_wcl_reassoc_prepare(ic, reassoc_serial, selbs)",
     "ic_sae_wcl_roam_start",
     "ieee80211_node_defer_bss_switch(ic, source, selbs,",
 ):
     require(completion, token, "real target switch path")
+
+# The target-stage transition moved from an inline assignment in scan
+# completion into the shared common helper. It must still copy the real
+# selected target and advance the owner to ROAM_STARTED under the lock.
+prepare = body(core, "ieee80211_wcl_reassoc_prepare(",
+               "common target-stage preparation")
+for token in (
+    "IEEE80211_ADDR_COPY(ic->ic_wcl_reassoc_target_bssid, target->ni_bssid)",
+    "IEEE80211_WCL_REASSOC_STAGE_PREP",
+    "IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED",
+):
+    require(prepare, token, "target selection transitions the shared owner")
 
 success = body(core, "ieee80211_wcl_reassoc_target_running(",
                "target completion gate")

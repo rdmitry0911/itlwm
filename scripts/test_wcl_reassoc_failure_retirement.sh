@@ -42,7 +42,7 @@ if [ -z "${WCL_REASSOC_NEGATIVE_REF:-}" ] && [ "${WCL_REASSOC_EXPECT_DEFECTS:-0}
          /^ieee80211_wcl_reassoc_claim_stages\(/ { selected=1; print "u_int32_t" }
          /^ieee80211_wcl_reassoc_(prepare|publication_current)\(/ { selected=1; print "int" }
          /^ieee80211_wcl_reassoc_post_progress\(/ { selected=1; print "void" }
-         /^ieee80211_wcl_reassoc_(current|claim_completion|scan_completion_begin)\(/ { selected=1; print "int" }
+         /^ieee80211_wcl_reassoc_(current|scan_completion_begin)\(/ { selected=1; print "int" }
          /^ieee80211_wcl_reassoc_clear_locked\(/ { selected=1; print "static void" }
          /^ieee80211_wcl_reassoc_cancel_target_epoch_locked\(/ { selected=1; print "void" }
          /^ieee80211_wcl_reassoc_take_completion\(/ { selected=1; print "static int" }

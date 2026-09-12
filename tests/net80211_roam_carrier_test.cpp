@@ -81,6 +81,8 @@ struct ieee80211com {
     uint64_t ic_pae_assoc_epoch=7, ic_roam_link_epoch=0;
     uint64_t ic_wcl_reassoc_next_serial=0, ic_wcl_reassoc_terminal_serial=0;
     uint64_t ic_wcl_reassoc_scan_accepted_serial=0;
+    uint32_t ic_wcl_reassoc_published_stages=0;
+    ieee80211_wcl_reassoc_observation ic_wcl_reassoc_observation{};
     uint64_t ic_wcl_reassoc_owner_serial=0, ic_wcl_reassoc_source_epoch=0;
     unsigned ic_wcl_reassoc_owner_active=0, ic_wcl_reassoc_owner_last_leaf=0;
     ieee80211_wcl_reassoc_request ic_wcl_reassoc_request{};
@@ -205,6 +207,16 @@ static void ieee80211_clean_sta_bss_node(ieee80211com *ic) {
     assert(ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss);
 }
 static void timeout_del(int *) {}
+/* This carrier fixture's event handler covers only the roam link-loss
+ * indication; the shared owner's progress publication (0x89/0x8b) is
+ * exercised end to end by wcl_reassoc_owner_test.cpp. The scan-completion
+ * helper's progress hook is therefore a no-op here, while its return value
+ * still reflects the real serial/owner check below. */
+void ieee80211_wcl_reassoc_post_progress(ieee80211com *, uint64_t) {}
+static int ieee80211_wcl_reassoc_current(ieee80211com *ic, uint64_t serial) {
+    return serial != 0 && ic->ic_wcl_reassoc_owner_active &&
+        ic->ic_wcl_reassoc_owner_serial == serial;
+}
 #include "production.inc"
 
 static std::vector<ieee80211_roam_link_loss> losses;
