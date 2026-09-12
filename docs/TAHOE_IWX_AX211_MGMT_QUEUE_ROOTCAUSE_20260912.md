@@ -47,18 +47,31 @@ LEGACY SCD_QUEUE_CFG, которую прошивка AX210 отвергает (
 REMOVE-путь (ItlIwx.cpp ~7008) трактует version=UNKNOWN как «legacy TVQM без
 REMOVE». Т.е. вся модель «UNKNOWN → legacy» неверна для AX210.
 
-## Направление фикса (требует эталонного grounding перед кодом)
+## Направление фикса — ЭТАЛОННО ПОДТВЕРЖДЕНО (upstream iwlwifi)
 
-Эталон Intel-транспорта = iwlwifi (на 10.7.6.112 отдельного дерева нет → нужен
-upstream). Открытый вопрос ИМЕННО по эталону: как iwlwifi для gen2/AX210
-аллоцирует MGMT-очередь, когда SCD_QUEUE_CONFIG_CMD ver = UNKNOWN —
-(a) modern SCD_QUEUE_CONFIG_CMD (IWX_SCD_QUEUE_ADD, wide-ID) по признаку
-device_family (не по version), или (b) TVQM dynamic (iwlwifi gen2 использует
-динамические очереди), или (c) fixed с иными полями. dtrace показал echo qnum=1
-(fixed принят прошивкой), что склоняет к (a) modern-format-по-device_family, а не
-к смене на dynamic. Гипотеза фикса: гейт `version == 3 || sc_device_family >=
-IWX_DEVICE_FAMILY_AX210` → modern. НО писать без подтверждения эталоном запрещено
-(риск firmware-assert). Верификация фикса = ещё один AX211 swap + JOIN.
+Fetched torvalds/linux: `mvm/ops.c` ~1426 —
+`trans->conf.queue_alloc_cmd_ver = iwl_fw_lookup_cmd_ver(fw,
+WIDE_ID(DATA_PATH_GROUP, SCD_QUEUE_CONFIG_CMD), 0)` — **DEFAULT 0** когда прошивка
+не публикует версию. → iwlwifi для прошивки AX211 (без TLV) ТОЖЕ берёт ver 0 →
+**OLD** SCD_QUEUE_CFG, как и itlwm. Значит выбор команды (legacy) — НЕ дивергенция.
+
+Настоящая дивергенция = FIXED vs DYNAMIC аллокация (`pcie/gen1_2/tx-gen2.c`
+~1021 `iwl_txq_dyn_alloc`): iwlwifi ВСЕГДА сперва зовёт `iwl_txq_dyn_alloc_dma`
+= выделяет СВЕЖУЮ dynamic-очередь (правильный gen2 DMA/bc-table), шлёт команду
+(old ИЛИ new) БЕЗ номера очереди, и **firmware НАЗНАЧАЕТ** очередь
+(`iwl_pcie_txq_alloc_response`). itlwm `iwx_enable_mgmt_queue` привязывает MGMT
+к ПРЕДСУЩЕСТВУЮЩЕМУ FIXED-кольцу `sc->txq[first_data_qid]` и требует, чтобы
+прошивка приняла этот fixed-конфиг → gen2/AX210 firmware отвергает (flags=0x1).
+Это ровно gap «Unlike iwlwifi, we do not support dynamic queue ID assignment».
+Замечание: dtrace echo qnum=1 — прошивка НАЗНАЧИЛА очередь 1 (у old-команды нет
+поля queue), совпало с fq=1 случайно; провал именно по flags (конфиг fixed-кольца
+не принят), не по номеру.
+
+**ФИКС:** маршрутизировать gen2/AX210 MGMT-очередь через СУЩЕСТВУЮЩИЙ dynamic-путь
+itlwm (`iwx_tvqm_alloc_txq` / `iwx_allocate_tx_queue` fixedQueue=-1 — уже делает
+свежий DMA + firmware-assigned queue), сохранить назначенный qid и использовать
+его в MGMT-TX (вместо fixed first_data_qid). Ограниченный, но реальный порт по
+MGMT-TX пути. Верификация = ещё один AX211 swap + JOIN.
 
 ## Статус
 
