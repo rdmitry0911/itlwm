@@ -42,6 +42,50 @@ An already-active AP across sleep is a separate cell, also NOT TESTED. Prior
 native-helper STA and post-S3 AP passes remain useful regression evidence but
 do not fill any of these GUI cells.
 
+## First GUI control: post-S3 display is unresponsive
+
+At 04:15–04:16 UTC, before any new reboot, the login screen remained at local
+06:09, matching the previous S3 wake. One ordinary VNC click/type/Return
+attempt produced a byte-identical screenshot. SSH remained responsive.
+This is a failed GUI-availability prerequisite, not a failed password result
+or a completed Wi-Fi selection cell. No repeated blind login attempts or
+recovery toggle were used to disguise the first failure.
+
+The bounded three-second WindowServer PID 203 sample captured all 274 main
+thread samples in:
+
+```text
+displayNotification → displayDidWake → IOFBAcknowledgeNotification
+  → IOConnectCallMethod → io_connect_method → mach_msg2_trap
+```
+
+The loginwindow sample shows an authorization XPC wait and a worker waiting
+on WindowServer. A WindowServer UserIsActive assertion names the QEMU USB
+Keyboard, so input reached the guest. Exact owned-QEMU monitor checks report
+the VM running, with its keyboard and active absolute tablet present.
+These userspace samples identify a framebuffer wake-acknowledgment wait;
+they do not establish the underlying kernel lock owner or exclude driver
+involvement. Do not attribute the fault to Wi-Fi or to graphics without that
+additional evidence.
+
+The bounded native screencapture attempt did not complete successfully
+(controller exit 255, empty log); it supplies no independent screenshot.
+The prior Wi-Fi-only S3 traffic pass remains valid only for that network
+measurement. GUI recovery after S3 remains open.
+
+Next work is to preserve/diagnose this exact display wait, then establish an
+awake interactive GUI baseline. If the owned guest must be restarted to
+restore the display, record a new boot and keep that baseline separate from
+this failed post-S3 prerequisite. Physical 10.90.10.22 remains out of scope.
+
+Durable evidence copy:
+`/home/dima/Projects/itlwm/aiam-gui-matrix-20260912.oqa9bf`.
+All seven files pass `sha256sum -c SHA256SUMS`; manifest SHA-256:
+`eb30ba85496e3e9c71b83a5f7b724d642787f994bef4a77508852b6c9f919f3a`.
+The before/after PNGs both hash to
+`d97e9c4979ad88c4838402ed7aa1ff4cf49289fc730d25de5339c49c1c0dbd41`.
+No production source, installed kext, or release artifact changed.
+
 ## Preserved roam work
 
 The completed scan-only overlap and reference/lifecycle requirements are in
