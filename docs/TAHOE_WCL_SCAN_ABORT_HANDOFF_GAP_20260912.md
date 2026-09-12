@@ -1,12 +1,15 @@
 # WCL discovery lost between roam cancellation and physical scan retirement
 
-Status: **reproduced twice on the published477ab0af/842B image; production
-candidate passes Linux/Tahoe source execution and builds, not yet loaded or
-radio-qualified**.
-The immediate cause is now the live lower scan lease after successful logical
+Status: **the exact lost-census handoff now passes twice on loaded092a7479/9B5B;
+stable WPA2 and open-to-WPA2 controls also pass. Further off/on, S3, AP and
+roaming regression is still pending; public alpha remains477ab0af/842B.**
+Initial new-image steady traffic retains20/20 forward but19/20 reverse.
+The baseline failure was reproduced twice on477ab0af/842B. The immediate
+cause is the live lower scan lease after successful logical
 roam cancellation, not an unknown generic Device Busy branch. This affects an
-ordinary new-network selection while native roaming is searching. The source
-candidate below does not yet justify replacing the public477ab0af alpha.
+ordinary new-network selection while native roaming is searching. Historical
+diagnosis/source/build checkpoints below are followed by actual loaded-image
+receipts; they do not imply that all other reconnect failures are closed.
 
 ## Same-image controls before provoking the overlap
 
@@ -274,3 +277,67 @@ changed: the guest still loads842B in boot1FB8BDE2-E95D-4B56-8948-A4FCE549D6BD.
 No activation, reboot, public release replacement or new radio pass is claimed.
 The immediate next gate is private AuxKC admission, then exact-image activation
 and the retained overlap/stable/S3/AP regression plan above.
+
+## Loaded candidate and exact two-control radio correction
+
+Private admission completed without canonical mutation. Transaction
+activation-20260912T012750Z then preserved the exact five-member AuxKC set,
+including unchanged companion identities and timestamped rollback copies.
+The owned guest rebooted normally at01:29:00UTC; by01:29:55 it loaded9B5B
+in new boot4B344697-7047-476A-9A0C-F08120C85E1E. Installed Mach-O retains
+the build's0a30b252 digest above. Physical22, unrelated QEMU and backing
+images were not changed.
+
+Native saved-WPA3/DHCP recovery was automatic. The independent first link
+check passes20/20 guest-to-host but only19/20 reverse, maximum126.935/25.922ms.
+Its strict data gate returns1. This retained failure is not hidden by later
+successful fixture traffic and does not establish a new cause of steady loss.
+
+The original two overlap controls are repeated on this image, with one
+framework roam to the opposite LabAP BSS and one ordinary WPA2 selection
+100ms after the helper returns. No second join request or remedial guest
+radio toggle is used. The host's same AX211 fixture stays on channel9 and
+restores its exact normal profile after each run.
+
+| Control | Queued upper / old physical | Fresh physical | Requested WPA2 result |
+| --- | --- | --- | --- |
+| q1, request01:32:31UTC |19 /21|22,2.4GHz|DHCP192.168.73.35;20/20 each way|
+| q2, request01:34:53UTC |53 /62|63,2.4GHz|DHCP192.168.73.35;20/20 each way|
+
+Both traces show successful admission while the matching cancelled generic
+scan is still live; upper queue acknowledgement returns success. The real
+old physical terminal later clears that lease and schedules replay1. Only
+then does the worker submit the fresh2.4GHz command. Post-WRPTR STARTED
+activates the same queued upper generation with the new backend serial;
+its own successful terminal precedes the separate5GHz carrier. The old
+terminal is never reported as completion of the new request. Waiting from
+setter return to old terminal is about25.48ms and35.57ms respectively.
+Each90-second observer records35 ingresses, zeroBusy and zeroDTrace errors.
+Both controllers and exact host-profile restorations return0.
+
+The new observer reads scalar API arguments/returns only, not private object
+or pending-record offsets. Q1 printed upper uint8 enum returns asuint32;
+only their low byte is authoritative. Q2 corrects those casts and narrows
+the replay-worker wildcard. Actual queue/doorbell/terminal identities and
+all bool results are unaffected; neither observer reads credentials or keys.
+
+Stable native WPA2q1 separately passes DHCP.35 and20/20 each way, without
+the injected framework roam. Openq1 -> normal fixture teardown -> WPA2q2
+also passes DHCP.26/.35 and20/20 each way, with no extra recovery selection,
+radio toggle or reboot. Its90-second observer covers both requested scan
+sequences with errors0/calls25/busy0, but ends before final traffic/teardown;
+those terminal checks are collected independently by the controller. The
+historical baseline used a180-second observer, so full observation windows
+are not represented as identical. All control and restoration results are0.
+
+Working evidence remains unfrozen while broader regression proceeds:
+`/dev/shm/aiam-wcl-background-handoff-20260912.YteT0m`.
+Q1/Q2 trace SHA256:
+`04ea4c6e07f9fb17db3cc6e27577025712eedbcb761961c32a5b266b95f903fe`,
+`15f38258267e53f0a915085b4556fdc976d31d79569c0d0c8a2f1b13454f2646`.
+Q1/Q2 controller SHA256:
+`520005e0cdde9b50cfff55b033409def86d5dbd0c4d4ddef641befb70a35e90d`,
+`b9d0d203e32b33fc955a8b129b847d5415201245151d4bf90b63bca2ac6c91a4`.
+This closes the reproduced lost-census handoff, not all scan Busy responses,
+native profile policy, steady losses, seamless roaming or IWM/IWX radio parity.
+Off/on, realS3, AP/security and post-S3 roam controls remain before publication.
