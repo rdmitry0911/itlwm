@@ -1,5 +1,15 @@
 # Agent handoff — Tahoe PMF/BIP runtime gate
 
+**P0.1 — repeated GUI open/WPA2/WPA3 transitions, saved-profile reuse and
+recovery now come first (latest user directive, 2026-09-12).** Cover all six
+directed cross-security pairs plus same-security saved-profile reselection,
+then the same paths after explicit off/on and real S3. Keep first failures,
+DHCP and bidirectional service evidence; never hide an intermediate join or
+recovery toggle. A stalled post-S3 GUI remains open. Standalone scan/roam
+analysis and mixed AP work cannot displace the remaining eligible STA cells.
+Active repeated-matrix scratch:
+`/dev/shm/aiam-gui-repeat-matrix-20260912.Z2kWqj`.
+
 **P0 — actual GUI connection/reconnection matrix (user priority reaffirmed
 2026-09-12).** Start with
 [`TAHOE_GUI_CONNECTION_MATRIX_20260912.md`](TAHOE_GUI_CONNECTION_MATRIX_20260912.md).
@@ -13,8 +23,11 @@ selection passes DHCP and20/20 each way. Real S3 on AF16 recovers Wi-Fi but
 again stalls WindowServer's framebuffer wake acknowledgment. The guest is
 gracefully rebooted to a separately labeled awake baseline. After GUI off/on,
 saved WPA2 selection retains a19/20 reverse first test overlapping background
-scan; an unchanged repeat is20/20. Next: measure continuous traffic through
-that actual GUI join/scan/roam sequence. This is a GUI-observed dependency,
+scan; an unchanged repeat is20/20. A later bounded continuous capture is now
+terminal in `/dev/shm/aiam-gui-scan-roam-20260912.ll3xGl`:350/346 forward after
+DHCP; host450/405 includes pre-join loss and must not all be called driver loss.
+Packet-level attribution is pending, behind the repeated-matrix priority above.
+This is a GUI-observed dependency,
 not a return to independent roam research. See
 `docs/TAHOE_GUI_STA_SLEEP_MATRIX_20260912.md`; current boot is
 `7A5FAA36-5FAA-451F-A32B-70EB251B8660`, same AF16 binary. Older next-step

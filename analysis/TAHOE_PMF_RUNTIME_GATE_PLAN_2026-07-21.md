@@ -1,5 +1,14 @@
 # Tahoe IWX PMF/BIP runtime-gate plan
 
+## P0.1 — repeated GUI STA combinations and recovery
+
+Latest user directive2026-09-12: all directed open/WPA2/WPA3 transitions,
+saved-network reuse/reselection and repetitions come before independent
+scan/roam or mixed-AP development. Exercise awake, explicit off/on and real
+sleep/wake separately, with actual GUI actions, DHCP and bidirectional traffic.
+Preserve first failures; do not call an intervening automatic fallback a direct
+transition. Follow the active GUI ledger for unavailable/untested cells.
+
 ## P0 — actual GUI matrix (user priority reaffirmed 2026-09-12)
 
 The first work item is

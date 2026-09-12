@@ -1,5 +1,16 @@
 # GUI-first connection matrix — 2026-09-12
 
+**P0.1 — repeated open/WPA2/WPA3 combinations, saved networks and recovery
+(latest explicit user priority, 2026-09-12).** Test all six directed security
+transitions and same-security saved-profile reselection, repeatedly through
+the actual GUI. Cover normal awake, explicit Wi-Fi off/on, and real sleep/wake
+as separate contexts. Preserve an unavailable post-sleep GUI as an open cell.
+Do not substitute automatic fallback or an intermediate network for a claimed
+direct transition. Every attempt records actual target, DHCP, first traffic
+loss and recovery actions. Individual scan/roam investigations serve failures
+in this matrix; they do not displace the other eligible repeated combinations.
+AP/mixed-security implementation remains below these ordinary STA combinations.
+
 **P0 — first work item; user priority reaffirmed 2026-09-12.** This matrix
 precedes independent protocol, capability, static-parity and roam-carrier
 implementation/research. Those layers run first only for an observed GUI-cell
