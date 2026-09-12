@@ -1,5 +1,21 @@
 # Tahoe IWX PMF/BIP runtime-gate plan
 
+## P0 — actual GUI matrix (user priority reaffirmed 2026-09-12)
+
+The first work item is
+[`TAHOE_GUI_CONNECTION_MATRIX_20260912.md`](../docs/TAHOE_GUI_CONNECTION_MATRIX_20260912.md):
+real UI joins/reconnects, saved-network changes across open/WPA2/WPA3, Wi-Fi
+off/on and real sleep/wake, with AP and ad hoc cells tracked explicitly.
+Retain failed first attempts; require DHCP and bidirectional traffic, not just
+a Connected label. CLI/API joins do not qualify as GUI passes.
+
+This current priority supersedes the historical July gate ordering below.
+Protocol implementation, reference/decomp work and capability changes precede
+a GUI cell only when they unblock its observed failure or a safety prerequisite.
+Mixed PSK/SAE AP remains a GUI-cell dependency, not a separate higher priority.
+Use the owned lab guest; preserve management access and do not modify/reboot
+physical 10.90.10.22. Keep IWN and the shared IWM/IWX paths in scope.
+
 ## Persistent layer-selection criterion (2026-07-22)
 
 For every next surface-reduction cycle, select the eligible discrepancy that

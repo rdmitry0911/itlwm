@@ -1,5 +1,13 @@
 # Agent handoff — Tahoe PMF/BIP runtime gate
 
+**P0 — actual GUI connection/reconnection matrix (user priority reaffirmed
+2026-09-12).** Start with
+[`TAHOE_GUI_CONNECTION_MATRIX_20260912.md`](TAHOE_GUI_CONNECTION_MATRIX_20260912.md).
+This takes precedence over the historical gate/checkpoint material below and
+over independent protocol, capability, or static-parity work. A lower-level
+fix runs first only to unblock an observed GUI cell or its safety prerequisite.
+Mixed PSK/SAE AP is one such cell dependency, not a replacement for the matrix.
+
 Date: 2026-07-21
 
 ## Exact repository state

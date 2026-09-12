@@ -1,8 +1,12 @@
 # GUI-first connection matrix — 2026-09-12
 
-User priority: this is the first functional layer, ahead of independent roam
-carrier implementation/research. The latter remains an identified dependency
-to revisit when a GUI control exercises it, not a reason to postpone the UI.
+**P0 — first work item; user priority reaffirmed 2026-09-12.** This matrix
+precedes independent protocol, capability, static-parity and roam-carrier
+implementation/research. Those layers run first only for an observed GUI-cell
+failure or a necessary safety prerequisite. Mixed PSK/SAE AP is a dependency
+within this matrix, not a replacement for it. Choose the next eligible cell
+by user-facing frequency, retaining ordinary STA connection/reconnection,
+saved-network changes and recovery coverage alongside AP and ad hoc.
 
 ## Current starting point
 
