@@ -246,13 +246,12 @@ struct ItlIwx {
             uint64_t desc=0,bc=0;
             uint32_t size=0;
             unsigned tid=0;
-            // Runtime on real AX211 proved the gen3 firmware requires the modern
-            // SCD_QUEUE_CONFIG_CMD and rejects the legacy command (flags=0x1) even
-            // when the firmware advertises no version (UNKNOWN); the driver gates
-            // modern on the device family in that case. Mirror that contract here
-            // (the lab is the proving ground): explicit version 0 stays legacy.
-            // (this mock's device family is IWX_DEVICE_FAMILY_AX210, so UNKNOWN maps to modern)
-            if(version==3 || version==IWX_FW_CMD_VER_UNKNOWN) {
+            // The modern SCD_QUEUE_CONFIG_CMD is used only when the firmware
+            // advertises version 3.  Runtime on real AX211 proved that firmware
+            // advertising NO version (UNKNOWN) does not implement the modern
+            // command (UMAC BAD_COMMAND assert); like iwlwifi's cmd_ver 0, both
+            // UNKNOWN and explicit 0 select the legacy IWX_SCD_QUEUE_CFG.
+            if(version==3) {
                 assert(hcmd->id==IWX_WIDE_ID(IWX_DATA_PATH_GROUP,IWX_SCD_QUEUE_CONFIG_CMD));
                 const auto &wire=*static_cast<const iwx_scd_queue_cfg_cmd *>(hcmd->data[0]);
                 assert(le32toh(wire.operation)==IWX_SCD_QUEUE_ADD);
@@ -439,7 +438,11 @@ int main(int argc,char **argv)
         assert(sendCalls==1 && "size fallback resubmitted a firmware-accepted transaction");
     } else if(std::strcmp(scenario,"control")==0 || std::strcmp(scenario,"local-dma")==0 ||
               std::strcmp(scenario,"preallocated")==0 || ap ||
-              std::strcmp(scenario,"collision")==0 || is("reentrant")) {
+              std::strcmp(scenario,"collision")==0 || is("reentrant") || is("flags")) {
+        // "flags": the firmware set response->flags=0x1 but still returned a
+        // usable queue.  Matching the OpenBSD reference, flags is not treated as
+        // fatal (validate queue_number/write_pointer only), so the queue is
+        // accepted exactly like the control path.
         assert(queue==expectedQueue && sendCalls==1);
         assert(sc.sc_tid_data[3].qid==(ap?IWX_INVALID_QUEUE:expectedQueue));
         assert(sc.txq[expectedQueue].cur==7 && allocations==3 && maps==sc.txq[expectedQueue].ring_count);
@@ -452,7 +455,7 @@ int main(int argc,char **argv)
         }
     } else assert(queue<0);
     if(is("transport") || is("short") || is("retry") || is("missing") ||
-        is("flags") || is("bad-id") || is("superseded") || is("collision")) {
+        is("bad-id") || is("superseded") || is("collision")) {
         assert(d.txQueueAllocation.phase==ItlTxQueueAllocation::Phase::Quarantined);
         assert(d.recoveries==1 && allocations==(is("collision")?6U:3U));
         auto before=sendCalls;

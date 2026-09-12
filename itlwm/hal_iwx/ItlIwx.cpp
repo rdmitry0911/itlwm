@@ -7411,18 +7411,20 @@ iwx_allocate_tx_queue(struct iwx_softc *sc, uint8_t station, int tid, int ssn,
     if (version != 0 && version != IWX_FW_CMD_VER_UNKNOWN && version != 3)
         return -EOPNOTSUPP;
     /*
-     * AX210+ (gen3) firmware requires the modern SCD_QUEUE_CONFIG_CMD
-     * (IWX_SCD_QUEUE_ADD via the DATA_PATH_GROUP wide id) and rejects the legacy
-     * IWX_SCD_QUEUE_CFG command with response flags=0x1 (runtime diagnosis on
-     * AX211: the firmware echoes the qid but flags the config as failed). The
-     * bundled AX211 firmware advertises no SCD_QUEUE_CONFIG_CMD version
-     * (iwx_lookup_cmd_ver returns UNKNOWN), so gate the modern command on the
-     * device family too when the version is unknown, matching iwlwifi which uses
-     * the modern format on gen2/gen3. An explicit version 0 still selects legacy.
+     * The modern SCD_QUEUE_CONFIG_CMD (IWX_SCD_QUEUE_ADD via the DATA_PATH_GROUP
+     * wide id) is only used when the firmware advertises version 3 for it.  When
+     * the firmware publishes no version (iwx_lookup_cmd_ver returns UNKNOWN) it
+     * does NOT implement the modern command: runtime diagnosis on AX211 (fw omits
+     * the version) showed that sending WIDE_ID(DATA_PATH_GROUP,SCD_QUEUE_CONFIG_CMD)
+     * triggers a UMAC BAD_COMMAND assert (0x20000038, data1=0x17 data2=0x5, last
+     * host cmd 0x0180517) and a device reset.  iwlwifi treats an absent version as
+     * cmd_ver 0 and uses the legacy IWX_SCD_QUEUE_CFG for exactly this firmware, so
+     * match that here.  (On AX211 the gen2 firmware sets response flags=0x1 for the
+     * legacy command while still returning a usable queue; that non-fatal flag is
+     * handled at the response check below, matching the OpenBSD reference which
+     * never treats response->flags as fatal.)
      */
-    const bool use_modern_scd = (version == 3) ||
-        (version == IWX_FW_CMD_VER_UNKNOWN &&
-         sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210);
+    const bool use_modern_scd = (version == 3);
     ItlTxQueueAllocationCommand command = {};
     int error = beginTxQueueAllocation(sc, station, tid, fixedQueue, &command);
     if (error != 0)
@@ -7515,10 +7517,15 @@ iwx_allocate_tx_queue(struct iwx_softc *sc, uint8_t station, int tid, int ssn,
         goto out;
     }
     response = (struct iwx_tx_queue_cfg_rsp *)packet->data;
-    if (le16toh(response->flags) != 0) {
-        error = EIO;
-        goto out;
-    }
+    /*
+     * The upstream reference (OpenBSD iwx_enable_txq, from which this code is
+     * ported) does NOT treat response->flags as fatal: it validates the
+     * firmware-assigned queue_number and write_pointer only.  On AX211 the gen2
+     * firmware sets flags=0x1 while still echoing the requested queue and a valid
+     * write pointer; rejecting on flags here (an itlwm-only addition) aborts an
+     * otherwise-usable queue.  Match the reference and validate queue_number /
+     * write_pointer instead of flags.
+     */
     queue = le16toh(response->queue_number);
     write = le16toh(response->write_pointer);
     if (queue == IWX_DQA_CMD_QUEUE || queue >= static_cast<int>(nitems(sc->txq)) ||
