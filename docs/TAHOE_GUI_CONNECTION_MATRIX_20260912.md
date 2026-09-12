@@ -35,7 +35,7 @@ hidden off/on or API-based join to turn a failed GUI cell green.
 | WPA2 selection / reconnect | D636 first/saved return PASS; AF16 saved selection PASS | GUI unavailable on D636 | D636 WPA2 recovery PASS |
 | Open → WPA2 → WPA3 and reverse | PARTIAL; WPA2→WPA3→open renamed-BSSID discovery/service fixed on AF16, via LabAP between fixtures | GUI unavailable on D636 | NOT TESTED |
 | Multiple saved networks / return to prior network | WPA2 and WPA3 target reselect controls PASS; full matrix open | GUI unavailable on D636 | AF16 same WPA3 recovery PASS |
-| AP UI enable/disable, external-client service | NOT TESTED | NOT TESTED | NOT TESTED |
+| AP UI enable/disable, external-client service | AF16 GUI WPA2 DHCP/20+20/cold-ARP/NAT PASS after corrected credential entry; WPA3/mixed selector gap open | NOT TESTED | NOT TESTED |
 | Ad hoc UI create/join | NOT TESTED | NOT TESTED | NOT TESTED |
 
 An already-active AP across sleep is a separate cell, also NOT TESTED. Prior
@@ -145,7 +145,12 @@ behind the WPA3 password dialog while the live radio/DHCP remain on LabAP.
 Its driver-versus-userspace ownership is not yet established. AP/ad hoc UI
 and post-S3 GUI availability remain open alongside the full combination
 matrix; do not let unrelated static work displace these GUI paths.
-Next functional cell: system-UI AP enable/disable and external-client service.
+The actual system-UI WPA2 AP service cell is now qualified on AF16; initial
+presentation and credential-entry failures remain in the ledger. The popup's
+reference capability also exposes mixed WPA2/WPA3 AP, which the current
+authenticator rejects. This is the next GUI-derived functional dependency,
+not permission to advertise the bit alone. See
+`TAHOE_GUI_AP_SECURITY_MATRIX_20260912.md` for exact controls and boundaries.
 
 AF16 evidence: `/home/dima/Projects/itlwm/aiam-gui-cache-runtime-20260912.gHMjC3`,
 251 verified files, manifest SHA256

@@ -41,7 +41,11 @@ GUI checkpoint2026-09-12:5e98d640 closes the live stale former-BSS ownership
 fault after WPA2→SAE. Exact AF16 GUI WPA3 first join/reconnect/off-on plus
 open/WPA2 regressions pass; the alpha is published with public readback
 verification. See `docs/TAHOE_GUI_STALE_BSS_CACHE_20260912.md`. Continue with
-system-UI AP enable/external-client service, while keeping post-S3 GUI,
+the GUI-derived mixed PSK/SAE AP prerequisite: the awake GUI WPA2 AP cell
+now passes external DHCP,20/20 both ways,cold ARP and NAT on AF16. The
+reference security-popup capability also exposes a mixed-mode default that
+our AP authenticator still rejects; do not publish that capability alone.
+See `docs/TAHOE_GUI_AP_SECURITY_MATRIX_20260912.md`. Keep post-S3 GUI,
 ad hoc and the remaining profile/security combinations explicitly open.
 
 ### General selection rule
