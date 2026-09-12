@@ -13,6 +13,11 @@ a limited-alpha checkpoint, not full qualification. Public alpha now contains
 477ab0af/842B, with exact download verification below. Baseline failures below
 are retained, not relabelled.
 
+Subsequent [scan-abort handoff diagnosis](TAHOE_WCL_SCAN_ABORT_HANDOFF_GAP_20260912.md)
+reproduces the WPA2 discovery failure twice on this unchanged image and
+identifies the live lower scan lease between logical roam cancellation and
+its real terminal. The deferred-start correction is not implemented yet.
+
 ## Controlled radio experiment
 
 Guest IWN/6235 retains UUID68F5B0D9-4863-3627-B30C-CC0CC111BB58 and boot
