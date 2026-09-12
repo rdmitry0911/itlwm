@@ -246,7 +246,13 @@ struct ItlIwx {
             uint64_t desc=0,bc=0;
             uint32_t size=0;
             unsigned tid=0;
-            if(version==3) {
+            // Runtime on real AX211 proved the gen3 firmware requires the modern
+            // SCD_QUEUE_CONFIG_CMD and rejects the legacy command (flags=0x1) even
+            // when the firmware advertises no version (UNKNOWN); the driver gates
+            // modern on the device family in that case. Mirror that contract here
+            // (the lab is the proving ground): explicit version 0 stays legacy.
+            // (this mock's device family is IWX_DEVICE_FAMILY_AX210, so UNKNOWN maps to modern)
+            if(version==3 || version==IWX_FW_CMD_VER_UNKNOWN) {
                 assert(hcmd->id==IWX_WIDE_ID(IWX_DATA_PATH_GROUP,IWX_SCD_QUEUE_CONFIG_CMD));
                 const auto &wire=*static_cast<const iwx_scd_queue_cfg_cmd *>(hcmd->data[0]);
                 assert(le32toh(wire.operation)==IWX_SCD_QUEUE_ADD);

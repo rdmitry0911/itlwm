@@ -7410,6 +7410,19 @@ iwx_allocate_tx_queue(struct iwx_softc *sc, uint8_t station, int tid, int ssn,
     const int version = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP, IWX_SCD_QUEUE_CONFIG_CMD);
     if (version != 0 && version != IWX_FW_CMD_VER_UNKNOWN && version != 3)
         return -EOPNOTSUPP;
+    /*
+     * AX210+ (gen3) firmware requires the modern SCD_QUEUE_CONFIG_CMD
+     * (IWX_SCD_QUEUE_ADD via the DATA_PATH_GROUP wide id) and rejects the legacy
+     * IWX_SCD_QUEUE_CFG command with response flags=0x1 (runtime diagnosis on
+     * AX211: the firmware echoes the qid but flags the config as failed). The
+     * bundled AX211 firmware advertises no SCD_QUEUE_CONFIG_CMD version
+     * (iwx_lookup_cmd_ver returns UNKNOWN), so gate the modern command on the
+     * device family too when the version is unknown, matching iwlwifi which uses
+     * the modern format on gen2/gen3. An explicit version 0 still selects legacy.
+     */
+    const bool use_modern_scd = (version == 3) ||
+        (version == IWX_FW_CMD_VER_UNKNOWN &&
+         sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210);
     ItlTxQueueAllocationCommand command = {};
     int error = beginTxQueueAllocation(sc, station, tid, fixedQueue, &command);
     if (error != 0)
@@ -7455,7 +7468,7 @@ iwx_allocate_tx_queue(struct iwx_softc *sc, uint8_t station, int tid, int ssn,
         }
         iwx_reset_tx_ring(sc, ring);
     }
-    if (version == 3) {
+    if (use_modern_scd) {
         modern.operation = htole32(IWX_SCD_QUEUE_ADD);
         modern.u.add.tfdq_dram_addr = htole64(ring->desc_dma.paddr);
         modern.u.add.bc_dram_addr = htole64(ring->bc_tbl.paddr);
