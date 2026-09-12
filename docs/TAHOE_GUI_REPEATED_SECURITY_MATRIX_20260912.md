@@ -1,5 +1,12 @@
 # Repeated GUI security transitions — 2026-09-12
 
+Follow-up: the delayed ControlCenter path below is diagnosed and repaired as a
+laboratory native WiFiAgent/preferences-readiness defect in
+[`TAHOE_GUI_WIFIAGENT_READINESS_20260912.md`](TAHOE_GUI_WIFIAGENT_READINESS_20260912.md).
+The original measurements and failures below remain unchanged. The follow-up
+also finds transition-security OpenWrt BSSes: an SSID name alone is not enough
+to qualify a WPA2-only matrix cell.
+
 P0.1 actual GUI work after8cdf553d. This cycle measures the current driver;
 it does not add production functionality. Loaded UUID remains
 `AF169180-05E8-33CF-960A-166E5DB901BB`, installed Mach-O SHA256

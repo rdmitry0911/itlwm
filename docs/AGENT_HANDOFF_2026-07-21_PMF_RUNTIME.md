@@ -7,14 +7,38 @@ then the same paths after explicit off/on and real S3. Keep first failures,
 DHCP and bidirectional service evidence; never hide an intermediate join or
 recovery toggle. A stalled post-S3 GUI remains open. Standalone scan/roam
 analysis and mixed AP work cannot displace the remaining eligible STA cells.
-Latest repeated-matrix result: all six awake direct GUI pairs associate/get
+Latest GUI-service cycle:
+`docs/TAHOE_GUI_WIFIAGENT_READINESS_20260912.md`. The delayed ControlCenter
+path is localized to repeated 80-second diagnostic waits: native WiFiAgent
+cannot initialize because the airport preferences plist is root-only 0600.
+Exact guest-binary decompilation (40 workers) and EACCES observations confirm
+the prerequisite. At 08:33:30 only this laboratory file's read mode is restored
+to 0644, with identical contents and a root-only backup. WiFiAgent PID 5894
+starts normally without a reboot/daemon restart. Actual menu disconnects on
+LabAP and OpenWrt reach airportd in 13 ms; same-profile SAE reselections each
+pass DHCP and 60/60 traffic both ways. OpenWrt's selected BSS is transition
+PSK/SAE on channel 100, so that result is NOT a WPA2-only pass. Use a uniquely
+named WPA2-only fixture for the remaining strict-security cells. Run the new
+read-only `scripts/check_tahoe_gui_service_readiness.sh` as the console user
+before further GUI tests. Explicit off/on starting from OpenWrt/SAE also
+auto-recovers that profile in about 12 seconds; the delayed minute control
+passes 60/60 each way. WiFiAgent PID and repaired read mode survive the writes.
+Current guest remains connected to OpenWrt/SAE, BSSID 50:4f:3b:cd:dd:67/ch100,
+IPv4 172.16.66.212, with independent USB management. No host AP fixture is
+running. Production/release remains 5e98d640/AF16. Durable cycle evidence:
+`/home/dima/Projects/itlwm/aiam-gui-unjoin-runtime-20260912.zvNP4h`.
+All 132 files verify; manifest SHA256
+`f4325686edd11bbeb1eb67a0c9ce37d185b0c025ee5b8512ef76ec146eb184c6`.
+Archive and RAM source are terminal/immutable; use a new scratch next cycle.
+
+Previous repeated-matrix result: all six awake direct GUI pairs associate/get
 DHCP; four60/60+60/60, both WPA3-target first checks59/60+59/60. After explicit
 WPA3 off/on, recovery and five repeated directed pairs pass60/60+60/60.
 The final open→WPA3 joins/gets DHCP then is disconnected by ControlCenter:
 GUI unjoin entries07:56:09.271/07:56:33.987 arrive at airportd as DISASSOC
-only08:06:29.688/.744. Guest remains inactive with USB management intact;
-fixture ended08:10:17, host profile restored. Investigate this observed
-GUI-action queue/lifecycle delay using existing reference evidence next;
+only08:06:29.688/.744. That cycle ended inactive with USB management intact;
+fixture ended08:10:17, host profile restored. This observed
+GUI-action queue/lifecycle delay was the dependency subsequently investigated;
 do not call it a spontaneous SAE failure or silently repair/relabel the cell.
 See `docs/TAHOE_GUI_REPEATED_SECURITY_MATRIX_20260912.md`.
 Repeated-matrix scratch:

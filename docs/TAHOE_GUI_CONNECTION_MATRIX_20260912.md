@@ -43,7 +43,20 @@ DHCP and bidirectional traffic, with first-attempt latency/loss retained.
 Opening the settings pane alone is not a connection test. Never insert a
 hidden off/on or API-based join to turn a failed GUI cell green.
 
-Latest P0.1 control:
+Latest P0.1 GUI-service dependency:
+[`TAHOE_GUI_WIFIAGENT_READINESS_20260912.md`](TAHOE_GUI_WIFIAGENT_READINESS_20260912.md).
+The native WiFiAgent startup/read-permission defect in the laboratory guest is
+repaired without a driver change, reboot or daemon restart. Two actual menu
+disconnects now reach airportd in 13 ms; saved LabAP/SAE and OpenWrt/SAE
+reconnections each pass DHCP and 60/60 packets both ways. OpenWrt's selected
+BSS advertises transition PSK/SAE, so it cannot stand in for a WPA2-only
+fixture. Use the new read-only GUI-service prerequisite before further cells.
+Explicit off/on from the saved OpenWrt/SAE profile also auto-recovers it in
+about 12 seconds; the delayed minute service control is 60/60 each way, with
+native WiFiAgent and preferences read access still healthy. This does not
+qualify WPA2-only off/on or post-S3 GUI recovery.
+
+Preceding P0.1 control:
 [`TAHOE_GUI_REPEATED_SECURITY_MATRIX_20260912.md`](TAHOE_GUI_REPEATED_SECURITY_MATRIX_20260912.md).
 With all three saved SSIDs simultaneously available, all six direct GUI
 security transitions associate and obtain DHCP on AF16. Four first-minute
@@ -51,7 +64,7 @@ controls pass60/60 both ways; both transitions into WPA3 retain59/60 each
 way. The later explicit WPA3 off/on recovery passes60/60 both ways. A second
 six-edge round has five60/60+60/60 controls; its last open→WPA3 join/DHCP is
 interrupted by two delayed ControlCenter DISASSOC requests following earlier
-menu unjoin actions. That GUI-action delay is the next observed dependency;
+menu unjoin actions. That GUI-action delay is the subsequently diagnosed dependency;
 do not classify the interrupted cell as spontaneous SAE failure or pass it.
 Same-security and full post-recovery combinations remain incomplete.
 

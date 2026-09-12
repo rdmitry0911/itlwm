@@ -9,17 +9,34 @@ sleep/wake separately, with actual GUI actions, DHCP and bidirectional traffic.
 Preserve first failures; do not call an intervening automatic fallback a direct
 transition. Follow the active GUI ledger for unavailable/untested cells.
 
-Latest executed result is in
+Latest GUI dependency is resolved for the tested laboratory path in
+`docs/TAHOE_GUI_WIFIAGENT_READINESS_20260912.md`: exact reference init requires
+unprivileged reading of the airport preferences plist. Root-only 0600 prevents
+native WiFiAgent initialization and causes repeated 80-second ControlCenter
+diagnostic waits. A metadata-only restoration to 0644 makes WiFiAgent start
+normally without daemon restart or reboot. Two actual menu disconnects now
+reach airportd in 13 ms; same-profile LabAP/SAE and OpenWrt/SAE reconnections
+each pass DHCP and 60/60 traffic both ways. OpenWrt also advertises transition
+PSK/SAE BSSes, so its name alone cannot qualify WPA2. Continue with a unique
+WPA2-only fixture, open same-profile tests, and repeated recovery combinations.
+The new read-only GUI-service prerequisite must precede these tests. No new
+production kext or release identity is claimed for this environment repair.
+Explicit off/on from OpenWrt/SAE auto-recovers it in about 12 seconds, followed
+by a delayed 60/60+60/60 service control. Same native WiFiAgent PID and readable
+preferences survive. Current guest is OpenWrt/SAE on channel 100, IPv4
+172.16.66.212; no AP fixture is running. This is not a WPA2-only off/on pass.
+
+The preceding executed result is in
 `docs/TAHOE_GUI_REPEATED_SECURITY_MATRIX_20260912.md`: awake six-pair round
 has DHCP6/6, four lossless minute controls and two WPA3-target59/60+59/60
 controls. After explicit off/on, recovery and five repeated pairs pass;
 last open→WPA3 joins/gets DHCP then delayed ControlCenter user-disconnect
-requests interrupt service. The next observed GUI dependency is the roughly
+requests interrupt service. Its observed GUI dependency was the roughly
 10-minute interval from ControlCenter unjoin entry to airportd DISASSOC
-receipt, not a proven spontaneous SAE failure. Resolve its queue/lifecycle
-against reference evidence, then retest the interrupted pair and continue
-same-security, saved-profile and recovery combinations. Guest remains
-disconnected with USB management intact; no physical .22 or guest reboot.
+receipt, not a proven spontaneous SAE failure. The original cell stays failed;
+the later prerequisite repair does not retrospectively pass it. Retest the
+interrupted pair and continue saved-profile/recovery combinations. USB
+management remains intact; physical .22 is untouched and no new reboot occurs.
 
 ## P0 — actual GUI matrix (user priority reaffirmed 2026-09-12)
 
