@@ -32,13 +32,23 @@ DHCP and bidirectional traffic, with first-attempt latency/loss retained.
 Opening the settings pane alone is not a connection test. Never insert a
 hidden off/on or API-based join to turn a failed GUI cell green.
 
+Current additional control:
+[`TAHOE_GUI_STA_SLEEP_MATRIX_20260912.md`](TAHOE_GUI_STA_SLEEP_MATRIX_20260912.md).
+AF16 direct saved WPA3↔WPA2 changes pass DHCP and20/20 each way. Actual S3
+again recovers Wi-Fi but stalls the framebuffer/GUI on AF16, as on D636.
+After a separately labeled reboot and GUI off/on, saved WPA2 selection has
+a retained19/20 reverse first test during a background-scan interval; an
+unchanged steady repeat passes20/20. The GUI return to WPA3 similarly has
+a19/20 forward first test at scan entry and20/20 unchanged repeat. Do not
+label those cells lossless.
+
 | UI path | Normal awake | After real S3 | After UI off/on |
 | --- | --- | --- | --- |
-| Select saved WPA3 / reconnect | AF16 first fixture join, saved reselect and final LabAP service PASS; full matrix open | GUI unavailable on D636 | AF16 same WPA3 recovery PASS |
-| Open network selection / reconnect | D636 first and AF16 saved selection PASS; repeated return still open | GUI unavailable on D636 | NOT TESTED |
-| WPA2 selection / reconnect | D636 first/saved return PASS; AF16 saved selection PASS | GUI unavailable on D636 | D636 WPA2 recovery PASS |
-| Open → WPA2 → WPA3 and reverse | PARTIAL; WPA2→WPA3→open renamed-BSSID discovery/service fixed on AF16, via LabAP between fixtures | GUI unavailable on D636 | NOT TESTED |
-| Multiple saved networks / return to prior network | WPA2 and WPA3 target reselect controls PASS; full matrix open | GUI unavailable on D636 | AF16 same WPA3 recovery PASS |
+| Select saved WPA3 / reconnect | AF16 first fixture join, saved reselect and final LabAP service PASS; full matrix open | GUI unavailable on D636 and AF16; AF16 auto Wi-Fi20/20 each way | AF16 same WPA3 recovery PASS |
+| Open network selection / reconnect | D636 first and AF16 saved selection PASS; repeated return still open | GUI unavailable on D636 and AF16 | NOT TESTED |
+| WPA2 selection / reconnect | D636 first/saved return PASS; AF16 saved selection PASS | GUI unavailable on D636 and AF16 | D636 WPA2 recovery PASS; AF16 cross-profile join/DHCP succeeds, first reverse19/20, unchanged repeat20/20 |
+| Open → WPA2 → WPA3 and reverse | PARTIAL; WPA2→WPA3→open renamed-BSSID discovery/service fixed on AF16, via LabAP between fixtures | GUI unavailable on D636 and AF16 | WPA3↔WPA2 tested with retained loss in both first checks; full combination open |
+| Multiple saved networks / return to prior network | WPA2 and WPA3 target reselect controls PASS; full matrix open | GUI unavailable on D636 and AF16 | AF16 same WPA3 recovery PASS; cross-profile first reverse19/20 retained |
 | AP UI enable/disable, external-client service | AF16 GUI WPA2 DHCP/20+20/cold-ARP/NAT PASS after corrected credential entry; WPA3/mixed selector gap open | NOT TESTED | NOT TESTED |
 | Ad hoc UI create/join | NOT TESTED | NOT TESTED | NOT TESTED |
 

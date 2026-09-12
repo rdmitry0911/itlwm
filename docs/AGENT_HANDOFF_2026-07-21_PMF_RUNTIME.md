@@ -8,6 +8,18 @@ over independent protocol, capability, or static-parity work. A lower-level
 fix runs first only to unblock an observed GUI cell or its safety prerequisite.
 Mixed PSK/SAE AP is one such cell dependency, not a replacement for the matrix.
 
+Latest GUI control (2026-09-12, after a9af94c0): direct saved WPA3↔WPA2
+selection passes DHCP and20/20 each way. Real S3 on AF16 recovers Wi-Fi but
+again stalls WindowServer's framebuffer wake acknowledgment. The guest is
+gracefully rebooted to a separately labeled awake baseline. After GUI off/on,
+saved WPA2 selection retains a19/20 reverse first test overlapping background
+scan; an unchanged repeat is20/20. Next: measure continuous traffic through
+that actual GUI join/scan/roam sequence. This is a GUI-observed dependency,
+not a return to independent roam research. See
+`docs/TAHOE_GUI_STA_SLEEP_MATRIX_20260912.md`; current boot is
+`7A5FAA36-5FAA-451F-A32B-70EB251B8660`, same AF16 binary. Older next-step
+mixed-AP notes below are preserved but do not supersede this active GUI cell.
+
 Date: 2026-07-21
 
 ## Exact repository state
