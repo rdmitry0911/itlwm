@@ -1991,10 +1991,8 @@ ieee80211_end_scan_owned(struct _ifnet *ifp,
                 return;
             }
 
-            IEEE80211_ADDR_COPY(ic->ic_wcl_reassoc_target_bssid,
-                selbs->ni_bssid);
-            ic->ic_wcl_reassoc_owner_last_leaf =
-                IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+            if (!ieee80211_wcl_reassoc_prepare(ic, reassoc_serial, selbs))
+                return;
             XYLog("wcl_reassoc TARGET_SELECTED bssid=%s channel=%u rssi=%d\n",
                 ether_sprintf(selbs->ni_bssid),
                 ieee80211_chan2ieee(ic, selbs->ni_chan),

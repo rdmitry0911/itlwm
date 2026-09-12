@@ -9773,14 +9773,40 @@ static IOReturn postWclReassocCompletionGated(
     if (that == nullptr || completion == nullptr || that->fHalService == nullptr ||
         that->fNetIf == nullptr ||
         (event != IEEE80211_EVT_WCL_REASSOC_DONE &&
-         event != IEEE80211_EVT_WCL_REASSOC_FAIL))
+         event != IEEE80211_EVT_WCL_REASSOC_FAIL &&
+         event != IEEE80211_EVT_WCL_REASSOC_PROGRESS))
         return kIOReturnNotReady;
     struct ieee80211com *ic = that->fHalService->get80211Controller();
-    if (!ieee80211_wcl_reassoc_claim_completion(ic, completion))
+    const bool terminal = event != IEEE80211_EVT_WCL_REASSOC_PROGRESS;
+    const uint32_t stages = ieee80211_wcl_reassoc_claim_stages(ic, completion, terminal);
+    if (stages == 0)
         return kIOReturnNotReady;
     /* runAction is synchronous, including when it has to wait for the gate.
      * Neither this detached input nor the wire value aliases shared scratch
      * storage which another lower completion can overwrite while waiting. */
+    const auto stillCurrent = [&]() {
+        return ieee80211_wcl_reassoc_publication_current(ic, completion) != 0;
+    };
+    /* Intel's host request has no Broadcom firmware roam-reason value.
+     * Keep the reference's unavailable sentinel, not a fabricated low-RSSI
+     * or initial-association reason. Preparation uses the RAW reason slot. */
+    if ((stages & IEEE80211_WCL_REASSOC_STAGE_SCAN) != 0 && stillCurrent()) {
+        uint32_t start[3] = { 0, 0xe3ff8100U, 0 };
+        const int16_t rssi = static_cast<int16_t>(completion->observation.source_rssi_dbm);
+        memcpy(reinterpret_cast<uint8_t *>(start) + 8, &rssi, sizeof(rssi));
+        that->postMessage(that->fNetIf,
+            IEEE80211_WCL_REASSOC_OWNER_SELECTOR_SCAN_EVENT, start, sizeof(start), true);
+    }
+    if ((stages & IEEE80211_WCL_REASSOC_STAGE_PREP) != 0 && stillCurrent()) {
+        uint32_t prep[3] = { UINT32_MAX, 0, 0 };
+        const int16_t rssi = static_cast<int16_t>(completion->observation.target_rssi_dbm);
+        memcpy(reinterpret_cast<uint8_t *>(prep) + 4, completion->target_bssid, 6);
+        memcpy(reinterpret_cast<uint8_t *>(prep) + 10, &rssi, sizeof(rssi));
+        that->postMessage(that->fNetIf,
+            IEEE80211_WCL_REASSOC_OWNER_SELECTOR_PREP_EVENT, prep, sizeof(prep), true);
+    }
+    if (!terminal || !stillCurrent())
+        return kIOReturnSuccess;
     if (event == IEEE80211_EVT_WCL_REASSOC_DONE) {
         const UInt32 status[2] = { 0, 0 };
         that->postMessage(that->fNetIf,
@@ -9792,6 +9818,28 @@ static IOReturn postWclReassocCompletionGated(
             IEEE80211_WCL_REASSOC_OWNER_SELECTOR_FAILURE,
             &result, sizeof(result), true);
     }
+    if (!stillCurrent())
+        return kIOReturnSuccess;
+    /* 25C56 WCLRoamManager::handleRoamDoneEvent requires exactly 168 bytes.
+     * Unlike the reassoc-command reply, this executes roamDone and releases
+     * its protection timer and pending force-roam request. */
+    uint32_t done[42] = {};
+    done[0] = event == IEEE80211_EVT_WCL_REASSOC_DONE ? 0 : 0xe3ff8100U;
+    done[1] = 0xe3ff8100U;
+    memcpy(reinterpret_cast<uint8_t *>(done) + 8,
+        &completion->observation.started_ms, sizeof(uint64_t));
+    memcpy(reinterpret_cast<uint8_t *>(done) + 16,
+        &completion->completed_ms, sizeof(uint64_t));
+    done[8] = static_cast<uint32_t>(completion->observation.source_rssi_dbm);
+    done[9] = static_cast<uint32_t>(completion->observation.target_rssi_dbm);
+    done[10] = completion->observation.source_channel;
+    done[11] = completion->observation.target_channel;
+    memcpy(reinterpret_cast<uint8_t *>(done) + 0x38, completion->source_bssid, 3);
+    memcpy(reinterpret_cast<uint8_t *>(done) + 0x3b, completion->target_bssid, 3);
+    memcpy(reinterpret_cast<uint8_t *>(done) + 0x58, completion->source_bssid, 6);
+    memcpy(reinterpret_cast<uint8_t *>(done) + 0x5e, completion->target_bssid, 6);
+    that->postMessage(that->fNetIf,
+        IEEE80211_WCL_REASSOC_OWNER_SELECTOR_DONE_EVENT, done, sizeof(done), true);
     return kIOReturnSuccess;
 }
 
@@ -10209,6 +10257,7 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             break;
         case IEEE80211_EVT_WCL_REASSOC_DONE:
         case IEEE80211_EVT_WCL_REASSOC_FAIL:
+        case IEEE80211_EVT_WCL_REASSOC_PROGRESS:
         {
             if (data == nullptr)
                 return;

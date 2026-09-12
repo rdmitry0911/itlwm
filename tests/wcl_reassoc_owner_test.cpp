@@ -33,7 +33,10 @@ static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, int) {
     assert(lock && lock->held); lock->held=false;
 }
 struct _ifnet {};
-struct ieee80211_node { bool ni_port_valid=true; uint8_t ni_bssid[6]={2}; };
+struct ieee80211_node {
+    bool ni_port_valid=true; uint8_t ni_bssid[6]={2};
+    uint8_t ni_rssi=58; unsigned ni_chan=9;
+};
 struct ieee80211com : _ifnet {
     IOSimpleLock lock;
     IOSimpleLock *ic_pae_selected_bss_lock=&lock;
@@ -41,6 +44,8 @@ struct ieee80211com : _ifnet {
     uint64_t ic_wcl_reassoc_source_epoch=0;
     uint64_t ic_wcl_reassoc_terminal_serial=0, ic_pae_assoc_epoch=11;
     uint64_t ic_wcl_reassoc_scan_accepted_serial=0;
+    uint32_t ic_wcl_reassoc_published_stages=0;
+    ieee80211_wcl_reassoc_observation ic_wcl_reassoc_observation{};
     uint32_t ic_wcl_reassoc_owner_active=0, ic_wcl_reassoc_owner_last_leaf=0;
     ieee80211_wcl_reassoc_request ic_wcl_reassoc_request{};
     uint8_t ic_wcl_reassoc_source_bssid[6]{}, ic_wcl_reassoc_target_bssid[6]{};
@@ -51,7 +56,12 @@ struct ieee80211com : _ifnet {
     int (*ic_bgscan_abort)(ieee80211com *, uint64_t)=nullptr;
     void (*ic_event_handler)(ieee80211com *, int, void *)=nullptr;
 };
-static unsigned epochs, events, frees;
+static unsigned ieee80211_chan2ieee(ieee80211com *, unsigned channel) { return channel; }
+static void clock_get_uptime(uint64_t *value) { *value=1234567890000ULL; }
+static void absolutetime_to_nanoseconds(uint64_t value, uint64_t *result) { *result=value; }
+uint64_t ieee80211_wcl_reassoc_uptime_ms(void);
+void ieee80211_wcl_reassoc_post_progress(ieee80211com *, uint64_t);
+static unsigned epochs, events, frees, wireEvents;
 static std::function<void(ieee80211com *)> cancelContinuation, beforeEpoch, freeContinuation;
 static void invoke(std::function<void(ieee80211com *)> &slot, ieee80211com *ic) {
     auto action=std::move(slot); slot={}; if(action) action(ic);
@@ -78,10 +88,14 @@ static std::function<void(uint32_t, const void *, size_t)> wireObserver;
 struct AirportItlwm : OSObject {
     Hal *fHalService; void *fNetIf=this;
     std::vector<uint8_t> payload; uint32_t selector=0;
+    std::vector<uint8_t> commandPayload; uint32_t commandSelector=0;
     void postMessage(void *,uint32_t code,void *data,size_t length,bool) {
         assert(!fHalService->ic->lock.held); selector=code;
         const auto *bytes=static_cast<uint8_t *>(data);
-        payload.assign(bytes,bytes+length); ++events;
+        payload.assign(bytes,bytes+length); ++wireEvents;
+        if (code == 0x49 || code == 0xcf) {
+            ++events; commandSelector=code; commandPayload=payload;
+        }
         if (wireObserver) wireObserver(code, data, length);
     }
 };
@@ -92,12 +106,18 @@ static int dispatch(ieee80211com *ic,int code,ieee80211_wcl_reassoc_completion c
     Hal hal{ic}; AirportItlwm driver; driver.fHalService=&hal;
     int result=postWclReassocCompletionGated(&driver,&copy,
         reinterpret_cast<void *>(static_cast<uintptr_t>(code)),nullptr,nullptr);
-    if(result==0) {
+    if(result==0 && code != IEEE80211_EVT_WCL_REASSOC_PROGRESS &&
+       ieee80211_wcl_reassoc_publication_current(ic, &copy)) {
         const bool failure=code==IEEE80211_EVT_WCL_REASSOC_FAIL;
-        assert(driver.selector==(failure ? IEEE80211_WCL_REASSOC_OWNER_SELECTOR_FAILURE :
+        assert(driver.commandSelector==(failure ? IEEE80211_WCL_REASSOC_OWNER_SELECTOR_FAILURE :
             IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT));
-        assert(driver.payload.size()==(failure?4U:8U));
-        uint32_t value; memcpy(&value,driver.payload.data(),4); assert(value==copy.result);
+        assert(driver.commandPayload.size()==(failure?4U:8U));
+        uint32_t value; memcpy(&value,driver.commandPayload.data(),4); assert(value==copy.result);
+        assert(driver.selector==IEEE80211_WCL_REASSOC_OWNER_SELECTOR_DONE_EVENT);
+        assert(driver.payload.size()==168);
+        memcpy(&value,driver.payload.data(),4); assert(value==(failure?0xe3ff8100U:0));
+        assert(!memcmp(driver.payload.data()+0x58,copy.source_bssid,6));
+        assert(!memcmp(driver.payload.data()+0x5e,copy.target_bssid,6));
     }
     return result;
 }
@@ -111,6 +131,11 @@ static void admit(ieee80211com *ic,uint8_t identity,uint32_t leaf) {
     ic->ic_wcl_reassoc_source_epoch=ic->ic_pae_assoc_epoch;
     ic->ic_wcl_reassoc_terminal_serial=0;
     ic->ic_wcl_reassoc_scan_accepted_serial=0;
+    ic->ic_wcl_reassoc_published_stages=0;
+    ic->ic_wcl_reassoc_observation={};
+    ic->ic_wcl_reassoc_observation.stages=IEEE80211_WCL_REASSOC_STAGE_SCAN;
+    if (leaf==IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED)
+        ic->ic_wcl_reassoc_observation.stages|=IEEE80211_WCL_REASSOC_STAGE_PREP;
     ic->ic_wcl_reassoc_owner_active=1; ic->ic_wcl_reassoc_owner_last_leaf=leaf;
     memset(&ic->ic_wcl_reassoc_request,identity,sizeof(ic->ic_wcl_reassoc_request));
     memset(ic->ic_wcl_reassoc_source_bssid,identity,6);
@@ -135,17 +160,19 @@ static int lifecycleRequirement(unsigned scenario) {
     ieee80211_wcl_reassoc_request request{};
     assert(ieee80211_begin_wcl_reassoc_bgscan(&ic, &request) == 0);
     if (scenario != 1) {
-        // Isolate actual terminal production from the independently tested
-        // missing progress producer. The oracle alone gets this precondition.
-        model.seedStarted(scenario >= 3);
-        if (scenario >= 3)
-            ic.ic_wcl_reassoc_owner_last_leaf = IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+        if (scenario >= 3) {
+            ieee80211_node target;
+            target.ni_bssid[0]=4; target.ni_chan=13; target.ni_rssi=63;
+            assert(ieee80211_wcl_reassoc_prepare(&ic,
+                ieee80211_wcl_reassoc_serial(&ic), &target));
+            assert(model.state == ReferenceRoamFsm::Reassoc && model.preparations == 1);
+        }
         if (scenario == 3) ieee80211_wcl_reassoc_post_success(&ic);
         else ieee80211_wcl_reassoc_post_failure(&ic, scenario == 2 ? ENOENT : EACCES);
     }
     std::printf("lifecycle=%u state=%u timer=%u pending=%u starts=%u done=%u command_errors=%u wire_events=%u\n",
         scenario, unsigned(model.state), model.timer, model.pending,
-        model.starts, model.completions, model.commandFailures, events);
+        model.starts, model.completions, model.commandFailures, wireEvents);
     std::fflush(stdout);
     if (scenario == 1)
         assert(model.state == ReferenceRoamFsm::Scan && model.timer && model.starts == 1);
@@ -154,6 +181,75 @@ static int lifecycleRequirement(unsigned scenario) {
             !model.pending && model.completions == 1);
     wireObserver = {};
     return 0;
+}
+
+static void lifecycleOrderingRequirements() {
+    for (unsigned scenario=0; scenario<6; ++scenario) {
+        epochs=events=frees=wireEvents=0; queued.clear(); deferGate=false;
+        cancelContinuation={}; beforeEpoch={}; freeContinuation={};
+        ieee80211com ic;
+        ic.ic_event_handler=event;
+        ieee80211_node target; target.ni_bssid[0]=4; target.ni_chan=13;
+        ReferenceRoamFsm model;
+        std::vector<uint32_t> sequence;
+        wireObserver=[&](uint32_t code, const void *data, size_t length) {
+            sequence.push_back(code); model.receive(code,data,length);
+            if (code==0x89 && (scenario==3 || scenario==4)) {
+                if (scenario==3) ieee80211_wcl_reassoc_post_failure(&ic,EIO);
+                else replacement(&ic);
+            }
+            if (code==0x49 && scenario==5) replacement(&ic);
+        };
+        ic.ic_bgscan_start=[](ieee80211com *,uint64_t) { return 0; };
+        if (scenario==0 || scenario==1) {
+            ic.ic_bgscan_start=[](ieee80211com *v,uint64_t serial) {
+                assert(ieee80211_wcl_reassoc_scan_completion_begin(v,serial));
+                ieee80211_wcl_reassoc_post_failure_owned(v,serial,EIO);
+                return 0;
+            };
+            if (scenario==1) ic.ic_bgscan_start=[](ieee80211com *v,uint64_t serial) {
+                assert(ieee80211_wcl_reassoc_scan_completion_begin(v,serial));
+                ieee80211_node candidate; candidate.ni_bssid[0]=4; candidate.ni_chan=13;
+                assert(ieee80211_wcl_reassoc_prepare(v,serial,&candidate));
+                ieee80211_wcl_reassoc_post_success(v);
+                return 0;
+            };
+        }
+        if (scenario==2) deferGate=true;
+        ieee80211_wcl_reassoc_request request{};
+        assert(ieee80211_begin_wcl_reassoc_bgscan(&ic,&request)==0);
+        if (scenario==2 || scenario==5) {
+            const auto serial=ieee80211_wcl_reassoc_serial(&ic);
+            assert(ieee80211_wcl_reassoc_scan_completion_begin(&ic,serial));
+            assert(ieee80211_wcl_reassoc_prepare(&ic,serial,&target));
+            ieee80211_wcl_reassoc_post_success(&ic);
+        }
+        if (scenario==2) {
+            assert(queued.size()==4);
+            deferGate=false;
+            assert(dispatch(&ic,queued.back().first,queued.back().second)==0);
+            for (const auto &entry : queued)
+                assert(dispatch(&ic,entry.first,entry.second)!=0);
+        }
+        if (scenario==4 || scenario==5) {
+            preserved(ic);
+            const std::vector<uint32_t> expected = scenario==4 ?
+                std::vector<uint32_t>{0x89} : std::vector<uint32_t>{0x89,0x8b,0x49};
+            assert(sequence==expected);
+            // A replacement's real link-down/new-join events are outside
+            // this fixture. It must never receive the old attempt's done.
+            assert(model.completions==0);
+        } else {
+            const std::vector<uint32_t> expected = scenario==0 || scenario==3 ?
+                std::vector<uint32_t>{0x89,0xcf,0x50} :
+                std::vector<uint32_t>{0x89,0x8b,0x49,0x50};
+            assert(sequence==expected);
+            assert(model.state==ReferenceRoamFsm::LinkUp && !model.timer &&
+                !model.pending && model.starts==1 && model.completions==1);
+        }
+        wireObserver={};
+    }
+    printf("PASS: 6 actual synchronous/deferred/reentrant lifecycle orderings\n");
 }
 
 int main(int argc, char **argv) {
@@ -316,4 +412,5 @@ int main(int argc, char **argv) {
         ++cases;
     }
     printf("PASS: %u actual reassoc admission/abort/retirement/controller-gate cases\n",cases);
+    lifecycleOrderingRequirements();
 }

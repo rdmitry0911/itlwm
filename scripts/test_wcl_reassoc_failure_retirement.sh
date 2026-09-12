@@ -22,6 +22,8 @@ else
         "$REASSOC_TEST_DIR/source.c"
 fi
 awk '/^#define IEEE80211_WCL_REASSOC_OWNER_/ { print }
+     /^#define IEEE80211_WCL_REASSOC_STAGE_/ { print }
+     /^#define IEEE80211_EVT_WCL_REASSOC_PROGRESS / { print }
      /^#define IEEE80211_EVT_WCL_REASSOC_FAIL / { print }
      /^ieee80211_wcl_reassoc_leaf_is_post_send\(/ { selected=1; print "static inline int" }
      selected { print }
@@ -31,11 +33,15 @@ awk '/^#define IEEE80211_WCL_REASSOC_OWNER_/ { print }
 if [ -z "${WCL_REASSOC_NEGATIVE_REF:-}" ] && [ "${WCL_REASSOC_EXPECT_DEFECTS:-0}" = 0 ]; then
     awk '/^#define IEEE80211_WCL_REASSOC_MAX_/ { print }
          /^#define IEEE80211_EVT_WCL_REASSOC_DONE / { print }
-         /^struct ieee80211_wcl_reassoc_(candidate|request|completion) \{/ { selected=1 }
+         /^struct ieee80211_wcl_reassoc_(candidate|request|observation|completion) \{/ { selected=1 }
          selected { print } selected && /^};/ { selected=0 }' \
         "$REASSOC_PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" \
         >> "$REASSOC_TEST_DIR/leaves.inc"
     awk '/^ieee80211_wcl_reassoc_serial\(/ { selected=1; print "u_int64_t" }
+         /^ieee80211_wcl_reassoc_uptime_ms\(/ { selected=1; print "u_int64_t" }
+         /^ieee80211_wcl_reassoc_claim_stages\(/ { selected=1; print "u_int32_t" }
+         /^ieee80211_wcl_reassoc_(prepare|publication_current)\(/ { selected=1; print "int" }
+         /^ieee80211_wcl_reassoc_post_progress\(/ { selected=1; print "void" }
          /^ieee80211_wcl_reassoc_(current|claim_completion|scan_completion_begin)\(/ { selected=1; print "int" }
          /^ieee80211_wcl_reassoc_clear_locked\(/ { selected=1; print "static void" }
          /^ieee80211_wcl_reassoc_cancel_target_epoch_locked\(/ { selected=1; print "void" }

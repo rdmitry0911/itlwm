@@ -309,6 +309,17 @@ struct ieee80211_wcl_reassoc_request {
 	int8_t		prune_rssi_dbm;
 };
 
+/* Copied observations, never node pointers. The source is captured before
+ * a scan can discard its census; the target only after real selection. */
+struct ieee80211_wcl_reassoc_observation {
+    u_int64_t started_ms;
+    u_int32_t stages;
+    int32_t source_rssi_dbm;
+    int32_t target_rssi_dbm;
+    u_int32_t source_channel;
+    u_int32_t target_channel;
+};
+
 /*
  * One exact Tahoe WCL ScanAdapter request, normalized before any lower HAL
  * owns the radio.  AppleBCMWLAN consumes the SSID at carrier +0x1c/+0x20
@@ -963,6 +974,8 @@ struct ieee80211com {
     u_int64_t       ic_wcl_reassoc_source_epoch;
     u_int64_t       ic_wcl_reassoc_terminal_serial;
     u_int64_t       ic_wcl_reassoc_scan_accepted_serial;
+    u_int32_t       ic_wcl_reassoc_published_stages;
+    struct ieee80211_wcl_reassoc_observation ic_wcl_reassoc_observation;
     u_int32_t       ic_wcl_reassoc_owner_active;
     u_int32_t       ic_wcl_reassoc_owner_last_leaf;
     struct ieee80211_wcl_reassoc_request ic_wcl_reassoc_request;
@@ -1482,6 +1495,7 @@ struct ieee80211_wcl_scan_start_rejected {
 #define IEEE80211_EVT_STA_JOIN_FAILED                24
 /* Local protected liveness timeout, NOT a received deauthentication. */
 #define IEEE80211_EVT_STA_SA_QUERY_TIMEOUT           25
+#define IEEE80211_EVT_WCL_REASSOC_PROGRESS          26
 struct ieee80211_roam_link_loss {
     u_int64_t epoch;
     u_int8_t bssid[IEEE80211_ADDR_LEN];
@@ -1507,6 +1521,11 @@ struct ieee80211_roam_link_loss {
 #define IEEE80211_WCL_REASSOC_OWNER_SELECTOR_FAILURE       0x000000cfU
 #define IEEE80211_WCL_REASSOC_OWNER_SELECTOR_SCAN_EVENT    0x00000089U
 #define IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT 0x00000049U
+#define IEEE80211_WCL_REASSOC_OWNER_SELECTOR_PREP_EVENT    0x0000008bU
+#define IEEE80211_WCL_REASSOC_OWNER_SELECTOR_DONE_EVENT    0x00000050U
+#define IEEE80211_WCL_REASSOC_STAGE_SCAN                   1U
+#define IEEE80211_WCL_REASSOC_STAGE_PREP                   2U
+#define IEEE80211_WCL_REASSOC_STAGE_DONE                   4U
 
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE              0U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP             1U
@@ -1549,7 +1568,17 @@ struct ieee80211_wcl_reassoc_completion {
     u_int32_t result;
     u_int8_t source_bssid[IEEE80211_ADDR_LEN];
     u_int8_t target_bssid[IEEE80211_ADDR_LEN];
+    struct ieee80211_wcl_reassoc_observation observation;
+    u_int64_t completed_ms;
 };
+u_int64_t ieee80211_wcl_reassoc_uptime_ms(void);
+void ieee80211_wcl_reassoc_post_progress(struct ieee80211com *, u_int64_t);
+int ieee80211_wcl_reassoc_prepare(struct ieee80211com *, u_int64_t,
+    const struct ieee80211_node *);
+u_int32_t ieee80211_wcl_reassoc_claim_stages(struct ieee80211com *,
+    const struct ieee80211_wcl_reassoc_completion *, int);
+int ieee80211_wcl_reassoc_publication_current(struct ieee80211com *,
+    const struct ieee80211_wcl_reassoc_completion *);
 u_int64_t ieee80211_wcl_reassoc_serial(struct ieee80211com *);
 int ieee80211_wcl_reassoc_current(struct ieee80211com *, u_int64_t);
 int ieee80211_wcl_reassoc_scan_completion_begin(struct ieee80211com *, u_int64_t);

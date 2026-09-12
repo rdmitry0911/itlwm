@@ -491,6 +491,7 @@ ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
 	struct ieee80211com *ic = (struct ieee80211com *)ifp;
 	int error;
 	u_int64_t serial, source_epoch;
+	const u_int64_t started_ms = ieee80211_wcl_reassoc_uptime_ms();
 	IOInterruptState irq;
 
 	if (ic == NULL || request == NULL || ic->ic_pae_selected_bss_lock == NULL)
@@ -521,6 +522,14 @@ ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
 	ic->ic_wcl_reassoc_source_epoch = source_epoch;
 	ic->ic_wcl_reassoc_terminal_serial = 0;
 	ic->ic_wcl_reassoc_scan_accepted_serial = 0;
+	ic->ic_wcl_reassoc_published_stages = 0;
+	explicit_bzero(&ic->ic_wcl_reassoc_observation,
+	    sizeof(ic->ic_wcl_reassoc_observation));
+	ic->ic_wcl_reassoc_observation.started_ms = started_ms;
+	ic->ic_wcl_reassoc_observation.source_rssi_dbm =
+	    (int)ic->ic_bss->ni_rssi - 100;
+	ic->ic_wcl_reassoc_observation.source_channel =
+	    ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
 	ic->ic_wcl_reassoc_request = *request;
 	IEEE80211_ADDR_COPY(ic->ic_wcl_reassoc_source_bssid,
 	    ic->ic_bss->ni_bssid);
@@ -577,7 +586,9 @@ ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
 	ic->ic_wcl_reassoc_owner_last_leaf =
 	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
 	ic->ic_wcl_reassoc_scan_accepted_serial = serial;
+	ic->ic_wcl_reassoc_observation.stages |= IEEE80211_WCL_REASSOC_STAGE_SCAN;
 	IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+	ieee80211_wcl_reassoc_post_progress(ic, serial);
 	XYLog("wcl_reassoc REAL_SCAN_STARTED channels=%u candidates=%u flags=0x%x prune=%d\n",
 	    request->channel_count, request->candidate_count,
 	    request->feature_flags, request->prune_rssi_dbm);
@@ -2491,9 +2502,75 @@ ieee80211_wcl_reassoc_scan_completion_begin(struct ieee80211com *ic,
         ic->ic_wcl_reassoc_owner_last_leaf = IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED;
         ic->ic_flags |= IEEE80211_F_BGSCAN;
         ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+        ic->ic_wcl_reassoc_observation.stages |= IEEE80211_WCL_REASSOC_STAGE_SCAN;
     }
     IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    if (current && serial != 0) {
+        ieee80211_wcl_reassoc_post_progress(ic, serial);
+        /* A synchronous upper callback may have replaced this request. */
+        current = ieee80211_wcl_reassoc_current(ic, serial);
+    }
     return current;
+}
+
+u_int64_t
+ieee80211_wcl_reassoc_uptime_ms(void)
+{
+    u_int64_t absolute, nanoseconds;
+    clock_get_uptime(&absolute);
+    absolutetime_to_nanoseconds(absolute, &nanoseconds);
+    return nanoseconds / 1000000;
+}
+
+void
+ieee80211_wcl_reassoc_post_progress(struct ieee80211com *ic, u_int64_t serial)
+{
+    struct ieee80211_wcl_reassoc_completion progress = {};
+    if (ic == NULL || serial == 0 || ic->ic_pae_selected_bss_lock == NULL)
+        return;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    if (!ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_serial != serial) {
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+        return;
+    }
+    progress.serial = serial;
+    progress.association_epoch = ic->ic_pae_assoc_epoch;
+    progress.observation = ic->ic_wcl_reassoc_observation;
+    IEEE80211_ADDR_COPY(progress.source_bssid, ic->ic_wcl_reassoc_source_bssid);
+    IEEE80211_ADDR_COPY(progress.target_bssid, ic->ic_wcl_reassoc_target_bssid);
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    if (ic->ic_event_handler != NULL)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_PROGRESS, &progress);
+}
+
+int
+ieee80211_wcl_reassoc_prepare(struct ieee80211com *ic, u_int64_t serial,
+    const struct ieee80211_node *target)
+{
+    if (ic == NULL || target == NULL || serial == 0 ||
+        ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    if (!ic->ic_wcl_reassoc_owner_active ||
+        ic->ic_wcl_reassoc_owner_serial != serial ||
+        ic->ic_pae_assoc_epoch != ic->ic_wcl_reassoc_source_epoch ||
+        ic->ic_wcl_reassoc_owner_last_leaf !=
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED) {
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+        return 0;
+    }
+    IEEE80211_ADDR_COPY(ic->ic_wcl_reassoc_target_bssid, target->ni_bssid);
+    ic->ic_wcl_reassoc_observation.target_rssi_dbm = (int)target->ni_rssi - 100;
+    ic->ic_wcl_reassoc_observation.target_channel =
+        ieee80211_chan2ieee(ic, target->ni_chan);
+    ic->ic_wcl_reassoc_observation.stages |= IEEE80211_WCL_REASSOC_STAGE_PREP;
+    ic->ic_wcl_reassoc_owner_last_leaf = IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    ieee80211_wcl_reassoc_post_progress(ic, serial);
+    return ieee80211_wcl_reassoc_current(ic, serial);
 }
 
 /* The caller holds the selected-BSS leaf; no lower or upper callback here. */
@@ -2593,6 +2670,8 @@ ieee80211_wcl_reassoc_take_completion(struct ieee80211com *ic,
     }
     completion->serial = serial;
     completion->association_epoch = ic->ic_pae_assoc_epoch;
+    completion->observation = ic->ic_wcl_reassoc_observation;
+    completion->observation.stages |= IEEE80211_WCL_REASSOC_STAGE_DONE;
     IEEE80211_ADDR_COPY(completion->source_bssid, ic->ic_wcl_reassoc_source_bssid);
     IEEE80211_ADDR_COPY(completion->target_bssid, ic->ic_wcl_reassoc_target_bssid);
     /* Retire before epoch cancellation releases its leaf and invokes SAE,
@@ -2600,7 +2679,55 @@ ieee80211_wcl_reassoc_take_completion(struct ieee80211com *ic,
     ieee80211_wcl_reassoc_clear_locked(ic);
     ic->ic_wcl_reassoc_terminal_serial = serial;
     IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    completion->completed_ms = ieee80211_wcl_reassoc_uptime_ms();
     return 1;
+}
+
+/* The controller gate serializes wire publication. A terminal carries the
+ * cumulative real observations, so a queued progress callback cannot lose
+ * the start/preparation prefix when a fast lower terminal overtakes it. */
+u_int32_t
+ieee80211_wcl_reassoc_claim_stages(struct ieee80211com *ic,
+    const struct ieee80211_wcl_reassoc_completion *completion, int terminal)
+{
+    if (ic == NULL || completion == NULL || completion->serial == 0 ||
+        ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const int current = ic->ic_wcl_reassoc_next_serial == completion->serial &&
+        ic->ic_pae_assoc_epoch == completion->association_epoch &&
+        (terminal ? ic->ic_wcl_reassoc_terminal_serial == completion->serial :
+            (ic->ic_wcl_reassoc_owner_active &&
+             ic->ic_wcl_reassoc_owner_serial == completion->serial));
+    u_int32_t stages = 0;
+    if (current) {
+        stages = completion->observation.stages &
+            ~ic->ic_wcl_reassoc_published_stages;
+        ic->ic_wcl_reassoc_published_stages |= stages;
+        if (terminal)
+            ic->ic_wcl_reassoc_terminal_serial = 0;
+    }
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    return stages;
+}
+
+int
+ieee80211_wcl_reassoc_publication_current(struct ieee80211com *ic,
+    const struct ieee80211_wcl_reassoc_completion *completion)
+{
+    if (ic == NULL || completion == NULL || ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    const int current = ic->ic_wcl_reassoc_next_serial == completion->serial &&
+        ic->ic_pae_assoc_epoch == completion->association_epoch &&
+        /* A nested failure can finish the SAME serial while a progress
+         * postMessage is on the stack. Do not publish prep after its done. */
+        (((ic->ic_wcl_reassoc_published_stages & IEEE80211_WCL_REASSOC_STAGE_DONE) == 0) ||
+         ((completion->observation.stages & IEEE80211_WCL_REASSOC_STAGE_DONE) != 0));
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    return current;
 }
 
 int
