@@ -87,7 +87,7 @@ ordered(request, "WCL associated/initial admission",
         "initialForeground = true",
         "instance->reserveWclPhysicalScan(",
         "fHalService->beginWclInitialScan",
-        "fHalService->beginWclBackgroundScan",
+        "airportItlwmBeginWclScanAfterRoam",
         "instance->activateWclPhysicalScan(generation, backendGeneration)")
 for token in ("ic->ic_opmode != IEEE80211_M_STA",
               "IEEE80211_F_AUTO_JOIN", "ic->ic_des_esslen != 0",
@@ -103,7 +103,7 @@ forbid(request, "IEEE80211_F_BGSCAN |\n                             IEEE80211_F_
 forbid(request, "~IEEE80211_F_DESBSSID",
        "WCL initial admission must preserve a BSSID pin")
 ordered(request, "queued initial handoff",
-        "if (initialForeground && beginResult == kIOReturnSuccess",
+        "if (beginResult == kIOReturnSuccess",
         "backendGeneration == 0",
         "instance->queueWclInitialPhysicalScan(generation)",
         "StartDisposition::TerminalPending",
@@ -403,7 +403,7 @@ for token in ("scanCommand.current(serial, com.sc_generation)",
     require(iwx_activate, token, "IWX flag publication requires actual submission")
 
 iwx_background_submit = body(
-    iwx, "iwx_bgscan(struct ieee80211com *ic)",
+    iwx, "iwx_bgscan(struct ieee80211com *ic, uint64_t reassocSerial)",
     "IWX background command submit")
 ordered(iwx_background_submit, "IWX background activation",
         "that->activateScanCommand(scanSerial, true)",
@@ -569,7 +569,7 @@ for token in ("scanCommand.current(serial, com.sc_generation)",
     require(iwm_activate, token, "IWM flag publication requires actual submission")
 
 iwm_background_submit = body(
-    iwm_scan, "iwm_bgscan(struct ieee80211com *ic)",
+    iwm_scan, "iwm_bgscan(struct ieee80211com *ic, uint64_t reassocSerial)",
     "IWM background command submit")
 ordered(iwm_background_submit, "IWM background activation",
         "that->activateScanCommand(scanSerial, true)",
@@ -726,7 +726,9 @@ ordered(iwn_start, "WCL foreground scan is an S_SCAN operation",
         "bool wcl_foreground = owner == IWN_SCAN_LEASE_WCL_INITIAL",
         "ic->ic_state != IEEE80211_S_SCAN",
         "iwn_scan_submit(sc, flags, bgscan, serial",
-        "controller_foreground, wcl_foreground")
+        "controller_foreground,",
+        "wcl_foreground || (wcl_background &&",
+        "required_initial_handoff_serial != 0)")
 for token in ("ic->ic_des_esslen != 0",
               "ieee80211_sae_wcl_request_scan_selection_held(ic)",
               "ieee80211_sae_wcl_request_scan_selection_owned(ic)"):

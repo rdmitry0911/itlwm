@@ -13,6 +13,7 @@ constexpr uint16_t IEEE80211_CHAN_5GHZ = 0x100;
 constexpr int IWN_FLAG_HAS_5GHZ = 1;
 constexpr int IFF_UP = 1, IFF_RUNNING = 2;
 constexpr int IWN_SCAN_LEASE_WCL_INITIAL = 4;
+constexpr int IWN_SCAN_LEASE_WCL_BACKGROUND = 3;
 constexpr int IEEE80211_EVT_WCL_SCAN_START_REJECTED = 9;
 constexpr int IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED = 1;
 constexpr int IEEE80211_SAE_WCL_REQUEST_RESUME_DEFERRED = 2;
@@ -37,6 +38,7 @@ struct iwn_softc {
     struct {
         bool queued, terminal_handoff_ready, launching, command_started;
         uint64_t upper_generation, generic_serial;
+        bool background;
     } sc_wcl_initial_scan_pending;
     bool sc_scan_lease_replay_pending;
     ieee80211_state sc_scan_lease_replay_nstate;
@@ -130,7 +132,7 @@ static ItlIwn fixture() {
     driver.com.sc_ic.ic_channels[13] = {IEEE80211_CHAN_2GHZ, 13};
     driver.com.sc_ic.ic_channels[153] = {IEEE80211_CHAN_5GHZ, 153};
     driver.com.sc_ic.plan.allowed[153] = true;
-    driver.com.sc_wcl_initial_scan_pending = {true, true, false, false, 77, 123};
+    driver.com.sc_wcl_initial_scan_pending = {true, true, false, false, 77, 123, false};
     submitted = rejected = 0;
     submitted_band = 0;
     injected_error = 0;

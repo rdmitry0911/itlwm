@@ -16,7 +16,8 @@ are retained, not relabelled.
 Subsequent [scan-abort handoff diagnosis](TAHOE_WCL_SCAN_ABORT_HANDOFF_GAP_20260912.md)
 reproduces the WPA2 discovery failure twice on this unchanged image and
 identifies the live lower scan lease between logical roam cancellation and
-its real terminal. The deferred-start correction is not implemented yet.
+its real terminal. The deferred-start candidate now passes Linux/Tahoe source
+execution; its build/load and radio correction gate remain open.
 
 ## Controlled radio experiment
 

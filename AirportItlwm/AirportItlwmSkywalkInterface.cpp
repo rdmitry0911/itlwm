@@ -7450,6 +7450,8 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
      * the boot-time generic foreground lease and then submit its own fresh
      * foreground command. */
     bool initialForeground = false;
+    uint64_t supersededReassocSerial = 0;
+    uint64_t supersededSourceEpoch = 0;
     if (ic->ic_state == IEEE80211_S_RUN) {
         if (ic->ic_mgt_timer != 0)
             return kIOReturnNotReady;
@@ -7462,6 +7464,15 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
          * and the public request remains retryable without disturbing the
          * live roam owner. */
         if (ic->ic_wcl_reassoc_owner_active) {
+            if (ic->ic_pae_selected_bss_lock == nullptr)
+                return kIOReturnNotReady;
+            IOInterruptState irq = IOSimpleLockLockDisableInterrupt(
+                ic->ic_pae_selected_bss_lock);
+            if (ic->ic_wcl_reassoc_owner_active) {
+                supersededReassocSerial = ic->ic_wcl_reassoc_owner_serial;
+                supersededSourceEpoch = ic->ic_wcl_reassoc_source_epoch;
+            }
+            IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
             const int cancelResult = ieee80211_cancel_wcl_reassoc_bgscan(
                 ic, static_cast<uint32_t>(ECANCELED));
             if (cancelResult != 0)
@@ -7521,9 +7532,9 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
     uint32_t backendGeneration = 0;
     const IOReturn beginResult = initialForeground ?
         fHalService->beginWclInitialScan(generation, &backendGeneration) :
-        fHalService->beginWclBackgroundScan(generation, &backendGeneration);
-    if (initialForeground && beginResult == kIOReturnSuccess &&
-        backendGeneration == 0) {
+        airportItlwmBeginWclScanAfterRoam(fHalService, generation,
+            supersededReassocSerial, supersededSourceEpoch, &backendGeneration);
+    if (beginResult == kIOReturnSuccess && backendGeneration == 0) {
         const TahoeWclPhysicalScanContracts::StartDisposition queued =
             instance->queueWclInitialPhysicalScan(generation);
         if (queued == TahoeWclPhysicalScanContracts::StartDisposition::Active)

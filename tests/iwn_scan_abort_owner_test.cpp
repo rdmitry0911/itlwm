@@ -49,11 +49,18 @@ struct iwn_ops { void (*update_sched)(iwn_softc *,int,int,int,int); };
 struct task {};
 struct ieee80211_wcl_scan_started { uint64_t generation; uint32_t backend_generation; };
 constexpr int IEEE80211_EVT_WCL_SCAN_STARTED=12;
+constexpr unsigned IFF_UP=1,IFF_RUNNING=2,IEEE80211_F_RSNON=1;
+constexpr unsigned IEEE80211_S_RUN=2,IEEE80211_M_STA=1;
+struct ieee80211_node { bool ni_port_valid=true; };
 struct ieee80211com {
     void *ic_softc=nullptr;
     IOSimpleLock *ic_pae_selected_bss_lock=nullptr;
     uint64_t ic_wcl_reassoc_owner_serial=31,ic_wcl_reassoc_source_epoch=7,ic_pae_assoc_epoch=7;
     unsigned ic_wcl_reassoc_owner_active=1;
+    struct { unsigned if_flags=IFF_UP|IFF_RUNNING; } ic_if;
+    unsigned ic_state=IEEE80211_S_RUN,ic_opmode=IEEE80211_M_STA,ic_mgt_timer=0,ic_flags=IEEE80211_F_RSNON;
+    ieee80211_node node;
+    ieee80211_node *ic_bss=&node;
     void (*ic_event_handler)(ieee80211com *,int,void *)=nullptr;
 };
 struct iwn_softc {
@@ -68,6 +75,9 @@ struct iwn_softc {
     iwn_ops ops{};
     iwn_tx_ring txq[1];
     unsigned command_queue=0,sc_flags=0;
+    bool sc_scan_lease_replay_task_ready=true,sc_ap_transition_scan_blocked=false;
+    uint64_t sc_sae_join_scan_block_generation=0,sc_sae_bss_loss_join_handoff_generation=0;
+    bool sc_sae_wcl_admission_reserved=false;
     uint8_t broadcast_id=15;
     task init_task;
 };
@@ -136,7 +146,6 @@ public:
 };
 static bool iwn_scan_lease_mark_abort(iwn_softc *,iwn_scan_lease_owner,uint64_t,
     uint64_t *,bool *,uint64_t=0);
-static bool iwn_scan_lease_initial_handoff_valid_locked(iwn_softc *) { return true; }
 #include "owner.inc"
 #include "sender.inc"
 static void active(iwn_softc *sc,uint64_t physical,uint64_t roam) {
@@ -216,6 +225,49 @@ int main() {
         assert(d.iwn_wnm_bgscan_abort(&sc->sc_ic,UINT64_C(0x100000032))==0);
         assert(writes==1 && sc->sc_scan_lease.abort_submitted);
         assert(d.iwn_scan_abort_command(sc,5)==0 && writes==1);
+        ++cases;
+    }
+    for(unsigned scenario=0;scenario<12;++scenario) {
+        ItlIwn d; auto *sc=&d.com; writes=clears=resets=0; wakeError=0; onWake={};
+        active(sc,5,0);
+        sc->sc_ic.ic_wcl_reassoc_owner_active=0;
+        sc->sc_scan_lease.owner=IWN_SCAN_LEASE_WCL_BACKGROUND;
+        sc->sc_scan_lease.phase=IWN_SCAN_LEASE_ARMING;
+        sc->sc_scan_lease.command_submitted=false;
+        sc->sc_scan_lease.upper_generation=408;
+        sc->sc_scan_lease.backend_generation=5;
+        sc->sc_scan_lease.wcl_initial_handoff_serial=471;
+        auto &pending=sc->sc_wcl_initial_scan_pending;
+        pending.queued=pending.launching=pending.terminal_handoff_ready=pending.background=true;
+        pending.upper_generation=408; pending.generic_serial=471;
+        pending.source_epoch=7; pending.superseded_reassoc_serial=31;
+        sc->sc_ic.ic_event_handler=[](ieee80211com *ic,int code,void *arg) {
+            auto *value=static_cast<iwn_softc *>(ic->ic_softc);
+            auto *started=static_cast<ieee80211_wcl_scan_started *>(arg);
+            assert(code==IEEE80211_EVT_WCL_SCAN_STARTED && writes==1 && held==2);
+            assert(value->ownerLock.held && value->lock.held);
+            assert(started->generation==408 && started->backend_generation==5);
+        };
+        onWake=[scenario](iwn_softc *v) {
+            if(scenario==1) ++v->sc_ic.ic_pae_assoc_epoch;
+            if(scenario==2) v->sc_ic.ic_wcl_reassoc_owner_active=1;
+            if(scenario==3) v->sc_ic.ic_bss->ni_port_valid=false;
+            if(scenario==4) v->sc_wcl_initial_scan_pending.queued=false;
+            if(scenario==5) ++v->sc_scan_lease.upper_generation;
+            if(scenario==6) ++v->sc_scan_lease.serial;
+            if(scenario==7) v->sc_scan_lease.hardware_invalidated=true;
+            if(scenario==8) v->sc_ic.ic_if.if_flags=0;
+            if(scenario==9) v->sc_ap_transition_scan_blocked=true;
+            if(scenario==10) v->sc_scan_lease_replay_task_ready=false;
+            if(scenario==11) v->sc_sae_wcl_admission_reserved=true;
+        };
+        iwn_scan_doorbell_context context{};
+        context.serial=5; context.background=true; context.publish_wcl_initial_started=true;
+        context.upper_generation=408; context.backend_generation=5;
+        const int result=d.iwn_cmd_with_doorbell_hook(sc,IWN_CMD_SCAN,nullptr,0,1,
+            iwn_scan_lease_prepare_doorbell,iwn_scan_lease_finish_doorbell,&context);
+        assert(result==(scenario==0?0:ECANCELED) && writes==(scenario==0?1U:0U));
+        assert(held==0 && pending.command_started==(scenario==0));
         ++cases;
     }
     printf("PASS: %u complete IWN abort/reservation/command-doorbell scenarios\n",cases);

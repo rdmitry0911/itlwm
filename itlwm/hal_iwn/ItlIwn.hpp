@@ -326,6 +326,9 @@ public:
 
     IOReturn beginWclBackgroundScan(uint64_t generation,
                                     uint32_t *outBackendGeneration) override;
+    IOReturn beginWclBackgroundScanAfterRoam(uint64_t generation,
+        uint64_t supersededReassocSerial, uint64_t sourceEpoch,
+        uint32_t *outBackendGeneration);
     IOReturn beginWclInitialScan(uint64_t generation,
                                  uint32_t *outBackendGeneration) override;
     IOReturn abortWclBackgroundScan(uint64_t generation) override;

@@ -16,7 +16,8 @@ awk '/^struct iwn_scan_(abort_)?doorbell_context/ { selected=1 }
      /^struct iwn_scan_lease_terminal/ { selected=1 }
      selected { print } selected && /^};/ { selected=0 }' \
     "$IWN_ABORT_ROOT/itlwm/hal_iwn/ItlIwn.cpp" >> "$IWN_ABORT_TEST/types.inc"
-awk '/^iwn_scan_lease_(live_locked|owner_is_wcl|owner_is_wcl_initial|mark_abort|claim_terminal)\(/ { selected=1; print "static bool" }
+awk '/^iwn_scan_lease_(live_locked|owner_is_wcl|owner_is_wcl_initial|mark_abort|claim_terminal|initial_handoff_valid_locked)\(/ { selected=1; print "static bool" }
+     /^iwn_wcl_background_source_current_locked\(/ { selected=1; print "static bool" }
      /^iwn_scan_lease_abort_submission_failed\(/ { selected=1; print "static void" }
      /^iwn_scan_abort_prepare_doorbell\(/ { selected=1; print "static bool" }
      /^iwn_scan_abort_finish_doorbell\(/ { selected=1; print "static void" }

@@ -17,7 +17,7 @@ namespace TahoeWclPhysicalScanContracts {
 enum class Phase : uint8_t {
     Idle,
     Starting,
-    /* The lower backend accepted an initial-discovery handoff, but its
+    /* The lower backend accepted an initial or background handoff, but its
      * replacement physical lease must wait for the retiring generic scan. */
     Queued,
     Active,
@@ -91,6 +91,15 @@ inline StartDisposition activate(State *state, uint64_t generation,
     if (state->phase == Phase::Active &&
         state->activeBackendGeneration == backendGeneration)
         return StartDisposition::Active;
+    if (state->phase == Phase::Aborting &&
+        (state->activeBackendGeneration == 0 ||
+         state->activeBackendGeneration == backendGeneration)) {
+        /* STARTED can win the leaf immediately before the queued abort
+         * reaches the lower backend. Retain cancellation, attach the real
+         * backend, and let its physical terminal finish that same ticket. */
+        state->activeBackendGeneration = backendGeneration;
+        return StartDisposition::Active;
+    }
     if (state->phase == Phase::Completing &&
         state->activeBackendGeneration == backendGeneration &&
         state->terminalBackendGeneration == backendGeneration)
@@ -98,8 +107,8 @@ inline StartDisposition activate(State *state, uint64_t generation,
     return StartDisposition::Lost;
 }
 
-/* A foreground initial-discovery request may have to drain the boot-time
- * generic foreground lease before it can reserve its own radio transaction.
+/* An initial request may drain the boot-time generic foreground lease; an
+ * associated request may drain its explicitly cancelled generic roam lease.
  * The ticket remains owned by WCL, but has no backend generation yet. */
 inline StartDisposition queueInitialStart(State *state, uint64_t generation)
 {
@@ -112,7 +121,7 @@ inline StartDisposition queueInitialStart(State *state, uint64_t generation)
     }
     if (state->phase == Phase::Queued)
         return StartDisposition::Active;
-    if (state->phase == Phase::Active)
+    if (state->phase == Phase::Active || state->phase == Phase::Aborting)
         return StartDisposition::Active;
     if (state->phase == Phase::Completing)
         return StartDisposition::TerminalPending;
@@ -130,7 +139,8 @@ inline bool rejectInitialStart(State *state, uint64_t generation,
         return false;
     if (backendGeneration == 0) {
         if (state->activeBackendGeneration != 0 ||
-            (state->phase != Phase::Queued && state->phase != Phase::Starting))
+            (state->phase != Phase::Queued && state->phase != Phase::Starting &&
+             state->phase != Phase::Aborting))
             return false;
     } else if (state->activeBackendGeneration != backendGeneration ||
                (state->phase != Phase::Active &&
@@ -163,11 +173,10 @@ inline bool markAborting(State *state, uint64_t *generation)
     if (state == nullptr || generation == nullptr)
         return false;
 
-    /* A queued initial request has no physical lease yet.  Its cancellation
-     * is intentionally fail-closed/Busy until the lower worker either emits
-     * STARTED or START_REJECTED; no caller may reinterpret it as a physical
-     * scan terminal. */
-    if (state->phase != Phase::Active)
+    /* A queued request has no backend yet. The lower owner must either
+     * reject its exact pending start or abort the real command if STARTED
+     * won the race; no generic predecessor terminal can complete it. */
+    if (state->phase != Phase::Active && state->phase != Phase::Queued)
         return false;
 
     state->phase = Phase::Aborting;
@@ -189,7 +198,7 @@ inline bool resumeAfterAbortFailure(State *state, uint64_t generation)
         state->phase != Phase::Aborting)
         return false;
 
-    state->phase = Phase::Active;
+    state->phase = state->activeBackendGeneration == 0 ? Phase::Queued : Phase::Active;
     return true;
 }
 

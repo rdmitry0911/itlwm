@@ -203,7 +203,7 @@ for token in (
         "ic->ic_state == IEEE80211_S_SCAN",
         "initialForeground = true;",
         "fHalService->beginWclInitialScan",
-        "fHalService->beginWclBackgroundScan",
+        "airportItlwmBeginWclScanAfterRoam",
 ):
     require(scan_request, token, "initial/background WCL request split")
 ordered(scan_request, "upper request then initial lower admission",
@@ -214,11 +214,10 @@ ordered(scan_request, "upper request then initial lower admission",
         "fHalService->beginWclInitialScan")
 queued_initial_request = body(
     scan_request,
-    "if (initialForeground && beginResult == kIOReturnSuccess",
+    "if (beginResult == kIOReturnSuccess",
     "queued initial WCL request")
 require(scan_request,
-        "if (initialForeground && beginResult == kIOReturnSuccess &&\n"
-        "        backendGeneration == 0)",
+        "if (beginResult == kIOReturnSuccess && backendGeneration == 0)",
         "zero-backend queued initial condition")
 for token in (
         "instance->queueWclInitialPhysicalScan(generation)",
@@ -294,7 +293,7 @@ finish_doorbell = body(iwn,
     "IWN initial WCL post-doorbell start")
 for token in (
         "The WRPTR write is now complete",
-        "sc->sc_scan_lease.owner == IWN_SCAN_LEASE_WCL_INITIAL",
+        "iwn_scan_lease_owner_is_wcl(sc->sc_scan_lease.owner)",
         "sc->sc_scan_lease.command_submitted",
         "sc->sc_scan_lease.wcl_initial_started = true",
         "IEEE80211_EVT_WCL_SCAN_STARTED",

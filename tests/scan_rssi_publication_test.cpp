@@ -143,8 +143,9 @@ static void testPhysicalCensus()
     assert(driver.activateWclPhysicalScan(generation, 9, true) == StartDisposition::TerminalPending);
     assert(life.resultObservationFloorUs == 200);
     life.state.phase = Phase::Aborting;
-    assert(driver.activateWclPhysicalScan(generation, 9, true) == StartDisposition::Lost);
-    assert(life.resultObservationFloorUs == 200);
+    assert(driver.activateWclPhysicalScan(generation, 9, true) == StartDisposition::Active);
+    assert(life.state.phase == Phase::Aborting && life.resultObservationFloorUs == 200);
+    assert(driver.activateWclPhysicalScan(generation, 10, true) == StartDisposition::Lost);
 
     ieee80211_channel ch{9, 0}, five{153, IEEE80211_CHAN_5GHZ};
     ieee80211_node ni;

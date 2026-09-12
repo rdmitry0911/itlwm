@@ -567,4 +567,12 @@ extern "C" uint32_t airportItlwmQueryAPTxFreeSpace(
 extern "C" IOReturn airportItlwmHandoffPrimaryStaRecoveryScanToAP(
     ItlHalService *service);
 
+/* An associated WCL census may supersede a still-draining roam scan. Keep
+ * its copied predecessor identity outside the HAL vtable (early-attach ABI).
+ * Success with backend0 requires the lower STARTED/START_REJECTED protocol,
+ * never reuse of the predecessor's results or completion. */
+extern "C" IOReturn airportItlwmBeginWclScanAfterRoam(
+    ItlHalService *, uint64_t generation, uint64_t supersededReassocSerial,
+    uint64_t sourceEpoch, uint32_t *outBackendGeneration);
+
 #endif /* ItlHalService_hpp */

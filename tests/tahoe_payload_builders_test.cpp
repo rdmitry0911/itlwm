@@ -1908,10 +1908,15 @@ void testTahoeWclPhysicalScanContracts()
                 state.activeBackendGeneration == 0,
             "generic terminal cannot claim a queued WCL handoff");
     uint64_t queuedAbortGeneration = 0xfeedfaceULL;
-    require(!markAborting(&state, &queuedAbortGeneration) &&
-                queuedAbortGeneration == 0xfeedfaceULL &&
-                state.phase == Phase::Queued,
-            "queued initial WCL handoff is Busy until it owns a physical lease");
+    require(markAborting(&state, &queuedAbortGeneration) &&
+                queuedAbortGeneration == queuedRejected &&
+                state.phase == Phase::Aborting && state.activeBackendGeneration == 0,
+            "queued WCL cancellation retains its generation without inventing a backend");
+    require(!resumeAfterAbortFailure(&state, queuedRejected + 1) &&
+                state.phase == Phase::Aborting,
+            "stale abort failure cannot restore the pending owner");
+    require(resumeAfterAbortFailure(&state, queuedRejected) && state.phase == Phase::Queued,
+            "a lower backend refusing queued cancellation restores Queued rather than Active");
     require(!rejectInitialStart(&state, queuedRejected + 1, 0) &&
                 state.phase == Phase::Queued,
             "stale queued-start rejection cannot clear the current ticket");

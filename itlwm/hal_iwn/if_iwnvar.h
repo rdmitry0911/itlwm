@@ -453,11 +453,11 @@ struct iwn_scan_lease {
     bool            wcl_initial_started;
 };
 
-/* A WCL initial-discovery request is allowed to wait only behind the exact
- * generic foreground lease that was already scanning at boot.  The record is
- * protected by sc_scan_lease_lock and carries no request payload, identity,
- * or result data.  The replay worker consumes it only after that lease's
- * controlled terminal has retired. */
+/* One deferred WCL request: either initial discovery behind the exact boot
+ * foreground lease, or associated discovery behind an explicitly cancelled
+ * roam lease. The legacy name is retained; this value-only record is protected
+ * by sc_scan_lease_lock and contains no pointers, credentials or results.
+ * The staged upper plan remains separate and owned by upper_generation. */
 struct iwn_wcl_initial_scan_pending {
     u_int64_t       upper_generation;
     u_int64_t       generic_serial;
@@ -468,6 +468,11 @@ struct iwn_wcl_initial_scan_pending {
      * first-doorbell start from a generic terminal that merely made the
      * handoff runnable, including an immediately completing WCL scan. */
     bool            command_started;
+    /* The same exact-terminal handoff also serves a new associated census
+     * after logical cancellation of this one generic-background roam. */
+    bool            background;
+    u_int64_t       source_epoch;
+    u_int64_t       superseded_reassoc_serial;
 };
 
 struct iwn_tx_ba {

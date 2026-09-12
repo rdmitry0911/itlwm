@@ -109,6 +109,7 @@ BSS_SWITCH_PASSING_ONLY=1 bash "$(dirname "$0")/test_reassoc_deferred_bss.sh"
 bash "$(dirname "$0")/test_reassoc_tx_retirement.sh"
 bash "$(dirname "$0")/test_iwn_scan_abort_owner.sh"
 bash "$(dirname "$0")/test_iwn_passive_scan_retry.sh"
+bash "$(dirname "$0")/test_iwn_wcl_scan_abort_gap.sh" require-handoff
 bash "$(dirname "$0")/test_net80211_join_attempt.sh"
 bash "$(dirname "$0")/test_iwn_sae_join_failure.sh"
 bash "$(dirname "$0")/test_sae_engine_peer_retry.sh"

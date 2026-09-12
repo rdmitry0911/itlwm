@@ -1,10 +1,11 @@
 # WCL discovery lost between roam cancellation and physical scan retirement
 
-Status: **reproduced twice on the published477ab0af/842B image; not fixed**.
+Status: **reproduced twice on the published477ab0af/842B image; production
+candidate passes Linux/Tahoe source execution, not yet built or radio-qualified**.
 The immediate cause is now the live lower scan lease after successful logical
 roam cancellation, not an unknown generic Device Busy branch. This affects an
-ordinary new-network selection while native roaming is searching. No new kext
-is justified by this diagnostic/test commit; the public alpha remains477ab0af.
+ordinary new-network selection while native roaming is searching. The source
+candidate below does not yet justify replacing the public477ab0af alpha.
 
 ## Same-image controls before provoking the overlap
 
@@ -173,3 +174,78 @@ Correlated native airportd log SHA256:
 Passing stable WPA2/open-transition WPA2 controller SHA256:
 c73f8c5f1ae18801b2a068d9c5f96278e624876f0b06f63af3133cdf347901ad,
 fd960f4e0a3b6b2f15828d923636d7c56a6c64e337fe94edf1455a03c9306690.
+
+## Production deferred-start candidate and executed source gates
+
+The public setter now copies the cancelled roam serial/source epoch before
+logical cancellation. An out-of-vtable HAL bridge sends this identity only to
+IWN; IWM/IWX retain ordinary admission after their existing exact synchronous
+abort wait. The new IWN path queues only behind that aborted generic-background
+physical lease, preserving the new upper generation and staged channel plan.
+An unrelated scan, AUTH/key gate, protected BTM, AP transition or closed worker
+is not converted from Busy into accepted work.
+
+The existing value-only initial handoff slot now also carries background mode
+and source epoch. Its matching real terminal, including admission after the
+early STOP_SCAN handoff check, or a never-doorbelled predecessor's rollback,
+makes the worker runnable. The worker selects the requested eligible band,
+reserves a new physical serial and submits an associated WCL scan. Selected-BSS
+and physical ownership are revalidated before background flag preparation and
+again across the actual command doorbell. STARTED is published after WRPTR;
+old scan frames remain excluded by the existing physical-start observation floor.
+
+Public cancellation can revoke a queued IWN token without fabricating a scan
+terminal. A racing real STARTED attaches its backend while retaining Aborting;
+then the actual command must abort/retire normally. A lower backend that refuses
+queued cancellation restores Queued, not Active with backend0. IWM/IWX queued
+initial cancellation is not implemented by this IWN correction.
+
+Source replacement cannot restore the old connection's background flags over
+its successor. A further negative test caught the old no-doorbell error path
+scheduling a redundant fatal reset after hardware reset had already retired
+the worker. Deferred background rollback now leaves reset/successor ownership
+alone; an error after a real doorbell still requests normal fatal recovery.
+
+Executed on both Linux and Tahoe:
+
+- 46 scenarios extract complete production ingress, pending queue/replay worker,
+  scan_start, lease reserve/rollback/terminal/reset, pre/post-doorbell and abort
+  bodies, and use the real upper reducer. They cover exact 2GHz/5GHz plans,
+  old terminal before/after admission, terminal before setter return, source
+  replacement, cancellation around STARTED, reset, stopped worker and an obsolete
+  worker returning after a successor starts. Command construction, hardware,
+  scheduler and unrelated net80211 calls remain explicit boundary doubles.
+- 31 scenarios execute the complete actual command sender and abort/scan hooks;
+  12 newly added cases verify deferred source/lease fencing through transport
+  wake and actual WRPTR ordering. No handoff-validator double remains there.
+- 65,563 actual passive-retry/receipt/doorbell cases and queued-band/RSSI census
+  regressions pass. Both full lifecycle and trace scripts, including their full
+  payload aggregates and IWM/IWX command/ownership tests, pass on both OSes.
+  Existing separate IWM/IWX SAE failure-retirement red requirements are not
+  repaired or relabelled by these aggregate results.
+
+The first native package omitted AirportItlwmAgent's test header and stopped
+before the aggregate; adding the missing test dependencies fixed packaging,
+not production. Static scripts also had pre-existing obsolete IWM/IWX bgscan
+signatures; these now match the unchanged two-argument functions. Initial-only
+assertions were updated to test both modes and retained cancellation identity.
+All intermediate failures are retained, including the negative stale-worker
+assertion and its later positive result.
+
+Working evidence remains separate from the frozen RF baseline:
+`/dev/shm/aiam-wcl-background-handoff-20260912.YteT0m`.
+Native source-only tree: `/private/var/tmp/wcl-background-handoff-tests.OlJ3OE`.
+All1022 source/test/dependency inputs verify before and after the final native
+run. Their manifest SHA256:
+`4caee6318e6e9684042fef3449e76f9795354ba4a3d2ff7c4a3ec0515ae020c1`.
+Linux lifecycle/trace log SHA256:
+`e6ec2ccb3b386f104484bafc4d20fe138b1bad69b636717ddb0d9b7e99c8f994`,
+`6ffcad2f5ff4643e0e6ea415b8c4b7c87e5f5a4d6e7ec9d87ad567368cdaddf5`.
+Tahoe final log SHA256:
+`19c9a90d5fcda768e2c5c458433650ad773969841851219f211e3e11fbaefe7b`.
+
+The build mirror and loaded842B image were not changed by these checks.
+Next: commit/push candidate, build and activate the exact image in the owned
+guest, repeat both overlap failures and stable/open-to-WPA2 controls, then
+STA/AP/off-on/real-S3/roaming regression. The scan-abort gap is not counted
+as a radio-qualified closure until those controls execute.

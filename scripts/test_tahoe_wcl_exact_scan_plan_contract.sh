@@ -145,7 +145,7 @@ ordered(producer, "plan precedes lower radio ownership",
         "instance->reserveWclPhysicalScan(",
         "scanPlan.generation = generation",
         "ieee80211_wcl_scan_plan_stage(ic, &scanPlan)",
-        "fHalService->beginWclBackgroundScan")
+        "airportItlwmBeginWclScanAfterRoam")
 if producer.count("ieee80211_wcl_scan_plan_clear(ic, generation)") < 3:
     fail("producer does not clear the exact generation on every post-stage start failure")
 
@@ -444,7 +444,8 @@ ordered(iwn_replay, "IWN queued WCL band selection",
         "if (launch_initial)",
         "iwn_wcl_scan_initial_band(sc, &scan_flags)",
         "if (error == 0)",
-        "iwn_scan_start(sc, scan_flags, 0",
+        "iwn_scan_start(sc, scan_flags, initial_background ? 1 : 0",
+        "initial_background ? IWN_SCAN_LEASE_WCL_BACKGROUND",
         "IWN_SCAN_LEASE_WCL_INITIAL", "initial_handoff_serial",
         "reject_initial = error != 0 && !command_started")
 forbid(iwn_replay, "iwn_scan_start(sc, IEEE80211_CHAN_2GHZ",
