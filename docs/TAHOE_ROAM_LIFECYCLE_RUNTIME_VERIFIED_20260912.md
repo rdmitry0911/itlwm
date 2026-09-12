@@ -56,3 +56,25 @@ boot-roam прошёл без наложения скана. Терминал su
 код emit 0x50 (postWclReassocCompletionGated FAIL-ветка), уже доказанно достигающий
 ROAM_MANAGER → высокая уверенность, но прямой repro (детерминированный триггер
 roam + одновременный scan) ещё нужен. Триггер roam на заказ — открытый tooling-вопрос.
+
+## ДОКАЗАНО: GUI off/on (power toggle) recovery контракт (highest-priority surface)
+
+CoreWLAN `setPower:NO`→`setPower:YES` (эквивалент GUI-тумблера) на WIP:
+восстановление SAE+DHCP `172.16.66.219` за 18с, ping OK. Все WCL FSM проходят
+свой контракт ЧИСТО, без зависаний:
+- OFF: NET_MANAGER LINK_UP→LEAVE_NETWORK→DEAUTH→LINK_DOWN; ROAM_MANAGER→LINK_DOWN;
+  SSM DRIVER_UNAVAILABLE.
+- ON: SSM DRIVER_AVAILABLE→CAN_SEND; SYSTEM_POWER_ON/RESUME (SCAN/JOIN/NDD);
+  JOIN_MANAGER JOIN_REQ→IN_PROGRESS→ASSOC_DONE→CONNECT_COMPLETE→IDLE;
+  NET_MANAGER LINK_DOWN→WAITING_FOR_CONNECT_COMPLETE→WAITING_FOR_IP;
+  ROAM_MANAGER LINK_DOWN→CONNECT_COMPLETE→LINK_UP.
+
+Транспорт лаборатории (read-only): mgmt SSH идёт по guest en2 (10.0.6.15,
+default route 10.0.6.2), НЕЗАВИСИМ от en1 (тестируемый Wi-Fi) → GUI Wi-Fi
+off/on безопасен для управления. Инструменты на guest: /tmp/aiamscan (scan),
+/tmp/aiampow (power on/off/status) — CoreWLAN, компилируются `clang -fobjc-arc
+-framework CoreWLAN -framework Foundation`.
+
+Остаток GUI-дивергенций (по handoff §7): пакетные потери в ОКНЕ reconnect
+(saved-SAE reselect, off/on) — это НЕ сбой контракта FSM (контракт чист), а
+потери в переходном окне; локализация RF/AP/driver требует endpoint-capture.
