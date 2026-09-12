@@ -2,9 +2,11 @@
 
 Status: persistent RF failure and a production-function negative requirement
 reproduced on Linux and Tahoe. A common lifecycle correction is implemented;
-executed source checks are described below. Build, activation and the radio
-correction gate remain required. Public alpha remains477ab0af/842B; loaded
-candidate is092a7479/9B5B. Physical10.90.10.22 was not touched.
+source checks, build and activation pass as described below. Public alpha
+remains477ab0af/842B; loaded
+image is nowc123d132/D636, with one successful AP/WPA2 regression but no
+observed post-target cancellation in that control. The exact correction
+gate remains open. Physical10.90.10.22 was not touched.
 
 ## Qualification before the failure
 
@@ -189,3 +191,44 @@ New runtime working root:/dev/shm/aiam-post-target-runtime-20260912.TpUKkd;
 durable working copy:/home/dima/Projects/itlwm/aiam-post-target-runtime.0ybGDl.
 Private activation root:/private/var/tmp/aiam-iwn-post-target-activation.iixXcs.
 The prior source/RF evidence root remains separate and not yet frozen.
+
+## Loaded D636 and first AP control: regression pass, overlap not exercised
+
+Private preflight35304 exits0 with five exact AuxKC members and no canonical
+mutation. Transactional activation62299 exits0, preserving companion rows
+and rollback copies. Transaction:activation-20260912T022509Z. A normal owned
+guest reboot is requested02:26:30UTC; session41106 verifies D636 loaded at
+02:27:24 with new boot900A4367-43E5-42DC-8DC4-C0662A9E954E. There is initially
+no IPv4 in that first snapshot. By02:28:01 ordinary automatic recovery reaches
+WPA3/DHCP172.16.66.219; no manual selection or off/on was used.
+
+loaded-baseline-q1 fails its strict data gate:20/20 forward,19/20 reverse.
+Its controller returns1. This remains a separate data-loss limitation and is
+not relabeled by the later AP pass.
+
+Observed cold AP/WPA2 q1 runs02:30:49->02:32:33UTC. Real external AX211 gets
+WPA2, DHCP192.168.2.2,20/20 forward,10/10 cold-ARP reverse and exact118-byte
+HTTP through USB/NAT. Normal AP stop removes bridge100, STA recovers, and
+10/10 guest-to-gateway packets pass. Exact host profile and wired management
+are restored. The controller and owning wrapper99855 both return0.
+
+The full180-second read-only observer ends errors0/calls13/**retired0**.
+All observed hard-cancel entries have no active roam. A later real target
+join starts after the AP stop, not during cancellation. Therefore this is a
+valid AP/service/restoration regression pass, **not an on-air proof that the
+specific stranded post-target owner has been repaired**. A controlled native
+roam/cancellation overlap remains the immediate next gate, followed by the
+remaining security/scan/off-on/S3/AP/roam matrix. Nothing was published yet.
+
+The current-image target-cancel/clear functions independently confirm the
+scalar observer offsets. The initial llvm-objdump invocation ignored its
+symbol-only filter and retained69,801,026 bytes of full disassembly; the exact
+two relevant bodies were subsequently located and inspected. The observer
+reads only synchronous, lock-held scalar owner fields, never nodes or keys.
+Do not mistake its zero errors for coverage: retired0 explicitly marks the
+unexercised edge.
+
+Trace/controller/initial-loss logSHA256:
+18e377c7b4b4b538bbf8b31bb8c7d0fc62e73f2acac68c2fd42de0057df5a6d0,
+460dbdee89a6b3d100ec878157d1aebb9667325152fd766463f0a607276fd61a,
+eabf2d8fb65b9687279335f156a114e896e407652c96fcd0036d89fe0d8c344f.
