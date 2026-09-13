@@ -511,6 +511,10 @@ public:
     static void iwm_mfp_pae_task(void *);
     static IOReturn iwm_mfp_pae_complete_action(OSObject *, void *, void *,
         void *, void *);
+    static IOReturn iwm_sae_continue_assoc_action(OSObject *, void *, void *,
+        void *, void *);
+    bool           iwm_sae_continue_assoc_gated(struct ieee80211com *,
+        const struct ItlSaePmkContinuationIdentityV1 *);
     static int iwm_pae_mfp_txn_submit(struct ieee80211com *, u_int64_t,
         u_int64_t, struct ieee80211_node *, const struct ieee80211_key *,
         u_int8_t);

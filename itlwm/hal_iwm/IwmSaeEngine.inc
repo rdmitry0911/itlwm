@@ -2387,6 +2387,52 @@ void ItlIwm::iwm_sae_peer_timer_timeout(OSObject *owner, IOTimerEventSource *)
     static_cast<ItlIwm *>(owner)->iwm_sae_peer_timer_drain();
 }
 
+/* Arguments for the main-gate re-entry that commits the SAE AUTH->ASSOC edge. */
+struct IwmSaeContinueAssocAction {
+    struct ieee80211com *ic;
+    const struct ItlSaePmkContinuationIdentityV1 *identity;
+    int result;
+};
+
+/* Runs inside the main workloop gate so
+ * ieee80211_sae_wcl_request_pmk_continue_assoc -> iwm_newstate takes its
+ * synchronous AUTH->ASSOC fast-path (mirrors iwm_mfp_pae_complete_action). */
+IOReturn ItlIwm::
+iwm_sae_continue_assoc_action(OSObject *target, void *arg0, void *arg1,
+                              void *arg2, void *arg3)
+{
+    struct IwmSaeContinueAssocAction *action =
+        (struct IwmSaeContinueAssocAction *)arg0;
+    (void)target;
+    (void)arg1;
+    (void)arg2;
+    (void)arg3;
+    if (action == NULL || action->ic == NULL || action->identity == NULL)
+        return kIOReturnBadArgument;
+    action->result = ieee80211_sae_wcl_request_pmk_continue_assoc(
+        action->ic, action->identity);
+    return kIOReturnSuccess;
+}
+
+/* Commit the SAE AUTH->ASSOC edge synchronously by re-entering the main workloop
+ * gate.  The SAE worker runs off that gate, where iwm_newstate would only ENQUEUE
+ * the AUTH->ASSOC transition (ic_state stays AUTH) and the caller's post-check
+ * would fail-close the join (AUTH watchdog then times out).  In-gate, iwm_newstate
+ * takes its synchronous AUTH->ASSOC fast-path (commits ic_state=ASSOC, sends the
+ * Association Request, re-arms the assoc timer) -- matching hal_iwn.  Mirrors
+ * iwm_mfp_pae_complete_action and the hal_iwx fix. */
+bool ItlIwm::
+iwm_sae_continue_assoc_gated(struct ieee80211com *ic,
+                             const struct ItlSaePmkContinuationIdentityV1 *identity)
+{
+    struct IwmSaeContinueAssocAction action = { ic, identity, 0 };
+    IOCommandGate *gate = getMainCommandGate();
+    if (gate == NULL ||
+        gate->runAction(iwm_sae_continue_assoc_action, &action) != kIOReturnSuccess)
+        return false;
+    return action.result != 0;
+}
+
 void ItlIwm::
 iwm_sae_engine_task(void *arg)
 {
@@ -2611,12 +2657,14 @@ iwm_sae_engine_task(void *arg)
 
                     if (pmk_claimed) {
                         /* This is after the selected-BSS + engine leaves
-                         * released their one-shot local PMK claim. */
+                         * released their one-shot local PMK claim.  Commit the
+                         * AUTH->ASSOC edge through the main gate (see
+                         * iwm_sae_continue_assoc_gated) so iwm_newstate runs its
+                         * synchronous fast-path from this off-gate worker. */
                         IWM_DIRECT_SAE_TRACE(&sc->sc_ic,
                             kAirportItlwmPostPltiTraceEventIwmDirectSaePmkClaimed);
-                        assoc_started =
-                            ieee80211_sae_wcl_request_pmk_continue_assoc(
-                            &sc->sc_ic, &continuation.identity) != 0;
+                        assoc_started = that->iwm_sae_continue_assoc_gated(
+                            &sc->sc_ic, &continuation.identity);
                     }
                     /* A driver newstate override can run before generic's
                      * sentinel.  Confirm that it actually left us in the

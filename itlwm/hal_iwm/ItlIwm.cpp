@@ -2864,6 +2864,20 @@ prepareStateTransition(int state, int argument, ItlStateTransitionRequest *reque
         (com.sc_flags & IWM_FLAG_SHUTDOWN) == 0) {
         if (!validScan)
             error = EINVAL;
+        /* Reference WCL contract (AppleBCMWLAN WCLJoinManager::joinIsBusy /
+         * joinBusyQueryForSetRequestHandler): a scan request arriving while a
+         * forward join transition (AUTH/ASSOC/RUN) is in flight is refused
+         * ("join busy"), never allowed to supersede it.  The single-slot lease's
+         * prepare() would otherwise clobber an accepted-but-not-yet-run ASSOC with
+         * the scan and drop the join.  Dropping the out-of-context scan (EALREADY
+         * -> iwm_newstate returns 0) matches the reference and hal_iwx. */
+        else if (state == IEEE80211_S_SCAN &&
+            stateTransition.stage != ItlStateTransitionLease::Stage::Empty &&
+            stateTransition.stage != ItlStateTransitionLease::Stage::Committed &&
+            (stateTransition.request.state == IEEE80211_S_AUTH ||
+             stateTransition.request.state == IEEE80211_S_ASSOC ||
+             stateTransition.request.state == IEEE80211_S_RUN))
+            error = EALREADY;
         else if (state != IEEE80211_S_SCAN && state != IEEE80211_S_AUTH &&
             stateTransition.duplicate(com.sc_generation, state, argument, identity))
             error = EALREADY;
