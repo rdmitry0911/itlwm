@@ -697,6 +697,33 @@ template<class T> static void suite() {
         assert(!d.takeStateTransition(&taken));
         assert(!d.enqueueStateTransition(request));
     }
+    if (std::is_same<T, ItlIwx>::value) {
+        /* join-busy: a SCAN must not clobber an accepted, in-flight forward
+         * join transition (reference WCLJoinManager::joinIsBusy). This is the
+         * AX211 SAE JOIN fix -- a post-auth WCL REFRESH_SCAN previously
+         * overwrote the queued ASSOC via prepare() and dropped the join.
+         * (hal_iwx only; hal_iwm shares the same latent lease bug but has no
+         * lab hardware to runtime-verify a fix -- tracked separately.) */
+        Fixture<T> f; auto &d = f.driver;
+        ItlStateTransitionRequest assocReq{}, scanReq{}, taken{};
+        assert(d.prepareStateTransition(IEEE80211_S_ASSOC, 0, &assocReq) == 0);
+        assert(d.enqueueStateTransition(assocReq));
+        assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Queued);
+        assert(d.stateTransition.request.state == IEEE80211_S_ASSOC);
+        /* Scan refused while the join is in flight; the queued ASSOC survives. */
+        assert(d.prepareStateTransition(IEEE80211_S_SCAN, -1, &scanReq) == EALREADY);
+        assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Queued);
+        assert(d.stateTransition.request.state == IEEE80211_S_ASSOC);
+        assert(d.takeStateTransition(&taken) && taken.state == IEEE80211_S_ASSOC);
+    }
+    {
+        /* Negative: with no in-flight forward transition (Empty/Committed) the
+         * guard is inert and a normal RUN->SCAN (roam/bgscan) prepares. */
+        Fixture<T> f; auto &d = f.driver;
+        ItlStateTransitionRequest scanReq{};
+        assert(d.prepareStateTransition(IEEE80211_S_SCAN, -1, &scanReq) == 0);
+        assert(d.stateTransition.request.state == IEEE80211_S_SCAN);
+    }
     for (unsigned cause = 0; cause < 3; ++cause) {
         Fixture<T> f; auto &d = f.driver;
         d.shutdownStateTransitions();
