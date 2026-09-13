@@ -136,6 +136,12 @@ public:
     } saePeerTimer;
     struct WorkLoop { bool gated = true; bool inGate() { return gated; } } workloop;
     WorkLoop *getMainWorkLoop() { return &workloop; }
+    /* Main-gate re-entry for the SAE AUTH->ASSOC commit; the production body
+     * runAction()s into iwx_newstate.  The worker only reaches it when a PMK is
+     * claimed, which the claim stub below never grants, so a compile-only shim
+     * matching the pmk_continue_assoc stub result (0 -> false) suffices. */
+    bool iwn_sae_continue_assoc_gated(ieee80211com *,
+        const ItlSaePmkContinuationIdentityV1 *) { return false; }
     void iwn_sae_peer_timer_drain();
     bool iwn_task_gate_enter(iwn_softc *sc, bool closed) {
         return iwn_sae_tx_lifecycle_enter(sc, closed);
