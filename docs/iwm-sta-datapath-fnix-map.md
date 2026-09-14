@@ -108,6 +108,34 @@ Extended the block-audit to the highest-frequency user-facing surfaces:
 identical, benign lease bookkeeping, intended f-macos (AP/WCL/MFP), or a
 teardown correctness fix — EXCEPT the one delivered `a810f34d` fw46 reorder.
 
+## System-tier audit COMPLETE (2026-09-14) — every hal_iwm file block-compared
+
+Bulk normalized-diff of all remaining `hal_iwm/*.cpp` vs cr479:
+
+| File | Divergence vs cr479 | Verdict |
+|------|---------------------|---------|
+| `coex.cpp` | 0 lines | byte-identical |
+| `led.cpp` | 0 lines | byte-identical |
+| `io.cpp` | 0 lines | byte-identical |
+| `utils.cpp` | 1 line | removed `XYLog` debug only |
+| `nvm.cpp` | 3 lines | removed `XYLog` debug only (regulatory/channels identical) |
+| `fw.cpp` | 15 lines | removed `XYLog`/`DPRINTF` debug + FSEQ-version log; fw-load logic identical |
+| `power.cpp` | 232 lines | **100% the intentional lease/ownership machinery** (receipt/Lease::/Admission/primaryStation) — the actual power-mgmt functions (`iwm_power`/`iwm_update_power`/beacon-filter/D0i3) are IDENTICAL to cr479; zero power-mgmt divergence |
+
+So the system-tier (firmware load, NVM/regulatory, power-mgmt, coex, LED, io) has
+**zero functional divergence** from cr479 — only debug-log removals and the
+benign f-macos lease wrapper.
+
+**★ COMPLETE hal_iwm block-audit (2026-09-14):** EVERY hal_iwm file has now been
+block-compared vs cr479 f-nix. Across the whole HAL, every divergence is one of:
+(a) the single delivered `a810f34d` fw46 TX-BA reorder (the ONE real functional
+fix), (b) intended f-macos (AP/SoftAP branches, WCL scan policy, MFP/SA-Query,
+the ItlFirmwareContextLease ownership layer — benign, admits on the datapath,
+runtime-confirmed via iwx), (c) a teardown correctness fix (safe node/mbuf
+retirement order), or (d) removed debug logging. **The reference-grounded iwm
+non-identity surface (code + function) = the single a810f34d fix**, whose only
+unrun step is runtime-verify on 9560 silicon (bob, user-reserved).
+
 **Net (all layers, 2026-09-14):** the entire block-audited iwm non-identity
 surface = the single required `a810f34d` fw46 TX-BA reorder. Every other
 high-frequency user/kernel contact surface is either f-nix-identical, benign
