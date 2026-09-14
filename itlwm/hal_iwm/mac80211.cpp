@@ -7385,10 +7385,21 @@ iwm_ba_task(void *arg)
     }
     ItlFirmwareStationUseGuard<ItlIwm, ieee80211_node> stationUse(that, ni);
     if (!stationUse.admitted()) {
-        splx(s);
-        return;
+        /* cr479/f-nix iwm_ba_task has NO station-use gate: while in RUN it sets
+         * up TX aggregation unconditionally. The WCL close/reopen dance leaves the
+         * station uses transiently closed on the WPA3-SAE path (same root as the
+         * iwm_tx EAPOL drop) -- which must NOT skip agg setup and strand
+         * throughput (observed: WPA2 keeps uses open -> 260Mbps agg; WPA3 closes
+         * them -> no ba_task at all). The BA firmware commands
+         * (iwm_add_sta_cmd MODIFY_QUEUES + iwm_sta_tx_agg) do not consume this
+         * receipt, so proceeding to set up aggregation is exactly f-nix. */
+        static int aiam_badrop_seen = 0;
+        if ((__atomic_fetch_add(&aiam_badrop_seen, 1, __ATOMIC_RELAXED) & 0x1f) == 0)
+            XYLog("AIAMDIAG iwm_ba_task not-admitted ic_state=%d uses_closed=%d -> PROCEED (f-nix)\n",
+                  sc->sc_ic.ic_state, that->primaryStationUses.closed);
+        /* fall through: do NOT bail */
     }
-    
+
     for (tid = 0; tid < IWM_MAX_TID_COUNT && !err; tid++) {
         if (sc->sc_flags & IWM_FLAG_SHUTDOWN)
             break;
