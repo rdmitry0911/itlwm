@@ -7398,11 +7398,30 @@ iwm_ba_task(void *arg)
                 ieee80211_output_ba_move_window(ic, ni, tid, ssn);
                 ni->ni_qos_txseqs[tid] = ssn;
             }
-            if (that->iwm_add_sta_cmd(sc, (struct iwm_node *)ni, 1, IWM_STA_MODIFY_QUEUES))
-                goto out;
-
+            /*
+             * iwm_enable_txq() has just linked the aggregation queue
+             * (IWM_FIRST_AGG_TX_QUEUE+tid) to the station in the firmware
+             * scheduler.  The MODIFY_QUEUES ADD_STA below publishes the
+             * station's tfd_queue_msk/tid_disable_tx from agg_queue_mask/
+             * agg_tid_disable, so those must ALREADY include the new queue and
+             * enable the TID -- otherwise the station's queue set omits a queue
+             * the SCD has already bound to it and the LMAC faults
+             * (ADVANCED_SYSASSERT 0x21A0, observed on 9560/fw46).  This matches
+             * linux iwlwifi, which assigns the queue into the station's
+             * tfd_queue_msk before the ADD_STA that references it.  (The upstream
+             * openbsd/cr479 "update after, then a second ADD_STA" ordering relies
+             * on the firmware tolerating the transient omission; fw46 does not.)
+             * Roll back if the command is rejected so agg_queue_mask stays
+             * consistent with the SCD.
+             */
             sc->agg_tid_disable &= ~(1 << tid);
             sc->agg_queue_mask |= (1 << qid);
+            if (that->iwm_add_sta_cmd(sc, (struct iwm_node *)ni, 1, IWM_STA_MODIFY_QUEUES)) {
+                sc->agg_tid_disable |= (1 << tid);
+                sc->agg_queue_mask &= ~(1 << qid);
+                goto out;
+            }
+
             sc->sc_tx_ba[tid].wn = (iwm_node *)ni;
             ba->ba_bitmap = 0;
             if (!that->iwm_sta_tx_agg(sc, ni, tid, 0, ssn, 1, &stationUse.identity())) {
