@@ -91,6 +91,23 @@ Extended the block-audit to the highest-frequency user-facing surfaces:
 - **scan.cpp** — divergences vs cr479 are the intended WCL/`ItlScanCommandPolicy`
   f-macos layer (defer, not drop); scan works on bob + lab. Not a divergence.
 
+- **`iwm_rx_tx_cmd` (TX completion, every frame; refactor-touched 1896beb2)** —
+  STA path byte-identical to cr479 (only additions: an AP-mode `txd->ap_frame`
+  branch = intended SoftAP, a defensive `qid` bounds check, removed debug
+  prints). Not a STA divergence.
+- **`iwm_free_tx_ring`/`iwm_reset_tx_ring` (TX teardown; 1896beb2)** — batches
+  mbuf+node retirement (`ieee80211_tx_node_retire_append`/`drain`) to free
+  physical TX before node callbacks (avoids teardown use-after-free), + defensive
+  field zeroing. Same end state as cr479, safer order, consistent across
+  IWN/IWM/IWX. Teardown correctness fix, not a hot-path divergence.
+
+**STA functional-surface audit EXHAUSTIVE (2026-09-14):** connection lifecycle
+(SCAN→AUTH→RUN→TX/RX-agg) + data plane (submit `iwm_tx` / completion
+`iwm_rx_tx_cmd` / teardown ring-free) + rate control (`rs.cpp`) + contact surface
+(apple80211 getters, runtime-confirmed) + scan (WCL). Every block is f-nix-
+identical, benign lease bookkeeping, intended f-macos (AP/WCL/MFP), or a
+teardown correctness fix — EXCEPT the one delivered `a810f34d` fw46 reorder.
+
 **Net (all layers, 2026-09-14):** the entire block-audited iwm non-identity
 surface = the single required `a810f34d` fw46 TX-BA reorder. Every other
 high-frequency user/kernel contact surface is either f-nix-identical, benign
