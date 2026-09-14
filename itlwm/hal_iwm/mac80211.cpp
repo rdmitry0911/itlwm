@@ -604,8 +604,39 @@ int ItlIwm::
 iwm_sta_tx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
                uint8_t qid, uint16_t ssn, int start, const ItlFirmwareContextReceipt *use)
 {
-    (void)ni; (void)tid; (void)qid; (void)ssn; (void)start;
-    return iwm_sta_tx_ba_cmd(sc, use, sc->agg_queue_mask, sc->agg_tid_disable);
+    /*
+     * f-nix restoration (openbsd/upstream iwm): the TX block-ack MODIFY must
+     * ALWAYS reach the firmware to complete the aggregation agreement.  Routing
+     * it through iwm_sta_tx_ba_cmd()->beginPrimaryBaCommand() lets the lease
+     * admission return EBUSY whenever the station-use receipt does not exactly
+     * match the current lease generation/serial/identity, silently dropping the
+     * command.  The agg queue is then left half-configured (iwm_enable_txq and
+     * the MODIFY_QUEUES ADD_STA already linked queue IWM_FIRST_AGG_TX_QUEUE+tid,
+     * but no BA agreement), so frames queued on it never receive a TX/BA
+     * completion and iwm_watchdog fires (device timeout) ~15-20s later, tearing
+     * the link down in a reconnect loop.  Build and send the ADD_STA directly,
+     * exactly as upstream iwm_sta_tx_agg does.
+     */
+    (void)tid; (void)qid; (void)ssn; (void)start; (void)use;
+    struct iwm_node *in = (struct iwm_node *)ni;
+    struct iwm_add_sta_cmd cmd = {};
+    uint32_t status;
+    size_t cmdsize;
+    cmd.mac_id_n_color = htole32(IWM_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color));
+    cmd.sta_id = IWM_STATION_ID;
+    cmd.add_modify = IWM_STA_MODE_MODIFY;
+    cmd.modify_mask = (IWM_STA_MODIFY_QUEUES | IWM_STA_MODIFY_TID_DISABLE_TX);
+    cmd.tfd_queue_msk = htole32(sc->agg_queue_mask);
+    cmd.tid_disable_tx = htole16(sc->agg_tid_disable);
+    if (isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
+        cmdsize = sizeof(cmd);
+    else
+        cmdsize = sizeof(struct iwm_add_sta_cmd_v7);
+    status = IWM_ADD_STA_SUCCESS;
+    int err = iwm_send_cmd_pdu_status(sc, IWM_ADD_STA, cmdsize, &cmd, &status);
+    if (err == 0 && (status & IWM_ADD_STA_STATUS_MASK) != IWM_ADD_STA_SUCCESS)
+        err = EIO;
+    return err;
 }
 
 void ItlIwm::
