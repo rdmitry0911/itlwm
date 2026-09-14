@@ -62,6 +62,36 @@ cr479-identical firmware bytes; the only gate that ever dropped (TX-BA) is fixed
 and its wrapper is now dead. No live lease gate silently drops a datapath
 firmware command.
 
+## Data-plane + contact-surface audit (2026-09-14) — all clean/benign
+
+Extended the block-audit to the highest-frequency user-facing surfaces:
+
+- **`iwm_tx` (per-packet TX data path)** — current is 439 lines vs cr479's 285.
+  Additions: (a) `ItlFirmwareStationUseGuard stationUse(this, ni, /*currentAttempt=*/false)`
+  → drop(ECANCELED) if `!admitted()`. **BENIGN:** `beginPrimaryStationUse` with
+  `currentAttempt=false` SHORT-CIRCUITS the scan-epoch/condition-5 check, so a
+  background roam-scan cannot drop data frames; it admits whenever the station
+  incarnation is Active/Modifying + generation/MAC/peer match, dropping only on
+  genuine teardown/roam (correct). iwx runtime = 0% loss confirms continuous
+  admit. (b) SAE assoc-TX claim + SA-Query snapshot + SAE-auth transport
+  validation → 802.11w/MFP + WPA3 management-frame handling, MGT-only,
+  etalon-required, working on iwx. Not a data-plane divergence.
+- **apple80211 GET ioctls** (STATE/RSSI/RATE/PHY_MODE/… highest-freq GUI polls,
+  `AirportItlwmSkywalkInterface.cpp`) — reference-matched to `AppleBCMWLANCore`;
+  preserve reference failure codes (`0xe082280e`, `kApple80211ClassOwnerAbsent`)
+  "instead of manufacturing zero carriers". Already identity.
+- **`getWCL_BSS_INFO`** — returns error only pre-RUN (not associated), same as the
+  reference; benign debug log, functionally equivalent.
+- **scan.cpp** — divergences vs cr479 are the intended WCL/`ItlScanCommandPolicy`
+  f-macos layer (defer, not drop); scan works on bob + lab. Not a divergence.
+
+**Net (all layers, 2026-09-14):** the entire block-audited iwm non-identity
+surface = the single required `a810f34d` fw46 TX-BA reorder. Every other
+high-frequency user/kernel contact surface is either f-nix-identical, benign
+lease bookkeeping (admits on the datapath, proven by iwx runtime), intended
+f-macos (WCL/MFP), or already reference-matched. The remaining unknown is purely
+the iwm-hardware runtime signal (bob), which only exercises the fixed TX-BA path.
+
 ## Verified NOT divergent (content identical to f-nix; refactor added only
 bookkeeping/AP-mode branches)
 
