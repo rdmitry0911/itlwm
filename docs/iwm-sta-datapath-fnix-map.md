@@ -43,8 +43,24 @@ WITHOUT sending. f-nix never drops these. Callers:
   equivalent to cr479's direct `iwm_sta_rx_agg` (same ADD_STA bytes + BAID
   handling); lease is benign bookkeeping. Do NOT strip — stripping would REMOVE
   a validated-equivalent path and risk the tested lifecycle invariants.
-- `iwm_add_sta_cmd` lease gate (`primaryStationContext.begin`) — proven benign on
-  the datapath (diag: add_sta always `adm=Submit`, never dropped). ✅
+- `iwm_add_sta_cmd` lease gate (`primaryStationContext.begin`, power.cpp:413) —
+  proven benign on the datapath (diag: add_sta always `adm=Submit`, never
+  dropped). ✅
+- `iwm_binding_cmd` lease gate (`primaryBindingContext.begin`, phy.cpp:473) —
+  benign: admits (`Submit`) because `primaryMacContext` is `Active` right after
+  the AUTH MAC-add; `Already`→skip is functionally correct (binding already in
+  fw). bob associating empirically confirms it admits. ✅
+- **Dead code:** `iwm_sta_tx_ba_cmd` (mac80211.cpp:574, the 2nd
+  `beginPrimaryBaCommand` caller) has NO live caller after 330cfcc0 bypassed it.
+  Functionally inert (never executes) → zero functional surface, but it is a
+  code-only artifact cr479 lacks. Low-priority cleanup (consider together with
+  the symmetric `iwx_sta_tx_ba_cmd`; verify neither is referenced by tests).
+
+**Lease-gate audit COMPLETE (2026-09-14):** every live gate on the iwm STA
+datapath (RX-BA, BINDING, ADD_STA) is benign bookkeeping that admits and emits
+cr479-identical firmware bytes; the only gate that ever dropped (TX-BA) is fixed
+and its wrapper is now dead. No live lease gate silently drops a datapath
+firmware command.
 
 ## Verified NOT divergent (content identical to f-nix; refactor added only
 bookkeeping/AP-mode branches)
