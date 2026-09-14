@@ -79,7 +79,13 @@ Extended the block-audit to the highest-frequency user-facing surfaces:
 - **apple80211 GET ioctls** (STATE/RSSI/RATE/PHY_MODE/… highest-freq GUI polls,
   `AirportItlwmSkywalkInterface.cpp`) — reference-matched to `AppleBCMWLANCore`;
   preserve reference failure codes (`0xe082280e`, `kApple80211ClassOwnerAbsent`)
-  "instead of manufacturing zero carriers". Already identity.
+  "instead of manufacturing zero carriers". Already identity. **RUNTIME-CONFIRMED
+  (2026-09-14, lab iwx):** `system_profiler SPAirPortDataType` (the macOS GUI/
+  menubar data source) AND `wdutil info` both read these getters and return
+  functionally-equivalent, mutually-consistent values while associated —
+  SSID/BSSID correct, RSSI -34/Noise -56 (SNR 22 dB), Tx 52 Mbps, MCS 11, PHY
+  11n, WPA3 Personal, ch 2g13, Country ZW. So the static getter audit is now
+  runtime-verified functionally-equivalent on the shared f-macos surface.
 - **`getWCL_BSS_INFO`** — returns error only pre-RUN (not associated), same as the
   reference; benign debug log, functionally equivalent.
 - **scan.cpp** — divergences vs cr479 are the intended WCL/`ItlScanCommandPolicy`
