@@ -2183,12 +2183,23 @@ runPrimaryRxBa()
                 auto &pending = primaryRxBa.pending[direction][tid];
                 if (pending.serial == 0)
                     continue;
+                /* Station-incarnation staleness (serial/generation/identity and
+                 * the join/association attempt epoch) still gates: a re-associated
+                 * or regenerated station's stale RX-BA must be dropped exactly as
+                 * f-nix implicitly drops it.  The ONLY f-nix divergence restored
+                 * here is the transient use-count close during the SAE roam
+                 * close/reopen dance: when the uses are closed but NOT retiring
+                 * (a live roam-defer, not a teardown) acquire past the close
+                 * (hostRetirement) so a fresh, current RX-BA is not stranded.
+                 * begin/finish bookkeeping below is left intact.  Kept identical
+                 * to hal_iwm's runPrimaryRxBa. */
                 const bool current = pending.lifecycle == primaryRxBa.lifecycle &&
                     pending.station.serial == primaryStationUses.owner.serial &&
                     pending.station.generation == static_cast<uint32_t>(com.sc_generation) &&
                     pending.station.identity.equals(primaryStationUses.owner.identity) &&
                     pending.station.identity.attempt.equals(ItlScanCommandPolicy::identityLocked(ic));
-                if (current && primaryStationUses.acquire(pending.station, &use)) {
+                if (current && !primaryStationUses.retiring &&
+                    primaryStationUses.acquire(pending.station, &use, true)) {
                     request = pending;
                     primaryRxBa.current = request;
                     primaryRxBa.phase = ItlStationRxBa::Phase::Hardware;

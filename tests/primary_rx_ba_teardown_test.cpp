@@ -386,6 +386,26 @@ template<class Driver,class Node> static void family()
             assert(!accepted && !refused && !d.event.signals);
             assertAp(d); reset(d); ++cases;
         }
+        {   /* f-nix restore (SAE roam-defer): a transient close(false) — closed
+             * but NOT retiring — must NOT strand a fresh, current RX-BA the way a
+             * teardown close() does.  The station incarnation still matches, so
+             * runPrimaryRxBa acquires past the closed use-count (hostRetirement),
+             * establishes the session, and start/retire/drain balances active to 0.
+             * Mirrors the clean race==0 success path with only close(false) added. */
+            Driver d; Node n; prepare(d,n,hardware);
+            assert(start(d)==EBUSY);
+            d.primaryStationUses.close(false);
+            assert(d.primaryStationUses.closed && !d.primaryStationUses.retiring);
+            d.runPrimaryRxBa();
+            assert(d.primaryRxBa.phase==Runtime::Phase::Ready && d.primaryStationUses.active==1);
+            assert(accepted==0 && refused==0 && timers==0);
+            assert(d.retirePrimaryRxBa()==EINPROGRESS);
+            complete(d);
+            assert(accepted==1 && refused==0);
+            assert(d.primaryRxBa.resource[3].occupied && d.primaryRxBa.resource[3].hostPublished);
+            assert(d.com.sc_rx_ba_sessions==3);
+            cleanup(d); ++cases;
+        }
         for (unsigned race=0;race<3;++race) {
             Driver d; Node n; prepare(d,n,hardware);
             assert(start(d)==EBUSY);
