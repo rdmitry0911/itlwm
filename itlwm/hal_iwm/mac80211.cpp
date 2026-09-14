@@ -1696,8 +1696,24 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
      * Direct SAE/association keep their additional preflight/commit checks. */
     ItlFirmwareStationUseGuard<ItlIwm, ieee80211_node> stationUse(this, ni, false);
     if (!stationUse.admitted()) {
-        mbuf_freem(m);
-        return ECANCELED;
+        /* cr479/f-nix iwm_tx has NO station-use gate: it builds and sends every
+         * data frame unconditionally.  The controlled-port exception REQUIRES the
+         * EAPOL 4-way to flow before the station lease is (re)admitted, and the
+         * WCL close/reopen dance around RUN (deferPrimaryStationUsers /
+         * reopenPrimaryStationUsers) can leave primaryStationUses transiently
+         * closed -- which must NOT strand the datapath.  Dropping here (added by
+         * the wip cfd9fe5d) blocks EAPOL on 9560 -> 4-way never completes -> the
+         * controlled port never authorizes -> TX watchdog device-timeout -> reset
+         * loop (observed on bob).  The guard still tracks the use for retirement
+         * WHEN admitted; the receipt is not consumed downstream, so falling
+         * through to transmit is exactly f-nix behaviour. */
+        static int aiam_txdrop_seen = 0;
+        int aiam_n = __atomic_fetch_add(&aiam_txdrop_seen, 1, __ATOMIC_RELAXED);
+        if ((aiam_n & 0x3f) == 0)
+            XYLog("AIAMDIAG iwm_tx not-admitted #%d ic_state=%d uses_closed=%d confirmed=%d stage=%d -> SEND (f-nix)\n",
+                  aiam_n, sc->sc_ic.ic_state, primaryStationUses.closed,
+                  primaryStationContext.confirmed, (int)primaryStationContext.stage);
+        /* fall through: do NOT drop */
     }
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwm_node *in = (struct iwm_node *)ni;
