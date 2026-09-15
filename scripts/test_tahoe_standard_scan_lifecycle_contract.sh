@@ -220,7 +220,7 @@ for token in (
         "bool controller_foreground = wcl_foreground ||\n        (standard && bgscan == 0);",
         "iwn_scan_lease_reserve(sc, owner, upper_generation,",
         "required_initial_handoff_serial,",
-        "controller_foreground, wcl_foreground,",
+        "controller_foreground,\n                            wcl_foreground || (wcl_background &&\n                                required_initial_handoff_serial != 0), wcl,",
         "&foreground_prepared);",
         "foreground_prepared || (bgscan == 0 && !wcl_foreground)",
         "iwn_scan_schedule_fatal_recovery(sc);",
@@ -230,7 +230,7 @@ ordered(scan_start, "normal scan builds after durable lower arm",
         "iwn_scan_lease_arm_submission(sc, serial, &abort_requested)",
         "if (abort_requested)",
         "error = iwn_scan_submit(sc, flags, bgscan, serial,",
-        "controller_foreground, wcl_foreground,")
+        "controller_foreground,\n                            wcl_foreground || (wcl_background &&\n                                required_initial_handoff_serial != 0), wcl,")
 arm = body(iwn, "static bool\niwn_scan_lease_arm_submission",
            "lower submission arm")
 require(arm, "const bool abort_requested = sc->sc_scan_lease.abort_requested;",

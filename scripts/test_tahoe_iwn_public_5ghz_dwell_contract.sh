@@ -36,11 +36,10 @@ def body(text: str, marker: str) -> str:
 submit = body(iwn, "int ItlIwn::\niwn_scan_submit")
 ordered = (
     "bool foreground_5ghz_directed_dwell = false;",
-    "if (ic->ic_des_esslen != 0) {",
-    "is_active = 1;",
-    "foreground_5ghz_directed_dwell = bgscan == 0 && is_active != 0 &&\n"
+    "is_active = activeScan ? 1 : 0;",
+    "foreground_5ghz_directed_dwell = bgscan == 0 && directedSsid &&\n"
     "        (flags & IEEE80211_CHAN_5GHZ) != 0;",
-    "if (foreground_5ghz_directed_dwell &&\n"
+    "if (!exactWclPlan && foreground_5ghz_directed_dwell &&\n"
     "            (c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0 &&\n"
     "            (c->ic_flags & IEEE80211_CHAN_DFS) == 0)\n"
     "            dwell_passive = MAX(dwell_passive, 130);",
@@ -61,7 +60,7 @@ assignment = submit[assignment_start:assignment_end]
 if "wcl_scan" in assignment:
     fail("public association dwell was incorrectly restricted to WCL")
 
-guard_start = submit.find("if (foreground_5ghz_directed_dwell &&")
+guard_start = submit.find("if (!exactWclPlan && foreground_5ghz_directed_dwell &&")
 guard_end = submit.find("dwell_passive = MAX(dwell_passive, 130);",
                         guard_start)
 guard = submit[guard_start:guard_end]

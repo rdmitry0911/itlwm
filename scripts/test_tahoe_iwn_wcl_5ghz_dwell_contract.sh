@@ -63,19 +63,19 @@ for needle, label in (
     ("ic->ic_bss->ni_associd == 0", "net80211 unassociated marker"),
     ("le16toh(sc->rxon.associd) == 0", "RXON unassociated AID marker"),
     ("(le32toh(sc->rxon.filter) & IWN_FILTER_BSS) == 0", "RXON BSS-filter absence marker"),
-    ("wcl_scan && bgscan != 0 &&\n        is_active != 0 &&", "background directed WCL guard"),
+    ("wcl_scan && bgscan != 0 &&\n        directedSsid &&", "background directed WCL guard"),
     ("wcl_background_5ghz_directed_dwell &&\n              (c->ic_flags & IEEE80211_CHAN_PASSIVE) != 0", "directed passive-channel guard"),
     ("dwell_passive > dwell_active", "serving-BSS dwell cap guard"),
     ("dwell_active = MAX(dwell_active,\n                MIN((uint16_t)40, (uint16_t)(dwell_passive - 1)));", "40 ms active dwell cap"),
-    ("if (ic->ic_des_esslen != 0)\n            chan->flags |= htole32(IWN_CHAN_NPBREQS(1));", "directed-SSID-only probe template selection"),
+    ("if (is_active != 0)\n            chan->flags |= htole32(IWN_CHAN_NPBREQS(1));", "active-scan probe template selection"),
 ):
     require(submit, needle, label)
 forbid(submit, "ni_port_valid", "port-valid recovery discriminator")
 forbid(submit, "else if (wcl_foreground_5ghz_extended_dwell)",
        "wildcard active probing")
-foreground_dwell_begin = submit.find("if ((wcl_foreground_5ghz_extended_dwell ||\n             wcl_background_5ghz_unassociated_dwell ||\n             (wcl_background_5ghz_directed_dwell &&")
+foreground_dwell_begin = submit.find("if (!exactWclPlan &&\n            (wcl_foreground_5ghz_extended_dwell ||\n             wcl_background_5ghz_unassociated_dwell ||\n             (wcl_background_5ghz_directed_dwell &&")
 background_dwell_begin = submit.find(
-    "if (wcl_background_5ghz_directed_dwell &&",
+    "if (!exactWclPlan && wcl_background_5ghz_directed_dwell &&",
     foreground_dwell_begin)
 if foreground_dwell_begin < 0 or background_dwell_begin < 0:
     fail("missing separated foreground/background dwell guards")
