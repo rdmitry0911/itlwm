@@ -1520,6 +1520,10 @@ iwm_rx_tx_cmd(struct iwm_softc *sc, struct iwm_rx_packet *pkt,
         return;
     ring = &sc->txq[qid];
     txd = &ring->data[idx];
+    if (qid != IWM_DQA_CMD_QUEUE && sc->sc_tx_timer[qid] > 0)
+        XYLog("AIAMDIAG txcmp qid=%d idx=%d fcount=%d armed=%d ap=%d fc=0x%04x\n",
+              qid, idx, tx_resp->frame_count, sc->sc_tx_timer[qid],
+              txd->ap_frame, txd->fc);
     if (txd->ap_frame) {
         if (tx_resp->frame_count > 1) {
             sc->sc_tx_timer[qid] = 0;
@@ -5899,6 +5903,16 @@ iwm_watchdog(struct _ifnet *ifp)
     for (i = 0; i < nitems(sc->sc_tx_timer); i++) {
         if (sc->sc_tx_timer[i] > 0) {
             if (--sc->sc_tx_timer[i] == 0) {
+                struct iwm_tx_ring *tr = &sc->txq[i];
+                struct iwm_tx_data *td = &tr->data[tr->read];
+                XYLog("AIAMDIAG device timeout qid=%d queued=%d cur=%d read=%d tail=%d "
+                      "agg_mask=0x%08x fc=0x%04x sta_id=%d ap=%d sae=%d "
+                      "peer=%02x:%02x:%02x:%02x:%02x:%02x first_agg=%d last_agg=%d\n",
+                      i, tr->queued, tr->cur, tr->read, tr->tail,
+                      sc->agg_queue_mask, td->fc, td->sta_id, td->ap_frame, td->sae_active,
+                      td->diag_peer[0], td->diag_peer[1], td->diag_peer[2],
+                      td->diag_peer[3], td->diag_peer[4], td->diag_peer[5],
+                      IWM_FIRST_AGG_TX_QUEUE, IWM_LAST_AGG_TX_QUEUE);
                 XYLog("%s: device timeout\n", DEVNAME(sc));
 #ifdef IWM_DEBUG
                 that->iwm_nic_error(sc);
