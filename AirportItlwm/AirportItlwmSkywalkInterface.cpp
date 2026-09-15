@@ -4583,30 +4583,6 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
         apple80211_link_changed_event_data ed;
         bzero(&ed, sizeof(ed));
         const bool isLinkDown = (state != kIO80211NetworkLinkUp);
-        /*
-         * Drive the IOSkywalkLegacyEthernet lower-half child (the BSD-bridge
-         * provider for this en interface) to link-active on the accepted edge,
-         * matching the reference IO80211InfraInterface::setLinkStateInternal,
-         * whose link-up branch sets BOTH the controller half (reportLinkStatus)
-         * AND the child's setLinkStatus (vtable[0x980]).  itlwm previously
-         * published only the controller half (this->reportLinkStatus /
-         * publishTahoeSkywalkLinkCarrier), leaving the child at IOLinkStatus=0.
-         * CaptiveNetworkSupport keys its connectivity assessment on the child's
-         * link-active edge, so with the child stuck link-down the assessment
-         * never leaves "Evaluate" and the Wi-Fi status icon shows the no-internet
-         * exclamation even though the interface reaches the internet.  The child
-         * is an IONetworkController (IOSkywalkLegacyEthernet -> IO80211Controller);
-         * reach it exactly as setSET_MAC_ADDRESSImpl does and set its link status
-         * directly (NOT this->reportLinkStatus, which is the controller half). */
-        IORegistryEntry *legacyEntry = getChildEntry(gIOServicePlane);
-        IONetworkController *legacyCtrl =
-            legacyEntry != nullptr ? OSDynamicCast(IONetworkController, legacyEntry)
-                                   : nullptr;
-        if (legacyCtrl != nullptr &&
-            legacyEntry->metaCast("IOSkywalkLegacyEthernet") != nullptr)
-            (void)legacyCtrl->setLinkStatus(isLinkDown ?
-                kIONetworkLinkValid :
-                (kIONetworkLinkValid | kIONetworkLinkActive));
         if (!isLinkDown) {
             /*
              * The normal net80211 association path reaches this accepted
