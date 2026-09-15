@@ -352,9 +352,10 @@ public:
     // [492] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn getRANGING_START(apple80211_ranging_start_request_t *) override;
-    // [493] — Tahoe reads an opaque RSDB capability window from Core state
-    // with observed ConfigManager/`rsdb` producer context. Keep this slot
-    // fail-closed until that producer exists here.
+    // [493] — Tahoe copies an 8-byte RSDB caps qword to caller+0x4 from cached
+    // Core state populated only for dual-radio (SDB) Broadcom parts. Intel
+    // AX211 is single-radio, so RSDB is physically impossible and the accurate
+    // caps value is all-zero (supersedes the CR-493 fail-closed quarantine).
     virtual IOReturn getAWDL_RSDB_CAPS(apple80211_rsdb_capability *) override;
     // [494] — Tahoe public contract is owner-backed: missing keepalive owner ->
     // 0xe00002bc, otherwise six u32 fields at +0x4..+0x18.

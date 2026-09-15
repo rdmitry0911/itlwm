@@ -6208,11 +6208,41 @@ getAWDL_RSDB_CAPS(apple80211_rsdb_capability *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    // Tahoe reads an opaque capability window from RSDB Core state with
-    // observed ConfigManager/`rsdb` producer context. This port has no
-    // matching lifecycle, so do not publish a default-only cache as success.
-    (void)data;
-    return kIOReturnUnsupported;
+    // Carrier layout recovered from the SHA-verified 25C56
+    // com.apple.DriverKit-AppleBCMWLAN DEXT
+    // (SHA-256 4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab,
+    // UUID 149C0AD1-A92F-35BC-AA69-5C8815C5421E):
+    //   AppleBCMWLANInfraProtocol::getAWDL_RSDB_CAPS (@0x100017a20, vtbl +0x388)
+    //     -> AppleBCMWLANCore::getAWDL_RSDB_CAPS (@0x1001328fa):
+    //          *(u64 *)(caller + 0x4) = *(u64 *)(*(this + 0x48) + 0x436);
+    //          return 0;
+    // The reference writes exactly one 8-byte caps qword at caller +0x4 and
+    // returns success. It performs no null test and never touches caller +0x0
+    // (the u32 version stays caller-provided). Public carrier = 0xc bytes:
+    // version u32 @+0x0, caps qword @+0x4.
+    //
+    // That caps qword is a snapshot of cached Core RSDB state that is populated
+    // ONLY when the hardware actually supports RSDB/SDB:
+    //   AppleBCMWLANConfigManager::querySDBPolicies (@0x10008b716)
+    //     -> AppleBCMWLANCore::checkForSDBSupport (@0x1000fa974, feature-flag
+    //        bit 0x2e — set only for dual-radio Broadcom parts)
+    //     -> AppleBCMWLANCommander::runIOVarGet("rsdb") (@0x10017b780)
+    //     -> AppleBCMWLANCore::updateRSDBCaps (@0x1000d9a70) writes the cache.
+    // RSDB = Real Simultaneous Dual Band, i.e. operating two radios in two bands
+    // at once; the reference support probe AppleBCMWLANCore::isRSDBSupported
+    // (@0xffffff800159cea0, findWord(caps,"rsdb")) only reports capability on
+    // multi-radio Broadcom hardware. Intel AX211 is a single-radio device, so
+    // RSDB is physically impossible: the SDB feature flag is never set,
+    // updateRSDBCaps never runs, and the cache the reference getter copies is
+    // itself all-zero. Publishing the zeroed caps qword is therefore the
+    // accurate hardware-derived value for this NIC, not an AWDL fabrication.
+    //
+    // Mirror the reference write exactly (ABI-safe: only the recovered 8-byte
+    // caps window at +0x4 is touched; +0x0 version is left caller-provided) and
+    // report success.
+    uint8_t *carrier = reinterpret_cast<uint8_t *>(data);
+    memset(carrier + 0x4, 0, 8);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

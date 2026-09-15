@@ -363,8 +363,9 @@ than accepting the inverted invalid range and caching a false success.
   `TKO_*` with no keepalive owner), while cache/state-backed selectors now
   preserve the caller-visible carrier instead of returning generic unsupported.
   `getAWDL_RSDB_CAPS` is no longer included in that closed cache/state group:
-  its real ConfigManager/`rsdb` producer lifecycle is now separately
-  fail-closed.
+  it now publishes the accurate single-radio all-zero RSDB caps (RSDB is
+  physically impossible on the single-radio Intel NIC), superseding its earlier
+  no-producer fail-closed.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: explicit Apple-unsupported setter classification`:
@@ -431,15 +432,20 @@ than accepting the inverted invalid range and caching a false success.
   non-identity).
   See [CR-623-power-budget-nominal-identity-20260915.md](reference/CR-623-power-budget-nominal-identity-20260915.md).
 
-- `Q13 correction: AWDL_RSDB_CAPS getter no-producer quarantine`:
-  Tahoe reads an opaque eight-byte Core-state window at caller `+4`, without an
-  observed null check or `version` initialization. Its ConfigManager performs
-  an `rsdb` IOVAR query, reply validation, and overlapping Core-state update
-  context. AirportItlwm has no matching lifecycle, so the existing
-  raw `0xe00002c2` null guard remains only a safety boundary and every
-  non-null getter request now fails closed without output mutation or a
-  reset-only cache. This is not Apple null-input, valid-input, full-carrier,
-  version, Core-state, AWDL-feature, or runtime-selector parity.
+- `Q13 correction: AWDL_RSDB_CAPS getter accurate single-radio caps` (supersedes
+  the 2026-07-15 no-producer quarantine):
+  The Core getter's write surface is fully recovered — a single eight-byte store
+  to caller `+0x4`, with `version` at `+0x0` left caller-provided and no null
+  test. The caps qword is populated only behind the dual-radio SDB feature-flag
+  gate (`checkForSDBSupport`, bit `0x2e`; `isRSDBSupported`,
+  `findWord(caps, "rsdb")`). Intel AX211 is single-radio, so RSDB is physically
+  impossible and the reference cache is definitionally all-zero. The getter now
+  mirrors the reference store (`memset(carrier + 0x4, 0, 8); return success`) to
+  publish that accurate hardware-derived value instead of failing closed. The
+  raw `0xe00002c2` null guard is retained as a safety boundary. This is not a
+  claim of Apple null-input parity, the full opaque struct definition beyond the
+  recovered write window, the Broadcom Core-state producer lifecycle, or any
+  runtime selector.
   See [CR-493-awdl-rsdb-caps-no-producer-quarantine-20260715.md](reference/CR-493-awdl-rsdb-caps-no-producer-quarantine-20260715.md).
 
 - `Q13 correction: PRIVATE_MAC getter no-producer quarantine`:

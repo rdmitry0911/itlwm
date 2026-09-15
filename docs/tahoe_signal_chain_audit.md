@@ -1440,6 +1440,19 @@ non-null request before output mutation. Its reset-only cache is removed. This
 is a no-producer quarantine, not Apple null-input, valid-input,
 full-carrier, version, Core-state, AWDL-feature, or runtime-selector parity.
 
+#### 2026-09-16 supersession: publish accurate single-radio all-zero caps
+
+The above no-producer fail-closed is **superseded**. The Core getter's write
+surface is fully recovered (a single 8-byte store at caller `+0x4`; version at
+`+0x0` untouched), and the caps qword is populated only behind the dual-radio
+SDB feature-flag gate (`checkForSDBSupport @0x1000fa974`, bit `0x2e`;
+`isRSDBSupported @0xffffff800159cea0`, `findWord(caps, "rsdb")`). Intel AX211 is
+single-radio, so RSDB is physically impossible and the reference cache is
+definitionally all-zero. `getAWDL_RSDB_CAPS` now mirrors the reference store
+(`memset(carrier + 0x4, 0, 8); return success`) to publish that accurate
+hardware-derived value. See CR-493 (superseded → accurate caps). No test may
+assert the old unsupported behavior.
+
 ### 2026-07-15 correction: `WCL_FW_HOT_CHANNELS` is a NetAdapter no-producer quarantine
 
 Fresh 25C56 recovery shows this is not a stable zero telemetry carrier: Infra

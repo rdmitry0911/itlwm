@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Generate and verify AWDL_RSDB_CAPS no-producer quarantine evidence."""
+"""Generate and verify AWDL_RSDB_CAPS accurate single-radio caps evidence.
+
+Supersedes the 2026-07-15 no-producer quarantine: the getter's write surface is
+fully recovered from the 25C56 DriverKit-AppleBCMWLAN DEXT (a single 8-byte caps
+store at caller+0x4), and on the single-radio Intel NIC the accurate
+hardware-derived caps value is all-zero (RSDB requires two radios).
+"""
 
 import argparse
 import hashlib
@@ -89,8 +95,8 @@ def report():
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
 
     return {
-        "schema": "itlwm-awdl-rsdb-caps-no-producer-quarantine-v1",
-        "source_base_revision": "d374793f7938b1a1ea184edf95341f0e0a3e5019",
+        "schema": "itlwm-awdl-rsdb-caps-accurate-single-radio-v2",
+        "source_base_revision": "ee306ff0dc5fb6e4cfa1c3626854bc9ee6ef8693",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
             "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
@@ -99,16 +105,22 @@ def report():
             "core_get_vtable_offset": "0x388",
             "core_getter": "0x1001328fa",
             "core_state_window_from_core": "0x48+0x436",
+            "caps_store_offset": "0x4",
+            "caps_store_width": 8,
+            "carrier_total_bytes": "0xc",
+            "sdb_support_gate": "0x1000fa974",
+            "sdb_support_feature_bit": "0x2e",
+            "rsdb_support_probe": "0xffffff800159cea0",
             "config_query": "0x10008b716",
             "commander_rsdb_get": "0x10017b780",
             "core_update": "0x1000d9a70",
             "observed_update_start": "0x438",
         },
         "local": {
-            "rsdb_query_owner_backend": False,
-            "synthetic_success": False,
-            "null_return_is_apple_parity": False,
-            "valid_input_return_is_apple_parity": False,
+            "publishes_accurate_zero_caps": True,
+            "single_radio_no_rsdb": True,
+            "mirrors_reference_write_window": True,
+            "adds_broadcom_producer_lifecycle": False,
             "runtime_selector_invocation": False,
         },
         "checks": {
@@ -139,9 +151,10 @@ def report():
                 and "testl  %esi" not in core_get_raw
                 and "0x4(%rsi)" in core_get_raw
             ),
-            "reference_note_has_scope_and_nonclaim": all(
+            "reference_note_supersedes_with_accurate_derivation": all(
                 token in note
                 for token in (
+                    "SUPERSEDED",
                     "slot `[493]`",
                     "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
                     "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
@@ -152,13 +165,18 @@ def report():
                     "`0x10008b716`",
                     'runIOVarGet("rsdb")',
                     "`0x1000d9a70`",
-                    "not Apple null-input, valid-input return-code, full carrier-layout, version, Core-state, AWDL-feature, or runtime-selector parity",
+                    "isRSDBSupported",
+                    "0xffffff800159cea0",
+                    "checkForSDBSupport",
+                    "single-radio",
+                    "memset(carrier + 0x4, 0, 8)",
+                    "No test may assert the old unsupported behavior.",
                 )
             ),
             "active_v2_slot_selector_and_get_route_remain": (
                 "// [493]" in hpp
                 and "getAWDL_RSDB_CAPS" in hpp
-                and "Keep this slot fail-closed" in hpp
+                and "supersedes the CR-493 fail-closed quarantine" in hpp
                 and "struct apple80211_rsdb_capability;" in infra
                 and "// [493]" in infra
                 and "getAWDL_RSDB_CAPS" in infra
@@ -178,32 +196,26 @@ def report():
                 "if (data == nullptr)" in getter
                 and "return static_cast<IOReturn>(0xe00002c2);" in getter
             ),
-            "nonnull_getter_fails_closed_without_output": all(
+            "nonnull_getter_publishes_accurate_zero_caps": all(
                 token in getter
                 for token in (
-                    "(void)data;",
-                    "return kIOReturnUnsupported;",
+                    "reinterpret_cast<uint8_t *>(data)",
+                    "memset(carrier + 0x4, 0, 8);",
+                    "return kIOReturnSuccess;",
                 )
             )
-            and all(
-                token not in getter
+            and "return kIOReturnUnsupported;" not in getter,
+            "getter_cites_single_radio_derivation": all(
+                token in getter
                 for token in (
-                    "data->",
-                    "memset",
-                    "reinterpret_cast",
-                    "cachedAwdlRsdbCaps",
-                    "return kIOReturnSuccess;",
+                    "isRSDBSupported",
+                    "0xffffff800159cea0",
+                    "checkForSDBSupport",
+                    "single-radio",
+                    "not an AWDL fabrication",
                 )
             ),
             "dead_rsdb_cache_is_removed": not source_contains("cachedAwdlRsdbCaps"),
-            "no_matching_local_operational_rsdb_producer": all(
-                not source_contains(token)
-                for token in (
-                    "querySDBPolicies",
-                    "updateRSDBCaps",
-                    'runIOVarGet("rsdb")',
-                )
-            ),
             "opaque_carrier_and_separate_rsdb_surfaces_are_preserved": (
                 "struct apple80211_rsdb_capability;" in infra
                 and "sizeof(apple80211_rsdb_capability)" not in cpp + hpp + infra + ioctl
@@ -212,13 +224,14 @@ def report():
                 and "setSDB_ENABLE" in cpp
                 and "setSDB_ENABLE" in hpp
             ),
-            "historical_cache_classification_is_superseded": (
+            "historical_classification_is_superseded": (
                 "### 2026-07-15 correction: `AWDL_RSDB_CAPS` getter is a no-producer quarantine"
+                in signal_audit
+                and "#### 2026-09-16 supersession: publish accurate single-radio all-zero caps"
                 in signal_audit
                 and "getAWDL_RSDB_CAPS" not in closed_zone
                 and "getAWDL_RSDB_CAPS" not in state_backed_zone
-                and "`Q13 correction: AWDL_RSDB_CAPS getter no-producer quarantine`"
-                in inventory
+                and "AWDL_RSDB_CAPS getter accurate single-radio caps" in inventory
                 and "no longer included in that closed cache/state group" in inventory
             ),
         },
