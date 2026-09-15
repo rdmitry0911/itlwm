@@ -61,7 +61,7 @@ def report():
     )
 
     return {
-        "schema": "itlwm-btcoex-public-quarantine-v3",
+        "schema": "itlwm-btcoex-public-quarantine-v4",
         "source_base_revision": "e04c5dc33ee6bdaa7ba5b2fee7d417927d9f1669",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
@@ -92,7 +92,7 @@ def report():
         "local": {
             "backend_btcoex_commander": False,
             "false_success": False,
-            "active_getter_false_success": False,
+            "active_getter_prosloyka_nominal": True,
             "chain_disable_getter_false_success": False,
             "valid_input_return_is_apple_parity": False,
         },
@@ -149,38 +149,52 @@ def report():
                 token not in cpp and token not in hpp
                 for token in ("cachedBtcoexProfiles", "cachedBtcoexProfileValidMask")
             ),
-            "active_and_chain_getters_fail_closed": (
+            "chain_getter_fails_closed": (
                 all(
-                    all(
-                        token in getter
-                        for token in (
-                            "if (data == nullptr)",
-                            "return static_cast<IOReturn>(0xe00002c2);",
-                            "(void)data;",
-                            "return kIOReturnUnsupported;",
-                        )
-                    )
-                    and all(
-                        token not in getter
-                        for token in (
-                            "memset",
-                            "reinterpret_cast",
-                            cache,
-                            "kIOReturnSuccess",
-                        )
-                    )
-                    for getter, cache in (
-                        (active_getter, "cachedBtcoexProfileActive"),
-                        (chain_getter, "cachedBtcoex2GChainDisable"),
+                    token in chain_getter
+                    for token in (
+                        "if (data == nullptr)",
+                        "return static_cast<IOReturn>(0xe00002c2);",
+                        "(void)data;",
+                        "return kIOReturnUnsupported;",
                     )
                 )
                 and all(
-                    cache not in cpp + hpp
-                    for cache in (
-                        "cachedBtcoexProfileActive",
+                    token not in chain_getter
+                    for token in (
+                        "memset",
+                        "reinterpret_cast",
                         "cachedBtcoex2GChainDisable",
+                        "kIOReturnSuccess",
                     )
                 )
+                and "cachedBtcoex2GChainDisable" not in cpp + hpp
+            ),
+            # 2026-09-15: getBTCOEX_PROFILE_ACTIVE closed as a прослойка nominal.
+            # The healthy Broadcom path returns the btc_profile_active dword; Intel
+            # engages no BT-coex profile arbitration, so active = 0 is the accurate
+            # right-domain value. Fail-closed here is a non-identity vs a reference
+            # that returns a value.
+            "active_getter_emits_prosloyka_nominal": (
+                all(
+                    token in active_getter
+                    for token in (
+                        "if (data == nullptr)",
+                        "return static_cast<IOReturn>(0xe00002c2);",
+                        "прослойка identity",
+                        "*reinterpret_cast<uint32_t *>(data) = 0;",
+                        "return kIOReturnSuccess;",
+                    )
+                )
+                and all(
+                    token not in active_getter
+                    for token in (
+                        "(void)data;",
+                        "return kIOReturnUnsupported;",
+                        "cachedBtcoexProfileActive",
+                    )
+                )
+                and "cachedBtcoexProfileActive" not in cpp + hpp
             ),
             "no_local_btcoex_commander_transport": all(
                 not source_contains(token)

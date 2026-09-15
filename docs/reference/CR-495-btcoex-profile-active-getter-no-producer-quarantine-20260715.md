@@ -64,3 +64,21 @@ the reference identity and raw transport anchors, retained public route/ABI
 and local null boundary, no-output non-null failure, removal of only the dead
 active getter cache, preservation of the separate setter/owner/chain surfaces,
 and supersession of the former cache-backed documentation.
+
+## 2026-09-15 supersession — прослойка nominal close (не заглушка)
+
+The 2026-07-15 no-producer quarantine above is **superseded**. Failing closed
+with `kIOReturnUnsupported` where the reference returns a value is itself a
+non-identity. The byte-verified 25C56 guest member `getBTCOEX_PROFILE_ACTIVE`
+(and the x86 core getter `0x1001e509a`) gate on the WCL bridge owner and, on a
+healthy associated system, return a single u32 `btc_profile_active` flag
+(`req.len == 4`, written at caller `+0x0`) sourced from the BT-coex commander.
+Intel itlwm engages no BT-coex profile arbitration, so the accurate прослойка
+nominal is `active = 0` (not active) — identical to the value the healthy
+Broadcom path yields when no BT profile is engaged, right domain and
+functionally equivalent.
+
+`getBTCOEX_PROFILE_ACTIVE` therefore now writes `active = 0` and returns
+`kIOReturnSuccess` for a valid non-null carrier (the `0xe00002c2` null boundary
+is retained). The guard asserts the nominal emission instead of the former
+no-output failure.

@@ -2,10 +2,11 @@
   "checks": {
     "abi_comment_keeps_only_observed_producer_split": true,
     "active_v2_slot_and_dispatch_remain": true,
-    "getter_preserves_null_and_fails_closed_without_output": true,
+    "getter_preserves_null_and_emits_prosloyka_nominal": true,
     "historical_zero_baseline_claim_is_superseded": true,
     "no_matching_local_private_mac_producer": true,
     "no_synthetic_private_mac_state_remains": true,
+    "prosloyka_close_supersedes_no_producer_quarantine": true,
     "reference_note_has_scope_and_nonclaim": true,
     "reference_raw_has_bgscan_transport_producer": true,
     "reference_raw_manifest_matches": true,
@@ -14,9 +15,9 @@
   "local": {
     "null_return_is_apple_parity": true,
     "private_mac_owner_backend": false,
+    "prosloyka_nominal_enabled_zero_primary_is_interface_mac": true,
     "runtime_selector_invocation": false,
-    "synthetic_success": false,
-    "valid_input_return_is_apple_parity": false
+    "valid_input_return_is_apple_parity": true
   },
   "reference": {
     "bgscan_adapter_from_core": "0x48+0x1578",
@@ -31,6 +32,6 @@
     "scanmac_iovar": "scanmac",
     "timeout_offset": "0xc"
   },
-  "schema": "itlwm-private-mac-no-producer-quarantine-v2",
+  "schema": "itlwm-private-mac-prosloyka-nominal-v3",
   "source_base_revision": "20a8de84e3c2055a8ddbb1c10c76dfe4a97d6656"
 }

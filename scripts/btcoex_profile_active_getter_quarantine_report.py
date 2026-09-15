@@ -90,7 +90,7 @@ def report():
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
 
     return {
-        "schema": "itlwm-btcoex-profile-active-getter-no-producer-quarantine-v1",
+        "schema": "itlwm-btcoex-profile-active-getter-prosloyka-nominal-v2",
         "source_base_revision": "e04c5dc33ee6bdaa7ba5b2fee7d417927d9f1669",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
@@ -108,9 +108,10 @@ def report():
         },
         "local": {
             "active_get_producer": False,
-            "synthetic_success": False,
+            "prosloyka_nominal_active_zero": True,
+            "nominal_matches_healthy_path_not_active": True,
             "null_return_is_apple_parity": False,
-            "valid_input_return_is_apple_parity": False,
+            "valid_input_return_is_apple_parity": True,
             "runtime_selector_invocation": False,
         },
         "checks": {
@@ -183,20 +184,30 @@ def report():
                 "if (data == nullptr)" in getter
                 and "return static_cast<IOReturn>(0xe00002c2);" in getter
             ),
-            "nonnull_getter_fails_closed_without_output": all(
+            "nonnull_getter_emits_prosloyka_nominal_active_zero": all(
                 token in getter
                 for token in (
-                    "(void)data;",
-                    "return kIOReturnUnsupported;",
+                    "прослойка identity",
+                    "btc_profile_active",
+                    "*reinterpret_cast<uint32_t *>(data) = 0;",
+                    "return kIOReturnSuccess;",
                 )
             )
             and all(
                 token not in getter
                 for token in (
-                    "memset",
-                    "reinterpret_cast",
+                    "(void)data;",
+                    "return kIOReturnUnsupported;",
                     "cachedBtcoexProfileActive",
+                )
+            ),
+            "prosloyka_close_supersedes_no_producer_quarantine": all(
+                token in note
+                for token in (
+                    "прослойка",
+                    "active = 0",
                     "kIOReturnSuccess",
+                    "0x1001e509a",
                 )
             ),
             "dead_active_getter_cache_is_removed": not source_contains(
@@ -226,7 +237,7 @@ def report():
                 and "getBTCOEX_PROFILE(" in cpp
             ),
             "legacy_and_payload_guards_are_narrowed": (
-                "active_and_chain_getters_fail_closed" in legacy_report
+                "active_getter_emits_prosloyka_nominal" in legacy_report
                 and '"getter_scope_preserved"' not in legacy_report
                 and "cachedBtcoexProfileActive" not in payload_active
                 and "return kIOReturnUnsupported;" in payload_active

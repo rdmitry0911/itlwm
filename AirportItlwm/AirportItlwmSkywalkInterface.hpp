@@ -338,8 +338,11 @@ public:
     virtual IOReturn getLEAKY_AP_STATS_MODE(apple80211_leaky_ap_setting *) override;
     // [489]
     virtual IOReturn getCOUNTRY_CHANNELS(apple80211_country_channel_data *) override;
-    // [490] — Tahoe requires a BGScanAdapter/"scanmac" producer here. Keep
-    // this slot fail-closed until that owner and transport exist locally.
+    // [490] — Reference reads scanmac state via BGScanAdapter into a 0x1c
+    // carrier (enabled@0x4, timeout@0xc, primary/secondary MAC). Intel has no
+    // scanmac background-MAC randomization owner, so emit the nominal enabled=0
+    // with the live interface MAC (прослойка identity), not a fail-closed
+    // non-identity vs a reference that returns a value.
     virtual IOReturn getPRIVATE_MAC(apple80211_private_mac_data *) override;
     // [491]
     // [491] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
@@ -364,8 +367,10 @@ public:
     // not generic unsupported.
     virtual IOReturn getBTCOEX_PROFILE(apple80211_btcoex_profile *) override;
     // [498] — Reference Core obtains the activity dword through the
-    // `btc_profile_active` commander IOVAR. This port has no GET producer, so
-    // retain the virtual ABI but fail closed for non-null input.
+    // `btc_profile_active` commander IOVAR (25C56 member req.len==4, one u32).
+    // Intel engages no BT-coex profile arbitration, so emit the nominal
+    // not-active flag 0 (прослойка identity), not a fail-closed non-identity vs
+    // a reference that returns a value.
     virtual IOReturn getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *) override;
     // [499] — trap/debug diagnostics surface, not a shared Apple80211 runtime
     // producer contract. Keep it classified as internal-only instead of open

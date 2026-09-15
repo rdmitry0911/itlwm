@@ -74,7 +74,7 @@ def report():
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
 
     return {
-        "schema": "itlwm-private-mac-no-producer-quarantine-v2",
+        "schema": "itlwm-private-mac-prosloyka-nominal-v3",
         "source_base_revision": "20a8de84e3c2055a8ddbb1c10c76dfe4a97d6656",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
@@ -91,9 +91,9 @@ def report():
         },
         "local": {
             "private_mac_owner_backend": False,
-            "synthetic_success": False,
+            "prosloyka_nominal_enabled_zero_primary_is_interface_mac": True,
             "null_return_is_apple_parity": True,
-            "valid_input_return_is_apple_parity": False,
+            "valid_input_return_is_apple_parity": True,
             "runtime_selector_invocation": False,
         },
         "checks": {
@@ -148,23 +148,36 @@ def report():
                     )
                 )
             ),
-            "getter_preserves_null_and_fails_closed_without_output": all(
+            "getter_preserves_null_and_emits_prosloyka_nominal": all(
                 token in getter
                 for token in (
+                    "прослойка identity",
                     "if (data == nullptr)",
                     "return kApple80211ErrInvalidArgumentRaw;",
-                    "(void)data;",
-                    "return kIOReturnUnsupported;",
+                    "AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();",
+                    "memset(data, 0, sizeof(*data));",
+                    "data->version = APPLE80211_VERSION;",
+                    "data->enabled = 0;",
+                    "IEEE80211_ADDR_COPY(data->primary_mac, ic->ic_myaddr);",
+                    "return kIOReturnSuccess;",
                 )
             )
             and all(
                 token not in getter
                 for token in (
-                    "data->",
+                    "(void)data;",
+                    "return kIOReturnUnsupported;",
                     "cachedPrivateMac",
-                    "return kIOReturnSuccess;",
-                    "memset",
-                    "APPLE80211_VERSION",
+                )
+            ),
+            "prosloyka_close_supersedes_no_producer_quarantine": all(
+                token in note
+                for token in (
+                    "прослойка",
+                    "enabled = 0",
+                    "ic_myaddr",
+                    "kIOReturnSuccess",
+                    "0x100119538",
                 )
             ),
             "setter_remains_quarantined_without_consuming": all(

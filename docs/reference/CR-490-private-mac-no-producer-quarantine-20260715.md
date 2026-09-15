@@ -55,3 +55,23 @@ reference identity/raw anchors, active slot and dispatch, preserved null
 boundary, absence of a local producer, and the fail-closed non-null getter and
 setter paths. It also verifies that the former zero-baseline claims are marked
 superseded.
+
+## 2026-09-15 supersession — прослойка nominal close (не заглушка)
+
+The 2026-07-15 no-producer quarantine above is **superseded**. Failing closed
+with `kIOReturnUnsupported` where the reference returns a value is itself a
+non-identity. The reference `getPRIVATE_MAC` (x86 Core `0x100119538`, 25C56
+guest member, `req.len == 0x1c`) gates on the WCL bridge owner and, on a healthy
+system, returns a populated 0x1c carrier: `enabled@0x4`
+(`isPrivateMacEnabled`), `timeout@0xc` (`getPrivateMacTimeout`), and the
+primary/secondary MAC. The Intel port implements no Apple scanmac background-MAC
+randomization owner, so the accurate прослойка state is `enabled = 0`, a zeroed
+secondary, and the primary MAC equal to the live interface address
+(`ic_myaddr`, which already reflects any OS-applied per-network private MAC).
+That is exactly the shape the healthy path emits for a device with the scanmac
+feature disabled — right domain, functionally equivalent.
+
+`getPRIVATE_MAC` therefore now returns `kIOReturnSuccess` for a valid non-null
+carrier after populating `version`, `enabled = 0`, and `primary_mac`; the raw
+`0x16` null boundary is retained. The guard asserts the nominal emission instead
+of the former no-output failure.

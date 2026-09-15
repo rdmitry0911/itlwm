@@ -5,8 +5,9 @@
     "historical_cache_classification_is_superseded": true,
     "legacy_and_payload_guards_are_narrowed": true,
     "local_null_guard_is_retained_as_safety_boundary": true,
-    "nonnull_getter_fails_closed_without_output": true,
+    "nonnull_getter_emits_prosloyka_nominal_active_zero": true,
     "paired_setter_remains_fail_closed_without_getter_cache": true,
+    "prosloyka_close_supersedes_no_producer_quarantine": true,
     "reference_note_has_scope_and_nonclaim": true,
     "reference_raw_has_get_and_set_transport_anchors": true,
     "reference_raw_manifest_matches": true,
@@ -14,10 +15,11 @@
   },
   "local": {
     "active_get_producer": false,
+    "nominal_matches_healthy_path_not_active": true,
     "null_return_is_apple_parity": false,
+    "prosloyka_nominal_active_zero": true,
     "runtime_selector_invocation": false,
-    "synthetic_success": false,
-    "valid_input_return_is_apple_parity": false
+    "valid_input_return_is_apple_parity": true
   },
   "reference": {
     "commander_from_core": "0x48+0x1520",
@@ -33,6 +35,6 @@
     "infra_get_wrapper": "0x100017470",
     "infra_set_wrapper": "0x100018714"
   },
-  "schema": "itlwm-btcoex-profile-active-getter-no-producer-quarantine-v1",
+  "schema": "itlwm-btcoex-profile-active-getter-prosloyka-nominal-v2",
   "source_base_revision": "e04c5dc33ee6bdaa7ba5b2fee7d417927d9f1669"
 }

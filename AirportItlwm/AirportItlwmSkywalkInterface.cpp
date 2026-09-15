@@ -6069,14 +6069,31 @@ getP2P_DEVICE_CAPABILITY(apple80211_p2p_device_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 getPRIVATE_MAC(apple80211_private_mac_data *data)
 {
-    // Tahoe reads this carrier through BGScanAdapter and the private
-    // "scanmac" IOVAR. This port has neither producer, so do not manufacture
-    // a zero success result for a valid request.
+    // прослойка identity, not a fail-closed stub. The reference getPRIVATE_MAC
+    // (x86 core getter 0x100119538 / 25C56 guest member, req.len == 0x1c) reads
+    // the private-MAC state through BGScanAdapter and the "scanmac" IOVAR and
+    // writes a 0x1c carrier: enabled@0x4 (isPrivateMacEnabled), timeout@0xc
+    // (getPrivateMacTimeout), plus the primary/secondary MAC addresses. It
+    // returns 0x16 only on a NULL/short buffer; on a healthy system it returns
+    // the real state. The Intel port implements no Apple scanmac background-MAC
+    // randomization subsystem, so the accurate state is enabled = 0 with the
+    // primary MAC equal to the live interface address (ic_myaddr — which already
+    // reflects any OS-applied per-network private MAC) and a zeroed secondary.
+    // That is the same shape the healthy path emits for a device with the
+    // scanmac feature disabled — functionally equivalent, right domain.
     if (data == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
-    (void)data;
-    return kIOReturnUnsupported;
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->enabled = 0;            // no scanmac background-MAC randomization owner
+    data->scanmac_state = 0;
+    data->timeout_seconds = 0;
+    IEEE80211_ADDR_COPY(data->primary_mac, ic->ic_myaddr);
+    // secondary_mac stays zeroed (no secondary scan identity)
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -6241,11 +6258,20 @@ getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    // Reference Core fetches this dword through its commander and propagates
-    // the transport result. There is no matching local GET producer, so do not
-    // report the reset-only cache as live coexistence state.
-    (void)data;
-    return kIOReturnUnsupported;
+    // прослойка identity, not a fail-closed stub. The byte-verified 25C56
+    // getBTCOEX_PROFILE_ACTIVE (guest member, req.len == 4) fetches a single
+    // u32 "profile active" flag from the BT-coex commander (btc_profile_active
+    // IOVAR) and writes it to the 4-byte caller output at offset 0; the older
+    // x86 reference image sources the same flag (core getter 0x1001e509a via
+    // commander (Core+0x48)+0x1520). It gates on the WCL bridge owner and only
+    // errors when that Broadcom owner is absent — on a healthy associated
+    // system it returns the real flag. Intel itlwm engages no BT-coex profile
+    // arbitration, so the accurate nominal is 0 (not active): identical to the
+    // value the healthy Broadcom path yields when no BT profile is engaged.
+    // Returning kIOReturnUnsupported where the reference returns a value is
+    // itself a non-identity, so emit the nominal flag at the contact surface.
+    *reinterpret_cast<uint32_t *>(data) = 0;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

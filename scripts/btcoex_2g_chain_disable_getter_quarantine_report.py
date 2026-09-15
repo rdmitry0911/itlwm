@@ -228,7 +228,7 @@ def report():
                 and "setBTCOEX_PROFILE_ACTIVE" in cpp
             ),
             "legacy_and_payload_guards_are_narrowed": (
-                "active_and_chain_getters_fail_closed" in legacy_report
+                "chain_getter_fails_closed" in legacy_report
                 and "cachedBtcoex2GChainDisable" not in payload_chain
                 and "return kIOReturnUnsupported;" in payload_chain
                 and "separate_btcoex_surfaces_are_preserved" in active_report
