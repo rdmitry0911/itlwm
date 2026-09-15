@@ -408,6 +408,11 @@ than accepting the inverted invalid range and caching a false success.
   now fails closed without output mutation. This is not Apple null-input,
   valid-input, full-carrier, version, or Core-state parity.
   See [CR-491-thermal-index-no-producer-quarantine-20260715.md](reference/CR-491-thermal-index-no-producer-quarantine-20260715.md).
+  **Superseded 2026-09-15 by CR-622:** the TVPM scalar defaults to 100
+  (`resetTVPMIndicies`) = full budget / no throttle = Intel nominal, so the
+  прослойка now emits `version + thermal_index = 100 + kIOReturnSuccess`
+  (fail-closed would be a non-identity).
+  See [CR-622-thermal-index-nominal-identity-20260915.md](reference/CR-622-thermal-index-nominal-identity-20260915.md).
 
 - `Q13 correction: POWER_BUDGET getter no-producer quarantine`:
   Tahoe reads its budget scalar from Core state at caller `+4`; the observed
@@ -419,6 +424,12 @@ than accepting the inverted invalid range and caching a false success.
   null-input, valid-input, full-carrier, version, Core-state, setter, or
   runtime-selector parity.
   See [CR-492-power-budget-no-producer-quarantine-20260715.md](reference/CR-492-power-budget-no-producer-quarantine-20260715.md).
+  **Superseded 2026-09-15 by CR-623:** the TVPM scalar defaults to 100
+  (`resetTVPMIndicies`) = full budget / no throttle = Intel nominal, so the
+  прослойка now emits `version + power_budget = 100 + kIOReturnSuccess` from the
+  getter (the setter stays fail-closed; fail-closed getter would be a
+  non-identity).
+  See [CR-623-power-budget-nominal-identity-20260915.md](reference/CR-623-power-budget-nominal-identity-20260915.md).
 
 - `Q13 correction: AWDL_RSDB_CAPS getter no-producer quarantine`:
   Tahoe reads an opaque eight-byte Core-state window at caller `+4`, without an

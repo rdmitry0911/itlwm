@@ -3,22 +3,24 @@
     "abi_preserves_declared_local_layout": true,
     "active_v2_slot_and_bsd_routes_remain": true,
     "dead_power_budget_cache_is_removed": true,
-    "historical_default_cache_claim_is_superseded": true,
-    "local_null_guard_is_retained_as_safety_boundary": true,
-    "no_matching_local_power_budget_producer": true,
-    "nonnull_getter_fails_closed_without_output": true,
+    "getter_emits_reference_nominal_index": true,
+    "getter_no_longer_fails_closed": true,
+    "no_matching_local_tvpm_producer": true,
+    "predecessor_note_exists": true,
     "reference_getter_has_no_observed_null_guard": true,
-    "reference_note_has_scope_and_nonclaim": true,
     "reference_raw_has_core_scalar_and_tvpm_context": true,
     "reference_raw_manifest_matches": true,
-    "setter_boundary_remains_without_consuming_carrier": true
+    "setter_boundary_remains_fail_closed": true,
+    "superseding_note_cites_prosloyka_and_reset_default": true
   },
   "local": {
-    "null_return_is_apple_parity": false,
-    "power_budget_owner_backend": false,
-    "runtime_selector_invocation": false,
-    "synthetic_success": false,
-    "valid_input_return_is_apple_parity": false
+    "emits_reference_nominal_index": true,
+    "getter_fail_closed": false,
+    "nominal_index": 100,
+    "null_guard_retained": true,
+    "power_budget_tvpm_backend": false,
+    "prosloyka_identity": true,
+    "setter_fail_closed": true
   },
   "reference": {
     "core_get_vtable_offset": "0x2f8",
@@ -34,8 +36,14 @@
     "infra_get_wrapper": "0x1000175d8",
     "infra_set_wrapper": "0x1000187f8",
     "infra_slot": 503,
-    "special_commit_status": "0xe3ff8117"
+    "reset_symbol": "AppleBCMWLANCore::resetTVPMIndicies",
+    "special_commit_status": "0xe3ff8117",
+    "tvpm_index_full_budget": 100,
+    "tvpm_reset_default_index": 100
   },
-  "schema": "itlwm-power-budget-no-producer-quarantine-v2",
-  "source_base_revision": "ac1a41603eadfb1ba3cf0e416099807cdc40f73b"
+  "schema": "itlwm-power-budget-nominal-identity-v3",
+  "supersedes": [
+    "CR-492",
+    "CR-479"
+  ]
 }

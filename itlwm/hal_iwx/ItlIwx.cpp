@@ -2914,6 +2914,17 @@ getBSSNoise()
     return com.sc_noise;
 }
 
+int16_t ItlIwx::
+getChannelLoad()
+{
+    // Airtime-based channel-occupancy estimate (0-100%), fed by
+    // IWX_STATISTICS_NOTIFICATION on the same beacon-driven cadence as
+    // sc_noise. Negative means the firmware has not reported airtime yet, so
+    // the LQM layer keeps the CCA byte invalid rather than publishing a
+    // fabricated occupancy.
+    return com.sc_has_channel_load ? (int16_t)com.sc_channel_load : (int16_t)-1;
+}
+
 bool ItlIwx::
 is5GBandSupport()
 {
@@ -16211,6 +16222,57 @@ iwx_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in,
     return error;
 }
 
+/*
+ * Update the airtime-based channel-occupancy estimate from the firmware
+ * general statistics. The reference Broadcom LQM path emits a channel-
+ * occupancy percentage (CCA) at LQM event +0x12/+0x13; Intel's -68 firmware
+ * has no Broadcom-private CCA counter, but IWX_STATISTICS_NOTIFICATION carries
+ * the medium-activity airtime accumulators rx_time/tx_time/on_time_rf
+ * (if_iwxreg.h iwx_statistics_general_common). busy% = (rx_time + tx_time) /
+ * on_time_rf is the same domain (fraction of active radio time the medium was
+ * busy) and normalises cleanly to 0-100 — a functionally-equivalent occupancy
+ * feed, not the wrong-domain RSSI value that was rightly removed. We prefer a
+ * per-notification delta so the figure tracks current occupancy instead of a
+ * lifetime average, and fall back to the cumulative ratio for the first sample
+ * or whenever the firmware clears/wraps the accumulators.
+ */
+static void
+iwx_update_channel_load(struct iwx_softc *sc, uint64_t rx_time,
+    uint64_t tx_time, uint64_t on_time_rf)
+{
+    uint64_t num, den;
+
+    if (sc->sc_has_channel_load_prev &&
+        on_time_rf > sc->sc_channel_load_prev_on_time_rf &&
+        rx_time >= sc->sc_channel_load_prev_rx_time &&
+        tx_time >= sc->sc_channel_load_prev_tx_time) {
+        num = (rx_time - sc->sc_channel_load_prev_rx_time) +
+              (tx_time - sc->sc_channel_load_prev_tx_time);
+        den = on_time_rf - sc->sc_channel_load_prev_on_time_rf;
+    } else {
+        num = rx_time + tx_time;
+        den = on_time_rf;
+    }
+
+    sc->sc_channel_load_prev_rx_time = rx_time;
+    sc->sc_channel_load_prev_tx_time = tx_time;
+    sc->sc_channel_load_prev_on_time_rf = on_time_rf;
+    sc->sc_has_channel_load_prev = true;
+
+    /*
+     * No airtime yet (firmware has not populated the accumulators): stay
+     * unavailable so the LQM CCA byte is not published as a fabricated 0%.
+     */
+    if (den == 0)
+        return;
+
+    uint64_t pct = (num * 100) / den;
+    if (pct > 100)
+        pct = 100;
+    sc->sc_channel_load = (uint8_t)pct;
+    sc->sc_has_channel_load = true;
+}
+
 int ItlIwx::
 iwx_clear_statistics(struct iwx_softc *sc)
 {
@@ -19960,11 +20022,19 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data,
                     sc->sc_noise = iwx_get_noise((uint8_t *)&stats->rx.general.beacon_silence_rssi_a);
                     sc->sc_lqm_beacon_count =
                         le32toh(stats->general.beacon_counter[0]);
+                    iwx_update_channel_load(sc,
+                        le64toh(stats->general.common.rx_time),
+                        le64toh(stats->general.common.tx_time),
+                        le64toh(stats->general.common.on_time_rf));
                 } else {
                     SYNC_RESP_STRUCT(stats_v11, pkt, struct iwx_notif_statistics_v11 *);
                     sc->sc_noise = iwx_get_noise((uint8_t *)&stats_v11->rx.general.beacon_silence_rssi_a);
                     sc->sc_lqm_beacon_count =
                         le32toh(stats_v11->general.beacon_counter[0]);
+                    iwx_update_channel_load(sc,
+                        le64toh(stats_v11->general.common.rx_time),
+                        le64toh(stats_v11->general.common.tx_time),
+                        le64toh(stats_v11->general.common.on_time_rf));
                 }
                 break;
             }

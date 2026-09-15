@@ -24,7 +24,14 @@ public:
     virtual const char *getFirmwareVersion() = 0;
     
     virtual int16_t getBSSNoise() = 0;
-    
+
+    // Airtime-based channel-occupancy estimate (0-100%) for the LQM CCA feed.
+    // Negative == unavailable. Defaulted so HALs without a wired airtime
+    // source stay fail-open (LQM marks CCA invalid) rather than publishing a
+    // fabricated percentage; the iwx HAL overrides it with the firmware
+    // statistics-derived occupancy.
+    virtual int16_t getChannelLoad() { return -1; }
+
     virtual bool is5GBandSupport() = 0;
     
     virtual int getTxNSS() = 0;

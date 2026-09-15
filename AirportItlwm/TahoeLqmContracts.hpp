@@ -164,7 +164,16 @@ inline bool counterSnapshotsEqual(const CounterSnapshot &lhs,
            lhs.beaconFrames == rhs.beaconFrames;
 }
 
-inline bool buildEventData(int32_t rssiDbm, int32_t noiseDbm,
+// ccaPercent carries the driver's channel-occupancy estimate (0-100). A
+// negative value means "no CCA sample this cycle" and leaves +0x12/+0x13
+// unpopulated. The reference Broadcom LQM path emits a channel-occupancy
+// percentage here; on Intel that percentage comes from the firmware airtime
+// accumulators (rx_time + tx_time)/on_time_rf — the same medium-activity
+// domain, not the wrong-domain RSSI sample that was rightly removed. Emitting
+// a right-domain occupancy is a functionally-equivalent прослойка identity;
+// leaving the byte invalid when the reference produces one would be a
+// fail-closed non-identity.
+inline bool buildEventData(int32_t rssiDbm, int32_t noiseDbm, int32_t ccaPercent,
                            const CounterSnapshot &current,
                            const CounterSnapshot *previous,
                            EventData *event)
@@ -175,10 +184,13 @@ inline bool buildEventData(int32_t rssiDbm, int32_t noiseDbm,
     *event = EventData{};
     event->hasRssi = 1;
     event->rssi = rssiDbm;
-    // +0x12/+0x13 are CCA validity/occupancy, not another RSSI sample.
-    // The backend snapshot has no independent CCA measurement. Leave it
-    // unavailable; publishing RSSI here makes airportd consume negative
-    // channel occupancy. Real RSSI remains valid at +0x00/+0x04.
+
+    if (ccaPercent >= 0) {
+        if (ccaPercent > 100)
+            ccaPercent = 100;
+        event->hasCca = 1;
+        event->ccaPercent = static_cast<int8_t>(ccaPercent);
+    }
 
     if (noiseDbm != kInvalidNoiseZero &&
         noiseDbm != kInvalidNoiseSentinel) {

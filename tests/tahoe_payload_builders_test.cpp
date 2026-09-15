@@ -1192,12 +1192,12 @@ void testTahoeLqmContracts()
     const CounterSnapshot previous{1, 2, 90, 180, 40};
     const CounterSnapshot current{2, 3, 100, 200, 50};
     EventData event{};
-    require(buildEventData(-63, -95, current, &previous, &event),
+    require(buildEventData(-63, -95, 41, current, &previous, &event),
             "LQM event builder accepts real signal and changed counters");
     require(event.hasRssi == 1 && event.rssi == -63,
             "LQM event builder carries current BSS RSSI");
-    require(event.hasCca == 0 && event.ccaPercent == 0,
-            "LQM event builder does not invent CCA from RSSI");
+    require(event.hasCca == 1 && event.ccaPercent == 41,
+            "LQM event builder carries the right-domain CCA occupancy");
     require(event.hasNoise == 1 && event.noise == -95 &&
                 event.hasSnr == 1 && event.snr == 32,
             "LQM event builder carries real noise and derived SNR");
@@ -1211,7 +1211,7 @@ void testTahoeLqmContracts()
                 event.counterSnapshotChanged == 1,
             "LQM changed snapshot sets only recovered validity gates");
 
-    require(buildEventData(-63, kInvalidNoiseSentinel, current, &current,
+    require(buildEventData(-63, kInvalidNoiseSentinel, -1, current, &current,
                            &event),
             "LQM event builder accepts a valid RSSI without noise data");
     require(event.hasNoise == 0 && event.hasSnr == 0,
@@ -1225,11 +1225,14 @@ void testTahoeLqmContracts()
     require(event.eventValid == 1,
             "LQM signal event remains valid when counters are unchanged");
     require(event.hasCca == 0 && event.ccaPercent == 0,
-            "LQM unchanged generation still has no independent CCA sample");
-    require(!buildEventData(-101, -95, current, nullptr, &event) &&
-                !buildEventData(1, -95, current, nullptr, &event),
+            "LQM unavailable CCA leaves the occupancy byte invalid");
+    require(buildEventData(-63, -95, 250, current, &previous, &event) &&
+                event.hasCca == 1 && event.ccaPercent == 100,
+            "LQM event builder clamps over-range CCA occupancy to 100");
+    require(!buildEventData(-101, -95, 10, current, nullptr, &event) &&
+                !buildEventData(1, -95, 10, current, nullptr, &event),
             "LQM event builder rejects RSSI outside the reference range");
-    require(!buildEventData(-63, -95, current, nullptr, nullptr),
+    require(!buildEventData(-63, -95, 10, current, nullptr, nullptr),
             "LQM event builder rejects a null output carrier");
 }
 

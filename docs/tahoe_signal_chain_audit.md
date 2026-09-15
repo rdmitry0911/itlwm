@@ -1606,6 +1606,13 @@ and removes the rejected-request cache.
 
 ### 2026-07-15 correction: `THERMAL_INDEX` getter is a no-producer quarantine
 
+> **Superseded 2026-09-15 by CR-622** (прослойка nominal-identity). The TVPM
+> Core scalar this getter reads defaults to 100 (`resetTVPMIndicies`) = full
+> budget / no throttle, which is Intel's nominal state. Fail-closed where the
+> reference returns a value is itself a non-identity, so slot `[500]` now emits
+> `version + thermal_index = 100 + kIOReturnSuccess`. See
+> [reference/CR-622-thermal-index-nominal-identity-20260915.md](reference/CR-622-thermal-index-nominal-identity-20260915.md).
+
 The fresh 25C56 getter is a live Core-state read, not an ownerless zero
 contract: Infra `0x1000174f4` dispatches through `+0x2e8` to Core
 `0x100106eda`, which reads `(Core + 0x48) + 0x0` and writes only caller `+0x4`.
@@ -1618,6 +1625,14 @@ mutation. This is a no-producer quarantine, not Apple null-input,
 valid-input, full-carrier, version, Core-state, or runtime-selector parity.
 
 ### 2026-07-15 correction: POWER_BUDGET getter is a no-producer quarantine
+
+> **Superseded 2026-09-15 by CR-623** (прослойка nominal-identity). The TVPM
+> Core scalar this getter reads defaults to 100 (`resetTVPMIndicies`) = full
+> budget / no throttle, which is Intel's nominal state. Fail-closed where the
+> reference returns a value is itself a non-identity, so slot `[503]` now emits
+> `version + power_budget = 100 + kIOReturnSuccess` (the setter stays
+> fail-closed). See
+> [reference/CR-623-power-budget-nominal-identity-20260915.md](reference/CR-623-power-budget-nominal-identity-20260915.md).
 
 The fresh 25C56 getter is a live Core-state read, not a default-only carrier:
 Infra 0x1000175d8 dispatches through +0x2f8 to Core 0x10010712c, which reads

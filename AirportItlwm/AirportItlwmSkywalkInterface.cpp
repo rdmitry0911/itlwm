@@ -6082,27 +6082,47 @@ getPRIVATE_MAC(apple80211_private_mac_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 getTHERMAL_INDEX(apple80211_thermal_index_t *data)
 {
-    // Tahoe writes caller +4 from its thermal Core state. This port has neither
-    // that state lifecycle nor the `tvpm` producer path, so do not report a
-    // zero success carrier for a valid request.
+    // прослойка identity, not a fail-closed stub. The reference
+    // AppleBCMWLANCore sources the thermal index from its TVPM
+    // (Broadcom thermal/voltage/power-management) Core state, whose OWN
+    // default after AppleBCMWLANCore::resetTVPMIndicies is index 100.
+    // getTHERMAL_INDEX @0xffffff80015e5de8 then just returns that cached
+    // u32. TVPM indices run 1-100 where 100 == full budget / no throttle.
+    // Intel is not TVPM-throttling, so 100 (no throttle) is Intel's actual
+    // nominal state AND simultaneously matches the reference's default
+    // output — functionally equivalent. Returning kIOReturnUnsupported where
+    // the reference returns a value is itself a non-identity, so we emit the
+    // nominal value at the contact surface.
     if (data == nullptr)
         return kIOReturnBadArgument;
 
-    (void)data;
-    return kIOReturnUnsupported;
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    // reference default 100 = full budget / no throttle = Intel nominal
+    data->thermal_index = 100;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 getPOWER_BUDGET(apple80211_power_budget_t *data)
 {
-    // Tahoe reads caller +4 from Core state populated through a `tvpm`
-    // lifecycle. This port has neither that state lifecycle nor a producer,
-    // so do not publish a default-only cache as a successful carrier.
+    // прослойка identity, not a fail-closed stub. The reference
+    // AppleBCMWLANCore reads caller +4 from TVPM Core state whose default
+    // after AppleBCMWLANCore::resetTVPMIndicies is index 100.
+    // getPOWER_BUDGET @0xffffff80015e60e6 returns that cached u32.
+    // TVPM budget indices run 1-100 where 100 == full budget / no throttle.
+    // Intel is not TVPM-throttling, so 100 (full budget) is Intel's actual
+    // nominal state AND matches the reference default — functionally
+    // equivalent. Fail-closed here would be a non-identity vs a reference
+    // that returns a value.
     if (data == nullptr)
         return kIOReturnBadArgument;
 
-    (void)data;
-    return kIOReturnUnsupported;
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    // reference default 100 = full budget / no throttle = Intel nominal
+    data->power_budget = 100;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

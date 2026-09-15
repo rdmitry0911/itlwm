@@ -10396,12 +10396,19 @@ IOReturn AirportItlwm::publishTahoeLqmStatsGated(
 
     TahoeLqmContracts::EventData event{};
     const int32_t rssi = IWM_MIN_DBM + ic->ic_bss->ni_rssi;
+    // Channel-occupancy (CCA) feed: the HAL returns an airtime-based
+    // occupancy estimate (0-100%) or a negative sentinel when the firmware
+    // has not yet reported airtime, in which case the LQM CCA byte stays
+    // invalid. Right-domain (medium activity), functionally equivalent to the
+    // reference's Broadcom channel-occupancy percentage.
+    const int32_t channelLoad = driverInfo->getChannelLoad();
     const TahoeLqmContracts::CounterSnapshot *previous =
         that->fTahoeLqmHasPreviousSnapshot
             ? &that->fTahoeLqmPreviousSnapshot
             : nullptr;
     if (!TahoeLqmContracts::buildEventData(
-            rssi, driverInfo->getBSSNoise(), current, previous, &event))
+            rssi, driverInfo->getBSSNoise(), channelLoad, current, previous,
+            &event))
         return kIOReturnBadArgument;
 
     that->fTahoeLqmPreviousSnapshot = current;

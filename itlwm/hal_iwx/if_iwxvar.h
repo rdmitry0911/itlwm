@@ -1153,6 +1153,22 @@ struct iwx_softc {
 
 	int sc_noise;
     uint32_t sc_lqm_beacon_count;
+    /*
+     * Airtime-based channel-occupancy estimate (0-100%) derived from the
+     * firmware IWX_STATISTICS_NOTIFICATION general counters
+     * (rx_time + tx_time) / on_time_rf. This is the LQM CCA feed: a
+     * right-domain medium-activity measure (not RSSI). sc_has_channel_load
+     * gates it so the value stays unavailable until the first stats
+     * notification populates real airtime; the prev_* accumulators let the
+     * notification handler compute a per-interval delta rather than a stale
+     * lifetime average.
+     */
+    uint8_t sc_channel_load;
+    bool sc_has_channel_load;
+    bool sc_has_channel_load_prev;
+    uint64_t sc_channel_load_prev_rx_time;
+    uint64_t sc_channel_load_prev_tx_time;
+    uint64_t sc_channel_load_prev_on_time_rf;
     uint32_t sc_last_rate_n_flags;
     uint8_t sc_last_qtxpower_raw;
     bool sc_has_last_rate_n_flags;

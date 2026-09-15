@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Generate and verify POWER_BUDGET no-producer quarantine evidence."""
+"""Generate and verify POWER_BUDGET nominal-identity прослойка evidence.
+
+Supersedes the CR-492/CR-479 no-producer quarantine. The reference sources the
+power budget from TVPM (Broadcom thermal/voltage/power-management) Core state
+whose OWN default after AppleBCMWLANCore::resetTVPMIndicies is index 100 (full
+budget / no throttle). Intel is not TVPM-throttling, so 100 is both Intel's
+nominal state and the reference default output -- a functionally-equivalent
+contact-surface identity. Returning kIOReturnUnsupported where the reference
+returns a value would itself be a non-identity, so the getter now emits 100.
+The virtual setter stays fail-closed: Intel has no `tvpm` transport to accept a
+budget write.
+"""
 
 import argparse
 import hashlib
@@ -10,12 +21,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "evidence/state/power_budget_quarantine_report.json"
-NOTE = ROOT / "docs/reference/CR-492-power-budget-no-producer-quarantine-20260715.md"
-LEGACY_NOTE = ROOT / "docs/reference/CR-479-power-budget-quarantine-20260714.md"
+NOTE = ROOT / "docs/reference/CR-623-power-budget-nominal-identity-20260915.md"
+PREDECESSOR_NOTE = ROOT / "docs/reference/CR-492-power-budget-no-producer-quarantine-20260715.md"
 RAW = ROOT / "docs/reference/artifacts/power-budget-25c56/raw.txt"
 RAW_MANIFEST = RAW.with_name("SHA256SUMS.txt")
-INVENTORY = ROOT / "docs/tahoe_discrepancy_inventory.md"
-SIGNAL_AUDIT = ROOT / "docs/tahoe_signal_chain_audit.md"
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
 HPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.hpp"
 V2 = ROOT / "AirportItlwm/AirportItlwmV2.cpp"
@@ -51,11 +60,8 @@ def report():
     infra = INFRA.read_text(encoding="utf-8")
     abi = ABI.read_text(encoding="utf-8")
     note = " ".join(NOTE.read_text(encoding="utf-8").split())
-    legacy_note = LEGACY_NOTE.read_text(encoding="utf-8")
     raw = RAW.read_text(encoding="utf-8")
     manifest = RAW_MANIFEST.read_text(encoding="utf-8")
-    inventory = INVENTORY.read_text(encoding="utf-8")
-    signal_audit = SIGNAL_AUDIT.read_text(encoding="utf-8")
     getter = section(
         cpp,
         "getPOWER_BUDGET(apple80211_power_budget_t *data)",
@@ -79,8 +85,8 @@ def report():
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
 
     return {
-        "schema": "itlwm-power-budget-no-producer-quarantine-v2",
-        "source_base_revision": "ac1a41603eadfb1ba3cf0e416099807cdc40f73b",
+        "schema": "itlwm-power-budget-nominal-identity-v3",
+        "supersedes": ["CR-492", "CR-479"],
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
             "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
@@ -96,13 +102,18 @@ def report():
             "firmware_iovar": "tvpm",
             "firmware_set": "0x10017b6e6",
             "special_commit_status": "0xe3ff8117",
+            "reset_symbol": "AppleBCMWLANCore::resetTVPMIndicies",
+            "tvpm_reset_default_index": 100,
+            "tvpm_index_full_budget": 100,
         },
         "local": {
-            "power_budget_owner_backend": False,
-            "synthetic_success": False,
-            "null_return_is_apple_parity": False,
-            "valid_input_return_is_apple_parity": False,
-            "runtime_selector_invocation": False,
+            "power_budget_tvpm_backend": False,
+            "emits_reference_nominal_index": True,
+            "nominal_index": 100,
+            "getter_fail_closed": False,
+            "setter_fail_closed": True,
+            "null_guard_retained": True,
+            "prosloyka_identity": True,
         },
         "checks": {
             "reference_raw_manifest_matches": manifest == f"{raw_digest}  raw.txt\n",
@@ -133,27 +144,24 @@ def report():
                 and "testl  %esi" not in core_get_raw
                 and "0x4(%rsi)" in core_get_raw
             ),
-            "reference_note_has_scope_and_nonclaim": all(
-                token in note
+            "getter_emits_reference_nominal_index": all(
+                token in getter
                 for token in (
-                    "slot `[503]`",
-                    "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-                    "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
-                    "`0x1000175d8`",
-                    "`0x2f8`",
-                    "`0x10010712c`",
-                    "(Core + 0x48) + 0x4",
-                    "`0x1000187f8`",
-                    "`0x4f8`",
-                    "`0x100120790`",
-                    'runIOVarSet("tvpm")',
-                    "not Apple null-input, valid-input return-code, full carrier-layout, version, Core-state, setter, or runtime-selector parity",
+                    "if (data == nullptr)",
+                    "return kIOReturnBadArgument;",
+                    "memset(data, 0, sizeof(*data));",
+                    "data->version = APPLE80211_VERSION;",
+                    "data->power_budget = 100;",
+                    "return kIOReturnSuccess;",
                 )
+            ),
+            "getter_no_longer_fails_closed": (
+                "return kIOReturnUnsupported;" not in getter
+                and "(void)data;" not in getter
             ),
             "active_v2_slot_and_bsd_routes_remain": (
                 "// [503]" in hpp
                 and "getPOWER_BUDGET" in hpp
-                and "Keep this slot fail-closed" in hpp
                 and "// [503]" in infra
                 and "getPOWER_BUDGET" in infra
                 and "fNetIf = new AirportItlwmSkywalkInterface;" in v2
@@ -168,29 +176,8 @@ def report():
                     )
                 )
             ),
-            "local_null_guard_is_retained_as_safety_boundary": (
-                "if (data == nullptr)" in getter
-                and "return kIOReturnBadArgument;" in getter
-            ),
-            "nonnull_getter_fails_closed_without_output": all(
-                token in getter
-                for token in (
-                    "(void)data;",
-                    "return kIOReturnUnsupported;",
-                )
-            )
-            and all(
-                token not in getter
-                for token in (
-                    "data->",
-                    "memset",
-                    "APPLE80211_VERSION",
-                    "cachedPowerBudget",
-                    "return kIOReturnSuccess;",
-                )
-            ),
             "dead_power_budget_cache_is_removed": not source_contains("cachedPowerBudget"),
-            "setter_boundary_remains_without_consuming_carrier": all(
+            "setter_boundary_remains_fail_closed": all(
                 token in setter
                 for token in (
                     "if (data == nullptr)",
@@ -207,7 +194,7 @@ def report():
                     "return kIOReturnSuccess;",
                 )
             ),
-            "no_matching_local_power_budget_producer": all(
+            "no_matching_local_tvpm_producer": all(
                 not source_contains(token)
                 for token in (
                     'runIOVarSet("tvpm")',
@@ -218,15 +205,19 @@ def report():
             "abi_preserves_declared_local_layout": (
                 "must preserve the declared local 8-byte carrier layout" in abi
             ),
-            "historical_default_cache_claim_is_superseded": (
-                "### 2026-07-15 correction: POWER_BUDGET getter is a no-producer quarantine"
-                in signal_audit
-                and "`Q13 correction: POWER_BUDGET getter no-producer quarantine`"
-                in inventory
-                and "Superseded on 2026-07-15" in legacy_note
-                and "getter's default-only cache remain outside this narrow setter change"
-                not in legacy_note
+            "superseding_note_cites_prosloyka_and_reset_default": all(
+                token in note
+                for token in (
+                    "slot `[503]`",
+                    "прослойка",
+                    "resetTVPMIndicies",
+                    "full budget",
+                    "functionally equivalent",
+                    "100",
+                    "supersedes CR-492",
+                )
             ),
+            "predecessor_note_exists": PREDECESSOR_NOTE.exists(),
         },
     }
 
@@ -242,8 +233,8 @@ def main():
     value = report()
     failed = [key for key, passed in value["checks"].items() if not passed]
     if failed:
-        raise ValueError("POWER_BUDGET no-producer checks failed: " + ", ".join(failed))
-    rendered = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        raise ValueError("POWER_BUDGET nominal-identity checks failed: " + ", ".join(failed))
+    rendered = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
         OUTPUT.write_text(rendered, encoding="utf-8")
@@ -256,5 +247,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"POWER_BUDGET no-producer validation failed: {exc}", file=sys.stderr)
+        print(f"POWER_BUDGET nominal-identity validation failed: {exc}", file=sys.stderr)
         sys.exit(1)

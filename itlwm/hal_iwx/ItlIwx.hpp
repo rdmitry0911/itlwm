@@ -329,7 +329,9 @@ public:
     virtual const char *getFirmwareVersion() override;
     
     virtual int16_t getBSSNoise() override;
-    
+
+    virtual int16_t getChannelLoad() override;
+
     virtual bool is5GBandSupport() override;
     
     virtual int getTxNSS() override;

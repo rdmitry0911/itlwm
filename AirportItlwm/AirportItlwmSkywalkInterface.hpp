@@ -371,8 +371,10 @@ public:
     // producer contract. Keep it classified as internal-only instead of open
     // Q13 debt.
     virtual IOReturn getTRAP_INFO(apple80211_trap_info_data *) override;
-    // [500] — Tahoe reads Core thermal state populated through a `tvpm`
-    // lifecycle. Keep this slot fail-closed until that producer exists here.
+    // [500] — Reference sources this from TVPM Core state whose own default
+    // after resetTVPMIndicies is index 100 (full budget / no throttle). Intel
+    // is not TVPM-throttling, so emit that nominal 100 (прослойка identity),
+    // not a fail-closed non-identity vs a reference that returns a value.
     virtual IOReturn getTHERMAL_INDEX(apple80211_thermal_index_t *) override;
     // [501] — Tahoe public contract is `NULL -> 0xe00002c2`, else one dword
     // carrier at +0x4.
@@ -381,8 +383,10 @@ public:
     // `btc_2g_shchain_disable` commander IOVAR. This port has no GET
     // producer, so retain the virtual ABI but fail closed for non-null input.
     virtual IOReturn getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *) override;
-    // [503] — Tahoe reads Core power-budget state populated through a `tvpm`
-    // lifecycle. Keep this slot fail-closed until that producer exists here.
+    // [503] — Reference sources this from TVPM Core state whose own default
+    // after resetTVPMIndicies is index 100 (full budget / no throttle). Intel
+    // is not TVPM-throttling, so emit that nominal 100 (прослойка identity),
+    // not a fail-closed non-identity vs a reference that returns a value.
     virtual IOReturn getPOWER_BUDGET(apple80211_power_budget_t *) override;
     // [504]
     virtual IOReturn getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
