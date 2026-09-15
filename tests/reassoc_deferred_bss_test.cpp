@@ -135,6 +135,10 @@ static void ieee80211_new_state(ieee80211com *ic, int state, int) {
 }
 static void ieee80211_free_node(ieee80211com *, ieee80211_node *) { assert(false); }
 void ieee80211_node_cleanup_internal(ieee80211com *, ieee80211_node *, int);
+/* Forward decl so ieee80211_node_defer_bss_switch (extracted ahead of
+ * ieee80211_release_node's definition) can call it, as it does in the real
+ * kernel via ieee80211_node.h. */
+void ieee80211_release_node(ieee80211com *, ieee80211_node *);
 static uint64_t ieee80211_pae_assoc_epoch_begin(ieee80211com *) {
     if (onCleanup) onCleanup();
     return 1;

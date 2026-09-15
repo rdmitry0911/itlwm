@@ -1389,15 +1389,16 @@ ieee80211_node_defer_bss_switch(struct ieee80211com *ic,
         free(arg);
         return ECANCELED;
     }
-    const int error = IEEE80211_SEND_MGMT(ic, source,
-        IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
-    if (error != 0) {
-        free(arg);
-        ieee80211_node_switch_bss_fail(ic, &identity, EIO, 0);
-        return error;
-    }
-    identity.continuation_epoch =
-        ieee80211_pae_assoc_epoch_begin_bss_switch(ic, &identity);
+    /*
+     * Arm the deferred switch BEFORE sending the DEAUTH.  IEEE80211_SEND_MGMT
+     * can complete the DEAUTH synchronously -- the source's last transient
+     * reference is then released before it returns -- and if ni_unref_cb were
+     * installed only afterwards that release would find no callback and strand
+     * the handoff ("terminal-before-arm").  Arm with the provisional identity
+     * (continuation_epoch == source_epoch, correct while the epoch has not yet
+     * advanced); the post-DEAUTH epoch is patched into the armed record below iff
+     * the callback has not already fired.
+     */
     irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
     const int arm = ieee80211_bss_switch_identity_current_locked(ic, &identity) &&
         (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 && source->ni_unref_cb == NULL;
@@ -1408,9 +1409,57 @@ ieee80211_node_defer_bss_switch(struct ieee80211com *ic,
         source->ni_unref_cb = ieee80211_node_switch_bss;
     }
     IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
-    if (!arm)
+    if (!arm) {
         free(arg);
-    return arm ? 0 : ECANCELED;
+        return ECANCELED;
+    }
+    const int error = IEEE80211_SEND_MGMT(ic, source,
+        IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
+    if (error != 0) {
+        /* The DEAUTH did not leave.  Disarm (unless a synchronous completion
+         * already fired the switch and freed arg) and report the failure. */
+        irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+        const bool disarm = source->ni_unref_cb == ieee80211_node_switch_bss &&
+            source->ni_unref_arg == arg;
+        if (disarm) {
+            source->ni_unref_cb = NULL;
+            source->ni_unref_arg = NULL;
+            source->ni_unref_arg_size = 0;
+        }
+        IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+        if (disarm)
+            free(arg);
+        ieee80211_node_switch_bss_fail(ic, &identity, EIO, 0);
+        return error;
+    }
+    identity.continuation_epoch =
+        ieee80211_pae_assoc_epoch_begin_bss_switch(ic, &identity);
+    /* A synchronous DEAUTH completion already fired the switch (with the correct
+     * provisional epoch) and freed arg, so touch the armed record only while the
+     * callback is still installed on this exact arg.  If it is still armed,
+     * re-validate the identity -- a serial/epoch replacement may have landed
+     * during the DEAUTH or the epoch advance -- and either patch the advanced
+     * epoch in or disarm and cancel exactly as the historical post-DEAUTH arm
+     * check did. */
+    bool cancel = false;
+    irq = IOSimpleLockLockDisableInterrupt(ic->ic_pae_selected_bss_lock);
+    if (source->ni_unref_cb == ieee80211_node_switch_bss &&
+        source->ni_unref_arg == arg) {
+        if (ieee80211_bss_switch_identity_current_locked(ic, &identity))
+            arg->identity.continuation_epoch = identity.continuation_epoch;
+        else {
+            source->ni_unref_cb = NULL;
+            source->ni_unref_arg = NULL;
+            source->ni_unref_arg_size = 0;
+            cancel = true;
+        }
+    }
+    IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+    if (cancel) {
+        free(arg);
+        return ECANCELED;
+    }
+    return 0;
 }
 
 /* Implements ni->ni_unref_cb() for a confirmed 802.11v target.  The source
@@ -2842,10 +2891,26 @@ ieee80211_tx_node_retire_drain(struct ieee80211com *ic,
 void
 ieee80211_release_node(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
+    u_int refcnt;
     int s;
-    
+
     s = splnet();
-    if (ieee80211_node_decref(ni) == 0) {
+    refcnt = ieee80211_node_decref(ni);
+    /*
+     * The deferred BSS switch (ni_unref_cb) is armed only on ic_bss
+     * (ieee80211_node_defer_bss_switch requires source == ic->ic_bss, and
+     * ieee80211_node_switch_bss re-checks ni == ic->ic_bss), and ic_bss retains
+     * one structural reference through ic->ic_bss.  Its transient TX/command
+     * references therefore drain down to that structural 1, so completing the
+     * roam only on the historical refcnt==0 trigger would strand it forever
+     * ("all transient TX references drained but roam never starts").  Fire when
+     * the last transient reference drains (refcnt==1 on the armed ic_bss);
+     * ordinary nodes still complete at refcnt==0.  ni_unref_cb is never set for a
+     * non-switch purpose, so nodes without an armed switch -- i.e. all
+     * steady-state traffic -- are unaffected.
+     */
+    if (refcnt == 0 ||
+        (refcnt == 1 && ni == ic->ic_bss && ni->ni_unref_cb != NULL)) {
         if (ni->ni_unref_cb) {
             void (*callback)(struct ieee80211com *,
                 struct ieee80211_node *, void *) = ni->ni_unref_cb;

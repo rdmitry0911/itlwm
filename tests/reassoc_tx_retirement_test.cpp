@@ -27,7 +27,8 @@ constexpr int IWM_DEVICE_FAMILY_7000 = 7000, IWX_INVALID_QUEUE = -1;
 #define DPRINTF(args) ((void)0)
 #define IWX_AGG_SSN_TO_TXQ_IDX(ssn, count) ((ssn) % (count))
 #define container_of(ptr, type, member) static_cast<type *>((ptr)->owner)
-struct ieee80211com {};
+struct ieee80211_node;
+struct ieee80211com { ieee80211_node *ic_bss = nullptr; };
 struct ieee80211_node {
     unsigned ni_refcnt = 0;
     int ni_state = IEEE80211_STA_CACHE;

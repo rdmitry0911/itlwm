@@ -13058,12 +13058,21 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
     ring->queued = 0;
     ring->cur = 0;
     ring->read = 0;
+    /* Detach every remaining node reference BEFORE releasing any of them: a
+     * release can fire the deferred BSS-switch callback (ni_unref_cb) as soon as
+     * the last transient reference drains, and that callback must not observe a
+     * still-populated ring slot.  Interleaving clear+release per entry would fire
+     * it while a later slot's data.ni is still set. */
+    struct ieee80211_node *drained[IWN_TX_RING_COUNT];
+    int ndrained = 0;
     for (i = 0; i < IWN_TX_RING_COUNT; i++) {
-        struct ieee80211_node *ni = ring->data[i].ni;
-        ring->data[i].ni = NULL;
-        if (ni != NULL)
-            ieee80211_release_node(&sc->sc_ic, ni);
+        if (ring->data[i].ni != NULL) {
+            drained[ndrained++] = ring->data[i].ni;
+            ring->data[i].ni = NULL;
+        }
     }
+    for (i = 0; i < ndrained; i++)
+        ieee80211_release_node(&sc->sc_ic, drained[i]);
     ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
@@ -13116,12 +13125,21 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         }
     }
     ring->queued = ring->cur = ring->read = 0;
+    /* Detach every remaining node reference BEFORE releasing any of them: a
+     * release can fire the deferred BSS-switch callback (ni_unref_cb) as soon as
+     * the last transient reference drains, and that callback must not observe a
+     * still-populated ring slot.  Interleaving clear+release per entry would fire
+     * it while a later slot's data.ni is still set. */
+    struct ieee80211_node *drained[IWN_TX_RING_COUNT];
+    int ndrained = 0;
     for (i = 0; i < IWN_TX_RING_COUNT; i++) {
-        struct ieee80211_node *ni = ring->data[i].ni;
-        ring->data[i].ni = NULL;
-        if (ni != NULL)
-            ieee80211_release_node(&sc->sc_ic, ni);
+        if (ring->data[i].ni != NULL) {
+            drained[ndrained++] = ring->data[i].ni;
+            ring->data[i].ni = NULL;
+        }
     }
+    for (i = 0; i < ndrained; i++)
+        ieee80211_release_node(&sc->sc_ic, drained[i]);
     ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
