@@ -4583,21 +4583,6 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
         apple80211_link_changed_event_data ed;
         bzero(&ed, sizeof(ed));
         const bool isLinkDown = (state != kIO80211NetworkLinkUp);
-        /*
-         * Publish the Skywalk lower-half link carrier consumed by
-         * IOSkywalkLegacyEthernet for the BSD child.  The reference
-         * IO80211InfraInterface::setLinkStateInternal drives BOTH the controller
-         * half (reportLinkStatus(...,3,0x80) -> IOLinkStatus=3) and this Skywalk
-         * lower-half provider on an accepted up/down transition.  itlwm's parent
-         * gives the controller half, but the STA associate path reaches this
-         * override without ever crossing the setLinkStatus edge that calls
-         * publishTahoeSkywalkLinkCarrier, so the IOSkywalkLegacyEthernet child
-         * was left at IOLinkStatus=0 while the controller reported 3 -- the
-         * link-state mismatch CoreWLAN observes.  Match the reference by
-         * publishing the carrier here on the accepted edge (3 = Valid|Active on
-         * up, 1 = Valid on down), exactly as publishTahoeSkywalkLinkCarrier does.
-         */
-        (void)reportLinkStatus(isLinkDown ? 1U : 3U, 0x80U);
         if (!isLinkDown) {
             /*
              * The normal net80211 association path reaches this accepted
