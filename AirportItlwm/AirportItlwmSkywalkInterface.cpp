@@ -5277,18 +5277,104 @@ getPOWER_DEBUG_INFO(apple80211_power_debug_info *data)
     return kIOReturnUnsupported;
 }
 
+static inline void
+tahoeRoamPutLE16(uint8_t *base, size_t off, uint16_t value)
+{
+    base[off + 0] = static_cast<uint8_t>(value & 0xff);
+    base[off + 1] = static_cast<uint8_t>((value >> 8) & 0xff);
+}
+
+static inline void
+tahoeRoamPutLE32(uint8_t *base, size_t off, uint32_t value)
+{
+    base[off + 0] = static_cast<uint8_t>(value & 0xff);
+    base[off + 1] = static_cast<uint8_t>((value >> 8) & 0xff);
+    base[off + 2] = static_cast<uint8_t>((value >> 16) & 0xff);
+    base[off + 3] = static_cast<uint8_t>((value >> 24) & 0xff);
+}
+
 IOReturn AirportItlwmSkywalkInterface::
 getROAM_PROFILE(apple80211_roam_profile_all_bands *data)
 {
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
+    if (fHalService == nullptr)
+        return kIOReturnNotReady;
 
-    // Tahoe obtains each band from the RoamAdapter after primary-interface,
-    // association, and firmware-I/O checks. A blank carrier with every band
-    // marked successful did none of that work, so fail closed until a real
-    // owner exists.
-    (void)data;
-    return kIOReturnUnsupported;
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic == nullptr)
+        return kIOReturnNotReady;
+
+    // Pinned carrier layout, recovered from the 25C56 DriverKit-AppleBCMWLAN
+    // DEXT: AppleBCMWLANCore::getROAM_PROFILE (@0x100140c0c) ->
+    // AppleBCMWLANRoamAdapter::getROAM_PROFILE (@0x10001d198) ->
+    // getRoamProfilePerBand (@0x10001d216). The adapter writes three 0x80-stride
+    // band slots (total 0x180): it sets slot+0x4 = band id {2G=4, 5G=2, 6G=0x400}
+    // for all three bands, then calls the per-band getter and, only when that
+    // returns 0, marks slot+0xc = 1. The per-band getter parses the firmware
+    // `roam_prof` IOVAR, writing profile_cnt at slot+0x8 and each bracket into a
+    // 0x1c-stride entry starting at slot+0x10 (max four). The os_log field names
+    // ("Roam profile[]: Band, RSSI:[trigger,lower], Flag, ScanParams:(5),
+    // Candidate:(3)") pin the per-entry field offsets below.
+    //
+    // itlwm keeps the authoritative policy in host state (ic->ic_roam_profile,
+    // set through setWCL_ROAM_PROFILE_CONFIG -> ieee80211_set_roam_profile_policy)
+    // and has no separate Intel firmware roam engine, so marshalling the snapshot
+    // is functionally equivalent to the reference. Like the reference, always
+    // publish the three band-id headers and return success; a band is marked
+    // valid ONLY when it carries real bracket data (never a blind success).
+    static const size_t kSlotStride = 0x80;
+    static const size_t kProfileBase = 0x10;
+    static const size_t kProfileStride = 0x1c;
+    static const size_t kMaxProfiles = 4;
+    static const uint32_t kBandId[IEEE80211_ROAM_PROFILE_NBANDS] = {
+        0x4, 0x2, 0x400
+    };
+
+    uint8_t *carrier = reinterpret_cast<uint8_t *>(data);
+    bzero(carrier, kSlotStride * IEEE80211_ROAM_PROFILE_NBANDS);
+
+    struct ieee80211_roam_profile_policy policy;
+    const bool have_policy =
+        ieee80211_roam_profile_snapshot(ic, &policy) != 0;
+
+    for (size_t band = 0; band < IEEE80211_ROAM_PROFILE_NBANDS; band++) {
+        uint8_t *slot = carrier + band * kSlotStride;
+        tahoeRoamPutLE32(slot, 0x4, kBandId[band]);
+
+        if (!have_policy || (policy.valid_mask & (1U << band)) == 0)
+            continue;
+
+        size_t count = policy.count[band];
+        if (count > IEEE80211_ROAM_PROFILE_NBRACKETS)
+            count = IEEE80211_ROAM_PROFILE_NBRACKETS;
+        if (count > kMaxProfiles)
+            count = kMaxProfiles;
+        if (count == 0)
+            continue;
+
+        tahoeRoamPutLE32(slot, 0x8, static_cast<uint32_t>(count));
+        tahoeRoamPutLE32(slot, 0xc, 1);
+
+        for (size_t i = 0; i < count; i++) {
+            const struct ieee80211_roam_profile_bracket *b =
+                &policy.bracket[band][i];
+            uint8_t *p = slot + kProfileBase + i * kProfileStride;
+            tahoeRoamPutLE32(p, 0x0, b->flags);
+            p[0x4] = static_cast<uint8_t>(b->trigger_dbm);
+            p[0x5] = static_cast<uint8_t>(b->lower_dbm);
+            p[0x6] = static_cast<uint8_t>(b->roam_delta_db);
+            p[0x7] = static_cast<uint8_t>(b->boost_delta_db[0]);
+            p[0x8] = static_cast<uint8_t>(b->boost_threshold_dbm[0]);
+            tahoeRoamPutLE16(p, 0x10, b->backoff_multiplier);
+            tahoeRoamPutLE16(p, 0x12, b->full_scan_period_s);
+            tahoeRoamPutLE16(p, 0x14, b->initial_scan_period_s);
+            tahoeRoamPutLE16(p, 0x16, b->nfscan);
+            tahoeRoamPutLE16(p, 0x18, b->max_scan_period_s);
+        }
+    }
+
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

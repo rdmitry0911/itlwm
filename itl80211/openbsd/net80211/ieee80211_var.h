@@ -1684,6 +1684,8 @@ void    ieee80211_deselect_ess(struct ieee80211com *);
 struct ieee80211_ess *ieee80211_get_ess(struct ieee80211com *, const char *, int);
 void ieee80211_set_roam_profile_policy(struct ieee80211com *,
     const struct ieee80211_roam_profile_policy *);
+int ieee80211_roam_profile_snapshot(struct ieee80211com *,
+    struct ieee80211_roam_profile_policy *);
 int ieee80211_roam_profile_scan_delay(struct ieee80211com *,
     const struct ieee80211_node *, u_int32_t *);
 int ieee80211_roam_profile_candidate_allowed(struct ieee80211com *,

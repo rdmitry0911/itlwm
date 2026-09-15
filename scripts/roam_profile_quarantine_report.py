@@ -40,7 +40,7 @@ def report():
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
 
     return {
-        "schema": "itlwm-roam-profile-quarantine-v1",
+        "schema": "itlwm-roam-profile-marshalling-v2",
         "source_base_revision": "3e0160b787b0d98b0c0e5f6fe053b31d8059f30f",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
@@ -53,11 +53,16 @@ def report():
             "per_band_getter": "0x10001d216",
             "not_associated_status": "0xe0822403",
             "primary_missing_status": "0x16",
+            "carrier_total_bytes": "0x180",
+            "band_slot_stride": "0x80",
+            "band_ids": ["0x4", "0x2", "0x400"],
+            "profile_base": "0x10",
+            "profile_stride": "0x1c",
         },
         "local": {
             "false_success": False,
-            "null_return_is_apple_parity": False,
-            "valid_input_return_is_apple_parity": False,
+            "marshals_host_policy": True,
+            "band_valid_requires_data": True,
             "runtime_selector_invocation": False,
         },
         "checks": {
@@ -81,15 +86,16 @@ def report():
                     "movl   %eax, %r13d",
                 )
             ),
-            "reference_note_has_scope_and_nonclaim": all(
+            "reference_note_supersedes_quarantine": all(
                 token in note
                 for token in (
+                    "SUPERSEDED",
                     "slot `[485]`",
-                    "0x1000171c4",
                     "0x100140c0c",
                     "0x10001d198",
                     "0x10001d216",
-                    "not Apple null, valid-input error-code,\noutput-layout, association, firmware, or runtime-selector parity",
+                    "ieee80211_roam_profile_snapshot",
+                    "functionally equivalent",
                 )
             ),
             "active_v2_slot_remains": (
@@ -103,22 +109,20 @@ def report():
                 "if (data == nullptr)" in getter
                 and "return kIOReturnBadArgumentTahoe;" in getter
             ),
-            "nonnull_path_fails_closed_without_synthetic_bands": (
-                "(void)data;" in getter
-                and "return kIOReturnUnsupported;" in getter
-                and "kIOReturnSuccess" not in getter
-                and "memset" not in getter
-                and "0x180" not in getter
-                and "reinterpret_cast" not in getter
+            "nonnull_path_marshals_host_policy": (
+                "ieee80211_roam_profile_snapshot(ic, &policy)" in getter
+                and "return kIOReturnSuccess;" in getter
+                and "bzero(carrier" in getter
+                and "kBandId" in getter
+                and "0x400" in getter
+                and "0x1c" in getter
+                and "return kIOReturnUnsupported;" not in getter
             ),
-            "no_local_roam_firmware_backend_is_introduced": all(
-                token not in getter
-                for token in (
-                    "getPrimaryInterface",
-                    "isAssociated",
-                    "getRoamProfilePerBand",
-                    "runIOVarGet",
-                )
+            "band_valid_only_with_data_no_blind_success": (
+                "(policy.valid_mask & (1U << band)) == 0" in getter
+                and "tahoeRoamPutLE32(slot, 0xc, 1);" in getter
+                and "if (count == 0)" in getter
+                and "continue;" in getter
             ),
         },
     }

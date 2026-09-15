@@ -226,7 +226,7 @@ ieee80211_set_roam_profile_policy(struct ieee80211com *ic,
         timeout_del(&ic->ic_bgscan_timeout);
 }
 
-static int
+int
 ieee80211_roam_profile_snapshot(struct ieee80211com *ic,
     struct ieee80211_roam_profile_policy *policy)
 {

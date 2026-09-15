@@ -317,10 +317,11 @@ public:
     virtual IOReturn getCHANNELS_INFO(apple80211_channels_info *) override;
     // [484]
     virtual IOReturn getVHT_CAPABILITY(apple80211_vht_capability *) override;
-    // [485] — Tahoe obtains band profiles through a primary-interface,
-    // association, and firmware-backed RoamAdapter pipeline. The local
-    // V2/Skywalk path retains its safety null guard and otherwise fails closed
-    // rather than marking synthetic bands successful.
+    // [485] — Tahoe's RoamAdapter marshals the firmware-backed roam_prof policy
+    // into three band slots. itlwm keeps the authoritative policy in host state
+    // (ic_roam_profile) and marshals that snapshot into the same carrier layout,
+    // publishing band-id headers and marking a band valid only when it carries
+    // real bracket data (supersedes the CR-479 fail-closed quarantine).
     virtual IOReturn getROAM_PROFILE(apple80211_roam_profile_all_bands *) override;
     // [486] — AppleBCMWLANCore does not expose a normal producer on Tahoe.
     // Newer chips trap through a private stats path, while the visible public
