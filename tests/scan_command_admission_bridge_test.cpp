@@ -26,7 +26,8 @@ static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock,
     lock->held = false;
     --held;
 }
-enum ieee80211_state { IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH };
+enum ieee80211_state { IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH,
+    IEEE80211_S_ASSOC, IEEE80211_S_RUN };
 enum { IEEE80211_M_STA, IEEE80211_M_HOSTAP };
 #include "scan_owner_test_fields.hpp"
 struct ieee80211com { SCAN_OWNER_TEST_FIELDS; };

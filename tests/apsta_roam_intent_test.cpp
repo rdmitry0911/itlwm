@@ -119,6 +119,7 @@ static void ieee80211_public_initial_bssid_pin_disarm(ieee80211com *) { ++pinDis
 static int ieee80211_begin_wcl_reassoc_bgscan(
     ieee80211com *, const ieee80211_wcl_reassoc_request *request)
 { ++scans; admitted = *request; return 0; }
+static void ieee80211_wcl_join_cancel(ieee80211com *, u_int64_t) {}
 
 // PRODUCTION_FUNCTIONS
 
