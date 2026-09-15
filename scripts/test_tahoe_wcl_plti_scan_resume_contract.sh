@@ -268,9 +268,7 @@ require(resume, "PMK_READY_SCAN_RESUME", "credential-safe local progress marker"
 iwx_newstate = body(iwx, "void ItlIwx::\niwx_newstate_task(void *psc)", "IWX newstate task")
 ordered(iwx_newstate, "IWX SCAN->SCAN preservation",
         "deferScanCommand(request, false)", "return;",
-        "if (ostate == IEEE80211_S_SCAN)",
-        "if (nstate == ostate)",
-        "goto next_scan", "iwx_scan(sc, request)")
+        "case IEEE80211_S_SCAN:", "iwx_scan(sc, request)")
 forbid(iwx_newstate, "IWX_FLAG_SCANNING", "flag-only scan request loss")
 require(body(iwn, "int ItlIwn::\niwn_newstate(", "IWN callback wrapper"),
         "return iwn_newstate_impl(ic, nstate, arg, 0);", "ordinary state forwarding")

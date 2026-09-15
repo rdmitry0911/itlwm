@@ -135,7 +135,10 @@ ordered(worker, "verified Confirm to PMK claim",
         "ieee80211_sae_wcl_request_pmk_claim_locked",
         "owner->completion_claimed = true",
         "owner->assoc_tx_pending = true",
-        "ieee80211_sae_wcl_request_pmk_continue_assoc")
+        "iwx_sae_continue_assoc_gated")
+require(method(engine, "iwx_sae_continue_assoc_action"),
+        "ieee80211_sae_wcl_request_pmk_continue_assoc",
+        "gated continue action still commits the AUTH->ASSOC edge")
 for token in ("installExternalPmkLocked", "programPMK", "0x10c", "Agent"):
     forbid(worker, token, "BCM/controller PMK detour")
 

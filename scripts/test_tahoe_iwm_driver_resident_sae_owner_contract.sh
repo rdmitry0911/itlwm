@@ -74,7 +74,10 @@ ordered(worker, "verified confirm to PMK",
         "itl_sae_pmk_continuation_is_well_formed",
         "ieee80211_sae_wcl_request_pmk_claim_locked",
         "owner->completion_claimed = true", "owner->assoc_tx_pending = true",
-        "ieee80211_sae_wcl_request_pmk_continue_assoc")
+        "iwm_sae_continue_assoc_gated")
+need(body(engine, "iwm_sae_continue_assoc_action"),
+     "ieee80211_sae_wcl_request_pmk_continue_assoc",
+     "gated continue action still commits the AUTH->ASSOC edge")
 
 commit = body(engine, "iwm_sae_engine_assoc_tx_commit")
 ordered(commit, "ASSOC descriptor fence",
