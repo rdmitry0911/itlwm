@@ -1837,6 +1837,13 @@ void AirportItlwmAPSTASkywalkInterface::enableDatapath()
     AirportItlwm *driver = controller;
     if (driver == nullptr)
         return;
+    // Datapath-enable symmetry (kernel-space audit): reference
+    // APSTA_enableDatapath @0xffffff8001693b82 enables the multicast queue
+    // FIRST. Mirror disableDatapath (which disables fAPSTAMultiCastQueue) so
+    // the enable/disable shapes match. Inert placeholder queue (bcast egresses
+    // via the main TX queue) — contract-shape fix only.
+    if (driver->fAPSTAMultiCastQueue != nullptr)
+        driver->fAPSTAMultiCastQueue->enable();
     if (driver->fAPSTATxCompQueue != nullptr)
         driver->fAPSTATxCompQueue->enable();
     if (driver->fAPSTARxQueue != nullptr) {
@@ -2282,6 +2289,13 @@ enableDatapath(void)
         return;
     }
 
+    // Datapath-enable symmetry (kernel-space audit): reference
+    // APSTA_enableDatapath @0xffffff8001693b82 enables the multicast queue
+    // FIRST. Mirror the disable path (which disables fMultiCastQueue) so the
+    // enable/disable shapes match. The queue is an inert placeholder (bcast
+    // egresses via the main TX queue), so this is a contract-shape fix.
+    if (controller->fMultiCastQueue)
+        controller->fMultiCastQueue->enable();
     if (controller->fTxCompQueue)
         controller->fTxCompQueue->enable();
     if (controller->fRxQueue) {

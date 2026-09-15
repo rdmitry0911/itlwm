@@ -11115,6 +11115,12 @@ bool AirportItlwm::start(IOService *provider)
     sDiag.step = 1;
 #endif
     SD_SET(4); // super::start entered
+    // IOService contract (kernel-space audit): super::stop() must receive the
+    // exact provider super::start() was given. super::start(provider) is called
+    // with `provider` (the IOPCIEDeviceWrapper), so every start-failure branch
+    // below unwinds with super::stop(provider) — NOT super::stop(pciNub) (the
+    // underlying IOPCIDevice is a different registry node). Matches the normal
+    // stop() path @ ~11927 which also uses super::stop(provider).
     bool superResult = super::start(provider);
     if (!superResult) {
         XYLog("DEBUG %s [STEP 2] FAIL: super::start returned false\n", __FUNCTION__);
@@ -11145,7 +11151,7 @@ bool AirportItlwm::start(IOService *provider)
     }
     if (initPCIPowerManagment(pciNub) == false) {
         XYLog("DEBUG %s [STEP 3] FAIL: initPCIPowerManagment\n", __FUNCTION__);
-        super::stop(pciNub);
+        super::stop(provider);
         DISARM_PANIC_TIMER();
         return false;
     }
@@ -11154,7 +11160,7 @@ bool AirportItlwm::start(IOService *provider)
     sDiag.workloop = _fWorkloop;
     if (_fWorkloop == NULL) {
         XYLog("DEBUG %s [STEP 4] FAIL: No _fWorkloop\n", __FUNCTION__);
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11163,7 +11169,7 @@ bool AirportItlwm::start(IOService *provider)
     _fCommandGate = IOCommandGate::commandGate(this, (IOCommandGate::Action)AirportItlwm::tsleepHandler);
     if (_fCommandGate == 0) {
         XYLog("DEBUG %s [STEP 4] FAIL: No command gate\n", __FUNCTION__);
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11233,7 +11239,7 @@ bool AirportItlwm::start(IOService *provider)
 
     if (!fHalService->attach(pciNub)) {
         XYLog("DEBUG %s [STEP 5] FAIL: HAL attach\n", __FUNCTION__);
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11261,7 +11267,7 @@ bool AirportItlwm::start(IOService *provider)
     if (fWatchdogWorkLoop == NULL) {
         XYLog("DEBUG %s [STEP 6] FAIL: watchdog workloop\n", __FUNCTION__);
         stopHalAndDrain();
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11270,7 +11276,7 @@ bool AirportItlwm::start(IOService *provider)
     if (!watchdogTimer) {
         XYLog("DEBUG %s [STEP 6] FAIL: watchdog timer\n", __FUNCTION__);
         stopHalAndDrain();
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11281,7 +11287,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 6] FAIL: watchdog event source\n",
               __FUNCTION__);
         stopHalAndDrain();
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11297,7 +11303,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 6] FAIL: Tahoe LQM stats timer\n",
               __FUNCTION__);
         stopHalAndDrain();
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11307,7 +11313,7 @@ bool AirportItlwm::start(IOService *provider)
     if (!setupScanSource(this, _fWorkloop)) {
         XYLog("DEBUG %s [STEP 6] FAIL: scan source\n", __FUNCTION__);
         stopHalAndDrain();
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11318,7 +11324,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 7] FAIL: SAE transport mailbox source alloc\n",
               __FUNCTION__);
         stopHalAndDrain();
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11327,7 +11333,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 7] FAIL: SAE peer RX mailbox source alloc\n",
               __FUNCTION__);
         stopHalAndDrain();
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11337,7 +11343,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 7] FAIL: IWN direct SAE lab source alloc\n",
               __FUNCTION__);
         stopHalAndDrain();
-        super::stop(pciNub);
+        super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
@@ -11437,8 +11443,15 @@ bool AirportItlwm::start(IOService *provider)
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
         XYLog("DEBUG %s [STEP 8] FAIL: initRegistrationInfo\n", __FUNCTION__);
         stopHalAndDrain();
-        super::stop(provider);
+        // Teardown order (kernel-space audit): once attachInterface() succeeds
+        // (fSkywalkInterfaceAttached=true above), releaseAll() must run its
+        // detachInterface() fence (@ ~8772) BEFORE super::stop(provider) —
+        // matching the normal stop() order (releaseAll(false) @ ~11925 ->
+        // super::stop(provider) @ ~11927) and the reference detacher, which
+        // unlinks the interface before stopping the provider. releaseAll() is
+        // idempotent/null-guarded, so reordering cannot double-free.
         releaseAll();
+        super::stop(provider);
         DISARM_PANIC_TIMER();
         return false;
     }
@@ -11498,8 +11511,10 @@ bool AirportItlwm::start(IOService *provider)
             XYLog("DEBUG %s [STEP 8b] FAIL: pool creation (TX=%p RX=%p)\n",
                   __FUNCTION__, fTxPool, fRxPool);
             stopHalAndDrain();
-            super::stop(provider);
+            // Teardown order: detachInterface() fence before super::stop() —
+            // see initRegistrationInfo branch above.
             releaseAll();
+            super::stop(provider);
             DISARM_PANIC_TIMER();
             return false;
         }
@@ -11540,8 +11555,10 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 8c] FAIL: queue creation (TX=%p TXC=%p RX=%p MC=%p)\n",
               __FUNCTION__, fTxQueue, fTxCompQueue, fRxQueue, fMultiCastQueue);
         stopHalAndDrain();
-        super::stop(provider);
+        // Teardown order: detachInterface() fence before super::stop() —
+        // see initRegistrationInfo branch above.
         releaseAll();
+        super::stop(provider);
         DISARM_PANIC_TIMER();
         return false;
     }
@@ -11586,8 +11603,10 @@ bool AirportItlwm::start(IOService *provider)
         if (multicastQueueWorkloopRet == kIOReturnSuccess)
             _fWorkloop->removeEventSource(fMultiCastQueue);
         stopHalAndDrain();
-        super::stop(provider);
+        // Teardown order: detachInterface() fence before super::stop() —
+        // see initRegistrationInfo branch above.
         releaseAll();
+        super::stop(provider);
         DISARM_PANIC_TIMER();
         return false;
     }
@@ -11658,8 +11677,10 @@ bool AirportItlwm::start(IOService *provider)
         if (regRet != kIOReturnSuccess) {
             XYLog("DEBUG %s [STEP 8d] FAIL: Skywalk registration ret=0x%x\n", __FUNCTION__, regRet);
             stopHalAndDrain();
-            super::stop(provider);
+            // Teardown order: detachInterface() fence before super::stop() —
+            // see initRegistrationInfo branch above.
             releaseAll();
+            super::stop(provider);
             DISARM_PANIC_TIMER();
             return false;
         }
@@ -11707,8 +11728,10 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 8f] FAIL: Glue link-state publish source\n",
               __FUNCTION__);
         stopHalAndDrain();
-        super::stop(provider);
+        // Teardown order: detachInterface() fence before super::stop() —
+        // see initRegistrationInfo branch above.
         releaseAll();
+        super::stop(provider);
         DISARM_PANIC_TIMER();
         return false;
     }
@@ -11723,8 +11746,10 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 8f] FAIL: WCL physical-scan source\n",
               __FUNCTION__);
         stopHalAndDrain();
-        super::stop(provider);
+        // Teardown order: detachInterface() fence before super::stop() —
+        // see initRegistrationInfo branch above.
         releaseAll();
+        super::stop(provider);
         DISARM_PANIC_TIMER();
         return false;
     }
@@ -11798,8 +11823,10 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 9] FAIL: lifecycle stopped during start\n",
               __FUNCTION__);
         stopHalAndDrain();
-        super::stop(provider);
+        // Teardown order: detachInterface() fence before super::stop() —
+        // see initRegistrationInfo branch above.
         releaseAll();
+        super::stop(provider);
         DISARM_PANIC_TIMER();
         return false;
     }
@@ -13396,7 +13423,7 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState,
 //   cur=1→req=0: powerOff        cur=0→req=1: powerOn
 //   cur=4→req=0: powerOff        cur=4→req=1: powerOn
 //   cur=0→req=4: powerOn         cur=1→req=4: powerOff
-//   other: error (-1)
+//   other: error (kIOReturnBadArgument, per reference FUN_ffffff800157af02)
 // On powerOn/powerOff failure, state is rolled back.
 //
 int AirportItlwm::handlePowerStateChangeCore(uint32_t newState,
@@ -13457,9 +13484,12 @@ int AirportItlwm::handlePowerStateChangeCore(uint32_t newState,
         // Same state — no-op
     }
     else {
-        // Invalid transition
+        // Invalid transition. Reference FUN_ffffff800157af02 returns
+        // kIOReturnBadArgument (0xE00002C7) for an illegal cur->req pair;
+        // functional effect is unchanged (reject, no state change — the else
+        // branch never touched power_state, so the rollback below is a no-op).
         XYLog("DEBUG %s INVALID transition %u → %u\n", __FUNCTION__, prevState, newState);
-        err = -1;
+        err = kIOReturnBadArgument;
     }
 
     if (err) {
