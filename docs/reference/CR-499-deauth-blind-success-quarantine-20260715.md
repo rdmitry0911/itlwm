@@ -58,5 +58,68 @@ path.
 
 scripts/deauth_blind_success_quarantine_report.py --check verifies the current
 BootKC identity/raw gate and terminal-vtable anchors, preserved typed IOC 29
-route, local non-reading fail-closed behavior, preservation of the separate
-DISASSOCIATE boundary, and the correction record in the signal-chain audit.
+route, the proven-terminal DEAUTH implementation (see the 2026-09-15
+superseding section), preservation of the separate DISASSOCIATE boundary, and
+the correction record in the signal-chain audit.
+
+## 2026-09-15 superseding: proven WCL terminal justifies implementing DEAUTH
+
+The fail-closed `kIOReturnUnsupported` above existed ONLY because the reference
+terminal owner was unproven at the time (the BootKC capture established the
+public gate/type/tail-dispatch topology but not the terminal's behavior). The
+terminal is now proven, so this correction supersedes the fail-closed quarantine
+and IOC 29 `setDEAUTH` is implemented as a faithful net80211 mirror.
+
+Proven reference contract:
+`WCLNetManager::setDEAUTH(bulletinBoardMessage&)` @0xffffff80020f06f4 (25C56)
+validates its carrier (non-null AND `carrier_len == 0x10`), stamps
+`carrier[0x28] = 1`, then calls
+`leaveNetworkCommand(this, deauth_reason = *(carrier+4), 0,1,1,1,0,1,0,0,
+ether_addr = NULL, "setDEAUTH")` and returns its result; an invalid carrier
+returns `0xe0000001`. `leaveNetworkCommand` is the WCL network-teardown/leave —
+the SAME routine the missed-beacons timeout drives. The carrier is
+`apple80211_deauth_data { u32 version; u32 deauth_reason; ether_addr deauth_ea; }`
+(deauth_reason at +4). Net effect: **leave/disconnect the current network
+carrying the caller's apple80211 deauth_reason**; the carrier BSSID is NOT used
+(`ether_addr` is NULL), so the teardown targets the current association.
+
+Implemented behavior (AirportItlwmSkywalkInterface::setDEAUTH): a faithful
+mirror of the same-file `setDISASSOCIATE` net80211 teardown
+(ieee80211_wcl_join_cancel, public_initial_bssid_pin_disarm, publicAssociation
+reset, roam_link_cancel, clearExternalPmkEligibilityLocked("setDEAUTH"),
+ic_pae_mfp_requested = 0, postTahoeWclInternalLinkDownInd under __MAC_26_0, the
+ic_state < SCAN early return, the ic_state > AUTH SEND_MGMT DEAUTH, the
+ASSOC/AUTH early return, disassocIsVoluntary = true, del_ess, deselect_ess,
+ic_assoc_status = UNAVAILABLE, new_state SCAN) — differing only in that it
+publishes the caller's reason via `ic->ic_deauth_reason = da->deauth_reason`
+(the local analog of leaveNetworkCommand carrying `*(carrier+4)`) instead of the
+fixed `APPLE80211_REASON_ASSOC_LEAVING`. A null carrier returns
+`kIOReturnBadArgumentTahoe`, the local analog of the reference's invalid-carrier
+`0xe0000001` rejection. This is a functional-equivalence implementation of the
+proven leave/disconnect contract, not a blind acknowledgement.
+
+### 2026-09-15 runtime verification (lab AX211/iwx, macOS 25C56)
+
+Built, materialized, and rebooted on the lab guest, then exercised via a tiny
+SIOCSA80211 IOC 29 program on en1 (WPA3/SAE, associated with DHCP + gateway +
+internet reachability):
+
+- `setDEAUTH(reason=R)` returns success and disconnects en1 (net80211
+  RUN -> SCAN, DHCP lease dropped), then the stack auto-reconnects to the same
+  WPA3 network with a restored IP in ~7s. The golden (fail-closed) kext instead
+  returned `kIOReturnUnsupported` (errno 102) and did not disconnect.
+- On this Skywalk SET path the family marshals only the outer `apple80211req`;
+  `req_data` reaches the handler as a raw userspace pointer (confirmed by
+  dtrace: `da` is a user VA; a supervisor deref yields a stale value while
+  `copyin` reads the true reason). The setter therefore reads the reason with
+  `copyin`, which is why the caller's reason is published correctly.
+- dtrace confirms the setter publishes the caller's reason: at `setDEAUTH`
+  return, `ic_deauth_reason` holds exactly the value passed (observed 4660 for
+  reason 4660). The paired getDEAUTH read from userspace typically returns
+  `APPLE80211_REASON_ASSOC_LEAVING` (8) instead, because CoreWiFi reacts to the
+  link-down by issuing its own `setWCL_LEAVE_NETWORK` ioctl ~250us later, which
+  re-stamps `ic_deauth_reason = 8`. This follow-up WCL leave overwrites the
+  shared field identically for the void `setDISASSOCIATE` selector, so it is a
+  live-stack race on a shared field, not a defect in `setDEAUTH`. A null carrier
+  is rejected (no blind success), and the high-priority surface (boot, WPA3/SAE
+  assoc, DHCP, ping, scan, no panic) remained intact throughout.

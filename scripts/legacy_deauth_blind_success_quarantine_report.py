@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate and verify legacy DEAUTH blind-success quarantine evidence."""
+"""Generate and verify legacy DEAUTH proven-terminal evidence.
+
+Supersedes the former blind-success fail-closed quarantine: with the terminal
+owner WCLNetManager::setDEAUTH @0xffffff80020f06f4 -> leaveNetworkCommand now
+proven, the legacy AirportItlwm::setDEAUTH handler mirrors the legacy
+setDISASSOCIATE net80211 teardown while publishing the caller's reason."""
 
 import argparse
 import hashlib
@@ -77,15 +82,8 @@ def build_report():
         "/* End PBXSourcesBuildPhase section */",
     )
 
-    setter_forbidden = (
-        "kIOReturnSuccess",
-        "fHalService",
-        "IEEE80211_SEND_MGMT",
-        "ieee80211_new_state",
-        "ic_deauth_reason",
-    )
     return {
-        "schema": "itlwm-legacy-deauth-blind-success-quarantine-v1",
+        "schema": "itlwm-legacy-deauth-proven-terminal-v2",
         "source_base_revision": "51e9f90c4486918b7c97678c3dda007b123fcd92",
         "reference": {
             "kind": "current BootKC public selector topology only",
@@ -94,11 +92,15 @@ def build_report():
             "wrapper": "apple80211setDEAUTH",
             "selector": "0x1d",
             "terminal_vtable_offset": "0x2e0",
+            "proven_terminal_owner": "WCLNetManager::setDEAUTH(bulletinBoardMessage&)",
+            "proven_terminal_addr_25C56": "0xffffff80020f06f4",
+            "proven_terminal_tailcall": "leaveNetworkCommand",
         },
         "scope": {
             "legacy_controller_setter_only": True,
             "tahoe_skywalk_setter_modified_by_this_layer": False,
-            "runtime_selector_invocation": False,
+            "faithful_net80211_mirror": True,
+            "publishes_caller_reason": True,
             "deployment": False,
             "radio_or_association": False,
             "traffic": False,
@@ -127,17 +129,30 @@ def build_report():
                     "ret = set##REQ(interface, (struct DATA_TYPE* )data);",
                 )
             ),
-            "legacy_setter_is_unread_fail_closed": (
+            "legacy_setter_implements_proven_terminal": (
                 "(void)object;" in legacy_setter
-                and "(void)da;" in legacy_setter
-                and "return kIOReturnUnsupported;" in legacy_setter
-                and all(token not in legacy_setter for token in setter_forbidden)
+                and "if (!da)" in legacy_setter
+                and "return kIOReturnBadArgument;" in legacy_setter
+                and "const uint32_t deauthReason = da->deauth_reason;" in legacy_setter
+                and "ic->ic_deauth_reason = deauthReason;" in legacy_setter
+                and "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);" in legacy_setter
+                and "ieee80211_del_ess(ic, nullptr, 0, 1);" in legacy_setter
+                and "IEEE80211_FC0_SUBTYPE_DEAUTH" in legacy_setter
+                and "leaveNetworkCommand" in legacy_setter
+                and all(
+                    token not in legacy_setter
+                    for token in (
+                        "return kIOReturnUnsupported;",
+                        "(void)da;",
+                        "ic->ic_deauth_reason = APPLE80211_REASON_ASSOC_LEAVING;",
+                    )
+                )
             ),
             "paired_legacy_getter_is_preserved": (
                 "da->deauth_reason = ic->ic_deauth_reason;" in legacy_getter
                 and "return kIOReturnSuccess;" in legacy_getter
             ),
-            "legacy_disassociate_not_substituted": all(
+            "legacy_disassociate_owns_its_own_lifecycle": all(
                 token in legacy_disassociate
                 for token in (
                     "IEEE80211_SEND_MGMT",
@@ -145,25 +160,24 @@ def build_report():
                     "ieee80211_new_state",
                 )
             ),
-            "separate_tahoe_skywalk_quarantine_retained": (
-                "(void)da;" in skywalk_setter
-                and "return kIOReturnUnsupported;" in skywalk_setter
-                and "This public carrier is not the void DISASSOCIATE lifecycle." in skywalk_setter
+            "separate_tahoe_skywalk_proven_terminal_retained": (
+                "ic->ic_deauth_reason = deauthReason;" in skywalk_setter
+                and "leaveNetworkCommand" in skywalk_setter
+                and "return kIOReturnUnsupported;" not in skywalk_setter
             ),
             "legacy_source_remains_historical_and_absent_from_tahoe_phase": (
                 project.count("AirportSTAIOCTL.cpp in Sources") >= 6
                 and "AirportSTAIOCTL.cpp in Sources" not in tahoe_sources
                 and "AirportItlwmSkywalkInterface.cpp in Sources" in tahoe_sources
             ),
-            "correction_records_scope_and_nonclaims": all(
-                token in note
-                for token in (
-                    "current Skywalk topology, not a recovered legacy AirportItlwm terminal",
-                    "does not alter the Tahoe Skywalk bridge corrected by CR-499",
-                    "not Apple legacy semantic parity",
-                )
-            )
-            and "legacy IOC 29 DEAUTH blind-success quarantine" in audit,
+            "correction_records_proven_terminal": (
+                "2026-09-15 superseding" in note
+                and "WCLNetManager::setDEAUTH" in note
+                and "0xffffff80020f06f4" in note
+                and "leaveNetworkCommand" in note
+                and "ic->ic_deauth_reason = da->deauth_reason" in note
+                and "## 2026-09-15 superseding: legacy IOC 29 DEAUTH proven-terminal implementation" in audit
+            ),
         },
     }
 

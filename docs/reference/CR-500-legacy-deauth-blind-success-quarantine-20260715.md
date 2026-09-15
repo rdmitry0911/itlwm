@@ -74,3 +74,21 @@ It does not claim Apple terminal behavior, null or valid-input status,
 carrier-layout parity, state or firmware parity, management-frame parity,
 legacy runtime coverage, Tahoe runtime coverage, deployment, radio activity,
 association, or traffic.
+
+## 2026-09-15 superseding: proven WCL terminal justifies implementing DEAUTH
+
+The fail-closed `kIOReturnUnsupported` above existed only because the reference
+terminal owner was unproven. It is now proven (see CR-499's 2026-09-15
+superseding section): `WCLNetManager::setDEAUTH(bulletinBoardMessage&)`
+@0xffffff80020f06f4 (25C56) validates its carrier and calls
+`leaveNetworkCommand(this, deauth_reason = *(carrier+4), ..., ether_addr = NULL,
+"setDEAUTH")` — leave/disconnect the current network carrying the caller's
+reason (the carrier BSSID is not used). Accordingly the legacy
+`AirportItlwm::setDEAUTH(OSObject *, apple80211_deauth_data *)` handler is now
+implemented as a faithful mirror of the same-file legacy `setDISASSOCIATE`
+net80211 teardown, differing only in publishing the caller's reason via
+`ic->ic_deauth_reason = da->deauth_reason`; a null carrier returns
+`kIOReturnBadArgument`, the local analog of the reference's invalid-carrier
+`0xe0000001` rejection. Tahoe still compiles the Skywalk implementation, not
+this legacy translation unit; this keeps the legacy source surface consistent
+with the proven terminal rather than asserting a false acknowledgement.

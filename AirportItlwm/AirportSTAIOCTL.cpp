@@ -1438,13 +1438,52 @@ IOReturn AirportItlwm::
 setDEAUTH(OSObject *object,
                           struct apple80211_deauth_data *da)
 {
-    // IOC 29 carries a reason and BSSID. This legacy path has no local
-    // deauthentication owner, state transition, management transport, or
-    // event publication, so it must not acknowledge an unapplied request.
-    // It is deliberately not substituted with the distinct IOC 22 lifecycle.
+    // Public IOC 29 DEAUTH terminal owner (supersedes CR-500 fail-closed).
+    //
+    // Proven reference: WCLNetManager::setDEAUTH(bulletinBoardMessage&)
+    // @0xffffff80020f06f4 (25C56) validates the carrier (non-null AND
+    // carrier_len==0x10) and calls leaveNetworkCommand(this,
+    // deauth_reason=*(carrier+4), ..., ether_addr=NULL, "setDEAUTH"), i.e.
+    // leave/disconnect the current network carrying the caller's reason (the
+    // carrier BSSID is not used).  This legacy path mirrors the local
+    // setDISASSOCIATE net80211 teardown, differing only in publishing the
+    // caller's reason via ic_deauth_reason; the null-carrier guard is the
+    // local analog of the reference's invalid-carrier 0xe0000001 rejection.
     (void)object;
-    (void)da;
-    return kIOReturnUnsupported;
+    if (!da)
+        return kIOReturnBadArgument;
+
+    // Capture the caller's reason up front (reference reads *(carrier+4) before
+    // leaveNetworkCommand), before the teardown below can cross into command-gate
+    // context. (The Skywalk SET path proved req_data arrives as an un-marshalled
+    // userspace pointer and reads it with copyin; this legacy controller path is
+    // historical and not compiled for Tahoe, so it retains the direct read.)
+    const uint32_t deauthReason = da->deauth_reason;
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    ieee80211_public_initial_bssid_pin_disarm(ic);
+
+    if (ic->ic_state < IEEE80211_S_SCAN)
+        return kIOReturnSuccess;
+
+    if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
+        IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
+
+    if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH)
+        return kIOReturnSuccess;
+
+    disassocIsVoluntary = true;
+
+    ieee80211_del_ess(ic, nullptr, 0, 1);
+    ieee80211_deselect_ess(ic);
+#ifdef USE_APPLE_SUPPLICANT
+    ic->ic_rsn_ie_override[1] = 0;
+#endif
+    ic->ic_assoc_status = APPLE80211_STATUS_UNAVAILABLE;
+    ic->ic_deauth_reason = deauthReason;
+    ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+    return kIOReturnSuccess;
 }
 
 void AirportItlwm::

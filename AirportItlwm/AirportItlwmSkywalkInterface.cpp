@@ -36,6 +36,7 @@
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
+#include <libkern/copyio.h>
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_node.h>
 #include <net80211/ieee80211_ioctl.h>
@@ -6978,11 +6979,108 @@ setCLEAR_PMKSA_CACHE(void *req)
 IOReturn AirportItlwmSkywalkInterface::
 setDEAUTH(struct apple80211_deauth_data *da)
 {
-    // This public carrier is not the void DISASSOCIATE lifecycle. Without a
-    // DEAUTH owner, do not acknowledge a reason/BSSID request that was not
-    // applied to state or management transport.
-    (void)da;
-    return kIOReturnUnsupported;
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    RT2_SET(8);
+    /*
+     * Public IOC 29 DEAUTH terminal owner (supersedes CR-499 fail-closed).
+     *
+     * Proven reference: WCLNetManager::setDEAUTH(bulletinBoardMessage&)
+     * @0xffffff80020f06f4 (25C56) validates the carrier (non-null AND
+     * carrier_len==0x10), stamps carrier[0x28]=1, then invokes
+     * leaveNetworkCommand(this, deauth_reason=*(carrier+4),
+     *                      0,1,1,1,0,1,0,0, ether_addr=NULL, "setDEAUTH")
+     * and returns its result; an invalid carrier returns 0xe0000001.
+     * leaveNetworkCommand is the SAME WCL network-teardown/leave that the
+     * missed-beacons timeout drives.  Net effect: leave/disconnect the current
+     * network carrying the caller's apple80211 deauth_reason.  The carrier
+     * BSSID (deauth_ea) is NOT consulted -- ether_addr is passed NULL -- so the
+     * teardown targets the current association, not an arbitrary BSSID.
+     *
+     * This faithfully mirrors setDISASSOCIATE's net80211 teardown (the local
+     * analog of leaveNetworkCommand), differing only in that it publishes the
+     * caller's reason via ic_deauth_reason instead of the fixed
+     * APPLE80211_REASON_ASSOC_LEAVING.  The carrier-null guard below is the
+     * local analog of the reference's invalid-carrier 0xe0000001 rejection.
+     */
+    if (da == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    /*
+     * Read the caller's reason from the carrier up front, mirroring the
+     * reference read of *(carrier+4) before leaveNetworkCommand.  On this
+     * Skywalk SET path the family marshals only the outer apple80211req, not
+     * the nested req_data pointer (see processApple80211Ioctl), so the carrier
+     * is a userspace address that must be brought in with copyin rather than
+     * dereferenced directly -- a raw supervisor read of it yields a stale
+     * value.  A carrier whose reason cannot be read is treated as invalid, the
+     * local analog of the reference's invalid-carrier 0xe0000001 rejection.
+     */
+    uint32_t deauthReason = 0;
+    if (copyin(reinterpret_cast<user_addr_t>(&da->deauth_reason),
+               &deauthReason, sizeof(deauthReason)) != 0)
+        return kIOReturnBadArgumentTahoe;
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    ieee80211_wcl_join_cancel(ic, 0);
+
+    /* Deauth cancels any initial public provenance before its early-return
+     * paths decide whether a lower deauth is needed. */
+    ieee80211_public_initial_bssid_pin_disarm(ic);
+
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().publicAssociation =
+            TahoeOwnerRegistry::AssociationOwner{};
+
+    // External PMK eligibility does not survive any deauth edge that this
+    // selector represents, including the early-return sub-paths where the
+    // function returns before publishing a lower deauth or before resetting
+    // net80211 ESS state. Clear unconditionally on entry so a stale PMK does
+    // not survive into the next association attempt regardless of which
+    // sub-path the deauth edge takes from here. The clear logs only a
+    // credential-safe reason marker and never the PMK bytes.
+    ieee80211_roam_link_cancel(ic);
+    clearExternalPmkEligibilityLocked("setDEAUTH");
+    ic->ic_pae_mfp_requested = 0;
+
+#if __IO80211_TARGET >= __MAC_26_0
+    /* Publish the zero-BSSID internal link-down indication before any
+     * lower-state early return so WCL can leave WAITING_FOR_IP even when a
+     * failed join already fell back to SCAN, mirroring setDISASSOCIATE. */
+    if (instance != nullptr)
+        instance->postTahoeWclInternalLinkDownInd();
+#endif
+
+    if (ic->ic_state < IEEE80211_S_SCAN) {
+        XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
+        return kIOReturnSuccess;
+    }
+
+    if (instance != nullptr && instance->getBssManager() != nullptr)
+        instance->getBssManager()->setAdHocCreated(false);
+
+    if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
+        IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
+
+    if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
+        XYLog("DEBUG %s SKIP: ic_state=%d (ASSOC/AUTH)\n", __FUNCTION__, ic->ic_state);
+        return kIOReturnSuccess;
+    }
+
+    disassocIsVoluntary = true;
+
+    ieee80211_del_ess(ic, nullptr, 0, 1);
+    ieee80211_deselect_ess(ic);
+#ifdef USE_APPLE_SUPPLICANT
+    ic->ic_rsn_ie_override[1] = 0;
+#endif
+    ic->ic_assoc_status = APPLE80211_STATUS_UNAVAILABLE;
+    /* Unlike setDISASSOCIATE's fixed APPLE80211_REASON_ASSOC_LEAVING, publish
+     * the caller-supplied reason (captured from carrier +4 on entry) so the
+     * paired getDEAUTH reader reports exactly what leaveNetworkCommand would
+     * have carried. */
+    ic->ic_deauth_reason = deauthReason;
+    ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

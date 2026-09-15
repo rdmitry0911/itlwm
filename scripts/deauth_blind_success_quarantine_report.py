@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Generate and verify public IOC 29 DEAUTH blind-success evidence."""
+"""Generate and verify public IOC 29 DEAUTH proven-terminal evidence.
+
+Supersedes the former blind-success fail-closed quarantine: the terminal owner
+WCLNetManager::setDEAUTH @0xffffff80020f06f4 -> leaveNetworkCommand is now
+proven, so setDEAUTH is implemented as a faithful net80211 mirror of
+setDISASSOCIATE that publishes the caller's reason. This report verifies that
+proven-terminal implementation instead of the old unsupported behavior."""
 
 import argparse
 import hashlib
@@ -59,7 +65,7 @@ def report():
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
 
     return {
-        "schema": "itlwm-deauth-blind-success-quarantine-v1",
+        "schema": "itlwm-deauth-proven-terminal-v2",
         "source_base_revision": "40d5660130c60fe63a5017981d08228c43c2979d",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -69,13 +75,17 @@ def report():
             "selector_gate_vtable_offset": "0xcc8",
             "terminal_vtable_offset": "0x2e0",
             "cast_failure_status": "0xe082280e",
+            "proven_terminal_owner": "WCLNetManager::setDEAUTH(bulletinBoardMessage&)",
+            "proven_terminal_addr_25C56": "0xffffff80020f06f4",
+            "proven_terminal_tailcall": "leaveNetworkCommand",
+            "proven_invalid_carrier_status": "0xe0000001",
         },
         "local": {
             "blind_success": False,
-            "terminal_owner": False,
-            "null_return_is_apple_parity": False,
-            "valid_input_return_is_apple_parity": False,
-            "runtime_selector_invocation": False,
+            "faithful_net80211_mirror": True,
+            "publishes_caller_reason": True,
+            "reference_leave_network_command_proven": True,
+            "null_carrier_rejected": True,
         },
         "checks": {
             "reference_raw_manifest_matches": manifest == f"{raw_digest}  raw.txt\n",
@@ -96,16 +106,18 @@ def report():
                     "movl   $0xe082280e, %eax",
                 )
             ),
-            "reference_note_has_scope_and_nonclaim": all(
+            "reference_note_records_proven_terminal": all(
                 token in note
                 for token in (
                     "APPLE80211_IOC_DEAUTH",
                     "numeric 29",
-                    "0xffffff80021c3a1f",
-                    "virtual +0xcc8",
-                    "virtual +0x2e0",
-                    "not canonical 25C56 AppleBCMWLAN DEXT evidence",
-                    "not Apple null-input, valid-input return-code, terminal-handler, carrier-layout, management-frame, state, firmware, or runtime-selector parity",
+                    "2026-09-15 superseding",
+                    "WCLNetManager::setDEAUTH",
+                    "0xffffff80020f06f4",
+                    "leaveNetworkCommand",
+                    "faithful net80211 mirror",
+                    "ic->ic_deauth_reason = da->deauth_reason",
+                    "invalid-carrier",
                 )
             ),
             "typed_ioc29_route_and_abi_remain": (
@@ -119,27 +131,31 @@ def report():
                 and hpp.count("IOReturn setDEAUTH(apple80211_deauth_data *);") == 1
                 and "Public IOC 29 is distinct from the void DISASSOCIATE carrier." in hpp
             ),
-            "local_setter_fails_closed_without_reading_or_effect": (
-                "(void)da;" in setter
-                and "return kIOReturnUnsupported;" in setter
+            "local_setter_implements_proven_terminal": (
+                "AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();" in setter
+                and "if (da == nullptr)" in setter
+                and "return kIOReturnBadArgumentTahoe;" in setter
+                and "copyin(reinterpret_cast<user_addr_t>(&da->deauth_reason)," in setter
+                and "ic->ic_deauth_reason = deauthReason;" in setter
+                and "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);" in setter
+                and "ieee80211_del_ess(ic, nullptr, 0, 1);" in setter
+                and "IEEE80211_FC0_SUBTYPE_DEAUTH" in setter
+                and "0xffffff80020f06f4" in setter
+                and "leaveNetworkCommand" in setter
                 and all(
                     token not in setter
                     for token in (
-                        "kIOReturnSuccess",
-                        "da->",
-                        "fHalService",
-                        "ic_deauth_reason",
-                        "setDISASSOCIATE",
-                        "ieee80211_send_mgmt",
-                        "postMessage",
+                        "return kIOReturnUnsupported;",
+                        "(void)da;",
+                        "ic->ic_deauth_reason = APPLE80211_REASON_ASSOC_LEAVING;",
                     )
                 )
             ),
-            "distinct_disassociate_is_not_substituted": (
-                "setDISASSOCIATE" not in setter
+            "distinct_disassociate_not_delegated_or_substituted": (
+                "setDISASSOCIATE(" not in setter
                 and "APPLE80211_IOC_DISASSOCIATE" not in ioc_route
             ),
-            "paired_get_legacy_and_apsta_surfaces_remain_out_of_scope": (
+            "paired_get_legacy_and_apsta_surfaces_remain": (
                 "da->version = APPLE80211_VERSION;" in getter
                 and "da->deauth_reason = ic->ic_deauth_reason;" in getter
                 and "return kIOReturnSuccess;" in getter
@@ -147,12 +163,11 @@ def report():
                 and "APSTA setSTA_DEAUTH slot mismatch" in sap_protocol
                 and "APSTA concrete setSTA_DEAUTH byte offset mismatch" in sap_protocol
             ),
-            "blind_success_classification_is_recorded": (
-                "## 2026-07-15 correction: public IOC 29" in signal_audit
-                and "blind-success quarantine" in signal_audit
-                and "not a recovered deauthentication lifecycle" in signal_audit
-                and "does not call or alter\nthe distinct void IOC 22" in signal_audit
-                and "setDISASSOCIATE" in signal_audit
+            "proven_terminal_classification_is_recorded": (
+                "## 2026-09-15 superseding: public IOC 29 `setDEAUTH` proven-terminal implementation" in signal_audit
+                and "leaveNetworkCommand" in signal_audit
+                and "faithful net80211 mirror" in signal_audit
+                and "ic->ic_deauth_reason = da->deauth_reason" in signal_audit
             ),
         },
     }

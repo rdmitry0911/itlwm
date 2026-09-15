@@ -6099,6 +6099,24 @@ boundary, not Apple null-input, valid-input return-code, terminal-handler,
 carrier-layout, management-frame, state, firmware, or runtime-selector parity.
 See `docs/reference/CR-499-deauth-blind-success-quarantine-20260715.md`.
 
+## 2026-09-15 superseding: public IOC 29 `setDEAUTH` proven-terminal implementation
+
+The fail-closed quarantine above is superseded now that the terminal owner is
+proven. `WCLNetManager::setDEAUTH(bulletinBoardMessage&)` @0xffffff80020f06f4
+(25C56) validates its carrier and tail-calls
+`leaveNetworkCommand(this, deauth_reason=*(carrier+4), ..., ether_addr=NULL,
+"setDEAUTH")` — the SAME WCL network-teardown the missed-beacons timeout drives
+— so IOC 29 means leave/disconnect the current network carrying the caller's
+reason (the carrier BSSID is not used). `AirportItlwmSkywalkInterface::setDEAUTH`
+now implements a faithful net80211 mirror of the same-file `setDISASSOCIATE`
+teardown, differing only in publishing the caller's reason via
+`ic->ic_deauth_reason = da->deauth_reason` instead of the fixed
+`APPLE80211_REASON_ASSOC_LEAVING`, and rejects a null carrier with
+`kIOReturnBadArgumentTahoe` (the local analog of the reference's
+invalid-carrier `0xe0000001`). The paired getDEAUTH reader then reports the
+caller's reason. This is functional-equivalence to the proven leave/disconnect
+contract, not a blind acknowledgement.
+
 ## 2026-07-15 correction: legacy IOC 29 DEAUTH blind-success quarantine
 
 The old AirportItlwm controller dispatcher remains a distinct source surface
@@ -6116,6 +6134,18 @@ runtime claim. The current BootKC DEAUTH capture establishes only modern
 public gate/type/terminal topology; it is not claimed as a recovered legacy
 terminal. See
 docs/reference/CR-500-legacy-deauth-blind-success-quarantine-20260715.md.
+
+## 2026-09-15 superseding: legacy IOC 29 DEAUTH proven-terminal implementation
+
+With the terminal owner now proven (see the public IOC 29 superseding note
+above), the legacy `AirportItlwm::setDEAUTH(OSObject *,
+apple80211_deauth_data *)` handler is implemented as a faithful mirror of the
+same-file legacy `setDISASSOCIATE` net80211 teardown, differing only in
+publishing the caller's reason via `ic->ic_deauth_reason = da->deauth_reason`;
+a null carrier returns `kIOReturnBadArgument`. Tahoe still compiles the Skywalk
+implementation, not this legacy translation unit, so this keeps the legacy
+source surface consistent with the proven leave/disconnect terminal rather than
+asserting a false acknowledgement.
 
 ## 2026-07-15 correction: legacy P2P fixed-stub alignment
 
