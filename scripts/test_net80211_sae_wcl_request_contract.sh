@@ -762,7 +762,7 @@ for predicate, label in ((scan_policy, "scan policy"),
         if forbidden in predicate:
             fail(f"{label} predicate must be side-effect free: {forbidden}")
 
-end_scan = body(node_c, "void\nieee80211_end_scan", "scan completion")
+end_scan = body(node_c, "void\nieee80211_end_scan_owned", "scan completion")
 ordered(end_scan, "scan HOLD returns before consuming a historical result",
         "ieee80211_sae_wcl_request_scan_selection_held(ic)",
         "return;",
