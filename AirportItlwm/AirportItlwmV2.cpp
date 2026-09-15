@@ -12792,7 +12792,19 @@ IOReturn AirportItlwm::setMulticastList(IOEthernetAddress* addr, UInt32 len)
 
 UInt32 AirportItlwm::getDataQueueDepth(OSObject *)
 {
-    return tahoeOwnerRegistry.controller.dataQueueDepth;
+    // Reference AppleBCMWLANCore::getDataQueueDepth (25C56 BootKC
+    // @0xffffff8001614170) returns the LIVE datapath ring depth
+    // *(uint16*)(*(this+0x128)+0x1154) (0x1154 == kDataQueueDepthOffset) — the
+    // depth the queue was actually built with, not a nominal default. Our TX
+    // ring is constructed at
+    // fSkywalkTxQueueDepth (= kAirportItlwmSkywalkQueueCapacity = 256; see the
+    // queue-inventory setup in start()). Report that live depth so the value the
+    // framework sees equals the real ring depth. Before the datapath is built
+    // (fSkywalkTxQueueDepth == 0) fall back to the build-time capacity so the
+    // framework never sizes against a zero depth. This supersedes the stale
+    // 0x200 mirror that reported a depth the 256-deep ring never had.
+    const UInt32 liveDepth = fSkywalkTxQueueDepth;
+    return liveDepth != 0 ? liveDepth : kAirportItlwmSkywalkQueueCapacity;
 }
 
 IOReturn AirportItlwm::getPacketFilters(const OSSymbol *group, UInt32 *filters) const

@@ -89,7 +89,11 @@ struct TahoeOwnerRegistry {
         uint32_t multicastCount = 0;
         uint8_t multicastList[TahoeControllerContracts::kMulticastMaxEntries]
                              [TahoeControllerContracts::kMulticastAddressLength] = {};
-        uint16_t dataQueueDepth = TahoeControllerContracts::kAppleDataQueueDepthDefault;
+        // getDataQueueDepth() now reports the live built ring depth
+        // (fSkywalkTxQueueDepth) instead of a stored nominal, so the former
+        // dataQueueDepth mirror (default 0x200) was removed: it reported a depth
+        // that differed from the real 256-deep ring. See AirportItlwm::
+        // getDataQueueDepth in AirportItlwmV2.cpp.
         uint16_t coalesceQueueSize = 0;
         uint16_t coalesceTimeout = 0;
     } controller;

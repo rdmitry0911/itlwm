@@ -2276,6 +2276,15 @@ enableDatapath(void)
         return;
 
     if (getInterfaceRole() == APPLE80211_VIF_SOFT_AP) {
+        // Datapath-enable symmetry (kernel-space audit): reference
+        // APSTA_enableDatapath @0xffffff8001693b82 enables the multicast queue
+        // FIRST. This defensive SOFT_AP role-branch mirrors the concrete
+        // AirportItlwmAPSTASkywalkInterface::enableDatapath path; its disable
+        // path below drops fAPSTAMultiCastQueue, so enable it first here too and
+        // keep every enable path a mirror of its disable. Inert placeholder
+        // queue (bcast egresses via the main TX queue) — contract-shape fix.
+        if (controller->fAPSTAMultiCastQueue)
+            controller->fAPSTAMultiCastQueue->enable();
         if (controller->fAPSTATxCompQueue)
             controller->fAPSTATxCompQueue->enable();
         if (controller->fAPSTARxQueue) {
