@@ -17441,7 +17441,7 @@ iwx_scan(struct iwx_softc *sc, const ItlStateTransitionRequest &request)
          * upper BGSCAN owner behind; JoinAdapter then sees a phantom busy
          * roam after this new scan has already started. */
         if (ic->ic_wcl_reassoc_owner_active)
-            err = ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED);
+            err = ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED, 0);
         else
             err = iwx_scan_abort(sc, true);
         if (err) {

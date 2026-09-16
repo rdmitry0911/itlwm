@@ -1596,7 +1596,7 @@ void	ieee80211_wcl_reassoc_target_port_valid(struct ieee80211com *,
     const struct ieee80211_node *);
 int	ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *,
     const struct ieee80211_wcl_reassoc_request *);
-int	ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *, u_int32_t);
+int	ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *, u_int32_t, int);
 int	ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *,
     const struct ieee80211_node *);
 int	ieee80211_wcl_scan_plan_stage(struct ieee80211com *,

@@ -129,17 +129,25 @@ for token in (
     "ieee80211_wcl_reassoc_post_failure",
 ):
     require(supersede, token, "paired lower/upper reassoc cancellation")
+# A scan never supersedes a roam (reference startScan cancels nothing): the
+# non-supersede early-return is the D1 fix.  Only a JOIN passes supersede=1.
+require(supersede, "if (!supersede)",
+        "scan callers never cancel a roam (supersede gate)")
 
 join = body(sky, "setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)",
             "WCL join producer")
 require(join, "ieee80211_cancel_wcl_reassoc_bgscan",
         "JoinAdapter supersession before replacement AUTH")
+require(join, "ECANCELED), 1)",
+        "JoinAdapter alone supersedes the roam (supersede=1)")
 public_scan = body(sky, "setWCL_SCAN_REQ(apple80211ScanRequest *req)",
                    "WCL scan producer")
-ordered(public_scan, "ScanAdapter supersession before BGSCAN admission",
+ordered(public_scan, "ScanAdapter defers behind an active roam census",
         "if (ic->ic_wcl_reassoc_owner_active)",
         "ieee80211_cancel_wcl_reassoc_bgscan(",
         "if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0")
+require(public_scan, "ECANCELED), 0)",
+        "ScanAdapter never supersedes the roam (supersede=0)")
 cached = body(sky, "tahoeFindJoinableCachedWclCandidate(\n    struct ieee80211com *ic,",
               "cached WCL candidate predicate")
 for token in ("IEEE80211_F_BGSCAN", "ic_wcl_reassoc_owner_active"):
@@ -154,10 +162,10 @@ require(iwx_hal, "ic->ic_bgscan_abort = iwx_bgscan_abort",
 iwx_replace = body(iwx_hal, "iwx_scan(struct iwx_softc *sc, const ItlStateTransitionRequest &request)",
                    "IWX foreground replacement")
 for token in ("ic_wcl_reassoc_owner_active",
-              "ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED)",
+              "ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED, 0)",
               "scanCommandBackgroundPending()",
               "iwx_umac_scan(sc, 0, scanSerial)"):
-    require(iwx_replace, token, "IWX paired replacement owner")
+    require(iwx_replace, token, "IWX scan defers behind roam (supersede=0)")
 
 iwx_stop = body(iwx_hal, "iwx_scan_abort(struct iwx_softc *sc, bool backgroundOnly, uint64_t reassocSerial)",
                 "IWX native stopping UID wait")
@@ -191,10 +199,10 @@ require(iwm_mac, "ic->ic_bgscan_abort = iwm_bgscan_abort",
 iwm_replace = body(iwm_scan, "iwm_scan(struct iwm_softc *sc, const ItlStateTransitionRequest &request)",
                    "IWM foreground replacement")
 for token in ("ic_wcl_reassoc_owner_active",
-              "ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED)",
+              "ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED, 0)",
               "scanCommandBackgroundPending()",
               "iwm_umac_scan(sc, 0, scanSerial)"):
-    require(iwm_replace, token, "IWM paired replacement owner")
+    require(iwm_replace, token, "IWM scan defers behind roam (supersede=0)")
 
 iwm_stop = body(iwm_scan, "iwm_scan_abort(struct iwm_softc *sc, bool backgroundOnly, uint64_t reassocSerial)",
                 "IWM native stopping UID wait")

@@ -609,7 +609,7 @@ ieee80211_begin_wcl_reassoc_bgscan(struct _ifnet *ifp,
  */
 int
 ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *ic,
-    u_int32_t result)
+    u_int32_t result, int supersede)
 {
 	int error;
 	u_int64_t serial;
@@ -622,6 +622,22 @@ ieee80211_cancel_wcl_reassoc_bgscan(struct ieee80211com *ic,
 	if (!ic->ic_wcl_reassoc_owner_active) {
 		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 		return 0;
+	}
+	/*
+	 * A scan never supersedes a roam.  The reference scan setter
+	 * (AppleBCMWLANScanAdapter::startScan) cancels nothing, and admitting a
+	 * scan never terminates the roam FSM -- the roam reaches its own terminal
+	 * (0x50 roamDone).  Only a JOIN (setWCL_ASSOCIATE / Broadcom JoinAdapter)
+	 * legitimately supersedes a firmware roam owner.  So a non-superseding
+	 * (scan) caller gets EBUSY for EVERY active owner -- including a still-
+	 * cancellable discovery-phase roam-scan -- and its existing EBUSY handling
+	 * (setWCL_SCAN_REQ->NotReady, iwx_scan/iwm_scan->deferScanCommand) defers
+	 * and retries the scan behind the roam instead of aborting the roam-scan
+	 * and posting the roam FAILED.  Matches the proven 25C56 reference contract.
+	 */
+	if (!supersede) {
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
+		return EBUSY;
 	}
 	if (ic->ic_wcl_reassoc_owner_last_leaf !=
 	    IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&

@@ -127,6 +127,7 @@ struct ItlIwx {
     void iwx_ampdu_txq_advance(iwx_softc *, iwx_tx_ring *, int);
     void iwx_reset_tx_ring(iwx_softc *, iwx_tx_ring *);
     void iwx_free_tx_ring(iwx_softc *, iwx_tx_ring *);
+    void iwx_drain_tx_ring_node_refs(iwx_softc *, iwx_tx_ring *, int);
     void iwx_sae_tx_report_terminal(iwx_softc *, iwx_tx_data *data, int error) {
         assert(error == EIO); ++saeFailures; data->sae_active = false;
     }

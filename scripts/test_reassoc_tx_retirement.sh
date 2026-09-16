@@ -19,10 +19,16 @@ awk '/^iwm_(txd_done|ampdu_txq_advance|reset_tx_ring|free_tx_ring)\(/ { selected
      selected { print } selected && /^}/ { selected=0 }' \
     "$TX_RETIRE_ROOT/itlwm/hal_iwm/mac80211.cpp" \
     "$TX_RETIRE_ROOT/itlwm/hal_iwm/tx.cpp" > "$TX_RETIRE_TEST/iwm-retirement.inc"
-awk '/^iwx_(txd_done|ampdu_txq_advance|reset_tx_ring|free_tx_ring)\(/ { selected=1; print "void ItlIwx::" }
-     /^iwx_clear_tx_desc\(/ { selected=1; print "void" }
-     selected { print } selected && /^}/ { selected=0 }' \
-    "$TX_RETIRE_ROOT/itlwm/hal_iwx/ItlIwx.cpp" > "$TX_RETIRE_TEST/iwx-retirement.inc"
+{
+  # iwx_drain_tx_ring_node_refs uses the kernel 3-arg malloc(size,type,flags)
+  # shim; supply a 3-arg-only function-like macro so the extracted body compiles
+  # against libc (::malloc/::free are untouched -- the macro needs exactly 3 args).
+  printf '#ifndef M_NOWAIT\n#define M_NOWAIT 0\n#endif\n#define malloc(sz, type, flags) (::malloc(sz))\n'
+  awk '/^iwx_(txd_done|ampdu_txq_advance|drain_tx_ring_node_refs|reset_tx_ring|free_tx_ring)\(/ { selected=1; print "void ItlIwx::" }
+       /^iwx_clear_tx_desc\(/ { selected=1; print "void" }
+       selected { print } selected && /^}/ { selected=0 }' \
+      "$TX_RETIRE_ROOT/itlwm/hal_iwx/ItlIwx.cpp"
+} > "$TX_RETIRE_TEST/iwx-retirement.inc"
 "${CXX:-clang++}" -std=c++17 -g -Wall -Wextra -Werror \
     -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I "$TX_RETIRE_TEST" "$TX_RETIRE_ROOT/tests/reassoc_tx_retirement_test.cpp" \

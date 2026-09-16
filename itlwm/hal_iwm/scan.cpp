@@ -951,7 +951,7 @@ iwm_scan(struct iwm_softc *sc, const ItlStateTransitionRequest &request)
         /* Pair firmware STOPPING with the host WCL reassociation terminal
          * before admitting the replacement foreground command. */
         if (ic->ic_wcl_reassoc_owner_active)
-            err = ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED);
+            err = ieee80211_cancel_wcl_reassoc_bgscan(ic, ECANCELED, 0);
         else
             err = iwm_scan_abort(sc, true);
         if (err) {

@@ -7757,7 +7757,7 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
             }
             IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
             const int cancelResult = ieee80211_cancel_wcl_reassoc_bgscan(
-                ic, static_cast<uint32_t>(ECANCELED));
+                ic, static_cast<uint32_t>(ECANCELED), 0);
             if (cancelResult != 0)
                 return kIOReturnNotReady;
         }
@@ -8584,7 +8584,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
      * can start a second ownerless join after the first one reached RUN. */
     if (ic->ic_wcl_reassoc_owner_active) {
         const int cancelResult = ieee80211_cancel_wcl_reassoc_bgscan(
-            ic, static_cast<uint32_t>(ECANCELED));
+            ic, static_cast<uint32_t>(ECANCELED), 1);
         if (cancelResult != 0) {
             XYLog("wcl_assoc REASSOC_SUPERSEDE_BUSY error=%d\n",
                   cancelResult);

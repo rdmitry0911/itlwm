@@ -273,7 +273,7 @@ int main(int argc, char **argv) {
             ic.ic_bgscan_abort=[](ieee80211com *v,uint64_t serial){
                 assert(serial==v->ic_wcl_reassoc_owner_serial);
                 assert(!v->lock.held); ieee80211_wcl_reassoc_post_failure(v,5); replacement(v); return 0;};
-            assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,6)==EBUSY);
+            assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,6,1)==EBUSY);
             preserved(ic); assert(ic.ic_flags==IEEE80211_F_BGSCAN && epochs==0 && events==1);
         } else if(scenario==3 || scenario==4 || scenario==5) {
             ic.ic_wcl_reassoc_owner_active=0;
@@ -315,7 +315,7 @@ int main(int argc, char **argv) {
                 assert(ieee80211_begin_wcl_reassoc_bgscan(&ic,&request)==0);
                 assert(frees==1 && ic.ic_wcl_reassoc_request.feature_flags==4);
                 auto serial=ieee80211_wcl_reassoc_serial(&ic); ic.ic_flags=0;
-                assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,5)==0);
+                assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,5,1)==0);
                 assert(epochs==0 && events==1);
                 assert(ieee80211_begin_wcl_reassoc_bgscan(&ic,&request)==0);
                 assert(ieee80211_wcl_reassoc_serial(&ic)>serial);
@@ -393,7 +393,7 @@ int main(int argc, char **argv) {
         ++ic.ic_pae_assoc_epoch;
         IOSimpleLockUnlockEnableInterrupt(&ic.lock,irq);
         assert(!ic.ic_wcl_reassoc_owner_active && events==0);
-        assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,ECANCELED)==0);
+        assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,ECANCELED,1)==0);
         assert(ieee80211_wcl_reassoc_post_failure_owned(&ic,original,EIO)==0);
         ieee80211_wcl_reassoc_post_success(&ic);
         assert(events==0);
@@ -411,6 +411,46 @@ int main(int argc, char **argv) {
         }
         ++cases;
     }
+    /*
+     * D1 supersede gate: a scan (supersede=0) NEVER cancels a roam, at any
+     * phase -- it returns EBUSY so setWCL_SCAN_REQ / iwx_scan / iwm_scan defer
+     * and retry behind the roam (reference startScan cancels nothing).  Only a
+     * JOIN (supersede=1, setWCL_ASSOCIATE) may abort+fail a discovery roam-scan.
+     */
+    {   // (a) discovery + supersede=0 -> EBUSY, roam PRESERVED (no abort, no fail)
+        epochs=events=frees=0; queued.clear();
+        ieee80211com ic;
+        admit(&ic,3,IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED);
+        ic.ic_flags=IEEE80211_F_BGSCAN;
+        ic.ic_bgscan_abort=[](ieee80211com *,uint64_t)->int{
+            assert(!"scan (supersede=0) must never abort a discovery roam-scan");
+            return 0;};
+        const auto serial=ic.ic_wcl_reassoc_owner_serial;
+        assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,ECANCELED,0)==EBUSY);
+        assert(ic.ic_wcl_reassoc_owner_active &&
+            ic.ic_wcl_reassoc_owner_serial==serial &&
+            ic.ic_wcl_reassoc_owner_last_leaf==
+                IEEE80211_WCL_REASSOC_OWNER_LEAF_SCAN_STARTED &&
+            ic.ic_flags==IEEE80211_F_BGSCAN && epochs==0 && events==0);
+        ++cases;
+    }
+    {   // (b) committed + supersede=0 -> EBUSY (unchanged), roam preserved
+        epochs=events=frees=0; queued.clear();
+        ieee80211com ic;
+        admit(&ic,3,IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED);
+        const auto serial=ic.ic_wcl_reassoc_owner_serial;
+        assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,ECANCELED,0)==EBUSY);
+        assert(ic.ic_wcl_reassoc_owner_active &&
+            ic.ic_wcl_reassoc_owner_serial==serial && events==0);
+        ++cases;
+    }
+    {   // (c) no active owner + supersede=0 -> 0 (nothing to defer behind)
+        epochs=events=frees=0; queued.clear();
+        ieee80211com ic;
+        assert(ieee80211_cancel_wcl_reassoc_bgscan(&ic,ECANCELED,0)==0);
+        ++cases;
+    }
+    // (supersede=1 abort path stays covered by scenarios 2 and 10 above.)
     printf("PASS: %u actual reassoc admission/abort/retirement/controller-gate cases\n",cases);
     lifecycleOrderingRequirements();
 }
