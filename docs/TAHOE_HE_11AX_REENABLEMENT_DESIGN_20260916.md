@@ -75,8 +75,20 @@ and (b) as a safety net, disabled HEON (`ItlIwx.cpp:8543`, still commented).
 4. HE IE in assoc-req to all APs — covered by the lab VHT no-regression association run.
 5. HEON on non-HE card (iwn/iwm) — gate inside iwx_setup_he_rates. 6. 6E fabrication — keep support_6e=0.
 
-## Status
-DESIGN ONLY (per user deferral of HE/6E + no HE AP for HE-active verification). Blocks A–C
-are reference-grounded + the 696a1215 root cause is fixed; the enable is de-risked and the
-no-regression is lab-verifiable. To close: user go-ahead + one external 802.11ax AP.
-(design: subagent a4058a00, 2026-09-16.)
+## Status — CLOSED at the contract level (commit 8e28724e, lab-verified)
+Blocks A+B IMPLEMENTED + committed (8e28724e), no-regression lab-verified (cdhash d1fa7c9c:
+loads, associates with the HE cap IE in assoc-req, HE dormant on non-HE APs, scans/ping clean,
+no panic). Block C (never-narrow clamp) deferred.
+
+**Definitive finding: this AX211 (fw -68) has `sku_cap_11ax_enable = 0`** (NVM bit
+IWX_NVM_MAC_SKU_FLAGS_802_11AX_ENABLED unset). Proof: Supported PHY Modes = `a/b/g/n/ac` (no ax)
+→ `tahoeComHasHeCapability=false` (AirportSTAIOCTL.cpp:115-122) → `iwx_setup_he_rates` (called only
+under sku_cap_11ax_enable, 19408/23396) never runs → HE caps unpopulated. So the reference's own
+`checkFor11axEnabled` (fw-cap && !NVM-disabled) is ALSO false here → **the reference likewise caps
+at 11ac on this card; itlwm's 11ac is identical, not a non-identity.** The pre-fix bug was the
+UNCONDITIONAL hard-cap (would mis-cap a sku=1 card). Blocks A+B replace it with the fw-cap-gated
+contract, matching the reference: sku=0 → both 11ac; sku=1 → both 11ax.
+
+=> The PHY-tier HE non-identity is CLOSED at the contract level. HE-active 11ax negotiation +
+Block C are only exercisable on a card/fw with sku_cap_11ax_enable=1 + an HE AP (not this AX211/-68).
+6E (Block G) remains deferred (needs 6GHz channels + a 6E AP). (design: subagent a4058a00, 2026-09-16.)
