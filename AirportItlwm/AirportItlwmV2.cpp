@@ -13577,6 +13577,26 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
                 XYLog("DEBUG %s WoWLAN arm (WoL enabled) on D3/sleep: 0x%x\n",
                       __FUNCTION__, wowRet);
             }
+            /*
+             * ARP/NDP firmware offload arming, GATED behind the host
+             * ARP-offload enable (arpOffloadEnabled).  On the default path the
+             * host never writes an OFFLOAD_ARP carrier with keepalive enabled,
+             * so arpOffloadEnabled is false and nothing is sent -- the sleep
+             * path stays byte-for-byte the prior behavior (inert, zero
+             * regression).  When ARP offload is configured we push a single
+             * PROT_OFFLOAD_CONFIG_CMD (0xd4) to the firmware while the device
+             * is still up, before disableAdapterCore().  The bridge no-ops
+             * (kIOReturnUnsupported) for non-iwx families and kIOReturnNotReady
+             * when there is no associated station or no captured host address.
+             */
+            if (arpOffloadEnabled && fHalService != nullptr) {
+                IOReturn arpRet = airportItlwmArmProtoOffload(
+                    fHalService, arpHostIPv4, ndpOffloadCount,
+                    ndpOffloadCount ? &ndpOffloadTargets[0][0] : nullptr);
+                XYLog("DEBUG %s ARP/NDP offload arm (ARP mode enabled) on "
+                      "D3/sleep: host_ipv4=0x%08x ndp=%u ret=0x%x\n",
+                      __FUNCTION__, arpHostIPv4, ndpOffloadCount, arpRet);
+            }
             publishDeferredPowerOffAvailability();
             disableAdapterCore(netif);
         }

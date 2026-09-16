@@ -582,4 +582,15 @@ extern "C" IOReturn airportItlwmBeginWclScanAfterRoam(
  * without the WOWLAN_CONFIGURATION firmware command (iwn/iwm). */
 extern "C" IOReturn airportItlwmArmWowlan(ItlHalService *service);
 
+/* ARP/NDP firmware offload arming for the driver D3/sleep path.  Kept out of
+ * the HAL vtable (early-attach ABI) like the bridges above.  The driver calls
+ * this only under the host ARP-offload gate, passing the captured host IPv4
+ * (network byte order, 0 if none) and up to ndpCount host IPv6 target
+ * addresses (ndpTargets = ndpCount * 16 bytes), so it is inert on the default
+ * path.  Returns kIOReturnUnsupported for HAL families without the
+ * PROT_OFFLOAD_CONFIG firmware command (iwn/iwm). */
+extern "C" IOReturn airportItlwmArmProtoOffload(
+    ItlHalService *service, uint32_t hostIPv4Be, uint32_t ndpCount,
+    const uint8_t *ndpTargets);
+
 #endif /* ItlHalService_hpp */

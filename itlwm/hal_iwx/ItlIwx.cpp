@@ -4142,6 +4142,140 @@ airportItlwmArmWowlan(ItlHalService *service)
     return that->armWowlanOffload();
 }
 
+/*
+ * Arm the firmware ARP / Neighbour-Discovery offload with the captured host
+ * IPv4 (ARP) and, when supplied, the host IPv6 target address(es) (NS).
+ * Called from the driver D3/sleep path only under the host ARP-offload gate;
+ * on the default path nothing calls this, so the whole subsystem stays inert.
+ *
+ * Faithful minimal port of Linux 6.12.87 iwl_mvm_send_proto_offload()
+ * (drivers/net/wireless/intel/iwlwifi/mvm/offloading.c): one
+ * PROT_OFFLOAD_CONFIG_CMD PDU carrying struct iwx_proto_offload_cmd (the v4
+ * "large" layout selected for IWL_UCODE_TLV_FLAGS_NEW_NSOFFL_LARGE firmware).
+ * As in Linux, common.host_ipv4_addr = our IPv4 and common.arp_mac_addr =
+ * our own MAC (ieee80211com ic_myaddr / vif->addr), and each NS config uses
+ * the solicited-node multicast derived from the target IPv6 address.
+ */
+IOReturn ItlIwx::
+armProtoOffload(uint32_t hostIPv4Be, uint32_t ndpCount, const uint8_t *ndpTargets)
+{
+    struct iwx_softc *sc = &com;
+    struct ieee80211com *ic = &com.sc_ic;
+    struct iwx_proto_offload_cmd cmd;
+    struct iwx_proto_offload_cmd_common *common;
+    struct iwx_node *in;
+    uint32_t enabled = 0;
+    uint32_t i, c;
+    int err;
+
+    /*
+     * Only meaningful for an associated STA with a live firmware station,
+     * mirroring the WoWLAN arm and Linux, which build the command against the
+     * associated vif/ap_sta.
+     */
+    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
+        ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL)
+        return kIOReturnNotReady;
+
+    /* Nothing to offload: no captured host IPv4 and no IPv6 targets. */
+    if (hostIPv4Be == 0 && (ndpCount == 0 || ndpTargets == NULL))
+        return kIOReturnNotReady;
+
+    in = (struct iwx_node *)ic->ic_bss;
+
+    memset(&cmd, 0, sizeof(cmd));
+    common = &cmd.common;
+
+    if (ndpCount > IWX_PROTO_OFFLOAD_NUM_IPV6_ADDRS_V3L)
+        ndpCount = IWX_PROTO_OFFLOAD_NUM_IPV6_ADDRS_V3L;
+
+    /*
+     * IPv6 / NS offload.  For each host IPv6 target address, fill a target
+     * address entry and one NS config keyed by the solicited-node multicast
+     * address, exactly as Linux iwl_mvm_send_proto_offload() does for the
+     * NEW_NSOFFL_LARGE path (dedup NS configs by solicited-node address).
+     */
+    if (ndpTargets != NULL && ndpCount > 0) {
+        for (i = 0, c = 0;
+             i < ndpCount && i < IWX_PROTO_OFFLOAD_NUM_IPV6_ADDRS_V3L &&
+             c < IWX_PROTO_OFFLOAD_NUM_NS_CONFIG_V3L; i++) {
+            const uint8_t *tgt = ndpTargets + (size_t)i * 16;
+            uint8_t solicited[16];
+            uint32_t j;
+
+            /*
+             * Solicited-node multicast address:
+             *   ff02:0000:0000:0000:0000:0001:ff<low 24 bits of target>
+             * (Linux addrconf_addr_solict_mult()).
+             */
+            memset(solicited, 0, sizeof(solicited));
+            solicited[0]  = 0xff;
+            solicited[1]  = 0x02;
+            solicited[11] = 0x01;
+            solicited[12] = 0xff;
+            solicited[13] = tgt[13];
+            solicited[14] = tgt[14];
+            solicited[15] = tgt[15];
+
+            for (j = 0; j < c; j++)
+                if (memcmp(cmd.ns_config[j].dest_ipv6_addr, solicited,
+                           sizeof(solicited)) == 0)
+                    break;
+            if (j == c)
+                c++;
+
+            memcpy(cmd.targ_addrs[i].addr, tgt, 16);
+            cmd.targ_addrs[i].config_num = htole32(j);
+            memcpy(cmd.ns_config[j].dest_ipv6_addr, solicited,
+                   sizeof(solicited));
+            memcpy(cmd.ns_config[j].target_mac_addr, ic->ic_myaddr,
+                   IEEE80211_ADDR_LEN);
+        }
+        if (i > 0) {
+            enabled |= IWX_D3_PROTO_IPV6_VALID | IWX_D3_PROTO_OFFLOAD_NS;
+            cmd.num_valid_ipv6_addrs = htole32(i);
+        }
+    }
+
+    /*
+     * IPv4 / ARP offload.  Mirror Linux: when a host IPv4 is present, set
+     * ARP|IPV4_VALID, store the host IPv4 (already network byte order) and our
+     * own MAC as the ARP-response MAC.
+     */
+    if (hostIPv4Be != 0) {
+        enabled |= IWX_D3_PROTO_OFFLOAD_ARP | IWX_D3_PROTO_IPV4_VALID;
+        common->host_ipv4_addr = hostIPv4Be; /* __be32, stored raw */
+        memcpy(common->arp_mac_addr, ic->ic_myaddr, IEEE80211_ADDR_LEN);
+    }
+
+    common->enabled = htole32(enabled);
+    cmd.sta_id = htole32((uint32_t)in->in_id);
+
+    err = iwx_send_cmd_pdu(sc, IWX_PROT_OFFLOAD_CONFIG_CMD, 0 /* sync */,
+                           sizeof(cmd), &cmd);
+    XYLog("%s: PROT_OFFLOAD_CONFIG(0xd4) arm enabled=0x%x host_ipv4=0x%08x "
+          "n_ipv6=%d sta=%d err=%d\n", __FUNCTION__, enabled,
+          le32toh(common->host_ipv4_addr), le32toh(cmd.num_valid_ipv6_addrs),
+          (int)le32toh(cmd.sta_id), err);
+    return err ? kIOReturnIOError : kIOReturnSuccess;
+}
+
+/*
+ * HAL-family dispatch bridge for the driver D3/sleep ARP-offload arm.  Kept
+ * out of the ItlHalService vtable (early-attach ABI) like airportItlwmArmWowlan.
+ * Returns kIOReturnUnsupported for non-iwx HALs (iwn/iwm), which do not carry
+ * the PROT_OFFLOAD_CONFIG firmware family here.
+ */
+extern "C" IOReturn
+airportItlwmArmProtoOffload(ItlHalService *service, uint32_t hostIPv4Be,
+                           uint32_t ndpCount, const uint8_t *ndpTargets)
+{
+    ItlIwx *that = OSDynamicCast(ItlIwx, service);
+    if (that == NULL)
+        return kIOReturnUnsupported;
+    return that->armProtoOffload(hostIPv4Be, ndpCount, ndpTargets);
+}
+
 #define MUL_NO_OVERFLOW    (1UL << (sizeof(size_t) * 4))
 
 #define    M_CANFAIL    0x0004

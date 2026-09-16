@@ -239,6 +239,19 @@ public:
      */
     IOReturn armWowlanOffload();
 
+    /*
+     * ARP / Neighbour-Discovery firmware offload arming.  Sends one
+     * PROT_OFFLOAD_CONFIG_CMD (0xd4, v4) to the firmware carrying the captured
+     * host IPv4 (ARP|IPV4_VALID) and, when supplied, host IPv6 target(s)
+     * (NS|IPV6_VALID).  Only invoked from the driver's D3/sleep power path and
+     * only under the host ARP-offload gate, so it is inert on the default path.
+     * ndpTargets points to ndpCount * 16 bytes (host IPv6 target addresses,
+     * capped at 12).  Non-virtual member: appending it does not perturb the HAL
+     * vtable ABI.  Mirrors armWowlanOffload().
+     */
+    IOReturn armProtoOffload(uint32_t hostIPv4Be, uint32_t ndpCount,
+                             const uint8_t *ndpTargets);
+
     /* One-ticket, real firmware TX path for the controller SAE relay. */
     IOReturn submitSaeAuthFrame(
         const struct ItlSaeAuthTxRequestV1 *request) override;

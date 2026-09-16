@@ -9433,6 +9433,24 @@ setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setOFFLOAD_NDP(apple80211_offload_ndp_data *data)
 {
+    /*
+     * Capture the host IPv6 target address(es) for the D3/sleep proto-offload
+     * arm (NS/IPV6 half of PROT_OFFLOAD_CONFIG_CMD).  Uses the proven, typed
+     * TahoePayloadBuilders::buildOffloadNdp reader (count at +4, up to four
+     * 16-byte targets at +8).  Capture is a pure side effect consumed only
+     * under the ARP-offload gate at sleep time; the delegation/return below is
+     * unchanged.
+     */
+    if (data != nullptr && instance != nullptr) {
+        TahoePayloadBuilders::NdpPayload ndp;
+        if (TahoePayloadBuilders::buildOffloadNdp(data, &ndp)) {
+            uint32_t n = ndp.count > 4 ? 4 : ndp.count;
+            instance->ndpOffloadCount = n;
+            for (uint32_t i = 0; i < n; i++)
+                memcpy(instance->ndpOffloadTargets[i], ndp.addresses[i], 16);
+        }
+    }
+
     TahoeAsyncCommandContext asyncContext{};
     return (instance != nullptr)
                ? instance->getTahoeCommander().runSetOFFLOADNDP(data, &asyncContext)
@@ -9446,6 +9464,30 @@ setOFFLOAD_ARP(apple80211_offload_arp_data *data)
     // request and queues its IPv4 notifications. Intel has no counterpart.
     if (data == nullptr || instance == nullptr || instance->fNetIf == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
+
+    /*
+     * Capture the ARP-offload data source for the D3/sleep proto-offload arm.
+     * This mirrors the reference setOFFLOAD_ARP, which stores mode / host-IPv4
+     * / ARP-MAC into control state (+0x251c/+0x2514/+0x2520).  keepalive_enabled
+     * is the single arming gate: only a nonzero enable (i.e. the host actually
+     * configured ARP offload with a valid IPv4) flips arpOffloadEnabled, so the
+     * default path -- where this carrier is never written with a live
+     * keepalive -- leaves the D3 arm completely inert.  We do NOT change the
+     * historical return status (no blind success, per CR-479); the capture is a
+     * pure side effect consumed only under the gate at sleep time.
+     */
+    const bool haveIPv4 = data->has_ipv4_address != 0 && data->ipv4_address != 0;
+    if (haveIPv4) {
+        instance->arpHostIPv4 = data->ipv4_address; /* network byte order */
+        memcpy(instance->arpRouterMac, &data->gateway,
+               sizeof(instance->arpRouterMac));
+    } else {
+        instance->arpHostIPv4 = 0;
+    }
+    instance->arpOffloadEnabled = data->keepalive_enabled != 0 && haveIPv4;
+    XYLog("DEBUG %s captured ARP offload: enabled=%d host_ipv4=0x%08x "
+          "keepalive=%u\n", __FUNCTION__, instance->arpOffloadEnabled,
+          instance->arpHostIPv4, data->keepalive_enabled);
 
     return kApple80211ErrInvalidArgumentRaw;
 }
@@ -9947,8 +9989,18 @@ setWCL_ARP_MODE(apple80211_wcl_arp_mode *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
+    // Record that the WCL ARP-mode toggle was exercised.  Per CR-479 the public
+    // apple80211_wcl_arp_mode carrier layout is NOT proven, so we do not
+    // dereference it at guessed offsets to derive the enable -- the authoritative,
+    // fully-typed arming gate + data come from setOFFLOAD_ARP (host IPv4 / MAC /
+    // keepalive-enable).  This flag is state-only for diagnostics and does not by
+    // itself arm anything.
+    if (instance != nullptr)
+        instance->arpWclModeSeen = true;
+
     // Tahoe delegates ARP keepalive/GARP and optional WNM keepalive work to
     // hidden owners. Intel has no matching keepalive, WNM, or transport path.
+    // Keep the honest Unsupported return (no blind success, CR-479).
     return kIOReturnUnsupported;
 }
 

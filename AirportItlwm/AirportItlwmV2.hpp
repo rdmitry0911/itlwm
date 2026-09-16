@@ -1089,7 +1089,26 @@ public:
     UInt8 pmPCICapPtr;
     bool magicPacketEnabled;
     bool magicPacketSupported;
-    
+
+    /*
+     * ARP / NDP firmware-offload capture state.  Populated by the Skywalk
+     * setOFFLOAD_ARP / setOFFLOAD_NDP handlers (the proven, fully-typed data
+     * source) and consumed on the D3/sleep path by armProtoOffload.
+     * arpOffloadEnabled is the single arming gate: it is set only when the host
+     * writes an OFFLOAD_ARP carrier with keepalive_enabled != 0, so on the
+     * default path (no ARP offload configured) it stays false and the D3 path
+     * arms nothing -- byte-for-byte the prior inert behavior.  arpHostIPv4 is
+     * kept in network byte order.  arpRouterMac mirrors the reference's
+     * captured ARP/router MAC (+0x2520); the Intel command itself answers with
+     * our own MAC per Linux, so it is state-only.
+     */
+    bool arpOffloadEnabled;
+    bool arpWclModeSeen;
+    uint32_t arpHostIPv4;          /* network byte order, 0 = none */
+    uint8_t arpRouterMac[6];
+    uint32_t ndpOffloadCount;      /* 0..4 captured host IPv6 targets */
+    uint8_t ndpOffloadTargets[4][16];
+
     //AWDL
     uint8_t *syncFrameTemplate;
     uint32_t syncFrameTemplateLength;

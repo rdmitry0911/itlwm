@@ -2104,6 +2104,63 @@ struct iwx_wowlan_config_cmd {
     uint8_t reserved;
 } __packed; /* WOWLAN_CONFIG_API_S_VER_5 */
 
+/*
+ * Protocol (ARP / NS) offload configuration command payload
+ * (PROT_OFFLOAD_CONFIG_CMD, 0xd4).  This opcode lives in the legacy command
+ * list (enum iwl_legacy_cmds), so it is emitted via the long group exactly
+ * like WOWLAN_CONFIGURATION above (iwx_send_cmd_pdu auto-wraps a bare opcode
+ * in IWX_LONG_GROUP).
+ *
+ * Borrowed faithfully from Linux 6.12.87
+ *   drivers/net/wireless/intel/iwlwifi/fw/api/d3.h
+ *     enum iwl_proto_offloads
+ *     struct iwl_proto_offload_cmd_common
+ *     struct iwl_ns_config / struct iwl_targ_addr
+ *     struct iwl_proto_offload_cmd_v4  (PROT_OFFLOAD_CONFIG_CMD_DB_S_VER_4)
+ * The bundled iwlwifi-ty-a0-gf-a0-68 firmware advertises PROT_OFFLOAD_CONFIG
+ * v4 (IWL_UCODE_TLV_FLAGS_NEW_NSOFFL_LARGE) -- the sta_id-prefixed "large"
+ * layout with 12 target IPv6 addresses / 4 NS configs, which is what
+ * iwl_mvm_send_proto_offload() selects for that capability.
+ */
+enum iwx_proto_offloads {
+    IWX_D3_PROTO_OFFLOAD_ARP    = (1 << 0),
+    IWX_D3_PROTO_OFFLOAD_NS     = (1 << 1),
+    IWX_D3_PROTO_IPV4_VALID     = (1 << 2),
+    IWX_D3_PROTO_IPV6_VALID     = (1 << 3),
+    IWX_D3_PROTO_OFFLOAD_BTM    = (1 << 4),
+};
+
+#define IWX_PROTO_OFFLOAD_NUM_IPV6_ADDRS_V3L    12
+#define IWX_PROTO_OFFLOAD_NUM_NS_CONFIG_V3L      4
+
+struct iwx_proto_offload_cmd_common {
+    uint32_t enabled;           /* __le32 (enum iwx_proto_offloads) */
+    uint32_t remote_ipv4_addr;  /* __be32, 0 = answer all */
+    uint32_t host_ipv4_addr;    /* __be32, our IPv4 to answer for */
+    uint8_t  arp_mac_addr[6];   /* ETH_ALEN, our MAC for ARP responses */
+    uint16_t reserved;          /* __le16 */
+} __packed;
+
+struct iwx_ns_config {
+    uint8_t  source_ipv6_addr[16];
+    uint8_t  dest_ipv6_addr[16];
+    uint8_t  target_mac_addr[6];    /* ETH_ALEN */
+    uint16_t reserved;              /* __le16 */
+} __packed; /* NS_OFFLOAD_CONFIG */
+
+struct iwx_targ_addr {
+    uint8_t  addr[16];
+    uint32_t config_num;            /* __le32 */
+} __packed; /* TARGET_IPV6_ADDRESS */
+
+struct iwx_proto_offload_cmd {
+    uint32_t sta_id;                /* __le32 */
+    struct iwx_proto_offload_cmd_common common;
+    uint32_t num_valid_ipv6_addrs;  /* __le32 */
+    struct iwx_targ_addr targ_addrs[IWX_PROTO_OFFLOAD_NUM_IPV6_ADDRS_V3L];
+    struct iwx_ns_config ns_config[IWX_PROTO_OFFLOAD_NUM_NS_CONFIG_V3L];
+} __packed; /* PROT_OFFLOAD_CONFIG_CMD_DB_S_VER_4 */
+
 /* and for NetDetect */
 #define IWX_NET_DETECT_CONFIG_CMD        0x54
 #define IWX_NET_DETECT_PROFILES_QUERY_CMD    0x56
