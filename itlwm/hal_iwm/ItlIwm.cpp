@@ -400,7 +400,15 @@ iwm_sae_tx_submit_on_gate(struct iwm_softc *sc,
     if (ifp->netStat != NULL)
         ifp->netStat->outputPackets++;
     if (ifp->if_flags & IFF_UP) {
-        sc->sc_tx_timer[EDCA_AC_BE] = 15;
+        // Do NOT arm sc_tx_timer[EDCA_AC_BE] here. sc_tx_timer[] is a per-hardware-
+        // queue array and EDCA_AC_BE == 0 == IWM_DQA_CMD_QUEUE under DQA, so this armed
+        // the *command-queue* watchdog — which nothing ever clears (firmware command
+        // completions go through iwm_cmd_done, not iwm_rx_tx_cmd) — falsely tripping a
+        // "device timeout" ~15s post-RUN that reset a healthy WPA3-SAE link (queued=0 at
+        // the trip proves no real stall). iwm_tx() above already armed the SAE frame's
+        // REAL egress queue (sc_tx_timer[IWM_DQA_MIN_MGMT_QUEUE + EDCA_AC_BE]), which is
+        // cleared on that queue's completion. Regression from 54e18f8d: the iwx *scalar*
+        // sc_tx_timer pattern was ported onto iwm's per-queue array and indexed by AC.
         ifp->if_timer = 1;
     }
     ni = NULL;
