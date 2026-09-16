@@ -8539,9 +8539,16 @@ iwx_setup_he_rates(struct iwx_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     
-    /* enable 11ax support */
-//    ic->ic_flags |= IEEE80211_F_HEON;
-    
+    /*
+     * Enable 11ax.  iwx_setup_he_rates() runs ONLY under
+     * sc_nvm.sku_cap_11ax_enable (ItlIwx.cpp:19388/23376) -- the HE-capable and
+     * not-NVM-disabled gate, mirroring the reference checkFor11axEnabled -- and
+     * iwn/iwm never reach it, so HEON is set only on an HE-capable iwx card.
+     * (Was disabled by 696a1215 as a safety net for the HE-parse bugs that same
+     * commit fixed; the residual 160MHz regression cause is phy_cap_info[0] below.)
+     */
+    ic->ic_flags |= IEEE80211_F_HEON;
+
     ic->ic_he_cap_elem = {
         .mac_cap_info[0] =
             IEEE80211_HE_MAC_CAP0_HTC_HE |
@@ -8563,6 +8570,19 @@ iwx_setup_he_rates(struct iwx_softc *sc)
             IEEE80211_HE_MAC_CAP5_UL_2x996_TONE_RU |
             IEEE80211_HE_MAC_CAP5_HE_DYNAMIC_SM_PS |
             IEEE80211_HE_MAC_CAP5_HT_VHT_TRIG_FRAME_RX,
+        /*
+         * HE Channel Width Set -- ROOT CAUSE of the 696a1215 160MHz regression:
+         * this byte was never initialized, so the STA advertised 20MHz-only HE
+         * and an HE AP would grant HE-20, pulling it off VHT-160.  Advertise the
+         * same widths as the VHT cap: 40 in 2G, 40/80 in 5G, 160 in 5G (2-stream
+         * AX211, no 80+80).  Matches the reference invariant "160 is orthogonal to
+         * HE" (bw_cap independent of VHT-vs-HE); byte values from linux iwlwifi
+         * iwl_he_capa 5GHz table.
+         */
+        .phy_cap_info[0] =
+            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G |
+            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G |
+            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G,
         .phy_cap_info[1] =
             IEEE80211_HE_PHY_CAP1_PREAMBLE_PUNC_RX_MASK |
             IEEE80211_HE_PHY_CAP1_DEVICE_CLASS_A |
