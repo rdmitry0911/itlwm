@@ -4057,6 +4057,91 @@ airportItlwmHandoffIwxPrimaryStaRecoveryScanToAP(
     return true;
 }
 
+/*
+ * Arm the firmware wake-on-WLAN offload with the minimal magic-packet +
+ * disconnect wake filter.  Called from the driver D3/sleep path only when the
+ * host has enabled Wake-on-Magic-Packet; on the default WoL-off path nothing
+ * calls this, so the whole subsystem stays inert.
+ *
+ * Faithful minimal port of Linux 6.12.87 iwl_mvm_get_wowlan_config() +
+ * iwl_mvm_wowlan_config() (drivers/net/wireless/intel/iwlwifi/mvm/d3.c):
+ * one WOWLAN_CONFIGURATION PDU carrying struct iwx_wowlan_config_cmd.  The
+ * full offload suite (patterns / ARP-ND / TCP-KA / GTK-rekey / TSC-RSC /
+ * KEK-KCK) is intentionally NOT ported here; see follow-up.
+ */
+IOReturn ItlIwx::
+armWowlanOffload()
+{
+    struct iwx_softc *sc = &com;
+    struct ieee80211com *ic = &com.sc_ic;
+    struct iwx_wowlan_config_cmd cmd;
+    struct iwx_node *in;
+    struct ieee80211_node *ni;
+    int err;
+
+    /*
+     * Only meaningful for an associated STA with a live firmware station,
+     * mirroring Linux, which requires ap_sta before it builds the command.
+     */
+    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
+        ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL)
+        return kIOReturnNotReady;
+
+    in = (struct iwx_node *)ic->ic_bss;
+    ni = ic->ic_bss;
+
+    memset(&cmd, 0, sizeof(cmd));
+
+    /*
+     * wakeup_filter: magic-packet + disconnect (Linux sets BEACON_MISS |
+     * LINK_CHANGE for wowlan->disconnect, MAGIC_PACKET for wowlan->magic_pkt).
+     */
+    cmd.wakeup_filter = htole32(IWX_WOWLAN_WAKEUP_MAGIC_PACKET |
+                                IWX_WOWLAN_WAKEUP_BEACON_MISS |
+                                IWX_WOWLAN_WAKEUP_LINK_CHANGE);
+
+    /* is_11n_connection from the AP station HT capability (Linux uses
+     * ap_sta->deflink.ht_cap.ht_supported). */
+    cmd.is_11n_connection = (ni->ni_flags & IEEE80211_NODE_HT) ? 1 : 0;
+
+    /* flags: L3 / NBNS / DHCP filtering, plus IS_11W_ASSOC when MFP, exactly
+     * as Linux iwl_mvm_get_wowlan_config() unconditionally sets them. */
+    cmd.flags = IWX_WOWLAN_FLAG_ENABLE_L3_FILTERING |
+                IWX_WOWLAN_FLAG_ENABLE_NBNS_FILTERING |
+                IWX_WOWLAN_FLAG_ENABLE_DHCP_FILTERING;
+    if (ni->ni_flags & IEEE80211_NODE_MFP)
+        cmd.flags |= IWX_WOWLAN_FLAG_IS_11W_ASSOC;
+
+    cmd.offloading_tid = 0;
+    cmd.sta_id = (uint8_t)in->in_id;
+
+    /* non_qos_seq / qos_seq left zero: reserved for WOWLAN_CONFIGURATION v6
+     * (the bundled -68 firmware), and a benign fresh counter for v5. */
+
+    err = iwx_send_cmd_pdu(sc, IWX_WOWLAN_CONFIGURATION, 0 /* sync */,
+                           sizeof(cmd), &cmd);
+    XYLog("%s: WOWLAN_CONFIGURATION(0xe1) arm filter=0x%x flags=0x%x "
+          "sta=%d 11n=%d err=%d\n", __FUNCTION__,
+          le32toh(cmd.wakeup_filter), cmd.flags, cmd.sta_id,
+          cmd.is_11n_connection, err);
+    return err ? kIOReturnIOError : kIOReturnSuccess;
+}
+
+/*
+ * HAL-family dispatch bridge for the driver D3/sleep path.  Kept out of the
+ * ItlHalService vtable (early-attach ABI) like the AP TX admission bridge.
+ * Returns kIOReturnUnsupported for non-iwx HALs (iwn/iwm), which do not carry
+ * the WOWLAN_CONFIGURATION firmware family here.
+ */
+extern "C" IOReturn
+airportItlwmArmWowlan(ItlHalService *service)
+{
+    ItlIwx *that = OSDynamicCast(ItlIwx, service);
+    if (that == NULL)
+        return kIOReturnUnsupported;
+    return that->armWowlanOffload();
+}
+
 #define MUL_NO_OVERFLOW    (1UL << (sizeof(size_t) * 4))
 
 #define    M_CANFAIL    0x0004

@@ -575,4 +575,11 @@ extern "C" IOReturn airportItlwmBeginWclScanAfterRoam(
     ItlHalService *, uint64_t generation, uint64_t supersededReassocSerial,
     uint64_t sourceEpoch, uint32_t *outBackendGeneration);
 
+/* Wake-on-WLAN firmware arming for the driver D3/sleep path.  Kept out of the
+ * HAL vtable (early-attach ABI) like the bridges above.  The driver calls this
+ * only when the host has enabled Wake-on-Magic-Packet, so it is inert on the
+ * default WoL-off sleep path.  Returns kIOReturnUnsupported for HAL families
+ * without the WOWLAN_CONFIGURATION firmware command (iwn/iwm). */
+extern "C" IOReturn airportItlwmArmWowlan(ItlHalService *service);
+
 #endif /* ItlHalService_hpp */

@@ -229,6 +229,16 @@ public:
         const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
 
+    /*
+     * Wake-on-WLAN firmware arming.  Sends WOWLAN_CONFIGURATION (0xe1) to
+     * the firmware with the minimal magic-packet + disconnect wake filter
+     * when an associated STA station exists.  Only invoked from the driver's
+     * D3/sleep power path and only when the host has enabled Wake-on-Magic-
+     * Packet, so it is inert on the default (WoL-off) sleep path.  Non-virtual
+     * member: appending it does not perturb the HAL vtable ABI.
+     */
+    IOReturn armWowlanOffload();
+
     /* One-ticket, real firmware TX path for the controller SAE relay. */
     IOReturn submitSaeAuthFrame(
         const struct ItlSaeAuthTxRequestV1 *request) override;

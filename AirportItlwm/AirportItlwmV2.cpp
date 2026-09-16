@@ -13560,6 +13560,23 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
                   __FUNCTION__, readyResult);
     } else {
         if (power_state) {
+            /*
+             * Wake-on-WLAN firmware arming, GATED behind the host WoL enable.
+             * On the default path magicPacketEnabled is false, so nothing is
+             * sent to the firmware and the sleep path is byte-for-byte the
+             * prior behavior (inert, zero regression risk).  When the host has
+             * enabled Wake-on-Magic-Packet we push a single
+             * WOWLAN_CONFIGURATION (0xe1) PDU to the firmware while the device
+             * is still up, before disableAdapterCore() quiesces the lower HAL.
+             * The bridge no-ops (kIOReturnUnsupported) for non-iwx families and
+             * kIOReturnNotReady when no associated station exists, so it is
+             * safe to call unconditionally under the WoL gate.
+             */
+            if (magicPacketEnabled && fHalService != nullptr) {
+                IOReturn wowRet = airportItlwmArmWowlan(fHalService);
+                XYLog("DEBUG %s WoWLAN arm (WoL enabled) on D3/sleep: 0x%x\n",
+                      __FUNCTION__, wowRet);
+            }
             publishDeferredPowerOffAvailability();
             disableAdapterCore(netif);
         }
@@ -13730,7 +13747,13 @@ unsigned long AirportItlwm::initialPowerStateForDomainState(IOPMPowerFlags domai
 
 IOReturn AirportItlwm::setWakeOnMagicPacket(bool active)
 {
+    // Record the host Wake-on-Magic-Packet enable state.  This bool is the
+    // single gate for the WoWLAN firmware arming performed on the D3/sleep
+    // path (handleSystemPowerStateChange).  When false (the default), the
+    // driver arms nothing, exactly matching the historical inert behavior.
     magicPacketEnabled = active;
+    XYLog("DEBUG %s Wake-on-Magic-Packet %s\n", __FUNCTION__,
+          active ? "ENABLED" : "disabled");
     return kIOReturnSuccess;
 }
 

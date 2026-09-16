@@ -2052,6 +2052,58 @@ struct iwx_scd_queue_cfg_cmd {
 #define IWX_WOWLAN_GET_STATUSES        0xe5
 #define IWX_WOWLAN_TX_POWER_PER_DB    0xe6
 
+/*
+ * WoWLAN configuration command payload (WOWLAN_CONFIGURATION, 0xe1).
+ *
+ * Borrowed faithfully from Linux 6.12.87
+ *   drivers/net/wireless/intel/iwlwifi/fw/api/d3.h
+ *     enum iwl_wowlan_wakeup_filters
+ *     enum iwl_wowlan_flags
+ *     struct iwl_wowlan_config_cmd  (WOWLAN_CONFIG_API_S_VER_5; the same
+ *       28-byte layout is used for v6, where non_qos_seq is reserved).
+ * The bundled iwlwifi-ty-a0-gf-a0-68 firmware advertises
+ * WOWLAN_CONFIGURATION v6.
+ */
+enum iwx_wowlan_wakeup_filters {
+    IWX_WOWLAN_WAKEUP_MAGIC_PACKET          = (1 << 0),
+    IWX_WOWLAN_WAKEUP_PATTERN_MATCH         = (1 << 1),
+    IWX_WOWLAN_WAKEUP_BEACON_MISS           = (1 << 2),
+    IWX_WOWLAN_WAKEUP_LINK_CHANGE           = (1 << 3),
+    IWX_WOWLAN_WAKEUP_GTK_REKEY_FAIL        = (1 << 4),
+    IWX_WOWLAN_WAKEUP_EAP_IDENT_REQ         = (1 << 5),
+    IWX_WOWLAN_WAKEUP_4WAY_HANDSHAKE        = (1 << 6),
+    IWX_WOWLAN_WAKEUP_ENABLE_NET_DETECT     = (1 << 7),
+    IWX_WOWLAN_WAKEUP_RF_KILL_DEASSERT      = (1 << 8),
+    IWX_WOWLAN_WAKEUP_REMOTE_LINK_LOSS      = (1 << 9),
+    IWX_WOWLAN_WAKEUP_REMOTE_SIGNATURE_TABLE = (1 << 10),
+    IWX_WOWLAN_WAKEUP_REMOTE_TCP_EXTERNAL   = (1 << 11),
+    IWX_WOWLAN_WAKEUP_REMOTE_WAKEUP_PACKET  = (1 << 12),
+    IWX_WOWLAN_WAKEUP_IOAC_MAGIC_PACKET     = (1 << 13),
+    IWX_WOWLAN_WAKEUP_HOST_TIMER            = (1 << 14),
+    IWX_WOWLAN_WAKEUP_RX_FRAME              = (1 << 15),
+    IWX_WOWLAN_WAKEUP_BCN_FILTERING         = (1 << 16),
+};
+
+enum iwx_wowlan_flags {
+    IWX_WOWLAN_FLAG_IS_11W_ASSOC            = (1 << 0),
+    IWX_WOWLAN_FLAG_ENABLE_L3_FILTERING     = (1 << 1),
+    IWX_WOWLAN_FLAG_ENABLE_NBNS_FILTERING   = (1 << 2),
+    IWX_WOWLAN_FLAG_ENABLE_DHCP_FILTERING   = (1 << 3),
+    IWX_WOWLAN_FLAG_ENABLE_STORE_BEACON     = (1 << 4),
+};
+
+struct iwx_wowlan_config_cmd {
+    uint32_t wakeup_filter;
+    uint16_t non_qos_seq;
+    uint16_t qos_seq[8];
+    uint8_t wowlan_ba_teardown_tids;
+    uint8_t is_11n_connection;
+    uint8_t offloading_tid;
+    uint8_t flags;
+    uint8_t sta_id;
+    uint8_t reserved;
+} __packed; /* WOWLAN_CONFIG_API_S_VER_5 */
+
 /* and for NetDetect */
 #define IWX_NET_DETECT_CONFIG_CMD        0x54
 #define IWX_NET_DETECT_PROFILES_QUERY_CMD    0x56
