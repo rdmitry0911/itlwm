@@ -1263,6 +1263,20 @@ cache-only `setPOWERSAVE(...)`.
 - `setOFFLOAD_NDP` no longer invents a dependency on local `fNetIf`
   attachment; the recovered Apple-visible gate is only `NULL -> 0x16`
 
+> **VERIFICATION BANNER (2026-09-16, HEAD `41422763`).** Every remaining
+> `open_confirmed` / `open_confirmed_with_fix_candidate` item below was re-audited
+> block-by-block against current HEAD and found **STALE-FIXED — none is genuinely
+> open**. The inventory was authored in the association-FAILING era; association
+> now works end-to-end (WPA3/SAE join, scan, DHCP, traffic), so every assoc-path
+> theory here is fixed or obsolete. Positively-fixed: capability ABI 0x1c (#14),
+> capability content sanitize (#15), USE_APPLE_SUPPLICANT (#20), scan chanSpec
+> `0xc000|ch` (#21), selector-20 `handleCardSpecific`→`setASSOCIATE` route
+> (#22/@1269/@1310), `ROAM_PROFILE` real marshaling (#23), `getCHIP_POWER_RANGE`
+> real carrier (#25). Obsolete narrowing-theories: #16/#17/#18/#24 (the hidden
+> 0x45 gate / gate-proxy / slot[470] bridge were never needed — assoc reaches the
+> real local owner via the selector-20 route). These `status:` lines are retained
+> for history; treat them as CLOSED. (audit: subagent aed0d9ed.)
+
 ## New Open Runtime Root Cause After `471f6f1`
 
 - queue: runtime post-closeout
