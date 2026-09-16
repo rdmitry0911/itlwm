@@ -441,6 +441,7 @@ public:
     int    iwx_alloc_tx_ring(struct iwx_softc *, struct iwx_tx_ring *, int);
     void    iwx_reset_tx_ring(struct iwx_softc *, struct iwx_tx_ring *);
     void    iwx_free_tx_ring(struct iwx_softc *, struct iwx_tx_ring *);
+    void    iwx_drain_tx_ring_node_refs(struct iwx_softc *, struct iwx_tx_ring *, int);
     void    iwx_enable_rfkill_int(struct iwx_softc *);
     int    iwx_check_rfkill(struct iwx_softc *);
     void    iwx_enable_interrupts(struct iwx_softc *);

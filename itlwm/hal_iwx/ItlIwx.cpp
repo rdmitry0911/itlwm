@@ -6549,6 +6549,55 @@ fail:    iwx_free_tx_ring(sc, ring);
     return err;
 }
 
+/* Two-phase orphan-node drain shared by iwx_reset_tx_ring / iwx_free_tx_ring.
+ * Detach every remaining node reference BEFORE releasing any of them: a release
+ * can fire the deferred BSS-switch callback (ni_unref_cb) once the last transient
+ * reference drains, and that callback must not observe a still-populated ring
+ * slot.  Interleaving clear+release per entry would fire it while a later slot's
+ * data.in is still set (the defect iwn_*_tx_ring's two-phase drain fixes).  A
+ * gen3 BA ring holds up to IWX_MIN_256_BA_QUEUE_SIZE_GEN3 (1024) slots, too large
+ * for a stack array, so the detached set is heap-backed (M_NOWAIT, allocated only
+ * when orphans exist). */
+void ItlIwx::
+iwx_drain_tx_ring_node_refs(struct iwx_softc *sc, struct iwx_tx_ring *ring,
+    int count)
+{
+    int i, norphan = 0;
+
+    for (i = 0; i < count; i++)
+        if (ring->data[i].in != NULL)
+            norphan++;
+    if (norphan == 0)
+        return;
+
+    struct ieee80211_node **drained = (struct ieee80211_node **)
+        malloc(norphan * sizeof(*drained), 0, M_NOWAIT);
+    if (drained == NULL) {
+        /* Extreme OOM only: fall back to per-entry release.  The narrow
+         * concurrent-roam-teardown race this guards is preferable to leaking
+         * every orphan node reference. */
+        for (i = 0; i < count; i++) {
+            struct ieee80211_node *ni = ring->data[i].in != NULL ?
+                &ring->data[i].in->in_ni : NULL;
+            ring->data[i].in = NULL;
+            if (ni != NULL)
+                ieee80211_release_node(&sc->sc_ic, ni);
+        }
+        return;
+    }
+
+    int ndrained = 0;
+    for (i = 0; i < count && ndrained < norphan; i++) {
+        if (ring->data[i].in != NULL) {
+            drained[ndrained++] = &ring->data[i].in->in_ni;
+            ring->data[i].in = NULL;
+        }
+    }
+    for (i = 0; i < ndrained; i++)
+        ieee80211_release_node(&sc->sc_ic, drained[i]);
+    ::free(drained);
+}
+
 void ItlIwx::
 iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
 {
@@ -6593,13 +6642,7 @@ iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     ring->queued = 0;
     ring->cur = 0;
     ring->tail = 0;
-    for (i = 0; i < ring->ring_count; i++) {
-        struct ieee80211_node *ni = ring->data[i].in != NULL ?
-            &ring->data[i].in->in_ni : NULL;
-        ring->data[i].in = NULL;
-        if (ni != NULL)
-            ieee80211_release_node(&sc->sc_ic, ni);
-    }
+    iwx_drain_tx_ring_node_refs(sc, ring, ring->ring_count);
     ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
@@ -6649,13 +6692,7 @@ iwx_free_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     ring->ap_queue_full = false;
     ring->ring_count = 0;
     ring->queued = ring->cur = ring->tail = 0;
-    for (i = 0; i < count; i++) {
-        struct ieee80211_node *ni = ring->data[i].in != NULL ?
-            &ring->data[i].in->in_ni : NULL;
-        ring->data[i].in = NULL;
-        if (ni != NULL)
-            ieee80211_release_node(&sc->sc_ic, ni);
-    }
+    iwx_drain_tx_ring_node_refs(sc, ring, count);
     ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 

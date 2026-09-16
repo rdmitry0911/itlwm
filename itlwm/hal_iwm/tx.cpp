@@ -157,14 +157,22 @@ iwm_free_tx_ring(iwm_softc *sc, struct iwm_tx_ring *ring)
         memset(&data->info, 0, sizeof(data->info));
     }
     ring->queued = ring->cur = ring->tail = 0;
-    /* Include orphan references left by an earlier partial/reset path. */
+    /* Detach every remaining (orphan) node reference BEFORE releasing any of
+     * them: a release can fire the deferred BSS-switch callback (ni_unref_cb)
+     * as soon as the last transient reference drains, and that callback must
+     * not observe a still-populated ring slot.  Interleaving clear+release per
+     * entry would fire it while a later slot's data.in is still set.  Mirrors
+     * iwn_free_tx_ring's two-phase drain (orphans left by a partial/reset path). */
+    struct ieee80211_node *drained[IWM_TX_RING_COUNT];
+    int ndrained = 0;
     for (i = 0; i < IWM_TX_RING_COUNT; i++) {
-        struct ieee80211_node *ni = ring->data[i].in != NULL ?
-            &ring->data[i].in->in_ni : NULL;
-        ring->data[i].in = NULL;
-        if (ni != NULL)
-            ieee80211_release_node(&sc->sc_ic, ni);
+        if (ring->data[i].in != NULL) {
+            drained[ndrained++] = &ring->data[i].in->in_ni;
+            ring->data[i].in = NULL;
+        }
     }
+    for (i = 0; i < ndrained; i++)
+        ieee80211_release_node(&sc->sc_ic, drained[i]);
     ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
@@ -210,13 +218,21 @@ iwm_reset_tx_ring(struct iwm_softc *sc, struct iwm_tx_ring *ring)
     ring->queued = 0;
     ring->cur = 0;
     ring->tail = 0;
+    /* Two-phase orphan drain: detach every remaining node reference BEFORE
+     * releasing any, so a release that fires the deferred BSS-switch callback
+     * (ni_unref_cb) never observes a still-populated ring slot.  Interleaving
+     * clear+release per entry would fire it while a later slot's data.in is
+     * still set.  Mirrors iwn_reset_tx_ring. */
+    struct ieee80211_node *drained[IWM_TX_RING_COUNT];
+    int ndrained = 0;
     for (i = 0; i < IWM_TX_RING_COUNT; i++) {
-        struct ieee80211_node *ni = ring->data[i].in != NULL ?
-            &ring->data[i].in->in_ni : NULL;
-        ring->data[i].in = NULL;
-        if (ni != NULL)
-            ieee80211_release_node(&sc->sc_ic, ni);
+        if (ring->data[i].in != NULL) {
+            drained[ndrained++] = &ring->data[i].in->in_ni;
+            ring->data[i].in = NULL;
+        }
     }
+    for (i = 0; i < ndrained; i++)
+        ieee80211_release_node(&sc->sc_ic, drained[i]);
     ieee80211_tx_node_retire_drain(&sc->sc_ic, &retired);
 }
 
