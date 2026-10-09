@@ -65,9 +65,59 @@ unexpected AP reset replay and resident IWM SAE owner contracts pass. The
 static stop checks now follow the real `iwm_stop_internal` body and separately
 verify the external wrapper, rather than dropping the old cancellation check.
 
-Build, macOS fixture, loaded-image and runtime evidence are pending at this
-source checkpoint. Evidence logs are in the current laboratory control root
-under `radio-stop-*`.
+The same seven new controls and the existing complete IWM/IWX init-ready
+fixtures pass on macOS. Both historical controls compile there, then exit 134
+at the intended assertion; Darwin's missing-ready error is 35, Linux's is 11.
+
+## Loaded candidate and real S3 regression
+
+Production `e689972e3fcf4c44a032d71731825e9e45f4bb38` is committed/pushed,
+built from the clean isolated guest checkout, transactionally installed and
+loaded. Build source identity is `38fff67b1a04`; all 1088 undefined imports
+resolve against the real BootKC. Private AuxKC admission and exact
+build/installed bundle equality pass. Four companions and rollback are
+retained under
+`/private/var/tmp/aiam-iwn-activation-iwm9260-stope689972e-20261009`.
+
+- Loaded UUID: `4ED4ECEA-0106-3F4D-9B90-18A96B049E21`.
+- Mach-O SHA256: `2c65cdee33c887bc8637eff5825c26b08700fa5e67d2143a30632e498a4eedd8`.
+- Boot: `3298EDC9-BB1E-422B-BF45-D65C10A9B674`.
+
+Actual S3 is confirmed by QEMU `paused (suspended)` and serial `ACPI SLEEP`.
+The same boot returned after 39 seconds; the framework reports WakeTime
+1.280 seconds. FBT observes IOPM Off, lower disable, stop owner entry, init
+drain with self-counts 0/1, device erase, stop owner end (generation 1), then
+successful lower disable return. The stop interval is about 664 ms on this
+RFKILL-blocked card. IOPM On subsequently produces the owned epoch-2 RFKILL
+failure and its deferred upper failure dispatch. No actual firmware-init
+owner entry or successful on-air ready was observed.
+
+Four post-S3 native Off/On controls pass, readbacks remain Off and en2/default
+route are intact. Three additional controls use an exact inner `setPOWER`
+probe: real SET returns NotReady `0xe00002d8` in 2.553, 2.016 and 1.947 ms.
+Their command-process exit status is not relabelled as radio success.
+
+The first trace had an overbroad `setPOWER` wildcard producing nested timing
+samples and printed a bool return as 32 bits. Those raw samples are retained
+but excluded from timing/boolean claims. The corrected script uses the exact
+inner function and an 8-bit bool return. An initial loaded-state check hit
+SIGPIPE from `grep -q` under pipefail; the independently repeated complete
+loaded-line check passes. Transient SSH failures during reboot/wake are
+retained; same-boot management recovery is verified. GUI evidence is still
+the login screen, not a connection matrix pass.
+
+Evidence logs are in the current laboratory control root under `radio-stop-*`.
+
+## Separate LAB release artifact
+
+Release `v2.4.0-alpha` has additional asset `625987470`,
+`AirportItlwm-Tahoe-Iwm-EarlyOff-e689972e.kext.zip`, 15,713,420 bytes,
+SHA256 `42076839e3a2310ca1a837f36a6c8785111b8b8ce406436187186a65c32198d3`.
+The archive is the installed bundle without a rebuild; its extracted Mach-O
+matches the loaded hash. A fresh API read verifies the new size/digest, all
+six older assets unchanged, and all preceding release notes byte-for-byte
+preserved as a suffix. The default archive is unchanged. The label and notes
+retain unsigned LAB ONLY, RFKILL and missing on-air qualification.
 
 ## Still open
 
