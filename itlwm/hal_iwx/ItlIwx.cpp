@@ -949,7 +949,7 @@ reportRadioPowerOnFailure(uint64_t requestEpoch, IOReturn status,
         return;
     const struct ItlRadioPowerOnFailureV1 failure = {
         kItlRadioPowerOnFailureVersion, sizeof(ItlRadioPowerOnFailureV1),
-        requestEpoch, status, reason, lowerError, 0
+        requestEpoch, static_cast<uint32_t>(status), reason, lowerError, 0
     };
     /* Only a copied, claimed request may fail. The controller callback is
      * nonblocking: Off can own its command gate while draining this task. */

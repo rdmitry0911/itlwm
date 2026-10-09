@@ -9345,7 +9345,7 @@ noteRadioPowerOnFailure(const struct ItlRadioPowerOnFailureV1 *failure)
         state.availabilityEpoch == failure->requestEpoch &&
         state.pendingPowerOnEpoch == failure->requestEpoch) {
         state.failedPowerOnEpoch = failure->requestEpoch;
-        state.powerOnFailureStatus = failure->status;
+        state.powerOnFailureStatus = static_cast<IOReturn>(failure->status);
         state.powerOnFailureQueued = true;
         ++state.users;
         source = state.source;

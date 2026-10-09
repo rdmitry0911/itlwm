@@ -8,14 +8,17 @@
 #include <functional>
 #include <initializer_list>
 
-using IOReturn = uint32_t;
+using IOReturn = int32_t;
 using UInt32 = uint32_t;
 using u_int8_t = uint8_t;
 using IOInterruptState = unsigned;
 using AbsoluteTime = uint64_t;
-constexpr IOReturn kIOReturnSuccess = 0, kIOReturnNotReady = 0xe00002d8,
-    kIOReturnBadArgument = 0xe00002c7, kIOReturnIOError = 0xe00002ca,
-    kIOReturnAborted = 0xe00002eb, kIOReturnTimeout = 0xe00002d6;
+constexpr IOReturn kIOReturnSuccess = 0,
+    kIOReturnNotReady = static_cast<IOReturn>(0xe00002d8),
+    kIOReturnBadArgument = static_cast<IOReturn>(0xe00002c7),
+    kIOReturnIOError = static_cast<IOReturn>(0xe00002ca),
+    kIOReturnAborted = static_cast<IOReturn>(0xe00002eb),
+    kIOReturnTimeout = static_cast<IOReturn>(0xe00002d6);
 constexpr IOReturn THREAD_AWAKENED = 0, THREAD_TIMED_OUT = 1;
 constexpr int THREAD_ABORTSAFE = 0, kMillisecondScale = 1;
 constexpr uint8_t kWiFiPowerOff = 0, kWiFiPowerOn = 1;
@@ -196,11 +199,13 @@ static void fatal_and_late_rfkill() {
         lower.run();
         assert(lower.com.sc_ic.callbacks == 1 && lower.initCalls == 0);
         assert(lower.com.sc_ic.lastFailure.requestEpoch == epoch);
-        assert(lower.com.sc_ic.lastFailure.status == (fatal == MVM_FLAG_RFKILL ? kIOReturnNotReady : kIOReturnIOError));
+        assert(static_cast<IOReturn>(lower.com.sc_ic.lastFailure.status) ==
+               (fatal == MVM_FLAG_RFKILL ? kIOReturnNotReady : kIOReturnIOError));
         assert(upper.gateReads == 0 && upper.gate.wakes == 0);
         serviceInterrupt(upper);
         upper.loop.gated = true;
-        assert(upper.waitForDeferredPowerOnAvailability(epoch, 15000) == lower.com.sc_ic.lastFailure.status);
+        assert(upper.waitForDeferredPowerOnAvailability(epoch, 15000) ==
+               static_cast<IOReturn>(lower.com.sc_ic.lastFailure.status));
         assert(upper.gate.sleeps == 0 && upper.gate.wakes == 1 && upper.wakeBulletins == 0);
         assert(upper.pmPowerStateFlags & kAirportItlwmPmDriverAvailabilityPendingBit);
         assert(upper.fWclPhysicalScanLifecycle.pendingPowerOnEpoch == epoch);

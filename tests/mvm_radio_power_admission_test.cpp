@@ -7,7 +7,7 @@
 #include <functional>
 #include <HAL/ItlRadioPowerOnFailureV1.h>
 
-using IOReturn = uint32_t;
+using IOReturn = int32_t;
 using UInt32 = uint32_t;
 using IOInterruptState = unsigned;
 struct IOSimpleLock { bool held = false; };
@@ -19,10 +19,10 @@ static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, IOInterruptSta
 }
 struct IONetworkInterface {};
 constexpr IOReturn kIOReturnSuccess = 0;
-constexpr IOReturn kIOReturnNotReady = 0xe00002d8;
-constexpr IOReturn kIOReturnTimeout = 0xe00002d6;
-constexpr IOReturn kIOReturnBadArgument = 0xe00002c7;
-constexpr IOReturn kIOReturnAborted = 0xe00002eb;
+constexpr IOReturn kIOReturnNotReady = static_cast<IOReturn>(0xe00002d8);
+constexpr IOReturn kIOReturnTimeout = static_cast<IOReturn>(0xe00002d6);
+constexpr IOReturn kIOReturnBadArgument = static_cast<IOReturn>(0xe00002c7);
+constexpr IOReturn kIOReturnAborted = static_cast<IOReturn>(0xe00002eb);
 constexpr uint8_t kWiFiPowerOff = 0, kWiFiPowerOn = 1, kWiFiPowerStandby = 4;
 constexpr uint32_t kAirportItlwmPowerOnReadyTimeoutMs = 15000;
 constexpr int kWatchDogTimerPeriod = 1000;

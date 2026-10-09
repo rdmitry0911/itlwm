@@ -94,6 +94,14 @@ Logs: `activation-failure-payloads-linux.log`,
 
 ## Qualification still required
 
+The first full macOS build of `92207a86` caught an ABI-double mismatch:
+SDK IOReturn is signed int, while the fixtures had used uint32_t. The packet
+stores the status bit pattern as uint32_t, so both producers and the receiver
+now convert explicitly, and both fixtures use the SDK's signed type. The
+failed build was not installed; its log is retained. A preceding command
+also used the wrong power-off test filename and exited before building; the
+correct WCL contract passed on retry.
+
 This software checkpoint is not yet a loaded-image or real asynchronous
 failure observation. The lab's 9260 currently reports hardware RF_KILL in
 both Linux and macOS. No radio block is bypassed. A real guest sleep/wake
