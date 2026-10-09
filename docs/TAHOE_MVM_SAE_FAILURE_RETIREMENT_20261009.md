@@ -98,9 +98,20 @@ The first Off/On reads correctly. The second and third Off requests continue
 to read On through six one-second polls each; the boot UUID and management
 remain unchanged. Serial records the actual POWER setter entered
 (`handler=1`) and returned `0xe00002d6`; this is not an omitted IOC dispatch.
-This source-connected recovery/control discrepancy is the next top-priority
-cycle. It is separate from the physical RFKILL cause. No GUI result is inferred
-from these native controls.
+No GUI result is inferred from these native controls.
+
+Follow-up passive FBT on the exact loaded image narrows that observation:
+the controller GET initially returns Off; SET On enters
+`handlePowerStateChangeCore` and waits 15.005 seconds before returning
+`0xe00002d6` (the configured 15000 ms lower-ready timeout). During the wait,
+GET returns the tentative On state. The next requested Off does not enter
+the traced setter during that pending call. After its timeout and rollback,
+native readback returns Off, and a standalone Off remains Off. Thus this is
+not evidence of a permanently stuck radio-off state. The short repeated
+matrix fails while failed activation is pending; the next priority is prompt
+real lower-init failure/cancellation propagation, not bypassing RFKILL or
+fabricating a lower-ready success. Read the raw
+`power-control-trace.log` and `power-control-trace-commands.log` together.
 
 Evidence root:
 `/home/dima/Projects/aiam/scratch/iwm-9260-runtime-20261009.mo5CXe/`.
