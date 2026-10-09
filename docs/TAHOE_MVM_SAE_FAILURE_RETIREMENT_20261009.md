@@ -71,6 +71,44 @@ embedded identity still named the old HEAD. It is not the deployment or
 release candidate. A committed-source rebuild and loaded UUID/hash check
 are required before runtime claims.
 
+## Committed-image build and runtime checkpoint
+
+Production commit `d2d8f1d8246c42a5d23a5e8286bacb4551e14510` was pushed to
+`origin/tahoe-iwn-sae-bridge-runtime`. The isolated guest worktree was aligned
+with that commit without changing the preexisting dirty main worktree.
+MacOS reran both 27-case MVM tests, the 254+24 queued-state groups and all
+68 scan-terminal groups, then built against its actual 25C56 BootKC.
+
+- Committed source identity: `92be77103720`.
+- Built, installed and loaded UUID: `1ABD7B76-3780-3690-A8AC-370A4A156866`.
+- Mach-O SHA256: `26e1ac4bd91020ecbde9f57e47ad5cf596b8cd3baf50df09d81fc7a95cf2da25`.
+- All 1088 imports resolve; no `_thread_call_cancel_wait`.
+- Private AuxKC admission PASS; canonical hashes unchanged by preflight.
+- Transactional activation preserved all four companion members and retained
+  rollback copies of the previous canonical bundle and AuxKC.
+- New boot UUID: `7E0F0479-E47A-47A1-A360-7A8C3E87E940`; SSH returned within
+  the first bounded 55-second observation. No kext unload was attempted.
+- Independent management remained on `en2`, `10.0.6.15`, default `10.0.6.2`.
+
+The 9260 still logs `iwm_init_task SKIP iwm_init: fatal=2 IFF_UP=1 IFF_RUNNING=0`.
+Boot/load success does not execute the new on-air failure path.
+
+A repeated native `networksetup` power test is **FAIL**, not an off/on pass.
+The first Off/On reads correctly. The second and third Off requests continue
+to read On through six one-second polls each; the boot UUID and management
+remain unchanged. Serial records the actual POWER setter entered
+(`handler=1`) and returned `0xe00002d6`; this is not an omitted IOC dispatch.
+This source-connected recovery/control discrepancy is the next top-priority
+cycle. It is separate from the physical RFKILL cause. No GUI result is inferred
+from these native controls.
+
+Evidence root:
+`/home/dima/Projects/aiam/scratch/iwm-9260-runtime-20261009.mo5CXe/`.
+Relevant logs are `sae-retirement-linux-final.log`, both
+`sae-retirement-negative-{iwm,iwx}.log`, `sae-retirement-macos-committed.log`,
+`sae-retirement-preflight.log`, `sae-retirement-activation.log`,
+`sae-retirement-loaded.log` and `sae-retirement-power-stable.log`.
+
 ## Remaining scope
 
 No on-air test can currently reach scan/auth on the assigned IWM 9260 because
