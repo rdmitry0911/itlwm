@@ -92,7 +92,7 @@ Logs: `activation-failure-payloads-linux.log`,
 `activation-failure-negative-{iwm,iwx}.log` and
 `activation-supersession-negative-iwm.log`.
 
-## Qualification still required
+## Full build and loaded IWM runtime
 
 The first full macOS build of `92207a86` caught an ABI-double mismatch:
 SDK IOReturn is signed int, while the fixtures had used uint32_t. The packet
@@ -102,13 +102,68 @@ failed build was not installed; its log is retained. A preceding command
 also used the wrong power-off test filename and exited before building; the
 correct WCL contract passed on retry.
 
-This software checkpoint is not yet a loaded-image or real asynchronous
-failure observation. The lab's 9260 currently reports hardware RF_KILL in
-both Linux and macOS. No radio block is bypassed. A real guest sleep/wake
-attempt will be evaluated separately; native blocked Off/On regression can
-exercise the previous admission fix but cannot by itself qualify this new
-post-admission terminal. IWX hardware, GUI repeated open/WPA2/WPA3, saved
-networks, DHCP/traffic, AP and successful sleep/wake are not qualified here.
+The corrected production commit `cfa8d39763dcfb89435ec1a586c2723b4e6bfd41`
+is pushed and built from a clean committed guest tree. Both admission and
+failure fixtures, standard scan and power-off contracts passed on macOS.
+The complete Linux payload aggregate passed again with signed IOReturn.
+All 1088 BootKC imports resolve, without `_thread_call_cancel_wait`.
+
+- Source identity: `af147f2b6af2`.
+- Built, installed and loaded UUID: `7DB624F0-37A5-368B-9286-0257CFEB967E`.
+- Mach-O SHA256: `bf8a8e52baafa49ffe216537957b90ab131ad0807a7491e6dd533223da71508a`.
+- Guest boot: `5897D32D-0B4C-477C-9C1F-4C1A3FE2559D`.
+- Transaction root: `/private/var/tmp/aiam-iwn-activation-iwm9260-failcfa8d397-20261009`.
+
+Private AuxKC admission passed without canonical mutation. Transactional
+activation reached READY, preserved four companion members and retained
+rollback copies. The installed bundle is byte-equal to the built bundle.
+Only the disposable guest rebooted; no unload or physical-host reboot.
+
+### Actual S3 failure qualification
+
+With Wi-Fi logical On and the real RF_KILL retained, `pmset sleepnow` entered
+S3. QEMU reported `paused (suspended)` and serial recorded ACPI SLEEP. A
+`system_wakeup` command to this VM's private monitor resumed it. Guest power
+history reports 44 seconds asleep and a 1.457-second wake; independent SSH
+and en2/default10.0.6.2 returned in the same boot with the same loaded UUID.
+
+Passive FBT records the actual new path, not an injected callback:
+
+`IOPM_SYSTEM Off -> IOPM_SYSTEM On -> ENABLE_ADAPTER epoch=2 ->
+IWM_ACCEPT epoch=2 -> IWM_FAILURE(epoch=2, status=0xe00002d8, reason=1,
+lower=EPERM) -> UPPER_FAILURE epoch=2 -> FAILURE_DOORBELL epoch=2`.
+
+Admission to the lower failure took 4.244 ms; admission to the gated failure
+action took 9.418 ms. Serial records RADIO_POWER_ON_FAILED, and subsequent
+IOC reads expose `isDriverAvailable=0`. Logical POWER remains On after the
+failed IOPM wake; this is preserved policy state, not an operational radio.
+The early SSH timeout during S3 is retained in the command log.
+
+Four subsequent actual native Off/On cycles passed. Off remained readable
+after each RF_KILL refusal; FBT recorded On returns `0xe00002d8` in 1.804,
+1.897, 1.937 and 2.104 ms. Management and boot identity survived. This proves
+the real IWM failed-wake terminal and bounded repeated blocked controls,
+not a public commandSleep failure under real late RF_KILL (fixture-only).
+
+Logs: `activation-failure-{signed-macos-build,activation,loaded}.log`,
+`activation-failure-sleep-{trace,commands,qemu}.log`,
+`activation-failure-wakeup-{qemu,reachability}.log`, and
+`activation-failure-postwake-power-{trace,commands}.log`. Exact probes and
+native sequence are `radio-failure-runtime.d` and `radio-failure-repeat.sh`.
+
+The exact installed unsigned Debug bundle is the separate LAB release asset
+`AirportItlwm-Tahoe-IwmIwx-RadioFailure-cfa8d397.kext.zip`, 15,711,181 bytes,
+ZIP SHA256 `85c0e6ea388a4f93e6a6db1bd8eec75412902d6d04a1f06f7af5a5ec1e21fd34`.
+GitHub asset `625769224` independently reports that digest and size. Older
+assets, including the default qualified archive, are retained unchanged.
+
+## Remaining qualification
+
+The lab's 9260 still reports hardware RF_KILL in both Linux and macOS. No
+radio block is bypassed. IWX hardware, GUI repeated open/WPA2/WPA3, saved
+networks, DHCP/traffic, AP and successful Wi-Fi recovery after sleep are not
+qualified here. Lower terminal ownership is software-tested for both MVM
+families but hardware-qualified only for this IWM failed system-wake path.
 The existing untagged REOPENED readiness identity remains a separate audit
 item; this new failure does not borrow the current pending epoch as its
 producer identity. Physical host `10.90.10.22` is untouched.
