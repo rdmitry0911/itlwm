@@ -12,6 +12,9 @@ case "$(uname -s)" in
   *) compat_flags="-Itests/compat" ;;
 esac
 
+bash scripts/test_mvm_radio_power_admission.sh iwm
+bash scripts/test_mvm_radio_power_admission.sh iwx
+
 "$cxx" \
   -std=c++17 \
   -Wall \

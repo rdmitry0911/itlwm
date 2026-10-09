@@ -184,6 +184,7 @@ public:
     virtual bool attach(IOPCIDevice *device) override;
     virtual void detach(IOPCIDevice *device) override;
     IOReturn enable(IONetworkInterface *netif) override;
+    IOReturn checkRadioPowerOnAdmission() override;
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
 

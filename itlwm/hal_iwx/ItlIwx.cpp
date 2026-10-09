@@ -882,6 +882,17 @@ getDriverController()
     return this;
 }
 
+IOReturn ItlIwx::
+checkRadioPowerOnAdmission()
+{
+    if (com.sc_flags & IWX_FLAG_SHUTDOWN)
+        return kIOReturnNotReady;
+    /* This is the physical CSR level, not the last interrupt's cached flag.
+     * A rejected public request leaves firmware discovery and the next
+     * request after hardware unblock reachable. */
+    return iwx_check_rfkill(&com) ? kIOReturnNotReady : kIOReturnSuccess;
+}
+
 IOReturn ItlIwx::enable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;

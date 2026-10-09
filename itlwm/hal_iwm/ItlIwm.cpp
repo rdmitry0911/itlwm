@@ -1098,6 +1098,17 @@ releaseAll()
 }
 
 IOReturn ItlIwm::
+checkRadioPowerOnAdmission()
+{
+    if (com.sc_flags & IWM_FLAG_SHUTDOWN)
+        return kIOReturnNotReady;
+    /* CSR_GP_CNTRL is available with firmware stopped. Read the physical
+     * switch again on every request: a stale cached RFKILL must not strand
+     * the next request after the switch has been released. */
+    return iwm_check_rfkill(&com) ? kIOReturnNotReady : kIOReturnSuccess;
+}
+
+IOReturn ItlIwm::
 enable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;

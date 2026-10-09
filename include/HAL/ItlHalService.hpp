@@ -250,6 +250,15 @@ public:
 
     virtual IOReturn enable(IONetworkInterface *interface) = 0;
 
+    /* Public radio-on admission, separate from bootstrap firmware discovery.
+     * MVM can synchronously reject an asserted physical RF_KILL before the
+     * upper controller arms a readiness epoch. This check neither starts the
+     * radio nor promises readiness; accepted activation still needs the real
+     * post-init REOPENED event. Legacy backends retain their own admission. */
+    virtual IOReturn checkRadioPowerOnAdmission() {
+        return kIOReturnSuccess;
+    }
+
     virtual IOReturn disable(IONetworkInterface *interface) = 0;
 
     virtual struct ieee80211com *get80211Controller() = 0;

@@ -13296,6 +13296,13 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 
     RT_SET(9);
     sRT.enableCnt++;
+    /* enable() requests activation, not readiness. Preserve a synchronous
+     * lower refusal instead of arming queues/watchdog and waiting for an
+     * impossible REOPENED event. Accepted requests still use that event. */
+    const IOReturn enableResult = fHalService->enable(netif);
+    sRT.lastEnableRet = enableResult;
+    if (enableResult != kIOReturnSuccess)
+        return enableResult;
 #if __IO80211_TARGET >= __MAC_26_0
     if (fTxCompQueue)
         fTxCompQueue->enable();
@@ -13306,12 +13313,10 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 #endif
     /* enable() only requests lower activation.  Keep a drained WCL ticket
      * closed until the backend emits its tagged post-init REOPENED event. */
-    (void)fHalService->enable(netif);
     if (!fWatchdogStopping && watchdogTimer) {
         watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
         watchdogTimer->enable();
     }
-    sRT.lastEnableRet = kIOReturnSuccess;
     return kIOReturnSuccess;
 }
 
@@ -13443,6 +13448,26 @@ int AirportItlwm::handlePowerStateChangeCore(uint32_t newState,
 {
     uint8_t prevState = power_state;
     int err = 0;
+
+    const bool startsLowerRadio =
+        (newState == kWiFiPowerOn &&
+         (prevState == kWiFiPowerOff || prevState == kWiFiPowerStandby)) ||
+        (newState == kWiFiPowerStandby && prevState == kWiFiPowerOff);
+    if (startsLowerRadio) {
+        const IOReturn admission = fHalService != nullptr
+            ? fHalService->checkRadioPowerOnAdmission() : kIOReturnNotReady;
+        if (admission != kIOReturnSuccess) {
+            /* The reference powerOn error returns to its caller and leaves
+             * the old logical radio state intact. An asserted Intel RF_KILL
+             * already makes lower init impossible; do not arm a 15-second
+             * ready wait, publish availability, or classify this temporary
+             * physical block as a permanent firmware failure. Bootstrap
+             * discovery deliberately does not use this public preflight. */
+            XYLog("DEBUG %s DENIED %u -> %u: lower radio admission=0x%x\n",
+                  __FUNCTION__, prevState, newState, admission);
+            return admission;
+        }
+    }
 
     if ((newState == kWiFiPowerOff && prevState == kWiFiPowerOn) ||
         (newState == kWiFiPowerOff && prevState == kWiFiPowerStandby)) {
