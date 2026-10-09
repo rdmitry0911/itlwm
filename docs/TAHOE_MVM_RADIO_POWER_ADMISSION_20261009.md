@@ -63,11 +63,68 @@ regression introduced by radio admission.
 
 Evidence root:
 `/home/dima/Projects/aiam/scratch/iwm-9260-runtime-20261009.mo5CXe/`.
-Current software logs are `power-admission-linux.log`,
+Software logs are `power-admission-linux.log`,
 `power-admission-negative-iwm.log` and `power-admission-negative-enable.log`.
-Committed-source macOS build, installation, loaded identity and the repeated
-real native power trace remain required before claiming this runtime layer
-closed.
+Both new tests and the standard scan/power-off gates also passed on macOS.
+
+## Loaded IWM runtime
+
+Production commit `018ef78f2e683e09a7c1808975c8db73aff3a532` is pushed. The
+isolated guest source was checked out at that commit with a clean tracked
+tree before building against the running 25C56 BootKC. All 1088 imports
+resolve; no `_thread_call_cancel_wait` dependency is present.
+
+- Source identity: `b42b98e6d256`.
+- Built, installed and loaded UUID: `EE0C07B7-14E2-3D34-A5DE-B2DBA6B73234`.
+- Mach-O SHA256: `8437e0aab2652bcf720b3cda08e9f2ff809de6a87adc4a8c28ecbeda663c75d9`.
+- New guest boot: `A2BC227C-551D-4FA6-B836-49EAFDFA9D24`.
+- Transactional activation root:
+  `/private/var/tmp/aiam-iwn-activation-iwm9260-power018ef78f-20261009`.
+
+Private AuxKC admission passed and left the canonical hashes unchanged.
+Activation reached READY, preserved all four companion members and retained
+previous bundle/AuxKC rollback copies. A following unprivileged dwarfdump
+failed on the deliberately sealed canonical bundle; sudo loaded-image checks
+after guest reboot succeeded and verified UUID, hash and byte-equal bundles.
+No kext unload or physical-host reboot was used.
+
+The first native On request after the new boot performs bootstrap discovery,
+not the normal radio-on transition. The initial expectation of immediate Off
+therefore failed and is retained in `power-admission-control-commands.log`.
+After discovery settled and a real Off completed, two four-cycle native
+series passed with every readback Off. The second series has a passive FBT
+trace of all four actual IWM admissions and controller returns:
+
+| Attempt | IWM/POWER result | SET duration |
+| --- | --- | --- |
+| 1 | `0xe00002d8` | 1.979631 ms |
+| 2 | `0xe00002d8` | 1.945927 ms |
+| 3 | `0xe00002d8` | 2.066939 ms |
+| 4 | `0xe00002d8` | 1.910159 ms |
+
+The prior image took 15.005 seconds. Native command exit zero is not the
+success criterion: FBT establishes the real kernel refusal, and the power
+readbacks remain Off. The same boot and independent en2/default10.0.6.2
+management survive all attempts. Serial records the new DENIED branch, not
+a ready event. This closes prompt refusal of an already-asserted RF_KILL on
+the real IWM 9260; hardware unblock is covered only by the software fixture.
+IWX has compiled/tested coverage, not this hardware qualification. GUI was
+not logged in, and no GUI result is inferred.
+
+Runtime logs: `power-admission-macos-build.log`,
+`power-admission-{preflight,activation,loaded}.log`,
+`power-admission-postbootstrap-commands.log`,
+`power-admission-postbootstrap-trace.log` and
+`power-admission-traced-commands.log`. The exact passive program is
+`power-admission-control.d`; `power-admission-repeat.sh` reproduces the native
+sequence after bootstrap.
+
+The release archive is the byte-equal installed unsigned Debug bundle,
+without rebuilding or re-signing:
+`AirportItlwm-Tahoe-IwmIwx-RadioAdmission-018ef78f.kext.zip`, 15,708,905 bytes,
+SHA256 `455b75fb4b01e4a57dd00e08333ae6eb8bc1121d0941ab3d64da7147ece9e32e`.
+It is a separate LAB candidate for `v2.4.0-alpha`, not a replacement for the
+older default qualified asset.
 
 ## Remaining user paths
 
