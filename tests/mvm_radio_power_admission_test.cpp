@@ -67,6 +67,8 @@ public:
     unsigned enableCalls = 0;
     IOReturn enableResult = kIOReturnSuccess;
     uint64_t radioPowerOnEpoch = 0;
+    uint64_t radioReadyReceiptSerial = 0, radioReadyRequestEpoch = 0;
+    uint32_t radioReadyBackendGeneration = 0;
     int mvm_check_rfkill(mvm_softc *);
     IOReturn checkRadioPowerOnAdmission();
     IOReturn enableForRadioPowerOn(IONetworkInterface *, uint64_t);

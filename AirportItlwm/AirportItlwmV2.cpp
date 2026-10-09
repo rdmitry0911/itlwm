@@ -2794,6 +2794,8 @@ static void wclPhysicalScanTerminalInterruptAction(
     uint32_t terminalStatus = 0;
     uint64_t wakePowerChangedEpoch = 0;
     uint64_t failedPowerOnEpoch = 0;
+    uint64_t radioReadyReceipt = 0;
+    uint64_t radioReadyAvailabilityEpoch = 0;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     if (!state.settingUp && !state.stopping && !state.tearingDown &&
         sender == state.source && state.snapshotReady &&
@@ -2812,6 +2814,13 @@ static void wclPhysicalScanTerminalInterruptAction(
         state.failedPowerOnEpoch == state.availabilityEpoch)
         failedPowerOnEpoch = state.failedPowerOnEpoch;
     if (!state.settingUp && !state.stopping && !state.tearingDown &&
+        sender == state.source && state.radioReadyQueued &&
+        state.failedPowerOnEpoch == 0 &&
+        state.radioReadyAvailabilityEpoch == state.availabilityEpoch) {
+        radioReadyReceipt = state.radioReady.receiptSerial;
+        radioReadyAvailabilityEpoch = state.radioReadyAvailabilityEpoch;
+    }
+    if (!state.settingUp && !state.stopping && !state.tearingDown &&
         sender == state.source && state.powerOnWakePublishQueued &&
         state.powerOnWakeBulletinPending &&
         state.powerOnWakeScanTerminalObserved &&
@@ -2822,11 +2831,15 @@ static void wclPhysicalScanTerminalInterruptAction(
         wakePowerChangedEpoch = state.availabilityEpoch;
     IOSimpleLockUnlockEnableInterrupt(lock, irq);
 
+    if (failedPowerOnEpoch != 0)
+        that->dispatchRadioPowerOnFailure(failedPowerOnEpoch);
+    if (radioReadyReceipt != 0)
+        that->dispatchRadioReady(radioReadyReceipt, radioReadyAvailabilityEpoch);
+    /* Ready and a fast census terminal can share this doorbell. Preserve
+     * the reference order: availability precedes exposure of scan results. */
     if (generation != 0 && backendGeneration != 0)
         dispatchWclPhysicalScanTerminal(that, generation, backendGeneration,
                                         terminalStatus);
-    if (failedPowerOnEpoch != 0)
-        that->dispatchRadioPowerOnFailure(failedPowerOnEpoch);
     if (wakePowerChangedEpoch != 0)
         that->dispatchDeferredWakePowerChanged(wakePowerChangedEpoch);
 }
@@ -9059,6 +9072,9 @@ armDeferredPowerOnAvailability(bool wakeBulletinPending)
     lifecycle.failedPowerOnEpoch = 0;
     lifecycle.powerOnFailureStatus = kIOReturnSuccess;
     lifecycle.powerOnFailureQueued = false;
+    lifecycle.radioReady = {};
+    lifecycle.radioReadyAvailabilityEpoch = 0;
+    lifecycle.radioReadyQueued = false;
     lifecycle.powerOnPublishQueued = false;
     lifecycle.powerOnWakeBulletinPending = wakeBulletinPending;
     lifecycle.powerOnWakeScanTerminalObserved = false;
@@ -9136,6 +9152,9 @@ cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch)
         lifecycle.failedPowerOnEpoch = 0;
         lifecycle.powerOnFailureStatus = kIOReturnSuccess;
         lifecycle.powerOnFailureQueued = false;
+        lifecycle.radioReady = {};
+        lifecycle.radioReadyAvailabilityEpoch = 0;
+        lifecycle.radioReadyQueued = false;
         lifecycle.powerOnPublishQueued = false;
         lifecycle.powerOnWakeBulletinPending = false;
         lifecycle.powerOnWakeScanTerminalObserved = false;
@@ -9164,6 +9183,9 @@ void AirportItlwm::cancelDeferredPowerOnAvailabilityRaw()
         lifecycle.failedPowerOnEpoch = 0;
         lifecycle.powerOnFailureStatus = kIOReturnSuccess;
         lifecycle.powerOnFailureQueued = false;
+        lifecycle.radioReady = {};
+        lifecycle.radioReadyAvailabilityEpoch = 0;
+        lifecycle.radioReadyQueued = false;
         lifecycle.powerOnPublishQueued = false;
         lifecycle.powerOnWakeBulletinPending = false;
         lifecycle.powerOnWakeScanTerminalObserved = false;
@@ -9378,6 +9400,7 @@ void AirportItlwm::dispatchRadioPowerOnFailure(uint64_t expectedEpoch)
         state.availabilityEpoch == expectedEpoch;
     if (current) {
         state.powerOnFailureQueued = false;
+        state.radioReadyQueued = false;
         state.powerOnWakeBulletinPending = false;
         state.powerOnWakeScanTerminalObserved = false;
         state.powerOnWakeAvailabilityAckObserved = false;
@@ -9388,6 +9411,103 @@ void AirportItlwm::dispatchRadioPowerOnFailure(uint64_t expectedEpoch)
         gate->commandWakeup(&state.availabilityEpoch, false);
     /* A failed system wake keeps DRIVER_AVAILABLE pending and association
      * fail-closed. There is no sleeping IOPM caller and no success bulletin. */
+}
+
+void AirportItlwm::
+noteRadioReady(const struct ItlRadioReadyV1 *ready)
+{
+    if (ready == nullptr || ready->version != kItlRadioReadyVersion ||
+        ready->size != sizeof(*ready) || ready->reserved != 0 ||
+        ready->receiptSerial == 0 || ready->backendGeneration == 0)
+        return;
+    AirportItlwmWclPhysicalScanLifecycle &state = fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = state.admissionLock;
+    if (lock == nullptr)
+        return;
+    IOInterruptEventSource *source = nullptr;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    const bool ownsActivation = ready->requestEpoch != 0
+        ? state.pendingPowerOnEpoch == ready->requestEpoch &&
+          state.availabilityEpoch == ready->requestEpoch
+        : state.pendingPowerOnEpoch == 0;
+    const bool newerReceipt =
+        state.radioReadyAvailabilityEpoch != state.availabilityEpoch ||
+        ready->receiptSerial > state.radioReady.receiptSerial;
+    if (ownsActivation && !state.settingUp && !state.stopping &&
+        !state.tearingDown && state.source != nullptr &&
+        state.failedPowerOnEpoch == 0 && newerReceipt) {
+        state.radioReady = *ready;
+        state.radioReadyAvailabilityEpoch = state.availabilityEpoch;
+        state.radioReadyQueued = true;
+        ++state.users;
+        source = state.source;
+        source->retain();
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    /* Do not enter the upper gate or mutate ESS/scan state here. Off can
+     * own that gate while draining the very scan worker that called us. */
+    if (source != nullptr)
+        signalWclPhysicalScanTerminalDoorbell(state, lock, source);
+}
+
+void AirportItlwm::dispatchRadioReady(uint64_t expectedReceipt,
+                                      uint64_t expectedAvailabilityEpoch)
+{
+    IOWorkLoop *workloop = getWorkLoop();
+    AirportItlwmWclPhysicalScanLifecycle &state = fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = state.admissionLock;
+    if (workloop == nullptr || !workloop->inGate() || lock == nullptr ||
+        fHalService == nullptr || expectedReceipt == 0)
+        return;
+    struct ItlRadioReadyV1 ready = {};
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    const bool current = !state.settingUp && !state.stopping &&
+        !state.tearingDown && state.radioReadyQueued &&
+        state.radioReady.receiptSerial == expectedReceipt &&
+        state.radioReadyAvailabilityEpoch == expectedAvailabilityEpoch &&
+        state.availabilityEpoch == expectedAvailabilityEpoch &&
+        state.failedPowerOnEpoch == 0 &&
+        (state.radioReady.requestEpoch != 0
+            ? state.pendingPowerOnEpoch == state.radioReady.requestEpoch &&
+              state.availabilityEpoch == state.radioReady.requestEpoch
+            : state.pendingPowerOnEpoch == 0);
+    if (current) {
+        ready = state.radioReady;
+        state.radioReadyQueued = false;
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    if (!current || power_state == kWiFiPowerOff ||
+        !fHalService->isRadioReadyCurrent(&ready))
+        return;
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic == nullptr)
+        return;
+    if (TAILQ_EMPTY(&ic->ic_ess)) {
+        ieee80211_deselect_ess(ic);
+        ic->ic_flags |= IEEE80211_F_AUTO_JOIN;
+    }
+    reopenWclPhysicalScanAfterRadioReset();
+    reopenStandardPhysicalScanAfterRadioReset();
+    (void)publishDefaultAPSTAInterfaceGated(this, nullptr, nullptr, nullptr,
+                                           nullptr);
+    /* A genuine bootstrap/reset receipt can reopen the lower scan planes,
+     * but epoch zero cannot authorize a later public POWER availability. */
+    if (ready.requestEpoch == 0 ||
+        !fHalService->isRadioReadyCurrent(&ready))
+        return;
+    irq = IOSimpleLockLockDisableInterrupt(lock);
+    const bool publish = state.availabilityEpoch == ready.requestEpoch &&
+        state.pendingPowerOnEpoch == ready.requestEpoch &&
+        state.failedPowerOnEpoch == 0 && !state.powerOnPublishQueued;
+    if (publish) {
+        state.readyPowerOnEpoch = ready.requestEpoch;
+        state.powerOnPublishQueued = true;
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    if (publish)
+        (void)publishDeferredPowerAvailabilityGated(
+            this, (void *)(uintptr_t)kAirportItlwmDeferredPowerAvailabilityPublishOn,
+            (void *)(uintptr_t)ready.requestEpoch, nullptr, nullptr);
 }
 
 bool AirportItlwm::retireFailedRadioPowerOn(uint64_t expectedEpoch,
@@ -10007,6 +10127,12 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     }
 
     if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED) {
+        if (data != nullptr) {
+            that->noteRadioReady(static_cast<const struct ItlRadioReadyV1 *>(data));
+            return;
+        }
+        /* Legacy IWN still emits NULL. MVM supplies the immutable value
+         * above and never borrows this legacy current-pending identity. */
         /*
          * A system sleep does not require WCLNetManager to issue
          * WCL_LEAVE_NETWORK, so the Intel reset can retain the preceding

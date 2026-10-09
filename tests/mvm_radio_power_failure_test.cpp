@@ -1,6 +1,7 @@
 // Complete production init task, request CAS, upper mailbox, doorbell action
 // and wait. Firmware init, hardware state, IOKit locks/sleep are doubles.
 #include <HAL/ItlRadioPowerOnFailureV1.h>
+#include <HAL/ItlRadioReadyV1.h>
 #include <cassert>
 #include <cerrno>
 #include <cstdint>
@@ -80,6 +81,9 @@ struct AirportItlwmWclPhysicalScanLifecycle {
     uint64_t availabilityEpoch = 0, pendingPowerOnEpoch = 0, readyPowerOnEpoch = 0, failedPowerOnEpoch = 0;
     IOReturn powerOnFailureStatus = 0;
     bool powerOnPublishQueued = false, powerOnFailureQueued = false;
+    ItlRadioReadyV1 radioReady = {};
+    uint64_t radioReadyAvailabilityEpoch = 0;
+    bool radioReadyQueued = false;
     bool powerOnWakeBulletinPending = false, powerOnWakeScanTerminalObserved = false;
     bool powerOnWakeAvailabilityAckObserved = false, powerOnWakePublishQueued = false;
 };
@@ -102,6 +106,7 @@ public:
     uint64_t armDeferredPowerOnAvailability(bool = false);
     void noteRadioPowerOnFailure(const ItlRadioPowerOnFailureV1 *);
     void dispatchRadioPowerOnFailure(uint64_t);
+    void dispatchRadioReady(uint64_t, uint64_t) { assert(false); }
     IOReturn waitForDeferredPowerOnAvailability(uint64_t, uint32_t);
     void dispatchDeferredWakePowerChanged(uint64_t) { ++wakeBulletins; }
 };
@@ -159,6 +164,8 @@ public:
     IOSimpleLock lowerLock;
     IOSimpleLock *wclScanLock = &lowerLock;
     uint64_t radioPowerOnEpoch = 0;
+    uint64_t radioReadyReceiptSerial = 0, radioReadyRequestEpoch = 0;
+    uint32_t radioReadyBackendGeneration = 0;
     unsigned initCalls = 0, stops = 0;
     int initResult = EIO;
     std::function<void()> initHook;

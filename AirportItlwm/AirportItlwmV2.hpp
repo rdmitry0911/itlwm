@@ -25,6 +25,7 @@
 #include <ClientKit/AirportItlwmSaeRelayFsmV1.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
 #include <HAL/ItlRadioPowerOnFailureV1.h>
+#include <HAL/ItlRadioReadyV1.h>
 #if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
 #include <ClientKit/AirportItlwmIwnLabDirectSaeStimulusV1.h>
 #endif
@@ -352,6 +353,9 @@ struct AirportItlwmWclPhysicalScanLifecycle {
     uint64_t failedPowerOnEpoch;
     IOReturn powerOnFailureStatus;
     bool powerOnFailureQueued;
+    ItlRadioReadyV1 radioReady;
+    uint64_t radioReadyAvailabilityEpoch;
+    bool radioReadyQueued;
     bool powerOnPublishQueued;
     bool powerOnWakeBulletinPending;
     bool powerOnWakeScanTerminalObserved;
@@ -641,6 +645,8 @@ public:
                                                 uint32_t timeoutMs);
     void noteRadioPowerOnFailure(const struct ItlRadioPowerOnFailureV1 *);
     void dispatchRadioPowerOnFailure(uint64_t);
+    void noteRadioReady(const struct ItlRadioReadyV1 *);
+    void dispatchRadioReady(uint64_t, uint64_t);
     bool retireFailedRadioPowerOn(uint64_t, IONetworkInterface *);
     IOReturn prepareTahoeWclAssociationBackend() const;
     bool cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch);

@@ -1414,7 +1414,8 @@ struct ieee80211_wcl_scan_invalidation {
 
 /* The lower radio completed a reset/init boundary and entered its first
  * post-init scan state; a drained WCL ticket may admit a later request again.
- * This carries no scan result or completion. */
+ * This carries no scan result or completion. IWM/IWX borrow a value-only
+ * ItlRadioReadyV1 receipt for the callback; legacy IWN still supplies NULL. */
 #define IEEE80211_EVT_WCL_SCAN_REOPENED          13
 
 /*

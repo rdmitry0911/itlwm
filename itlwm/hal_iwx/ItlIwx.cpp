@@ -590,6 +590,9 @@ bool ItlIwx::attach(IOPCIDevice *device)
      */
     wclScanNeedsReopen = true;
     __atomic_store_n(&radioPowerOnEpoch, 0, __ATOMIC_RELEASE);
+    radioReadyReceiptSerial = 0;
+    radioReadyRequestEpoch = 0;
+    radioReadyBackendGeneration = 0;
     wclSaeAdmissionReserved = false;
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
@@ -896,6 +899,9 @@ enableForRadioPowerOn(IONetworkInterface *netif, uint64_t requestEpoch)
         return kIOReturnNotReady;
     }
     __atomic_store_n(&radioPowerOnEpoch, requestEpoch, __ATOMIC_RELEASE);
+    radioReadyReceiptSerial = 0;
+    radioReadyRequestEpoch = 0;
+    radioReadyBackendGeneration = 0;
     __atomic_store_n(&com.init_retry_count, 0, __ATOMIC_RELEASE);
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
     const IOReturn result = enable(netif);
@@ -1279,6 +1285,7 @@ void ItlIwx::
 noteWclScanRadioReady(uint64_t serial)
 {
     bool publish = false;
+    struct ItlRadioReadyV1 ready = {};
 
     if (wclScanLock == NULL)
         return;
@@ -1286,6 +1293,12 @@ noteWclScanRadioReady(uint64_t serial)
         IOSimpleLockLockDisableInterrupt(wclScanLock);
     if (scanCommand.current(serial, com.sc_generation) && wclScanNeedsReopen) {
         wclScanNeedsReopen = false;
+        radioReadyReceiptSerial = serial;
+        radioReadyRequestEpoch = radioPowerOnRequestEpoch();
+        radioReadyBackendGeneration = com.sc_generation;
+        ready = { kItlRadioReadyVersion, sizeof(ready),
+            radioReadyRequestEpoch, radioReadyReceiptSerial,
+            radioReadyBackendGeneration, 0 };
         publish = true;
     }
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
@@ -1309,8 +1322,28 @@ noteWclScanRadioReady(uint64_t serial)
               iwx_softc_supports_ap_go(&com) ? 1U : 0U);
         if (com.sc_ic.ic_event_handler != NULL)
             (*com.sc_ic.ic_event_handler)(
-                &com.sc_ic, IEEE80211_EVT_WCL_SCAN_REOPENED, NULL);
+                &com.sc_ic, IEEE80211_EVT_WCL_SCAN_REOPENED, &ready);
     }
+}
+
+bool ItlIwx::
+isRadioReadyCurrent(const struct ItlRadioReadyV1 *ready)
+{
+    if (ready == nullptr || ready->version != kItlRadioReadyVersion ||
+        ready->size != sizeof(*ready) || ready->reserved != 0 ||
+        ready->receiptSerial == 0 || ready->backendGeneration == 0 ||
+        wclScanLock == nullptr)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const bool current =
+        ready->receiptSerial == radioReadyReceiptSerial &&
+        ready->requestEpoch == radioReadyRequestEpoch &&
+        ready->backendGeneration == radioReadyBackendGeneration &&
+        ready->backendGeneration == static_cast<uint32_t>(com.sc_generation) &&
+        (com.sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_RFKILL | IWX_FLAG_HW_ERR)) == 0 &&
+        (com.sc_ic.ic_if.if_flags & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return current;
 }
 
 ItlIwxWclScanTerminalKind ItlIwx::
@@ -3001,6 +3034,9 @@ invalidateWclScanForReset()
     wclSaeAdmissionReserved = false;
     wclScanNeedsReopen = true;
     scanCommand.invalidate();
+    radioReadyReceiptSerial = 0;
+    radioReadyRequestEpoch = 0;
+    radioReadyBackendGeneration = 0;
     scanCommandPolicy = ItlScanCommandPolicy{};
     stateTransition.invalidate();
     scanCommandAbortSerial = 0;

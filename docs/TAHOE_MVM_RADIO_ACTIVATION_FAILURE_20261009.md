@@ -164,6 +164,7 @@ radio block is bypassed. IWX hardware, GUI repeated open/WPA2/WPA3, saved
 networks, DHCP/traffic, AP and successful Wi-Fi recovery after sleep are not
 qualified here. Lower terminal ownership is software-tested for both MVM
 families but hardware-qualified only for this IWM failed system-wake path.
-The existing untagged REOPENED readiness identity remains a separate audit
-item; this new failure does not borrow the current pending epoch as its
+The subsequent `TAHOE_MVM_RADIO_READY_OWNERSHIP_20261009.md` checkpoint
+addresses MVM REOPENED readiness identity and the success callback's gate
+entry. This failure fix does not borrow the current pending epoch as its
 producer identity. Physical host `10.90.10.22` is untouched.

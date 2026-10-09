@@ -78,6 +78,7 @@ public:
     uint64_t radioPowerOnRequestEpoch() const;
     uint8_t claimRadioPowerOnRetry(uint64_t);
     void reportRadioPowerOnFailure(uint64_t, IOReturn, uint32_t, int);
+    bool isRadioReadyCurrent(const struct ItlRadioReadyV1 *) override;
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
 
@@ -752,6 +753,9 @@ public:
     bool wclScanPublicationInvalidated;
     bool wclScanNeedsReopen;
     uint64_t radioPowerOnEpoch;
+    uint64_t radioReadyReceiptSerial;
+    uint64_t radioReadyRequestEpoch;
+    uint32_t radioReadyBackendGeneration;
     bool wclSaeAdmissionReserved;
 };
 

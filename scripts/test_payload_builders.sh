@@ -16,6 +16,8 @@ bash scripts/test_mvm_radio_power_admission.sh iwm
 bash scripts/test_mvm_radio_power_admission.sh iwx
 bash scripts/test_mvm_radio_power_failure.sh iwm
 bash scripts/test_mvm_radio_power_failure.sh iwx
+bash scripts/test_mvm_radio_ready.sh iwm
+bash scripts/test_mvm_radio_ready.sh iwx
 
 "$cxx" \
   -std=c++17 \

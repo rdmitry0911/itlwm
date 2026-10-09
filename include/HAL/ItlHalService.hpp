@@ -21,6 +21,7 @@
 #include <HAL/ItlSaeAuthTransportV1.h>
 #include <HAL/ItlSaeWclCredentialV1.h>
 #include <HAL/ItlRadioPowerOnFailureV1.h>
+#include <HAL/ItlRadioReadyV1.h>
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/pci/IOPCIDevice.h>
@@ -270,6 +271,10 @@ public:
     }
     virtual void cancelRadioPowerOnRequest(uint64_t requestEpoch) {
         (void)requestEpoch;
+    }
+    virtual bool isRadioReadyCurrent(const struct ItlRadioReadyV1 *ready) {
+        (void)ready;
+        return false;
     }
 
     virtual IOReturn disable(IONetworkInterface *interface) = 0;

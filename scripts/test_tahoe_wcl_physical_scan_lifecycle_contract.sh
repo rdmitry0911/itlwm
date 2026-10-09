@@ -175,6 +175,63 @@ reopened_start = event.find("if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED)")
 reopened_end = event.find("if (msgCode == IEEE80211_EVT_STANDARD_SCAN_INVALIDATED)",
                           reopened_start)
 reopened = event[reopened_start:reopened_end]
+tagged_ready_end = reopened.find("/* Legacy IWN")
+if tagged_ready_end < 0:
+    fail("missing explicit legacy/receipt readiness split")
+tagged_ready = reopened[:tagged_ready_end]
+ordered(tagged_ready, "MVM ready ingress never enters the upper gate",
+        "if (data != nullptr)", "noteRadioReady(", "return;")
+for token in ("runAction", "ieee80211_deselect_ess", "reopenWclPhysicalScan"):
+    forbid(tagged_ready, token, "lower ready ingress doing gated effects")
+ready_note = body(v2, "noteRadioReady(const struct ItlRadioReadyV1 *ready)",
+                  "immutable MVM ready mailbox")
+ordered(ready_note, "exact accepted activation before ready mailbox",
+        "state.pendingPowerOnEpoch == ready->requestEpoch",
+        "state.availabilityEpoch == ready->requestEpoch",
+        "state.radioReady = *ready",
+        "IOSimpleLockUnlockEnableInterrupt(lock, irq)",
+        "signalWclPhysicalScanTerminalDoorbell(state, lock, source)")
+for token in ("runAction", "getCommandGate", "reopenWclPhysicalScan"):
+    forbid(ready_note, token, "ready mailbox entering gate or mutating scan")
+ready_dispatch = body(v2, "void AirportItlwm::dispatchRadioReady(",
+                      "gated MVM ready receipt dispatch")
+ordered(ready_dispatch, "validated receipt before all readiness effects",
+        "workloop->inGate()",
+        "state.radioReady.receiptSerial == expectedReceipt",
+        "state.availabilityEpoch == expectedAvailabilityEpoch",
+        "fHalService->isRadioReadyCurrent(&ready)",
+        "ieee80211_deselect_ess(ic)",
+        "reopenWclPhysicalScanAfterRadioReset()",
+        "reopenStandardPhysicalScanAfterRadioReset()",
+        "publishDefaultAPSTAInterfaceGated(this",
+        "ready.requestEpoch == 0",
+        "state.readyPowerOnEpoch = ready.requestEpoch",
+        "publishDeferredPowerAvailabilityGated(")
+forbid(ready_dispatch, "noteRadioScanReadyAndQueuePowerOnAvailability()",
+       "tagged ready borrowing the legacy pending epoch")
+interrupt_action = body(v2,
+    "static void wclPhysicalScanTerminalInterruptAction(",
+    "shared ready and scan terminal doorbell")
+ordered(interrupt_action, "coalesced readiness precedes scan result exposure",
+        "that->dispatchRadioPowerOnFailure(failedPowerOnEpoch)",
+        "that->dispatchRadioReady(radioReadyReceipt",
+        "dispatchWclPhysicalScanTerminal(that, generation")
+for source, prefix, mixed in ((iwm, "IWM", "Iwm"), (iwx, "IWX", "Iwx")):
+    ready_validate = body(source,
+        "isRadioReadyCurrent(const struct ItlRadioReadyV1 *ready)",
+        f"{prefix} persistent readiness receipt")
+    for token in ("ready->receiptSerial == radioReadyReceiptSerial",
+                  "ready->requestEpoch == radioReadyRequestEpoch",
+                  "ready->backendGeneration == radioReadyBackendGeneration",
+                  "IFF_UP | IFF_RUNNING"):
+        require(ready_validate, token, f"{prefix} exact lower readiness validation")
+    forbid(ready_validate, "scanCommand.current",
+           f"{prefix} completed scan incorrectly revoking actual readiness")
+    reset = body(source, f"void Itl{mixed}::\ninvalidateWclScanForReset()",
+                 f"{prefix} reset invalidates readiness")
+    for token in ("radioReadyReceiptSerial = 0", "radioReadyRequestEpoch = 0",
+                  "radioReadyBackendGeneration = 0"):
+        require(reset, token, f"{prefix} ready reset fence")
 require(reopened, "TAILQ_EMPTY(&ic->ic_ess)",
         "empty-ESS wake scan policy fence")
 require(reopened, "ieee80211_deselect_ess(ic)",
@@ -385,6 +442,8 @@ ordered(iwx_radio_ready, "IWX reset reopening",
         "if (scanCommand.current(serial, com.sc_generation) && wclScanNeedsReopen)",
         "wclScanNeedsReopen = false",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
+require(iwx_radio_ready, "IEEE80211_EVT_WCL_SCAN_REOPENED, &ready",
+        "IWX immutable ready callback value")
 
 iwx_claim = body(
     iwx, "claimWclScanTerminal(ItlIwxWclScanTerminal *terminal, bool leafHeld)",
@@ -551,6 +610,8 @@ ordered(iwm_radio_ready, "IWM reset reopening",
         "if (scanCommand.current(serial, com.sc_generation) && wclScanNeedsReopen)",
         "wclScanNeedsReopen = false",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
+require(iwm_radio_ready, "IEEE80211_EVT_WCL_SCAN_REOPENED, &ready",
+        "IWM immutable ready callback value")
 
 iwm_claim = body(
     iwm, "claimWclScanTerminal(ItlIwmWclScanTerminal *terminal, bool leafHeld)",
