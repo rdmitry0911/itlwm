@@ -681,8 +681,15 @@ public:
     int    iwm_send_paging_cmd(struct iwm_softc *, const struct iwm_fw_sects *);
     int    iwm_init_hw(struct iwm_softc *);
     int    iwm_init(struct _ifnet *);
+    bool   iwm_radio_init_begin(struct iwm_softc *, int *);
+    bool   iwm_radio_init_current(struct iwm_softc *, int);
+    void   iwm_radio_init_end(struct iwm_softc *);
+    bool   iwm_radio_stop_begin(struct iwm_softc *, int *);
+    void   iwm_radio_stop_drain(struct iwm_softc *, uint32_t, uint32_t);
+    void   iwm_radio_stop_end(struct iwm_softc *, int);
     static void    iwm_start(struct _ifnet *);
     void    iwm_stop(struct _ifnet *);
+    void    iwm_stop_internal(struct _ifnet *, bool);
     static void    iwm_watchdog(struct _ifnet *);
     static int    iwm_ioctl(struct _ifnet *, u_long, caddr_t);
 #ifdef IWM_DEBUG

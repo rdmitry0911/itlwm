@@ -782,6 +782,10 @@ struct iwm_softc {
      */
     IOLock       *sc_sae_tx_lifecycle_lock;
     uint32_t      sc_sae_tx_lifecycle_active;
+    /* Firmware init owns one detach lease until its body exits.  Stop closes
+     * the generation first, then drains this owner before erasing DMA. */
+    uint32_t      sc_radio_init_refs;
+    uint32_t      sc_radio_stop_refs;
     bool          sc_sae_tx_lifecycle_closed;
     bool          sc_sae_tx_detaching;
     bool          sc_sae_tx_task_ready;

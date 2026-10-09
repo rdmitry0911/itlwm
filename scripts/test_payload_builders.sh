@@ -20,6 +20,7 @@ bash scripts/test_mvm_radio_ready.sh iwm
 bash scripts/test_mvm_radio_ready.sh iwx
 bash scripts/test_mvm_radio_init_ready.sh iwm
 bash scripts/test_mvm_radio_init_ready.sh iwx
+bash scripts/test_iwm_radio_init_stop.sh
 
 "$cxx" \
   -std=c++17 \

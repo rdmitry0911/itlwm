@@ -5615,6 +5615,97 @@ err:
     return err;
 }
 
+bool ItlIwm::
+iwm_radio_init_begin(struct iwm_softc *sc, int *generation)
+{
+    if (sc->sc_sae_tx_lifecycle_lock == NULL)
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (sc->sc_sae_tx_detaching || (sc->sc_flags & IWM_FLAG_SHUTDOWN) ||
+        (sc->sc_ic.ic_if.if_flags & (IFF_UP | IFF_RUNNING)) != IFF_UP ||
+        sc->sc_radio_init_refs != 0 || sc->sc_radio_stop_refs != 0) {
+        IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+        return false;
+    }
+    *generation = ++sc->sc_generation;
+    sc->sc_radio_init_refs++;
+    sc->sc_sae_tx_lifecycle_active++;
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return true;
+}
+
+bool ItlIwm::
+iwm_radio_init_current(struct iwm_softc *sc, int generation)
+{
+    if (sc->sc_sae_tx_lifecycle_lock == NULL)
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    const bool current = !sc->sc_sae_tx_detaching &&
+        (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
+        (sc->sc_ic.ic_if.if_flags & IFF_UP) != 0 &&
+        sc->sc_radio_init_refs == 1 && sc->sc_radio_stop_refs == 0 &&
+        sc->sc_generation == generation;
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return current;
+}
+
+void ItlIwm::
+iwm_radio_init_end(struct iwm_softc *sc)
+{
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    KASSERT(sc->sc_radio_init_refs == 1, "sc->sc_radio_init_refs == 1");
+    KASSERT(sc->sc_sae_tx_lifecycle_active != 0,
+        "sc->sc_sae_tx_lifecycle_active != 0");
+    sc->sc_radio_init_refs--;
+    sc->sc_sae_tx_lifecycle_active--;
+    IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+bool ItlIwm::
+iwm_radio_stop_begin(struct iwm_softc *sc, int *generation)
+{
+    if (sc->sc_sae_tx_lifecycle_lock == NULL)
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (sc->sc_sae_tx_detaching || sc->sc_radio_stop_refs != 0) {
+        IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+        return false;
+    }
+    sc->sc_radio_stop_refs++;
+    sc->sc_flags |= IWM_FLAG_SHUTDOWN;
+    *generation = ++sc->sc_generation;
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return true;
+}
+
+void ItlIwm::
+iwm_radio_stop_drain(struct iwm_softc *sc, uint32_t self_init_refs,
+                     uint32_t self_stop_refs)
+{
+    if (sc->sc_sae_tx_lifecycle_lock == NULL)
+        return;
+    /* No firmware, scan leaf or controller command gate is acquired here.
+     * The init caller may retain its own single reference on timeout. */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    while (sc->sc_radio_init_refs > self_init_refs ||
+           sc->sc_radio_stop_refs > self_stop_refs)
+        IOLockSleep(sc->sc_sae_tx_lifecycle_lock, sc, THREAD_UNINT);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+void ItlIwm::
+iwm_radio_stop_end(struct iwm_softc *sc, int generation)
+{
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    KASSERT(sc->sc_radio_stop_refs == 1, "sc->sc_radio_stop_refs == 1");
+    sc->sc_radio_stop_refs--;
+    if (!sc->sc_sae_tx_detaching && sc->sc_generation == generation)
+        sc->sc_flags &= ~IWM_FLAG_SHUTDOWN;
+    IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
 int ItlIwm::
 iwm_init(struct _ifnet *ifp)
 {
@@ -5624,26 +5715,35 @@ iwm_init(struct _ifnet *ifp)
     bool driver_reset_reconnect;
     int err, generation;
     const uint64_t scanResetEpoch = that->scanCommandResetEpoch();
+
+    if (!that->iwm_radio_init_begin(sc, &generation))
+        return ENXIO;
     
     //    rw_assert_wrlock(&sc->ioctl_rwl);
     sc->agg_tid_disable = 0xffff;
     sc->agg_queue_mask = 0;
     memset(sc->sc_tx_ba, 0, sizeof(sc->sc_tx_ba));
     
-    generation = ++sc->sc_generation;
-    
     KASSERT(sc->task_refs.refs == 0, "sc->task_refs.refs == 0");
     //        refcnt_init(&sc->task_refs);
     
     err = iwm_init_hw(sc);
     if (err) {
-        if (generation == sc->sc_generation)
+        if (that->iwm_radio_init_current(sc, generation))
             iwm_stop_device(sc);
-        return err;
+        goto out;
     }
 
-    if (!that->reopenScanCommands(scanResetEpoch, generation))
-        return ENXIO;
+    if (!that->iwm_radio_init_current(sc, generation)) {
+        err = ENXIO;
+        goto out;
+    }
+    if (!that->reopenScanCommands(scanResetEpoch, generation)) {
+        if (that->iwm_radio_init_current(sc, generation))
+            iwm_stop_device(sc);
+        err = ENXIO;
+        goto out;
+    }
     
     if (sc->sc_nvm.sku_cap_11n_enable)
         iwm_setup_ht_rates(sc);
@@ -5661,8 +5761,8 @@ iwm_init(struct _ifnet *ifp)
         iwm_mfp_pae_reopen(sc);
         iwm_sae_tx_reopen(sc);
         iwm_sae_engine_reopen(sc);
-        __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
-        return 0;
+        err = 0;
+        goto out;
     }
     
     driver_reset_reconnect =
@@ -5680,21 +5780,23 @@ iwm_init(struct _ifnet *ifp)
      * harmless: the predicate is checked both before sleep and on timeout.
      */
     for (;;) {
-        if (generation != sc->sc_generation ||
-            (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0)
-            return ENXIO;
+        if (!that->iwm_radio_init_current(sc, generation)) {
+            err = ENXIO;
+            goto out;
+        }
         if (that->isRadioScanReady(static_cast<uint32_t>(generation)))
             break;
         err = tsleep_nsec(&ic->ic_state, PCATCH, "iwminit",
                           SEC_TO_NSEC(1));
-        if (generation != sc->sc_generation ||
-            (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0)
-            return ENXIO;
+        if (!that->iwm_radio_init_current(sc, generation)) {
+            err = ENXIO;
+            goto out;
+        }
         if (that->isRadioScanReady(static_cast<uint32_t>(generation)))
             break;
         if (err) {
-            iwm_stop(ifp);
-            return err;
+            that->iwm_stop_internal(ifp, true);
+            goto out;
         }
     }
 
@@ -5706,8 +5808,14 @@ iwm_init(struct _ifnet *ifp)
         (void)that->iwm_sae_driver_reset_recovery_pending(sc, true);
         XYLog("iwm_sae_reconnect DRIVER_RESET_SCAN_STARTED\n");
     }
-    __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
-    return 0;
+    err = 0;
+out:
+    if (err == 0 && !that->iwm_radio_init_current(sc, generation))
+        err = ENXIO;
+    if (err == 0)
+        __atomic_store_n(&sc->init_retry_count, 0, __ATOMIC_RELEASE);
+    that->iwm_radio_init_end(sc);
+    return err;
 }
 
 IOReturn ItlIwm::
@@ -5814,22 +5922,37 @@ iwm_start(struct _ifnet *ifp)
 void ItlIwm::
 iwm_stop(struct _ifnet *ifp)
 {
+    iwm_stop_internal(ifp, false);
+}
+
+void ItlIwm::
+iwm_stop_internal(struct _ifnet *ifp, bool caller_is_init_epoch)
+{
     struct iwm_softc *sc = (struct iwm_softc*)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
     ItlIwm *that = container_of(sc, ItlIwm, com);
     struct iwm_node *in = (struct iwm_node *)ic->ic_bss;
-    int i, s;
+    int i, s, stop_generation;
+
+    /* Closing the generation precedes both cancellation and DMA erasure.
+     * IFF_RUNNING is not an init-lifetime fence: firmware starts before it. */
+    if (!that->iwm_radio_stop_begin(sc, &stop_generation)) {
+        /* An init owner must leave so the other stop can drain it. External
+         * Off callers wait for that stop's actual hardware erase instead. */
+        if (!caller_is_init_epoch)
+            that->iwm_radio_stop_drain(sc, 0, 0);
+        return;
+    }
 
     /* This direct sc_newstate(INIT) path intentionally bypasses the macro. */
     (void)ieee80211_pae_assoc_epoch_begin(ic);
     __atomic_store_n(&ic->ic_initial_scan_census_only, 0,
                      __ATOMIC_RELEASE);
     that->invalidateWclScanForReset();
+    that->wakeupOn(&ic->ic_state);
     s = splnet();
     
     //    rw_assert_wrlock(&sc->ioctl_rwl);
-    
-    sc->sc_flags |= IWM_FLAG_SHUTDOWN; /* Disallow new tasks. */
     
     /* Cancel scheduled tasks and let any stale tasks finish up. */
     task_del(systq, &sc->init_task);
@@ -5843,6 +5966,9 @@ iwm_stop(struct _ifnet *ifp)
     //    KASSERT(sc->task_refs.refs >= 1, "sc->task_refs.refs >= 1");
     //    refcnt_finalize(&sc->task_refs, "iwmstop");
     
+    /* init_hw may still be returning from a bounded firmware wait. Never
+     * reset rings underneath it, or return Off while it can start DMA. */
+    that->iwm_radio_stop_drain(sc, caller_is_init_epoch ? 1 : 0, 1);
     iwm_stop_device(sc);
 
     /* The device reset discarded every GO firmware resource.  Publish that
@@ -5871,7 +5997,6 @@ iwm_stop(struct _ifnet *ifp)
     
     /* Reset soft state. */
     
-    sc->sc_generation++;
     for (i = 0; i < nitems(sc->sc_cmd_resp_pkt); i++) {
         ::free(sc->sc_cmd_resp_pkt[i]);
         sc->sc_cmd_resp_pkt[i] = NULL;
@@ -5894,7 +6019,6 @@ iwm_stop(struct _ifnet *ifp)
     sc->sc_flags &= ~IWM_FLAG_STA_ACTIVE;
     sc->sc_flags &= ~IWM_FLAG_TE_ACTIVE;
     sc->sc_flags &= ~IWM_FLAG_HW_ERR;
-    sc->sc_flags &= ~IWM_FLAG_SHUTDOWN;
 
     ItlRxBaSessionCount::reset(&sc->sc_rx_ba_sessions);
     sc->ba_rx.start_tidmask = 0;
@@ -5915,6 +6039,8 @@ iwm_stop(struct _ifnet *ifp)
     iwm_led_blink_stop(sc);
     memset(sc->sc_tx_timer, 0, sizeof(sc->sc_tx_timer));
     ifp->if_timer = 0;
+
+    that->iwm_radio_stop_end(sc, stop_generation);
     
     splx(s);
 }
@@ -7014,6 +7140,8 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
         goto fail4;
     }
     sc->sc_sae_tx_lifecycle_active = 0;
+    sc->sc_radio_init_refs = 0;
+    sc->sc_radio_stop_refs = 0;
     sc->sc_sae_tx_lifecycle_closed = true;
     sc->sc_sae_tx_detaching = false;
     sc->sc_sae_tx_task_ready = false;
@@ -7603,11 +7731,7 @@ iwm_activate(struct iwm_softc *sc, int act)
     
     switch (act) {
         case DVACT_QUIESCE:
-            if (ifp->if_flags & IFF_RUNNING) {
-                //                rw_enter_write(&sc->ioctl_rwl);
-                iwm_stop(ifp);
-                //                rw_exit(&sc->ioctl_rwl);
-            }
+            iwm_stop(ifp);
             break;
         case DVACT_RESUME:
             err = iwm_resume(sc);

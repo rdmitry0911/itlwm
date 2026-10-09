@@ -68,7 +68,7 @@ assert iwn_stop.index("iwn_reset_ap_runtime_state();") < \
     "IWN must publish lower AP loss before destroying firmware"
 
 for family, source, signature, device_stop, runtime_reset in (
-    ("IWM", iwm, "iwm_stop(struct _ifnet *ifp)", "iwm_stop_device(sc);",
+    ("IWM", iwm, "iwm_stop_internal(struct _ifnet *ifp,", "iwm_stop_device(sc);",
      "itl_ap_firmware_runtime_reset(&that->apRuntime, true);"),
     ("IWX", iwx, "iwx_stop_internal(struct _ifnet *ifp,",
      "iwx_stop_device(sc);", "iwx_ap_lifecycle_reset(that, false);"),

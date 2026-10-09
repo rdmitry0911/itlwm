@@ -133,6 +133,17 @@ public:
     }
     void mvm_stop(_ifnet *) { stop(); }
     void mvm_stop_internal(_ifnet *, bool, bool) { stop(); }
+    void mvm_stop_internal(_ifnet *, bool) { stop(); }
+    bool mvm_radio_init_begin(mvm_softc *, int *generation) {
+        *generation=++com.sc_generation;
+        return epochLive;
+    }
+    bool mvm_radio_init_current(mvm_softc *, int generation) {
+        return epochLive && generation==com.sc_generation &&
+            (com.sc_flags & MVM_FLAG_SHUTDOWN)==0 &&
+            (com.sc_ic.ic_if.if_flags & IFF_UP)!=0;
+    }
+    void mvm_radio_init_end(mvm_softc *) {}
     void commitScanReady() {
         assert(com.sc_ic.ic_if.if_flags & IFF_RUNNING);
         com.sc_ic.ic_state=IEEE80211_S_SCAN;

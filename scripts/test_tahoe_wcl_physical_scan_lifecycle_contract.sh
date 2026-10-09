@@ -696,7 +696,9 @@ for token in (
         "IEEE80211_EVT_WCL_SCAN_TERMINAL",
 ):
     require(iwm, token, "IWM exact upper event mapping")
-iwm_stop = body(iwm_mac, "iwm_stop(struct _ifnet *ifp)",
+iwm_stop_wrapper = body(iwm_mac, "iwm_stop(struct _ifnet *ifp)", "IWM stop entry")
+require(iwm_stop_wrapper, "iwm_stop_internal(ifp, false);", "IWM external stop owner")
+iwm_stop = body(iwm_mac, "iwm_stop_internal(struct _ifnet *ifp,",
                 "IWM hardware stop")
 require(iwm_stop, "that->invalidateWclScanForReset();",
         "IWM stop reset invalidation")

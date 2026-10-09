@@ -1194,6 +1194,8 @@ IOReturn ItlIwm::
 enable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    if (com.sc_flags & IWM_FLAG_SHUTDOWN)
+        return kIOReturnNotReady;
     if (ifp->if_flags & IFF_UP) {
         XYLog("DEBUG %s SKIP: already IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
@@ -1224,7 +1226,6 @@ disable(IONetworkInterface *netif)
     }
     if (!(ifp->if_flags & IFF_UP)) {
         XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
-        return kIOReturnSuccess;
     }
     ifp->if_flags &= ~IFF_UP;
     iwm_activate(&com, DVACT_QUIESCE);
