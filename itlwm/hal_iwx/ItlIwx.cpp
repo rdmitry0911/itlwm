@@ -589,6 +589,7 @@ bool ItlIwx::attach(IOPCIDevice *device)
      * loaded firmware passed every AP/GO carrier gate.
      */
     wclScanNeedsReopen = true;
+    __atomic_store_n(&radioPowerOnEpoch, 0, __ATOMIC_RELEASE);
     wclSaeAdmissionReserved = false;
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
@@ -883,6 +884,81 @@ getDriverController()
 }
 
 IOReturn ItlIwx::
+enableForRadioPowerOn(IONetworkInterface *netif, uint64_t requestEpoch)
+{
+    if (requestEpoch == 0)
+        return kIOReturnBadArgument;
+    if (wclScanLock == NULL)
+        return kIOReturnNotReady;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (com.sc_flags & IWX_FLAG_SHUTDOWN) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return kIOReturnNotReady;
+    }
+    __atomic_store_n(&radioPowerOnEpoch, requestEpoch, __ATOMIC_RELEASE);
+    __atomic_store_n(&com.init_retry_count, 0, __ATOMIC_RELEASE);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    const IOReturn result = enable(netif);
+    if (result != kIOReturnSuccess)
+        cancelRadioPowerOnRequest(requestEpoch);
+    return result;
+}
+
+void ItlIwx::
+cancelRadioPowerOnRequest(uint64_t requestEpoch)
+{
+    if (requestEpoch == 0)
+        return;
+    uint64_t expected = requestEpoch;
+    (void)__atomic_compare_exchange_n(&radioPowerOnEpoch, &expected, 0,
+        false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+uint64_t ItlIwx::
+radioPowerOnRequestEpoch() const
+{
+    return __atomic_load_n(&radioPowerOnEpoch, __ATOMIC_ACQUIRE);
+}
+
+uint8_t ItlIwx::
+claimRadioPowerOnRetry(uint64_t requestEpoch)
+{
+    if (wclScanLock == NULL)
+        return 0;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    /* Match even epoch zero: an old bootstrap must not consume the retry
+     * budget of a newly accepted tagged activation. Admission and this
+     * increment share the lock; a replacement resets its own budget. */
+    const uint8_t attempt = radioPowerOnRequestEpoch() == requestEpoch &&
+        (com.sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_RFKILL)) == 0
+        ? __atomic_add_fetch(&com.init_retry_count, 1, __ATOMIC_ACQ_REL) : 0;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return attempt;
+}
+
+void ItlIwx::
+reportRadioPowerOnFailure(uint64_t requestEpoch, IOReturn status,
+                          uint32_t reason, int lowerError)
+{
+    if (requestEpoch == 0 || status == kIOReturnSuccess ||
+        com.sc_ic.ic_event_handler == NULL)
+        return;
+    uint64_t expected = requestEpoch;
+    if (!__atomic_compare_exchange_n(&radioPowerOnEpoch, &expected, 0,
+            false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return;
+    const struct ItlRadioPowerOnFailureV1 failure = {
+        kItlRadioPowerOnFailureVersion, sizeof(ItlRadioPowerOnFailureV1),
+        requestEpoch, status, reason, lowerError, 0
+    };
+    /* Only a copied, claimed request may fail. The controller callback is
+     * nonblocking: Off can own its command gate while draining this task. */
+    (*com.sc_ic.ic_event_handler)(&com.sc_ic,
+        IEEE80211_EVT_RADIO_POWER_ON_FAILED,
+        const_cast<struct ItlRadioPowerOnFailureV1 *>(&failure));
+}
+
+IOReturn ItlIwx::
 checkRadioPowerOnAdmission()
 {
     if (com.sc_flags & IWX_FLAG_SHUTDOWN)
@@ -911,6 +987,7 @@ IOReturn ItlIwx::enable(IONetworkInterface *netif)
 
 IOReturn ItlIwx::disable(IONetworkInterface *netif)
 {
+    __atomic_store_n(&radioPowerOnEpoch, 0, __ATOMIC_RELEASE);
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     /* The APSTA owner has already closed its role-7 datapath.  Do not queue
      * an asynchronous firmware AP stop from this power-command workloop:
@@ -24138,6 +24215,7 @@ iwx_init_task(void *arg1)
     struct iwx_softc *sc = (struct iwx_softc *)arg1;
     struct _ifnet *ifp = &sc->sc_ic.ic_if;
     ItlIwx *that = container_of(sc, ItlIwx, com);
+    const uint64_t powerOnEpoch = that->radioPowerOnRequestEpoch();
     int s = splnet();
     int generation = sc->sc_generation;
     int fatal = (sc->sc_flags & (IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL));
@@ -24145,6 +24223,8 @@ iwx_init_task(void *arg1)
     bool attempted = false;
 
     if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
+        that->reportRadioPowerOnFailure(powerOnEpoch, kIOReturnAborted,
+            kItlRadioPowerOnFailureHardware, ECANCELED);
         splx(s);
         return;
     }
@@ -24173,25 +24253,42 @@ iwx_init_task(void *arg1)
               __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
     }
 
+    if (!attempted && fatal && (ifp->if_flags & IFF_UP) != 0) {
+        that->reportRadioPowerOnFailure(powerOnEpoch,
+            (fatal & IWX_FLAG_RFKILL) ? kIOReturnNotReady : kIOReturnIOError,
+            (fatal & IWX_FLAG_RFKILL) ? kItlRadioPowerOnFailureRfKill :
+                                           kItlRadioPowerOnFailureHardware,
+            (fatal & IWX_FLAG_RFKILL) ? EPERM : EIO);
+    } else if (attempted && error != 0 &&
+               (sc->sc_flags & IWX_FLAG_RFKILL) != 0) {
+        that->reportRadioPowerOnFailure(powerOnEpoch, kIOReturnNotReady,
+            kItlRadioPowerOnFailureRfKill, error);
+    }
+
     if (attempted && error != 0 && (ifp->if_flags & IFF_UP) != 0 &&
         (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_RFKILL)) == 0) {
-        const u_int8_t attempt = __atomic_add_fetch(
-            &sc->init_retry_count, 1, __ATOMIC_ACQ_REL);
+        const uint8_t attempt = that->claimRadioPowerOnRetry(powerOnEpoch);
 
         /* Tahoe 25C56 AppleBCMWLANCore::powerOn allows five complete lower
          * attempts before its permanent-failure terminal.  A failed IWX
          * epoch leaves admission closed and rearmed, so every retry must use
          * the bootstrap token rather than bypassing the lifecycle gate. */
-        if (attempt < 5) {
+        if (attempt != 0 && attempt < 5) {
             XYLog("%s: power-on attempt %u failed (%d), retrying\n",
                   DEVNAME(sc), (unsigned)attempt, error);
             that->iwx_bootstrap_init_task(sc);
-        } else {
-            (void)task_del(systq, &sc->init_task);
+        } else if (attempt >= 5) {
+            /* A replacement may have queued this same task after the claim.
+             * Stop self-requeueing; never delete that successor's work. */
             XYLog("%s: power-on recovery exhausted after %u attempts\n",
                   DEVNAME(sc), (unsigned)attempt);
+            that->reportRadioPowerOnFailure(powerOnEpoch, kIOReturnIOError,
+                kItlRadioPowerOnFailureRecoveryExhausted, error);
         }
     }
+
+    if (attempted && error == 0)
+        that->cancelRadioPowerOnRequest(powerOnEpoch);
 
     //    rw_exit(&sc->ioctl_rwl);
     splx(s);

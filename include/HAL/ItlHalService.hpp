@@ -20,6 +20,7 @@
 #include <IOKit/IOService.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
 #include <HAL/ItlSaeWclCredentialV1.h>
+#include <HAL/ItlRadioPowerOnFailureV1.h>
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/pci/IOPCIDevice.h>
@@ -257,6 +258,18 @@ public:
      * post-init REOPENED event. Legacy backends retain their own admission. */
     virtual IOReturn checkRadioPowerOnAdmission() {
         return kIOReturnSuccess;
+    }
+
+    /* A real post-bootstrap activation has its own upper request identity.
+     * Backends supporting a failure terminal capture it before queueing init;
+     * bootstrap and legacy callers continue through enable() without one. */
+    virtual IOReturn enableForRadioPowerOn(IONetworkInterface *interface,
+                                          uint64_t requestEpoch) {
+        (void)requestEpoch;
+        return enable(interface);
+    }
+    virtual void cancelRadioPowerOnRequest(uint64_t requestEpoch) {
+        (void)requestEpoch;
     }
 
     virtual IOReturn disable(IONetworkInterface *interface) = 0;

@@ -4,9 +4,19 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <functional>
+#include <HAL/ItlRadioPowerOnFailureV1.h>
 
 using IOReturn = uint32_t;
 using UInt32 = uint32_t;
+using IOInterruptState = unsigned;
+struct IOSimpleLock { bool held = false; };
+static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock) {
+    assert(!lock->held); lock->held = true; return 1;
+}
+static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, IOInterruptState irq) {
+    assert(irq == 1 && lock->held); lock->held = false;
+}
 struct IONetworkInterface {};
 constexpr IOReturn kIOReturnSuccess = 0;
 constexpr IOReturn kIOReturnNotReady = 0xe00002d8;
@@ -20,10 +30,15 @@ constexpr uint32_t MVM_FLAG_RFKILL = 2, MVM_FLAG_SHUTDOWN = 0x100;
 constexpr uint32_t MVM_CSR_GP_CNTRL = 0x024;
 constexpr uint32_t MVM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW = 1U << 27;
 struct mvm_softc {
+    struct ieee80211com {
+        void (*ic_event_handler)(ieee80211com *, int, void *) = nullptr;
+    } sc_ic;
     uint32_t sc_flags = 0;
     uint32_t csr = MVM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW;
     unsigned reads = 0;
+    uint8_t init_retry_count = 0;
 };
+constexpr int IEEE80211_EVT_RADIO_POWER_ON_FAILED = 27;
 static uint32_t read_csr(mvm_softc *sc, uint32_t offset) {
     assert(offset == MVM_CSR_GP_CNTRL);
     ++sc->reads;
@@ -47,10 +62,17 @@ struct Watchdog {
 class ItlMvm {
 public:
     mvm_softc com;
+    IOSimpleLock lowerLock;
+    IOSimpleLock *wclScanLock = &lowerLock;
     unsigned enableCalls = 0;
     IOReturn enableResult = kIOReturnSuccess;
+    uint64_t radioPowerOnEpoch = 0;
     int mvm_check_rfkill(mvm_softc *);
     IOReturn checkRadioPowerOnAdmission();
+    IOReturn enableForRadioPowerOn(IONetworkInterface *, uint64_t);
+    void cancelRadioPowerOnRequest(uint64_t);
+    uint64_t radioPowerOnRequestEpoch() const;
+    void reportRadioPowerOnFailure(uint64_t, IOReturn, uint32_t, int);
     IOReturn enable(IONetworkInterface *) { ++enableCalls; return enableResult; }
 };
 #include "hal.inc"
@@ -70,7 +92,9 @@ public:
     uint64_t nextEpoch = 0, pendingEpoch = 0;
     unsigned arms = 0, waits = 0, cancellations = 0, offCarriers = 0, disables = 0;
     IOReturn waitResult = kIOReturnSuccess;
-    IOReturn enableAdapter(IONetworkInterface *);
+    std::function<void()> waitHook;
+    IOReturn enableAdapter(IONetworkInterface *, uint64_t = 0);
+    bool retireFailedRadioPowerOn(uint64_t, IONetworkInterface *);
     int handlePowerStateChangeCore(uint32_t, IONetworkInterface *);
     uint64_t armDeferredPowerOnAvailability() {
         ++arms; pendingEpoch = ++nextEpoch; return pendingEpoch;
@@ -78,6 +102,10 @@ public:
     IOReturn waitForDeferredPowerOnAvailability(uint64_t epoch, uint32_t timeout) {
         assert(epoch == pendingEpoch && timeout == kAirportItlwmPowerOnReadyTimeoutMs);
         ++waits;
+        if (waitHook) {
+            auto hook = waitHook; waitHook = {}; hook();
+            return kIOReturnAborted;
+        }
         if (waitResult == kIOReturnSuccess) pendingEpoch = 0;
         return waitResult;
     }
@@ -85,11 +113,14 @@ public:
         void *action, void *epoch, void *, void *) {
         assert(target == this);
         assert(reinterpret_cast<uintptr_t>(action) == kAirportItlwmDeferredPowerAvailabilityCancelEpoch);
-        assert(reinterpret_cast<uintptr_t>(epoch) == pendingEpoch);
+        if (reinterpret_cast<uintptr_t>(epoch) != pendingEpoch)
+            return kIOReturnAborted;
         ++cancellations; pendingEpoch = 0; return kIOReturnSuccess;
     }
     void publishDeferredPowerOffAvailability() { ++offCarriers; pendingEpoch = 0; }
-    void disableAdapterCore(IONetworkInterface *) { ++disables; }
+    void disableAdapterCore(IONetworkInterface *) {
+        ++disables; hal.radioPowerOnEpoch = 0;
+    }
 };
 struct AirportItlwmControllerLifecycleOperationGuard {
     AirportItlwm *self;
@@ -175,10 +206,32 @@ static void boot_and_nonstarting_transitions() {
     assert(invalid.handlePowerStateChangeCore(kWiFiPowerOff, nullptr) == 0);
     assert(invalid.hal.com.reads == 0 && invalid.offCarriers == 0);
 }
+static void superseded_wait_does_not_rollback_successor() {
+    AirportItlwm driver;
+    driver.waitHook = [&] {
+        if (driver.hal.radioPowerOnRequestEpoch() != 0)
+            assert(driver.hal.radioPowerOnRequestEpoch() == 1);
+        assert(driver.handlePowerStateChangeCore(kWiFiPowerOff, nullptr) == 0);
+        assert(driver.handlePowerStateChangeCore(kWiFiPowerOn, nullptr) == 0);
+        assert(driver.power_state == kWiFiPowerOn);
+    };
+    assert(static_cast<IOReturn>(driver.handlePowerStateChangeCore(kWiFiPowerOn, nullptr)) == kIOReturnAborted);
+    assert(driver.power_state == kWiFiPowerOn);
+    assert(driver.hal.radioPowerOnRequestEpoch() == 2);
+    assert(driver.disables == 1 && driver.offCarriers == 1 && driver.cancellations == 0);
+    AirportItlwm failed;
+    failed.waitResult = kIOReturnTimeout;
+    assert(static_cast<IOReturn>(failed.handlePowerStateChangeCore(kWiFiPowerOn, nullptr)) == kIOReturnTimeout);
+    assert(failed.disables == 1 && failed.hal.radioPowerOnRequestEpoch() == 0);
+    failed.waitResult = kIOReturnSuccess;
+    assert(failed.handlePowerStateChangeCore(kWiFiPowerOn, nullptr) == 0);
+    assert(failed.power_state == kWiFiPowerOn && failed.arms == 2);
+}
 int main() {
     blocked_transitions();
     unblock_and_reblock();
     lower_result_and_timeout();
     boot_and_nonstarting_transitions();
-    std::puts("MVM radio power admission: PASS (fresh CSR, repeated refusal, unblock/reblock, lower error, timeout, bootstrap, Off, detach)");
+    superseded_wait_does_not_rollback_successor();
+    std::puts("MVM radio power admission: PASS (fresh CSR, repeated refusal, unblock/reblock, lower error, timeout retirement/retry, superseded rollback, bootstrap, Off, detach)");
 }

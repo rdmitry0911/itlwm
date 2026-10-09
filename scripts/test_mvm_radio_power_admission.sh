@@ -22,6 +22,11 @@ normalize() { sed -e "s/$family/mvm/g" -e "s/$mixed/Mvm/g" -e "s/$upper/MVM/g"; 
 read_source "$rf" | awk -v name="${family}_check_rfkill" '
     $0 ~ "^" name "\\(" { selected=1; print "int ItlMvm::" }
     selected { print } selected && /^}/ { selected=0 }' | normalize > "$power_test_dir/hal.inc"
+sed -n '1,$p' "$root/$hal" | awk '
+    /^enableForRadioPowerOn\(/ { selected=1; print "IOReturn ItlMvm::" }
+    /^cancelRadioPowerOnRequest\(/ || /^reportRadioPowerOnFailure\(/ { selected=1; print "void ItlMvm::" }
+    /^radioPowerOnRequestEpoch\(/ { selected=1; print "uint64_t ItlMvm::" }
+    selected { print } selected && /^}/ { selected=0 }' | normalize >> "$power_test_dir/hal.inc"
 read_source "$hal" | awk '
     /^checkRadioPowerOnAdmission\(/ { selected=1; print "IOReturn ItlMvm::" }
     selected { print } selected && /^}/ { selected=0 }' | normalize >> "$power_test_dir/hal.inc"
@@ -36,12 +41,16 @@ else
     read_source AirportItlwm/AirportItlwmV2.cpp
 fi | awk '
     /^IOReturn AirportItlwm::enableAdapter\(/ { selected=1 }
-    selected { print } selected && /^}/ { selected=0 }' > "$power_test_dir/controller.inc"
+    selected { print } selected && /^}/ { selected=0 }' |
+    sed 's/enableAdapter(IONetworkInterface \*netif)/enableAdapter(IONetworkInterface *netif, uint64_t radioPowerOnEpoch)/' > "$power_test_dir/controller.inc"
+awk '/^bool AirportItlwm::retireFailedRadioPowerOn\(/ { selected=1 }
+    selected { print } selected && /^}/ { selected=0 }' \
+    "$root/AirportItlwm/AirportItlwmV2.cpp" >> "$power_test_dir/controller.inc"
 read_source AirportItlwm/AirportItlwmV2.cpp | awk '
     /^int AirportItlwm::handlePowerStateChangeCore\(/ { selected=1 }
     selected { print } selected && /^}/ { selected=0 }' >> "$power_test_dir/controller.inc"
-"${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -g \
+"${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -g \
     -fsanitize=address,undefined -fno-omit-frame-pointer \
-    -I "$power_test_dir" "$root/tests/mvm_radio_power_admission_test.cpp" \
+    -I "$root/include" -I "$power_test_dir" "$root/tests/mvm_radio_power_admission_test.cpp" \
     -o "$power_test_dir/test"
 "$power_test_dir/test"

@@ -17,8 +17,10 @@ are in `power-control-trace{,-commands}.log` under the evidence root below.
 
 The 25C56 reference `handlePowerStateChange` at `0xffffff800157af02` restores
 the old logical state after a real powerOn error. The powerOn range listing
-also contains a synchronous NotReady return before its successful availability
-tail. Reference material read on `10.7.6.112`:
+also contains a synchronous `0xe00002d5` (`kIOReturnBusy`) return before its
+successful availability tail. This is evidence of a synchronous failure
+boundary, not the same status as the Intel RF_KILL refusal. Reference material
+read on `10.7.6.112`:
 
 - `~/Projects/ghidra_output/aiam_power_lifecycle_exact2_25C56_20260711.c`
 - `~/Projects/ghidra_output/aiam_poweron_retry_exact_25C56_20260802/powerOn.full_range.txt`
@@ -33,7 +35,7 @@ MMIO.
 
 Bootstrap firmware discovery remains separate. Temporary RF_KILL must not
 convert the accepted boot discovery into a permanent BootFailure. An accepted
-public activation still waits for its real tagged post-init REOPENED event;
+public activation still waits for its real post-init REOPENED event;
 the preflight publishes no DRIVER_AVAILABLE or POWER_CHANGED carrier and
 does not shorten the normal 15000 ms timeout. Existing five-attempt lower
 recovery is unchanged. `enableAdapter` also preserves synchronous HAL errors
@@ -129,9 +131,11 @@ older default qualified asset.
 ## Remaining user paths
 
 RF_KILL asserted after admission or during initialization, fatal init skips
-and exhausted asynchronous lower retries still need an owned failure signal
-to the waiting controller. This preflight closes the already-known physical
-block only. IWN keeps its previous admission path. The repeated GUI
+and exhausted asynchronous lower retries are addressed in the subsequent
+`TAHOE_MVM_RADIO_ACTIVATION_FAILURE_20261009.md` checkpoint. This preflight
+closes the already-known physical block only. The existing REOPENED event is
+untagged; its upper availability epoch must not be mistaken for an immutable
+lower producer identity. IWN keeps its previous admission path. The repeated GUI
 open/WPA2/WPA3, saved-network, DHCP/traffic and sleep/wake matrix remains
 unqualified while the assigned 9260 cannot transmit or scan. Physical host
 `10.90.10.22` is outside this laboratory cycle.

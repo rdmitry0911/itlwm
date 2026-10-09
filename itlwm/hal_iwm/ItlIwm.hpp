@@ -73,6 +73,11 @@ public:
     virtual void detach(IOPCIDevice *device) override;
     IOReturn enable(IONetworkInterface *netif) override;
     IOReturn checkRadioPowerOnAdmission() override;
+    IOReturn enableForRadioPowerOn(IONetworkInterface *, uint64_t) override;
+    void cancelRadioPowerOnRequest(uint64_t) override;
+    uint64_t radioPowerOnRequestEpoch() const;
+    uint8_t claimRadioPowerOnRetry(uint64_t);
+    void reportRadioPowerOnFailure(uint64_t, IOReturn, uint32_t, int);
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
 
@@ -746,6 +751,7 @@ public:
     uint32_t wclScanNextBackendGeneration;
     bool wclScanPublicationInvalidated;
     bool wclScanNeedsReopen;
+    uint64_t radioPowerOnEpoch;
     bool wclSaeAdmissionReserved;
 };
 

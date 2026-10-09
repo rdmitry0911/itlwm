@@ -2793,6 +2793,7 @@ static void wclPhysicalScanTerminalInterruptAction(
     uint32_t backendGeneration = 0;
     uint32_t terminalStatus = 0;
     uint64_t wakePowerChangedEpoch = 0;
+    uint64_t failedPowerOnEpoch = 0;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     if (!state.settingUp && !state.stopping && !state.tearingDown &&
         sender == state.source && state.snapshotReady &&
@@ -2804,6 +2805,12 @@ static void wclPhysicalScanTerminalInterruptAction(
         backendGeneration = state.state.activeBackendGeneration;
         terminalStatus = state.state.terminalStatus;
     }
+    if (!state.settingUp && !state.stopping && !state.tearingDown &&
+        sender == state.source && state.powerOnFailureQueued &&
+        state.failedPowerOnEpoch != 0 &&
+        state.failedPowerOnEpoch == state.pendingPowerOnEpoch &&
+        state.failedPowerOnEpoch == state.availabilityEpoch)
+        failedPowerOnEpoch = state.failedPowerOnEpoch;
     if (!state.settingUp && !state.stopping && !state.tearingDown &&
         sender == state.source && state.powerOnWakePublishQueued &&
         state.powerOnWakeBulletinPending &&
@@ -2818,6 +2825,8 @@ static void wclPhysicalScanTerminalInterruptAction(
     if (generation != 0 && backendGeneration != 0)
         dispatchWclPhysicalScanTerminal(that, generation, backendGeneration,
                                         terminalStatus);
+    if (failedPowerOnEpoch != 0)
+        that->dispatchRadioPowerOnFailure(failedPowerOnEpoch);
     if (wakePowerChangedEpoch != 0)
         that->dispatchDeferredWakePowerChanged(wakePowerChangedEpoch);
 }
@@ -9047,6 +9056,9 @@ armDeferredPowerOnAvailability(bool wakeBulletinPending)
         ++lifecycle.availabilityEpoch;
     lifecycle.pendingPowerOnEpoch = lifecycle.availabilityEpoch;
     lifecycle.readyPowerOnEpoch = 0;
+    lifecycle.failedPowerOnEpoch = 0;
+    lifecycle.powerOnFailureStatus = kIOReturnSuccess;
+    lifecycle.powerOnFailureQueued = false;
     lifecycle.powerOnPublishQueued = false;
     lifecycle.powerOnWakeBulletinPending = wakeBulletinPending;
     lifecycle.powerOnWakeScanTerminalObserved = false;
@@ -9121,6 +9133,9 @@ cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch)
             ++lifecycle.availabilityEpoch;
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
+        lifecycle.failedPowerOnEpoch = 0;
+        lifecycle.powerOnFailureStatus = kIOReturnSuccess;
+        lifecycle.powerOnFailureQueued = false;
         lifecycle.powerOnPublishQueued = false;
         lifecycle.powerOnWakeBulletinPending = false;
         lifecycle.powerOnWakeScanTerminalObserved = false;
@@ -9146,6 +9161,9 @@ void AirportItlwm::cancelDeferredPowerOnAvailabilityRaw()
             ++lifecycle.availabilityEpoch;
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
+        lifecycle.failedPowerOnEpoch = 0;
+        lifecycle.powerOnFailureStatus = kIOReturnSuccess;
+        lifecycle.powerOnFailureQueued = false;
         lifecycle.powerOnPublishQueued = false;
         lifecycle.powerOnWakeBulletinPending = false;
         lifecycle.powerOnWakeScanTerminalObserved = false;
@@ -9277,7 +9295,8 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
         lifecycle.availabilityEpoch == expectedEpoch &&
         lifecycle.pendingPowerOnEpoch == expectedEpoch &&
         lifecycle.readyPowerOnEpoch == expectedEpoch &&
-        lifecycle.powerOnPublishQueued;
+        lifecycle.powerOnPublishQueued &&
+        lifecycle.failedPowerOnEpoch == 0;
     if (publish) {
         lifecycle.pendingPowerOnEpoch = 0;
         lifecycle.readyPowerOnEpoch = 0;
@@ -9303,6 +9322,88 @@ publishDeferredPowerAvailabilityGated(OSObject *target, void *arg0,
     if (gate != NULL)
         gate->commandWakeup(waitEvent, /*oneThread=*/false);
     return kIOReturnSuccess;
+}
+
+void AirportItlwm::
+noteRadioPowerOnFailure(const struct ItlRadioPowerOnFailureV1 *failure)
+{
+    if (failure == nullptr ||
+        failure->version != kItlRadioPowerOnFailureVersion ||
+        failure->size != sizeof(*failure) || failure->reserved != 0 ||
+        failure->requestEpoch == 0 || failure->status == kIOReturnSuccess ||
+        failure->reason < kItlRadioPowerOnFailureRfKill ||
+        failure->reason > kItlRadioPowerOnFailureRecoveryExhausted)
+        return;
+    AirportItlwmWclPhysicalScanLifecycle &state = fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = state.admissionLock;
+    if (lock == nullptr)
+        return;
+    IOInterruptEventSource *source = nullptr;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    if (!state.settingUp && !state.stopping && !state.tearingDown &&
+        state.source != nullptr && state.failedPowerOnEpoch == 0 &&
+        state.availabilityEpoch == failure->requestEpoch &&
+        state.pendingPowerOnEpoch == failure->requestEpoch) {
+        state.failedPowerOnEpoch = failure->requestEpoch;
+        state.powerOnFailureStatus = failure->status;
+        state.powerOnFailureQueued = true;
+        ++state.users;
+        source = state.source;
+        source->retain();
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    /* No gate entry or backend cancellation here: this producer can be the
+     * very init task that a concurrent Off is draining under that gate. */
+    if (source != nullptr) {
+        XYLog("RADIO_POWER_ON_FAILED epoch=%llu status=0x%x reason=%u lower=%d\n",
+              failure->requestEpoch, failure->status, failure->reason,
+              failure->lowerError);
+        signalWclPhysicalScanTerminalDoorbell(state, lock, source);
+    }
+}
+
+void AirportItlwm::dispatchRadioPowerOnFailure(uint64_t expectedEpoch)
+{
+    IOCommandGate *gate = getCommandGate();
+    IOWorkLoop *workloop = getWorkLoop();
+    AirportItlwmWclPhysicalScanLifecycle &state = fWclPhysicalScanLifecycle;
+    IOSimpleLock *lock = state.admissionLock;
+    if (gate == nullptr || workloop == nullptr || !workloop->inGate() ||
+        lock == nullptr || expectedEpoch == 0)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    const bool current = state.powerOnFailureQueued &&
+        state.failedPowerOnEpoch == expectedEpoch &&
+        state.pendingPowerOnEpoch == expectedEpoch &&
+        state.availabilityEpoch == expectedEpoch;
+    if (current) {
+        state.powerOnFailureQueued = false;
+        state.powerOnWakeBulletinPending = false;
+        state.powerOnWakeScanTerminalObserved = false;
+        state.powerOnWakeAvailabilityAckObserved = false;
+        state.powerOnWakePublishQueued = false;
+    }
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    if (current)
+        gate->commandWakeup(&state.availabilityEpoch, false);
+    /* A failed system wake keeps DRIVER_AVAILABLE pending and association
+     * fail-closed. There is no sleeping IOPM caller and no success bulletin. */
+}
+
+bool AirportItlwm::retireFailedRadioPowerOn(uint64_t expectedEpoch,
+                                          IONetworkInterface *netif)
+{
+    if (expectedEpoch == 0)
+        return true; // no lower activation was admitted
+    const IOReturn canceled = publishDeferredPowerAvailabilityGated(
+        this, (void *)(uintptr_t)kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
+        (void *)(uintptr_t)expectedEpoch, nullptr, nullptr);
+    if (canceled != kIOReturnSuccess)
+        return false; // Off or a newer On already owns this controller
+    if (fHalService != nullptr)
+        fHalService->cancelRadioPowerOnRequest(expectedEpoch);
+    disableAdapterCore(netif);
+    return true;
 }
 
 IOReturn AirportItlwm::
@@ -9333,8 +9434,15 @@ waitForDeferredPowerOnAvailability(uint64_t expectedEpoch,
         const bool superseded =
             lifecycle.availabilityEpoch != expectedEpoch ||
             lifecycle.stopping || lifecycle.tearingDown;
+        const IOReturn failure =
+            lifecycle.availabilityEpoch == expectedEpoch &&
+            lifecycle.pendingPowerOnEpoch == expectedEpoch &&
+            lifecycle.failedPowerOnEpoch == expectedEpoch
+                ? lifecycle.powerOnFailureStatus : kIOReturnSuccess;
         IOSimpleLockUnlockEnableInterrupt(lock, irq);
 
+        if (failure != kIOReturnSuccess)
+            return failure;
         if (completed &&
             (pmPowerStateFlags &
                  kAirportItlwmPmDriverAvailabilityPendingBit) == 0 &&
@@ -9413,6 +9521,7 @@ bool AirportItlwm::noteRadioScanReadyAndQueuePowerOnAvailability()
     uint64_t epoch = 0;
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
     if (lifecycle.pendingPowerOnEpoch != 0 &&
+        lifecycle.failedPowerOnEpoch == 0 &&
         !lifecycle.powerOnPublishQueued) {
         lifecycle.readyPowerOnEpoch = lifecycle.pendingPowerOnEpoch;
         lifecycle.powerOnPublishQueued = true;
@@ -9888,6 +9997,12 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             that->invalidateWclPhysicalScan(invalidation->generation,
                                             invalidation->backend_generation);
         }
+        return;
+    }
+
+    if (msgCode == IEEE80211_EVT_RADIO_POWER_ON_FAILED) {
+        that->noteRadioPowerOnFailure(
+            static_cast<const struct ItlRadioPowerOnFailureV1 *>(data));
         return;
     }
 
@@ -13285,7 +13400,8 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
     return kIOReturnUnsupported;
 }
 
-IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
+IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif,
+                                    uint64_t radioPowerOnEpoch)
 {
     // Startup and power-management paths both converge here. They may run
     // while Starting, but a stale power-on must not reopen or dereference the
@@ -13299,7 +13415,9 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
     /* enable() requests activation, not readiness. Preserve a synchronous
      * lower refusal instead of arming queues/watchdog and waiting for an
      * impossible REOPENED event. Accepted requests still use that event. */
-    const IOReturn enableResult = fHalService->enable(netif);
+    const IOReturn enableResult = radioPowerOnEpoch != 0
+        ? fHalService->enableForRadioPowerOn(netif, radioPowerOnEpoch)
+        : fHalService->enable(netif);
     sRT.lastEnableRet = enableResult;
     if (enableResult != kIOReturnSuccess)
         return enableResult;
@@ -13449,6 +13567,8 @@ int AirportItlwm::handlePowerStateChangeCore(uint32_t newState,
     uint8_t prevState = power_state;
     int err = 0;
 
+    bool rollbackAllowed = true;
+
     const bool startsLowerRadio =
         (newState == kWiFiPowerOn &&
          (prevState == kWiFiPowerOff || prevState == kWiFiPowerStandby)) ||
@@ -13484,32 +13604,26 @@ int AirportItlwm::handlePowerStateChangeCore(uint32_t newState,
          * the tagged post-S_SCAN lower-ready edge. */
         const uint64_t availabilityEpoch =
             armDeferredPowerOnAvailability();
-        err = enableAdapter(netif);
+        err = availabilityEpoch != 0
+            ? enableAdapter(netif, availabilityEpoch) : kIOReturnNotReady;
         if (err == kIOReturnSuccess)
             err = waitForDeferredPowerOnAvailability(
                 availabilityEpoch, kAirportItlwmPowerOnReadyTimeoutMs);
         if (err != kIOReturnSuccess)
-            publishDeferredPowerAvailabilityGated(
-                this,
-                (void *)(uintptr_t)
-                    kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
-                (void *)(uintptr_t)availabilityEpoch, NULL, NULL);
+            rollbackAllowed = retireFailedRadioPowerOn(availabilityEpoch, netif);
     }
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOff) {
         // OFF→STANDBY: power on (into standby mode)
         power_state = kWiFiPowerStandby;
         const uint64_t availabilityEpoch =
             armDeferredPowerOnAvailability();
-        err = enableAdapter(netif);
+        err = availabilityEpoch != 0
+            ? enableAdapter(netif, availabilityEpoch) : kIOReturnNotReady;
         if (err == kIOReturnSuccess)
             err = waitForDeferredPowerOnAvailability(
                 availabilityEpoch, kAirportItlwmPowerOnReadyTimeoutMs);
         if (err != kIOReturnSuccess)
-            publishDeferredPowerAvailabilityGated(
-                this,
-                (void *)(uintptr_t)
-                    kAirportItlwmDeferredPowerAvailabilityCancelEpoch,
-                (void *)(uintptr_t)availabilityEpoch, NULL, NULL);
+            rollbackAllowed = retireFailedRadioPowerOn(availabilityEpoch, netif);
     }
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOn) {
         // ON→STANDBY: power off (into standby)
@@ -13529,7 +13643,7 @@ int AirportItlwm::handlePowerStateChangeCore(uint32_t newState,
         err = kIOReturnBadArgument;
     }
 
-    if (err) {
+    if (err && rollbackAllowed) {
         XYLog("DEBUG %s FAILED, rollback %u → %u\n", __FUNCTION__, power_state, prevState);
         power_state = prevState;
     }
@@ -13570,7 +13684,7 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
                 armDeferredPowerOnAvailability(
                     /*wakeBulletinPending=*/true);
             readyResult = availabilityEpoch != 0
-                ? enableAdapter(netif) : kIOReturnNotReady;
+                ? enableAdapter(netif, availabilityEpoch) : kIOReturnNotReady;
             if (readyResult != kIOReturnSuccess)
                 publishDeferredPowerAvailabilityGated(
                     this,

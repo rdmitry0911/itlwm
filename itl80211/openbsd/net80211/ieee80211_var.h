@@ -1496,6 +1496,10 @@ struct ieee80211_wcl_scan_start_rejected {
 /* Local protected liveness timeout, NOT a received deauthentication. */
 #define IEEE80211_EVT_STA_SA_QUERY_TIMEOUT           25
 #define IEEE80211_EVT_WCL_REASSOC_PROGRESS          26
+/* Exact accepted radio activation failed below the controller. Borrowed
+ * ItlRadioPowerOnFailureV1 must be copied without entering the command gate:
+ * radio Off may be holding that gate while it drains this lower worker. */
+#define IEEE80211_EVT_RADIO_POWER_ON_FAILED          27
 struct ieee80211_roam_link_loss {
     u_int64_t epoch;
     u_int8_t bssid[IEEE80211_ADDR_LEN];

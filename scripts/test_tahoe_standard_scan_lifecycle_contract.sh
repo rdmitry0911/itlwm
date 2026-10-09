@@ -17,6 +17,7 @@ iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 iwnh = (root / "itlwm/hal_iwn/ItlIwn.hpp").read_text()
 iwnvar = (root / "itlwm/hal_iwn/if_iwnvar.h").read_text()
 iwm = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
+iwm_hal = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
 iwmvar = (root / "itlwm/hal_iwm/if_iwmvar.h").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 iwxvar = (root / "itlwm/hal_iwx/if_iwxvar.h").read_text()
@@ -439,27 +440,38 @@ ordered(iwn_init, "lower scan acceptance precedes availability",
         "goto fail;",
         "IEEE80211_EVT_WCL_SCAN_REOPENED")
 
-for source, var_source, prefix, flags in (
-        (iwm, iwmvar, "IWM", "IWM_FLAG_SHUTDOWN | IWM_FLAG_RFKILL"),
-        (iwx, iwxvar, "IWX", "IWX_FLAG_SHUTDOWN | IWX_FLAG_RFKILL")):
+for source, hal_source, var_source, prefix, flags in (
+        (iwm, iwm_hal, iwmvar, "IWM", "IWM_FLAG_SHUTDOWN | IWM_FLAG_RFKILL"),
+        (iwx, iwx, iwxvar, "IWX", "IWX_FLAG_SHUTDOWN | IWX_FLAG_RFKILL")):
     require(var_source, "u_int8_t\t\tinit_retry_count;",
             f"{prefix} bounded power-on counter")
     task = body(source, f"{prefix.lower()}_init_task(void *arg1)",
                 f"{prefix} bounded power-on recovery")
     for token in (
             "attempted = true;",
-            "&sc->init_retry_count, 1, __ATOMIC_ACQ_REL",
+            "that->claimRadioPowerOnRetry(powerOnEpoch)",
             f"sc->sc_flags & ({flags})",
-            "if (attempt < 5)",
+            "if (attempt != 0 && attempt < 5)",
             "power-on recovery exhausted after %u attempts"):
         require(task, token, f"{prefix} bounded power-on recovery")
+    retry = body(hal_source, "claimRadioPowerOnRetry(uint64_t requestEpoch)",
+                 f"{prefix} owned retry budget")
+    ordered(retry, f"{prefix} admission and retry share ownership lock",
+            "IOSimpleLockLockDisableInterrupt(wclScanLock)",
+            "radioPowerOnRequestEpoch() == requestEpoch",
+            "&com.init_retry_count, 1, __ATOMIC_ACQ_REL",
+            "IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq)")
+    require(task, "kItlRadioPowerOnFailureRecoveryExhausted, error",
+            f"{prefix} tagged recovery exhaustion")
+    forbid(task, "task_del(systq, &sc->init_task)",
+           f"{prefix} old exhaustion deleting replacement work")
 
 iwm_task = body(iwm, "iwm_init_task(void *arg1)",
                 "IWM bounded power-on recovery")
 ordered(iwm_task, "IWM retries a complete firmware/first-scan epoch",
         "error = that->iwm_init(ifp);",
-        "&sc->init_retry_count, 1, __ATOMIC_ACQ_REL",
-        "if (attempt < 5)",
+        "that->claimRadioPowerOnRetry(powerOnEpoch)",
+        "if (attempt != 0 && attempt < 5)",
         "(void)task_add(systq, &sc->init_task);")
 iwm_wake = body(iwm, "iwm_activate(struct iwm_softc *sc, int act)",
                 "IWM wake recovery admission")
@@ -475,8 +487,8 @@ iwx_task = body(iwx, "iwx_init_task(void *arg1)",
                 "IWX bounded power-on recovery")
 ordered(iwx_task, "IWX retries through its bootstrap lifecycle token",
         "error = that->iwx_init_internal(ifp, true);",
-        "&sc->init_retry_count, 1, __ATOMIC_ACQ_REL",
-        "if (attempt < 5)",
+        "that->claimRadioPowerOnRetry(powerOnEpoch)",
+        "if (attempt != 0 && attempt < 5)",
         "that->iwx_bootstrap_init_task(sc);")
 iwx_wake = body(iwx, "iwx_activate(struct iwx_softc *sc, int act)",
                 "IWX wake recovery admission")

@@ -7279,6 +7279,7 @@ iwm_init_task(void *arg1)
 {
     struct iwm_softc *sc = (struct iwm_softc *)arg1;
     ItlIwm *that = container_of(sc, ItlIwm, com);
+    const uint64_t powerOnEpoch = that->radioPowerOnRequestEpoch();
     struct _ifnet *ifp = &sc->sc_ic.ic_if;
     int s = splnet();
     int generation = sc->sc_generation;
@@ -7310,25 +7311,42 @@ iwm_init_task(void *arg1)
               __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
     }
 
+    if (!attempted && fatal && (ifp->if_flags & IFF_UP) != 0) {
+        that->reportRadioPowerOnFailure(powerOnEpoch,
+            (fatal & IWM_FLAG_RFKILL) ? kIOReturnNotReady : kIOReturnIOError,
+            (fatal & IWM_FLAG_RFKILL) ? kItlRadioPowerOnFailureRfKill :
+                                           kItlRadioPowerOnFailureHardware,
+            (fatal & IWM_FLAG_RFKILL) ? EPERM : EIO);
+    } else if (attempted && error != 0 &&
+               (sc->sc_flags & IWM_FLAG_RFKILL) != 0) {
+        that->reportRadioPowerOnFailure(powerOnEpoch, kIOReturnNotReady,
+            kItlRadioPowerOnFailureRfKill, error);
+    }
+
     if (attempted && error != 0 && (ifp->if_flags & IFF_UP) != 0 &&
         (sc->sc_flags & (IWM_FLAG_SHUTDOWN | IWM_FLAG_RFKILL)) == 0) {
-        const u_int8_t attempt = __atomic_add_fetch(
-            &sc->init_retry_count, 1, __ATOMIC_ACQ_REL);
+        const uint8_t attempt = that->claimRadioPowerOnRetry(powerOnEpoch);
 
         /* Tahoe 25C56 AppleBCMWLANCore::powerOn increments its recovery
          * counter through five complete lower attempts before selecting the
          * permanent-failure terminal.  IWM's checked lower boundary is the
          * firmware epoch plus the synchronous first-SCAN transition. */
-        if (attempt < 5) {
+        if (attempt != 0 && attempt < 5) {
             XYLog("%s: power-on attempt %u failed (%d), retrying\n",
                   DEVNAME(sc), (unsigned)attempt, error);
             (void)task_add(systq, &sc->init_task);
-        } else {
-            (void)task_del(systq, &sc->init_task);
+        } else if (attempt >= 5) {
+            /* Do not delete a task queued by a replacement activation after
+             * this attempt's claim. Exhaustion means no self-requeue. */
             XYLog("%s: power-on recovery exhausted after %u attempts\n",
                   DEVNAME(sc), (unsigned)attempt);
+            that->reportRadioPowerOnFailure(powerOnEpoch, kIOReturnIOError,
+                kItlRadioPowerOnFailureRecoveryExhausted, error);
         }
     }
+
+    if (attempted && error == 0)
+        that->cancelRadioPowerOnRequest(powerOnEpoch);
 
     //    rw_exit(&sc->ioctl_rwl);
     splx(s);

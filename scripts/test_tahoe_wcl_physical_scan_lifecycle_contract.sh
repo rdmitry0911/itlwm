@@ -128,6 +128,25 @@ forbid(abort, "ItlDriverController", "generic controller WCL abort bridge")
 
 event = body(v2, "eventHandler(struct ieee80211com *ic, int msgCode, void *data)",
              "eventHandler")
+failure_start = event.find("if (msgCode == IEEE80211_EVT_RADIO_POWER_ON_FAILED)")
+failure_end = event.find("if (msgCode == IEEE80211_EVT_WCL_SCAN_REOPENED)",
+                         failure_start)
+if failure_start < 0 or failure_end < failure_start:
+    fail("missing separate lower activation-failure ingress")
+failure_event = event[failure_start:failure_end]
+ordered(failure_event, "activation failure returns before generic gate ingress",
+        "noteRadioPowerOnFailure(", "return;")
+forbid(failure_event, "runAction", "gate entry from lower activation failure")
+failure_note = body(v2, "noteRadioPowerOnFailure(",
+                    "activation failure value mailbox")
+ordered(failure_note, "owned failure mailbox before nonblocking doorbell",
+        "state.availabilityEpoch == failure->requestEpoch",
+        "state.pendingPowerOnEpoch == failure->requestEpoch",
+        "state.failedPowerOnEpoch = failure->requestEpoch",
+        "IOSimpleLockUnlockEnableInterrupt(lock, irq)",
+        "signalWclPhysicalScanTerminalDoorbell(state, lock, source)")
+forbid(failure_note, "runAction", "lower failure callback entering command gate")
+forbid(failure_note, "disableAdapter", "lower failure callback draining itself")
 ordered(event, "post-doorbell WCL initial start",
         "IEEE80211_EVT_WCL_SCAN_STARTED",
         "activateWclPhysicalScan(started.generation",
@@ -922,9 +941,19 @@ radio_power = body(v2,
                    "radio power transition core")
 ordered(radio_power, "PowerOn waits for the exact lower-ready epoch",
         "armDeferredPowerOnAvailability()",
-        "enableAdapter(netif)",
+        "enableAdapter(netif, availabilityEpoch)",
         "waitForDeferredPowerOnAvailability(",
-        "kAirportItlwmDeferredPowerAvailabilityCancelEpoch")
+        "retireFailedRadioPowerOn(availabilityEpoch, netif)")
+retire_failed_power = body(v2, "bool AirportItlwm::retireFailedRadioPowerOn",
+                          "request-owned radio failure retirement")
+ordered(retire_failed_power, "only current failed radio request retires lower",
+        "kAirportItlwmDeferredPowerAvailabilityCancelEpoch",
+        "if (canceled != kIOReturnSuccess)",
+        "return false;",
+        "cancelRadioPowerOnRequest(expectedEpoch)",
+        "disableAdapterCore(netif)")
+require(radio_power, "if (err && rollbackAllowed)",
+        "superseded PowerOn cannot roll back a newer radio state")
 require(radio_power, "publishDeferredPowerOffAvailability();",
         "serialized PowerOff cancellation")
 forbid(radio_power, "Transition::PowerOn",
@@ -941,7 +970,7 @@ ordered(system_power,
         "const uint64_t availabilityEpoch",
         "armDeferredPowerOnAvailability(",
         "/*wakeBulletinPending=*/true",
-        "enableAdapter(netif)",
+        "enableAdapter(netif, availabilityEpoch)",
         "kAirportItlwmDeferredPowerAvailabilityCancelEpoch")
 forbid(system_power, "waitForDeferredPowerOnAvailability(",
        "system IOPM callback blocking on Intel backend readiness")

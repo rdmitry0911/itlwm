@@ -1012,6 +1012,7 @@ attach(IOPCIDevice *device)
      * loaded firmware passed every AP/GO carrier gate.
      */
     wclScanNeedsReopen = true;
+    __atomic_store_n(&radioPowerOnEpoch, 0, __ATOMIC_RELEASE);
     wclSaeAdmissionReserved = false;
 
     pci.pa_tag = device;
@@ -1098,6 +1099,81 @@ releaseAll()
 }
 
 IOReturn ItlIwm::
+enableForRadioPowerOn(IONetworkInterface *netif, uint64_t requestEpoch)
+{
+    if (requestEpoch == 0)
+        return kIOReturnBadArgument;
+    if (wclScanLock == NULL)
+        return kIOReturnNotReady;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    if (com.sc_flags & IWM_FLAG_SHUTDOWN) {
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        return kIOReturnNotReady;
+    }
+    __atomic_store_n(&radioPowerOnEpoch, requestEpoch, __ATOMIC_RELEASE);
+    __atomic_store_n(&com.init_retry_count, 0, __ATOMIC_RELEASE);
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    const IOReturn result = enable(netif);
+    if (result != kIOReturnSuccess)
+        cancelRadioPowerOnRequest(requestEpoch);
+    return result;
+}
+
+void ItlIwm::
+cancelRadioPowerOnRequest(uint64_t requestEpoch)
+{
+    if (requestEpoch == 0)
+        return;
+    uint64_t expected = requestEpoch;
+    (void)__atomic_compare_exchange_n(&radioPowerOnEpoch, &expected, 0,
+        false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+uint64_t ItlIwm::
+radioPowerOnRequestEpoch() const
+{
+    return __atomic_load_n(&radioPowerOnEpoch, __ATOMIC_ACQUIRE);
+}
+
+uint8_t ItlIwm::
+claimRadioPowerOnRetry(uint64_t requestEpoch)
+{
+    if (wclScanLock == NULL)
+        return 0;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    /* Match even epoch zero: an old bootstrap must not consume the retry
+     * budget of a newly accepted tagged activation. Admission and this
+     * increment share the lock; a replacement resets its own budget. */
+    const uint8_t attempt = radioPowerOnRequestEpoch() == requestEpoch &&
+        (com.sc_flags & (IWM_FLAG_SHUTDOWN | IWM_FLAG_RFKILL)) == 0
+        ? __atomic_add_fetch(&com.init_retry_count, 1, __ATOMIC_ACQ_REL) : 0;
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    return attempt;
+}
+
+void ItlIwm::
+reportRadioPowerOnFailure(uint64_t requestEpoch, IOReturn status,
+                          uint32_t reason, int lowerError)
+{
+    if (requestEpoch == 0 || status == kIOReturnSuccess ||
+        com.sc_ic.ic_event_handler == NULL)
+        return;
+    uint64_t expected = requestEpoch;
+    if (!__atomic_compare_exchange_n(&radioPowerOnEpoch, &expected, 0,
+            false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return;
+    const struct ItlRadioPowerOnFailureV1 failure = {
+        kItlRadioPowerOnFailureVersion, sizeof(ItlRadioPowerOnFailureV1),
+        requestEpoch, status, reason, lowerError, 0
+    };
+    /* Only a copied, claimed request may fail. The controller callback is
+     * nonblocking: Off can own its command gate while draining this task. */
+    (*com.sc_ic.ic_event_handler)(&com.sc_ic,
+        IEEE80211_EVT_RADIO_POWER_ON_FAILED,
+        const_cast<struct ItlRadioPowerOnFailureV1 *>(&failure));
+}
+
+IOReturn ItlIwm::
 checkRadioPowerOnAdmission()
 {
     if (com.sc_flags & IWM_FLAG_SHUTDOWN)
@@ -1125,6 +1201,7 @@ enable(IONetworkInterface *netif)
 IOReturn ItlIwm::
 disable(IONetworkInterface *netif)
 {
+    __atomic_store_n(&radioPowerOnEpoch, 0, __ATOMIC_RELEASE);
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     /* APSTAOwner has already closed the role-7 datapath but deliberately
      * retains its profile across sleep.  Retire the firmware GO resources

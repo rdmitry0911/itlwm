@@ -24,6 +24,7 @@
 #include <ClientKit/AirportItlwmSaeRelayV1.h>
 #include <ClientKit/AirportItlwmSaeRelayFsmV1.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
+#include <HAL/ItlRadioPowerOnFailureV1.h>
 #if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
 #include <ClientKit/AirportItlwmIwnLabDirectSaeStimulusV1.h>
 #endif
@@ -348,6 +349,9 @@ struct AirportItlwmWclPhysicalScanLifecycle {
     uint64_t availabilityEpoch;
     uint64_t pendingPowerOnEpoch;
     uint64_t readyPowerOnEpoch;
+    uint64_t failedPowerOnEpoch;
+    IOReturn powerOnFailureStatus;
+    bool powerOnFailureQueued;
     bool powerOnPublishQueued;
     bool powerOnWakeBulletinPending;
     bool powerOnWakeScanTerminalObserved;
@@ -635,6 +639,9 @@ public:
         bool wakeBulletinPending = false);
     IOReturn waitForDeferredPowerOnAvailability(uint64_t expectedEpoch,
                                                 uint32_t timeoutMs);
+    void noteRadioPowerOnFailure(const struct ItlRadioPowerOnFailureV1 *);
+    void dispatchRadioPowerOnFailure(uint64_t);
+    bool retireFailedRadioPowerOn(uint64_t, IONetworkInterface *);
     IOReturn prepareTahoeWclAssociationBackend() const;
     bool cancelDeferredPowerOnAvailabilityEpochRaw(uint64_t expectedEpoch);
     void cancelDeferredPowerOnAvailabilityRaw();
@@ -655,7 +662,8 @@ public:
     static void handleSaeAuthPeerEvent(
         AirportItlwm *, const struct ItlSaeAuthPeerEventV1 *);
 #endif
-    IOReturn enableAdapter(IONetworkInterface *netif);
+    IOReturn enableAdapter(IONetworkInterface *netif,
+                          uint64_t radioPowerOnEpoch = 0);
     void disableAdapterCore(IONetworkInterface *netif);
     void disableAdapter(IONetworkInterface *netif);
     int handlePowerStateChange(uint32_t newState, IONetworkInterface *netif);
