@@ -20,7 +20,7 @@ live association state is needed to prove that initialization reached SCAN.
 Both full init routines check the receipt before sleeping and again after
 waking, including a timeout return. IWM also rejects a shutdown owner before
 and after sleep; IWX retains its task-gate generation, init/stop-owner and
-shutdown fence. No receipt still means a real timeout and normal teardown;
+shutdown fence. No receipt still means a real timeout and normal teardown.
 An already replaced or shutting-down epoch exits without timeout teardown.
 
 This does not move the public ready boundary or its carrier. The lower producer
@@ -58,6 +58,59 @@ the eight `radio-init-historical-{iwm,iwx}-*.log` retain the executed results.
 An initial aggregate invocation used the orchestration checkout instead of
 the driver checkout; its missing-script log is retained separately from the
 corrected verification.
+
+The complete fixtures and all eight historical init controls also pass their
+expected outcomes on macOS. Full Linux aggregate and physical/standard scan,
+power-off, SAE reset-reconnect and IWM software-PMF/driver-owner checks pass.
+Logs: `radio-init-aggregate-linux-verified.log`,
+`radio-init-macos-build.log` and `radio-init-historical-macos.log`.
+
+## Loaded IWM regression
+
+Production commit `9dab1748264259520d42685e9203a246a383279f` was built from the
+clean isolated guest source; the dirty original checkout remains untouched.
+Full Tahoe build resolves all 1088 imports. Private AuxKC validation and
+transactional activation pass with four companion members and rollback
+retained. Built and installed bundles compare identically. Activation root:
+`/private/var/tmp/aiam-iwn-activation-iwm9260-init9dab1748-20261009`.
+
+The guest was rebooted and the exact loaded image verified:
+
+- Source identity `f31dcc45e0cd`.
+- Boot `0F6485C1-A17C-4E98-A7DD-46756080E6B9`.
+- UUID `DFED1EE5-0378-3FE0-81ED-01155D30633D`.
+- Mach-O SHA256
+  `63230f18d61a1ac9f5eb0e7e7a87fa724ba352d962f77e1dce7519ffe09846a5`.
+
+Real S3 reports QEMU `paused (suspended)` and serial `ACPI SLEEP`. The private
+monitor wake resumes the same boot; macOS reports 21 seconds asleep and
+WakeTime 1.444 seconds. FBT captures activation epoch 2, lower RFKILL failure
+at 2.658 ms, upper failure mailbox and gated doorbell at 19.912 ms after lower
+acceptance. No `iwm_init`, new sticky getter or ready-success event is observed
+in this bounded trace: RFKILL prevents that path from executing. This is a
+loaded blocked-radio regression, not hardware proof of the new successful
+init logic. en2, its route and SSH return; no panic observed. One SSH banner
+timeout during suspension is retained. Logical On after failed wake is policy
+state, not an operational radio.
+
+Four subsequent native Off/On cycles retain the boot and en2 route. Every
+power read remains Off; real SET FBT returns NotReady `0xe00002d8` in
+1.828–4.731 ms, independent of `networksetup` process exit. GUI remains the
+login screen. Logs: `radio-init-{activation,loaded,sleep-command,sleep-monitor,
+sleep-trace,wake-monitor,wake-poll,postwake}.log` and
+`radio-init-repeat-{command,trace}.log` under the evidence root above.
+
+## Published laboratory package
+
+The exact installed unsigned bundle is an additional asset in
+`rdmitry0911/itlwm` release `v2.4.0-alpha`:
+`AirportItlwm-Tahoe-IwmIwx-InitReceipt-9dab1748.kext.zip`, asset `625910461`,
+15,712,818 bytes. ZIP SHA256:
+`c72672ee7ec88d30c5f3f0a08520965481fc990b2893031511638ebaad2fc50b`.
+Its extracted Mach-O matches the loaded hash. A separate API read verifies
+size/digest, all five preceding assets unchanged, and all previous notes
+byte-for-byte preserved as the suffix. The default September archive is not
+replaced. LAB ONLY notes retain the RFKILL and missing on-air qualification.
 
 ## Remaining security and hardware qualification
 
