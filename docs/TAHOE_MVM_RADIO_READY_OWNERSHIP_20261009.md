@@ -54,8 +54,8 @@ gate is held, completed scan and cancelled failure owner before delivery,
 replacement between the lower claim and callback, old queued action versus
 new On, bootstrap zero and duplicate receipts, newer reset receipts, hardware
 and upper failures, lifecycle shutdown, malformed records, replacement during
-APSTA publication and coalesced ready/census ordering. Existing admission, activation-failure, standard scan
-and APSTA publication checks pass.
+APSTA publication and coalesced ready/census ordering. Existing admission,
+activation-failure, standard scan and APSTA publication checks pass.
 
 Full historical producers from `f6110188` compile but fail the missing-receipt
 assertion (exit 134, both families). The complete historical readiness
@@ -75,10 +75,58 @@ as `radio-ready-final-physical-linux.log` and its selector was corrected.
 
 ## Hardware qualification
 
-The new ready-success path has not yet been observed on hardware. The real
-IWM 9260 still reports RF_KILL, so its new receipt producer cannot reach the
-successful SCAN boundary. Full build, loaded-image checks and blocked-radio
-sleep/wake regression are separate qualifications and do not replace that
-missing observation. WPA3/SAE, GUI repeated open/WPA2/WPA3, saved networks,
-DHCP/traffic, AP and successful Wi-Fi sleep/wake remain unqualified on this
-card. Physical host `10.90.10.22` is outside this lab cycle.
+Production commit `6182a2b50357796ca2db335f67f283ee1960620a` was built in the
+isolated guest checkout. The same complete fixtures and four historical
+negative controls pass their expected outcomes on macOS. Full Tahoe build
+passes all 1088 imports, private AuxKC validation passes, and transactional
+activation retains four companions and rollback material. Built and installed
+bundles compare identically. Activation root:
+`/private/var/tmp/aiam-iwn-activation-iwm9260-ready6182a2b5-20261009`.
+
+The disposable IWM 9260 guest was rebooted and verified to load the exact new
+image, not merely have it installed:
+
+- Boot `FDF7EADB-0029-4961-8B1C-DF0091297DD4`.
+- Source identity `ef5d7d0021db`.
+- Loaded UUID `67CD7ED7-FE5B-3C15-AE01-BD2194F34DC6`.
+- Mach-O SHA256
+  `cbd321d2e3bad0c85bafcb0a7d6c894ff1b2370771b12eb8685abe951a799111`.
+
+Real S3 was then entered from the bootstrap logical-On state. QEMU reported
+`paused (suspended)` and the serial console recorded `ACPI SLEEP`; the private
+monitor's `system_wakeup` resumed the same boot. macOS reports a 26-second
+sleep and WakeTime 1.262 seconds. Passive FBT recorded IOPM Off/On, activation
+epoch 2, the exact lower RFKILL failure, upper mailbox and gated failure
+doorbell. Lower failure was 1.562 ms and doorbell 6.112 ms after acceptance.
+No ready producer, ready mailbox or ready doorbell was observed in that
+bounded trace. Logical On after failed wake is policy state, not an available
+radio. Management en2, its default route and SSH returned; no panic observed.
+One SSH banner timeout during suspension is retained, not treated as a crash.
+
+Four subsequent native Off/On cycles pass, all reads remain Off, with the same
+boot and en2 route. Actual SET/CORE FBT returns `0xe00002d8` (NotReady), not
+just a successful `networksetup` process exit: On duration 1.888–2.955 ms.
+GUI observation remains the login screen. Logs are
+`radio-ready-{macos-build,negative-macos,activation,loaded}.log`,
+`radio-ready-{sleep-command,sleep-observe,sleep-trace,wake-monitor,wake-poll,postwake}.log`
+and `radio-ready-repeat-{command,trace}.log` under the evidence root above.
+
+The new ready-success path has **not** been observed on hardware. The real
+9260 still reports RF_KILL, so its receipt producer cannot reach the successful
+SCAN boundary. These loaded-image and blocked-radio regressions do not replace
+that observation. WPA3/SAE, GUI repeated open/WPA2/WPA3, saved networks,
+DHCP/traffic, AP and operational Wi-Fi after sleep remain unqualified on this
+card. Physical host `10.90.10.22` was not modified.
+
+## Published laboratory package
+
+The exact installed unsigned bundle is an additional asset in
+`rdmitry0911/itlwm` release `v2.4.0-alpha`:
+`AirportItlwm-Tahoe-IwmIwx-RadioReady-6182a2b5.kext.zip`, asset `625856131`,
+15,712,530 bytes. ZIP SHA256:
+`f28a0e4951f75059635dfadd494b8b444941b670a71622a8299ba37a155f63e3`.
+The archive's extracted Mach-O matches the loaded hash above. Its label and
+notes explicitly say LAB ONLY, RFKILL and no on-air qualification. A separate
+API read verified size/digest, all four earlier assets unchanged, and all
+previous release notes byte-for-byte retained as the suffix. The default
+September package was not replaced.
