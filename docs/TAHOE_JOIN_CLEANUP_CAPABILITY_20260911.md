@@ -1,5 +1,15 @@
 # No-candidate cleanup enrollment — 2026-09-11
 
+## Current IWM and IWX rejection status 20261009
+
+The complete MVM worker negative controls still reproduce the retirement gap
+at `e1b18deb` on Linux and macOS. Their gated association boundary has been
+updated so they compile again; both families reach the required assertion,
+with the accepted attempt left in AUTH, one generic scan and no owned cleanup
+or published failure. This is an intentionally failing regression test, not
+a fixed production path. See the [9260 qualification checkpoint](TAHOE_IWM_9260_RUNTIME_20261009.md)
+for the current build, hardware RFKILL gate and next runtime priorities.
+
 ## Production correction
 
 IWM/IWX now carry the exact fresh-join generation through physical scan

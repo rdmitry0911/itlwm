@@ -138,6 +138,14 @@ public:
     } saePeerTimer;
     struct WorkLoop { bool gated = true; bool inGate() { return gated; } } workloop;
     WorkLoop *getMainWorkLoop() { return &workloop; }
+    // The production worker now commits a successful PMK through the main
+    // gate. This rejection-only fixture must never take that success path;
+    // keep the boundary explicit instead of substituting an association.
+    bool iwn_sae_continue_assoc_gated(ieee80211com *,
+        const ItlSaePmkContinuationIdentityV1 *) {
+        assert(false && "SAE rejection must not continue association");
+        return false;
+    }
     void iwn_sae_peer_timer_drain();
     // IWX's task-admission boundary is distinct in production. Both boundary
     // doubles retain the test object's lifetime; neither stands in for DMA.
