@@ -5087,7 +5087,8 @@ iwm_newstate_task(void *psc)
     }
     const enum ieee80211_state nstate = (enum ieee80211_state)request.state;
     const enum ieee80211_state ostate = ic->ic_state;
-    if (nstate == IEEE80211_S_SCAN && that->deferScanCommand(request, false)) {
+    if (nstate == IEEE80211_S_SCAN && that->deferScanCommand(request,
+            request.joinFailureGeneration != 0)) {
         splx(s);
         return;
     }
@@ -5149,6 +5150,8 @@ iwm_newstate_task(void *psc)
         case IEEE80211_S_INIT:
             break;
         case IEEE80211_S_SCAN:
+            if (request.joinFailureGeneration != 0)
+                break;
             err = that->iwm_scan(sc, request);
             if (err)
                 break;
@@ -5174,6 +5177,23 @@ out:
     }
     (void)that->postStateTransitionCommit(request, err);
     splx(s);
+}
+
+int ItlIwm::
+iwm_newstate_preflight(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
+{
+    (void)arg;
+    if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA ||
+        nstate != IEEE80211_S_SCAN || ic->ic_pae_selected_bss_lock == NULL)
+        return 0;
+    IOSimpleLock *lock = ic->ic_pae_selected_bss_lock;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    const bool retiring = ic->ic_wcl_join_attempt.phase == IEEE80211_JOIN_FAILING;
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    /* A watchdog/public scan cannot change the epoch or replace the owned
+     * cleanup request before its three real retirement terminals. A fresh
+     * accepted carrier has a different ledger and passes this fence. */
+    return retiring ? EBUSY : 0;
 }
 
 int ItlIwm::
@@ -5268,6 +5288,12 @@ iwm_endscan(struct iwm_softc *sc, uint64_t serial)
             &terminal, physical.aborted ?
                 IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED :
                 IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE);
+    if (physical.joinGeneration != 0 &&
+        ieee80211_wcl_join_failure_pending(ic, physical.joinGeneration)) {
+        iwm_wcl_join_failure_scan(ic, physical.joinGeneration);
+        ieee80211_wcl_join_cleanup_done(ic, physical.joinGeneration,
+            IEEE80211_JOIN_CLEANUP_PRODUCER);
+    }
     that->resumeScanCommand();
 }
 
@@ -7019,6 +7045,8 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
         sizeof(sc->sc_sae_engine_owner));
     sc->sc_sae_engine = NULL;
     sc->sc_sae_engine_wcl_cancel_generation = 0;
+    sc->sc_sae_engine_join_failure_generation = 0;
+    sc->sc_sae_tx_join_failure_generation = 0;
     __atomic_store_n(&sc->sc_sae_engine_lifecycle_generation, 1,
         __ATOMIC_RELEASE);
     sc->sc_sae_engine_next_ticket = 0;
@@ -7184,6 +7212,8 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     ic->ic_set_key = iwm_set_key;
     ic->ic_delete_key = iwm_delete_key;
     ic->ic_assoc_comeback_retry = iwm_assoc_comeback_retry;
+    ic->ic_wcl_join_failure_scan = iwm_wcl_join_failure_scan;
+    ic->ic_newstate_preflight = iwm_newstate_preflight;
     
     /* Override 802.11 state transition machine. */
     sc->sc_newstate = ic->ic_newstate;

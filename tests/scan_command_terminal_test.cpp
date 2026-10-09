@@ -11,6 +11,9 @@ using IOInterruptState = unsigned;
 struct IOSimpleLock { bool held = false; unsigned rank = 2; };
 static IOSimpleLock *lockStack[2];
 static unsigned held, generic, controlled, published, wakes, begins, requeues;
+static unsigned joinCleanups, joinFailures;
+static uint64_t cleanedJoin;
+static std::function<void()> joinCleanupHook;
 static uint64_t last_upper;
 static unsigned last_status, last_mode;
 static std::function<void()> unlock_hook, upper_hook;
@@ -51,6 +54,7 @@ constexpr unsigned IEEE80211_SCAN_COMPLETION_GENERIC = 0;
 constexpr unsigned IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND = 2;
 constexpr unsigned IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED = 1;
 constexpr unsigned IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE = 2;
+constexpr unsigned IEEE80211_EVT_STA_JOIN_FAILED = 3;
 struct Ifnet { unsigned if_flags = IFF_UP | IFF_RUNNING; };
 enum { IEEE80211_M_STA, IEEE80211_M_HOSTAP, IEEE80211_S_SCAN };
 constexpr unsigned IWM_FLAG_SHUTDOWN = 4, IWX_FLAG_SHUTDOWN = 4;
@@ -61,6 +65,7 @@ struct ieee80211com {
     Ifnet ic_if;
     unsigned ic_flags = 0;
     unsigned ic_wcl_scan_active = 0, ic_wcl_scan_suppress_scan_done_once = 0;
+    void (*ic_event_handler)(ieee80211com *, unsigned, void *) = nullptr;
 };
 struct task { unsigned enqueues = 0; };
 struct taskq {};
@@ -199,6 +204,14 @@ struct Itl##family { \
     void wakeupOn(void *) { assert(!held); ++wakes; } \
     void lower##_endscan(Softc *, uint64_t); \
     void finish(uint64_t serial) { lower##_endscan(&com, serial); } \
+    static void lower##_wcl_join_failure_scan(ieee80211com *ic, uint64_t generation) { \
+        auto *sc = static_cast<Softc *>(ic->ic_softc); \
+        auto *that = reinterpret_cast<Itl##family *>( \
+            reinterpret_cast<char *>(sc) - offsetof(Itl##family, com)); \
+        assert(!held && !that->scanCommand.live()); \
+        ++joinCleanups; cleanedJoin = generation; \
+        if (joinCleanupHook) { auto hook = joinCleanupHook; joinCleanupHook = {}; hook(); } \
+    } \
 };
 DECLARE(Iwm, iwm)
 DECLARE(Iwx, iwx)
@@ -233,6 +246,7 @@ static void reset_observers()
     waits = resets = 0;
     abort_submissions = 0; aborted_serial = 0; abort_hook = {};
     sleep_result = 0;
+    joinCleanups = joinFailures = 0; cleanedJoin = 0; joinCleanupHook = {};
 }
 template<class D> static uint64_t prepare(D &d, uint64_t join = 91, bool bg = false,
     uint64_t reassocSerial = 0)
@@ -255,6 +269,49 @@ template<class D> static void wcl(D &d, uint64_t generation, bool bg = false)
 template<class D> static unsigned exercise()
 {
     unsigned cases = 0;
+    for (unsigned mutation = 0; mutation != 3; ++mutation) {
+        reset_observers(); D d;
+        constexpr uint64_t join = UINT64_C(0x10000005b);
+        const uint8_t bssid[6] = {2, 3, 4, 5, 6, 7};
+        const uint8_t ssid[] = {'l', 'a', 'b'};
+        auto &attempt = d.com.sc_ic.ic_wcl_join_attempt;
+        attempt.next_generation = join - 1;
+        assert(ieee80211_join_attempt_begin(&attempt, bssid, ssid, sizeof(ssid)) == join);
+        const auto serial = prepare(d, join);
+        assert(d.readyScanCommand(serial));
+        d.com.sc_ic.ic_event_handler = [](ieee80211com *, unsigned event, void *payload) {
+            assert(!held && event == IEEE80211_EVT_STA_JOIN_FAILED);
+            auto *failure = static_cast<ieee80211_join_failure *>(payload);
+            assert(failure->terminal.cause == IEEE80211_JOIN_FAILURE_NO_NETWORKS);
+            ++joinFailures;
+        };
+        upper_hook = [&] {
+            assert(!d.scanCommand.live());
+            assert(ieee80211_join_attempt_fail(&attempt, join, 0,
+                IEEE80211_JOIN_DISCOVERY, IEEE80211_JOIN_FAILURE_NO_NETWORKS,
+                0, 0, 0, IEEE80211_JOIN_CLEANUP_ALL));
+            if (mutation == 1)
+                assert(ieee80211_join_attempt_begin(&attempt, bssid, ssid, sizeof(ssid)) == join + 1);
+        };
+        if (mutation == 2) joinCleanupHook = [&] {
+            assert(ieee80211_join_attempt_begin(&attempt, bssid, ssid, sizeof(ssid)) == join + 1);
+        };
+        d.noteScanCommandTerminal(true, 0, false);
+        assert(joinCleanups == unsigned(mutation != 1) && !joinFailures && !begins);
+        if (mutation == 0) {
+            assert(cleanedJoin == join);
+            assert(attempt.cleanup_pending == (IEEE80211_JOIN_CLEANUP_LOWER | IEEE80211_JOIN_CLEANUP_SAE));
+            ieee80211_wcl_join_cleanup_done(&d.com.sc_ic, join, IEEE80211_JOIN_CLEANUP_LOWER);
+            assert(!joinFailures);
+            ieee80211_wcl_join_cleanup_done(&d.com.sc_ic, join, IEEE80211_JOIN_CLEANUP_SAE);
+            assert(joinFailures == 1);
+            d.finish(serial); assert(joinCleanups == 1 && joinFailures == 1);
+        } else {
+            assert(attempt.result.generation == join + 1 && attempt.phase == IEEE80211_JOIN_DISCOVERY);
+            assert(!attempt.cleanup_pending && !joinFailures);
+        }
+        ++cases;
+    }
     reset_observers();
     {
         D d; const auto physical=prepare(d,0,true,UINT64_C(0x100000032));

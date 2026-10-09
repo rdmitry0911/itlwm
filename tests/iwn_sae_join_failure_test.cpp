@@ -23,12 +23,14 @@ enum { kMillisecondScale = 1 };
 static void clock_interval_to_deadline(unsigned interval, unsigned scale, uint64_t *deadline) {
     assert(scale == kMillisecondScale); *deadline = testNow + interval;
 }
-enum { IEEE80211_M_STA = 1, IEEE80211_S_SCAN = 1, IEEE80211_S_AUTH = 2,
+enum ieee80211_state { IEEE80211_M_STA = 1, IEEE80211_S_SCAN = 1, IEEE80211_S_AUTH = 2,
     IEEE80211_S_ASSOC = 3, IEEE80211_S_RUN = 4, IFF_RUNNING = 2,
     IEEE80211_SAE_WCL_REQUEST_BOUND = 2, IEEE80211_STATUS_SUCCESS = 0,
     IWN_SAE_ENGINE_PEERQ_LEN = 4, IWN_SAE_ENGINE_SUBMIT_OK = 0,
+    IWN_FLAG_SHUTDOWN = 1,
     IWN_SAE_ENGINE_SUBMIT_RETRY = 1, IWN_SAE_ENGINE_SUBMIT_RETRY_LIMIT = 3 };
 #define IEEE80211_ADDR_EQ(a, b) (memcmp((a), (b), 6) == 0)
+#define IEEE80211_ADDR_COPY(a, b) memcpy((a), (b), 6)
 #define IC2IFP(ic) (&(ic)->ic_if)
 #define IWN_DIRECT_SAE_TRACE(...) ((void)0)
 #define container_of(ptr, type, member) reinterpret_cast<type *>(ptr)
@@ -54,6 +56,7 @@ struct ieee80211_sae_wcl_request {
     uint8_t ssid_len = 4, bssid[6]{}, ssid[32]{};
 };
 struct ieee80211com {
+    void *ic_softc = nullptr;
     int ic_state = IEEE80211_S_AUTH;
     int ic_opmode = IEEE80211_M_STA;
     struct { unsigned if_flags = IFF_RUNNING, if_timer = 0; } ic_if;
@@ -71,6 +74,7 @@ static uint64_t ieee80211_pae_assoc_epoch_current(ieee80211com *ic) { return ic-
 #include "owner.inc"
 struct ieee80211_sae_engine {};
 struct iwn_softc {
+    unsigned sc_flags = 0;
     ieee80211com sc_ic;
     IOSimpleLock *sc_sae_engine_lock = nullptr, *sc_sae_tx_lock = nullptr;
     iwn_sae_engine_owner sc_sae_engine_owner{};
@@ -81,6 +85,8 @@ struct iwn_softc {
     unsigned sc_sae_tx_event_count = 0;
     uint32_t sc_sae_engine_lifecycle_generation = 1;
     uint64_t sc_sae_engine_wcl_cancel_generation = 0;
+    uint64_t sc_sae_engine_next_relay_generation = 6;
+    unsigned sc_sae_engine_callback_state = 0;
     uint64_t sc_sae_engine_join_failure_generation = 0, sc_sae_tx_join_failure_generation = 0;
 };
 static unsigned scheduled, genericScans, ownedScans, destroyed, delivered;
@@ -148,6 +154,10 @@ public:
     }
     void iwn_task_gate_leave(iwn_softc *sc) { iwn_sae_tx_lifecycle_leave(sc); }
     static void iwn_sae_engine_task(void *);
+#ifdef SAE_JOIN_TEST_ADMISSION
+    static int iwn_sae_auth_hold(ieee80211com *, ieee80211_node *,
+        ieee80211_state, int);
+#endif
     static void iwn_wcl_join_failure_scan(ieee80211com *ic, uint64_t gen) {
         outsideLeaves(); if (ieee80211_wcl_join_failure_pending(ic, gen)) { ++ownedScans; lowerGeneration = gen; }
     }
@@ -182,6 +192,27 @@ static bool iwn_sae_engine_owner_matches_pmk_identity_locked(iwn_softc *, iwn_sa
 static bool ieee80211_sae_wcl_request_pmk_claim_locked(ieee80211com *, const ItlSaePmkContinuationV1 *) { return false; }
 static int ieee80211_sae_wcl_request_pmk_continue_assoc(ieee80211com *, const ItlSaePmkContinuationIdentityV1 *) { return 0; }
 static bool ieee80211_sae_wcl_request_pmk_claim_assoc_current_locked(ieee80211com *, ieee80211_node *, const ItlSaePmkContinuationIdentityV1 *) { return false; }
+#ifdef SAE_JOIN_TEST_ADMISSION
+#define IEEE80211_SAE_SCAN_RSNXE_H2E 0x00000002u
+#define IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR 0x00000400u
+enum { IWN_SAE_ENGINE_CALLBACK_CLOSED = 1 };
+struct ieee80211_sae_wcl_bound_request {
+    uint64_t generation = 19, association_epoch = 41;
+    unsigned sae_scan_flags = 0;
+    uint8_t ssid_len = 4, bssid[6]{}, sta[6]{}, ssid[32]{};
+};
+static ieee80211_sae_wcl_bound_request admissionBound;
+static bool iwn_sae_engine_callback_enter(iwn_softc *) { outsideLeaves(); return true; }
+static void iwn_sae_engine_callback_leave(iwn_softc *) { outsideLeaves(); }
+static bool iwn_sae_engine_runtime_enabled(iwn_softc *) { return true; }
+static bool ieee80211_sae_wcl_request_copyout_bound_current(ieee80211com *, uint64_t,
+    ieee80211_sae_wcl_bound_request *bound) { *bound = admissionBound; return true; }
+static bool ieee80211_sae_wcl_peer_rx_admit(ieee80211com *,
+    const ieee80211_sae_wcl_bound_request *, uint64_t) { outsideLeaves(); return true; }
+struct IwnSaeEngineCancellation;
+static bool iwn_sae_engine_mark_cancelled(iwn_softc *, uint64_t, bool,
+    IwnSaeEngineCancellation *) { assert(false); return false; }
+#endif
 #ifdef SAE_PEER_RETRY_ONLY
 static void iwn_sae_engine_queue_wcl_cancel_locked(iwn_softc *sc, uint64_t generation) {
     assert(leaves != 0); sc->sc_sae_engine_wcl_cancel_generation = generation;
@@ -230,7 +261,27 @@ int main() {
             reinterpret_cast<const uint8_t *>("test"), 4);
         assert(ieee80211_join_attempt_bind(&attempt, gen, 41, bssid,
             reinterpret_cast<const uint8_t *>("test"), 4));
+#ifdef SAE_JOIN_TEST_ADMISSION
+        // Capture the generation through the complete production AUTH hold;
+        // do not synthesize ownership in the MVM worker fixture.
+        const auto queuedPeer = peer;
+        owner = {};
+        sc.sc_sae_engine = nullptr;
+        ic.ic_softc = &sc;
+        admissionBound = {};
+        memcpy(admissionBound.bssid, bssid, 6);
+        memcpy(admissionBound.sta, sta, 6);
+        memcpy(admissionBound.ssid, "test", 4);
+        assert(ItlIwn::iwn_sae_auth_hold(&ic, &node, IEEE80211_S_SCAN, -1) == 1);
+        assert(owner.join_attempt_generation == gen);
+        owner.start_pending = false;
+        owner.peerq[0] = queuedPeer;
+        owner.peer_count = 1;
+        owner.peer_tail = 1;
+        sc.sc_sae_engine = &engine;
+#else
         owner.join_attempt_generation = gen;
+#endif
         scheduled = genericScans = ownedScans = destroyed = delivered = 0;
         producerAcks = credentialRetired = 0; lowerGeneration = 0;
         duringPeer = {}; duringCancel = {};
@@ -326,6 +377,53 @@ int main() {
         }
         ++cases;
     }
-    printf("PASS: %u complete IWN SAE worker failure/retirement scenarios\n", cases);
+#ifdef SAE_JOIN_TEST_TX_RETIREMENT
+    for (unsigned scenario = 0; scenario != 6; ++scenario) {
+        ItlIwn device;
+        auto &sc = device.com;
+        auto &ic = sc.sc_ic;
+        auto &attempt = ic.ic_wcl_join_attempt;
+        IOSimpleLock bssLock, txLock;
+        ic.ic_pae_selected_bss_lock = &bssLock;
+        sc.sc_sae_tx_lock = &txLock;
+        const uint8_t bssid[6] = {2, 1, 2, 3, 4, 5};
+        const uint8_t ssid[] = {'t', 'e', 's', 't'};
+        const auto gen = ieee80211_join_attempt_begin(&attempt, bssid, ssid, sizeof(ssid));
+        assert(ieee80211_join_attempt_fail(&attempt, gen, 0,
+            IEEE80211_JOIN_DISCOVERY, IEEE80211_JOIN_FAILURE_NO_NETWORKS,
+            0, 0, 0, IEEE80211_JOIN_CLEANUP_ALL));
+        assert(ieee80211_join_attempt_cleanup_done(&attempt, gen, IEEE80211_JOIN_CLEANUP_PRODUCER));
+        assert(ieee80211_join_attempt_cleanup_done(&attempt, gen, IEEE80211_JOIN_CLEANUP_LOWER));
+        scheduled = delivered = 0;
+        iwn_sae_engine_request_join_retirement(&sc, gen);
+        assert(sc.sc_sae_tx_join_failure_generation == gen && scheduled == 1);
+        if (scenario == 1) sc.sc_sae_tx_active = true;
+        if (scenario == 2) sc.sc_sae_tx_event_count = 1;
+        if (scenario == 3) { sc.sc_sae_tx_stopping = true; sc.sc_flags |= IWN_FLAG_SHUTDOWN; }
+        if (scenario == 4)
+            assert(ieee80211_join_attempt_begin(&attempt, bssid, ssid, sizeof(ssid)) == gen + 1);
+        if (scenario == 5) sc.sc_sae_tx_lock = nullptr;
+        iwn_sae_tx_finish_join_retirement(&sc);
+        iwn_sae_engine_wake_join_retirement(&sc);
+        assert(scheduled == 1); // No worker self-spin while waiting for a real TX terminal.
+        assert(delivered == unsigned(scenario == 0));
+        if (scenario == 1 || scenario == 2) {
+            assert(attempt.cleanup_pending == IEEE80211_JOIN_CLEANUP_SAE);
+            sc.sc_sae_tx_active = false; sc.sc_sae_tx_event_count = 0;
+            iwn_sae_tx_finish_join_retirement(&sc);
+            assert(delivered == 1);
+        }
+        if (scenario == 4)
+            assert(attempt.phase == IEEE80211_JOIN_DISCOVERY && attempt.result.generation == gen + 1);
+        iwn_sae_tx_finish_join_retirement(&sc);
+        assert(delivered <= 1 && !leaves);
+        ++cases;
+    }
+#endif
+#ifndef SAE_JOIN_TEST_FAMILY
+#define SAE_JOIN_TEST_FAMILY "IWN"
+#endif
+    printf("PASS: %u complete %s SAE worker failure/retirement scenarios\n",
+        cases, SAE_JOIN_TEST_FAMILY);
 }
 #endif

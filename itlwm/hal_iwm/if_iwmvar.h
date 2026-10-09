@@ -578,6 +578,8 @@ struct iwm_sae_engine_owner {
     u_int64_t                         request_generation;
     u_int64_t                         association_epoch;
     u_int64_t                         relay_generation;
+    u_int64_t                         join_attempt_generation;
+    u_int64_t                         join_failure_generation;
     u_int64_t                         in_flight_ticket;
     /* Public last-TX identity and absolute peer deadline, no crypto state. */
     u_int64_t                         terminal_peer_deadline;
@@ -803,11 +805,13 @@ struct iwm_softc {
     uint8_t       sc_sae_tx_event_head;
     uint8_t       sc_sae_tx_event_tail;
     uint8_t       sc_sae_tx_event_count;
+    uint64_t      sc_sae_tx_join_failure_generation;
 
     IOSimpleLock *sc_sae_engine_lock;
     struct iwm_sae_engine_owner sc_sae_engine_owner;
     struct ieee80211_sae_engine *sc_sae_engine;
     u_int64_t sc_sae_engine_wcl_cancel_generation;
+    u_int64_t sc_sae_engine_join_failure_generation;
     volatile u_int32_t sc_sae_engine_lifecycle_generation;
     u_int64_t sc_sae_engine_next_ticket;
     u_int64_t sc_sae_engine_next_relay_generation;

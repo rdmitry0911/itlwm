@@ -21,7 +21,7 @@ enum ieee80211_state { IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH,
 enum { IEEE80211_M_STA, IEEE80211_M_HOSTAP };
 enum { IWM_FLAG_SHUTDOWN = 1, IWX_FLAG_SHUTDOWN = 1,
     IWM_FLAG_SCANNING = 2, IWX_FLAG_SCANNING = 2 };
-enum { IFF_UP = 1, IFF_RUNNING = 2 };
+enum { IFF_UP = 1, IFF_RUNNING = 2, LINK_STATE_DOWN = 0 };
 #define IEEE80211_NEWSTATE_BACKEND_ARG(state, arg) ((arg) == -100 ? -1 : (arg))
 #define IWX_AUTH_DIAG(...) ((void)0)
 #define XYLog(...) ((void)0)
@@ -30,6 +30,7 @@ enum { IFF_UP = 1, IFF_RUNNING = 2 };
 
 static unsigned leafDepth;
 static unsigned physicalContextCases;
+static unsigned joinCleanupCases;
 static std::function<void()> unlocked;
 struct IOSimpleLock { bool held = false; };
 static int IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock) {
@@ -113,6 +114,7 @@ struct ieee80211com {
     SCAN_OWNER_TEST_FIELDS;
     ieee80211_state ic_state = IEEE80211_S_SCAN;
     ieee80211_node *ic_bss = nullptr;
+    unsigned ic_mgt_timer = 15;
     TestHal *testOwner = nullptr;
 };
 extern "C" bool airportItlwmGetScanHomeAwayTime(uint32_t *value) {
@@ -179,6 +181,9 @@ struct TestHal : OSObject {
     std::vector<int> lowerCalls;
     std::function<void()> lowerHook, commitHook, failureHook, ampduHook;
     std::function<void()> apFenceHook;
+    std::function<void()> nodeCleanupHook;
+    unsigned lowerAcks = 0, saeRequests = 0, cleanupNodes = 0;
+    uint64_t retiredJoin = 0;
     bool apFence = false, deferAtScan = false;
     unsigned commits = 0, failures = 0, defers = 0;
     int lowerError = 0, genericError = 0, lastArgument = 0;
@@ -226,6 +231,42 @@ static void ieee80211_stop_ampdu_tx(ieee80211com *ic, ieee80211_node *, int) {
     if (action) action();
 }
 static void ieee80211_ba_del(ieee80211_node *) { assert(!leafDepth); }
+static int ieee80211_wcl_join_failure_pending(ieee80211com *, uint64_t);
+static void ieee80211_pae_assoc_epoch_note_newstate(ieee80211com *ic,
+    ieee80211_state state, int) {
+    assert(!leafDepth && ic->testOwner->loop.inGate());
+    assert(state == IEEE80211_S_SCAN);
+    ++ic->ic_pae_assoc_epoch;
+}
+static void ieee80211_set_link_state(ieee80211com *ic, int state) {
+    assert(!leafDepth && ic->testOwner->loop.inGate());
+    assert(state == LINK_STATE_DOWN);
+}
+static void ieee80211_node_cleanup(ieee80211com *ic, ieee80211_node *node) {
+    assert(!leafDepth && ic->testOwner->loop.inGate() && node == ic->ic_bss);
+    ++ic->testOwner->cleanupNodes;
+    auto hook = std::move(ic->testOwner->nodeCleanupHook);
+    ic->testOwner->nodeCleanupHook = {};
+    if (hook) hook();
+}
+static void ieee80211_wcl_join_cleanup_done(ieee80211com *ic, uint64_t generation,
+    unsigned part) {
+    assert(!leafDepth && ic->testOwner->loop.inGate());
+    assert(part == IEEE80211_JOIN_CLEANUP_LOWER);
+    assert(ieee80211_join_attempt_cleanup_done(&ic->ic_wcl_join_attempt, generation, part));
+    ++ic->testOwner->lowerAcks;
+    ic->testOwner->retiredJoin = generation;
+}
+static void iwm_sae_engine_request_join_retirement(iwm_softc *sc, uint64_t generation) {
+    assert(!leafDepth && sc->sc_ic.testOwner->loop.inGate());
+    assert(ieee80211_wcl_join_failure_pending(&sc->sc_ic, generation));
+    ++sc->sc_ic.testOwner->saeRequests;
+}
+static void iwx_sae_engine_request_join_retirement(iwx_softc *sc, uint64_t generation) {
+    assert(!leafDepth && sc->sc_ic.testOwner->loop.inGate());
+    assert(ieee80211_wcl_join_failure_pending(&sc->sc_ic, generation));
+    ++sc->sc_ic.testOwner->saeRequests;
+}
 
 #define STATE_DECLARATIONS \
     void reopenPrimaryStationUsers(const ItlStateTransitionRequest &); \
@@ -235,6 +276,7 @@ static void ieee80211_ba_del(ieee80211_node *) { assert(!leafDepth); }
     bool initStateTransitions(); \
     void shutdownStateTransitions(); \
     int prepareStateTransition(int, int, ItlStateTransitionRequest *); \
+    int prepareJoinFailureTransition(uint64_t, ItlStateTransitionRequest *); \
     bool stateTransitionCurrent(const ItlStateTransitionRequest &); \
     bool primaryFirmwareContextsPresent(); \
     bool enqueueStateTransition(const ItlStateTransitionRequest &); \
@@ -266,6 +308,10 @@ static void ieee80211_ba_del(ieee80211_node *) { assert(!leafDepth); }
     static void prefix##_newstate_task(void *); \
     static void prefix##_newstate_task_dispatch(void *); \
     static int prefix##_newstate(ieee80211com *, ieee80211_state, int); \
+    static int prefix##_newstate_preflight(ieee80211com *, ieee80211_state, int); \
+    int preflight(ieee80211_state state) { return prefix##_newstate_preflight(&com.sc_ic, state, -1); } \
+    static void prefix##_wcl_join_failure_scan(ieee80211com *, uint64_t); \
+    void failureRequest(uint64_t generation) { prefix##_wcl_join_failure_scan(&com.sc_ic, generation); } \
     static int _##prefix##_start_task(OSObject *, void *, void *, void *, void *) { return 0; } \
     int request(ieee80211_state state, int arg = -1) { \
         return prefix##_newstate(&com.sc_ic, state, arg); \
@@ -313,6 +359,112 @@ template<class T> struct Fixture {
     ~Fixture() { driver.shutdownStateTransitions(); assert(!driver.com.active); }
 };
 template<class T> static void suite() {
+    for (unsigned scenario = 0; scenario < 12; ++scenario) {
+        Fixture<T> f; auto &d = f.driver;
+        auto &ic = d.com.sc_ic;
+        auto &attempt = ic.ic_wcl_join_attempt;
+        const uint8_t bssid[6] = {2,1,2,3,4,5};
+        const uint8_t ssid[4] = {'t','e','s','t'};
+        attempt.next_generation = UINT64_C(0x100000005);
+        const auto generation = ieee80211_join_attempt_begin(&attempt, bssid, ssid, 4);
+        const bool discovery = scenario == 1;
+        ic.ic_state = discovery ? IEEE80211_S_SCAN : IEEE80211_S_AUTH;
+        if (!discovery)
+            assert(ieee80211_join_attempt_bind(&attempt, generation,
+                ic.ic_pae_assoc_epoch, bssid, ssid, 4));
+        assert(ieee80211_join_attempt_fail(&attempt, generation,
+            discovery ? 0 : ic.ic_pae_assoc_epoch,
+            discovery ? IEEE80211_JOIN_DISCOVERY : IEEE80211_JOIN_AUTH,
+            discovery ? IEEE80211_JOIN_FAILURE_NO_NETWORKS : IEEE80211_JOIN_FAILURE_PEER_STATUS,
+            discovery ? 0 : 1, 0, 0, IEEE80211_JOIN_CLEANUP_ALL));
+        assert(ieee80211_join_attempt_cleanup_done(&attempt, generation,
+            IEEE80211_JOIN_CLEANUP_PRODUCER));
+        uint64_t physical = 0;
+        if (scenario == 3 || scenario == 4 || scenario == 11)
+            physical = d.scanCommand.reserve(d.com.sc_generation, 0,
+                true, scenario == 4, 0);
+        if (scenario == 5) d.apFence = true;
+        d.failureRequest(generation);
+        assert(d.stateTransition.request.joinFailureGeneration == generation);
+        const auto serial = d.stateTransition.request.serial;
+        // The macro calls this before advancing the association epoch. Raw
+        // backend callers are separately refused without replacing cleanup.
+        assert(d.preflight(IEEE80211_S_SCAN) == EBUSY);
+        assert(d.preflight(IEEE80211_S_INIT) == 0);
+        ItlStateTransitionRequest unrelated{};
+        assert(d.prepareStateTransition(IEEE80211_S_SCAN, -1, &unrelated) == EALREADY);
+        assert(d.stateTransition.request.serial == serial);
+        if (scenario == 9) {
+            d.failureRequest(generation);
+            assert(d.com.newstate_task.enqueues == 1);
+        }
+        if (scenario == 10)
+            assert(ieee80211_join_attempt_cancel(&attempt, generation));
+        ItlFirmwareContextReceipt reader{};
+        if (scenario == 2) {
+            auto &station = d.primaryStationContext;
+            station.owner = {19,d.com.sc_generation,{}};
+            station.owner.identity.attempt = d.stateTransition.request.identity;
+            station.stage = ItlFirmwareContextLease::Stage::Active;
+            station.confirmed = true;
+            assert(d.primaryStationUses.start(station.owner));
+            assert(d.primaryStationUses.acquire(station.owner, &reader));
+        }
+        if (scenario == 6) d.lowerHook = [&] {
+            const auto next = ieee80211_join_attempt_begin(&attempt, bssid, ssid, 4);
+            assert(ieee80211_join_attempt_bind(&attempt, next,
+                ic.ic_pae_assoc_epoch, bssid, ssid, 4));
+        };
+        if (scenario == 7) d.nodeCleanupHook = [&] {
+            const auto next = ieee80211_join_attempt_begin(&attempt, bssid, ssid, 4);
+            assert(ieee80211_join_attempt_bind(&attempt, next,
+                ic.ic_pae_assoc_epoch, bssid, ssid, 4));
+            ic.ic_state = IEEE80211_S_AUTH;
+        };
+        if (scenario == 8) d.lowerError = EIO;
+        d.work();
+        if (physical || reader.serial || d.apFence) {
+            assert(d.stateTransition.stage == ItlStateTransitionLease::Stage::Deferred);
+            assert(d.lowerCalls.empty() && !d.lowerAcks && !d.saeRequests);
+            if (scenario == 11)
+                assert(ieee80211_join_attempt_cancel(&attempt, generation));
+            if (physical) {
+                assert(d.scanCommand.rejectUnsubmitted(physical, d.com.sc_generation));
+                d.resumeScanCommand();
+            }
+            if (reader.serial) {
+                assert(d.primaryStationUses.release(&reader));
+                d.resumePrimaryStationUsers();
+            }
+            if (d.apFence) {
+                d.apFence = false;
+                d.resumeScanCommand();
+            }
+            if (scenario != 11) {
+                assert(d.stateTransition.request.serial == serial);
+                d.work();
+            }
+        }
+        d.stateTransitionSource->deliver();
+        const bool retired = scenario != 6 && scenario != 7 && scenario != 8 &&
+            scenario != 10 && scenario != 11;
+        assert(d.lowerAcks == unsigned(retired));
+        assert(d.saeRequests == unsigned(retired));
+        assert(d.commits == 0);
+        for (int operation : d.lowerCalls) assert(operation != 3);
+        if (retired) {
+            assert(ic.ic_state == IEEE80211_S_SCAN && ic.ic_mgt_timer == 0);
+            assert(d.retiredJoin == generation && d.cleanupNodes == 1);
+            assert(attempt.cleanup_pending == IEEE80211_JOIN_CLEANUP_SAE);
+            d.failureRequest(generation);
+            assert(d.stateTransition.request.serial == serial);
+        }
+        if (scenario == 7) assert(ic.ic_state == IEEE80211_S_AUTH);
+        if (scenario == 6 || scenario == 7 || scenario == 10 || scenario == 11)
+            assert(d.preflight(IEEE80211_S_SCAN) == 0);
+        if (scenario == 8) assert(d.com.init_task.enqueues == 1 && !d.scanCommand.open);
+        ++joinCleanupCases;
+    }
     for (auto nextState : {IEEE80211_S_ASSOC,IEEE80211_S_RUN})
     for (bool superseded : {false,true}) {
         Fixture<T> f; auto &d = f.driver;
@@ -932,4 +1084,6 @@ int main(int argc, char **argv) {
     assert(!liveSources && !leafDepth);
     std::printf("actual IWM/IWX queued-state identity, deferred replay and asynchronous commit: PASS (%u scenario groups)\n",
         92 + physicalContextCases);
+    std::printf("actual IWM/IWX failed-join lower retirement: %u scenario groups PASS\n",
+        joinCleanupCases);
 }

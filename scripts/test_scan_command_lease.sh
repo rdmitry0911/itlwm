@@ -60,6 +60,11 @@ awk '
     "$PROJECT_DIR/tests/scan_command_admission_bridge_test.cpp" \
     -o "$SCAN_TEST_DIR/bridge"
 "$SCAN_TEST_DIR/bridge"
+{
+awk '/^ieee80211_wcl_join_failure_pending\(/ { selected=1; print "int" }
+     /^ieee80211_wcl_join_cleanup_done\(/ { selected=1; print "void" }
+     selected { print } selected && /^}/ { selected=0 }' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
 awk '
     /^[[:alnum:]_]+ ItlIw[mx]::$/ { type=$0 }
     /^(claimWclScanTerminal|claimScanCommandTerminal|activateScanCommand|scanCommandCurrent|scanCommandBackgroundPending|readyScanCommand|noteScanCommandTerminal|deferScanCommand|scanCommandReplayPending|resumeScanCommand|reserveScanCommandAbort|waitScanCommandAbort|iwm_endscan|iwx_endscan|iwm_scan_abort|iwx_scan_abort|iwm_bgscan_abort|iwx_bgscan_abort)\(/ { selected=1; print type }
@@ -68,7 +73,8 @@ awk '
 ' "$PROJECT_DIR/itlwm/hal_iwm/ItlIwm.cpp" \
   "$PROJECT_DIR/itlwm/hal_iwm/scan.cpp" \
   "$PROJECT_DIR/itlwm/hal_iwm/mac80211.cpp" \
-  "$PROJECT_DIR/itlwm/hal_iwx/ItlIwx.cpp" > "$SCAN_TEST_DIR/scan-terminal.inc"
+  "$PROJECT_DIR/itlwm/hal_iwx/ItlIwx.cpp"
+} > "$SCAN_TEST_DIR/scan-terminal.inc"
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -g \
     -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I "$PROJECT_DIR" -I "$PROJECT_DIR/include" -I "$SCAN_TEST_DIR" \

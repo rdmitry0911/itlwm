@@ -3,8 +3,10 @@
 The Thunderbolt radio is now Intel Wireless-AC 9260, PCI `8086:2526`,
 subsystem `8086:0010`. The macOS guest boots with this device assigned to
 IWM, but on-air qualification is blocked before initialization by RFKILL.
-Separately, the complete extracted IWM and IWX SAE workers still reproduce
-the failed-join retirement gap documented on September 11. Successful SAE
+The [next production correction](TAHOE_MVM_SAE_FAILURE_RETIREMENT_20261009.md)
+implements the separate failed-join retirement participants and has passing
+production-source fixtures. The baseline observations below are retained
+as history, not the current implementation status. Successful SAE
 association does not establish correctness of this failure/recovery path.
 
 ## Source and build

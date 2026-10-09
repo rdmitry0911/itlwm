@@ -39,6 +39,8 @@ static bool iwm_sae_engine_queue_terminal(struct iwm_softc *,
     const struct ItlSaeAuthTransportEventV1 *);
 static bool iwm_sae_engine_callback_enter(struct iwm_softc *);
 static void iwm_sae_engine_callback_leave(struct iwm_softc *);
+static void iwm_sae_engine_wake_join_retirement(struct iwm_softc *);
+static void iwm_sae_tx_finish_join_retirement(struct iwm_softc *);
 
 struct IwmSaeTxGateArgs {
     struct ItlSaeAuthTxRequestV1 request;
@@ -563,6 +565,7 @@ iwm_sae_tx_cancel_all(struct iwm_softc *sc)
     sc->sc_sae_tx_event_head = 0;
     sc->sc_sae_tx_event_tail = 0;
     sc->sc_sae_tx_event_count = 0;
+    sc->sc_sae_tx_join_failure_generation = 0;
     IOSimpleLockUnlock(sc->sc_sae_tx_lock);
 }
 
@@ -576,6 +579,7 @@ iwm_sae_tx_stop_begin(struct iwm_softc *sc)
         return;
     IOSimpleLockLock(sc->sc_sae_tx_lock);
     sc->sc_sae_tx_stopping = true;
+    sc->sc_sae_tx_join_failure_generation = 0;
     iwm_sae_tx_generation_advance_locked(sc);
     if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled) {
         iwm_sae_tx_cancel_ticket_locked(sc, sc->sc_sae_tx_active_ticket);
@@ -735,8 +739,11 @@ iwm_sae_tx_task(void *arg)
             &event);
     }
     explicit_bzero(&event, sizeof(event));
+    iwm_sae_tx_finish_join_retirement(sc);
     if (more)
         iwm_sae_tx_schedule_task(sc, is_reset);
+    else
+        iwm_sae_engine_wake_join_retirement(sc);
     iwm_sae_tx_lifecycle_leave(sc);
 }
 
@@ -928,6 +935,8 @@ detach(IOPCIDevice *device)
     invalidateWclScanForReset();
     shutdownStateTransitions();
     sc->sc_ic.ic_assoc_comeback_retry = NULL;
+    sc->sc_ic.ic_wcl_join_failure_scan = NULL;
+    sc->sc_ic.ic_newstate_preflight = NULL;
     iwm_sae_engine_detach_begin(sc);
     iwm_sae_tx_detach_begin(sc);
     if (sc->sc_nswq != NULL) {
@@ -2666,8 +2675,12 @@ resumeScanCommand()
              (wclScanPhase == ItlIwmWclScanPhase::InitialStarting &&
               !wclScanPublicationInvalidated &&
               request.scanGeneration == wclScanUpperGeneration)) &&
-            ItlScanCommandPolicy::captureOwnedLocked(ic, request.scanGeneration,
-                                                       &request, &policy) == 0;
+            (request.joinFailureGeneration != 0 ?
+                (request.identity.equals(ItlScanCommandPolicy::identityLocked(ic)) &&
+                 ic->ic_wcl_join_attempt.phase == IEEE80211_JOIN_FAILING &&
+                 ic->ic_wcl_join_attempt.result.generation == request.joinFailureGeneration) :
+                ItlScanCommandPolicy::captureOwnedLocked(ic, request.scanGeneration,
+                    &request, &policy) == 0);
         if (!current)
             stateTransition.invalidate();
         else if (!scanCommand.live() && scanCommand.apSerial == 0)
@@ -2872,6 +2885,10 @@ prepareStateTransition(int state, int argument, ItlStateTransitionRequest *reque
         (com.sc_flags & IWM_FLAG_SHUTDOWN) == 0) {
         if (!validScan)
             error = EINVAL;
+        else if (state == IEEE80211_S_SCAN &&
+            com.sc_ic.ic_opmode == IEEE80211_M_STA &&
+            com.sc_ic.ic_wcl_join_attempt.phase == IEEE80211_JOIN_FAILING)
+            error = EALREADY; // Raw callers cannot supersede owned cleanup either.
         /* Reference WCL contract (AppleBCMWLAN WCLJoinManager::joinIsBusy /
          * joinBusyQueryForSetRequestHandler): a scan request arriving while a
          * forward join transition (AUTH/ASSOC/RUN) is in flight is refused
@@ -2909,11 +2926,66 @@ prepareStateTransition(int state, int argument, ItlStateTransitionRequest *reque
     return error;
 }
 
+int ItlIwm::
+prepareJoinFailureTransition(uint64_t generation,
+    ItlStateTransitionRequest *request)
+{
+    if (request == NULL || generation == 0)
+        return EINVAL;
+    *request = ItlStateTransitionRequest{};
+    IOSimpleLock *ownerLock = com.sc_ic.ic_pae_selected_bss_lock;
+    if (wclScanLock == NULL || ownerLock == NULL)
+        return ENXIO;
+    IOInterruptState ownerIrq = IOSimpleLockLockDisableInterrupt(ownerLock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const auto &attempt = com.sc_ic.ic_wcl_join_attempt;
+    const ItlStateTransitionIdentity identity =
+        ItlScanCommandPolicy::identityLocked(&com.sc_ic);
+    int error = ECANCELED;
+    if (stateTransitionSource != NULL && scanCommand.open &&
+        (com.sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
+        attempt.phase == IEEE80211_JOIN_FAILING &&
+        attempt.result.generation == generation &&
+        identity.joinGeneration == generation) {
+        if (stateTransition.request.joinFailureGeneration == generation &&
+            stateTransition.request.hardwareGeneration == static_cast<uint32_t>(com.sc_generation) &&
+            stateTransition.stage != ItlStateTransitionLease::Stage::Empty)
+            error = EALREADY;
+        else if (stateTransition.prepare(com.sc_generation,
+            IEEE80211_S_SCAN, -1, identity, request)) {
+            request->joinFailureGeneration = generation;
+            stateTransition.request = *request;
+            error = 0;
+        } else
+            error = EOVERFLOW;
+    }
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(ownerLock, ownerIrq);
+    return error;
+}
+
+void ItlIwm::
+iwm_wcl_join_failure_scan(struct ieee80211com *ic, uint64_t generation)
+{
+    if (ic == NULL ||
+        !ieee80211_wcl_join_failure_pending(ic, generation))
+        return;
+    struct iwm_softc *sc = (struct iwm_softc *)ic->ic_if.if_softc;
+    if (sc == NULL)
+        return;
+    ItlIwm *that = container_of(sc, ItlIwm, com);
+    ItlStateTransitionRequest request = {};
+    if (that->prepareJoinFailureTransition(generation, &request) == 0)
+        (void)that->enqueueStateTransition(request);
+}
+
 bool ItlIwm::
 stateTransitionCurrent(const ItlStateTransitionRequest &request)
 {
     ItlStateTransitionIdentity identity = {};
-    if (wclScanLock == NULL ||
+    if ((request.joinFailureGeneration != 0 &&
+         !ieee80211_wcl_join_failure_pending(&com.sc_ic,
+             request.joinFailureGeneration)) || wclScanLock == NULL ||
         !ieee80211_wcl_join_state_identity(&com.sc_ic, &identity.joinSequence,
             &identity.joinGeneration, &identity.associationEpoch) ||
         !request.identity.equals(identity))
@@ -3745,6 +3817,30 @@ drainStateTransitionCommit(IOInterruptEventSource *source)
         ieee80211_roam_link_failed(&com.sc_ic, request.identity.associationEpoch);
         recoverStateTransition(request);
         return error;
+    }
+
+    if (request.joinFailureGeneration != 0) {
+        /* Hardware state work has completed all station/BA/command drains.
+         * Retire the generic BSS on its main gate, without generic SCAN's
+         * recursive begin_scan. Every yielding cleanup rechecks the token. */
+        const uint64_t generation = request.joinFailureGeneration;
+        ieee80211_pae_assoc_epoch_note_newstate(&com.sc_ic,
+            IEEE80211_S_SCAN, -1);
+        if (!ieee80211_wcl_join_failure_pending(&com.sc_ic, generation))
+            return ECANCELED;
+        ieee80211_set_link_state(&com.sc_ic, LINK_STATE_DOWN);
+        if (!ieee80211_wcl_join_failure_pending(&com.sc_ic, generation))
+            return ECANCELED;
+        ieee80211_node_cleanup(&com.sc_ic, com.sc_ic.ic_bss);
+        if (!ieee80211_wcl_join_failure_pending(&com.sc_ic, generation) ||
+            request.hardwareGeneration != static_cast<uint32_t>(com.sc_generation))
+            return ECANCELED;
+        com.sc_ic.ic_mgt_timer = 0;
+        com.sc_ic.ic_state = IEEE80211_S_SCAN;
+        iwm_sae_engine_request_join_retirement(&com, generation);
+        ieee80211_wcl_join_cleanup_done(&com.sc_ic, generation,
+            IEEE80211_JOIN_CLEANUP_LOWER);
+        return 0;
     }
 
     /* Generic AUTH/ASSOC enqueue and its if_start now share the recursive

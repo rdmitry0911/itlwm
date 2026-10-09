@@ -26,6 +26,9 @@ struct ItlStateTransitionRequest {
     int state;
     int argument;
     ItlStateTransitionIdentity identity;
+    /* A failed accepted join retires lower resources without starting scan.
+     * Separate from scanJoinGeneration, which owns a physical census. */
+    uint64_t joinFailureGeneration;
     /* Host-only copied SCAN ingress; not a firmware or Apple carrier ABI. */
     uint64_t scanGeneration;
     uint64_t scanJoinGeneration;

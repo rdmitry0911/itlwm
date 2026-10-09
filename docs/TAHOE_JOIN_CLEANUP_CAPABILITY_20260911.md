@@ -2,7 +2,13 @@
 
 ## Current IWM and IWX rejection status 20261009
 
-The complete MVM worker negative controls still reproduce the retirement gap
+The [IWM/IWX production correction](TAHOE_MVM_SAE_FAILURE_RETIREMENT_20261009.md)
+now captures the accepted AUTH generation and implements separate producer,
+lower and SAE retirement, including NO_NETWORKS. Passing software fixtures
+do not close on-air recovery: the assigned 9260 is hardware-RFKILL blocked.
+The following baseline observations and September correction are historical.
+
+The complete MVM worker negative controls reproduced the retirement gap
 at `e1b18deb` on Linux and macOS. Their gated association boundary has been
 updated so they compile again; both families reach the required assertion,
 with the accepted attempt left in AUTH, one generic scan and no owned cleanup
@@ -10,7 +16,7 @@ or published failure. This is an intentionally failing regression test, not
 a fixed production path. See the [9260 qualification checkpoint](TAHOE_IWM_9260_RUNTIME_20261009.md)
 for the current build, hardware RFKILL gate and next runtime priorities.
 
-## Production correction
+## Historical production correction at e1b18deb
 
 IWM/IWX now carry the exact fresh-join generation through physical scan
 admission and terminal handling. Both advertise `IEEE80211_C_SCANALLBAND`.

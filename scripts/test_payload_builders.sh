@@ -112,6 +112,8 @@ bash "$(dirname "$0")/test_iwn_passive_scan_retry.sh"
 bash "$(dirname "$0")/test_iwn_wcl_scan_abort_gap.sh" require-handoff
 bash "$(dirname "$0")/test_net80211_join_attempt.sh"
 bash "$(dirname "$0")/test_iwn_sae_join_failure.sh"
+bash "$(dirname "$0")/test_mvm_sae_peer_failure.sh" iwm
+bash "$(dirname "$0")/test_mvm_sae_peer_failure.sh" iwx
 bash "$(dirname "$0")/test_sae_engine_peer_retry.sh"
 bash "$(dirname "$0")/test_sae_peer_retry_workers.sh"
 bash "$(dirname "$0")/test_sae_peer_timer.sh"

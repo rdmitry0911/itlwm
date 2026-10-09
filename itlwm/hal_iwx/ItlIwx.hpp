@@ -313,6 +313,8 @@ public:
     bool initStateTransitions();
     void shutdownStateTransitions();
     int prepareStateTransition(int, int, ItlStateTransitionRequest *);
+    int prepareJoinFailureTransition(uint64_t, ItlStateTransitionRequest *);
+    static void iwx_wcl_join_failure_scan(struct ieee80211com *, uint64_t);
     bool enqueueStateTransition(const ItlStateTransitionRequest &);
     bool takeStateTransition(ItlStateTransitionRequest *);
     bool stateTransitionCurrent(const ItlStateTransitionRequest &);
@@ -832,6 +834,7 @@ public:
     static void    iwx_newstate_task(void *);
     static void    iwx_newstate_task_dispatch(void *);
     static int    iwx_newstate(struct ieee80211com *, enum ieee80211_state, int);
+    static int    iwx_newstate_preflight(struct ieee80211com *, enum ieee80211_state, int);
     void    iwx_endscan(struct iwx_softc *, uint64_t);
     void    iwx_fill_sf_command(struct iwx_softc *, struct iwx_sf_cfg_cmd *,
             struct ieee80211_node *);

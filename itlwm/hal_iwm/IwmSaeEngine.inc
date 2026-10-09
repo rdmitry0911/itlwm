@@ -594,6 +594,46 @@ iwm_sae_engine_schedule_task(struct iwm_softc *sc)
     iwm_sae_engine_task_admission_leave(sc);
 }
 
+static void
+iwm_sae_engine_wake_join_retirement(struct iwm_softc *sc)
+{
+    bool waiting;
+
+    if (sc == NULL)
+        return;
+    if (sc->sc_sae_engine_lock == NULL) {
+        /* The TX worker just checked fallback retirement. A live descriptor
+         * must wake it through TX_DONE/reset, not a self-requeue spin. */
+        return;
+    }
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    waiting = sc->sc_sae_engine_join_failure_generation != 0 &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching;
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (waiting)
+        iwm_sae_engine_schedule_task(sc);
+}
+
+static void
+iwm_sae_tx_finish_join_retirement(struct iwm_softc *sc)
+{
+    u_int64_t generation = 0;
+
+    if (sc == NULL || sc->sc_sae_engine_lock != NULL ||
+        sc->sc_sae_tx_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (!sc->sc_sae_tx_stopping && !sc->sc_sae_tx_active &&
+        sc->sc_sae_tx_event_count == 0) {
+        generation = sc->sc_sae_tx_join_failure_generation;
+        sc->sc_sae_tx_join_failure_generation = 0;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    if (generation != 0)
+        ieee80211_wcl_join_cleanup_done(&sc->sc_ic, generation,
+            IEEE80211_JOIN_CLEANUP_SAE);
+}
+
 } // namespace
 bool ItlIwm::
 supportsDriverResidentSae()
@@ -1845,8 +1885,10 @@ iwm_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct ItlSaeSelectedJoinEventV1 selected;
     struct ItlSaeAuthActivatedEventV1 activated;
     struct IwmSaeEngineCancellation cancel;
+    struct ieee80211_join_failure join_request;
     struct iwm_sae_engine_owner *owner;
     u_int64_t relay_generation = 0;
+    u_int64_t join_attempt_generation = 0;
     int held = 0;
 
     explicit_bzero(&bound, sizeof(bound));
@@ -1893,6 +1935,17 @@ iwm_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (!itl_sae_selected_join_event_is_well_formed(&selected))
         goto leave;
 
+    /* Capture the accepted fresh request before the peer worker runs.
+     * A replacement naming the same BSS must not inherit this result. */
+    explicit_bzero(&join_request, sizeof(join_request));
+    if (ieee80211_wcl_join_copy_current(ic, bound.association_epoch,
+            &join_request) && join_request.phase == IEEE80211_JOIN_AUTH &&
+        join_request.ssid_len == selected.ssid_len &&
+        IEEE80211_ADDR_EQ(join_request.bssid, selected.bssid) &&
+        memcmp(join_request.ssid, selected.ssid, selected.ssid_len) == 0)
+        join_attempt_generation = join_request.generation;
+    explicit_bzero(&join_request, sizeof(join_request));
+
     IOSimpleLockLock(sc->sc_sae_engine_lock);
     owner = &sc->sc_sae_engine_owner;
     /* A queued lower SCAN may outlive the failed worker which retained this
@@ -1927,6 +1980,7 @@ iwm_sae_auth_hold(struct ieee80211com *ic, struct ieee80211_node *ni,
             owner->request_generation = selected.request_generation;
             owner->association_epoch = selected.association_epoch;
             owner->relay_generation = relay_generation;
+            owner->join_attempt_generation = join_attempt_generation;
             owner->selected = selected;
             owner->activated = activated;
             held = 1;
@@ -2195,6 +2249,7 @@ iwm_sae_engine_worker_retire(struct iwm_softc *sc, bool request_scan)
     bool issue_scan = false;
     bool reopen_hooks = false;
     u_int32_t reopen_generation = 0;
+    u_int64_t join_failure_generation = 0;
 
     if (sc == NULL || sc->sc_sae_engine_lock == NULL)
         return;
@@ -2208,6 +2263,7 @@ iwm_sae_engine_worker_retire(struct iwm_softc *sc, bool request_scan)
         cancel.association_epoch = owner->association_epoch;
         cancel.relay_generation = owner->relay_generation;
         cancel.ticket = owner->in_flight_ticket;
+        join_failure_generation = owner->join_failure_generation;
         suppress_scan = owner->suppress_scan || sc->sc_sae_engine_stopping ||
             sc->sc_sae_engine_detaching;
         /* Preserve this cancelled public identity as an S_AUTH tombstone.
@@ -2249,7 +2305,10 @@ iwm_sae_engine_worker_retire(struct iwm_softc *sc, bool request_scan)
         (IC2IFP(&sc->sc_ic)->if_flags & IFF_RUNNING) != 0 &&
         (sc->sc_ic.ic_state == IEEE80211_S_AUTH ||
         sc->sc_ic.ic_state == IEEE80211_S_ASSOC);
-    if (issue_scan)
+    if (issue_scan && join_failure_generation != 0)
+        ItlIwm::iwm_wcl_join_failure_scan(&sc->sc_ic,
+            join_failure_generation);
+    else if (issue_scan)
         ieee80211_new_state(&sc->sc_ic, IEEE80211_S_SCAN, -1);
 
     IOSimpleLockLock(sc->sc_sae_engine_lock);
@@ -2284,6 +2343,123 @@ iwm_sae_engine_worker_retire(struct iwm_softc *sc, bool request_scan)
 } // namespace
 
 namespace {
+
+static u_int64_t
+iwm_sae_engine_claim_peer_failure(struct iwm_softc *sc,
+    struct ieee80211_sae_engine *engine,
+    const struct ItlSaeAuthPeerEventV1 *peer,
+    enum ieee80211_sae_engine_peer_result result)
+{
+    IOSimpleLock *bss_lock;
+    IOInterruptState irq;
+    u_int64_t generation = 0;
+
+    if (sc == NULL || engine == NULL || peer == NULL ||
+        sc->sc_sae_engine_lock == NULL ||
+        (bss_lock = sc->sc_ic.ic_pae_selected_bss_lock) == NULL ||
+        (result != IEEE80211_SAE_ENGINE_PEER_AP_REJECT &&
+         result != IEEE80211_SAE_ENGINE_PEER_ABORT))
+        return 0;
+    irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    auto *owner = &sc->sc_sae_engine_owner;
+    auto *attempt = &sc->sc_ic.ic_wcl_join_attempt;
+    const bool peer_rejected = result == IEEE80211_SAE_ENGINE_PEER_AP_REJECT &&
+        peer->auth_status != 0;
+    if (sc->sc_ic.ic_opmode == IEEE80211_M_STA &&
+        sc->sc_sae_engine == engine && !owner->cancelled &&
+        !owner->suppress_scan && !sc->sc_sae_engine_stopping &&
+        !sc->sc_sae_engine_detaching && !owner->completion_claimed &&
+        owner->join_failure_generation == 0 &&
+        owner->join_attempt_generation != 0 &&
+        owner->join_attempt_generation == attempt->result.generation &&
+        iwm_sae_engine_owner_matches_peer_locked(sc, peer) &&
+        iwm_sae_engine_peer_owner_current_locked(sc, owner) &&
+        attempt->phase == IEEE80211_JOIN_AUTH &&
+        attempt->result.association_epoch == owner->association_epoch &&
+        attempt->result.ssid_len == owner->selected.ssid_len &&
+        IEEE80211_ADDR_EQ(attempt->result.bssid, owner->selected.bssid) &&
+        memcmp(attempt->result.ssid, owner->selected.ssid,
+            owner->selected.ssid_len) == 0 &&
+        ieee80211_join_attempt_fail(attempt, attempt->result.generation,
+            owner->association_epoch, IEEE80211_JOIN_AUTH,
+            peer_rejected ? IEEE80211_JOIN_FAILURE_PEER_STATUS :
+                IEEE80211_JOIN_FAILURE_LOCAL,
+            peer_rejected ? peer->auth_status : 0, 0,
+            peer_rejected ? 0 : EPROTO, IEEE80211_JOIN_CLEANUP_ALL)) {
+        generation = attempt->result.generation;
+        owner->join_failure_generation = generation;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+    return generation;
+}
+
+static void
+iwm_sae_engine_request_join_retirement(struct iwm_softc *sc,
+    u_int64_t generation)
+{
+    bool queued = false;
+
+    if (sc == NULL ||
+        !ieee80211_wcl_join_failure_pending(&sc->sc_ic, generation))
+        return;
+    if (sc->sc_sae_engine_lock == NULL) {
+        /* Crypto allocation can fail independently of the legacy transport.
+         * Its worker must retire any remaining native descriptor/event. */
+        if (sc->sc_sae_tx_lock == NULL)
+            return;
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        if (!sc->sc_sae_tx_stopping &&
+            generation >= sc->sc_sae_tx_join_failure_generation) {
+            sc->sc_sae_tx_join_failure_generation = generation;
+            queued = true;
+        }
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+        if (queued)
+            iwm_sae_tx_schedule_task(sc, false);
+        return;
+    }
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    if (sc->sc_sae_engine_task_ready && !sc->sc_sae_engine_stopping &&
+        !sc->sc_sae_engine_detaching &&
+        generation >= sc->sc_sae_engine_join_failure_generation) {
+        sc->sc_sae_engine_join_failure_generation = generation;
+        queued = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (queued)
+        iwm_sae_engine_schedule_task(sc);
+}
+
+static void
+iwm_sae_engine_finish_join_retirement(struct iwm_softc *sc)
+{
+    u_int64_t generation = 0;
+
+    if (sc == NULL || sc->sc_sae_engine_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_engine_lock);
+    if (!sc->sc_sae_engine_owner.active && sc->sc_sae_engine == NULL &&
+        sc->sc_sae_engine_wcl_cancel_generation == 0 &&
+        !sc->sc_sae_engine_stopping && !sc->sc_sae_engine_detaching) {
+        /* Same engine -> TX leaf order as the doorbell cancellation fence.
+         * A cancelled descriptor remains live until TX_DONE/reset reclaims
+         * it; queued terminal values are drained by the TX worker as well. */
+        if (sc->sc_sae_tx_lock != NULL)
+            IOSimpleLockLock(sc->sc_sae_tx_lock);
+        if (!sc->sc_sae_tx_active && sc->sc_sae_tx_event_count == 0) {
+            generation = sc->sc_sae_engine_join_failure_generation;
+            sc->sc_sae_engine_join_failure_generation = 0;
+        }
+        if (sc->sc_sae_tx_lock != NULL)
+            IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    if (generation != 0)
+        ieee80211_wcl_join_cleanup_done(&sc->sc_ic, generation,
+            IEEE80211_JOIN_CLEANUP_SAE);
+}
 
 /* Worker-only claim. RX queued before this leaf wins over the timeout. */
 static bool
@@ -2448,6 +2624,7 @@ iwm_sae_engine_task(void *arg)
     uint64_t retry_peer_ticket = 0;
     uint64_t peer_now = 0;
     struct ItlSaeAuthActivatedEventV1 retry_identity = {};
+    u_int64_t join_failure_generation = 0;
     bool start = false;
     bool retry_submit = false;
     bool have_terminal = false;
@@ -2683,6 +2860,8 @@ iwm_sae_engine_task(void *arg)
                 }
             } else if (peer_result == IEEE80211_SAE_ENGINE_PEER_ABORT ||
                 peer_result == IEEE80211_SAE_ENGINE_PEER_AP_REJECT) {
+                join_failure_generation = iwm_sae_engine_claim_peer_failure(
+                    sc, engine, &peer, peer_result);
                 fail = true;
             }
         }
@@ -2732,6 +2911,10 @@ out:
     explicit_bzero(&continuation, sizeof(continuation));
     explicit_bzero(&peer, sizeof(peer));
     explicit_bzero(&terminal, sizeof(terminal));
+    if (join_failure_generation != 0)
+        ieee80211_wcl_join_cleanup_done(&sc->sc_ic, join_failure_generation,
+            IEEE80211_JOIN_CLEANUP_PRODUCER);
+    iwm_sae_engine_finish_join_retirement(sc);
     iwm_sae_tx_lifecycle_leave(sc);
 }
 
@@ -2750,6 +2933,7 @@ iwm_sae_engine_stop_begin(struct iwm_softc *sc)
     if (sc->sc_sae_engine_lock != NULL) {
         IOSimpleLockLock(sc->sc_sae_engine_lock);
         sc->sc_sae_engine_stopping = true;
+        sc->sc_sae_engine_join_failure_generation = 0;
         (void)iwm_sae_engine_generation_advance_locked(sc);
         (void)iwm_sae_engine_mark_cancelled_locked(sc, 0, true, &cancel);
         schedule = sc->sc_sae_engine_task_ready;
@@ -2941,6 +3125,7 @@ iwm_sae_engine_detach_begin(struct iwm_softc *sc)
         sc->sc_sae_engine = NULL;
         wcl_cancel_generation = sc->sc_sae_engine_wcl_cancel_generation;
         sc->sc_sae_engine_wcl_cancel_generation = 0;
+        sc->sc_sae_engine_join_failure_generation = 0;
         iwm_sae_engine_owner_clear_locked(sc);
         IOSimpleLockUnlock(sc->sc_sae_engine_lock);
     }
