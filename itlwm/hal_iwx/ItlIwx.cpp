@@ -978,6 +978,8 @@ checkRadioPowerOnAdmission()
 IOReturn ItlIwx::enable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    if (com.sc_flags & IWX_FLAG_SHUTDOWN)
+        return kIOReturnNotReady;
     if (ifp->if_flags & IFF_UP) {
         XYLog("DEBUG %s SKIP: already IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
@@ -19856,6 +19858,11 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
      */
     /* close() atomically sets SHUTDOWN and becomes this stop's owner ref. */
     if (!that->iwx_task_gate_close(sc, false, &stop_generation)) {
+        /* A second external Off must not return while the first stop still
+         * owns live DMA. Init-task/epoch callers must instead leave their
+         * self-reference so that same stopper can finish draining them. */
+        if (!caller_is_init_task && !caller_is_init_epoch)
+            that->iwx_task_gate_drain(sc, 0, 0, 0);
         splx(s);
         return;
     }
@@ -24398,11 +24405,9 @@ iwx_activate(struct iwx_softc *sc, int act)
     
     switch (act) {
         case DVACT_QUIESCE:
-            if (ifp->if_flags & IFF_RUNNING) {
-                //            rw_enter_write(&sc->ioctl_rwl);
-                iwx_stop(ifp);
-                //            rw_exit(&sc->ioctl_rwl);
-            }
+            /* Firmware/q0 starts before IFF_RUNNING. The task-gated stop
+             * must close and drain that init owner on every radio Off. */
+            iwx_stop(ifp);
             break;
         case DVACT_RESUME:
             err = iwx_resume(sc);

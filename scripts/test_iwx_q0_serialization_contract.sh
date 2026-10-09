@@ -291,15 +291,19 @@ require(cmdq_start_bootstrap, "Attach/preinit has no active task-gate init epoch
         "bootstrap-only q0 start scope")
 if "sc_task_gate_lock" in cmdq_start_bootstrap:
     fail("bootstrap q0 start must not pretend to own a runtime init epoch")
+# A live init owner survives closed -> open: the same owner performs SCAN
+# after task admission opens. SHUTDOWN, refs and generation still fence stop.
+gate_live_code = re.sub(r"/\*.*?\*/|//[^\n]*", "", gate_live, flags=re.S)
 for needle in (
     "sc->sc_flags & IWX_FLAG_SHUTDOWN",
     "!sc->sc_task_gate_detaching",
-    "sc->sc_task_gate_closed",
     "sc->sc_task_gate_init_refs == 1",
     "sc->sc_task_gate_stop_refs == 0",
     "sc->sc_generation == generation",
 ):
-    require(gate_live, needle, "epoch-live validation")
+    require(gate_live_code, needle, "epoch-live validation")
+if "sc_task_gate_closed" in gate_live_code:
+    fail("epoch-live owner must survive opening task admission before SCAN")
 
 # Stop uses the same order, never sleeps under either lock, and drains refs
 # before response/ring teardown can proceed.
