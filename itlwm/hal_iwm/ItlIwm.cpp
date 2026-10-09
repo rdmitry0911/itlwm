@@ -2335,6 +2335,23 @@ noteWclScanRadioReady(uint64_t serial)
 }
 
 bool ItlIwm::
+isRadioScanReady(uint32_t hardwareGeneration)
+{
+    if (hardwareGeneration == 0 || wclScanLock == nullptr)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const struct ItlRadioReadyV1 ready = {
+        kItlRadioReadyVersion, sizeof(ready), radioReadyRequestEpoch,
+        radioReadyReceiptSerial, radioReadyBackendGeneration, 0 };
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    /* Initialization observed this accepted SCAN even if a ready consumer
+     * has already entered AUTH, or the scan command has since completed.
+     * Revalidate after copying: reset/replacement still wins this snapshot. */
+    return ready.backendGeneration == hardwareGeneration &&
+        isRadioReadyCurrent(&ready);
+}
+
+bool ItlIwm::
 isRadioReadyCurrent(const struct ItlRadioReadyV1 *ready)
 {
     if (ready == nullptr || ready->version != kItlRadioReadyVersion ||

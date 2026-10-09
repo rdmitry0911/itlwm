@@ -5674,18 +5674,29 @@ iwm_init(struct _ifnet *ifp)
     
     /*
      * ieee80211_begin_scan() ends up scheduling iwm_newstate_task().
-     * Wait until the transition to SCAN state has completed.
+     * The first accepted SCAN can finish or a ready consumer can enter AUTH
+     * before this thread wakes. Observe its immutable hardware-epoch receipt,
+     * not the now-mutable association state. A wakeup before msleep is also
+     * harmless: the predicate is checked both before sleep and on timeout.
      */
-    do {
+    for (;;) {
+        if (generation != sc->sc_generation ||
+            (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0)
+            return ENXIO;
+        if (that->isRadioScanReady(static_cast<uint32_t>(generation)))
+            break;
         err = tsleep_nsec(&ic->ic_state, PCATCH, "iwminit",
                           SEC_TO_NSEC(1));
-        if (generation != sc->sc_generation)
+        if (generation != sc->sc_generation ||
+            (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0)
             return ENXIO;
+        if (that->isRadioScanReady(static_cast<uint32_t>(generation)))
+            break;
         if (err) {
             iwm_stop(ifp);
             return err;
         }
-    } while (ic->ic_state != IEEE80211_S_SCAN);
+    }
 
     /* The lower firmware and its first synchronous scan state now exist. */
     iwm_mfp_pae_reopen(sc);

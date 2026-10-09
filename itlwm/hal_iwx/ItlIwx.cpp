@@ -1327,6 +1327,22 @@ noteWclScanRadioReady(uint64_t serial)
 }
 
 bool ItlIwx::
+isRadioScanReady(uint32_t hardwareGeneration)
+{
+    if (hardwareGeneration == 0 || wclScanLock == nullptr)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+    const struct ItlRadioReadyV1 ready = {
+        kItlRadioReadyVersion, sizeof(ready), radioReadyRequestEpoch,
+        radioReadyReceiptSerial, radioReadyBackendGeneration, 0 };
+    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    /* A sticky receipt, not mutable ic_state, is this init's completion.
+     * Revalidate the copied identity against reset/replacement before use. */
+    return ready.backendGeneration == hardwareGeneration &&
+        isRadioReadyCurrent(&ready);
+}
+
+bool ItlIwx::
 isRadioReadyCurrent(const struct ItlRadioReadyV1 *ready)
 {
     if (ready == nullptr || ready->version != kItlRadioReadyVersion ||
@@ -19673,9 +19689,19 @@ iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
 
     /*
      * ieee80211_begin_scan() ends up scheduling iwx_newstate_task().
-     * Wait until the transition to SCAN state has completed.
+     * The first accepted SCAN can finish or a ready consumer can enter AUTH
+     * before this thread wakes. Observe its immutable hardware-epoch receipt,
+     * not the now-mutable association state. A wakeup before msleep is also
+     * harmless: the predicate is checked both before sleep and on timeout.
      */
-    do {
+    for (;;) {
+        if (!that->iwx_task_gate_epoch_live(sc, generation)) {
+            that->iwx_cmdq_stop(sc);
+            err = ENXIO;
+            goto out;
+        }
+        if (that->isRadioScanReady(static_cast<uint32_t>(generation)))
+            break;
         err = tsleep_nsec(&ic->ic_state, PCATCH, "iwxinit",
             SEC_TO_NSEC(1));
         if (!that->iwx_task_gate_epoch_live(sc, generation)) {
@@ -19684,12 +19710,14 @@ iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
             err = ENXIO;
             goto out;
         }
+        if (that->isRadioScanReady(static_cast<uint32_t>(generation)))
+            break;
         if (err) {
             XYLog("DEBUG %s tsleep err=%d ic_state=%d, stopping\n", __FUNCTION__, err, ic->ic_state);
             iwx_stop_internal(ifp, caller_is_init_task, true);
             goto out;
         }
-    } while (ic->ic_state != IEEE80211_S_SCAN);
+    }
 
     if (driver_reset_reconnect) {
         (void)that->iwx_sae_driver_reset_recovery_pending(sc, true);

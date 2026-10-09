@@ -5,6 +5,8 @@ receipt through a nonblocking controller mailbox. A delayed old receipt
 cannot borrow a new POWER attempt's epoch, and a scan worker no longer has
 to enter the upper command gate while Off may be draining that worker.
 This follows the preceding accepted-activation failure correction.
+The later `TAHOE_MVM_RADIO_INIT_RECEIPT_20261009.md` checkpoint makes the init
+waiter consume this immutable receipt instead of mutable association state.
 
 ## Producer and controller boundaries
 

@@ -191,6 +191,7 @@ public:
     uint8_t claimRadioPowerOnRetry(uint64_t);
     void reportRadioPowerOnFailure(uint64_t, IOReturn, uint32_t, int);
     bool isRadioReadyCurrent(const struct ItlRadioReadyV1 *) override;
+    bool isRadioScanReady(uint32_t hardwareGeneration);
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
 
