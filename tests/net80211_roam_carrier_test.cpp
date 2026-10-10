@@ -20,25 +20,24 @@ using u_int32_t = uint32_t;
 #define IEEE80211_ADDR_COPY(a,b) std::memcpy(a,b,6)
 #include "constants.inc"
 #include "../itl80211/openbsd/net80211/ieee80211_bss_switch.h"
+#include "../itl80211/openbsd/net80211/ieee80211_pae_selected_bss.h"
+#define _KASSERT(value) assert(value)
+#define XYLog(...) do {} while (0)
 enum ieee80211_phymode { ModeA };
 enum ieee80211_state { IEEE80211_S_INIT, IEEE80211_S_SCAN, IEEE80211_S_AUTH,
                        IEEE80211_S_ASSOC, IEEE80211_S_RUN };
 enum { IEEE80211_M_STA, IEEE80211_M_HOSTAP, IEEE80211_M_MONITOR,
-       IEEE80211_STA_BSS, IEEE80211_CIPHER_USEGROUP=0,
+       IEEE80211_STA_BSS,
        IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED=-1 };
 enum { LINK_STATE_DOWN, LINK_STATE_UP, LINK_STATE_UNKNOWN };
 enum { IEEE80211_F_BGSCAN=4, IEEE80211_F_DISABLE_BG_AUTO_CONNECT=8,
        IEEE80211_F_DOSORT=1, IEEE80211_F_DOFRATE=2, IEEE80211_F_DONEGO=4,
        IEEE80211_F_DODEL=8, IEEE80211_FC0_SUBTYPE_DEAUTH=0xc0,
-       IEEE80211_FC0_SUBTYPE_AUTH=0xb0 };
+       IEEE80211_FC0_SUBTYPE_AUTH=0xb0, IEEE80211_F_TX_MGMT_ONLY=16 };
 enum { kAirportItlwmPostPltiTraceEventBssSelected,
        kAirportItlwmPostPltiTraceEventJoinBssEntered };
 enum { kIONetworkLinkValid=1, kIONetworkLinkActive=2 };
-enum { IEEE80211_SAE_WCL_REQUEST_BOUND=4,
-       IEEE80211_SAE_WCL_REQUEST_PENDING=1,
-       IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED=2,
-       IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED=3,
-       IEEE80211_NEWSTATE_ARG_SCAN_HOP=1000,
+enum { IEEE80211_NEWSTATE_ARG_SCAN_HOP=1000,
        IEEE80211_NEWSTATE_ARG_PUBLIC_ASSOCIATE=1001 };
 struct IOSimpleLock { bool held=false; };
 static std::function<void()> onUnlock;
@@ -48,7 +47,8 @@ static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock) {
 }
 static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, int) {
     assert(lock->held); lock->held=false;
-    if (onUnlock) onUnlock();
+    const auto callback=onUnlock;
+    if (callback) callback();
 }
 struct ieee80211_pae_mfp_prepared {};
 struct ieee80211_sae_wcl_request_revocation {};
@@ -62,7 +62,8 @@ struct Controller {
 };
 struct _ifnet { int if_link_state=LINK_STATE_UP; Controller *controller; };
 struct ieee80211_node {
-    int ni_chan=1, ni_esslen=3, ni_port_valid=1;
+    int ni_chan=1, ni_port_valid=1;
+    uint8_t ni_esslen=3;
     uint8_t ni_macaddr[6]={2}, ni_bssid[6]={2}, ni_essid[32]={'n','e','t'};
     uint32_t ni_assoc_fail=0, ni_capinfo=IEEE80211_CAPINFO_PRIVACY,
         ni_flags=IEEE80211_NODE_MFP, ni_rsnprotos=IEEE80211_PROTO_RSN,
@@ -79,6 +80,11 @@ struct ieee80211com {
         ic_mgt_timer=5, ic_bgscan_timeout=0;
     uint8_t ic_des_essid[32]={'n','e','t'};
     uint64_t ic_pae_assoc_epoch=7, ic_roam_link_epoch=0;
+    ieee80211_wnm_bss_transition ic_wnm_bss_transition{};
+    uint64_t ic_wnm_bss_transition_next_request=0;
+    uint64_t ic_wnm_bss_transition_next_tx_fence=0;
+    unsigned ic_xflags=0;
+    int (*ic_sae_wnm_roam_start)(ieee80211com *,const ieee80211_node *)=nullptr;
     uint64_t ic_wcl_reassoc_next_serial=0, ic_wcl_reassoc_terminal_serial=0;
     uint64_t ic_wcl_reassoc_scan_accepted_serial=0;
     uint32_t ic_wcl_reassoc_published_stages=0;
@@ -90,12 +96,20 @@ struct ieee80211com {
     struct { uint64_t next_generation=0; } ic_wcl_join_attempt;
     uint64_t ic_pae_assoc_replace_epoch=0, ic_sae_wcl_policy_generation=0;
     IOSimpleLock *ic_pae_selected_bss_lock=nullptr;
-    struct { uint64_t epoch=0; uint8_t bssid[6]={}; } ic_pae_selected_bss;
+    ieee80211_pae_selected_bss ic_pae_selected_bss{};
     struct { uint64_t association_epoch=0, configuration_epoch=0;
         int active=0, binding_pending=0; uint8_t bssid[6]={};
     } ic_public_initial_bssid_pin;
     uint8_t ic_des_bssid[6]={};
-    struct { int phase=0; uint64_t generation=0, association_epoch=0; } ic_sae_wcl_request;
+    ieee80211_sae_wcl_request ic_sae_wcl_request{};
+    uint64_t ic_sae_wcl_request_next_generation=0;
+    unsigned ic_sae_wcl_request_join_active=0;
+    unsigned ic_pae_mfp_requested=0, ic_rsnprotos=0, ic_rsnakms=0,
+        ic_rsnciphers=0, ic_rsngroupcipher=0, ic_rsngroupmgmtcipher=0;
+    // These four hook slots are registration identities only. The actual
+    // owner predicate checks them; no authentication callback is simulated.
+    void (*ic_sae_auth_hold)()=nullptr, (*ic_sae_auth_owned)()=nullptr,
+        (*ic_sae_engine_peer_event)()=nullptr, (*ic_sae_wcl_request_revoke)()=nullptr;
     int ic_sae_wcl_fresh_carrier_required=0, ic_sae_wcl_request_policy_starting=0;
     void (*ic_pae_mfp_txn_cancel)(ieee80211com *, uint64_t)=nullptr;
     void (*ic_event_handler)(ieee80211com *, int, void *)=nullptr;
@@ -110,19 +124,12 @@ static uint64_t ieee80211_pae_assoc_epoch_current(const ieee80211com *ic) {
  * carrier fixture does not arm an ordinary join. */
 static void ieee80211_wcl_join_cancel(ieee80211com *, uint64_t) {}
 void ieee80211_set_link_state(ieee80211com *, int);
-#ifdef ROAM_LOSS_BASELINE
-uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *, int);
-#else
 uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *, int,
-    uint64_t, uint64_t, const ieee80211_bss_switch_identity *);
-#endif
+    uint64_t, uint64_t, const ieee80211_bss_switch_identity *,uint64_t,uint64_t);
 void ieee80211_pae_assoc_epoch_note_newstate(ieee80211com *, ieee80211_state, int);
+void ieee80211_node_wnm_reconnect(ieee80211com *,ieee80211_node *,uint64_t,uint64_t);
 static uint64_t ieee80211_pae_assoc_epoch_begin(ieee80211com *ic) {
-#ifdef ROAM_LOSS_BASELINE
-    return ieee80211_pae_assoc_epoch_begin_internal(ic,0);
-#else
-    return ieee80211_pae_assoc_epoch_begin_internal(ic,0,0,0,nullptr);
-#endif
+    return ieee80211_pae_assoc_epoch_begin_internal(ic,0,0,0,nullptr,0,0);
 }
 static uint64_t ieee80211_pae_assoc_epoch_advance_locked(ieee80211com *ic) {
     if (++ic->ic_pae_assoc_epoch==0) ++ic->ic_pae_assoc_epoch;
@@ -144,7 +151,8 @@ static std::function<void(ieee80211com *)> onRevoke;
 static void ieee80211_sae_wcl_request_revocation_deliver(ieee80211com *ic,
     ieee80211_sae_wcl_request_revocation *) {
     assert(!ic->ic_pae_selected_bss_lock || !ic->ic_pae_selected_bss_lock->held);
-    if (onRevoke) onRevoke(ic);
+    const auto callback=onRevoke;
+    if (callback) callback(ic);
 }
 static void ieee80211_pae_mfp_txn_dispose_prepared(ieee80211com *,
     ieee80211_pae_mfp_prepared *) {}
@@ -153,11 +161,14 @@ static void AirportItlwmRegDiagNet80211LinkContext(ieee80211com *, uint32_t, uin
 static bool admitted=true, bindingRejected=false, preflightRejected=false;
 static bool cancelDuringStop=false;
 static int backendError=0, stops=0, copies=0;
+static unsigned stateRequests=0;
+static std::function<int(ieee80211com *)> onPreflight, onNewstate, onSaeWnm;
 static bool ieee80211_sae_wcl_request_join_begin(ieee80211com *) { return admitted; }
 static void ieee80211_sae_wcl_request_join_end(ieee80211com *) {}
 static void AirportItlwmPostPltiTraceRecord(ieee80211com *, int) {}
 static void AirportItlwmPostPltiTraceNoteStateRequest(ieee80211com *, uint32_t, uint32_t) {}
 static ieee80211_phymode ieee80211_chan2mode(ieee80211com *, int) { return ModeA; }
+static unsigned ieee80211_chan2ieee(ieee80211com *, int channel) { return channel; }
 static void ieee80211_setmode(ieee80211com *, ieee80211_phymode) {}
 static void ieee80211_stop_ampdu_tx(ieee80211com *ic, ieee80211_node *, int) {
     ++stops;
@@ -184,8 +195,15 @@ static void ieee80211_pae_selected_bss_capture(ieee80211com *ic, ieee80211_node 
 static int ieee80211_sae_wcl_request_bind_selected_bss(ieee80211com *, ieee80211_node *, uint64_t) {
     return bindingRejected ? -1 : 0;
 }
-static int preflight(ieee80211com *, ieee80211_state, int) { return preflightRejected ? 1 : 0; }
+static int preflight(ieee80211com *ic, ieee80211_state, int) {
+    const auto callback=onPreflight;
+    if (callback) return callback(ic);
+    return preflightRejected ? 1 : 0;
+}
 static int newstate(ieee80211com *ic, ieee80211_state state, int) {
+    ++stateRequests;
+    const auto callback=onNewstate;
+    if (callback) return callback(ic);
     if (backendError) return backendError;
     const auto old=ic->ic_state;
     ic->ic_state=state;
@@ -268,6 +286,8 @@ struct Fixture {
         admitted=true; bindingRejected=preflightRejected=false;
         cancelDuringStop=false;
         backendError=stops=copies=0;
+        stateRequests=0;
+        onPreflight={}; onNewstate={}; onSaeWnm={};
         onRevoke={};
         onUnlock={};
         losses.clear();
@@ -281,7 +301,264 @@ struct Fixture {
     void join() { ieee80211_node_join_bss(&ic,&target,0); }
 };
 
+static void btm_cancel_control() {
+    Fixture f;
+    assert(ieee80211_wnm_bss_transition_arm(&f.ic,f.source.ni_bssid,
+        f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,17,f.target.ni_chan));
+    uint8_t token=0,bssid[6]{};
+    assert(ieee80211_wnm_bss_transition_confirm_candidate(&f.ic,&f.target,&token,bssid));
+    assert(f.ic.ic_wnm_bss_transition.source_epoch==7);
+    // Execute the complete production ordinary cancellation, including its
+    // real epoch advance and out-of-leaf revocation boundary. No bare epoch
+    // increment substitutes for the cancellation body in this composition.
+    assert(ieee80211_pae_assoc_epoch_begin(&f.ic)==8);
+    const int retarget=ieee80211_wnm_bss_transition_copy_retarget(&f.ic,
+        f.source.ni_essid,f.source.ni_esslen,bssid);
+    std::fprintf(stderr,"actual full epoch cancel + BTM retarget: old=7 current=%llu "
+        "active=%u retarget=%d\n",static_cast<unsigned long long>(f.ic.ic_pae_assoc_epoch),
+        f.ic.ic_wnm_bss_transition.active,retarget);
+    assert(!retarget && !f.ic.ic_wnm_bss_transition.active);
+}
+static void btm_terminal_cancel_control() {
+    Fixture f;
+    assert(ieee80211_wnm_bss_transition_arm(&f.ic,f.source.ni_bssid,
+        f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,17,f.target.ni_chan));
+    uint8_t token=0,bssid[6]{}; uint64_t fence=0;
+    assert(ieee80211_wnm_bss_transition_confirm_candidate(&f.ic,&f.target,&token,bssid));
+    assert(ieee80211_wnm_bss_transition_tx_fence_arm(&f.ic,&f.source,token,bssid,&fence));
+    assert(ieee80211_wnm_bss_transition_tx_fence_submit(&f.ic,fence,IEEE80211_WNM_TX_FENCE_RESPONSE));
+    assert(ieee80211_wnm_bss_transition_tx_fence_submit(&f.ic,fence,IEEE80211_WNM_TX_FENCE_DEAUTH));
+    ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,fence,IEEE80211_WNM_TX_FENCE_RESPONSE);
+    // Explicit scheduling boundary after the actual terminal owner's leaf,
+    // before its real node reconnect function. Execute complete cancellation
+    // and state-note bodies, not a fabricated TX result or epoch increment.
+    onUnlock=[&] {
+        onUnlock={};
+        ieee80211_new_state(&f.ic,IEEE80211_S_INIT,-1);
+    };
+    ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,fence,IEEE80211_WNM_TX_FENCE_DEAUTH);
+    std::fprintf(stderr,"actual BTM terminal/cancel/reconnect: state=%u epoch=%llu active=%u\n",
+        unsigned(f.ic.ic_state),static_cast<unsigned long long>(f.ic.ic_pae_assoc_epoch),
+        f.ic.ic_wnm_bss_transition.active);
+    assert(f.ic.ic_state==IEEE80211_S_INIT && f.ic.ic_pae_assoc_epoch==8);
+}
+struct BtmFence { uint64_t request=0, sourceEpoch=0, tx=0; };
+static BtmFence arm_btm(Fixture &f, bool submit=true) {
+    assert(ieee80211_wnm_bss_transition_arm(&f.ic,f.source.ni_bssid,
+        f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,17,f.target.ni_chan));
+    uint8_t token=0,target[6]{};
+    assert(ieee80211_wnm_bss_transition_confirm_candidate(&f.ic,&f.target,&token,target));
+    BtmFence receipt{f.ic.ic_wnm_bss_transition.request_generation,
+        f.ic.ic_wnm_bss_transition.source_epoch,0};
+    assert(ieee80211_wnm_bss_transition_tx_fence_arm(&f.ic,&f.source,token,target,&receipt.tx));
+    if(submit) {
+        assert(ieee80211_wnm_bss_transition_tx_fence_submit(&f.ic,receipt.tx,IEEE80211_WNM_TX_FENCE_RESPONSE));
+        assert(ieee80211_wnm_bss_transition_tx_fence_submit(&f.ic,receipt.tx,IEEE80211_WNM_TX_FENCE_DEAUTH));
+    }
+    return receipt;
+}
+static void complete_btm(Fixture &f,const BtmFence &receipt,bool reverse=false) {
+    ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,
+        reverse ? IEEE80211_WNM_TX_FENCE_DEAUTH : IEEE80211_WNM_TX_FENCE_RESPONSE);
+    ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,
+        reverse ? IEEE80211_WNM_TX_FENCE_RESPONSE : IEEE80211_WNM_TX_FENCE_DEAUTH);
+}
+static bool copy_btm_target(Fixture &f) {
+    uint8_t target[6]{};
+    const bool copied=ieee80211_wnm_bss_transition_copy_retarget(&f.ic,
+        f.source.ni_essid,f.source.ni_esslen,target)!=0;
+    if(copied) assert(IEEE80211_ADDR_EQ(target,f.target.ni_bssid));
+    else { const uint8_t zero[6]{}; assert(IEEE80211_ADDR_EQ(target,zero)); }
+    return copied;
+}
+static void hook_identity() {}
+static void sae_policy(Fixture &f,uint64_t generation,bool bound) {
+    auto &ic=f.ic;
+    ic.ic_flags|=IEEE80211_F_RSNON|IEEE80211_F_MFPR;
+    ic.ic_flags&=~IEEE80211_F_PSK;
+    ic.ic_pae_mfp_requested=1;
+    ic.ic_rsnprotos=IEEE80211_PROTO_RSN; ic.ic_rsnakms=IEEE80211_AKM_SAE;
+    ic.ic_rsnciphers=ic.ic_rsngroupcipher=IEEE80211_CIPHER_CCMP;
+    ic.ic_rsngroupmgmtcipher=IEEE80211_CIPHER_BIP;
+    ic.ic_sae_auth_hold=ic.ic_sae_auth_owned=ic.ic_sae_engine_peer_event=
+        ic.ic_sae_wcl_request_revoke=hook_identity;
+    ic.ic_sae_wcl_policy_generation=ic.ic_sae_wcl_request_next_generation=generation;
+    ic.ic_sae_wcl_request={};
+    auto &request=ic.ic_sae_wcl_request;
+    request.generation=generation; request.ssid_len=f.source.ni_esslen;
+    std::memcpy(request.ssid,f.source.ni_essid,request.ssid_len);
+    request.phase=bound ? IEEE80211_SAE_WCL_REQUEST_BOUND : IEEE80211_SAE_WCL_REQUEST_PENDING;
+    request.association_epoch=bound ? ic.ic_pae_assoc_epoch : 0;
+    IEEE80211_ADDR_COPY(request.bssid,bound ? f.source.ni_bssid : f.target.ni_bssid);
+    if(bound) {
+        assert(ieee80211_pae_selected_bss_populate(&ic.ic_pae_selected_bss,
+            f.source.ni_bssid,f.source.ni_essid,f.source.ni_esslen,0,
+            IEEE80211_SAE_SELECTED_BSS_PROFILE_PURE));
+        ic.ic_pae_selected_bss.epoch=ic.ic_pae_assoc_epoch;
+    }
+}
+static int sae_wnm_boundary(ieee80211com *ic,const ieee80211_node *) {
+    assert(onSaeWnm);
+    const auto callback=onSaeWnm;
+    return callback(ic);
+}
+static unsigned btm_handoff_matrix() {
+    unsigned cases=0;
+    for(bool open : {false,true}) for(bool reverse : {false,true}) {
+        Fixture f; if(open) f.open();
+        const auto receipt=arm_btm(f);
+        assert(!copy_btm_target(f) && f.ic.ic_wnm_bss_transition.active);
+        const auto first=reverse ? IEEE80211_WNM_TX_FENCE_DEAUTH : IEEE80211_WNM_TX_FENCE_RESPONSE;
+        const auto second=reverse ? IEEE80211_WNM_TX_FENCE_RESPONSE : IEEE80211_WNM_TX_FENCE_DEAUTH;
+        ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,first);
+        assert(!copy_btm_target(f) && stateRequests==0 && f.ic.ic_pae_assoc_epoch==7);
+        ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,first);
+        ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx+1,second);
+        ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.target,receipt.tx,second);
+        ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,4);
+        assert(stateRequests==0);
+        ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,second);
+        assert(f.ic.ic_state==IEEE80211_S_SCAN && f.ic.ic_pae_assoc_epoch==8);
+        assert(stateRequests==1 && copy_btm_target(f));
+        assert(ieee80211_wnm_bss_transition_handoff_current(&f.ic,receipt.request,8));
+        complete_btm(f,receipt);
+        ieee80211_node_wnm_reconnect(&f.ic,&f.source,receipt.request,receipt.sourceEpoch);
+        assert(stateRequests==1 && copy_btm_target(f));
+        assert(!(f.ic.ic_flags&(IEEE80211_F_BGSCAN|IEEE80211_F_DISABLE_BG_AUTO_CONNECT)));
+        ++cases;
+    }
+    for(unsigned stage=0;stage<4;++stage) for(unsigned cancel=0;cancel<4;++cancel) {
+        Fixture f; const auto receipt=arm_btm(f,stage!=0);
+        if(stage==2) ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,IEEE80211_WNM_TX_FENCE_RESPONSE);
+        if(stage==3) complete_btm(f,receipt);
+        const auto before=f.ic.ic_pae_assoc_epoch;
+        if(cancel<2) ieee80211_new_state(&f.ic,cancel ? IEEE80211_S_SCAN : IEEE80211_S_INIT,-1);
+        else if(cancel==2) assert(ieee80211_pae_assoc_epoch_begin(&f.ic)==before+1);
+        else assert(ieee80211_pae_assoc_epoch_begin_replacement(&f.ic)==before+1);
+        assert(!f.ic.ic_wnm_bss_transition.active && !copy_btm_target(f));
+        const auto requests=stateRequests;
+        complete_btm(f,receipt);
+        assert(stateRequests==requests && f.ic.ic_pae_assoc_epoch==before+1);
+        assert(f.ic.ic_wnm_bss_transition_next_request==receipt.request);
+        assert(f.ic.ic_wnm_bss_transition_next_tx_fence==receipt.tx);
+        ++cases;
+    }
+    for(unsigned mutation=0;mutation<13;++mutation) {
+        Fixture f; const auto receipt=arm_btm(f);
+        // Hold the real completed-leave phase at the registered SAE boundary,
+        // rather than directly inventing descriptor completion in the record.
+        f.ic.ic_sae_wnm_roam_start=sae_wnm_boundary;
+        onSaeWnm=[](ieee80211com *) { return 1; };
+        complete_btm(f,receipt);
+        assert(f.ic.ic_wnm_bss_transition.handoff_phase==IEEE80211_WNM_HANDOFF_LEAVE_DONE);
+        auto generation=receipt.request, epoch=receipt.sourceEpoch;
+        switch(mutation) {
+            case 0: ++generation; break;
+            case 1: ++epoch; break;
+            case 2: f.ic.ic_wnm_bss_transition.handoff_phase=0; break;
+            case 3: f.ic.ic_wnm_bss_transition.candidate_confirmed=0; break;
+            case 4: f.source.ni_bssid[1]=1; break;
+            case 5: f.source.ni_essid[0]='x'; break;
+            case 6: f.ic.ic_state=IEEE80211_S_AUTH; break;
+            case 7: f.ic.ic_opmode=IEEE80211_M_HOSTAP; break;
+            case 8: f.ic.ic_bss=nullptr; break;
+            case 9: f.ic.ic_pae_selected_bss_lock=nullptr; break;
+            case 10: epoch=0; break;
+            case 11: generation=0; break;
+            case 12: generation=epoch=0; break;
+        }
+        assert(ieee80211_pae_assoc_epoch_begin_wnm_handoff(&f.ic,generation,epoch)==0);
+        assert(f.ic.ic_pae_assoc_epoch==7 && stateRequests==0);
+        ++cases;
+    }
+    for(unsigned boundary=0;boundary<4;++boundary) for(bool successor : {false,true}) {
+        Fixture f; const auto receipt=arm_btm(f);
+        auto replace=[&](ieee80211com *) {
+            onUnlock={}; onRevoke={}; onPreflight={}; onSaeWnm={};
+            assert(ieee80211_pae_assoc_epoch_begin(&f.ic)!=0);
+            if(successor) { const auto next=arm_btm(f); assert(next.request>receipt.request); }
+        };
+        if(boundary==0) {
+            ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,IEEE80211_WNM_TX_FENCE_RESPONSE);
+            onUnlock=[&] { replace(&f.ic); };
+            ieee80211_wnm_bss_transition_tx_fence_complete(&f.ic,&f.source,receipt.tx,IEEE80211_WNM_TX_FENCE_DEAUTH);
+        } else {
+            if(boundary==1) {
+                f.ic.ic_sae_wnm_roam_start=sae_wnm_boundary;
+                onSaeWnm=[&](ieee80211com *ic) { replace(ic); return 0; };
+            } else if(boundary==2) onPreflight=[&](ieee80211com *ic) { replace(ic); return 0; };
+            else onRevoke=replace;
+            complete_btm(f,receipt);
+        }
+        assert(stateRequests==0 && f.ic.ic_state==IEEE80211_S_RUN);
+        assert(f.ic.ic_pae_assoc_epoch==(boundary==3 ? 9u : 8u));
+        assert(bool(f.ic.ic_wnm_bss_transition.active)==successor);
+        if(successor) assert(f.ic.ic_wnm_bss_transition.request_generation>receipt.request);
+        ++cases;
+    }
+    for(unsigned refusal=0;refusal<3;++refusal) {
+        Fixture f; const auto receipt=arm_btm(f);
+        if(refusal==0) preflightRejected=true;
+        else if(refusal==1) backendError=5;
+        else onNewstate=[&](ieee80211com *) { arm_btm(f); return 5; };
+        complete_btm(f,receipt);
+        assert(f.ic.ic_state==IEEE80211_S_RUN && f.ic.ic_pae_assoc_epoch==(refusal==0 ? 7u : 8u));
+        assert(bool(f.ic.ic_wnm_bss_transition.active)==(refusal==2));
+        if(refusal==2) assert(f.ic.ic_wnm_bss_transition.request_generation>receipt.request);
+        ++cases;
+    }
+    for(unsigned mutation=0;mutation<8;++mutation) {
+        Fixture f; const auto receipt=arm_btm(f); complete_btm(f,receipt);
+        sae_policy(f,42,false);
+        if(mutation==1) ++f.ic.ic_pae_assoc_epoch;
+        if(mutation==2) f.source.ni_bssid[1]=1;
+        if(mutation==3) f.ic.ic_wnm_bss_transition.handoff_phase=IEEE80211_WNM_HANDOFF_LEAVE_DONE;
+        if(mutation==4) f.ic.ic_wnm_bss_transition.candidate_confirmed=0;
+        if(mutation==5) f.ic.ic_sae_wcl_request.bssid[1]=1;
+        if(mutation==6) f.ic.ic_sae_auth_owned=nullptr;
+        if(mutation==7) f.ic.ic_flags|=IEEE80211_F_PSK;
+        const int accepted=ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(&f.ic,42);
+        assert(bool(accepted)==(mutation==0));
+        if(accepted) {
+            assert(f.ic.ic_sae_wcl_request.phase==IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED);
+            assert(ieee80211_pae_assoc_epoch_begin_replacement(&f.ic)==9);
+            assert(f.ic.ic_sae_wcl_request.phase==IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED);
+            assert(!f.ic.ic_wnm_bss_transition.active);
+        }
+        ++cases;
+    }
+    for(unsigned mutation=0;mutation<8;++mutation) {
+        Fixture f; const auto receipt=arm_btm(f); sae_policy(f,42,true);
+        f.ic.ic_sae_wnm_roam_start=sae_wnm_boundary;
+        onSaeWnm=[](ieee80211com *) { return 1; };
+        complete_btm(f,receipt);
+        if(mutation==1) ++f.ic.ic_pae_assoc_epoch;
+        if(mutation==2) f.source.ni_bssid[1]=1;
+        if(mutation==3) f.ic.ic_wnm_bss_transition.handoff_phase=0;
+        if(mutation==4) f.ic.ic_wnm_bss_transition.candidate_confirmed=0;
+        if(mutation==5) f.ic.ic_sae_auth_owned=nullptr;
+        if(mutation==6) f.ic.ic_flags|=IEEE80211_F_PSK;
+        if(mutation==7) f.ic.ic_sae_wcl_request_join_active=1;
+        const auto next=ieee80211_sae_wcl_request_retarget_run(&f.ic,&f.source,42,
+            f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,1);
+        assert(bool(next)==(mutation==0));
+        if(next) {
+            assert(next==43 && f.ic.ic_state==IEEE80211_S_RUN && f.ic.ic_pae_assoc_epoch==7);
+            assert(f.ic.ic_sae_wcl_request.phase==IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED);
+            assert(ieee80211_pae_assoc_epoch_begin_replacement(&f.ic)==8);
+            assert(f.ic.ic_sae_wcl_request.phase==IEEE80211_SAE_WCL_REQUEST_RUN_RETARGET_ISSUED);
+            assert(!f.ic.ic_wnm_bss_transition.active);
+        }
+        ++cases;
+    }
+    std::printf("PASS: %u actual BTM TX/cancel/handoff and SAE admission cases\n",cases);
+    return cases;
+}
 int main() {
+    if(std::getenv("BTM_CANCEL_REQUIRE")!=nullptr) { btm_cancel_control(); return 0; }
+    if(std::getenv("BTM_TERMINAL_CANCEL_REQUIRE")!=nullptr) { btm_terminal_cancel_control(); return 0; }
+    if(std::getenv("ROAM_LOSS_BASELINE")==nullptr && std::getenv("ROAM_EPOCH_BASELINE")==nullptr)
+        btm_handoff_matrix();
     {
         // Reproduce the radio failure without an AP/authentication double:
         // a selected target has crossed the controlled replacement epoch,

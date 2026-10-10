@@ -242,6 +242,14 @@ extern	int ieee80211_wnm_bss_transition_arm(struct ieee80211com *,
 	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int8_t,
 	    u_int8_t, u_int8_t);
 extern	void ieee80211_wnm_bss_transition_clear(struct ieee80211com *);
+extern	void ieee80211_wnm_bss_transition_clear_if_generation(
+	    struct ieee80211com *, u_int64_t);
+extern	int ieee80211_wnm_bss_transition_reconnect_current(
+	    struct ieee80211com *, const struct ieee80211_node *, u_int64_t, u_int64_t);
+extern	int ieee80211_wnm_bss_transition_handoff_current(
+	    struct ieee80211com *, u_int64_t, u_int64_t);
+extern	u_int64_t ieee80211_pae_assoc_epoch_begin_wnm_handoff(
+	    struct ieee80211com *, u_int64_t, u_int64_t);
 extern	int ieee80211_wnm_bss_transition_defer_fresh_scan(
 	    struct ieee80211com *);
 extern	int ieee80211_wnm_bss_transition_fresh_scan_pending(

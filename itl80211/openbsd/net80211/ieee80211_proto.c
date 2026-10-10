@@ -934,6 +934,48 @@ ieee80211_wnm_bss_transition_clear_locked(struct ieee80211com *ic)
 	    sizeof(ic->ic_wnm_bss_transition));
 }
 
+/* Caller holds the selected-BSS leaf. No mutable node is retained. */
+static int
+ieee80211_wnm_bss_transition_source_identity_current_locked(
+    const struct ieee80211com *ic)
+{
+	const struct ieee80211_wnm_bss_transition *transition;
+
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA || ic->ic_bss == NULL)
+		return 0;
+	transition = &ic->ic_wnm_bss_transition;
+	return transition->active != 0 && transition->request_generation != 0 &&
+	    transition->ssid_len != 0 && transition->ssid_len <= IEEE80211_NWID_LEN &&
+	    IEEE80211_ADDR_EQ(transition->source_bssid, ic->ic_bss->ni_bssid) &&
+	    transition->ssid_len == ic->ic_bss->ni_esslen &&
+	    memcmp(transition->ssid, ic->ic_bss->ni_essid, transition->ssid_len) == 0;
+}
+
+static int
+ieee80211_wnm_bss_transition_source_current_locked(
+    const struct ieee80211com *ic)
+{
+	return ieee80211_wnm_bss_transition_source_identity_current_locked(ic) &&
+	    ic->ic_state == IEEE80211_S_RUN &&
+	    ic->ic_wnm_bss_transition.source_epoch != 0 &&
+	    ic->ic_wnm_bss_transition.source_epoch == __atomic_load_n(
+	    &ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+}
+
+static int
+ieee80211_wnm_bss_transition_handoff_current_locked(
+    const struct ieee80211com *ic, u_int64_t generation, u_int64_t epoch)
+{
+	return generation != 0 && epoch != 0 &&
+	    ieee80211_wnm_bss_transition_source_identity_current_locked(ic) &&
+	    (ic->ic_state == IEEE80211_S_RUN || ic->ic_state == IEEE80211_S_SCAN) &&
+	    ic->ic_wnm_bss_transition.candidate_confirmed != 0 &&
+	    ic->ic_wnm_bss_transition.handoff_phase == IEEE80211_WNM_HANDOFF_SCAN_HELD &&
+	    ic->ic_wnm_bss_transition.request_generation == generation &&
+	    ic->ic_wnm_bss_transition.handoff_epoch == epoch &&
+	    epoch == __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+}
+
 /* Caller holds the selected-BSS leaf. A request generation distinguishes
  * BTM replacements, not an independent native join or same-BSS reconnect.
  * Before candidate confirmation, every scan action still belongs to the
@@ -950,18 +992,63 @@ ieee80211_wnm_bss_transition_validate_scan_source_locked(
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active == 0 || transition->candidate_confirmed != 0)
 		return;
-	if (ic->ic_opmode != IEEE80211_M_STA ||
-	    ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL ||
-	    transition->source_epoch == 0 ||
-	    transition->source_epoch != __atomic_load_n(
-	    &ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) ||
-	    transition->ssid_len == 0 ||
-	    transition->ssid_len > IEEE80211_NWID_LEN ||
-	    !IEEE80211_ADDR_EQ(transition->source_bssid, ic->ic_bss->ni_bssid) ||
-	    transition->ssid_len != ic->ic_bss->ni_esslen ||
-	    memcmp(transition->ssid, ic->ic_bss->ni_essid,
-	    transition->ssid_len) != 0)
+	if (!ieee80211_wnm_bss_transition_source_current_locked(ic))
 		ieee80211_wnm_bss_transition_clear_locked(ic);
+}
+
+void
+ieee80211_wnm_bss_transition_clear_if_generation(struct ieee80211com *ic,
+    u_int64_t generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL || generation == 0 ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_wnm_bss_transition.request_generation == generation)
+		ieee80211_wnm_bss_transition_clear_locked(ic);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+int
+ieee80211_wnm_bss_transition_reconnect_current(struct ieee80211com *ic,
+    const struct ieee80211_node *source, u_int64_t generation,
+    u_int64_t source_epoch)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int current;
+
+	if (ic == NULL || source == NULL || generation == 0 || source_epoch == 0 ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	current = source == ic->ic_bss &&
+	    ieee80211_wnm_bss_transition_source_current_locked(ic) &&
+	    ic->ic_wnm_bss_transition.candidate_confirmed != 0 &&
+	    ic->ic_wnm_bss_transition.handoff_phase == IEEE80211_WNM_HANDOFF_LEAVE_DONE &&
+	    ic->ic_wnm_bss_transition.request_generation == generation &&
+	    ic->ic_wnm_bss_transition.source_epoch == source_epoch;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return current;
+}
+
+int
+ieee80211_wnm_bss_transition_handoff_current(struct ieee80211com *ic,
+    u_int64_t generation, u_int64_t epoch)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int current;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	current = ieee80211_wnm_bss_transition_handoff_current_locked(ic, generation, epoch);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return current;
 }
 
 static int
@@ -1400,8 +1487,10 @@ ieee80211_wnm_bss_transition_tx_fence_arm(struct ieee80211com *ic,
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	transition = &ic->ic_wnm_bss_transition;
 	if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss == ni &&
+	    ieee80211_wnm_bss_transition_source_current_locked(ic) &&
 	    transition->active != 0 &&
 	    transition->candidate_confirmed != 0 &&
+	    transition->handoff_phase == 0 &&
 	    transition->tx_fence_generation == 0 &&
 	    transition->dialog_token == dialog_token &&
 	    IEEE80211_ADDR_EQ(transition->source_bssid, ni->ni_bssid) &&
@@ -1472,6 +1561,7 @@ ieee80211_wnm_bss_transition_tx_fence_classify(
 	if (transition->active == 0 ||
 	    transition->candidate_confirmed == 0 ||
 	    transition->tx_fence_generation == 0 ||
+	    !ieee80211_wnm_bss_transition_source_current_locked(ic) ||
 	    ic->ic_state != IEEE80211_S_RUN || ic->ic_bss != ni ||
 	    !IEEE80211_ADDR_EQ(transition->source_bssid, ni->ni_bssid) ||
 	    !IEEE80211_ADDR_EQ(wh->i_addr1, transition->source_bssid))
@@ -1517,6 +1607,7 @@ ieee80211_wnm_bss_transition_tx_fence_submit(struct ieee80211com *ic,
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0 &&
+	    ieee80211_wnm_bss_transition_source_current_locked(ic) &&
 	    transition->candidate_confirmed != 0 &&
 	    transition->tx_fence_generation == generation &&
 	    (transition->tx_fence_submitted & kind) == 0) {
@@ -1545,6 +1636,7 @@ ieee80211_wnm_bss_transition_tx_fence_submit_failed(
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0 &&
+	    ieee80211_wnm_bss_transition_source_current_locked(ic) &&
 	    transition->candidate_confirmed != 0 &&
 	    transition->tx_fence_generation == generation &&
 	    ic->ic_state == IEEE80211_S_RUN && ic->ic_bss == ni &&
@@ -1573,6 +1665,7 @@ ieee80211_wnm_bss_transition_tx_fence_complete(struct ieee80211com *ic,
 	struct ieee80211_wnm_bss_transition *transition;
 	const u_int8_t expected = IEEE80211_WNM_TX_FENCE_RESPONSE |
 	    IEEE80211_WNM_TX_FENCE_DEAUTH;
+	u_int64_t request_generation = 0, source_epoch = 0;
 	int reconnect = 0;
 
 	if (ic == NULL || ni == NULL || generation == 0 ||
@@ -1583,6 +1676,7 @@ ieee80211_wnm_bss_transition_tx_fence_complete(struct ieee80211com *ic,
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0 &&
+	    ieee80211_wnm_bss_transition_source_current_locked(ic) &&
 	    transition->candidate_confirmed != 0 &&
 	    transition->tx_fence_generation == generation &&
 	    (transition->tx_fence_submitted & kind) != 0 &&
@@ -1595,13 +1689,16 @@ ieee80211_wnm_bss_transition_tx_fence_complete(struct ieee80211com *ic,
 			transition->tx_fence_generation = 0;
 			transition->tx_fence_submitted = 0;
 			transition->tx_fence_completed = 0;
+			transition->handoff_phase = IEEE80211_WNM_HANDOFF_LEAVE_DONE;
+			request_generation = transition->request_generation;
+			source_epoch = transition->source_epoch;
 			reconnect = 1;
 		}
 	}
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 
 	if (reconnect)
-		ieee80211_node_wnm_reconnect(ic, ni);
+		ieee80211_node_wnm_reconnect(ic, ni, request_generation, source_epoch);
 }
 
 int
@@ -1622,13 +1719,21 @@ ieee80211_wnm_bss_transition_copy_retarget(struct ieee80211com *ic,
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	transition = &ic->ic_wnm_bss_transition;
+	const int source_current =
+	    ieee80211_wnm_bss_transition_source_current_locked(ic);
+	const int scan_handoff =
+	    ieee80211_wnm_bss_transition_handoff_current_locked(ic,
+	    transition->request_generation, transition->handoff_epoch);
 	if (transition->active != 0 && transition->candidate_confirmed != 0 &&
+	    ((source_current && transition->handoff_phase == IEEE80211_WNM_HANDOFF_LEAVE_DONE) ||
+	    (scan_handoff && ic->ic_state == IEEE80211_S_SCAN)) &&
 	    transition->ssid_len == ssid_len &&
 	    memcmp(transition->ssid, ssid, ssid_len) == 0) {
 		IEEE80211_ADDR_COPY(target_bssid, transition->target_bssid);
 		retarget = 1;
-	} else if (transition->active != 0 &&
-	    transition->candidate_confirmed != 0) {
+	} else if (transition->active != 0 && transition->candidate_confirmed != 0 &&
+	    ((!source_current && !scan_handoff) || transition->ssid_len != ssid_len ||
+	    memcmp(transition->ssid, ssid, ssid_len) != 0)) {
 		/* A different explicit join supersedes the completed transition. */
 		ieee80211_wnm_bss_transition_clear_locked(ic);
 	}
@@ -2665,7 +2770,8 @@ static u_int64_t
 ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
     int preserve_unbound_public_initial_bssid_pin,
     u_int64_t reassoc_serial, u_int64_t expected_epoch,
-    const struct ieee80211_bss_switch_identity *bss_switch = NULL)
+    const struct ieee80211_bss_switch_identity *bss_switch = NULL,
+    u_int64_t wnm_generation = 0, u_int64_t wnm_source_epoch = 0)
 {
 	u_int64_t epoch;
 	u_int64_t prior_epoch;
@@ -2686,6 +2792,19 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 		irq = IOSimpleLockLockDisableInterrupt(lock);
 	prior_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch,
 	    __ATOMIC_ACQUIRE);
+	/* Only a completed exact BTM leave can preserve its target through the
+	 * fallback RUN->SCAN epoch. Generic cancellation never inherits it. */
+	if ((wnm_generation == 0) != (wnm_source_epoch == 0) ||
+	    (wnm_generation != 0 && (lock == NULL ||
+	    !ieee80211_wnm_bss_transition_source_current_locked(ic) ||
+	    ic->ic_wnm_bss_transition.candidate_confirmed == 0 ||
+	    ic->ic_wnm_bss_transition.request_generation != wnm_generation ||
+	    ic->ic_wnm_bss_transition.source_epoch != wnm_source_epoch ||
+	    ic->ic_wnm_bss_transition.handoff_phase != IEEE80211_WNM_HANDOFF_LEAVE_DONE))) {
+		if (lock != NULL)
+			IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		return 0;
+	}
 	/* Source leave may follow AMPDU/TX callbacks. It can advance only the
 	 * identity captured before those callbacks, not whichever join is now
 	 * current. This check and the advance share the selected-BSS leaf. */
@@ -2713,7 +2832,13 @@ ieee80211_pae_assoc_epoch_begin_internal(struct ieee80211com *ic,
 	 * handoff. Physical producers still retire through their actual owners. */
 	if (bss_switch == NULL)
 		ieee80211_wcl_reassoc_cancel_target_epoch_locked(ic, prior_epoch);
+	if (wnm_generation == 0)
+		ieee80211_wnm_bss_transition_clear_locked(ic);
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
+	if (wnm_generation != 0) {
+		ic->ic_wnm_bss_transition.handoff_epoch = epoch;
+		ic->ic_wnm_bss_transition.handoff_phase = IEEE80211_WNM_HANDOFF_SCAN_HELD;
+	}
 	/* A background census belongs to the departing source association.
 	 * Rejecting its eventual old-epoch result is necessary but insufficient:
 	 * an active logical owner would otherwise block every future WCL join
@@ -2789,6 +2914,16 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 }
 
 u_int64_t
+ieee80211_pae_assoc_epoch_begin_wnm_handoff(struct ieee80211com *ic,
+    u_int64_t generation, u_int64_t source_epoch)
+{
+	if (generation == 0 || source_epoch == 0)
+		return 0;
+	return ieee80211_pae_assoc_epoch_begin_internal(ic, 0, 0, 0, NULL,
+	    generation, source_epoch);
+}
+
+u_int64_t
 ieee80211_pae_assoc_epoch_begin_bss_switch(struct ieee80211com *ic,
     const struct ieee80211_bss_switch_identity *identity)
 {
@@ -2832,6 +2967,9 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	prior_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch,
 	    __ATOMIC_ACQUIRE);
+	/* Target admission has already copied the BTM identity into its actual
+	 * SAE/WCL request. No association replacement inherits the old BTM. */
+	ieee80211_wnm_bss_transition_clear_locked(ic);
 	/* Lower reassociation staging has succeeded and node_join_bss() has now
 	 * crossed the reference-style source-preserving rollback boundary. */
 	ieee80211_sae_wcl_pmk_claim_retire_replacement_locked(ic, prior_epoch);
@@ -3572,6 +3710,9 @@ ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
 	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request) &&
 	    transition->active != 0 &&
 	    transition->candidate_confirmed != 0 &&
+	    transition->handoff_phase == IEEE80211_WNM_HANDOFF_SCAN_HELD &&
+	    ieee80211_wnm_bss_transition_handoff_current_locked(ic,
+	    transition->request_generation, transition->handoff_epoch) &&
 	    transition->fresh_scan_pending == 0 &&
 	    transition->scan_starting == 0 &&
 	    IEEE80211_ADDR_EQ(request->bssid, transition->target_bssid) &&
@@ -3850,6 +3991,8 @@ ieee80211_sae_wcl_request_retarget_run(struct ieee80211com *ic,
 	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
 	target_owned = confirmed_wnm ?
 	    (transition->active != 0 && transition->candidate_confirmed != 0 &&
+	    transition->handoff_phase == IEEE80211_WNM_HANDOFF_LEAVE_DONE &&
+	    ieee80211_wnm_bss_transition_source_current_locked(ic) &&
 	    transition->fresh_scan_pending == 0 &&
 	    transition->scan_starting == 0 &&
 	    IEEE80211_ADDR_EQ(transition->target_bssid, target_bssid) &&

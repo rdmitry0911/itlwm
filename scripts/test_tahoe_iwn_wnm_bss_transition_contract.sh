@@ -104,7 +104,10 @@ order(proto_c, "exact management TX completion fence",
       "ieee80211_wnm_bss_transition_tx_fence_submit_failed(",
       "ieee80211_wnm_bss_transition_tx_fence_complete(",
       "transition->tx_fence_completed |= kind;",
-      "ieee80211_node_wnm_reconnect(ic, ni);")
+      "transition->handoff_phase = IEEE80211_WNM_HANDOFF_LEAVE_DONE;",
+      "request_generation = transition->request_generation;",
+      "source_epoch = transition->source_epoch;",
+      "ieee80211_node_wnm_reconnect(ic, ni, request_generation, source_epoch);")
 for token in (
         "ieee80211_wnm_bss_transition_tx_fence_classify(",
         "ieee80211_wnm_bss_transition_tx_fence_submit(ic,",
@@ -114,10 +117,15 @@ for token in (
     require(iwn, token, "IWN descriptor carries exact BTM fence")
 order(node_c, "TX completion before reconnect scan",
       "ieee80211_node_wnm_reconnect(struct ieee80211com *ic,",
+      "ieee80211_wnm_bss_transition_reconnect_current(ic, ni, generation, source_epoch)",
       "IEEE80211_F_TX_MGMT_ONLY",
       "ic->ic_sae_wnm_roam_start != NULL",
       "(*ic->ic_sae_wnm_roam_start)(ic, ni) != 0",
-      "ieee80211_new_state(ic, IEEE80211_S_SCAN,",
+      "ieee80211_wnm_bss_transition_reconnect_current(ic, ni, generation, source_epoch)",
+      "ic->ic_newstate_preflight != NULL",
+      "ieee80211_pae_assoc_epoch_begin_wnm_handoff(ic,",
+      "ieee80211_wnm_bss_transition_handoff_current(ic, generation, handoff_epoch)",
+      "(*ic->ic_newstate)(ic, IEEE80211_S_SCAN,",
       "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD")
 require(proto_h, "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD (-4)",
         "private BTM reconnect hold marker")

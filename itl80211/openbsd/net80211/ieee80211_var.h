@@ -633,9 +633,12 @@ struct ieee80211_public_initial_bssid_pin {
  * a fresh background scan.  The selected-BSS leaf lock serializes the fixed
  * record across RX, scan completion, and the next WCL association carrier.
  */
+#define IEEE80211_WNM_HANDOFF_LEAVE_DONE 1
+#define IEEE80211_WNM_HANDOFF_SCAN_HELD 2
 struct ieee80211_wnm_bss_transition {
 	u_int64_t		request_generation;
 	u_int64_t		source_epoch;
+	u_int64_t		handoff_epoch;
 	u_int8_t		source_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t		target_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t		ssid[IEEE80211_NWID_LEN];
@@ -645,6 +648,7 @@ struct ieee80211_wnm_bss_transition {
 	u_int8_t		target_channel;
 	u_int8_t		active;
 	u_int8_t		candidate_confirmed;
+	u_int8_t		handoff_phase;
 	u_int8_t		fresh_scan_pending;
 	u_int8_t		scan_retry_count;
 	u_int8_t		scan_starting;

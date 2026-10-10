@@ -11,7 +11,7 @@
 #include <sys/types.h>
 
 constexpr unsigned IEEE80211_ADDR_LEN=6, IEEE80211_NWID_LEN=32;
-constexpr unsigned IEEE80211_M_STA=1, IEEE80211_S_RUN=4;
+constexpr unsigned IEEE80211_M_STA=1, IEEE80211_S_RUN=4, IEEE80211_S_SCAN=1;
 constexpr unsigned IEEE80211_F_BGSCAN=1, IEEE80211_F_RSNON=2,
     IEEE80211_F_DISABLE_BG_AUTO_CONNECT=4;
 constexpr unsigned IEEE80211_WNM_BSS_TM_REQ_PREF_CAND_LIST=1,
@@ -308,6 +308,28 @@ static unsigned source_matrix() {
     node_clear_source_control(); ++cases;
     return cases;
 }
+static void confirmed_source_control(unsigned replacement) {
+    reset(); Fixture f; f.receive(); ieee80211_node target;
+    IEEE80211_ADDR_COPY(target.ni_bssid,f.ic.ic_wnm_bss_transition.target_bssid);
+    u_int8_t token=0,bssid[6]{};
+    assert(ieee80211_wnm_bss_transition_confirm_candidate(&f.ic,&target,&token,bssid));
+    const auto generation=f.generation();
+    const u_int8_t ssid[3]={'L','a','b'};
+    // An independent native association replaces the source, not the owned
+    // BTM source-leave continuation. This explicit boundary is not a new BTM
+    // or an invented management TX completion.
+    change_source(f,replacement);
+    assert(f.generation()==generation);
+    const int retarget=ieee80211_wnm_bss_transition_copy_retarget(&f.ic,ssid,sizeof(ssid),bssid);
+    std::fprintf(stderr,"actual confirmed BTM stale source replacement=%u "
+        "retarget=%d sourceEpoch=%llu currentEpoch=%llu active=%u\n",
+        replacement,retarget,
+        static_cast<unsigned long long>(f.ic.ic_wnm_bss_transition.source_epoch),
+        static_cast<unsigned long long>(f.ic.ic_pae_assoc_epoch),
+        f.ic.ic_wnm_bss_transition.active);
+    assert(!retarget);
+    assert(std::all_of(bssid,bssid+6,[](auto b) { return b==0; }));
+}
 int main(int argc,char **argv) {
     if(argc==2 && std::strcmp(argv[1],"rx-idle")==0) rx_control(false);
     else if(argc==2 && std::strcmp(argv[1],"rx-busy")==0) rx_control(true);
@@ -318,5 +340,13 @@ int main(int argc,char **argv) {
     else if(argc==2 && std::strcmp(argv[1],"ess-replaced-during-abort")==0) source_replacement_control(true,1);
     else if(argc==2 && std::strcmp(argv[1],"epoch-replaced-during-abort")==0) source_replacement_control(true,2);
     else if(argc==2 && std::strcmp(argv[1],"source-replaced-during-node-release")==0) node_clear_source_control();
-    else std::printf("actual BTM RX/callout dispatch: %u scenarios passed\n",matrix()+source_matrix());
+    else if(argc==2 && std::strcmp(argv[1],"confirmed-source-replaced")==0) confirmed_source_control(0);
+    else if(argc==2 && std::strcmp(argv[1],"confirmed-ess-replaced")==0) confirmed_source_control(1);
+    else if(argc==2 && std::strcmp(argv[1],"confirmed-epoch-replaced")==0) confirmed_source_control(2);
+    else {
+        const unsigned cases=matrix()+source_matrix();
+        for(unsigned replacement=0;replacement<3;++replacement)
+            confirmed_source_control(replacement);
+        std::printf("actual BTM RX/callout dispatch: %u scenarios passed\n",cases+3);
+    }
 }

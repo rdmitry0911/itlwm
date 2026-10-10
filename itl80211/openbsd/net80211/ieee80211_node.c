@@ -1465,13 +1465,13 @@ ieee80211_node_defer_bss_switch(struct ieee80211com *ic,
 /* Implements ni->ni_unref_cb() for a confirmed 802.11v target.  The source
  * BTM response and disassociation have both left the hardware queue before
  * this callback tears down the old BSS.  A driver-resident SAE owner gets
- * first refusal on the freshly confirmed target; without one, the ordinary
- * WCL credential-restage fallback remains unchanged. */
+ * first refusal on the freshly confirmed target; without one, the WCL
+ * credential-restage fallback retains only this exact completed leave. */
 void
 ieee80211_node_wnm_reconnect(struct ieee80211com *ic,
-    struct ieee80211_node *ni)
+    struct ieee80211_node *ni, u_int64_t generation, u_int64_t source_epoch)
 {
-    if (ic == NULL || ni == NULL || ni != ic->ic_bss)
+    if (!ieee80211_wnm_bss_transition_reconnect_current(ic, ni, generation, source_epoch))
         return;
     ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
     ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
@@ -1479,8 +1479,24 @@ ieee80211_node_wnm_reconnect(struct ieee80211com *ic,
     if (ic->ic_sae_wnm_roam_start != NULL &&
         (*ic->ic_sae_wnm_roam_start)(ic, ni) != 0)
         return;
-    ieee80211_new_state(ic, IEEE80211_S_SCAN,
-                        IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD);
+    if (!ieee80211_wnm_bss_transition_reconnect_current(ic, ni, generation, source_epoch))
+        return;
+    if (ic->ic_newstate_preflight != NULL &&
+        (*ic->ic_newstate_preflight)(ic, IEEE80211_S_SCAN,
+            IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD) != 0) {
+        ieee80211_wnm_bss_transition_clear_if_generation(ic, generation);
+        return;
+    }
+    const u_int64_t handoff_epoch = ieee80211_pae_assoc_epoch_begin_wnm_handoff(ic,
+        generation, source_epoch);
+    if (!ieee80211_wnm_bss_transition_handoff_current(ic, generation, handoff_epoch))
+        return;
+    AirportItlwmPostPltiTraceNoteStateRequest(ic, (uint32_t)ic->ic_state,
+        (uint32_t)IEEE80211_S_SCAN);
+    const int error = (*ic->ic_newstate)(ic, IEEE80211_S_SCAN,
+        IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD);
+    if (error != 0)
+        ieee80211_wnm_bss_transition_clear_if_generation(ic, generation);
 }
 
 void

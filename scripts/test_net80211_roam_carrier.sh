@@ -5,12 +5,22 @@ PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 ROAM_TEST_DIR="$(mktemp -d)"
 trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/epoch.inc" "$ROAM_TEST_DIR/test"; rm -rf "$ROAM_TEST_DIR/test.dSYM"; rmdir "$ROAM_TEST_DIR"' EXIT
 PROTO="$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
-awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST|WCL_REASSOC_OWNER_LEAF_[A-Z_]+|WCL_REASSOC_STAGE_[A-Z_]+)[ \t]/' \
+awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|F_MFPR|F_PSK|AKM_SAE|CIPHER_CCMP|CIPHER_BIP|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST|WCL_REASSOC_OWNER_LEAF_[A-Z_]+|WCL_REASSOC_STAGE_[A-Z_]+)[ \t]/' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211.h" \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_node.h" > "$ROAM_TEST_DIR/constants.inc"
 sed -n '/^struct ieee80211_roam_link_loss {/,/^};/p' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
+sed -n '/^struct ieee80211_wnm_bss_transition {/,/^};/p' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
+sed -n '/^enum ieee80211_sae_wcl_request_phase {/,/^};/p; /^struct ieee80211_sae_wcl_request {/,/^};/p' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
+sed -n '/^enum ieee80211_cipher {/,/^};/p; /^enum ieee80211_akm {/,/^};/p' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_crypto.h" >> "$ROAM_TEST_DIR/constants.inc"
+awk '/^#define IEEE80211_WNM_HANDOFF_/ { print }' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" >> "$ROAM_TEST_DIR/constants.inc"
+awk '/^#define[ \t]+IEEE80211_(WNM_TX_FENCE_RESPONSE|WNM_TX_FENCE_DEAUTH|NEWSTATE_ARG_WNM_RECONNECT_HOLD)[ \t]/' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.h" >> "$ROAM_TEST_DIR/constants.inc"
 awk '/^#define IEEE80211_WCL_REASSOC_MAX_/ { print }
      /^struct ieee80211_wcl_reassoc_(candidate|request|observation) \{/ { selected=1 }
      selected { print } selected && /^};/ { selected=0 }' \
@@ -29,15 +39,41 @@ if [ -n "${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" ]; then
     git -C "$PROJECT_DIR" show "${ROAM_LOSS_BASELINE:-$ROAM_EPOCH_BASELINE}:itl80211/openbsd/net80211/ieee80211_proto.c" |
         awk '/^ieee80211_pae_assoc_epoch_begin_internal\(/ { selected=1; print "uint64_t" }
              selected { print } selected && /^}/ { selected=0 }' > "$ROAM_TEST_DIR/epoch.inc"
+    ROAM_EPOCH_ARITY=$(awk '
+        /^ieee80211_pae_assoc_epoch_begin_internal\(/ { selected=1 }
+        selected && /^\{/ { print split(signature,parameters,","); exit }
+        selected { signature=signature $0 }
+    ' "$ROAM_TEST_DIR/epoch.inc")
+    case "$ROAM_EPOCH_ARITY" in
+        2|4|5|7) ;;
+        *) echo "unsupported historical epoch signature: $ROAM_EPOCH_ARITY" >&2; exit 2 ;;
+    esac
 fi
-awk -v baseline="${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" -v replacement="$ROAM_TEST_DIR/epoch.inc" '
+awk -v baseline="${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" -v replacement="$ROAM_TEST_DIR/epoch.inc" -v arity="${ROAM_EPOCH_ARITY:-0}" '
     /^ieee80211_bssid_is_unicast_nonzero\(/ { selected=1; print "int" }
+    /^ieee80211_wnm_bss_transition_(clear_locked|validate_scan_source_locked|tx_fence_complete|clear_if_generation)\(/ { selected=1; print "void" }
+    /^ieee80211_wnm_bss_transition_(arm|confirm_candidate|copy_retarget|tx_fence_arm|tx_fence_submit|source_identity_current_locked|source_current_locked|handoff_current_locked|handoff_current|reconnect_current)\(/ { selected=1; print "int" }
+    /^ieee80211_sae_wcl_request_(bssid_is_unicast_nonzero|owner_hooks_ready_locked|identity_is_valid_locked|join_active_locked|run_is_stable_locked|scan_policy_matches_locked|matches_current_locked|admit_confirmed_wnm_candidate)\(/ { selected=1; print "int" }
+    /^ieee80211_sae_wcl_request_retarget_run\(/ { selected=1; print "uint64_t" }
+    /^ieee80211_pae_assoc_epoch_begin_wnm_handoff\(/ { selected=1; print "uint64_t" }
     /^ieee80211_roam_link_(take_loss_locked|take_loss|loss_current)\(/ { selected=1; print "int" }
     /^ieee80211_roam_link_(loss_deliver|cancel)\(/ { selected=1; print "void" }
     /^ieee80211_pae_assoc_epoch_begin_internal\(/ && baseline == "" { selected=1; print "uint64_t" }
     /^ieee80211_pae_assoc_epoch_begin_internal\(/ && baseline != "" {
+        # Preserve the full historical body. Only its test-local symbol is
+        # renamed; the explicit adapter below bridges signature growth for
+        # ordinary cancellation. It never simulates a historical BTM handoff.
+        print "#define ieee80211_pae_assoc_epoch_begin_internal ieee80211_pae_assoc_epoch_begin_historical"
         while ((getline saved < replacement) > 0) print saved
         close(replacement)
+        print "#undef ieee80211_pae_assoc_epoch_begin_internal"
+        print "uint64_t ieee80211_pae_assoc_epoch_begin_internal(ieee80211com *ic, int preserve, uint64_t serial, uint64_t epoch, const ieee80211_bss_switch_identity *identity=nullptr, uint64_t wnm=0, uint64_t source=0) {"
+        print "  assert(wnm==0 && source==0); (void)serial; (void)epoch; (void)identity;"
+        if (arity==2) print "  return ieee80211_pae_assoc_epoch_begin_historical(ic,preserve);"
+        else if (arity==4) print "  return ieee80211_pae_assoc_epoch_begin_historical(ic,preserve,serial,epoch);"
+        else if (arity==5) print "  return ieee80211_pae_assoc_epoch_begin_historical(ic,preserve,serial,epoch,identity);"
+        else print "  return ieee80211_pae_assoc_epoch_begin_historical(ic,preserve,serial,epoch,identity,0,0);"
+        print "}"
     }
     /^ieee80211_pae_assoc_epoch_note_newstate\(/ { selected=1; print "void" }
     /^ieee80211_pae_assoc_epoch_begin_replacement\(/ { selected=1; print "uint64_t" }
@@ -49,6 +85,9 @@ awk -v baseline="${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" -v replacement
     selected { print }
     selected && /^}/ { selected=0 }
 ' "$PROTO" >> "$ROAM_TEST_DIR/production.inc"
+awk '/^ieee80211_node_wnm_reconnect\(/ { selected=1; print "void" }
+    selected { print } selected && /^}/ { selected=0 }' \
+    "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_node.c" >> "$ROAM_TEST_DIR/production.inc"
 sed -n '/^struct TahoeWclLinkChangedPayload {/,/^} __attribute__((packed));/p' \
     "$PROJECT_DIR/AirportItlwm/AirportItlwmV2.cpp" >> "$ROAM_TEST_DIR/constants.inc"
 awk '/^static IOReturn postTahoeWclRoamLinkLossGated\(/ { selected=1 }
@@ -66,7 +105,10 @@ fi | awk '
 ' >> "$ROAM_TEST_DIR/production.inc"
 ROAM_BASELINE_FLAGS=(-DROAM_CURRENT_EPOCH)
 if [ -n "${ROAM_LOSS_BASELINE:-}" ]; then
-    ROAM_BASELINE_FLAGS=(-DROAM_LOSS_BASELINE)
+    ROAM_BASELINE_FLAGS+=(-DROAM_LOSS_BASELINE)
+fi
+if [ -n "${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" ]; then
+    ROAM_BASELINE_FLAGS+=(-DROAM_HISTORICAL_EPOCH)
 fi
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -g \
     "${ROAM_BASELINE_FLAGS[@]}" \
