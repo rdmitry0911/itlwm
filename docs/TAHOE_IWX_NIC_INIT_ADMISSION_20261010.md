@@ -137,14 +137,26 @@ The package and runtime logs are retained in
 `/home/dima/Projects/aiam/scratch/iwm-9260-runtime-20261009.mo5CXe/`.
 
 The user requested a saved checkpoint and guest shutdown before rebooting
-the laboratory host. This additional archive has not been uploaded or added
-to release notes; the existing nineteen release assets remain unchanged.
-Publication requires a fresh release baseline and an independent download
-comparison after resumption. Do not replay the completed activation or use
-the preceding boot as a post reboot guard. First revalidate PCI binding,
-loaded identity and hardware RFKILL. If radio admission becomes available,
-the repeated native GUI and saved network matrix remains the first runtime
-qualification task.
+the laboratory host. After the host reboot, native Linux still reports the
+9260 hardware block. Its read-only transport diagnostic reports debug -1
+and hardware 1, excluding an active debug override without identifying the
+physical cause. The user confirms the complete original PCIe carrier was
+transferred from a Lenovo ThinkStation P620 into the Thunderbolt enclosure.
+
+The user subsequently requested publication and a bounded driver work cycle.
+The saved archive is published in release v2.4.0-alpha as additional asset
+628393762. An independent release download is byte equal to the local archive;
+the ZIP size and hash above match the server digest. All nineteen previous
+assets and their immutable metadata remain unchanged. The complete previous
+notes remain an exact suffix after the new LAB qualification section. The
+default asset 568074766 is unchanged. The artifact retains the hardware RFKILL
+and missing physical IWX execution limits, rather than replacing the default.
+
+Do not replay the completed activation or use the preceding boot as a new
+post reboot guard. Revalidate PCI binding, loaded identity and hardware RFKILL
+after starting the retained laboratory overlay. If radio admission becomes
+available, the repeated native GUI and saved network matrix remains the first
+runtime qualification task.
 
 One guarded guest shutdown completes normally with CPU halted and power off.
 The owned QEMU unit reports inactive and dead, MainPID zero and success.
