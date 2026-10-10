@@ -166,8 +166,8 @@ public:
     bool iwn_sae_roam_departure_commit(iwn_softc *,iwn_tx_ring *,int,uint8_t,uint16_t,const IwnSaeRoamDepartureIdentity *);
     void iwn_sae_roam_departure_terminal(iwn_softc *,const IwnSaeRoamDepartureIdentity *,bool);
     int iwn_tx(iwn_softc *,mbuf_t,ieee80211_node *,const ItlSaeAuthTxRequestV1 *,const IwnSaeRoamDepartureIdentity *);
-    int iwn_sae_targeted_roam_start(ieee80211com *,const ieee80211_node *,const uint8_t *target,bool wnm) {
-        assert(depth==0 && packets==0 && descriptorNode==nullptr && !wnm);
+    int iwn_sae_targeted_roam_start(ieee80211com *,const ieee80211_node *,const uint8_t *target,bool wnm,uint64_t wnmGeneration) {
+        assert(depth==0 && packets==0 && descriptorNode==nullptr && !wnm && !wnmGeneration);
         assert(IEEE80211_ADDR_EQ(target,submitted.target_bssid));
         ++targetStarts; return targetWorks;
     }

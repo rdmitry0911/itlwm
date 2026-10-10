@@ -120,7 +120,7 @@ order(node_c, "TX completion before reconnect scan",
       "ieee80211_wnm_bss_transition_reconnect_current(ic, ni, generation, source_epoch)",
       "IEEE80211_F_TX_MGMT_ONLY",
       "ic->ic_sae_wnm_roam_start != NULL",
-      "(*ic->ic_sae_wnm_roam_start)(ic, ni) != 0",
+      "(*ic->ic_sae_wnm_roam_start)(ic, ni, generation, source_epoch) != 0",
       "ieee80211_wnm_bss_transition_reconnect_current(ic, ni, generation, source_epoch)",
       "ic->ic_newstate_preflight != NULL",
       "ieee80211_pae_assoc_epoch_begin_wnm_handoff(ic,",
@@ -176,11 +176,13 @@ order(skywalk, "fresh WCL credential retarget",
       "ieee80211_wnm_bss_transition_copy_retarget(",
       "const struct ether_addr *bssid = wnm_retarget",
       "directRequest.confirmedWnmCandidate = wnm_retarget;",
+      "directRequest.confirmedWnmGeneration = wnm_generation;",
       "startIwnDirectSaeCredential(&directRequest",
       "ieee80211_wnm_bss_transition_consume(")
 order(proto_c, "confirmed BTM target promotes one direct-SAE selection",
       "ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(",
       "request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING",
+      "transition->request_generation == wnm_generation",
       "transition->candidate_confirmed != 0",
       "IEEE80211_ADDR_EQ(request->bssid, transition->target_bssid)",
       "request->phase = IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED;")
@@ -188,6 +190,7 @@ order(skywalk, "confirmed BTM SAE uses the retained candidate directly",
       "if (request->confirmedWnmCandidate &&",
       "!lowerAdmissionRequiresFreshScan) {",
       "ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(",
+      "ic, generation, request->confirmedWnmGeneration)",
       "tahoeJoinCachedWclCandidate(",
       "ieee80211_sae_wcl_request_bound_current(ic, ic->ic_bss)",
       "} else {",
@@ -218,8 +221,20 @@ if "IEEE80211_NEWSTATE_ARG_WNM_RECONNECT_HOLD" in iwn[iwn.find(
     fail("targeted SAE owner must preserve RUN until lower retarget acceptance")
 order(iwn, "driver-resident SAE BTM target wrapper",
       "iwn_sae_wnm_roam_start(struct ieee80211com *ic,",
+      "ieee80211_wnm_bss_transition_reconnect_current(ic, source,",
+      "request_generation, source_epoch)",
       "ieee80211_wnm_bss_transition_copy_retarget(ic, source_ssid,",
-      "iwn_sae_targeted_roam_start(ic, source, target_bssid, true)")
+      "source_ssid_len, target_bssid, &wnm_generation)",
+      "wnm_generation != request_generation",
+      "iwn_sae_targeted_roam_start(ic, source, target_bssid, true,",
+      "wnm_generation)")
+for family, engine in (("iwn", iwn), ("iwm", (root / "itlwm/hal_iwm/IwmSaeEngine.inc").read_text()),
+                       ("iwx", (root / "itlwm/hal_iwx/IwxSaeEngine.inc").read_text())):
+    require(engine, "(consume_wnm != (wnm_generation != 0))", family + " rejects inconsistent BTM domain")
+    require(engine, "source_ssid_len, consume_wnm ? 1 : 0,\n        wnm_generation);",
+            family + " admission owns copied BTM generation")
+    require(engine, "source_ssid_len, target_bssid, wnm_generation);",
+            family + " logical consume owns copied BTM generation")
 order(pae_input_c, "normal RSN port validates retained SAE credential",
       "ni->ni_port_valid = 1;",
       "ic->ic_sae_roam_port_valid != NULL",

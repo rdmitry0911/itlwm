@@ -3,7 +3,7 @@ set -euo pipefail
 ulimit -c 0
 PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 ROAM_TEST_DIR="$(mktemp -d)"
-trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/epoch.inc" "$ROAM_TEST_DIR/test"; rm -rf "$ROAM_TEST_DIR/test.dSYM"; rmdir "$ROAM_TEST_DIR"' EXIT
+trap 'rm -f "$ROAM_TEST_DIR/production.inc" "$ROAM_TEST_DIR/constants.inc" "$ROAM_TEST_DIR/controller.inc" "$ROAM_TEST_DIR/hal.inc" "$ROAM_TEST_DIR/epoch.inc" "$ROAM_TEST_DIR/test"; rm -rf "$ROAM_TEST_DIR/test.dSYM"; rmdir "$ROAM_TEST_DIR"' EXIT
 PROTO="$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
 awk '/^#define[ \t]+IEEE80211_(F_RSNON|F_WEPON|F_DESBSSID|F_MFPR|F_PSK|AKM_SAE|CIPHER_CCMP|CIPHER_BIP|CAPINFO_PRIVACY|NODE_MFP|RSNCAP_MFPC|PROTO_RSN|EVT_STA_ROAM_LINK_LOST|WCL_REASSOC_OWNER_LEAF_[A-Z_]+|WCL_REASSOC_STAGE_[A-Z_]+)[ \t]/' \
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_var.h" \
@@ -51,7 +51,7 @@ if [ -n "${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" ]; then
 fi
 awk -v baseline="${ROAM_LOSS_BASELINE:-${ROAM_EPOCH_BASELINE:-}}" -v replacement="$ROAM_TEST_DIR/epoch.inc" -v arity="${ROAM_EPOCH_ARITY:-0}" '
     /^ieee80211_bssid_is_unicast_nonzero\(/ { selected=1; print "int" }
-    /^ieee80211_wnm_bss_transition_(clear_locked|validate_scan_source_locked|tx_fence_complete|clear_if_generation)\(/ { selected=1; print "void" }
+    /^ieee80211_wnm_bss_transition_(clear_locked|validate_scan_source_locked|tx_fence_complete|clear_if_generation|consume)\(/ { selected=1; print "void" }
     /^ieee80211_wnm_bss_transition_(arm|confirm_candidate|copy_retarget|tx_fence_arm|tx_fence_submit|source_identity_current_locked|source_current_locked|handoff_current_locked|handoff_current|reconnect_current)\(/ { selected=1; print "int" }
     /^ieee80211_sae_wcl_request_(bssid_is_unicast_nonzero|owner_hooks_ready_locked|identity_is_valid_locked|join_active_locked|run_is_stable_locked|scan_policy_matches_locked|matches_current_locked|admit_confirmed_wnm_candidate)\(/ { selected=1; print "int" }
     /^ieee80211_sae_wcl_request_retarget_run\(/ { selected=1; print "uint64_t" }
@@ -104,6 +104,19 @@ fi | awk '
     selected && /^}/ { selected=0 }
 ' >> "$ROAM_TEST_DIR/production.inc"
 ROAM_BASELINE_FLAGS=(-DROAM_CURRENT_EPOCH)
+# Execute the full private BTM wrappers for all three HALs. Credential
+# staging and lower target submission remain explicit fixture boundaries.
+for family in Iwn Iwm Iwx; do
+    case "$family" in
+        Iwn) backend=iwn; engine=itlwm/hal_iwn/ItlIwn.cpp ;;
+        Iwm) backend=iwm; engine=itlwm/hal_iwm/IwmSaeEngine.inc ;;
+        Iwx) backend=iwx; engine=itlwm/hal_iwx/IwxSaeEngine.inc ;;
+    esac
+    awk -v method="${backend}_sae_wnm_roam_start" -v owner="Itl$family" '
+        $0 ~ "^" method "\\(" { selected=1; print "int " owner "::" }
+        selected { print } selected && /^}/ { selected=0 }
+    ' "$PROJECT_DIR/$engine" >> "$ROAM_TEST_DIR/hal.inc"
+done
 if [ -n "${ROAM_LOSS_BASELINE:-}" ]; then
     ROAM_BASELINE_FLAGS+=(-DROAM_LOSS_BASELINE)
 fi

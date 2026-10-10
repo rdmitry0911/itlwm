@@ -7944,6 +7944,7 @@ struct AirportItlwmIwnDirectSaeCredentialRequest {
     uint32_t authUpper;
     const AirportItlwmIwnDirectSaeWclAssociationOwner *wclOwner;
     bool confirmedWnmCandidate;
+    uint64_t confirmedWnmGeneration;
 };
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -7978,6 +7979,7 @@ startIwnDirectSaeCredential(
     memset(&authType, 0, sizeof(authType));
 
     if (request == nullptr || request->ssid == nullptr ||
+        (request->confirmedWnmCandidate != (request->confirmedWnmGeneration != 0)) ||
         request->bssid == nullptr || request->password == nullptr ||
         request->ssidLength == 0 ||
         request->ssidLength > kItlSaeWclCredentialV1SsidMaxLength ||
@@ -8201,7 +8203,7 @@ startIwnDirectSaeCredential(
         !lowerAdmissionRequiresFreshScan) {
         const bool admitted =
             ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
-                ic, generation) != 0;
+                ic, generation, request->confirmedWnmGeneration) != 0;
         const bool joined = admitted && instance != nullptr &&
             tahoeJoinCachedWclCandidate(
                 ic, request->bssid,
@@ -8524,11 +8526,12 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         reinterpret_cast<const struct ether_addr *>(
             raw + TahoeAssociationContracts::kFirstCandidateBssidOffset);
     struct ether_addr wnm_target_bssid{};
+    uint64_t wnm_generation = 0;
     const bool wnm_retarget =
         raw_ssid_len > 0 && raw_ssid_len <= APPLE80211_MAX_SSID_LEN &&
         ieee80211_wnm_bss_transition_copy_retarget(
             ic, ssid, static_cast<uint8_t>(raw_ssid_len),
-            wnm_target_bssid.octet) != 0;
+            wnm_target_bssid.octet, &wnm_generation) != 0;
     const struct ether_addr *bssid = wnm_retarget
         ? &wnm_target_bssid
         : (candidate_count > 0 ? candidate_bssid : context_bssid);
@@ -8672,11 +8675,13 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         directRequest.authUpper = auth_upper;
         directRequest.wclOwner = &owner;
         directRequest.confirmedWnmCandidate = wnm_retarget;
+        directRequest.confirmedWnmGeneration = wnm_generation;
         saeResult = startIwnDirectSaeCredential(&directRequest, nullptr,
                                                 nullptr);
         if (saeResult == kIOReturnSuccess && wnm_retarget)
             ieee80211_wnm_bss_transition_consume(
-                ic, ssid, static_cast<uint8_t>(raw_ssid_len), saeBssid);
+                ic, ssid, static_cast<uint8_t>(raw_ssid_len), saeBssid,
+                wnm_generation);
 
 sae_out:
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
@@ -8987,7 +8992,7 @@ sae_out:
     if (assocResult == kIOReturnSuccess && wnm_retarget)
         ieee80211_wnm_bss_transition_consume(
             ic, ssid, static_cast<uint8_t>(raw_ssid_len),
-            wnm_target_bssid.octet);
+            wnm_target_bssid.octet, wnm_generation);
     return assocResult;
 }
 

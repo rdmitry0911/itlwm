@@ -320,14 +320,15 @@ static void confirmed_source_control(unsigned replacement) {
     // or an invented management TX completion.
     change_source(f,replacement);
     assert(f.generation()==generation);
-    const int retarget=ieee80211_wnm_bss_transition_copy_retarget(&f.ic,ssid,sizeof(ssid),bssid);
+    uint64_t copiedGeneration=99;
+    const int retarget=ieee80211_wnm_bss_transition_copy_retarget(&f.ic,ssid,sizeof(ssid),bssid,&copiedGeneration);
     std::fprintf(stderr,"actual confirmed BTM stale source replacement=%u "
         "retarget=%d sourceEpoch=%llu currentEpoch=%llu active=%u\n",
         replacement,retarget,
         static_cast<unsigned long long>(f.ic.ic_wnm_bss_transition.source_epoch),
         static_cast<unsigned long long>(f.ic.ic_pae_assoc_epoch),
         f.ic.ic_wnm_bss_transition.active);
-    assert(!retarget);
+    assert(!retarget && !copiedGeneration);
     assert(std::all_of(bssid,bssid+6,[](auto b) { return b==0; }));
 }
 int main(int argc,char **argv) {

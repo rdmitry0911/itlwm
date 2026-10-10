@@ -84,7 +84,7 @@ struct ieee80211com {
     uint64_t ic_wnm_bss_transition_next_request=0;
     uint64_t ic_wnm_bss_transition_next_tx_fence=0;
     unsigned ic_xflags=0;
-    int (*ic_sae_wnm_roam_start)(ieee80211com *,const ieee80211_node *)=nullptr;
+    int (*ic_sae_wnm_roam_start)(ieee80211com *,const ieee80211_node *,uint64_t,uint64_t)=nullptr;
     uint64_t ic_wcl_reassoc_next_serial=0, ic_wcl_reassoc_terminal_serial=0;
     uint64_t ic_wcl_reassoc_scan_accepted_serial=0;
     uint32_t ic_wcl_reassoc_published_stages=0;
@@ -312,12 +312,13 @@ static void btm_cancel_control() {
     // real epoch advance and out-of-leaf revocation boundary. No bare epoch
     // increment substitutes for the cancellation body in this composition.
     assert(ieee80211_pae_assoc_epoch_begin(&f.ic)==8);
+    uint64_t copiedGeneration=99;
     const int retarget=ieee80211_wnm_bss_transition_copy_retarget(&f.ic,
-        f.source.ni_essid,f.source.ni_esslen,bssid);
+        f.source.ni_essid,f.source.ni_esslen,bssid,&copiedGeneration);
     std::fprintf(stderr,"actual full epoch cancel + BTM retarget: old=7 current=%llu "
         "active=%u retarget=%d\n",static_cast<unsigned long long>(f.ic.ic_pae_assoc_epoch),
         f.ic.ic_wnm_bss_transition.active,retarget);
-    assert(!retarget && !f.ic.ic_wnm_bss_transition.active);
+    assert(!retarget && !copiedGeneration && !f.ic.ic_wnm_bss_transition.active);
 }
 static void btm_terminal_cancel_control() {
     Fixture f;
@@ -365,10 +366,13 @@ static void complete_btm(Fixture &f,const BtmFence &receipt,bool reverse=false) 
 }
 static bool copy_btm_target(Fixture &f) {
     uint8_t target[6]{};
+    uint64_t generation=99;
     const bool copied=ieee80211_wnm_bss_transition_copy_retarget(&f.ic,
-        f.source.ni_essid,f.source.ni_esslen,target)!=0;
-    if(copied) assert(IEEE80211_ADDR_EQ(target,f.target.ni_bssid));
-    else { const uint8_t zero[6]{}; assert(IEEE80211_ADDR_EQ(target,zero)); }
+        f.source.ni_essid,f.source.ni_esslen,target,&generation)!=0;
+    if(copied) {
+        assert(IEEE80211_ADDR_EQ(target,f.target.ni_bssid));
+        assert(generation && generation==f.ic.ic_wnm_bss_transition.request_generation);
+    } else { const uint8_t zero[6]{}; assert(IEEE80211_ADDR_EQ(target,zero) && !generation); }
     return copied;
 }
 static void hook_identity() {}
@@ -397,10 +401,205 @@ static void sae_policy(Fixture &f,uint64_t generation,bool bound) {
         ic.ic_pae_selected_bss.epoch=ic.ic_pae_assoc_epoch;
     }
 }
-static int sae_wnm_boundary(ieee80211com *ic,const ieee80211_node *) {
+static int sae_wnm_boundary(ieee80211com *ic,const ieee80211_node *source,
+    uint64_t generation,uint64_t sourceEpoch) {
     assert(onSaeWnm);
+    assert(ieee80211_wnm_bss_transition_reconnect_current(ic,source,generation,sourceEpoch));
     const auto callback=onSaeWnm;
     return callback(ic);
+}
+
+static unsigned halTargetCalls;
+static uint64_t halTargetGeneration;
+// Only the lower credential/staging boundary is a double. It records the
+// wrapper's copied owner and executes the complete production admission leaf.
+static int hal_target_boundary(ieee80211com *ic,const ieee80211_node *source,
+    const uint8_t *target,bool wnm,uint64_t generation) {
+    ++halTargetCalls; halTargetGeneration=generation;
+    assert(wnm && generation);
+    return ieee80211_sae_wcl_request_retarget_run(ic,source,42,target,
+        source->ni_essid,source->ni_esslen,1,generation)!=0;
+}
+#define BTM_HAL_FIXTURE(Owner, backend) \
+class Owner { public: \
+    static int backend##_sae_wnm_roam_start(ieee80211com *,const ieee80211_node *,uint64_t,uint64_t); \
+    static int backend##_sae_targeted_roam_start(ieee80211com *ic,const ieee80211_node *source, \
+        const uint8_t *target,bool wnm,uint64_t generation) { \
+        return hal_target_boundary(ic,source,target,wnm,generation); \
+    } \
+};
+BTM_HAL_FIXTURE(ItlIwn,iwn)
+BTM_HAL_FIXTURE(ItlIwm,iwm)
+BTM_HAL_FIXTURE(ItlIwx,iwx)
+#undef BTM_HAL_FIXTURE
+#include "hal.inc"
+
+static BtmFence completed_btm(Fixture &f,bool scan) {
+    if(!scan) {
+        f.ic.ic_sae_wnm_roam_start=sae_wnm_boundary;
+        onSaeWnm=[](ieee80211com *) { return 1; };
+    }
+    const auto receipt=arm_btm(f); complete_btm(f,receipt);
+    assert(copy_btm_target(f));
+    return receipt;
+}
+
+static unsigned btm_generation_matrix() {
+    unsigned cases=0;
+    for(bool scan : {false,true}) for(unsigned mutation=0;mutation<12;++mutation) {
+        Fixture f; const auto receipt=completed_btm(f,scan);
+        uint8_t target[6],ssid[32]; uint8_t length=f.source.ni_esslen;
+        std::memcpy(target,f.target.ni_bssid,6); std::memcpy(ssid,f.source.ni_essid,32);
+        const uint8_t *ssidArg=ssid,*targetArg=target;
+        auto *ic=&f.ic; uint64_t generation=receipt.request;
+        switch(mutation) {
+            case 1: generation=0; break;
+            case 2: ++generation; break;
+            case 3: ssid[0]^=1; break;
+            case 4: target[1]^=1; break;
+            case 5: length=0; break;
+            case 6: length=33; break;
+            case 7: ssidArg=nullptr; break;
+            case 8: targetArg=nullptr; break;
+            case 9: ic=nullptr; break;
+            case 10: f.ic.ic_pae_selected_bss_lock=nullptr; break;
+            case 11: f.ic.ic_wnm_bss_transition.candidate_confirmed=0; break;
+        }
+        ieee80211_wnm_bss_transition_consume(ic,ssidArg,length,targetArg,generation);
+        assert(bool(f.ic.ic_wnm_bss_transition.active)==(mutation!=0));
+        assert(f.ic.ic_wnm_bss_transition_next_request==receipt.request &&
+            f.ic.ic_wnm_bss_transition_next_tx_fence==receipt.tx);
+        if(mutation==0) {
+            ieee80211_wnm_bss_transition_consume(ic,ssidArg,length,targetArg,generation);
+            assert(!f.ic.ic_wnm_bss_transition.active);
+        }
+        ++cases;
+    }
+    for(bool scan : {false,true}) for(unsigned mutation=0;mutation<8;++mutation) {
+        Fixture f; const auto receipt=completed_btm(f,scan);
+        uint8_t target[6]; std::memset(target,0xa5,6);
+        uint64_t generation=99,*generationArg=&generation;
+        auto *ic=&f.ic; const uint8_t *ssid=f.source.ni_essid;
+        uint8_t length=f.source.ni_esslen,*targetArg=target;
+        switch(mutation) {
+            case 1: ic=nullptr; break;
+            case 2: ssid=nullptr; break;
+            case 3: length=0; break;
+            case 4: length=33; break;
+            case 5: targetArg=nullptr; break;
+            case 6: generationArg=nullptr; break;
+            case 7: f.ic.ic_pae_selected_bss_lock=nullptr; break;
+        }
+        const auto copied=ieee80211_wnm_bss_transition_copy_retarget(ic,ssid,length,targetArg,generationArg);
+        assert(bool(copied)==(mutation==0));
+        if(copied) assert(generation==receipt.request && IEEE80211_ADDR_EQ(target,f.target.ni_bssid));
+        else {
+            if(targetArg) { const uint8_t zero[6]{}; assert(IEEE80211_ADDR_EQ(target,zero)); }
+            if(generationArg) assert(!generation);
+        }
+        assert(f.ic.ic_wnm_bss_transition.active);
+        ++cases;
+    }
+    for(unsigned boundary=0;boundary<3;++boundary) for(bool completed : {false,true}) {
+        Fixture f; const auto old=completed_btm(f,false);
+        uint8_t target[6]{}; uint64_t generation=0;
+        assert(ieee80211_wnm_bss_transition_copy_retarget(&f.ic,f.source.ni_essid,
+            f.source.ni_esslen,target,&generation) && generation==old.request);
+        if(boundary==1) ieee80211_pae_assoc_epoch_begin(&f.ic);
+        if(boundary==2) ieee80211_new_state(&f.ic,IEEE80211_S_SCAN,-1);
+        if(boundary==2) ieee80211_new_state(&f.ic,IEEE80211_S_RUN,-1);
+        const auto next=arm_btm(f);
+        if(completed) complete_btm(f,next);
+        ieee80211_wnm_bss_transition_consume(&f.ic,f.source.ni_essid,
+            f.source.ni_esslen,target,generation);
+        assert(f.ic.ic_wnm_bss_transition.active &&
+            f.ic.ic_wnm_bss_transition.request_generation==next.request);
+        assert(f.ic.ic_wnm_bss_transition_next_request==next.request &&
+            f.ic.ic_wnm_bss_transition_next_tx_fence==next.tx);
+        ++cases;
+    }
+    for(bool scan : {false,true}) {
+        Fixture f; const auto old=completed_btm(f,scan);
+        const auto oldTarget=f.target;
+        BtmFence next;
+        onUnlock=[&] {
+            onUnlock={};
+            if(scan) ieee80211_new_state(&f.ic,IEEE80211_S_RUN,-1);
+            f.target.ni_bssid[1]=0x77;
+            next=arm_btm(f);
+        };
+        uint8_t target[6]{}; uint64_t generation=0;
+        assert(ieee80211_wnm_bss_transition_copy_retarget(&f.ic,f.source.ni_essid,
+            f.source.ni_esslen,target,&generation));
+        assert(generation==old.request && IEEE80211_ADDR_EQ(target,oldTarget.ni_bssid));
+        assert(next.request>generation && !IEEE80211_ADDR_EQ(target,f.target.ni_bssid));
+        ieee80211_wnm_bss_transition_consume(&f.ic,f.source.ni_essid,
+            f.source.ni_esslen,target,generation);
+        assert(f.ic.ic_wnm_bss_transition.request_generation==next.request);
+        ++cases;
+    }
+    for(bool scan : {false,true}) for(unsigned mutation=0;mutation<4;++mutation) {
+        Fixture f; const auto receipt=completed_btm(f,scan); sae_policy(f,42,!scan);
+        const auto before=f.ic.ic_sae_wcl_request;
+        const auto flags=f.ic.ic_flags;
+        uint64_t generation=receipt.request;
+        if(mutation==1) generation=0;
+        if(mutation==2) ++generation;
+        if(mutation==3) generation=UINT64_MAX;
+        const auto accepted=scan ?
+            uint64_t(ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(&f.ic,42,generation)) :
+            ieee80211_sae_wcl_request_retarget_run(&f.ic,&f.source,42,
+                f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,1,generation);
+        assert(bool(accepted)==(mutation==0));
+        if(!accepted) {
+            assert(!std::memcmp(&before,&f.ic.ic_sae_wcl_request,sizeof(before)));
+            assert(f.ic.ic_sae_wcl_request_next_generation==42 &&
+                f.ic.ic_sae_wcl_policy_generation==42 && f.ic.ic_flags==flags);
+        }
+        ++cases;
+    }
+    for(unsigned domain=0;domain<3;++domain) {
+        Fixture f; completed_btm(f,false); sae_policy(f,42,true);
+        f.ic.ic_wcl_reassoc_owner_active=1;
+        f.ic.ic_wcl_reassoc_owner_last_leaf=IEEE80211_WCL_REASSOC_OWNER_LEAF_ROAM_STARTED;
+        IEEE80211_ADDR_COPY(f.ic.ic_wcl_reassoc_target_bssid,f.target.ni_bssid);
+        const auto accepted=ieee80211_sae_wcl_request_retarget_run(&f.ic,&f.source,42,
+            f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,domain==1,domain==2 ? 1 : 0);
+        assert(bool(accepted)==(domain==0));
+        if(accepted) assert(accepted==43);
+        else assert(f.ic.ic_sae_wcl_request.generation==42 && f.ic.ic_sae_wcl_request_next_generation==42);
+        ++cases;
+    }
+    using Wrapper=int (*)(ieee80211com *,const ieee80211_node *,uint64_t,uint64_t);
+    for(Wrapper wrapper : {ItlIwn::iwn_sae_wnm_roam_start,ItlIwm::iwm_sae_wnm_roam_start,
+                           ItlIwx::iwx_sae_wnm_roam_start}) {
+        for(unsigned mutation=0;mutation<8;++mutation) {
+            Fixture f; const auto old=completed_btm(f,false); sae_policy(f,42,true);
+            halTargetCalls=0; halTargetGeneration=0;
+            uint64_t generation=old.request,epoch=old.sourceEpoch;
+            const auto *source=&f.source;
+            if(mutation==1) ++generation;
+            if(mutation==2) ++epoch;
+            if(mutation==3) source=&f.target;
+            if(mutation==4) source=nullptr;
+            if(mutation==5) f.source.ni_esslen=0;
+            unsigned unlocks=0; BtmFence next;
+            if(mutation>=6) onUnlock=[&] {
+                if(++unlocks!=(mutation==6 ? 1u : 2u)) return;
+                onUnlock={}; next=arm_btm(f); complete_btm(f,next);
+            };
+            const auto started=wrapper(&f.ic,source,generation,epoch);
+            assert(bool(started)==(mutation==0));
+            assert(halTargetCalls==unsigned(mutation==0 || mutation==7));
+            if(halTargetCalls) assert(halTargetGeneration==old.request);
+            if(mutation>=6) assert(next.request>old.request &&
+                f.ic.ic_wnm_bss_transition.request_generation==next.request);
+            assert(f.ic.ic_sae_wcl_request.generation==(mutation==0 ? 43u : 42u));
+            ++cases;
+        }
+    }
+    std::printf("PASS: %u actual BTM generation copy/consume/admission and three-HAL wrapper cases\n",cases);
+    return cases;
 }
 static unsigned btm_handoff_matrix() {
     unsigned cases=0;
@@ -517,7 +716,7 @@ static unsigned btm_handoff_matrix() {
         if(mutation==5) f.ic.ic_sae_wcl_request.bssid[1]=1;
         if(mutation==6) f.ic.ic_sae_auth_owned=nullptr;
         if(mutation==7) f.ic.ic_flags|=IEEE80211_F_PSK;
-        const int accepted=ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(&f.ic,42);
+        const int accepted=ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(&f.ic,42,receipt.request);
         assert(bool(accepted)==(mutation==0));
         if(accepted) {
             assert(f.ic.ic_sae_wcl_request.phase==IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED);
@@ -540,7 +739,7 @@ static unsigned btm_handoff_matrix() {
         if(mutation==6) f.ic.ic_flags|=IEEE80211_F_PSK;
         if(mutation==7) f.ic.ic_sae_wcl_request_join_active=1;
         const auto next=ieee80211_sae_wcl_request_retarget_run(&f.ic,&f.source,42,
-            f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,1);
+            f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,1,receipt.request);
         assert(bool(next)==(mutation==0));
         if(next) {
             assert(next==43 && f.ic.ic_state==IEEE80211_S_RUN && f.ic.ic_pae_assoc_epoch==7);
@@ -554,11 +753,72 @@ static unsigned btm_handoff_matrix() {
     std::printf("PASS: %u actual BTM TX/cancel/handoff and SAE admission cases\n",cases);
     return cases;
 }
+static void btm_consume_successor_control() {
+    Fixture f; const auto old=arm_btm(f);
+    // The explicit lower callback holds completed leave at RUN. The actual
+    // two TX terminals and production copy-out still run; this is not a
+    // fabricated descriptor result or an on-air SAE success substitute.
+    f.ic.ic_sae_wnm_roam_start=sae_wnm_boundary;
+    onSaeWnm=[](ieee80211com *) { return 1; };
+    complete_btm(f,old);
+    uint8_t oldTarget[6]{};
+    uint64_t oldGeneration=0;
+    assert(ieee80211_wnm_bss_transition_copy_retarget(&f.ic,
+        f.source.ni_essid,f.source.ni_esslen,oldTarget,&oldGeneration));
+    assert(oldGeneration==old.request);
+    // An admitted successor has the same public ESS/target and a distinct
+    // request/fence identity. The old carrier reaches consume after that
+    // real arm/confirm boundary. No old command owns the new logical record.
+    const auto next=arm_btm(f);
+    assert(next.request>old.request && next.tx>old.tx);
+    ieee80211_wnm_bss_transition_consume(&f.ic,f.source.ni_essid,
+        f.source.ni_esslen,oldTarget,oldGeneration);
+    std::fprintf(stderr,"actual BTM consume successor: old=%llu successor=%llu "
+        "remaining=%llu active=%u\n",static_cast<unsigned long long>(old.request),
+        static_cast<unsigned long long>(next.request),
+        static_cast<unsigned long long>(f.ic.ic_wnm_bss_transition.request_generation),
+        f.ic.ic_wnm_bss_transition.active);
+    assert(f.ic.ic_wnm_bss_transition.active &&
+        f.ic.ic_wnm_bss_transition.request_generation==next.request);
+}
+static void btm_admission_successor_control(bool scan) {
+    Fixture f; const auto old=arm_btm(f);
+    if(!scan) {
+        f.ic.ic_sae_wnm_roam_start=sae_wnm_boundary;
+        onSaeWnm=[](ieee80211com *) { return 1; };
+    }
+    complete_btm(f,old);
+    assert(copy_btm_target(f));
+    if(scan) ieee80211_new_state(&f.ic,IEEE80211_S_RUN,-1);
+    const auto next=arm_btm(f); complete_btm(f,next);
+    assert(next.request>old.request && copy_btm_target(f));
+    sae_policy(f,42,!scan);
+    // Policy and lower-hook registration are explicit boundary doubles.
+    // Execute the complete admission leaf with the old copied public target
+    // after another real BTM owns that same target. No raw epoch increment or
+    // fabricated admission result replaces either producer's implementation.
+    const auto admitted=scan ?
+        uint64_t(ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(&f.ic,42,old.request)) :
+        ieee80211_sae_wcl_request_retarget_run(&f.ic,&f.source,42,
+            f.target.ni_bssid,f.source.ni_essid,f.source.ni_esslen,1,old.request);
+    std::fprintf(stderr,"actual BTM stale admission: scan=%d old=%llu successor=%llu admitted=%llu\n",
+        int(scan),static_cast<unsigned long long>(old.request),
+        static_cast<unsigned long long>(next.request),static_cast<unsigned long long>(admitted));
+    assert(!admitted && f.ic.ic_sae_wcl_request.generation==42);
+}
 int main() {
     if(std::getenv("BTM_CANCEL_REQUIRE")!=nullptr) { btm_cancel_control(); return 0; }
     if(std::getenv("BTM_TERMINAL_CANCEL_REQUIRE")!=nullptr) { btm_terminal_cancel_control(); return 0; }
-    if(std::getenv("ROAM_LOSS_BASELINE")==nullptr && std::getenv("ROAM_EPOCH_BASELINE")==nullptr)
+    if(std::getenv("BTM_CONSUME_REQUIRE")!=nullptr) { btm_consume_successor_control(); return 0; }
+    if(std::getenv("BTM_RETARGET_SUCCESSOR_REQUIRE")!=nullptr) { btm_admission_successor_control(false); return 0; }
+    if(std::getenv("BTM_ADMIT_SUCCESSOR_REQUIRE")!=nullptr) { btm_admission_successor_control(true); return 0; }
+    if(std::getenv("ROAM_LOSS_BASELINE")==nullptr && std::getenv("ROAM_EPOCH_BASELINE")==nullptr) {
         btm_handoff_matrix();
+        btm_consume_successor_control();
+        btm_admission_successor_control(false);
+        btm_admission_successor_control(true);
+        btm_generation_matrix();
+    }
     {
         // Reproduce the radio failure without an AP/authentication double:
         // a selected target has crossed the controlled replacement epoch,

@@ -1477,7 +1477,7 @@ ieee80211_node_wnm_reconnect(struct ieee80211com *ic,
     ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
                       IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
     if (ic->ic_sae_wnm_roam_start != NULL &&
-        (*ic->ic_sae_wnm_roam_start)(ic, ni) != 0)
+        (*ic->ic_sae_wnm_roam_start)(ic, ni, generation, source_epoch) != 0)
         return;
     if (!ieee80211_wnm_bss_transition_reconnect_current(ic, ni, generation, source_epoch))
         return;

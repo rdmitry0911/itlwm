@@ -951,7 +951,7 @@ struct ieee80211com {
     void            (*ic_sae_roam_port_valid)(struct ieee80211com *,
                             const struct ieee80211_node *);
     int             (*ic_sae_wnm_roam_start)(struct ieee80211com *,
-                            const struct ieee80211_node *);
+                        const struct ieee80211_node *, u_int64_t, u_int64_t);
     int             (*ic_sae_wcl_roam_start)(struct ieee80211com *,
                             const struct ieee80211_node *,
                             const u_int8_t [IEEE80211_ADDR_LEN]);

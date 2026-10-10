@@ -3121,7 +3121,8 @@ iwn_sae_roam_departure_fail(struct iwn_softc *sc,
 int ItlIwn::
 iwn_sae_targeted_roam_start(struct ieee80211com *ic,
     const struct ieee80211_node *source,
-    const u_int8_t target_bssid[IEEE80211_ADDR_LEN], bool consume_wnm)
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN], bool consume_wnm,
+    u_int64_t wnm_generation)
 {
     struct iwn_softc *sc;
     ItlIwn *that;
@@ -3137,6 +3138,7 @@ iwn_sae_targeted_roam_start(struct ieee80211com *ic,
     explicit_bzero(&credential, sizeof(credential));
     explicit_bzero(source_ssid, sizeof(source_ssid));
     if (ic == NULL || source == NULL || target_bssid == NULL ||
+        (consume_wnm != (wnm_generation != 0)) ||
         source != ic->ic_bss ||
         ic->ic_opmode != IEEE80211_M_STA ||
         ic->ic_state != IEEE80211_S_RUN || !source->ni_port_valid ||
@@ -3196,7 +3198,8 @@ iwn_sae_targeted_roam_start(struct ieee80211com *ic,
      */
     generation = ieee80211_sae_wcl_request_retarget_run(ic, source,
         source_generation,
-        target_bssid, source_ssid, source_ssid_len, consume_wnm ? 1 : 0);
+        target_bssid, source_ssid, source_ssid_len, consume_wnm ? 1 : 0,
+        wnm_generation);
     if (generation == 0)
         goto leave;
     credential.request_generation = generation;
@@ -3220,7 +3223,7 @@ iwn_sae_targeted_roam_start(struct ieee80211com *ic,
         goto leave;
     if (consume_wnm)
         ieee80211_wnm_bss_transition_consume(ic, source_ssid,
-            source_ssid_len, target_bssid);
+            source_ssid_len, target_bssid, wnm_generation);
     XYLog("iwn_sae_roam DRIVER_RESIDENT_%s_STARTED\n",
         consume_wnm ? "BTM" : "WCL");
     started = 1;
@@ -3240,25 +3243,31 @@ out:
 
 int ItlIwn::
 iwn_sae_wnm_roam_start(struct ieee80211com *ic,
-    const struct ieee80211_node *source)
+    const struct ieee80211_node *source, u_int64_t request_generation,
+    u_int64_t source_epoch)
 {
     u_int8_t target_bssid[IEEE80211_ADDR_LEN];
     u_int8_t source_ssid[IEEE80211_NWID_LEN];
     u_int8_t source_ssid_len;
+    u_int64_t wnm_generation = 0;
     int started = 0;
 
     explicit_bzero(target_bssid, sizeof(target_bssid));
     explicit_bzero(source_ssid, sizeof(source_ssid));
     if (ic == NULL || source == NULL || source != ic->ic_bss ||
         source->ni_esslen == 0 ||
-        source->ni_esslen > sizeof(source_ssid))
+        source->ni_esslen > sizeof(source_ssid) ||
+        !ieee80211_wnm_bss_transition_reconnect_current(ic, source,
+            request_generation, source_epoch))
         goto out;
     source_ssid_len = source->ni_esslen;
     memcpy(source_ssid, source->ni_essid, source_ssid_len);
     if (ieee80211_wnm_bss_transition_copy_retarget(ic, source_ssid,
-            source_ssid_len, target_bssid) == 0)
+            source_ssid_len, target_bssid, &wnm_generation) == 0 ||
+        wnm_generation != request_generation)
         goto out;
-    started = iwn_sae_targeted_roam_start(ic, source, target_bssid, true);
+    started = iwn_sae_targeted_roam_start(ic, source, target_bssid, true,
+        wnm_generation);
 out:
     explicit_bzero(source_ssid, sizeof(source_ssid));
     explicit_bzero(target_bssid, sizeof(target_bssid));
@@ -3462,7 +3471,7 @@ iwn_sae_roam_departure_terminal(struct iwn_softc *sc,
          * to the selected target. It is a terminal, not an ACK-success claim. */
         XYLog("iwn_sae_roam SOURCE_DEAUTH_TERMINAL ticket=%llu txfail=%u\n",
             identity->ticket, txfail ? 1U : 0U);
-        if (!iwn_sae_targeted_roam_start(ic, ic->ic_bss, identity->target_bssid, false))
+        if (!iwn_sae_targeted_roam_start(ic, ic->ic_bss, identity->target_bssid, false, 0))
             iwn_sae_roam_departure_fail(sc, identity, EIO, true);
     }
     iwn_sae_tx_lifecycle_leave(sc);

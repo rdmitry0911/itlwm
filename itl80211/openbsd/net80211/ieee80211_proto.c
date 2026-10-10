@@ -1704,7 +1704,7 @@ ieee80211_wnm_bss_transition_tx_fence_complete(struct ieee80211com *ic,
 int
 ieee80211_wnm_bss_transition_copy_retarget(struct ieee80211com *ic,
     const u_int8_t *ssid, u_int8_t ssid_len,
-    u_int8_t target_bssid[IEEE80211_ADDR_LEN])
+    u_int8_t target_bssid[IEEE80211_ADDR_LEN], u_int64_t *generation)
 {
 	IOSimpleLock *lock;
 	IOInterruptState irq;
@@ -1713,8 +1713,11 @@ ieee80211_wnm_bss_transition_copy_retarget(struct ieee80211com *ic,
 
 	if (target_bssid != NULL)
 		explicit_bzero(target_bssid, IEEE80211_ADDR_LEN);
+	if (generation != NULL)
+		*generation = 0;
 	if (ic == NULL || ssid == NULL || ssid_len == 0 ||
 	    ssid_len > IEEE80211_NWID_LEN || target_bssid == NULL ||
+	    generation == NULL ||
 	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
@@ -1729,7 +1732,10 @@ ieee80211_wnm_bss_transition_copy_retarget(struct ieee80211com *ic,
 	    (scan_handoff && ic->ic_state == IEEE80211_S_SCAN)) &&
 	    transition->ssid_len == ssid_len &&
 	    memcmp(transition->ssid, ssid, ssid_len) == 0) {
+		/* This local request identity travels with the target across lower
+		 * work. The same public SSID/BSSID does not identify its successor. */
 		IEEE80211_ADDR_COPY(target_bssid, transition->target_bssid);
+		*generation = transition->request_generation;
 		retarget = 1;
 	} else if (transition->active != 0 && transition->candidate_confirmed != 0 &&
 	    ((!source_current && !scan_handoff) || transition->ssid_len != ssid_len ||
@@ -1744,18 +1750,22 @@ ieee80211_wnm_bss_transition_copy_retarget(struct ieee80211com *ic,
 void
 ieee80211_wnm_bss_transition_consume(struct ieee80211com *ic,
     const u_int8_t *ssid, u_int8_t ssid_len,
-    const u_int8_t target_bssid[IEEE80211_ADDR_LEN])
+    const u_int8_t target_bssid[IEEE80211_ADDR_LEN], u_int64_t generation)
 {
 	IOSimpleLock *lock;
 	IOInterruptState irq;
 	struct ieee80211_wnm_bss_transition *transition;
 
-	if (ic == NULL || ssid == NULL || target_bssid == NULL ||
+	if (ic == NULL || ssid == NULL || target_bssid == NULL || generation == 0 ||
+	    ssid_len == 0 || ssid_len > IEEE80211_NWID_LEN ||
 	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	transition = &ic->ic_wnm_bss_transition;
+	/* Retire only the logical request copied by this caller. Physical
+	 * management descriptor completion has its own independent owner. */
 	if (transition->active != 0 && transition->candidate_confirmed != 0 &&
+	    transition->request_generation == generation &&
 	    transition->ssid_len == ssid_len &&
 	    memcmp(transition->ssid, ssid, ssid_len) == 0 &&
 	    IEEE80211_ADDR_EQ(transition->target_bssid, target_bssid))
@@ -3685,7 +3695,7 @@ ieee80211_sae_wcl_request_scan_started(struct ieee80211com *ic,
  */
 int
 ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
-    struct ieee80211com *ic, u_int64_t generation)
+    struct ieee80211com *ic, u_int64_t generation, u_int64_t wnm_generation)
 {
 	IOSimpleLock *lock;
 	IOInterruptState irq;
@@ -3693,7 +3703,7 @@ ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
 	const struct ieee80211_wnm_bss_transition *transition;
 	int admitted = 0;
 
-	if (ic == NULL || generation == 0 ||
+	if (ic == NULL || generation == 0 || wnm_generation == 0 ||
 	    ic->ic_opmode != IEEE80211_M_STA ||
 	    ic->ic_state != IEEE80211_S_SCAN)
 		return 0;
@@ -3709,6 +3719,7 @@ ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
 	    request->association_epoch == 0 &&
 	    ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request) &&
 	    transition->active != 0 &&
+	    transition->request_generation == wnm_generation &&
 	    transition->candidate_confirmed != 0 &&
 	    transition->handoff_phase == IEEE80211_WNM_HANDOFF_SCAN_HELD &&
 	    ieee80211_wnm_bss_transition_handoff_current_locked(ic,
@@ -3967,7 +3978,7 @@ u_int64_t
 ieee80211_sae_wcl_request_retarget_run(struct ieee80211com *ic,
     const struct ieee80211_node *source, u_int64_t source_generation,
     const u_int8_t target_bssid[IEEE80211_ADDR_LEN], const u_int8_t *ssid,
-    u_int ssid_len, int confirmed_wnm)
+    u_int ssid_len, int confirmed_wnm, u_int64_t wnm_generation)
 {
 	IOSimpleLock *lock;
 	IOInterruptState irq;
@@ -3978,6 +3989,7 @@ ieee80211_sae_wcl_request_retarget_run(struct ieee80211com *ic,
 	int target_owned;
 
 	if (ic == NULL || source == NULL || source_generation == 0 ||
+	    ((confirmed_wnm != 0) != (wnm_generation != 0)) ||
 	    target_bssid == NULL || ssid == NULL ||
 	    ssid_len == 0 || ssid_len > IEEE80211_NWID_LEN ||
 	    !ieee80211_sae_wcl_request_bssid_is_unicast_nonzero(target_bssid) ||
@@ -3991,6 +4003,7 @@ ieee80211_sae_wcl_request_retarget_run(struct ieee80211com *ic,
 	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
 	target_owned = confirmed_wnm ?
 	    (transition->active != 0 && transition->candidate_confirmed != 0 &&
+	    transition->request_generation == wnm_generation &&
 	    transition->handoff_phase == IEEE80211_WNM_HANDOFF_LEAVE_DONE &&
 	    ieee80211_wnm_bss_transition_source_current_locked(ic) &&
 	    transition->fresh_scan_pending == 0 &&

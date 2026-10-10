@@ -500,7 +500,7 @@ public:
     static void iwm_sae_roam_port_valid(struct ieee80211com *,
         const struct ieee80211_node *);
     static int iwm_sae_wnm_roam_start(struct ieee80211com *,
-        const struct ieee80211_node *);
+        const struct ieee80211_node *, u_int64_t, u_int64_t);
     static int iwm_sae_wcl_roam_start(struct ieee80211com *,
         const struct ieee80211_node *,
         const u_int8_t [IEEE80211_ADDR_LEN]);
@@ -511,7 +511,7 @@ public:
     bool iwm_sae_driver_reset_recovery_pending(struct iwm_softc *, bool);
     static int iwm_sae_targeted_roam_start(struct ieee80211com *,
         const struct ieee80211_node *,
-        const u_int8_t [IEEE80211_ADDR_LEN], bool);
+        const u_int8_t [IEEE80211_ADDR_LEN], bool, u_int64_t);
     static enum IwmSaeAssocTxAdmission iwm_sae_engine_assoc_tx_preflight(
         struct iwm_softc *, const struct ieee80211_node *,
         const struct ieee80211_frame *, struct IwmSaeAssocTxClaim *);

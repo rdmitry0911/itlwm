@@ -305,10 +305,10 @@ extern	void ieee80211_wnm_bss_transition_tx_fence_complete(
 	    u_int8_t);
 extern	int ieee80211_wnm_bss_transition_copy_retarget(
 	    struct ieee80211com *, const u_int8_t *, u_int8_t,
-	    u_int8_t[IEEE80211_ADDR_LEN]);
+	    u_int8_t[IEEE80211_ADDR_LEN], u_int64_t *);
 extern	void ieee80211_wnm_bss_transition_consume(
 	    struct ieee80211com *, const u_int8_t *, u_int8_t,
-	    const u_int8_t[IEEE80211_ADDR_LEN]);
+	    const u_int8_t[IEEE80211_ADDR_LEN], u_int64_t);
 extern	int ieee80211_send_bss_transition_response(struct ieee80211com *,
 	    struct ieee80211_node *, u_int8_t, u_int8_t,
 	    const u_int8_t[IEEE80211_ADDR_LEN]);
@@ -388,10 +388,11 @@ extern	int ieee80211_sae_wcl_request_scan_starting(struct ieee80211com *,
 extern	int ieee80211_sae_wcl_request_scan_started(struct ieee80211com *,
 	    u_int64_t);
 /* Promote one exact PENDING direct-SAE request without another physical scan
- * only while the protected WNM record still confirms the same SSID+BSSID.
+ * only while the protected WNM record still owns the captured BTM generation
+ * and confirms the same SSID+BSSID.
  * This carries no credential or node and is false for every ordinary join. */
 extern	int ieee80211_sae_wcl_request_admit_confirmed_wnm_candidate(
-	    struct ieee80211com *, u_int64_t);
+	    struct ieee80211com *, u_int64_t, u_int64_t);
 /* Promote the exact ordinary WCL-selected SSID+BSSID to the selection-owned
  * phase.  The caller separately proves that the physical scan owners are
  * idle and that the matching live node is still usable before joining it. */
@@ -407,7 +408,7 @@ extern	int ieee80211_sae_wcl_request_admit_cached_roam_candidate(
  * rollback_run_retarget() is valid only before that replacement begins. */
 extern	u_int64_t ieee80211_sae_wcl_request_retarget_run(
 	    struct ieee80211com *, const struct ieee80211_node *, u_int64_t,
-	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int, int);
+	    const u_int8_t[IEEE80211_ADDR_LEN], const u_int8_t *, u_int, int, u_int64_t);
 extern	int ieee80211_sae_wcl_request_rollback_run_retarget(
 	    struct ieee80211com *, u_int64_t, u_int64_t,
 	    const struct ieee80211_node *);
