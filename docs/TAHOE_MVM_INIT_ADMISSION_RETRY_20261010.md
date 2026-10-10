@@ -77,13 +77,81 @@ outside this qualification.
 
 ## Candidate qualification
 
-The source and fixture checks above are complete. The candidate has not yet
-been built, installed or loaded. The running IWM 9260 guest still uses
-`a1c778a3` and retains management through en2. Its hardware RFKILL prevents
-successful open, WPA2, WPA3, DHCP, traffic and AP qualification. Loading this
-fix and checking real sleep and bounded native controls is the next release
-step, not proof that the collision executes on hardware.
+Production `685f388029af42404c6b4531fa9609349013e65e` is pushed, built,
+transactionally installed and loaded in the existing IWM 9260 guest. Source
+identity is `80ecde86eee8`; all 1088 BootKC imports resolve. The exact committed
+macOS tree repeats the lifecycle, ready and failure fixture results above.
+Private admission and the canonical and AuxKC member sets pass. Four companion
+kexts and rollback material remain under
+`/private/var/tmp/aiam-iwn-activation-iwm9260-initowner685f3880-20261010`.
+Activation is `activation-20261010T081527Z`.
+
+- Loaded UUID: `D50DEB81-94E7-3FB9-81F4-CC8BCEE424EC`.
+- Mach-O SHA256: `1f1fd888bb55102d6025045e3bb49778fbb60193cf54807218532c284f1b61aa`.
+- Boot: `DD112E64-7417-4D93-AD3A-F3F3F55854E5`.
+
+The build, installed bundle and extracted archive match completely. The
+guarded guest reboot returns SSH exit 255; the same QEMU is observed through
+temporary banner timeouts until the new boot and exact image are verified.
+The private monitor, overlay and management default through en2 remain
+unchanged. The original dirty checkout and physical host `.22` are untouched.
+
+The first bundle fetch requested a branch name although this bundle exports
+HEAD; it failed before changing the checkout. The corrected fetch uses the
+actual exported ref. The activation wrapper returns one despite its final
+success marker; an independent read verifies the READY transaction, both
+member sets and complete installed equality before the guarded reboot. The
+existing activation is not replayed.
+
+## Real sleep and native controls
+
+Actual S3 is confirmed independently by `paused (suspended)` and serial
+`ACPI SLEEP`. The initial observation window ends before the guest suspends;
+the same VM is then reobserved and awakened only after suspension is proved.
+Current boot power history records one 32 second sleep, WakeTime 1.222 seconds
+and a 30 second WindowServer sleep notification timeout. Older history belongs
+to earlier boots. The same boot, loaded image, installed equality and en2
+management survive private `system_wakeup`.
+
+The first FBT trace observes actual Off, stop ownership, drain, device erase
+and successful Off in 665.36 ms, but its wrapper ends with one and does not
+cover the subsequent controls. That result remains distinct from the separate
+native trace, whose explicit remote and local process results are zero and
+whose ready and complete markers bracket four repeated Off and On controls.
+It records real inner POWER On refusal `0xe00002d8` in 1.899, 6.941, 2.197 and
+2.138 ms. Off readbacks and management remain intact in both sets of four
+native controls. One control wrapper also ends with one despite its final
+assertion marker; it is not counted as a clean process exit.
+
+At boot the native logical power getter initially says On while the interface
+is inactive and the lower worker reports `fatal=2`. This is not a successful
+radio start. After native Off, repeated On remains refused. RFKILL prevents
+actual full init and retry claim entries in the completed hardware trace, so
+the software collision result is not represented as hardware execution.
+
+## Separate LAB release artifact
+
+Release `v2.4.0-alpha` has additional asset `627421593`,
+`AirportItlwm-Tahoe-IwmIwx-InitOwner-685f3880.kext.zip`, 15,713,687 bytes,
+SHA256 `36f5ea1fc716a1cd33706f5ae5924d24e30891746cd80cee45d7e5d812c3cdaa`.
+It is the exact installed unsigned Debug bundle. SCP reaches terminal zero
+before local size and hash checks and upload.
+
+Independent API reads verify the new asset and all nine older assets with
+immutable metadata unchanged. The complete preceding notes remain byte equal
+as the suffix and the default archive is unchanged. The new label and notes
+retain LAB ONLY, IWM RFKILL and software only IWX limits.
+
+## Operational qualification boundary
+
+Successful GUI, saved network recovery, open, WPA2, WPA3, DHCP, traffic and
+AP remain unqualified on this RFKILL blocked 9260. IWX has executable software
+coverage, not hardware runtime coverage in this cycle. Dequeued IWM workers,
+raw task producers and deferred SAE hook retirement remain separate lifetime
+work; this change does not establish full driver equivalence.
 
 Evidence is retained in the current laboratory root under
 `init-retry-owner-*` and `init-owner-receipt-*`, including current Linux and
 macOS controls, historical intended failures and passing historical controls.
+`init-owner-*` contains the exact committed build, activation reconciliation,
+loaded image, sleep and wake, native traces, controls and archive verification.
