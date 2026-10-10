@@ -23,6 +23,8 @@ negative controls compile, then fail their intended assertions with exit 134:
 shutdown, stale generation and missing init owner for each of PMF, TX and SAE;
 shutdown before publication and between its two token checks; stop before
 the engine claim; and publication without the radio lifecycle lock.
+These historical controls and negatives reproduce on both Linux and macOS,
+as does the complete historical init ordering failure.
 
 Stop ownership is acquired through the real `iwm_radio_stop_begin`, rather
 than setting a test flag. The shutdown controls represent stop waiting for
@@ -80,14 +82,67 @@ The final Linux payload aggregate and physical scan, standard scan, power
 off link down, resident IWM SAE owner, unexpected AP reset replay and software
 PMF contracts pass. The broader q0 producer surface remains separate.
 
-## Laboratory qualification boundary
+## Loaded candidate and real sleep regression
 
-The laboratory is the existing IWM 9260 guest on SSH 3338, using the private
-monitor and unchanged overlay. Physical host `.22` remains out of scope.
-The 9260 is hardware RFKILL blocked, so loaded image, real S3 and bounded
+Production `a1c778a3da770cc5bfdaba0f32c72a91d9304a70` is pushed, built,
+transactionally installed and loaded in the existing IWM 9260 guest on SSH
+3338. Source identity is `3909dd8568a9`; all 1088 BootKC imports resolve.
+Private AuxKC admission and exact build and installed bundle equality pass.
+Four companion kexts and rollback material remain under
+`/private/var/tmp/aiam-iwn-activation-iwm9260-securitya1c778a3-20261010`.
+Activation is `activation-20261010T073827Z`.
+
+- Loaded UUID: `3562DB7F-EC82-3BB6-8317-DDFC43BC3426`.
+- Mach-O SHA256: `a058ded6acf83bd1bc10b751886d9333bf6bf82551b3993c43376a0fe59e7cfb`.
+- Boot: `FC32DD4D-3B6C-4EF3-8263-17C7BB4FFEE4`.
+
+The same private monitor and overlay remain in use. The guarded guest reboot
+disconnects SSH with exit 255 as expected; subsequent observation retains
+temporary banner timeouts before verifying the new boot and exact image.
+No QEMU restart or physical host `.22` access occurs.
+
+Actual S3 is independently confirmed by `paused (suspended)` and serial
+`ACPI SLEEP`. The power history records one 38 second sleep in this boot,
+with WakeTime 1.331 seconds. Private `system_wakeup` restores the same boot,
+UUID, installed hash, bundle equality and management default through en2.
+The earlier sleep history in the same log belongs to earlier boots.
+
+The bounded FBT trace starts with a ready marker before the sleep request
+and exits normally. It observes real Off, stop ownership, drain with self
+counts 0 and 1, device erase and successful Off completion in about 660 ms.
+After wake, four native Off and On controls retain Off readbacks and en2
+management. Exact inner POWER probes show On refusal `0xe00002d8` in 1.952,
+1.961, 1.812 and 1.864 ms. Native process exit zero is not radio success.
+RFKILL prevents successful init ownership and all three security reopen
+entries during this hardware trace; the executable helper results above
+must not be represented as hardware execution.
+
+Evidence in the current laboratory root uses `security-reopen-*`: final
+Linux aggregate and adjacent logs, WIP and candidate macOS checks, build,
+activation, loaded image, sleep monitor, wake image, native controls, trace,
+power history and installed archive verification. Initial static token
+failures and transient reboot and wake observation failures remain retained.
+
+## Separate LAB release artifact
+
+Release `v2.4.0-alpha` has additional asset `627345255`,
+`AirportItlwm-Tahoe-Iwm-SecurityReady-a1c778a3.kext.zip`, 15,713,572 bytes,
+SHA256 `77788e71fbb42a8095a5fcf8664c9081a5c7d2355f7a6e00027a40a2ce327669`.
+The archive is the exact installed unsigned Debug bundle; extraction matches
+the complete installed bundle and loaded Mach-O. SCP completed before the
+local size and hash guard and upload, without the earlier transfer race.
+
+An independent API read verifies the new asset and all eight older assets
+unchanged, including labels, digests, sizes and immutable metadata. A further
+independent read verifies the new bounded notes and the complete preceding
+notes byte for byte as the suffix. The default archive remains unchanged.
+The new label and notes retain LAB ONLY, RFKILL and missing on air proof.
+
+## Operational qualification boundary
+
+The 9260 is hardware RFKILL blocked, so the loaded image, real S3 and bounded
 native refusal regression do not establish a successful security reopen,
 GUI join, open or WPA2 or WPA3 association, DHCP, traffic or operational AP.
-The new source candidate has not yet been built or loaded at this checkpoint.
 
 The highest operational priority remains the repeated GUI and saved network
 matrix, including recovery without an Off and On workaround, once hardware
