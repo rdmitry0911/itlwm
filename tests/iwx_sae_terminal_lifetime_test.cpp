@@ -14,6 +14,14 @@
 #include <thread>
 #include <HAL/ItlSaeAuthTransportV1.h>
 
+#if defined(__APPLE__)
+// The macOS host libc does not expose the kernel's explicit_bzero helper.
+static void explicit_bzero(void *buffer, size_t size) {
+    volatile unsigned char *bytes = static_cast<volatile unsigned char *>(buffer);
+    while (size-- != 0) *bytes++ = 0;
+}
+#endif
+
 using u_int64_t = uint64_t;
 using u_int32_t = uint32_t;
 using IOInterruptState = unsigned;
