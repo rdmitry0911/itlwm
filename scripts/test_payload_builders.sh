@@ -25,6 +25,7 @@ bash scripts/test_iwm_command_cancellation.sh
 bash scripts/test_iwm_security_reopen.sh
 bash scripts/test_iwx_radio_quiesce.sh
 bash scripts/test_iwx_radio_init_stop.sh
+bash scripts/test_wnm_rx_scan_dispatch.sh
 
 "$cxx" \
   -std=c++17 \

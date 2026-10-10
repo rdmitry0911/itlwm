@@ -721,8 +721,12 @@ int
 ieee80211_begin_wnm_bgscan(struct _ifnet *ifp)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
+    const u_int64_t generation =
+        ieee80211_wnm_bss_transition_request_generation(ic);
     int error;
 
+    if (generation == 0)
+        return ECANCELED;
     if (ic == NULL || ic->ic_state != IEEE80211_S_RUN ||
         ic->ic_mgt_timer != 0 || (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 ||
         ic->ic_bgscan_start == NULL)
@@ -733,15 +737,35 @@ ieee80211_begin_wnm_bgscan(struct _ifnet *ifp)
 
 	if (!ieee80211_wnm_bss_transition_scan_start(ic))
 		return EBUSY;
+	/* Publish generic scan ownership before the command can release its
+	 * gate or deliver an early physical terminal.  Fresh results must not
+	 * be deleted, or BGSCAN resurrected, after that terminal returns. */
+	ieee80211_free_allnodes(ic, 0);
+	const u_int32_t previous_scan_flags = ic->ic_flags &
+	    (IEEE80211_F_BGSCAN | IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+	ic->ic_flags |= IEEE80211_F_BGSCAN;
+	ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
 	error = ic->ic_bgscan_start(ic, 0);
+	/* Lower commands can release the gate while waiting for real ACKs.
+	 * A replacement BTM now owns its own pending timer and target; neither
+	 * old cleanup nor successful publication may mutate that request. */
+	if (generation !=
+	    ieee80211_wnm_bss_transition_request_generation(ic))
+		return ECANCELED;
 	ieee80211_wnm_bss_transition_scan_end(ic);
-	if (error != 0)
+	if (error != 0) {
+		ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
+		    IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+		ic->ic_flags |= previous_scan_flags;
+		IOInterruptState irq = IOSimpleLockLockDisableInterrupt(
+		    ic->ic_pae_selected_bss_lock);
+		if (ic->ic_wnm_bss_transition.request_generation == generation &&
+		    ic->ic_wnm_bss_transition.active != 0 &&
+		    ic->ic_wnm_bss_transition.candidate_confirmed == 0)
+			ic->ic_wnm_bss_transition.fresh_scan_pending = 1;
+		IOSimpleLockUnlockEnableInterrupt(ic->ic_pae_selected_bss_lock, irq);
 		return error;
-
-    /* Keep only the live ic_bss; every target must be observed afresh. */
-    ieee80211_free_allnodes(ic, 0);
-    ic->ic_flags |= IEEE80211_F_BGSCAN;
-    ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+    }
     return 0;
 }
 
@@ -751,13 +775,34 @@ ieee80211_wnm_bgscan_retry_timeout(void *arg)
     struct _ifnet *ifp = (struct _ifnet *)arg;
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     u_int8_t dialog_token = 0;
+    u_int64_t generation;
     int error;
 
     if (ic == NULL ||
-        !ieee80211_wnm_bss_transition_fresh_scan_pending(ic))
+        !ieee80211_wnm_bss_transition_fresh_scan_pending(ic) ||
+        (generation =
+        ieee80211_wnm_bss_transition_request_generation(ic)) == 0)
         return;
 
-    error = ieee80211_begin_wnm_bgscan(ifp);
+    /* The ordinary timer callback is an external gate holder, so command
+     * sleeps can release it while the IRQ workloop keeps making progress.
+     * IWN abort submission is asynchronous; MVM waits for the exact terminal.
+     * Neither acceptance alone nor a wake authorizes a replacement scan. */
+    error = 0;
+    if ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0) {
+        error = ic->ic_bgscan_abort != NULL ?
+            ic->ic_bgscan_abort(ic, 0) : EOPNOTSUPP;
+        if (generation !=
+            ieee80211_wnm_bss_transition_request_generation(ic))
+            return;
+        if (error == 0 && (ic->ic_flags & IEEE80211_F_BGSCAN) != 0)
+            error = EBUSY;
+    }
+    if (error == 0)
+        error = ieee80211_begin_wnm_bgscan(ifp);
+    if (generation !=
+        ieee80211_wnm_bss_transition_request_generation(ic))
+        return;
     if (error == 0) {
         ieee80211_wnm_bss_transition_fresh_scan_started(ic);
         return;

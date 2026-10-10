@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <algorithm>
 
 using IOInterruptState = unsigned;
 struct IOSimpleLock { bool held = false; unsigned rank = 2; };
@@ -24,6 +25,42 @@ static unsigned abort_submissions;
 static uint64_t aborted_serial;
 static std::function<void()> abort_hook;
 static int sleep_result;
+static unsigned controller_gate_depth, blocked_scan_terminals;
+static bool scan_terminal_irq_double, persistent_sleep_hook;
+static uint64_t test_now;
+static unsigned gate_sleeps,gate_wakes,gate_wake_attempts;
+static bool drop_gate_wakes;
+static std::function<void()> gate_sleep_hook,wait_unlock_hook;
+using AbsoluteTime=uint64_t;
+[[maybe_unused]] constexpr unsigned kSecondScale=1000000000,
+    kMillisecondScale=1000000,THREAD_UNINT=0;
+[[maybe_unused]] static void clock_interval_to_deadline(unsigned interval,unsigned scale,uint64_t *deadline)
+{ *deadline=test_now+uint64_t(interval)*scale; }
+[[maybe_unused]] static void clock_get_uptime(uint64_t *now) { *now=test_now; }
+[[maybe_unused]] static void absolutetime_to_nanoseconds(uint64_t value,uint64_t *ns) { *ns=value; }
+struct WorkLoop {
+    bool inGate() const { return controller_gate_depth!=0; }
+protected:
+    int sleepGate(void *,AbsoluteTime deadline,unsigned) {
+        assert(controller_gate_depth && !held && !sleep_locked);
+        const unsigned saved=controller_gate_depth; controller_gate_depth=0;
+        ++gate_sleeps;
+        if(gate_sleep_hook) gate_sleep_hook();
+        else if(sleep_hook) { auto hook=sleep_hook; if(!persistent_sleep_hook) sleep_hook={}; hook(); }
+        test_now=std::max(test_now,deadline); controller_gate_depth=saved;
+        return 0;
+    }
+    void wakeupGate(void *,bool) {
+        assert(!held); ++gate_wake_attempts; if(!drop_gate_wakes) ++gate_wakes;
+    }
+    friend struct CommandGate;
+};
+struct CommandGate {
+    WorkLoop loop;
+    int commandSleep(void *event,AbsoluteTime deadline,unsigned flags)
+    { return loop.sleepGate(event,deadline,flags); }
+    void commandWakeup(void *event,bool one) { loop.wakeupGate(event,one); }
+};
 static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock)
 {
     assert(lock && !lock->held && held < 2);
@@ -55,6 +92,8 @@ constexpr unsigned IEEE80211_SCAN_COMPLETION_WCL_FOREGROUND = 2;
 constexpr unsigned IEEE80211_WCL_SCAN_TERMINAL_STATUS_ABORTED = 1;
 constexpr unsigned IEEE80211_WCL_SCAN_TERMINAL_STATUS_COMPLETE = 2;
 constexpr unsigned IEEE80211_EVT_STA_JOIN_FAILED = 3;
+constexpr unsigned IEEE80211_EVT_WCL_SCAN_INVALIDATED=4;
+struct ieee80211_wcl_scan_invalidation { uint64_t generation; uint32_t backend_generation; };
 struct Ifnet { unsigned if_flags = IFF_UP | IFF_RUNNING; };
 enum { IEEE80211_M_STA, IEEE80211_M_HOSTAP, IEEE80211_S_SCAN };
 constexpr unsigned IWM_FLAG_SHUTDOWN = 4, IWX_FLAG_SHUTDOWN = 4;
@@ -134,6 +173,13 @@ struct Itl##family { \
     ItlStateTransitionLease stateTransition = {}; \
     void *stateTransitionSource = this; \
     uint64_t scanCommandAbortSerial = 0; \
+    CommandGate gate; \
+    CommandGate *getMainCommandGate() { return &gate; } \
+    WorkLoop *getMainWorkLoop() { return &gate.loop; } \
+    bool wclScanNeedsReopen=false,wclSaeAdmissionReserved=false; \
+    uint64_t radioReadyReceiptSerial=0,radioReadyRequestEpoch=0; \
+    uint32_t radioReadyBackendGeneration=0; \
+    void invalidateWclScanForReset(); \
     Phase wclScanPhase = Phase::Idle; \
     uint64_t wclScanUpperGeneration = 0; \
     uint32_t wclScanBackendGeneration = 0; \
@@ -189,10 +235,19 @@ struct Itl##family { \
         if (scanCommand.quarantine(serial, com.sc_generation)) ++resets; \
     } \
     void lockTsleep() { assert(!held && !sleep_locked); sleep_locked = true; } \
-    void unlockTsleep() { assert(!held && sleep_locked); sleep_locked = false; } \
-    int tsleep_nsec_locked(void *, int, const char *, uint64_t) { \
+    void unlockTsleep() { \
+        assert(!held && sleep_locked); sleep_locked = false; \
+        if(wait_unlock_hook) { auto hook=wait_unlock_hook; wait_unlock_hook={}; hook(); } \
+    } \
+    int tsleep_nsec_locked(void *, int, const char *, uint64_t remaining) { \
         assert(!held && sleep_locked); ++waits; sleep_locked = false; \
-        if (sleep_hook) { auto hook = sleep_hook; sleep_hook = {}; hook(); } \
+        const uint64_t sleep_started=test_now; \
+        if (scan_terminal_irq_double && controller_gate_depth) { \
+            ++blocked_scan_terminals; test_now+=remaining; sleep_locked = true; return ETIMEDOUT; \
+        } \
+        const bool had_hook=bool(sleep_hook); \
+        if (sleep_hook) { auto hook = sleep_hook; if (!persistent_sleep_hook) sleep_hook = {}; hook(); } \
+        if(sleep_result!=0 || !had_hook) test_now=std::max(test_now,sleep_started+remaining); \
         assert(!held && !sleep_locked); sleep_locked = true; return sleep_result; \
     } \
     bool isAPScanFenceActive() { assert(!held); return apFence || scanCommand.apSerial != 0; } \
@@ -225,6 +280,12 @@ template<class D> static void reset_ticket(D *driver)
 }
 static void iwm_wcl_scan_ticket_reset_locked(ItlIwm *d) { reset_ticket(d); }
 static void iwx_wcl_scan_ticket_reset_locked(ItlIwx *d) { reset_ticket(d); }
+template<class D> static void start_rejected(D *,uint64_t,uint32_t)
+{ assert(!held && !sleep_locked); }
+static void iwm_wcl_scan_publish_start_rejected(ItlIwm *d,uint64_t generation,uint32_t backend)
+{ start_rejected(d,generation,backend); }
+static void iwx_wcl_scan_publish_start_rejected(ItlIwx *d,uint64_t generation,uint32_t backend)
+{ start_rejected(d,generation,backend); }
 #define explicit_bzero fixture_bzero
 #define SEC_TO_NSEC(x) (uint64_t(x) * 1000000000ULL)
 #define iwm_softc Softc
@@ -246,15 +307,19 @@ static void reset_observers()
     waits = resets = 0;
     abort_submissions = 0; aborted_serial = 0; abort_hook = {};
     sleep_result = 0;
+    controller_gate_depth=blocked_scan_terminals=0;
+    scan_terminal_irq_double=persistent_sleep_hook=false;
+    test_now=0; gate_sleeps=gate_wakes=gate_wake_attempts=0;
+    drop_gate_wakes=false; gate_sleep_hook=wait_unlock_hook={};
     joinCleanups = joinFailures = 0; cleanedJoin = 0; joinCleanupHook = {};
 }
 template<class D> static uint64_t prepare(D &d, uint64_t join = 91, bool bg = false,
-    uint64_t reassocSerial = 0)
+    uint64_t reassocSerial = 0,bool umac=true,uint32_t uid=0)
 {
     if (!d.scanCommand.open)
         assert(d.scanCommand.reopen(d.scanCommand.resetEpoch, d.com.sc_generation));
     const auto serial = d.scanCommand.reserve(d.com.sc_generation, bg ? 0 : join,
-                                              true, bg, 0, reassocSerial);
+                                              umac, bg, uid, reassocSerial);
     assert(serial && d.scanCommand.submit(serial, d.com.sc_generation));
     assert(d.activateScanCommand(serial, bg));
     return serial;
@@ -535,8 +600,146 @@ template<class D> static unsigned exercise()
     }
     return cases;
 }
-int main()
+template<class D> static void abortWaitControl(bool gated,bool spurious)
 {
+    reset_observers(); D d;
+    const auto serial=prepare(d);
+    assert(d.readyScanCommand(serial));
+    uint64_t abort=0;
+    assert(d.reserveScanCommandAbort(true,&abort)==0 && abort==serial);
+    auto irq=IOSimpleLockLockDisableInterrupt(d.wclScanLock);
+    // Explicit command publication boundary, not a fabricated firmware status.
+    assert(d.scanCommand.submitAbort(serial,d.com.sc_generation));
+    IOSimpleLockUnlockEnableInterrupt(d.wclScanLock,irq);
+    controller_gate_depth=gated ? 2 : 0;
+    scan_terminal_irq_double=true; persistent_sleep_hook=spurious;
+    sleep_hook=[&] {
+        if(spurious && waits==1) return;
+        d.noteScanCommandTerminal(true,0,true);
+    };
+    const int result=d.waitScanCommandAbort(serial,d.com.sc_generation);
+    std::fprintf(stderr,"actual scan-abort wait gated=%u spurious=%u result=%d "
+        "waits=%u blockedTerminals=%u wakes=%u resets=%u live=%u\n",
+        gated,spurious,result,waits,blocked_scan_terminals,wakes,resets,d.scanCommand.live());
+    assert(result==0 && !blocked_scan_terminals && wakes==1 && !resets);
+    assert(!d.scanCommand.live() && !d.scanCommandAbortSerial);
+    assert(controller_gate_depth==(gated ? 2U : 0U));
+    std::puts("actual scan-abort terminal control: PASS");
+}
+template<class D> static unsigned abortWaitMatrix()
+{
+    unsigned cases=0;
+    for(bool gated : {false,true}) for(bool umac : {false,true}) {
+        for(unsigned edge=0;edge<10;++edge) {
+            reset_observers(); D d;
+            const auto serial=prepare(d,91,false,0,umac,17);
+            assert(d.readyScanCommand(serial));
+            uint64_t abort=0,next=0;
+            assert(d.reserveScanCommandAbort(true,&abort)==0 && abort==serial);
+            auto irq=IOSimpleLockLockDisableInterrupt(d.wclScanLock);
+            assert(d.scanCommand.submitAbort(serial,d.com.sc_generation));
+            IOSimpleLockUnlockEnableInterrupt(d.wclScanLock,irq);
+            controller_gate_depth=gated ? 3 : 0;
+            unsigned pulses=0,callbacks=0;
+            auto terminal=[&] { d.noteScanCommandTerminal(umac,17,true); };
+            if(edge==0) terminal(); // Actual terminal retained before registration.
+            if(edge==2) drop_gate_wakes=true;
+            auto pulse=[&] {
+                ++pulses;
+                if(edge==1 && pulses<3) { test_now+=100000000; return; }
+                if(edge==3) { if(!gated) test_now+=100000000; return; }
+                if(edge==4) { test_now=1000000000; terminal(); return; }
+                if(edge==5 && pulses==1) {
+                    d.noteScanCommandTerminal(!umac,17,true);
+                    if(umac) d.noteScanCommandTerminal(umac,18,true);
+                    assert(!wakes && d.scanCommand.live()); test_now+=100000000; return;
+                }
+                if(edge==6) { d.invalidateWclScanForReset(); return; }
+                if(edge==7) { d.com.sc_flags|=IWM_FLAG_SHUTDOWN; return; }
+                if(edge==8) { ++d.com.sc_generation; return; }
+                terminal();
+                if(edge==9) {
+                    next=prepare(d,92,false,0,umac,18); assert(d.readyScanCommand(next));
+                    assert(d.reserveScanCommandAbort(true,&abort)==0 && abort==next);
+                }
+            };
+            if(edge==6) {
+                wcl(d,5); d.com.sc_ic.ic_wcl_scan_active=1;
+                d.radioReadyReceiptSerial=d.radioReadyRequestEpoch=91;
+                d.radioReadyBackendGeneration=9;
+                upper_hook=[&] { assert(!held && !sleep_locked); ++callbacks; };
+                d.com.sc_ic.ic_event_handler=[](ieee80211com *,unsigned event,void *payload) {
+                    assert(event==IEEE80211_EVT_WCL_SCAN_INVALIDATED && !held && !sleep_locked);
+                    const auto *invalidation=static_cast<ieee80211_wcl_scan_invalidation *>(payload);
+                    assert(invalidation->generation==5 && invalidation->backend_generation==15);
+                    run_upper();
+                };
+            }
+            if(gated) gate_sleep_hook=pulse;
+            else { sleep_hook=pulse; persistent_sleep_hook=true; }
+            if(edge==4 && !gated) sleep_result=ETIMEDOUT;
+            const int result=d.waitScanCommandAbort(serial,7);
+            const int expected=edge==3 ? ETIMEDOUT : edge>=6 && edge<=8 ? ENXIO : 0;
+            assert(result==expected && controller_gate_depth==(gated ? 3U : 0U));
+            assert(!held && !sleep_locked && !blocked_scan_terminals);
+            if(edge==3) {
+                assert(test_now==1000000000 && resets==1 && d.scanCommand.live());
+                assert(!d.scanCommand.open && d.scanCommandAbortSerial==serial && d.com.sc_scan_abort_pending==1);
+                assert((gated ? gate_sleeps : waits)==(gated ? 100U : 10U));
+            } else if(edge==6) {
+                assert(!resets && wakes==1 && gate_wake_attempts==1 && callbacks==1);
+                assert(!d.scanCommand.open && !d.scanCommand.live() && !d.scanCommandAbortSerial);
+                assert(!d.com.sc_scan_abort_pending && !d.com.sc_ic.ic_wcl_scan_active);
+                assert(!d.radioReadyReceiptSerial && !d.radioReadyRequestEpoch && !d.radioReadyBackendGeneration);
+                assert(d.wclScanNeedsReopen);
+            } else if(edge==7 || edge==8) {
+                assert(!resets && !wakes && d.scanCommand.live());
+            } else {
+                assert(!resets && wakes==1 && gate_wake_attempts==1);
+                if(edge==9) assert(d.scanCommand.live() && d.scanCommandAbortSerial==next && d.com.sc_scan_abort_pending==1);
+                else assert(!d.scanCommand.live() && !d.scanCommandAbortSerial && !d.com.sc_scan_abort_pending);
+                if(edge==0) assert(!gate_sleeps && !waits);
+                if(edge==1) assert(pulses==3);
+                if(edge==2) assert(!gate_wakes);
+                if(edge==4) assert(test_now==1000000000);
+                if(edge==5) assert(pulses==2);
+            }
+            ++cases;
+        }
+    }
+    { reset_observers(); D d;
+      assert(d.waitScanCommandAbort(0,7)==EINVAL && !waits && !gate_sleeps); ++cases; }
+    { reset_observers(); D d; d.wclScanLock=nullptr;
+      assert(d.waitScanCommandAbort(1,7)==ENXIO && !waits && !gate_sleeps); ++cases; }
+    { reset_observers(); D d; const auto serial=prepare(d); assert(d.readyScanCommand(serial));
+      uint64_t abort=0; assert(d.reserveScanCommandAbort(true,&abort)==0);
+      d.wclScanPhase=Phase::InitialQueued; d.invalidateWclScanForReset();
+      assert(d.waitScanCommandAbort(serial,7)==ENXIO && wakes==1 && !waits && !gate_sleeps);
+      assert(!d.com.sc_scan_abort_pending && !d.scanCommandAbortSerial); ++cases; }
+    return cases;
+}
+int main(int argc,char **argv)
+{
+    if(argc==2) {
+        if(std::strcmp(argv[1],"abort-matrix-iwm")==0) {
+            std::printf("IWM actual scan-abort deadline and reset matrix: %u scenarios passed\n",abortWaitMatrix<ItlIwm>()); return 0;
+        }
+        if(std::strcmp(argv[1],"abort-matrix-iwx")==0) {
+            std::printf("IWX actual scan-abort deadline and reset matrix: %u scenarios passed\n",abortWaitMatrix<ItlIwx>()); return 0;
+        }
+        const bool gated=std::strncmp(argv[1],"gated-abort-",12)==0;
+        const bool spurious=std::strncmp(argv[1],"spurious-abort-",15)==0;
+        const bool ordinary=std::strncmp(argv[1],"offgate-abort-",14)==0;
+        if(!gated && !spurious && !ordinary) return 2;
+        const char *family=argv[1]+(gated ? 12 : spurious ? 15 : 14);
+        if(std::strcmp(family,"iwm")==0) abortWaitControl<ItlIwm>(gated,spurious);
+        else if(std::strcmp(family,"iwx")==0) abortWaitControl<ItlIwx>(gated,spurious);
+        else return 2;
+        return 0;
+    }
+    if(argc!=1) return 2;
     std::printf("actual IWM/IWX scan terminal and replay: %u scenario groups passed\n",
                 exercise<ItlIwm>() + exercise<ItlIwx>());
+    std::printf("actual IWM/IWX scan-abort deadline and reset: %u scenarios passed\n",
+                abortWaitMatrix<ItlIwm>()+abortWaitMatrix<ItlIwx>());
 }

@@ -48,8 +48,8 @@ require(iwn, "IEEE80211_C_WNM_BSS_TRANSITION",
         "IWN BSS Transition capability")
 order(input_c, "protected BTM request ownership",
       "ieee80211_wnm_bss_transition_arm(ic, ni->ni_bssid,",
-      "ieee80211_begin_wnm_bgscan(&ic->ic_if)",
       "ieee80211_wnm_bss_transition_defer_fresh_scan(ic)",
+      "timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 1)",
       "ieee80211_wnm_bss_transition_clear(ic);",
       "IEEE80211_WNM_BSS_TM_REJECT_NO_SUITABLE")
 require(proto_c, "transition->candidate_confirmed = 1;",
@@ -66,11 +66,15 @@ order(core_c, "BTM-only physical scan admission",
       "if (!ieee80211_wnm_bss_transition_scan_start(ic))",
       "error = ic->ic_bgscan_start(ic, 0);",
       "ieee80211_wnm_bss_transition_scan_end(ic);")
-order(input_c, "BTM preempts an older background census",
-      "ieee80211_wnm_bss_transition_defer_fresh_scan(ic)",
-      "ic->ic_bgscan_abort != NULL",
-      "ic->ic_bgscan_abort(ic, 0) == 0",
-      "timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 1)")
+rx_btm = input_c.split("ieee80211_recv_wnm_bss_transition_req(", 1)[1].split("\n}", 1)[0]
+if "ieee80211_begin_wnm_bgscan(" in rx_btm or "ic->ic_bgscan_abort(" in rx_btm:
+    fail("RX workloop must not wait for its own firmware ACK or scan terminal")
+order(core_c, "callout preempts an older background census",
+      "ieee80211_wnm_bgscan_retry_timeout(void *arg)",
+      "ieee80211_wnm_bss_transition_request_generation(ic)",
+      "ic->ic_bgscan_abort(ic, 0)",
+      "error = EBUSY;",
+      "error = ieee80211_begin_wnm_bgscan(ifp);")
 order(core_c, "bounded fresh-scan retry",
       "ieee80211_wnm_bgscan_retry_timeout(void *arg)",
       "ieee80211_begin_wnm_bgscan(ifp)",

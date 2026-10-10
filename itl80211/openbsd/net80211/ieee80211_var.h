@@ -634,6 +634,7 @@ struct ieee80211_public_initial_bssid_pin {
  * record across RX, scan completion, and the next WCL association carrier.
  */
 struct ieee80211_wnm_bss_transition {
+	u_int64_t		request_generation;
 	u_int8_t		source_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t		target_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t		ssid[IEEE80211_NWID_LEN];
@@ -1072,6 +1073,7 @@ struct ieee80211com {
 	struct ieee80211_public_initial_bssid_pin ic_public_initial_bssid_pin;
 	/* Protected 802.11v target hint, consumed by one replacement join. */
 	struct ieee80211_wnm_bss_transition ic_wnm_bss_transition;
+	u_int64_t		ic_wnm_bss_transition_next_request;
 	u_int64_t		ic_wnm_bss_transition_next_tx_fence;
 	/* Direct-WCL SAE request identity and monotonic nonzero generation.  The
 	 * fixed record is public control-plane state only; credentials remain in

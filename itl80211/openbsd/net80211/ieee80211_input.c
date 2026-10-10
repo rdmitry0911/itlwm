@@ -4031,7 +4031,7 @@ ieee80211_recv_wnm_bss_transition_req(struct ieee80211com *ic, mbuf_t m,
 	u_int8_t target_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t dialog_token, request_mode, target_channel = 0;
 	size_t offset;
-	int armed = 0, scan_error;
+	int armed = 0;
 
 	explicit_bzero(target_bssid, sizeof(target_bssid));
 	if (ic == NULL || ni == NULL || ic->ic_opmode != IEEE80211_M_STA ||
@@ -4088,22 +4088,13 @@ ieee80211_recv_wnm_bss_transition_req(struct ieee80211com *ic, mbuf_t m,
 	    target_channel);
 	if (!armed)
 		goto reject;
-	scan_error = ieee80211_begin_wnm_bgscan(&ic->ic_if);
-	if (scan_error == 0)
-		return;
-	if (scan_error == EBUSY &&
-	    (ic->ic_flags & IEEE80211_F_BGSCAN) != 0 &&
-	    ieee80211_wnm_bss_transition_defer_fresh_scan(ic)) {
-		/*
-		 * A user-roam channel is latency-sensitive.  Tahoe's reference
-		 * WCL scan manager moves an in-progress census through
-		 * ABORT_CURRENT before servicing the replacement request.  Ask
-		 * the lower physical owner to do the same; fresh_scan_pending
-		 * fences every competing retry until its terminal retires.
-		 */
-		if (ic->ic_bgscan_abort != NULL &&
-		    ic->ic_bgscan_abort(ic, 0) == 0)
-			timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 1);
+	/* RX runs on the same workloop thread that must deliver command ACKs
+	 * and physical scan terminals.  Releasing its gate cannot run another
+	 * IRQ on that blocked thread.  The existing ordinary timer uses a kernel
+	 * callout, not workloop-thread delivery; submit both start and abort there.
+	 * Mark the old census ineligible before returning from this RX action. */
+	if (ieee80211_wnm_bss_transition_defer_fresh_scan(ic) &&
+	    timeout_add_msec(&ic->ic_wnm_bgscan_retry_timeout, 1)) {
 		return;
 	}
 	ieee80211_wnm_bss_transition_clear(ic);

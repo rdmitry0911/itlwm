@@ -1647,8 +1647,11 @@ claimScanCommandTerminal(uint64_t serial,
                                IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
     scanCommandPolicy = ItlScanCommandPolicy{};
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
-    if (wake)
+    if (wake) {
         wakeupOn(&com.sc_scan_abort_pending);
+        if (getMainCommandGate() != NULL)
+            getMainCommandGate()->commandWakeup(&com.sc_scan_abort_pending, false);
+    }
     unlockTsleep();
     return true;
 }
@@ -1892,27 +1895,51 @@ reserveScanCommandAbort(bool wait, uint64_t *serial, bool backgroundOnly,
 int ItlIwx::
 waitScanCommandAbort(uint64_t serial, uint32_t generation)
 {
-    int error = 0;
-    lockTsleep();
-    IOInterruptState irq =
-        IOSimpleLockLockDisableInterrupt(wclScanLock);
-    bool current = scanCommand.open &&
-        static_cast<uint32_t>(com.sc_generation) == generation;
-    bool pending = current && scanCommandAbortSerial == serial;
-    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
-    if (pending)
-        error = tsleep_nsec_locked(&com.sc_scan_abort_pending, 0,
-                                   "scan-abort", SEC_TO_NSEC(1));
-    irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
-    current = scanCommand.open &&
-        static_cast<uint32_t>(com.sc_generation) == generation;
-    pending = current && scanCommandAbortSerial == serial;
-    IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
-    unlockTsleep();
-    if (!current)
+    if (wclScanLock == NULL)
         return ENXIO;
-    if (!pending)
-        return 0;
+    if (serial == 0)
+        return EINVAL;
+    int error = 0;
+    uint64_t hard_deadline;
+    clock_interval_to_deadline(1, kSecondScale, &hard_deadline);
+    lockTsleep();
+    for (;;) {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(wclScanLock);
+        const bool current = scanCommand.open &&
+            static_cast<uint32_t>(com.sc_generation) == generation &&
+            (com.sc_flags & IWX_FLAG_SHUTDOWN) == 0;
+        const bool pending = current && scanCommandAbortSerial == serial;
+        IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+        if (!current || !pending) {
+            unlockTsleep();
+            return current ? 0 : ENXIO;
+        }
+        uint64_t now;
+        clock_get_uptime(&now);
+        if (error != 0 || now >= hard_deadline)
+            break;
+        uint64_t remaining;
+        absolutetime_to_nanoseconds(hard_deadline - now, &remaining);
+        if (getMainCommandGate() != NULL && getMainWorkLoop() != NULL &&
+            getMainWorkLoop()->inGate()) {
+            AbsoluteTime deadline;
+            clock_interval_to_deadline(10, kMillisecondScale,
+                reinterpret_cast<uint64_t *>(&deadline));
+            if (*reinterpret_cast<uint64_t *>(&deadline) > hard_deadline)
+                *reinterpret_cast<uint64_t *>(&deadline) = hard_deadline;
+            /* A same-workloop terminal needs the entire recursive gate.
+             * Never hold the wait mutex across gate release/reacquisition.
+             * Missed gate wakes are bounded, never terminal receipts. */
+            unlockTsleep();
+            (void)getMainCommandGate()->commandSleep(&com.sc_scan_abort_pending,
+                deadline, THREAD_UNINT);
+            lockTsleep();
+        } else {
+            error = tsleep_nsec_locked(&com.sc_scan_abort_pending, 0,
+                "scan-abort", remaining);
+        }
+    }
+    unlockTsleep();
 
     /* Timeout never clears another command's waiter or reuses a UID whose
      * physical terminal was not received. Hardware reset owns that erasure. */
@@ -3037,6 +3064,7 @@ invalidateWclScanForReset()
 
     if (wclScanLock == NULL)
         return;
+    lockTsleep();
     IOInterruptState irq =
         IOSimpleLockLockDisableInterrupt(wclScanLock);
     generation = wclScanUpperGeneration;
@@ -3058,7 +3086,15 @@ invalidateWclScanForReset()
     scanCommandPolicy = ItlScanCommandPolicy{};
     stateTransition.invalidate();
     scanCommandAbortSerial = 0;
+    const bool wake = __atomic_exchange_n(&com.sc_scan_abort_pending, 0,
+        __ATOMIC_ACQ_REL) != 0;
     IOSimpleLockUnlockEnableInterrupt(wclScanLock, irq);
+    if (wake) {
+        wakeupOn(&com.sc_scan_abort_pending);
+        if (getMainCommandGate() != NULL)
+            getMainCommandGate()->commandWakeup(&com.sc_scan_abort_pending, false);
+    }
+    unlockTsleep();
     __atomic_store_n(&com.sc_ic.ic_wcl_scan_active, 0, __ATOMIC_RELEASE);
 
     if (rejectStart) {

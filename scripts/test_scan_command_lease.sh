@@ -80,7 +80,7 @@ awk '/^ieee80211_wcl_join_failure_pending\(/ { selected=1; print "int" }
     "$PROJECT_DIR/itl80211/openbsd/net80211/ieee80211_proto.c"
 awk '
     /^[[:alnum:]_]+ ItlIw[mx]::$/ { type=$0 }
-    /^(claimWclScanTerminal|claimScanCommandTerminal|activateScanCommand|scanCommandCurrent|scanCommandBackgroundPending|readyScanCommand|noteScanCommandTerminal|deferScanCommand|scanCommandReplayPending|resumeScanCommand|reserveScanCommandAbort|waitScanCommandAbort|iwm_endscan|iwx_endscan|iwm_scan_abort|iwx_scan_abort|iwm_bgscan_abort|iwx_bgscan_abort)\(/ { selected=1; print type }
+    /^(claimWclScanTerminal|claimScanCommandTerminal|activateScanCommand|scanCommandCurrent|scanCommandBackgroundPending|readyScanCommand|noteScanCommandTerminal|deferScanCommand|scanCommandReplayPending|resumeScanCommand|reserveScanCommandAbort|waitScanCommandAbort|invalidateWclScanForReset|iwm_endscan|iwx_endscan|iwm_scan_abort|iwx_scan_abort|iwm_bgscan_abort|iwx_bgscan_abort)\(/ { selected=1; print type }
     selected { print }
     selected && /^}/ { selected=0 }
 ' "$PROJECT_DIR/itlwm/hal_iwm/ItlIwm.cpp" \

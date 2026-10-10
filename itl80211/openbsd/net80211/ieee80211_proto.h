@@ -246,6 +246,8 @@ extern	int ieee80211_wnm_bss_transition_defer_fresh_scan(
 	    struct ieee80211com *);
 extern	int ieee80211_wnm_bss_transition_fresh_scan_pending(
 	    struct ieee80211com *);
+extern	u_int64_t ieee80211_wnm_bss_transition_request_generation(
+	    struct ieee80211com *);
 extern	int ieee80211_wnm_bss_transition_retry_fresh_scan(
 	    struct ieee80211com *);
 extern	void ieee80211_wnm_bss_transition_fresh_scan_started(
