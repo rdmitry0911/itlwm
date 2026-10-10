@@ -85,8 +85,13 @@ public:
     int sleeps=0, stops=0, hardwareStops=0, opens=0;
     bool readySawAllSecurity=false;
     ItlMvm() { com.sc_ic.ic_if.if_softc=&com; active=this; }
+#if MVM_RADIO_INIT_HISTORICAL
     int mvm_init(_ifnet *);
     int mvm_init_internal(_ifnet *, bool);
+#else
+    int mvm_init(_ifnet *, bool *owner_admitted = nullptr);
+    int mvm_init_internal(_ifnet *, bool, bool *owner_admitted = nullptr);
+#endif
     bool isRadioScanReady(uint32_t);
     bool isRadioReadyCurrent(const ItlRadioReadyV1 *);
     uint64_t scanCommandResetEpoch() const { return 7; }

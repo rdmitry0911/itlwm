@@ -680,7 +680,7 @@ public:
     int    iwm_save_fw_paging(struct iwm_softc *, const struct iwm_fw_sects *);
     int    iwm_send_paging_cmd(struct iwm_softc *, const struct iwm_fw_sects *);
     int    iwm_init_hw(struct iwm_softc *);
-    int    iwm_init(struct _ifnet *);
+    int    iwm_init(struct _ifnet *, bool *owner_admitted = nullptr);
     bool   iwm_radio_init_begin(struct iwm_softc *, int *);
     bool   iwm_radio_init_current(struct iwm_softc *, int);
     /* Caller holds sc_sae_tx_lifecycle_lock, before any security leaf. */

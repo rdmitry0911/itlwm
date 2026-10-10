@@ -181,13 +181,18 @@ public:
     uint8_t claimRadioPowerOnRetry(uint64_t);
     void reportRadioPowerOnFailure(uint64_t, IOReturn, uint32_t, int);
     static void mvm_init_task(void *);
-    int mvm_init(_ifnet *) {
+    int mvm_init(_ifnet *, bool *owner_admitted = nullptr) {
+        // Firmware/init ownership remains a double in this upper-boundary
+        // fixture; complete lower ownership executes in the lifecycle tests.
+        if (owner_admitted) *owner_admitted=true;
         ++initCalls; ++com.sc_generation;
         if (initHook) { auto hook = initHook; initHook = {}; hook(); }
         if (initResult == 0) com.sc_ic.ic_if.if_flags |= IFF_RUNNING;
         return initResult;
     }
-    int mvm_init_internal(_ifnet *ifp, bool) { return mvm_init(ifp); }
+    int mvm_init_internal(_ifnet *ifp, bool, bool *owner_admitted = nullptr) {
+        return mvm_init(ifp, owner_admitted);
+    }
     void mvm_stop(_ifnet *ifp) { ++stops; ++com.sc_generation; ifp->if_flags &= ~IFF_RUNNING; }
     void mvm_stop_internal(_ifnet *ifp, bool, bool) { mvm_stop(ifp); }
     void mvm_sae_driver_reset_recovery_prepare(mvm_softc *) {}

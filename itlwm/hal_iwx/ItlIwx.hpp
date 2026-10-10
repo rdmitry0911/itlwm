@@ -853,7 +853,7 @@ public:
     int    iwx_send_temp_report_ths_cmd(struct iwx_softc *);
     int    iwx_init_hw(struct iwx_softc *);
     int    iwx_init(struct _ifnet *);
-    int    iwx_init_internal(struct _ifnet *, bool);
+    int    iwx_init_internal(struct _ifnet *, bool, bool *owner_admitted = nullptr);
     static void    iwx_start(struct _ifnet *);
     void    iwx_stop(struct _ifnet *);
     void    iwx_stop_internal(struct _ifnet *, bool, bool);

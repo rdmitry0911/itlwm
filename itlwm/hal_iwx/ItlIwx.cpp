@@ -19603,8 +19603,10 @@ iwx_init(struct _ifnet *ifp)
 }
 
 int ItlIwx::
-iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
+iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task, bool *owner_admitted)
 {
+    if (owner_admitted != NULL)
+        *owner_admitted = false;
     struct iwx_softc *sc = (struct iwx_softc *)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
     ItlIwx *that = container_of(sc, ItlIwx, com);
@@ -19617,6 +19619,10 @@ iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
 
     if (!that->iwx_task_gate_begin_epoch(sc, &generation))
         return ENXIO;
+    /* Retry accounting belongs to the admitted lower epoch, not a refused
+     * duplicate dispatcher. Real hardware ENXIO still counts as an attempt. */
+    if (owner_admitted != NULL)
+        *owner_admitted = true;
 
     memset(sc->sc_tid_data, 0, sizeof(sc->sc_tid_data));
     for (i = 0; i < ARRAY_SIZE(sc->sc_tid_data); i++) {
@@ -24317,8 +24323,7 @@ iwx_init_task(void *arg1)
     }
 
     if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
-        attempted = true;
-        error = that->iwx_init_internal(ifp, true);
+        error = that->iwx_init_internal(ifp, true, &attempted);
     } else {
         XYLog("DEBUG %s SKIP iwx_init: fatal=%d IFF_UP=%d IFF_RUNNING=%d\n",
               __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));

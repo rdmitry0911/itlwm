@@ -448,12 +448,21 @@ for source, hal_source, var_source, prefix, flags in (
     task = body(source, f"{prefix.lower()}_init_task(void *arg1)",
                 f"{prefix} bounded power-on recovery")
     for token in (
-            "attempted = true;",
+            "bool attempted = false;",
+            "&attempted",
             "that->claimRadioPowerOnRetry(powerOnEpoch)",
             f"sc->sc_flags & ({flags})",
             "if (attempt != 0 && attempt < 5)",
             "power-on recovery exhausted after %u attempts"):
         require(task, token, f"{prefix} bounded power-on recovery")
+    forbid(task, "attempted = true;", f"{prefix} preclaimed recovery attempt")
+    init_name = "iwm_init" if prefix == "IWM" else "iwx_init_internal"
+    init_owner = body(source, init_name + "(struct _ifnet *ifp",
+                      f"{prefix} real lower admission receipt")
+    begin = "iwm_radio_init_begin" if prefix == "IWM" else "iwx_task_gate_begin_epoch"
+    ordered(init_owner, f"{prefix} attempt receipt follows actual ownership",
+            "*owner_admitted = false;", begin + "(sc, &generation)",
+            "*owner_admitted = true;", "err = " + prefix.lower() + "_init_hw(sc);")
     retry = body(hal_source, "claimRadioPowerOnRetry(uint64_t requestEpoch)",
                  f"{prefix} owned retry budget")
     ordered(retry, f"{prefix} admission and retry share ownership lock",
@@ -469,7 +478,7 @@ for source, hal_source, var_source, prefix, flags in (
 iwm_task = body(iwm, "iwm_init_task(void *arg1)",
                 "IWM bounded power-on recovery")
 ordered(iwm_task, "IWM retries a complete firmware/first-scan epoch",
-        "error = that->iwm_init(ifp);",
+        "error = that->iwm_init(ifp, &attempted);",
         "that->claimRadioPowerOnRetry(powerOnEpoch)",
         "if (attempt != 0 && attempt < 5)",
         "(void)task_add(systq, &sc->init_task);")
@@ -486,7 +495,7 @@ forbid(iwm_wake, "init_task NOT scheduled",
 iwx_task = body(iwx, "iwx_init_task(void *arg1)",
                 "IWX bounded power-on recovery")
 ordered(iwx_task, "IWX retries through its bootstrap lifecycle token",
-        "error = that->iwx_init_internal(ifp, true);",
+        "error = that->iwx_init_internal(ifp, true, &attempted);",
         "that->claimRadioPowerOnRetry(powerOnEpoch)",
         "if (attempt != 0 && attempt < 5)",
         "that->iwx_bootstrap_init_task(sc);")

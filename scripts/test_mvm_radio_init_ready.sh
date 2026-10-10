@@ -11,6 +11,8 @@ case "$family" in
     *) exit 2 ;;
 esac
 init_test_dir="$(mktemp -d)"
+historical=0
+if [ -n "${MVM_RADIO_INIT_NEGATIVE_REF:-}" ]; then historical=1; fi
 trap 'rm -f "$init_test_dir/init.inc" "$init_test_dir/test"; rm -rf "$init_test_dir/test.dSYM"; rmdir "$init_test_dir"' EXIT
 sed -e "s/$family/mvm/g" -e "s/$mixed/Mvm/g" -e "s/$upper/MVM/g" "$root/$hal" |
     awk '/^isRadioScanReady\(/ || /^isRadioReadyCurrent\(/ { selected=1; print "bool ItlMvm::" }
@@ -27,7 +29,8 @@ fi | sed -e "s/$family/mvm/g" -e "s/$mixed/Mvm/g" -e "s/$upper/MVM/g" |
 test -s "$init_test_dir/init.inc"
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -Wno-unused-function \
     -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-    -DMVM_INIT_IWM="$is_iwm" -I "$init_test_dir" -I "$root/include" \
+    -DMVM_INIT_IWM="$is_iwm" -DMVM_RADIO_INIT_HISTORICAL="$historical" \
+    -I "$init_test_dir" -I "$root/include" \
     "$root/tests/mvm_radio_init_ready_test.cpp" -o "$init_test_dir/test"
 if [ "$scenario" = all ]; then
     for init_case in normal lost-wake consumer-advances ready-on-timeout \

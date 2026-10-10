@@ -1,6 +1,7 @@
 // Full real init/stop/disable/activate, task gate, q0 start/stop, ready getter.
 // Hardware, task barriers, net80211 soft state and IOKit primitives are doubles.
 #include <HAL/ItlRadioReadyV1.h>
+#include <HAL/ItlRadioPowerOnFailureV1.h>
 #include <HAL/ItlScanCommandLease.hpp>
 #include <HAL/ItlSaeAuthTransportV1.h>
 #include <cassert>
@@ -25,6 +26,7 @@ static void explicit_bzero(void *memory, size_t length) {
 
 #define KASSERT(condition, message) assert(condition)
 #define XYLog(...) ((void)0)
+#define DEVNAME(sc) "iwx-lifecycle-test"
 #define nitems(array) int(sizeof(array) / sizeof((array)[0]))
 #define ARRAY_SIZE(array) nitems(array)
 #define SEC_TO_NSEC(seconds) (uint64_t(seconds) * 1000000000ULL)
@@ -43,7 +45,9 @@ constexpr int IWX_INVALID_QUEUE=-1, IWX_DQA_CMD_QUEUE=0;
 constexpr int IWX_CMD_SLOT_FREE=0, IWX_CMD_SLOT_SUBMITTED=1, IWX_CMD_SLOT_ABORTED=2,
     IWX_CMD_ASYNC_OWNER_NONE=0, IWX_CMD_ASYNC_ACK_NONE=0;
 using IOReturn=int;
-[[maybe_unused]] constexpr int kIOReturnSuccess=0, kIOReturnNotReady=-1;
+[[maybe_unused]] constexpr int kIOReturnSuccess=0, kIOReturnNotReady=-1,
+    kIOReturnIOError=-2, kIOReturnAborted=-3;
+constexpr int IEEE80211_EVT_RADIO_POWER_ON_FAILED=27;
 struct IONetworkInterface {};
 using IOInterruptState=unsigned;
 struct IOSimpleLock { std::mutex mutex; };
@@ -79,6 +83,9 @@ struct ieee80211com {
     iwx_node node; ieee80211_node *ic_bss=&node.in_ni;
     int ic_state=IEEE80211_S_INIT, ic_opmode=0, ic_ibss_chan=1;
     unsigned ic_initial_scan_census_only=0;
+    unsigned failureEvents=0;
+    ItlRadioPowerOnFailureV1 lastFailure{};
+    void (*ic_event_handler)(ieee80211com *, int, void *)=nullptr;
     ieee80211com() : ic_if{} {}
 };
 struct task {};
@@ -86,7 +93,8 @@ struct taskq {};
 static taskq sysQueue, stateQueue;
 static taskq *systq=&sysQueue;
 static int task_del(taskq *, task *) { return 1; }
-static int task_add(taskq *, task *) { return 1; }
+static unsigned taskAdds=0;
+static int task_add(taskq *, task *) { ++taskAdds; return 1; }
 static void taskq_barrier(taskq *q) {
     if (q==systq && hardwareEntered) {
         std::unique_lock<std::mutex> guard(stageMutex);
@@ -165,12 +173,26 @@ public:
         emitReady=true, pauseReset=false;
     int hardwareStarts=0, hardwareStops=0, scans=0, readyEvents=0,
         resumeCalls=0, prepareCalls=0, wakeups=0;
+    int hardwareError=0;
     std::mutex waitMutex; std::condition_variable waitCv;
-    ItlIwx() { com.sc_ic.ic_if.if_softc=&com; active=this; }
+    ItlIwx() {
+        com.sc_ic.ic_if.if_softc=&com; active=this;
+        com.sc_ic.ic_event_handler=[](ieee80211com *ic, int code, void *payload) {
+            assert(code==IEEE80211_EVT_RADIO_POWER_ON_FAILED);
+            ++ic->failureEvents;
+            ic->lastFailure=*static_cast<ItlRadioPowerOnFailureV1 *>(payload);
+        };
+    }
     IOReturn disable(IONetworkInterface *);
     IOReturn enable(IONetworkInterface *);
     int iwx_activate(iwx_softc *, int);
+#if IWX_RADIO_INIT_STOP_HISTORICAL
     int iwx_init_internal(_ifnet *, bool);
+#else
+    int iwx_init_internal(_ifnet *, bool, bool *owner_admitted = nullptr);
+#endif
+    static void iwx_init_task(void *);
+    static void iwx_init_task_dispatch(void *);
     void iwx_stop(_ifnet *);
     void iwx_stop_internal(_ifnet *, bool, bool);
     bool iwx_task_gate_close(iwx_softc *, bool, int *);
@@ -191,6 +213,10 @@ public:
     bool reopenScanCommands(uint64_t, uint32_t);
     bool isRadioScanReady(uint32_t);
     bool isRadioReadyCurrent(const ItlRadioReadyV1 *);
+    uint64_t radioPowerOnRequestEpoch() const;
+    void cancelRadioPowerOnRequest(uint64_t);
+    uint8_t claimRadioPowerOnRetry(uint64_t);
+    void reportRadioPowerOnFailure(uint64_t, IOReturn, uint32_t, int);
     void lockTsleep() { waitMutex.lock(); }
     void unlockTsleep() { waitMutex.unlock(); }
     void wakeupOn(void *) { ++wakeups; waitCv.notify_all(); }
@@ -220,7 +246,7 @@ public:
             guard.unlock(); iwx_cmdq_leave(sc);
             if (aborted) return ENXIO;
         }
-        return failHardware ? EIO : 0;
+        return hardwareError ? hardwareError : failHardware ? EIO : 0;
     }
     void iwx_stop_device(iwx_softc *sc) {
         iwx_cmdq_stop(sc); ++hardwareStops;
@@ -251,6 +277,7 @@ public:
     void iwx_sae_tx_purge(iwx_softc *) {}
     void iwx_sae_tx_emit_reset_event(iwx_softc *, ItlSaeAuthTransportEventV1 *) {}
     bool iwx_sae_driver_reset_recovery_pending(iwx_softc *, bool) { return false; }
+    void iwx_sae_driver_reset_recovery_prepare(iwx_softc *) {}
     int iwx_resume(iwx_softc *) { ++resumeCalls; return 0; }
     int iwx_prepare_card_hw(iwx_softc *) { ++prepareCalls; return 0; }
     void iwx_del_task(iwx_softc *, taskq *, task *) {}
@@ -315,6 +342,66 @@ int main(int argc, char **argv) {
             assert(driver.radioReadyRequestEpoch==84);
             assert(driver.disable(nullptr)==0 && !driver.hardwareLive);
         }
+    } else if (scenario=="init-owner-retry") {
+        driver.pauseHardware=true; driver.com.init_retry_count=0;
+        int initResult=-1;
+        std::thread initializer([&] {
+            initResult=driver.iwx_init_internal(&driver.com.sc_ic.ic_if, false);
+            std::lock_guard<std::mutex> guard(stageMutex);
+            initFinished=true; stageCv.notify_all();
+        });
+        { std::unique_lock<std::mutex> guard(stageMutex);
+          assert(stageCv.wait_for(guard, std::chrono::seconds(3), [] { return hardwareEntered; })); }
+        const unsigned addsBefore=taskAdds;
+        // Dispatch consumes the real bootstrap token; historical retries
+        // rearm it despite the original full init retaining the firmware owner.
+        for (unsigned collision=0; collision<5; ++collision)
+            driver.iwx_init_task_dispatch(&driver.com);
+        const unsigned retries=driver.com.init_retry_count;
+        const unsigned failures=driver.com.sc_ic.failureEvents;
+        const unsigned adds=taskAdds-addsBefore;
+        const uint64_t requestEpoch=driver.radioPowerOnRequestEpoch();
+        const auto failure=driver.com.sc_ic.lastFailure;
+        { std::lock_guard<std::mutex> guard(driver.waitMutex);
+          releaseHardware=true; driver.waitCv.notify_all(); }
+        initializer.join();
+        std::fprintf(stderr,
+            "IWX dispatcher collision hardwareStarts=%d retries=%u failureEvents=%u "
+            "requeues=%u requestEpoch=%llu failureReason=%u lowerError=%d "
+            "originalResult=%d readyEpoch=%llu\n",
+            driver.hardwareStarts, retries, failures, adds,
+            static_cast<unsigned long long>(requestEpoch), failure.reason,
+            failure.lowerError, initResult,
+            static_cast<unsigned long long>(driver.radioReadyRequestEpoch));
+        assert(driver.hardwareStarts==1 && retries==0 && failures==0 &&
+            adds==0 && requestEpoch==42);
+        assert(initResult==0 && driver.readyEvents==1 &&
+            driver.radioReadyRequestEpoch==42 && driver.hardwareLive);
+        assert(driver.com.sc_task_gate_active==0 && driver.com.sc_task_gate_init_refs==0);
+        assert(driver.disable(nullptr)==0 && !driver.hardwareLive);
+    } else if (scenario=="worker-five-failures" || scenario=="worker-five-enxio" ||
+        scenario=="worker-eventual-success") {
+        driver.com.init_retry_count=0;
+        driver.hardwareError=scenario=="worker-five-enxio" ? ENXIO : EIO;
+        const unsigned failures=scenario=="worker-eventual-success" ? 2 : 5;
+        for (unsigned attempt=1; attempt<=failures; ++attempt) {
+            driver.iwx_init_task_dispatch(&driver.com);
+            assert(driver.hardwareStarts==int(attempt) &&
+                driver.com.init_retry_count==attempt && !driver.hardwareLive);
+            assert(driver.com.sc_ic.failureEvents==(attempt==5 ? 1U : 0U));
+        }
+        if (scenario=="worker-eventual-success") {
+            driver.hardwareError=0; driver.iwx_init_task_dispatch(&driver.com);
+            assert(driver.hardwareStarts==3 && driver.com.init_retry_count==0 &&
+                driver.com.sc_ic.failureEvents==0 && driver.radioReadyRequestEpoch==42 &&
+                driver.radioPowerOnRequestEpoch()==0 && driver.hardwareLive);
+            assert(driver.disable(nullptr)==0 && !driver.hardwareLive);
+        } else {
+            assert(driver.com.sc_ic.lastFailure.reason==kItlRadioPowerOnFailureRecoveryExhausted &&
+                driver.com.sc_ic.lastFailure.lowerError==driver.hardwareError &&
+                driver.radioPowerOnRequestEpoch()==0 && taskAdds==4);
+        }
+        assert(driver.com.sc_task_gate_active==0 && driver.com.sc_task_gate_init_refs==0);
     } else if (scenario=="overlapping-off" || scenario=="on-during-stop") {
         assert(driver.runWorker()==0);
         driver.pauseReset=true; bool premature=false; int onResult=0;

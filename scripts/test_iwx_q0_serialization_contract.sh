@@ -446,7 +446,7 @@ require(stop_internal, "caller_is_init_epoch ? 1 : 0, 1",
 order(stop_internal, "iwx_task_gate_drain", "iwx_stop_device(sc);",
       "iwx_task_gate_rearm(sc, stop_generation);")
 order(init_task, "iwx_stop_internal(ifp, true, false);",
-      "iwx_init_internal(ifp, true);")
+      "iwx_init_internal(ifp, true, &attempted);")
 order(init_internal, "iwx_task_gate_begin_epoch(sc, &generation)",
       "iwx_cmdq_start(sc, generation)",
       "iwx_task_gate_epoch_live(sc, generation)",

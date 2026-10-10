@@ -5714,8 +5714,10 @@ iwm_radio_stop_end(struct iwm_softc *sc, int generation)
 }
 
 int ItlIwm::
-iwm_init(struct _ifnet *ifp)
+iwm_init(struct _ifnet *ifp, bool *owner_admitted)
 {
+    if (owner_admitted != NULL)
+        *owner_admitted = false;
     struct iwm_softc *sc = (struct iwm_softc*)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
     ItlIwm *that = container_of(sc, ItlIwm, com);
@@ -5725,6 +5727,10 @@ iwm_init(struct _ifnet *ifp)
 
     if (!that->iwm_radio_init_begin(sc, &generation))
         return ENXIO;
+    /* Only a claimed lower epoch is a recovery attempt. ENXIO alone cannot
+     * distinguish refused ownership from a real hardware-init failure. */
+    if (owner_admitted != NULL)
+        *owner_admitted = true;
     
     //    rw_assert_wrlock(&sc->ioctl_rwl);
     sc->agg_tid_disable = 0xffff;
@@ -7454,8 +7460,7 @@ iwm_init_task(void *arg1)
     }
 
     if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
-        attempted = true;
-        error = that->iwm_init(ifp);
+        error = that->iwm_init(ifp, &attempted);
     } else {
         XYLog("DEBUG %s SKIP iwm_init: fatal=%d IFF_UP=%d IFF_RUNNING=%d\n",
               __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
