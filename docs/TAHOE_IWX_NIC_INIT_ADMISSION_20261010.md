@@ -73,3 +73,75 @@ The gate is included in the complete payload aggregate. Current laboratory
 hardware is IWM 9260 with hardware RFKILL. Whole kext loading and IWM power
 regression cannot qualify the changed IWX path, repeated GUI joins, DHCP,
 traffic, WPA3 or AP service on a physical IWX device.
+
+## Exact build and private activation
+
+Production `0ba9dc5975ea6d6d3fb8dece46aa1b8642073e05` is committed, pushed
+and independently matched to the remote. The exact Linux and macOS payload
+aggregates pass. The ordinary Tahoe build succeeds with all 1088 imports
+resolved against the running guest BootKC. The isolated checkout is clean;
+both complete build bundles compare equal.
+
+- Source identity: `e64157f36cc3`.
+- Mach O UUID: `1A4E2AAD-09ED-3D4C-A105-E258B0B09EDC`.
+- Mach O SHA256: `4f8307436a6a0990ff2151258ea2b54d9f6b214a8c679e13db73af8c0a50d3b2`.
+
+Private activation `activation-20261010T145135Z` preserves four companions
+and rollback, reaches READY_FOR_GUEST_REBOOT and verifies the complete
+installed bundle. An independent check of the actual protected TXT summary
+confirms both collection member sets and readiness before one guarded guest
+reboot. Physical host 10.90.10.22 and the original dirty guest checkout are
+untouched; the owned QEMU stays at PID 517226 without restart or host side
+base or overlay replacement.
+
+## Loaded IWM sleep regression
+
+The exact new image loads in boot `8B68E81F-7422-4270-B215-2CB286E0E4D7`.
+Installed and built full bundles compare equal and independent en2 management
+remains available. The first postboot SSH banner observation times out; the
+next confirms the new boot and exact UUID, without replaying the reboot.
+All three changed IWX path entry probes are present in the loaded image.
+
+The root private observer in
+`/private/var/tmp/iwm-sleep-stop-local.B3ksZx` is verified live with its DTrace
+child and READY before native cold Off and On and one sleep request. Public
+power reads On, but en1 is inactive and an actual IWM RFKILL check reports
+blocked. Two independent private monitor observations confirm suspended
+state; serial records System Sleep and ACPI SLEEP. One exact monitor wake
+resumes the same boot and image. Power history records a 43 second interval
+and WakeTime 1.273 seconds, not the full physical paused duration. The
+WindowServer 30000 millisecond acknowledgement timeout remains recorded.
+
+Four native postwake Off and On controls finish with Wi Fi Off and en2
+management intact. The durable observer survives real S3 and covers all four
+controls before completing with status zero and TRACE_COMPLETE. Actual
+sleep disable takes 671.258 milliseconds: NIC access failures account for
+330.250 and 326.721 milliseconds, while task drain takes 5.714 microseconds.
+The first postwake Off takes another 670.829 milliseconds. Actual postwake
+On returns NotReady in 1.928, 1.818, 1.867 and 2.045 milliseconds; every RFKILL
+check reports blocked. Utility exit zero is not radio admission.
+
+No IWX initialization executes on this IWM device. This loaded regression
+does not qualify the changed path on physical IWX, on air GUI selections,
+WPA3, DHCP, restored traffic or AP operation. Stop latency and cold public
+On under lower RFKILL remain observations for the next recovery audit.
+
+## Saved artifact before host reboot
+
+The verified installed bundle is packaged without rebuilding as
+`AirportItlwm-Tahoe-IwxNicInitAdmission-0ba9dc59.kext.zip`. Build, installed,
+snapshot and extracted complete bundles compare equal. The archive has
+15,719,267 bytes and SHA256
+`b309b57c8b4f25a7c21b3b35dbae88ed2e17a5fa0637b15942f71dfafa8a3d4d`.
+The package and runtime logs are retained in
+`/home/dima/Projects/aiam/scratch/iwm-9260-runtime-20261009.mo5CXe/`.
+
+The user requested a saved checkpoint and guest shutdown before rebooting
+the laboratory host. This additional archive has not been uploaded or added
+to release notes; the existing nineteen release assets remain unchanged.
+Publication requires a fresh release baseline and an independent download
+comparison after resumption. Do not replay the completed activation or use
+the preceding boot as a post reboot guard. First revalidate PCI binding,
+loaded identity and hardware RFKILL. If radio admission becomes available,
+the repeated native GUI and saved network matrix remains the first runtime
+qualification task.
