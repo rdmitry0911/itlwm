@@ -82,6 +82,66 @@ executable code. The existing runtime-init contract already expresses the
 same rule. The larger q0 static script still fails its older raw `task_add`
 count; this is not relabelled as a full q0/task-producer pass.
 
+## Loaded IWM whole image regression
+
+Production `5d4cb4dc56dad38d27e7b9a7f107ca67bdc468aa` is committed and
+pushed. The clean isolated guest checkout builds with all 1088 imports
+resolved against the running 25C56 BootKC. Private AuxKC admission and
+transactional activation pass; all four companions and rollback material
+remain under
+`/private/var/tmp/aiam-iwn-activation-iwm9260-iwxstop5d4cb4dc-20261009`.
+Activation `activation-20261009T200234Z` installs a byte-equal bundle.
+
+- Source identity: `fe4207595c53`.
+- Loaded UUID: `A1927158-09E9-3A6B-941C-555066AD2304`.
+- Mach-O SHA256: `c078d8fccb3772a7584e89879cb535def0b4ab2d01feac0b65d2319728012774`.
+- Boot: `DFD9C8C1-A00A-4330-B62B-F09F8271B231`.
+
+The first S3 test was interrupted by an executor sandbox failure. Its trace
+is empty and is not treated as measurement. On 2026-10-10, the exact private
+monitor independently confirmed `paused (suspended)` and serial retained
+`ACPI SLEEP`. `system_wakeup` resumed that same guest without a QEMU restart,
+reinstall or rebuild. Same boot, loaded UUID/hash, exact build/installed
+equality and en2/default-route management are independently verified after
+wake. Power history shows maintenance wake/sleep cycles during the
+interruption, not one continuous overnight sleep. Its final sleep interval
+is 248 seconds and WakeTime is 1.244 seconds; the history records 11 total
+sleep/wakes for that boot, not 11 complete Wi-Fi qualification passes.
+
+Four subsequent native Off/On controls pass their bounded refusal checks.
+Every readback remains Off and en2/default10.0.6.2 remains available. The new
+bounded FBT trace observes actual lower disable, stop ownership, drain with
+self-counts 0/1, device erase, stop end generation 11 and successful Off
+return. That stop takes about 664 ms. Exact inner POWER probes report the
+four real On refusals `0xe00002d8` in 1.891, 1.827, 1.903 and 1.892 ms.
+The native process exit zero is not radio success. No init-owner or ready
+success entry occurs on the RFKILL-blocked IWM; none of these observations
+executes the new IWX hardware branch. The trace exits normally and no dtrace
+process remains at the package check.
+
+Logs under the current laboratory evidence root include
+`iwx-stop-{build-macos,activation,loaded}.log`,
+`iwx-stop-resume-{wake-monitor,wake-poll,loaded,native-controls}.log`,
+`iwx-stop-resumed-regression-trace.log`, `iwx-stop-pm-history.log` and
+`iwx-stop-package-macos.log`. Earlier empty trace and failed observation
+logs are retained separately.
+
+## Separate LAB release artifact
+
+Release `v2.4.0-alpha` has additional asset `627281202`,
+`AirportItlwm-Tahoe-IwmIwx-EarlyOff-5d4cb4dc.kext.zip`, 15,713,418 bytes,
+SHA256 `26245baee84fa7ef071aa0dadb5454ee504fb8417f99dd289fe3da6765832a4f`.
+The archive is the exact installed unsigned Debug bundle; its extracted
+Mach-O matches the loaded image without a packaging rebuild. The label and
+notes retain IWM RFKILL, missing IWX hardware and missing on-air qualification.
+
+The first upload began before SCP finished and was rejected with a content
+length error. No asset existed under the new name afterward. The completed
+archive was then size/hash-verified before upload; an independent API read
+verifies its exact digest/size and all seven preceding assets unchanged.
+A following independent API read verifies the newly prepended notes and all
+previous notes byte-for-byte as the suffix. The default archive is unchanged.
+
 ## Qualification limits
 
 Complete q0 command submission, interrupts, firmware and DMA are not executed
