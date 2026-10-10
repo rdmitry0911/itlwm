@@ -103,15 +103,63 @@ passes on both Linux and macOS. The final macOS run also compiles the actual
 historical sender and ACK and reaches the intended result assertion with exit
 134; the aggregate wrapper completes with exit zero after checking that result.
 
-## Runtime qualification pending
+## Loaded candidate and sleep regression
 
-The candidate has not yet been built, installed or loaded. The laboratory
-still runs production `e3e09a24`, with the previously qualified real S3 and
-RFKILL refusal regression. Source fixtures alone do not close native GUI
-joins, DHCP, traffic, WPA3 or AP on the newly installed 9260.
+Production `eb91aee60e31d48f22bca36b0174d4240cea763a` is pushed and independently
+verified on the branch remote. The exact committed macOS checkout passes the
+complete payload aggregate and builds with all 1088 imports resolved against
+the running 25C56 BootKC. Its tracked files are clean and source identity is
+`fb332ca33f77`. The original dirty checkout and physical host `.22` stay untouched.
+
+Private AuxKC admission, four preserved companions and both canonical and
+candidate member sets pass. Activation `activation-20261010T100209Z` under
+`/private/var/tmp/aiam-iwn-activation-iwm9260-cmdslot-eb91aee6-20261010` returns
+zero and preserves rollback. An independent read verifies READY and full
+installed bundle equality before one guarded guest reboot. The first postboot
+SSH observation returns 255; the second verifies the new boot and exact image.
+The same QEMU remains at PID 517226 without VM restart or overlay change.
+
+- Loaded boot: `03D25669-683A-41E4-A4F9-C2299C42AC6C`.
+- Mach-O UUID: `5F84C9FF-747A-3029-9502-B5C32CD5C50F`.
+- Mach-O SHA256: `8aa54c41edca99b1774c323feee743f876ba138a6e06e9959ccab2b2b49285f2`.
+
+Real S3 is independently confirmed by `paused (suspended)` and serial
+`ACPI SLEEP`. Power history records 62 seconds of sleep and WakeTime 1.222
+seconds in this boot. The WindowServer sleep notification timeout of 30 seconds
+remains recorded. Private `system_wakeup` restores the same boot, exact loaded
+image, full bundle equality and en2 management, with no VM restart.
+
+The FBT trace finishes normally with exit zero and its COMPLETE marker. Initial
+native Off executes device stop and command queue closure and returns success
+in 663.646 milliseconds. Both observed queue stops return, in 16.392 and 13.024
+microseconds. Four native Off and On controls after wake preserve Off readbacks
+and en2. On returns `0xe00002d8` in 2.072, 2.218, 5.522 and 1.909 milliseconds.
+The native utility exit zero is not radio success. RFKILL prevents command
+sender or ACK execution in this runtime trace; the empty queue regression is
+not qualification of a busy firmware ACK race or successful on air connection.
+
+## Additional laboratory release
+
+The archive contains the exact installed and loaded bundle without a packaging
+rebuild. Build, installed and extracted bundles compare equal. SCP completes
+with exit zero before the local independent size and SHA256 guard and upload.
+
+- Asset: [AirportItlwm-Tahoe-Iwm-CommandSlots-eb91aee6.kext.zip](https://github.com/rdmitry0911/itlwm/releases/download/v2.4.0-alpha/AirportItlwm-Tahoe-Iwm-CommandSlots-eb91aee6.kext.zip).
+- Asset ID: `627630660`; size: 15,716,627 bytes.
+- ZIP SHA256: `6e3c893c68682ee86e2e44918c4abd95dac018ed5ae69b94795e8ee424dd3113`.
+
+An independent final API read verifies all eleven older assets and their
+immutable metadata unchanged, the full previous notes as an exact suffix,
+and the default asset unchanged. This is an additional unsigned Debug LAB
+asset, not a replacement default or a claim of native GUI joins, DHCP,
+traffic, WPA3 or AP qualification on the 9260.
 
 Evidence uses `command-slot-*` under the existing laboratory root. The first
 historical adapter compile error was an unused mock clock warning, not a
 behavioral negative. The first aggregate adapter error lacked the command stop
 declaration in a data queue only retirement fixture; that fixture now rejects
 any accidental command queue execution instead of supplying fake drain success.
+Two preboot observation errors remain retained: an unprivileged shell could
+not expand the protected activation glob, then a guard used the wrong summary
+key. Neither replays activation; explicit paths and the actual activation_state
+key independently reconcile the applied transaction before reboot.
