@@ -8,6 +8,7 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 bash "$root/scripts/test_tahoe_ax211_api68_pmf_transaction_owner_contract.sh"
 bash "$root/scripts/test_net80211_sae_eapol_key_descriptor_contract.sh"
+bash "$root/scripts/test_iwx_sae_terminal_lifetime.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
@@ -107,7 +108,8 @@ for token in ("iwx_sae_tx_ticket_is_direct", "IWX_SAE_ENGINE_TICKET_COUNTER_MASK
 dispatch = method(cpp, "iwx_sae_tx_task_dispatch")
 ordered(dispatch, "native terminal routing",
         "iwx_sae_engine_queue_terminal", "engine_consumed",
-        "iwx_task_gate_leave", "IEEE80211_EVT_SAE_AUTH_TRANSPORT")
+        "IEEE80211_EVT_SAE_AUTH_TRANSPORT",
+        "iwx_sae_tx_finish_join_retirement", "iwx_task_gate_leave")
 
 stage = method(engine, "stageSaeWclCredential")
 for token in ("itl_sae_wcl_credential_is_well_formed",

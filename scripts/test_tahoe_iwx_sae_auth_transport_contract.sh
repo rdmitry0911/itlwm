@@ -3,14 +3,14 @@
 #
 # This checks source-level ownership all the way from the controller's
 # credential-free request to a real IWX descriptor/doorbell and back through
-# a deferred terminal completion.  It deliberately does not claim an SAE or
-# WPA3 association: there is still no selected-BSS join owner, cryptographic
-# backend, PMK/AKM activation, or PMF enable. A separately admitted bounded
-# peer-RX bridge exists solely to preserve real AP Commit/Confirm values for
-# the future selected-BSS owner.
+# a deferred terminal completion. The driver-resident SAE/PMF owner has
+# separate contracts; source checks and executable host fixtures do not
+# establish a physical SAE or WPA3 association.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+bash "$root/scripts/test_iwx_sae_terminal_lifetime.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
@@ -285,9 +285,24 @@ for token in ("sc_sae_tx_eventq", "iwx_sae_tx_ticket_cancelled_locked",
               "iwx_task_gate_leave", "IEEE80211_EVT_SAE_AUTH_TRANSPORT",
               "ic->ic_event_handler"):
     require(deferred, token, "deferred controller terminal delivery")
-if deferred.find("iwx_task_gate_leave") > deferred.find("ic->ic_event_handler"):
-    fail("IWX deferred terminal worker must leave its task gate before callback")
+# This gate is an active-owner lease, not a held workloop mutex. The complete
+# executable dispatcher/mailbox fixture above rejects the historical early
+# leave: stop must not reclaim sc during callback, retirement or requeue.
+ordered(deferred, "terminal lifecycle lease", "iwx_task_gate_enter",
+        "ic->ic_event_handler", "explicit_bzero(&event",
+        "iwx_sae_tx_finish_join_retirement", "iwx_add_task",
+        "iwx_sae_engine_wake_join_retirement", "iwx_task_gate_leave")
 forbid(deferred, "getCommandGate", "IWX deferred worker controller-gate wait")
+mailbox_producer = function_body(v2, "queueSaeTransportMailbox")
+forbid(mailbox_producer, "getCommandGate", "mailbox producer controller-gate wait")
+forbid(mailbox_producer, "runAction", "mailbox producer synchronous action")
+require(mailbox_producer, "source->interruptOccurred", "nonblocking mailbox doorbell")
+transport_callback = airport_method("handleSaeAuthTransportEvent")
+require(transport_callback, "queueSaeTransportMailbox", "value-copy transport callback")
+forbid(transport_callback, "getCommandGate", "transport callback controller-gate wait")
+ordered(airport_method("eventHandler"), "transport fast-return before main gate",
+        "msgCode == IEEE80211_EVT_SAE_AUTH_TRANSPORT",
+        "handleSaeAuthTransportEvent", "return;", "getCommandGate")
 require(var_h, "IEEE80211_EVT_SAE_AUTH_TRANSPORT        8",
         "normal IWX SAE terminal event")
 require(var_h, "IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET  9",

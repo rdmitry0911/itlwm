@@ -132,6 +132,8 @@ bash "$(dirname "$0")/test_net80211_join_attempt.sh"
 bash "$(dirname "$0")/test_iwn_sae_join_failure.sh"
 bash "$(dirname "$0")/test_mvm_sae_peer_failure.sh" iwm
 bash "$(dirname "$0")/test_mvm_sae_peer_failure.sh" iwx
+bash "$(dirname "$0")/test_tahoe_iwx_sae_auth_transport_contract.sh"
+bash "$(dirname "$0")/test_tahoe_iwx_driver_resident_sae_owner_contract.sh"
 bash "$(dirname "$0")/test_sae_engine_peer_retry.sh"
 bash "$(dirname "$0")/test_sae_peer_retry_workers.sh"
 bash "$(dirname "$0")/test_sae_peer_timer.sh"
