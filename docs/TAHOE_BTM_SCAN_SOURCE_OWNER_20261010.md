@@ -68,5 +68,59 @@ The WIP archive SHA256 is
 The isolated macOS stage is
 `/private/var/tmp/btm-source-owner-20261010.o23IKI/source`.
 The original dirty guest checkout, physical host 10.90.10.22 and all VM
-backing images remain outside this cycle's mutations. Build, loaded image,
-sleep regression and additional release qualification follow separately.
+backing images remain outside this cycle's mutations.
+
+## Exact build and loaded regression
+
+Production `f17c88b793e11e15279c0a5379d13044be16de62` is pushed and independently
+matched to the remote branch. Exact committed Linux and macOS payload
+aggregates pass, followed by a successful ordinary Tahoe build. All 1088
+imports resolve against the running guest BootKernelExtensions.kc. The clean
+isolated guest checkout is detached at that exact production commit.
+
+- Source identity: `9759d7d1ae6a`.
+- Mach-O UUID: `41139CBA-7667-320F-A897-2D4AD76C5BC2`.
+- Mach-O SHA256: `415a2c12a219f44a60c0c9a30c0a2743b8b8a860e1abe94fb011c7d6fcf8030f`.
+- Loaded boot: `0C9FEE46-4388-4E61-80B4-068A02B2C16B`.
+
+The new private AuxKC transaction preserves four companion members and
+rollback, reaches READY and verifies whole installed bundle equality. One
+guarded guest reboot loads the exact image. Reboot SSH returns 255, and the
+first postboot banner observation also times out; the second independently
+verifies the new boot, loaded UUID, complete bundle and en2 management.
+No VM restart or installer replay is used to reconcile those observations.
+
+Two private monitor observations show paused suspended state; serial records
+ACPI SLEEP. Power history records 45 seconds of actual S3, a power button wake
+and WakeTime 1.254 seconds. The first wake SSH banner times out; the second
+verifies the same boot, image, full bundle and en2 default route. WindowServer's
+30 second sleep acknowledgement timeout remains recorded.
+
+The bounded sleep trace and separate postwake trace both finish with COMPLETE
+and remote DTrace status zero. Actual sleep cancellation records IWM disable
+666.631 milliseconds and scan reset invalidation 4.636 microseconds. Four
+postwake native controls and four additional traced controls retain Off and
+management; traced On returns NotReady in 1.827, 1.862, 1.916 and 2.435
+milliseconds. Utility process exit zero is not radio or connection success.
+The cold boot power readback was On while lower initialization reported fatal
+2; that public readback is not a successful radio admission either.
+
+No actual BTM RX or source validation probe runs under hardware RFKILL. This
+loaded regression does not qualify on air source replacement, physical scan
+abort, SAE or restored Wi-Fi traffic, nor new IWN or IWX hardware behavior.
+
+## Additional laboratory release
+
+The additional unsigned Debug asset is
+[AirportItlwm-Tahoe-BtmSource-f17c88b7.kext.zip](https://github.com/rdmitry0911/itlwm/releases/download/v2.4.0-alpha/AirportItlwm-Tahoe-BtmSource-f17c88b7.kext.zip).
+It contains the exact installed and loaded bundle, with build, installed and
+extracted trees equal and no packaging rebuild.
+
+- Asset ID: `627848930`; size: 15,717,686 bytes.
+- ZIP SHA256: `7e2025092f1990d1e68444234bb0f132bdf6b1356c68cd6822f99bdadfee0b30`.
+
+The default and all fourteen older assets retain their immutable metadata.
+The complete previous notes remain unchanged below the new qualification
+entry. This is an additional LAB artifact, not a promoted default build.
+An independent release download has the same ZIP SHA256 and compares equal
+byte for byte to the locally validated archive.
