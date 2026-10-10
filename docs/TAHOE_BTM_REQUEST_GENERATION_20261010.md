@@ -72,14 +72,69 @@ unlocks inside each complete production HAL wrapper. The lower staging double
 calls the complete production admission leaf; it does not simulate firmware
 or successful SAE negotiation.
 
-## Loaded image and next qualification
+## Exact build and loaded regression
 
-The currently loaded image is still production `d80d6fc3`, source identity
-`946d41bce15d`, UUID `F11831F7-5BCE-3411-AEB5-90E6E5500E50`, boot
-`7A93D037-E8BD-4E60-B64F-FD2A8E2E3178`. The generation correction is not yet
-committed, built, installed or released. Exact committed tests, build and
-import validation, private activation, loaded image verification, real S3
-regression and an additional LAB asset remain the next cycle steps.
+Production `c9f1d745922aeea6eb20a61c10ba2a92ad30ae0d` is committed, pushed and
+independently matched to the remote branch. Exact committed Linux and macOS
+payload gates and source contracts pass. The ordinary Tahoe build succeeds
+and all 1088 imports resolve against the running guest BootKernelExtensions.kc.
+The isolated guest checkout is clean; build and DerivedData complete bundles
+compare equal.
+
+- Source identity: `c89ac518508d`.
+- Mach-O UUID: `8A5BF340-BFC5-3C2E-8FF8-E27D52B48868`.
+- Mach-O SHA256: `495ed1f4174112a4572ac7b35bf797d21651a10e20063b6bebdead93e7b81f82`.
+- Loaded boot: `CA1DAC07-E228-41F6-A8E3-7488217F4D1E`.
+
+Private activation `activation-20261010T130244Z` preserves all four companion
+kexts and rollback, reaches READY and verifies the installed complete bundle.
+One guarded guest reboot loads the exact new UUID. The first observation is
+reset and the second times out during banner exchange; the next verifies the
+new boot, loaded UUID, full installed bundle and independent en2 management.
+No QEMU restart or host side replacement of the base or overlay occurs. Guest
+installation writes its existing overlay. The original dirty guest checkout
+and physical host 10.90.10.22 are untouched.
+
+The new consume and confirmed admission entry probes are present in the
+loaded image. The bounded DTrace observer completes with remote status zero.
+Before sleep, native Off and On calls return success and public power reads
+On, but actual lower init records hardware RFKILL fatal 2 without IFF_RUNNING.
+Those initial public results are not successful radio admission.
+
+Two independent private monitor observations show paused suspended state;
+serial records System Sleep and ACPI SLEEP. One exact private monitor wake
+resumes the same boot. Power history records a 51 second sleep interval and
+WakeTime 1.252 seconds; that interval is not a measurement of the full physical
+paused duration. The first postwake SSH observation times out during banner
+exchange, and the next verifies exact image, complete bundle and en2 route.
+
+The actual IWM disable returns in 668.248 milliseconds. The power log retains
+the driver slow acknowledgement and WindowServer 30000 millisecond timeout.
+Four native postwake Off and On controls preserve management and power Off.
+The real driver On calls return NotReady at 2.100, 1.795, 1.906 and
+2.020 milliseconds. Utility exit zero does not mean successful radio startup.
+The guest ends with Wi-Fi Off.
+
+No actual BTM consume or confirmed admission runs under RFKILL. The loaded
+regression therefore does not qualify on air BTM, WPA3, restored Wi-Fi traffic,
+GUI combinations, AP service or new IWN and IWX hardware.
+
+## Additional laboratory release
+
+The additional unsigned Debug asset is
+[AirportItlwm-Tahoe-BtmGeneration-c9f1d745.kext.zip](https://github.com/rdmitry0911/itlwm/releases/download/v2.4.0-alpha/AirportItlwm-Tahoe-BtmGeneration-c9f1d745.kext.zip).
+Build, installed and extracted complete bundles compare equal, without a
+packaging rebuild.
+
+- Asset ID: `628008501`; size: 15,719,194 bytes.
+- ZIP SHA256: `e511daa110749e6c097c4fd0ccccd0dd33dd97dcff2b04481c03fa58d2fd2042`.
+
+Fresh API reads verify all sixteen previous assets and the default unchanged.
+The complete previous notes remain the exact suffix below the new LAB entry.
+An independent release download compares byte for byte with the validated
+local archive. The label and notes retain RFKILL and missing on air limits.
+
+## Remaining operational qualification
 
 Repeated native GUI open, WPA2 and WPA3 transitions among saved networks,
 automatic recovery without an Off and On workaround, DHCP and traffic after
