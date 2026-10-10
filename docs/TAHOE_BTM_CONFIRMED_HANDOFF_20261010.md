@@ -76,12 +76,62 @@ functions. Hook registration, credential revocation, lower state callbacks
 and kernel scheduling remain explicit doubles. This does not qualify complete
 SAE authentication, an actual GUI transition, DHCP or traffic.
 
-## Remaining qualification
+## Exact build and loaded regression
 
-The currently loaded image remains `f17c88b7` until the new committed build
-passes its ordinary Tahoe build, import check and private activation cycle.
-Runtime installation, real S3 regression and an additional LAB release are
-the next gates. The current 9260 RFKILL is not bypassed.
+Production `d80d6fc3befc49c02cbb47e845c09a03bb45d43f` is pushed and independently
+matched to the remote branch. Exact committed Linux and macOS payload gates
+pass. The ordinary Tahoe build succeeds and all 1088 imports resolve against
+the running guest BootKernelExtensions.kc. The build wrapper then returns 1
+for a nonexistent guessed Info.plist key; independent source identity, clean
+HEAD, UUID, hash and whole build bundle checks pass without rebuilding.
+
+- Source identity: `946d41bce15d`.
+- Mach-O UUID: `F11831F7-5BCE-3411-AEB5-90E6E5500E50`.
+- Mach-O SHA256: `d791382f4e5247daa308f37b27adaf8941827195db4e77346c7f4031368d32f0`.
+- Loaded boot: `7A93D037-E8BD-4E60-B64F-FD2A8E2E3178`.
+
+Private activation `activation-20261010T122605Z` preserves four companions
+and rollback, reaches READY and verifies complete installed bundle equality.
+One guarded guest reboot loads the exact UUID. The first postboot observation
+returns connection reset; the next verifies the new boot, full bundle and en2
+management. The original dirty checkout, physical host 10.90.10.22, VM base
+and running overlay are outside this cycle's installation mutations.
+
+Two exact private monitor observations show paused suspended state and serial
+records ACPI SLEEP. Power history records 77 seconds of actual S3, power button
+wake and WakeTime 1.269 seconds. A first wake banner times out; the next
+verifies the same boot, image, full bundle and en2 default route. WindowServer's
+30 second acknowledgement timeout remains recorded.
+
+The corrected bounded observer finishes with COMPLETE and remote DTrace status
+zero. Actual sleep cancellation records IWM disable 664.499 milliseconds.
+Four native postwake controls retain Off and management; the observer captures
+two On refusals at 1.850 and 1.901 milliseconds. A separate postwake observer
+also finishes COMPLETE and status zero while four further native controls
+retain Off and management. Those On calls return NotReady at 1.828, 1.814,
+1.856 and 1.882 milliseconds. Utility exit zero is not successful radio
+admission. Cold boot public On with lower fatal 2 is not admission either.
+
+The two new handoff probes are registered, but no actual BTM handoff executes
+under hardware RFKILL. This loaded regression does not qualify on air BTM,
+SAE, restored Wi-Fi traffic, GUI combinations, AP or new IWN/IWX hardware.
+
+## Additional laboratory release
+
+The additional unsigned Debug asset is
+[AirportItlwm-Tahoe-BtmHandoff-d80d6fc3.kext.zip](https://github.com/rdmitry0911/itlwm/releases/download/v2.4.0-alpha/AirportItlwm-Tahoe-BtmHandoff-d80d6fc3.kext.zip).
+The package is made from the exact build without rebuilding; build, installed
+and extracted bundles compare equal.
+
+- Asset ID: `627932962`; size: 15,718,909 bytes.
+- ZIP SHA256: `8b45d5cc7cce1cfe383c1801e6b0f8a69bf025fac40fbdb7fa5d9ef05261f1f7`.
+
+All fifteen older assets, the default and complete previous notes remain
+unchanged. A fresh API read verifies the addition and notes. An independent
+release download has the same ZIP SHA256 and compares byte for byte to the
+validated local archive. The asset remains LAB ONLY with its RFKILL limits.
+
+## Remaining handoff scope
 
 The later consume helper still matches public SSID and target BSSID rather
 than a captured BTM generation. Its out of callback successor behavior is a
