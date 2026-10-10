@@ -49,6 +49,10 @@ awk '/^bool AirportItlwm::retireFailedRadioPowerOn\(/ { selected=1 }
 read_source AirportItlwm/AirportItlwmV2.cpp | awk '
     /^int AirportItlwm::handlePowerStateChangeCore\(/ { selected=1 }
     selected { print } selected && /^}/ { selected=0 }' >> "$power_test_dir/controller.inc"
+sed -n '1,$p' "$root/AirportItlwm/AirportItlwmV2.cpp" | awk '
+    /^void AirportItlwm::performTahoeBootChipImage\(/ { selected=1 }
+    /^getPOWER\(/ || /^setPOWER\(/ { selected=1; print "IOReturn AirportItlwm::" }
+    selected { print } selected && /^}/ { selected=0 }' >> "$power_test_dir/controller.inc"
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -g \
     -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I "$root/include" -I "$power_test_dir" "$root/tests/mvm_radio_power_admission_test.cpp" \

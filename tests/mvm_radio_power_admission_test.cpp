@@ -1,5 +1,6 @@
 // Hardware, IOKit queues, and readiness sleep are explicit doubles. Execute
-// full production CSR check, HAL admission, enableAdapter, and POWER core.
+// full production CSR check, HAL admission, enableAdapter, POWER core and
+// bootstrap/get/set POWER bodies. BootReady and radio readiness are distinct.
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -18,7 +19,14 @@ static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, IOInterruptSta
     assert(irq == 1 && lock->held); lock->held = false;
 }
 struct IONetworkInterface {};
+struct OSObject {};
+struct apple80211_power_data {
+    uint32_t version = 0, num_radios = 0;
+    uint32_t power_state[4] = {};
+};
+constexpr uint32_t APPLE80211_VERSION = 1;
 constexpr IOReturn kIOReturnSuccess = 0;
+constexpr IOReturn kIOReturnError = static_cast<IOReturn>(0xe00002bc);
 constexpr IOReturn kIOReturnNotReady = static_cast<IOReturn>(0xe00002d8);
 constexpr IOReturn kIOReturnTimeout = static_cast<IOReturn>(0xe00002d6);
 constexpr IOReturn kIOReturnBadArgument = static_cast<IOReturn>(0xe00002c7);
@@ -32,6 +40,8 @@ constexpr uint32_t MVM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW = 1U << 27;
 struct mvm_softc {
     struct ieee80211com {
         void (*ic_event_handler)(ieee80211com *, int, void *) = nullptr;
+        bool ic_ess = false;
+        unsigned ic_flags = 0;
     } sc_ic;
     uint32_t sc_flags = 0;
     uint32_t csr = MVM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW;
@@ -49,6 +59,13 @@ static int splnet() { return 0; }
 static void splx(int) {}
 #define XYLog(...) do {} while (0)
 #define RT_SET(value) do {} while (0)
+#define RT2_SET(value) do {} while (0)
+#define TAILQ_EMPTY(head) (!*(head))
+constexpr uint32_t IEEE80211_F_AUTO_JOIN = 1;
+constexpr uint32_t kIONetworkLinkValid = 1;
+constexpr uint32_t kAirportItlwmPmBootInProgressBit = 4;
+static void OSBitOrAtomic(UInt32 bits, UInt32 *value) { *value |= bits; }
+static void OSBitAndAtomic(UInt32 bits, UInt32 *value) { *value &= bits; }
 #define __IO80211_TARGET 260000
 #define __MAC_26_0 260000
 struct RuntimeStats { unsigned enableCnt = 0; IOReturn lastEnableRet = 0; };
@@ -76,6 +93,7 @@ public:
     uint64_t radioPowerOnRequestEpoch() const;
     void reportRadioPowerOnFailure(uint64_t, IOReturn, uint32_t, int);
     IOReturn enable(IONetworkInterface *) { ++enableCalls; return enableResult; }
+    mvm_softc::ieee80211com *get80211Controller() { return &com.sc_ic; }
 };
 #include "hal.inc"
 enum {
@@ -95,6 +113,19 @@ public:
     unsigned arms = 0, waits = 0, cancellations = 0, offCarriers = 0, disables = 0;
     IOReturn waitResult = kIOReturnSuccess;
     std::function<void()> waitHook;
+    bool tahoeBootstrapPowerPending = false, tahoeBootstrapPowerWindowOpen = true;
+    uint8_t tahoeRequestedPowerState = kWiFiPowerOff;
+    UInt32 pmPowerStateFlags = 0;
+    unsigned bootSchedules = 0, bootReady = 0, bootFailure = 0, linkValid = 0;
+    std::function<void()> bootReadyHook;
+    void performTahoeBootChipImage();
+    IOReturn getPOWER(OSObject *, apple80211_power_data *);
+    IOReturn setPOWER(OSObject *, apple80211_power_data *);
+    void scheduleTahoeBootThreadCall() { ++bootSchedules; }
+    void setLinkStatus(uint32_t status) { assert(status == kIONetworkLinkValid); ++linkValid; }
+    IOReturn handlePowerStateChange(uint32_t state, IONetworkInterface *netif) {
+        return handlePowerStateChangeCore(state, netif);
+    }
     IOReturn enableAdapter(IONetworkInterface *, uint64_t = 0);
     bool retireFailedRadioPowerOn(uint64_t, IONetworkInterface *);
     int handlePowerStateChangeCore(uint32_t, IONetworkInterface *);
@@ -129,6 +160,15 @@ struct AirportItlwmControllerLifecycleOperationGuard {
     AirportItlwmControllerLifecycleOperationGuard(AirportItlwm *that, bool) : self(that) {}
     bool admitted() const { return self->admitted; }
 };
+static void publishTahoeBootReadyState(AirportItlwm *driver) {
+    assert(!(driver->pmPowerStateFlags & kAirportItlwmPmBootInProgressBit));
+    ++driver->bootReady;
+    if (driver->bootReadyHook) driver->bootReadyHook();
+}
+static void publishTahoeBootFailureState(AirportItlwm *driver) {
+    assert(!(driver->pmPowerStateFlags & kAirportItlwmPmBootInProgressBit));
+    ++driver->bootFailure;
+}
 #include "controller.inc"
 
 static void blocked_transitions() {
@@ -229,11 +269,68 @@ static void superseded_wait_does_not_rollback_successor() {
     assert(failed.handlePowerStateChangeCore(kWiFiPowerOn, nullptr) == 0);
     assert(failed.power_state == kWiFiPowerOn && failed.arms == 2);
 }
+static void complete_bootstrap_power_path() {
+    // The framework request is cached, not a promise of firmware ALIVE or
+    // an on-air interface. Execute the real setter and boot consumer.
+    AirportItlwm boot;
+    boot.hal.com.csr = 0;
+    apple80211_power_data request;
+    request.num_radios = 1;
+    request.power_state[0] = kWiFiPowerOff;
+    assert(boot.setPOWER(nullptr, &request) == 0);
+    assert(boot.bootSchedules == 0 && boot.hal.enableCalls == 0);
+    request.power_state[0] = kWiFiPowerOn;
+    assert(boot.setPOWER(nullptr, &request) == 0);
+    assert(boot.bootSchedules == 1 && boot.tahoeBootstrapPowerPending);
+    boot.performTahoeBootChipImage();
+    assert(boot.bootReady == 1 && boot.bootFailure == 0);
+    assert(!boot.tahoeBootstrapPowerPending && !boot.tahoeBootstrapPowerWindowOpen);
+    assert(boot.hal.enableCalls == 1 && boot.hal.com.reads == 0);
+    assert(boot.arms == 0 && boot.waits == 0 && boot.pendingEpoch == 0);
+    assert(boot.hal.com.sc_ic.ic_flags & IEEE80211_F_AUTO_JOIN);
+    apple80211_power_data reply;
+    assert(boot.getPOWER(nullptr, &reply) == 0 && reply.version == APPLE80211_VERSION);
+    assert(reply.num_radios == 4);
+    for (auto state : reply.power_state) assert(state == kWiFiPowerOn);
+    // Once bootstrap closes, a new Off/On uses fresh CSR admission.
+    request.power_state[0] = kWiFiPowerOff;
+    assert(boot.setPOWER(nullptr, &request) == 0);
+    request.power_state[0] = kWiFiPowerOn;
+    assert(boot.setPOWER(nullptr, &request) == kIOReturnNotReady);
+    assert(boot.power_state == kWiFiPowerOff && boot.bootSchedules == 1);
+    assert(boot.hal.com.reads == 1 && boot.waits == 0);
+
+    AirportItlwm cachedOff;
+    cachedOff.hal.com.csr = 0;
+    request.power_state[0] = kWiFiPowerOn;
+    assert(cachedOff.setPOWER(nullptr, &request) == 0);
+    request.power_state[0] = kWiFiPowerOff;
+    assert(cachedOff.setPOWER(nullptr, &request) == 0);
+    cachedOff.bootReadyHook = [&] {
+        assert(cachedOff.setPOWER(nullptr, &request) == 0);
+        assert(!cachedOff.tahoeBootstrapPowerPending);
+    };
+    cachedOff.performTahoeBootChipImage();
+    assert(cachedOff.power_state == kWiFiPowerOff && cachedOff.disables == 1);
+    assert(cachedOff.offCarriers == 1 && cachedOff.bootReady == 1);
+    assert(cachedOff.hal.com.reads == 0 && cachedOff.bootFailure == 0);
+
+    AirportItlwm failed;
+    failed.hal.enableResult = kIOReturnAborted;
+    request.power_state[0] = kWiFiPowerOn;
+    assert(failed.setPOWER(nullptr, &request) == 0);
+    failed.performTahoeBootChipImage();
+    assert(failed.power_state == kWiFiPowerOff && failed.bootFailure == 1);
+    assert(failed.bootReady == 0 && failed.waits == 0 && failed.tx.enables == 0);
+    assert(failed.getPOWER(nullptr, nullptr) == kIOReturnError);
+    assert(failed.setPOWER(nullptr, nullptr) == kIOReturnError);
+}
 int main() {
     blocked_transitions();
     unblock_and_reblock();
     lower_result_and_timeout();
     boot_and_nonstarting_transitions();
     superseded_wait_does_not_rollback_successor();
-    std::puts("MVM radio power admission: PASS (fresh CSR, repeated refusal, unblock/reblock, lower error, timeout retirement/retry, superseded rollback, bootstrap, Off, detach)");
+    complete_bootstrap_power_path();
+    std::puts("MVM radio power admission: PASS (fresh CSR, repeated refusal, unblock/reblock, lower error, timeout retirement/retry, superseded rollback, complete bootstrap/get/set POWER, cached Off, distinct BootReady, detach)");
 }
