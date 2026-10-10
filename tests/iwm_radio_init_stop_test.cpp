@@ -83,6 +83,8 @@ struct WorkLoop {
     void openGate() {
         assert(inGate()); if (--depth==0) held=nullptr; gate.unlock();
     }
+protected:
+    friend struct CommandGate;
     int sleepGate(void *, AbsoluteTime deadline, int) {
         assert(inGate()); const unsigned recursion=depth;
         for (unsigned i=0; i<recursion; ++i) openGate();
@@ -96,6 +98,16 @@ struct WorkLoop {
     void wakeupGate(void *, bool) { if (!dropWakeups) waitCv.notify_all(); }
 };
 using IOWorkLoop=WorkLoop;
+struct CommandGate {
+    WorkLoop *loop;
+    int commandSleep(void *event, AbsoluteTime deadline, int interruptible) {
+        assert(loop->inGate()); return loop->sleepGate(event, deadline, interruptible);
+    }
+    void commandWakeup(void *event, bool oneThread) {
+        loop->wakeupGate(event, oneThread);
+    }
+};
+using IOCommandGate=CommandGate;
 static void IOLockLock(IOLock *lock) { lock->mutex.lock(); }
 static void IOLockUnlock(IOLock *lock) { lock->mutex.unlock(); }
 static void IOLockWakeup(IOLock *lock, void *, bool) { lock->cv.notify_all(); }
@@ -201,6 +213,7 @@ public:
     IOInterruptEventSource eventSource;
     IOInterruptEventSource *stateTransitionSource=&eventSource;
     WorkLoop workLoop;
+    CommandGate commandGate{&workLoop};
     uint64_t radioPowerOnEpoch=42, radioReadyReceiptSerial=0, radioReadyRequestEpoch=0;
     uint32_t radioReadyBackendGeneration=0;
     bool apCsaTimerInitialized=false;
@@ -264,6 +277,7 @@ public:
     bool stateTransitionCurrent(const ItlStateTransitionRequest &);
     int postStateTransitionCommit(const ItlStateTransitionRequest &, int);
     WorkLoop *getMainWorkLoop() { return &workLoop; }
+    CommandGate *getMainCommandGate() { return &commandGate; }
     int drainStateTransitionCommit(IOInterruptEventSource *) { return 0; }
     bool deferScanCommand(const ItlStateTransitionRequest &, bool) { return false; }
     bool deferPrimaryStationUsers(const ItlStateTransitionRequest &, bool = false) { return false; }

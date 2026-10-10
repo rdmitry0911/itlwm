@@ -51,7 +51,9 @@ Native POWER can hold the same main gate needed by firmware IRQs and generic
 scan callbacks. A lifecycle IOLock sleep alone cannot release that gate.
 An in gate drain instead releases the lifecycle lock and sleeps the whole
 recursive workloop gate, then reacquires the lifecycle lock to check the
-actual reference counts. Off gate callers retain the ordinary IOLock wait.
+actual reference counts. The public command gate sleep and wake methods
+wrap the protected workloop operations. Off gate callers retain the ordinary
+IOLock wait.
 
 Retirement wakes the workloop without acquiring its gate. Because its
 predicate is protected by a different lock, a 10 millisecond deadline bounds
@@ -59,7 +61,7 @@ the wake before registration gap. A timeout only rechecks the predicate;
 it never permits erasure of an owned device. The full recursive gate depth
 is restored before the caller resumes. These API semantics follow the
 [Apple workloop implementation](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/iokit/Kernel/IOWorkLoop.cpp)
-and [recursive lock implementation](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/iokit/Kernel/IOLocks.cpp).
+and [command gate implementation](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/iokit/Kernel/IOCommandGate.cpp).
 These are IOKit API sources, not a claim about private BCM firmware commands.
 
 The lower retirement principle is consistent with
@@ -96,6 +98,11 @@ The new source has not yet been built, installed or released. The laboratory
 still loads `685f3880`. Exact committed macOS tests, build, installation,
 real sleep regression and publication must be recorded before treating this
 candidate as delivered.
+
+The first candidate build rejects direct calls to protected workloop methods.
+The source now uses the public command gate wrappers; fixture workloop
+methods have matching protected access. The failed build did not install
+or activate a candidate and is retained as an integration failure.
 
 Normal fast command completion before wait registration, full IWM command
 ring serialization, raw BA and AP task lifetime, and direct device reset

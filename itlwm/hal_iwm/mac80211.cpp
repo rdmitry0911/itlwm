@@ -5662,8 +5662,8 @@ iwm_radio_state_leave(struct iwm_softc *sc)
     sc->sc_radio_state_refs--;
     sc->sc_sae_tx_lifecycle_active--;
     IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
-    if (getMainWorkLoop() != NULL)
-        getMainWorkLoop()->wakeupGate(sc, false);
+    if (getMainCommandGate() != NULL)
+        getMainCommandGate()->commandWakeup(sc, false);
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 }
 
@@ -5699,8 +5699,8 @@ iwm_radio_init_end(struct iwm_softc *sc)
     sc->sc_radio_init_refs--;
     sc->sc_sae_tx_lifecycle_active--;
     IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
-    if (getMainWorkLoop() != NULL)
-        getMainWorkLoop()->wakeupGate(sc, false);
+    if (getMainCommandGate() != NULL)
+        getMainCommandGate()->commandWakeup(sc, false);
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 }
 
@@ -5733,11 +5733,12 @@ iwm_radio_stop_drain(struct iwm_softc *sc, uint32_t self_init_refs,
      * generic scan callback on that gate. Never hold the lifecycle lock
      * across gate reacquisition. */
     IOWorkLoop *workloop = getMainWorkLoop();
+    IOCommandGate *gate = getMainCommandGate();
     IOLockLock(sc->sc_sae_tx_lifecycle_lock);
     while (sc->sc_radio_init_refs > self_init_refs ||
            sc->sc_radio_stop_refs > self_stop_refs ||
            sc->sc_radio_state_refs != 0) {
-        if (workloop != NULL && workloop->inGate()) {
+        if (gate != NULL && workloop != NULL && workloop->inGate()) {
             /* Retirement wakes this gate without acquiring it. Its predicate
              * lives under a different lock, so bound the registration gap:
              * a missed wake only delays the next predicate check by 10ms.
@@ -5746,7 +5747,7 @@ iwm_radio_stop_drain(struct iwm_softc *sc, uint32_t self_init_refs,
             clock_interval_to_deadline(10, kMillisecondScale,
                 reinterpret_cast<uint64_t *>(&deadline));
             IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
-            (void)workloop->sleepGate(sc, deadline, THREAD_UNINT);
+            (void)gate->commandSleep(sc, deadline, THREAD_UNINT);
             IOLockLock(sc->sc_sae_tx_lifecycle_lock);
         } else {
             IOLockSleep(sc->sc_sae_tx_lifecycle_lock, sc, THREAD_UNINT);
@@ -5764,8 +5765,8 @@ iwm_radio_stop_end(struct iwm_softc *sc, int generation)
     if (!sc->sc_sae_tx_detaching && sc->sc_generation == generation)
         sc->sc_flags &= ~IWM_FLAG_SHUTDOWN;
     IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
-    if (getMainWorkLoop() != NULL)
-        getMainWorkLoop()->wakeupGate(sc, false);
+    if (getMainCommandGate() != NULL)
+        getMainCommandGate()->commandWakeup(sc, false);
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 }
 
