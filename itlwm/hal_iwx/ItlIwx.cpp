@@ -11288,6 +11288,7 @@ iwx_cmdq_init(struct iwx_softc *sc)
     sc->sc_cmdq_next_serial = 0;
     sc->sc_cmdq_epoch = 1;
     sc->sc_cmdq_senders = 0;
+    sc->sc_cmdq_stoppers = 0;
     sc->sc_cmdq_stopping = true;
     sc->sc_cmdq_detaching = false;
     memset(sc->sc_cmdq_slots, 0, sizeof(sc->sc_cmdq_slots));
@@ -11301,7 +11302,8 @@ iwx_cmdq_start_locked(struct iwx_softc *sc)
     struct iwx_tx_ring *ring = &sc->txq[IWX_DQA_CMD_QUEUE];
 
     if (sc->sc_cmdq_detaching || !sc->sc_cmdq_stopping ||
-        sc->sc_cmdq_senders != 0 || !iwx_cmdq_ring_valid(sc, ring))
+        sc->sc_cmdq_senders != 0 || sc->sc_cmdq_stoppers != 0 ||
+        !iwx_cmdq_ring_valid(sc, ring))
         return false;
 
     sc->sc_cmdq_epoch++;
@@ -11385,6 +11387,8 @@ iwx_cmdq_leave(struct iwx_softc *sc)
     KASSERT(sc->sc_cmdq_senders > 0, "sc->sc_cmdq_senders > 0");
     sc->sc_cmdq_senders--;
     IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    if (getMainCommandGate() != NULL)
+        getMainCommandGate()->commandWakeup(sc, false);
 }
 
 void ItlIwx::
@@ -11419,15 +11423,12 @@ iwx_cmdq_stop(struct iwx_softc *sc)
     /*
      * The stopped lock deliberately outlives rings/DMA until free(). A
      * repeated stop after those resources are gone must not inspect ring
-     * fields or manufacture wake addresses from reclaimed storage; the first
-     * stopper already published terminal slot state and owns cleanup.
+     * fields or manufacture wake addresses from reclaimed storage. Every
+     * stopper still drains live senders; none may return while the first
+     * stopper has released the controller gate to let a sender leave.
      */
-    if (sc->sc_cmdq_stopping) {
-        IOSimpleLockUnlock(sc->sc_cmdq_lock);
-        unlockTsleep();
-        return;
-    }
-    {
+    sc->sc_cmdq_stoppers++;
+    if (!sc->sc_cmdq_stopping) {
         struct iwx_tx_ring *ring = &sc->txq[IWX_DQA_CMD_QUEUE];
 
         if (iwx_cmdq_ring_valid(sc, ring)) {
@@ -11451,8 +11452,11 @@ iwx_cmdq_stop(struct iwx_softc *sc)
     }
     IOSimpleLockUnlock(sc->sc_cmdq_lock);
     /* Waking an unused descriptor is harmless and keeps stop stack-small. */
-    for (i = 0; i < wake_count; i++)
+    for (i = 0; i < wake_count; i++) {
         wakeupOn(&wake_desc[i]);
+        if (getMainCommandGate() != NULL)
+            getMainCommandGate()->commandWakeup(&wake_desc[i], false);
+    }
     unlockTsleep();
 
     /*
@@ -11468,7 +11472,15 @@ iwx_cmdq_stop(struct iwx_softc *sc)
         IOSimpleLockUnlock(sc->sc_cmdq_lock);
         if (senders == 0)
             break;
-        IOSleep(1);
+        if (getMainCommandGate() != NULL && getMainWorkLoop() != NULL &&
+            getMainWorkLoop()->inGate()) {
+            AbsoluteTime deadline;
+            clock_interval_to_deadline(10, kMillisecondScale,
+                reinterpret_cast<uint64_t *>(&deadline));
+            (void)getMainCommandGate()->commandSleep(sc, deadline, THREAD_UNINT);
+        } else {
+            IOSleep(1);
+        }
     }
 
     /* Detach each response under q0, then free it after leaving q0. */
@@ -11483,6 +11495,10 @@ iwx_cmdq_stop(struct iwx_softc *sc)
         if (resp != NULL)
             ::free(resp);
     }
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    KASSERT(sc->sc_cmdq_stoppers != 0, "sc->sc_cmdq_stoppers != 0");
+    sc->sc_cmdq_stoppers--;
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
 }
 
 void ItlIwx::
@@ -11493,6 +11509,7 @@ iwx_cmdq_destroy(struct iwx_softc *sc)
         KASSERT(sc->sc_cmdq_detaching, "sc->sc_cmdq_detaching");
         KASSERT(sc->sc_cmdq_stopping, "sc->sc_cmdq_stopping");
         KASSERT(sc->sc_cmdq_senders == 0, "sc->sc_cmdq_senders == 0");
+        KASSERT(sc->sc_cmdq_stoppers == 0, "sc->sc_cmdq_stoppers == 0");
         IOSimpleLockUnlock(sc->sc_cmdq_lock);
         IOSimpleLockFree(sc->sc_cmdq_lock);
         sc->sc_cmdq_lock = NULL;
@@ -11936,54 +11953,67 @@ unlock:
         goto out;
 
     if (!async) {
+        uint64_t hard_deadline;
+        clock_interval_to_deadline(1, kSecondScale, &hard_deadline);
         /*
          * Hold the sleep mutex before q0.  Completion/stop use the same
-         * order, so state testing and entering msleep cannot lose a wakeup.
+         * order. A gated caller drops this mutex before releasing its entire
+         * recursive controller gate, then reacquires it after the gate.
          */
         lockTsleep();
-        IOSimpleLockLock(sc->sc_cmdq_lock);
-        if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
-            generation == sc->sc_generation &&
-            iwx_cmdq_ring_valid(sc, ring) && idx >= 0 &&
-            idx < (int)ring->ring_count &&
-            sc->sc_cmdq_slots[idx].serial == slot_serial &&
-            sc->sc_cmdq_slots[idx].epoch == slot_epoch &&
-            sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_SUBMITTED) {
-            IOSimpleLockUnlock(sc->sc_cmdq_lock);
-            err = tsleep_nsec_locked(desc, PCATCH, "iwxcmd",
-                                     SEC_TO_NSEC(1));
+        for (;;) {
             IOSimpleLockLock(sc->sc_cmdq_lock);
-        }
-
-        if (sc->sc_cmdq_stopping || sc->sc_cmdq_detaching ||
-            generation != sc->sc_generation || !iwx_cmdq_ring_valid(sc, ring) ||
-            idx < 0 || idx >= (int)ring->ring_count ||
-            sc->sc_cmdq_slots[idx].serial != slot_serial ||
-            sc->sc_cmdq_slots[idx].epoch != slot_epoch) {
-            err = ENXIO;
-        } else if (sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_COMPLETED) {
-            if (err == 0) {
+            struct iwx_cmd_slot *slot = &sc->sc_cmdq_slots[idx];
+            if (sc->sc_cmdq_stopping || sc->sc_cmdq_detaching ||
+                generation != sc->sc_generation ||
+                !iwx_cmdq_ring_valid(sc, ring) || idx < 0 ||
+                idx >= (int)ring->ring_count || slot->serial != slot_serial ||
+                slot->epoch != slot_epoch || slot->state == IWX_CMD_SLOT_ABORTED) {
+                err = ENXIO;
+            } else if (slot->state == IWX_CMD_SLOT_COMPLETED) {
+                /* Only the retained actual ACK is success, even if it raced
+                 * registration or timeout. A wake alone proves nothing. */
                 hcmd->resp_pkt =
                     (struct iwx_rx_packet *)sc->sc_cmd_resp_pkt[idx];
                 sc->sc_cmd_resp_pkt[idx] = NULL;
                 sc->sc_cmd_resp_len[idx] = 0;
-            } else {
-                resp_to_free = sc->sc_cmd_resp_pkt[idx];
-                sc->sc_cmd_resp_pkt[idx] = NULL;
-                sc->sc_cmd_resp_len[idx] = 0;
-            }
-            sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_FREE;
-        } else if (sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_SUBMITTED) {
-            /* A timeout or spurious wake never permits immediate reuse. */
-            sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_TIMED_OUT;
-            if (err == 0)
+                slot->state = IWX_CMD_SLOT_FREE;
+                err = 0;
+            } else if (slot->state != IWX_CMD_SLOT_SUBMITTED) {
                 err = EIO;
-        } else if (sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_ABORTED) {
-            err = ENXIO;
-        } else {
-            err = EIO;
+            } else {
+                uint64_t now;
+                clock_get_uptime(&now);
+                if (err != 0 || now >= hard_deadline) {
+                    if (err == 0)
+                        err = ETIMEDOUT;
+                    /* DMA and response stay quarantined until ACK/reset. */
+                    sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_TIMED_OUT;
+                } else {
+                    uint64_t remaining;
+                    absolutetime_to_nanoseconds(hard_deadline - now, &remaining);
+                    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+                    if (getMainCommandGate() != NULL && getMainWorkLoop() != NULL &&
+                        getMainWorkLoop()->inGate()) {
+                        AbsoluteTime deadline;
+                        clock_interval_to_deadline(10, kMillisecondScale,
+                            reinterpret_cast<uint64_t *>(&deadline));
+                        if (*reinterpret_cast<uint64_t *>(&deadline) > hard_deadline)
+                            *reinterpret_cast<uint64_t *>(&deadline) = hard_deadline;
+                        /* A missed gate wake costs at most 10ms; recheck the
+                         * exact slot against one absolute command deadline. */
+                        unlockTsleep();
+                        (void)getMainCommandGate()->commandSleep(desc, deadline, THREAD_UNINT);
+                        lockTsleep();
+                    } else {
+                        err = tsleep_nsec_locked(desc, PCATCH, "iwxcmd", remaining);
+                    }
+                    continue;
+                }
+            }
+            IOSimpleLockUnlock(sc->sc_cmdq_lock);
+            break;
         }
-        IOSimpleLockUnlock(sc->sc_cmdq_lock);
         unlockTsleep();
     }
 
@@ -12254,8 +12284,11 @@ iwx_cmd_done(struct iwx_softc *sc, int qid, int idx, int code,
     IOSimpleLockUnlock(sc->sc_cmdq_lock);
 
     /* The predicate changed while the sleep mutex was held; wake atomically. */
-    if (wchan != NULL)
+    if (wchan != NULL) {
         wakeupOn(wchan);
+        if (getMainCommandGate() != NULL)
+            getMainCommandGate()->commandWakeup(wchan, false);
+    }
     unlockTsleep();
 
     if (async_result_ready)
@@ -23770,6 +23803,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_cmdq_next_serial = 0;
     sc->sc_cmdq_epoch = 0;
     sc->sc_cmdq_senders = 0;
+    sc->sc_cmdq_stoppers = 0;
     sc->sc_cmdq_stopping = true;
     sc->sc_cmdq_detaching = false;
     sc->sc_task_gate_lock = NULL;

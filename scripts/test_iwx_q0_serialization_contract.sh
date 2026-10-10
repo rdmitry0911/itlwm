@@ -228,8 +228,16 @@ order(send, "lockTsleep();", "IOSimpleLockLock(sc->sc_cmdq_lock);")
 require(send, "tsleep_nsec_locked(desc", "predicate-locked q0 sleep")
 if "tsleep_nsec(desc" in send:
     fail("unlocked q0 tsleep remains")
-order(send, "IOSimpleLockUnlock(sc->sc_cmdq_lock);\n        unlockTsleep();",
+order(send, "IOSimpleLockUnlock(sc->sc_cmdq_lock);\n            break;",
+      "unlockTsleep();",
       "iwx_cmdq_leave(sc);")
+require(send, "clock_interval_to_deadline(1, kSecondScale, &hard_deadline);",
+        "one absolute synchronous deadline")
+order(send, "getMainWorkLoop()->inGate()", "unlockTsleep();",
+      "getMainCommandGate()->commandSleep(desc, deadline, THREAD_UNINT);",
+      "lockTsleep();")
+require(done, "getMainCommandGate()->commandWakeup(wchan, false);",
+        "controller gate completion wake")
 if send.rfind("iwx_cmdq_leave(sc);") < send.rfind("if (resp_to_free != NULL)"):
     fail("sender lifetime ref drops before local cleanup")
 
@@ -349,13 +357,16 @@ for needle in (
     require(destroy, needle, "final q0 destroy precondition")
 require(detach_begin, "sc->sc_cmdq_detaching = true;", "permanent detach gate")
 
-# The retained lock makes repeat stop safe after detach has already released
-# ring/DMA storage. The repeat branch must return before it even constructs a
-# q0-ring pointer or wake address from that storage.
+# Repeated stop never touches a dead ring, but must drain the same live senders.
+# A stopper reference prevents reopening q0 while any drain releases its gate.
 order(stop, "IOSimpleLockLock(sc->sc_cmdq_lock);",
-      "if (sc->sc_cmdq_stopping)",
-      "IOSimpleLockUnlock(sc->sc_cmdq_lock);", "unlockTsleep();",
-      "return;", "struct iwx_tx_ring *ring")
+      "sc->sc_cmdq_stoppers++;", "if (!sc->sc_cmdq_stopping)",
+      "struct iwx_tx_ring *ring", "unlockTsleep();",
+      "senders = sc->sc_cmdq_senders;", "sc->sc_cmdq_stoppers--;")
+require(start_locked, "sc->sc_cmdq_stoppers != 0", "active stop admission fence")
+order(stop, "getMainWorkLoop()->inGate()",
+      "getMainCommandGate()->commandSleep(sc, deadline, THREAD_UNINT);")
+require(destroy, "KASSERT(sc->sc_cmdq_stoppers == 0", "final stopper drain")
 for helper, name in (
     (snapshot, "snapshot"),
     (is_narrow, "is_narrow"),

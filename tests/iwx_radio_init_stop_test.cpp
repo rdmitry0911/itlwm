@@ -74,6 +74,16 @@ static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock, IOInterruptSta
     assert(irq==1); IOSimpleLockUnlock(lock);
 }
 static void IOSleep(unsigned delay) { std::this_thread::sleep_for(std::chrono::milliseconds(delay)); }
+// These lifecycle controls run off the controller gate. The complete gated
+// sender/stop fixture separately exercises real threads and recursive release.
+using AbsoluteTime=uint64_t;
+constexpr unsigned kMillisecondScale=1000000, THREAD_UNINT=0;
+static void clock_interval_to_deadline(unsigned,unsigned,uint64_t *) { assert(false); }
+struct WorkLoop { bool inGate() const { assert(false); return false; } };
+struct CommandGate {
+    void commandWakeup(void *,bool) { assert(false); }
+    int commandSleep(void *,AbsoluteTime,unsigned) { assert(false); return EIO; }
+};
 struct Queue {};
 struct _ifnet { void *if_softc=nullptr; unsigned if_flags=IFF_UP; Queue if_snd; int if_timer=0; };
 struct ieee80211_node { int ni_chan=0, ni_chw=0; };
@@ -134,7 +144,7 @@ struct iwx_softc {
     IOSimpleLock mfpLock; IOSimpleLock *sc_mfp_pae_lock=&mfpLock;
     bool sc_mfp_pae_reset_pending=false;
     IOSimpleLock cmdLock; IOSimpleLock *sc_cmdq_lock=&cmdLock;
-    uint32_t sc_cmdq_epoch=1, sc_cmdq_senders=0;
+    uint32_t sc_cmdq_epoch=1, sc_cmdq_senders=0, sc_cmdq_stoppers=0;
     bool sc_cmdq_stopping=true, sc_cmdq_detaching=false;
     Slot sc_cmdq_slots[4];
     iwx_tfh_tfd descriptors[4]; iwx_tx_ring txq[1];
@@ -209,6 +219,8 @@ public:
     bool iwx_cmdq_enter(iwx_softc *);
     void iwx_cmdq_leave(iwx_softc *);
     void iwx_cmdq_stop(iwx_softc *);
+    CommandGate *getMainCommandGate() { return nullptr; }
+    WorkLoop *getMainWorkLoop() { return nullptr; }
     uint64_t scanCommandResetEpoch();
     bool reopenScanCommands(uint64_t, uint32_t);
     bool isRadioScanReady(uint32_t);

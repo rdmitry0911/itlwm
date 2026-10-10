@@ -1138,6 +1138,7 @@ struct iwx_softc {
 	uint64_t sc_cmdq_next_serial;
 	uint32_t sc_cmdq_epoch;
 	uint32_t sc_cmdq_senders;
+	uint32_t sc_cmdq_stoppers;
 	bool sc_cmdq_stopping;
 	bool sc_cmdq_detaching;
 	struct iwx_cmd_slot sc_cmdq_slots[IWX_MIN_256_BA_QUEUE_SIZE_GEN3];
