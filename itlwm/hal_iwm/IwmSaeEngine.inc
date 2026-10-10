@@ -1350,7 +1350,8 @@ iwm_sae_engine_publish_hooks(struct iwm_softc *sc, bool enabled,
 
     if (sc == NULL)
         return false;
-    if (enabled && (!iwm_sae_engine_runtime_enabled(sc) ||
+    if (enabled && ((sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0 ||
+        !iwm_sae_engine_runtime_enabled(sc) ||
         expected_generation == 0 ||
         __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
             __ATOMIC_ACQUIRE) != expected_generation ||
@@ -1364,7 +1365,8 @@ iwm_sae_engine_publish_hooks(struct iwm_softc *sc, bool enabled,
     /* The second token check is under the same generic hook writer leaf as
      * publication.  A stop which won in between leaves its own unpublish
      * authoritative; this older reopen never resurrects a hook. */
-    if (enabled && (!iwm_sae_engine_runtime_enabled(sc) ||
+    if (enabled && ((sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0 ||
+        !iwm_sae_engine_runtime_enabled(sc) ||
         __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
             __ATOMIC_ACQUIRE) != expected_generation ||
         (__atomic_load_n(&sc->sc_sae_engine_callback_state,
@@ -2952,7 +2954,7 @@ iwm_sae_engine_stop_begin(struct iwm_softc *sc)
  * lifecycle path allowed to clear the stop flag and reopen a closed hook
  * lease; deferred engine retirement uses reopen_if_current() above. */
 void ItlIwm::
-iwm_sae_engine_reopen(struct iwm_softc *sc)
+iwm_sae_engine_reopen(struct iwm_softc *sc, int radio_generation)
 {
     struct iwm_sae_engine_owner *owner;
     u_int32_t generation = 0;
@@ -2961,7 +2963,7 @@ iwm_sae_engine_reopen(struct iwm_softc *sc)
     bool may_publish = false;
     bool may_open_callback = false;
 
-    if (sc == NULL)
+    if (sc == NULL || !iwm_radio_init_current(sc, radio_generation))
         return;
     if (!iwm_sae_engine_runtime_enabled(sc) ||
         !iwm_sae_task_lifecycle_is_open(sc)) {
@@ -2982,8 +2984,10 @@ iwm_sae_engine_reopen(struct iwm_softc *sc)
         return;
     }
 
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
     IOSimpleLockLock(sc->sc_sae_engine_lock);
-    if (!sc->sc_sae_engine_detaching) {
+    if (iwm_radio_init_current_locked(sc, radio_generation) &&
+        !sc->sc_sae_engine_detaching) {
         sc->sc_sae_engine_stopping = false;
         generation = __atomic_load_n(
             &sc->sc_sae_engine_lifecycle_generation, __ATOMIC_ACQUIRE);
@@ -2999,6 +3003,7 @@ iwm_sae_engine_reopen(struct iwm_softc *sc)
         may_publish = !owner->active && sc->sc_sae_engine == NULL;
     }
     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 
     if (generation == 0 || (!pending_retire && !may_publish))
         return;
@@ -3016,11 +3021,13 @@ iwm_sae_engine_reopen(struct iwm_softc *sc)
          * one still-active cancelled tombstone.  It leaves the other hooks
          * withdrawn, schedules retirement, and lets that worker publish only
          * after it has released the old owner (and SCAN when still in AUTH). */
+        IOLockLock(sc->sc_sae_tx_lifecycle_lock);
         IOSimpleLockLock(sc->sc_sae_engine_lock);
         owner = &sc->sc_sae_engine_owner;
         pending_retire = false;
         may_publish = false;
-        if (!sc->sc_sae_engine_detaching && !sc->sc_sae_engine_stopping &&
+        if (iwm_radio_init_current_locked(sc, radio_generation) &&
+            !sc->sc_sae_engine_detaching && !sc->sc_sae_engine_stopping &&
             __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
                 __ATOMIC_ACQUIRE) == generation) {
             if (owner->active && owner->cancelled) {
@@ -3033,6 +3040,7 @@ iwm_sae_engine_reopen(struct iwm_softc *sc)
                 may_open_callback = iwm_sae_engine_callback_open(sc);
         }
         IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+        IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
         if (!may_open_callback)
             return;
     }
@@ -3041,11 +3049,13 @@ iwm_sae_engine_reopen(struct iwm_softc *sc)
      * one fresh owner snapshot so a worker which retired during the drain
      * cannot leave a lease open without either scheduling retirement or
      * restoring the complete direct-owner hook set. */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
     IOSimpleLockLock(sc->sc_sae_engine_lock);
     owner = &sc->sc_sae_engine_owner;
     pending_retire = false;
     may_publish = false;
-    if (!sc->sc_sae_engine_detaching && !sc->sc_sae_engine_stopping &&
+    if (iwm_radio_init_current_locked(sc, radio_generation) &&
+        !sc->sc_sae_engine_detaching && !sc->sc_sae_engine_stopping &&
         __atomic_load_n(&sc->sc_sae_engine_lifecycle_generation,
             __ATOMIC_ACQUIRE) == generation) {
         if (owner->active && owner->cancelled) {
@@ -3055,13 +3065,17 @@ iwm_sae_engine_reopen(struct iwm_softc *sc)
         may_publish = !owner->active && sc->sc_sae_engine == NULL;
     }
     IOSimpleLockUnlock(sc->sc_sae_engine_lock);
+    /* Keep the radio owner across the generic writer leaf. Stop cannot win
+     * SHUTDOWN between this final claim and hook publication. No callback or
+     * sleep occurs here, and the sleeping lifecycle lock precedes both leaves. */
+    if (may_publish)
+        (void)iwm_sae_engine_publish_hooks(sc, true, false, generation);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 
     if (pending_retire) {
         iwm_sae_engine_schedule_task(sc);
         return;
     }
-    if (may_publish)
-        (void)iwm_sae_engine_publish_hooks(sc, true, false, generation);
 }
 
 /* Detach is process context and executes before the IWM TX gate/lifecycle is

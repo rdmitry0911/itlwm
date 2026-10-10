@@ -79,10 +79,28 @@ attach = mac[mac.find("iwm_attach(struct iwm_softc *sc"):
              mac.find("fail5:", mac.find("iwm_attach(struct iwm_softc *sc"))]
 ordered(attach, "attach publication", "sc->sc_mfp_pae_runtime_enabled = true",
         "task_set(&sc->mfp_pae_task", "iwm_publish_mfp_capability(sc)")
-init = mac[mac.find("iwm_init(struct _ifnet *ifp"):
-           mac.find("_iwm_start_task", mac.find("iwm_init(struct _ifnet *ifp"))]
-ordered(init, "fresh PMF generation", "iwm_mfp_pae_reopen(sc)",
-        "iwm_sae_tx_reopen(sc)", "iwm_sae_engine_reopen(sc)")
+init = body(mac, "iwm_init")
+ordered(init, "owned security before first ready",
+        "iwm_mfp_pae_reopen(sc, generation)",
+        "iwm_sae_tx_reopen(sc, generation)",
+        "iwm_sae_engine_reopen(sc, generation)",
+        "iwm_radio_init_current(sc, generation)",
+        "ifp->if_flags |= IFF_RUNNING",
+        "ieee80211_begin_scan(ifp)")
+reopen = body(pmf, "iwm_mfp_pae_reopen")
+ordered(reopen, "atomic PMF admission with live init owner",
+        "IOLockLock(sc->sc_sae_tx_lifecycle_lock)",
+        "IOSimpleLockLock(sc->sc_mfp_pae_lock)",
+        "iwm_radio_init_current_locked(sc, generation)",
+        "iwm_mfp_pae_generation_advance_locked(sc)",
+        "sc->sc_mfp_pae_stopping = false",
+        "IOSimpleLockUnlock(sc->sc_mfp_pae_lock)",
+        "IOLockUnlock(sc->sc_sae_tx_lifecycle_lock)")
+current = body(mac, "iwm_radio_init_current_locked")
+for token in ("!sc->sc_sae_tx_detaching", "IWM_FLAG_SHUTDOWN",
+              "IFF_UP", "sc->sc_radio_init_refs == 1",
+              "sc->sc_radio_stop_refs == 0", "sc->sc_generation == generation"):
+    need(current, token, "live lower init owner")
 ordered(hw, "stop cancellation", "iwm_mfp_pae_abort_all(sc)",
         "ieee80211_pae_mfp_txn_abort")
 detach = body(cpp, "detach")

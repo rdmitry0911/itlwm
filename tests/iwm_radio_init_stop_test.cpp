@@ -143,6 +143,7 @@ public:
     void iwm_stop_internal(_ifnet *, bool);
     bool iwm_radio_init_begin(iwm_softc *, int *);
     bool iwm_radio_init_current(iwm_softc *, int);
+    bool iwm_radio_init_current_locked(iwm_softc *, int);
     void iwm_radio_init_end(iwm_softc *);
     bool iwm_radio_stop_begin(iwm_softc *, int *);
     void iwm_radio_stop_drain(iwm_softc *, unsigned, unsigned);
@@ -184,9 +185,9 @@ public:
     }
     void iwm_setup_ht_rates(iwm_softc *) {}
     void iwm_setup_vht_rates(iwm_softc *) {}
-    void iwm_mfp_pae_reopen(iwm_softc *) {}
-    void iwm_sae_tx_reopen(iwm_softc *) {}
-    void iwm_sae_engine_reopen(iwm_softc *) {}
+    void iwm_mfp_pae_reopen(iwm_softc *, int = 0) {}
+    void iwm_sae_tx_reopen(iwm_softc *, int = 0) {}
+    void iwm_sae_engine_reopen(iwm_softc *, int = 0) {}
     bool iwm_sae_driver_reset_recovery_pending(iwm_softc *, bool) { return false; }
     int iwm_stop_ap_resources(iwm_softc *, ApRuntime *, bool) { return 0; }
     int iwm_resume(iwm_softc *) { return 0; }

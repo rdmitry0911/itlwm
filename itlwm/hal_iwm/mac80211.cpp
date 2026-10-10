@@ -5635,16 +5635,23 @@ iwm_radio_init_begin(struct iwm_softc *sc, int *generation)
 }
 
 bool ItlIwm::
+iwm_radio_init_current_locked(struct iwm_softc *sc, int generation)
+{
+    /* Same owner fence for init and atomic security-admission claims. */
+    return !sc->sc_sae_tx_detaching &&
+        (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
+        (sc->sc_ic.ic_if.if_flags & IFF_UP) != 0 &&
+        sc->sc_radio_init_refs == 1 && sc->sc_radio_stop_refs == 0 &&
+        sc->sc_generation == generation;
+}
+
+bool ItlIwm::
 iwm_radio_init_current(struct iwm_softc *sc, int generation)
 {
     if (sc->sc_sae_tx_lifecycle_lock == NULL)
         return false;
     IOLockLock(sc->sc_sae_tx_lifecycle_lock);
-    const bool current = !sc->sc_sae_tx_detaching &&
-        (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
-        (sc->sc_ic.ic_if.if_flags & IFF_UP) != 0 &&
-        sc->sc_radio_init_refs == 1 && sc->sc_radio_stop_refs == 0 &&
-        sc->sc_generation == generation;
+    const bool current = iwm_radio_init_current_locked(sc, generation);
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
     return current;
 }
@@ -5750,6 +5757,17 @@ iwm_init(struct _ifnet *ifp)
     
     if (sc->sc_nvm.sku_cap_11ac_enable)
         iwm_setup_vht_rates(sc);
+
+    /* A ready consumer can enter AUTH before this init thread wakes. Open
+     * security under this exact init owner before publishing RUN/SCAN; no
+     * blocking callback drain belongs in the asynchronous scan worker. */
+    iwm_mfp_pae_reopen(sc, generation);
+    iwm_sae_tx_reopen(sc, generation);
+    iwm_sae_engine_reopen(sc, generation);
+    if (!that->iwm_radio_init_current(sc, generation)) {
+        err = ENXIO;
+        goto out;
+    }
     
     ifq_clr_oactive(&ifp->if_snd);
     ifq_flush(&ifp->if_snd);
@@ -5758,9 +5776,6 @@ iwm_init(struct _ifnet *ifp)
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
-        iwm_mfp_pae_reopen(sc);
-        iwm_sae_tx_reopen(sc);
-        iwm_sae_engine_reopen(sc);
         err = 0;
         goto out;
     }
@@ -5800,10 +5815,6 @@ iwm_init(struct _ifnet *ifp)
         }
     }
 
-    /* The lower firmware and its first synchronous scan state now exist. */
-    iwm_mfp_pae_reopen(sc);
-    iwm_sae_tx_reopen(sc);
-    iwm_sae_engine_reopen(sc);
     if (driver_reset_reconnect) {
         (void)that->iwm_sae_driver_reset_recovery_pending(sc, true);
         XYLog("iwm_sae_reconnect DRIVER_RESET_SCAN_STARTED\n");

@@ -593,13 +593,13 @@ iwm_sae_tx_stop_begin(struct iwm_softc *sc)
 }
 
 void ItlIwm::
-iwm_sae_tx_reopen(struct iwm_softc *sc)
+iwm_sae_tx_reopen(struct iwm_softc *sc, int generation)
 {
     if (sc == NULL || sc->sc_sae_tx_lifecycle_lock == NULL ||
         sc->sc_sae_tx_lock == NULL)
         return;
     IOLockLock(sc->sc_sae_tx_lifecycle_lock);
-    if (!sc->sc_sae_tx_detaching) {
+    if (iwm_radio_init_current_locked(sc, generation)) {
         IOSimpleLockLock(sc->sc_sae_tx_lock);
         iwm_sae_tx_generation_advance_locked(sc);
         sc->sc_sae_tx_stopping = false;

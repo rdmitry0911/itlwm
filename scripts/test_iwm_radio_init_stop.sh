@@ -22,14 +22,14 @@ source_text itlwm/hal_iwm/ItlIwm.cpp | awk '
 source_text itlwm/hal_iwm/mac80211.cpp | awk '
     /^iwm_init\(/ || /^iwm_activate\(/ { selected=1; print "int ItlIwm::" }
     /^iwm_stop(_internal)?\(/ { selected=1; print "void ItlIwm::" }
-    /^iwm_radio_(init_begin|init_current|stop_begin)\(/ { selected=1; print "bool ItlIwm::" }
+    /^iwm_radio_(init_begin|init_current|init_current_locked|stop_begin)\(/ { selected=1; print "bool ItlIwm::" }
     /^iwm_radio_(init_end|stop_drain|stop_end)\(/ { selected=1; print "void ItlIwm::" }
     selected { print } selected && /^}/ { selected=0 }
 ' >> "$init_stop_dir/lifecycle.inc"
 if [ -n "$init_stop_ref" ]; then
     # Keep historical complete bodies compilable without supplying the new
     # owner to that old body; gate-only scenarios are not historical controls.
-    awk '/^iwm_radio_init_begin\(/ || /^iwm_radio_init_current\(/ || /^iwm_radio_stop_begin\(/ { selected=1; print "bool ItlIwm::" }
+    awk '/^iwm_radio_init_begin\(/ || /^iwm_radio_init_current(_locked)?\(/ || /^iwm_radio_stop_begin\(/ { selected=1; print "bool ItlIwm::" }
         /^iwm_radio_init_end\(/ || /^iwm_radio_stop_drain\(/ || /^iwm_radio_stop_end\(/ { selected=1; print "void ItlIwm::" }
         selected { print } selected && /^}/ { selected=0 }' \
         "$root/itlwm/hal_iwm/mac80211.cpp" >> "$init_stop_dir/lifecycle.inc"

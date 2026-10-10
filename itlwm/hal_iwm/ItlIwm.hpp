@@ -473,7 +473,7 @@ public:
     void   iwm_sae_tx_retire_unsubmitted(struct iwm_softc *, uint64_t);
     void   iwm_sae_tx_cancel_all(struct iwm_softc *);
     void   iwm_sae_tx_stop_begin(struct iwm_softc *);
-    void   iwm_sae_tx_reopen(struct iwm_softc *);
+    void   iwm_sae_tx_reopen(struct iwm_softc *, int);
     void   iwm_sae_tx_detach_begin(struct iwm_softc *);
     bool   iwm_sae_tx_snapshot_reset(struct iwm_softc *,
         struct ItlSaeAuthTransportEventV1 *);
@@ -514,7 +514,7 @@ public:
     static void iwm_sae_peer_timer_event(OSObject *, IOInterruptEventSource *, int);
     static void iwm_sae_peer_timer_timeout(OSObject *, IOTimerEventSource *);
     void iwm_sae_engine_stop_begin(struct iwm_softc *);
-    void iwm_sae_engine_reopen(struct iwm_softc *);
+    void iwm_sae_engine_reopen(struct iwm_softc *, int);
     void iwm_sae_engine_detach_begin(struct iwm_softc *);
     void iwm_sae_wcl_stop_begin(struct iwm_softc *);
     void iwm_sae_wcl_detach_begin(struct iwm_softc *);
@@ -530,7 +530,7 @@ public:
         u_int8_t);
     static void iwm_pae_mfp_txn_cancel(struct ieee80211com *, u_int64_t);
     static int iwm_pae_mfp_txn_finish(struct ieee80211com *, u_int64_t);
-    void iwm_mfp_pae_reopen(struct iwm_softc *);
+    void iwm_mfp_pae_reopen(struct iwm_softc *, int);
     void iwm_publish_mfp_capability(struct iwm_softc *);
     void iwm_mfp_pae_abort_all(struct iwm_softc *);
     void iwm_mfp_pae_detach_begin(struct iwm_softc *);
@@ -683,6 +683,8 @@ public:
     int    iwm_init(struct _ifnet *);
     bool   iwm_radio_init_begin(struct iwm_softc *, int *);
     bool   iwm_radio_init_current(struct iwm_softc *, int);
+    /* Caller holds sc_sae_tx_lifecycle_lock, before any security leaf. */
+    bool   iwm_radio_init_current_locked(struct iwm_softc *, int);
     void   iwm_radio_init_end(struct iwm_softc *);
     bool   iwm_radio_stop_begin(struct iwm_softc *, int *);
     void   iwm_radio_stop_drain(struct iwm_softc *, uint32_t, uint32_t);

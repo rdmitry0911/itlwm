@@ -204,16 +204,22 @@ iwm_mfp_pae_generation_advance_locked(struct iwm_softc *sc)
  * still be unwinding, but their saved generation can no longer publish or
  * complete against this new one. */
 void ItlIwm::
-iwm_mfp_pae_reopen(struct iwm_softc *sc)
+iwm_mfp_pae_reopen(struct iwm_softc *sc, int generation)
 {
-    if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL ||
+        sc->sc_sae_tx_lifecycle_lock == NULL)
         return;
+    /* Init lifetime precedes the PMF leaf, never the reverse. A stale init
+     * cannot reopen the software-key owner after stop has closed its epoch. */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
     IOSimpleLockLock(sc->sc_mfp_pae_lock);
-    if (!sc->sc_mfp_pae_detaching) {
+    if (iwm_radio_init_current_locked(sc, generation) &&
+        !sc->sc_mfp_pae_detaching) {
         iwm_mfp_pae_generation_advance_locked(sc);
         sc->sc_mfp_pae_stopping = false;
     }
     IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 }
 
 /* Caller holds sc_mfp_pae_lock.  A worker keeps task_active set, so it alone

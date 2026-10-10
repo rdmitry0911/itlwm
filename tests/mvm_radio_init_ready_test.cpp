@@ -102,9 +102,18 @@ public:
     void mvm_setup_ht_rates(mvm_softc *) {}
     void mvm_setup_vht_rates(mvm_softc *) {}
     void mvm_setup_he_rates(mvm_softc *) {}
-    void mvm_mfp_pae_reopen(mvm_softc *) { mfpOpen=true; ++opens; }
-    void mvm_sae_tx_reopen(mvm_softc *) { txOpen=true; ++opens; }
-    void mvm_sae_engine_reopen(mvm_softc *) { engineOpen=true; ++opens; }
+    void mvm_mfp_pae_reopen(mvm_softc *, int generation=0) {
+        if (generation) assert(generation==com.sc_generation);
+        mfpOpen=true; ++opens;
+    }
+    void mvm_sae_tx_reopen(mvm_softc *, int generation=0) {
+        if (generation) assert(generation==com.sc_generation);
+        txOpen=true; ++opens;
+    }
+    void mvm_sae_engine_reopen(mvm_softc *, int generation=0) {
+        if (generation) assert(generation==com.sc_generation);
+        engineOpen=true; ++opens;
+    }
     bool mvm_sae_driver_reset_recovery_pending(mvm_softc *, bool consume) {
         const bool pending=resetReconnect;
         if (consume) resetReconnect=false;

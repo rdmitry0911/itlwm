@@ -35,9 +35,7 @@ if [ "$scenario" = all ]; then
         reset-replacement shutdown-replacement monitor receipt-validity; do
         "$init_test_dir/test" "$init_case"
     done
-    if [ "$family" = iwx ]; then
-        "$init_test_dir/test" security-before-ready
-    fi
+    "$init_test_dir/test" security-before-ready
 else
     "$init_test_dir/test" "$scenario"
 fi
