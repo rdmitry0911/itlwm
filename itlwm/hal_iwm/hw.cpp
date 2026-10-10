@@ -923,7 +923,11 @@ iwm_nic_init(struct iwm_softc *sc)
 {
     int err;
     
-    iwm_apm_init(sc);
+    /* A failed MAC clock admission cannot authorize peripheral or DMA
+     * setup. Preserve this error for start_fw and its owned init cleanup. */
+    err = iwm_apm_init(sc);
+    if (err)
+        return err;
     if (sc->sc_device_family == IWM_DEVICE_FAMILY_7000)
         iwm_set_bits_mask_prph(sc, IWM_APMG_PS_CTRL_REG,
                                IWM_APMG_PS_CTRL_VAL_PWR_SRC_VMAIN,
