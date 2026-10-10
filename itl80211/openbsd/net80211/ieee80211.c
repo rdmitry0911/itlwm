@@ -741,6 +741,11 @@ ieee80211_begin_wnm_bgscan(struct _ifnet *ifp)
 	 * gate or deliver an early physical terminal.  Fresh results must not
 	 * be deleted, or BGSCAN resurrected, after that terminal returns. */
 	ieee80211_free_allnodes(ic, 0);
+	/* Node retirement can invoke lower callbacks. Do not publish scan flags
+	 * or submit a command for a successor association or replacement BTM. */
+	if (generation !=
+	    ieee80211_wnm_bss_transition_request_generation(ic))
+		return ECANCELED;
 	const u_int32_t previous_scan_flags = ic->ic_flags &
 	    (IEEE80211_F_BGSCAN | IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
 	ic->ic_flags |= IEEE80211_F_BGSCAN;

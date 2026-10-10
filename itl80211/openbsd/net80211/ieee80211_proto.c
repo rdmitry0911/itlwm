@@ -934,6 +934,36 @@ ieee80211_wnm_bss_transition_clear_locked(struct ieee80211com *ic)
 	    sizeof(ic->ic_wnm_bss_transition));
 }
 
+/* Caller holds the selected-BSS leaf. A request generation distinguishes
+ * BTM replacements, not an independent native join or same-BSS reconnect.
+ * Before candidate confirmation, every scan action still belongs to the
+ * exact RUN source. Retire only that logical request, never a HAL scan lease.
+ * Confirmed candidates retain their existing descriptor-fenced handoff. */
+static void
+ieee80211_wnm_bss_transition_validate_scan_source_locked(
+    struct ieee80211com *ic)
+{
+	struct ieee80211_wnm_bss_transition *transition;
+
+	if (ic == NULL)
+		return;
+	transition = &ic->ic_wnm_bss_transition;
+	if (transition->active == 0 || transition->candidate_confirmed != 0)
+		return;
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL ||
+	    transition->source_epoch == 0 ||
+	    transition->source_epoch != __atomic_load_n(
+	    &ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) ||
+	    transition->ssid_len == 0 ||
+	    transition->ssid_len > IEEE80211_NWID_LEN ||
+	    !IEEE80211_ADDR_EQ(transition->source_bssid, ic->ic_bss->ni_bssid) ||
+	    transition->ssid_len != ic->ic_bss->ni_esslen ||
+	    memcmp(transition->ssid, ic->ic_bss->ni_essid,
+	    transition->ssid_len) != 0)
+		ieee80211_wnm_bss_transition_clear_locked(ic);
+}
+
 static int
 ieee80211_bssid_is_unicast_nonzero(
     const u_int8_t bssid[IEEE80211_ADDR_LEN])
@@ -1015,6 +1045,7 @@ ieee80211_wnm_bss_transition_arm(struct ieee80211com *ic,
 	IOSimpleLock *lock;
 	IOInterruptState irq;
 	struct ieee80211_wnm_bss_transition *transition;
+	u_int64_t source_epoch;
 	int armed = 0;
 
 	if (ic == NULL || source_bssid == NULL || target_bssid == NULL ||
@@ -1027,7 +1058,9 @@ ieee80211_wnm_bss_transition_arm(struct ieee80211com *ic,
 		return 0;
 
 	irq = IOSimpleLockLockDisableInterrupt(lock);
-	if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+	source_epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (source_epoch != 0 && ic->ic_state == IEEE80211_S_RUN &&
+	    ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss != NULL &&
 	    IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, source_bssid) &&
 	    ic->ic_bss->ni_esslen == ssid_len &&
 	    memcmp(ic->ic_bss->ni_essid, ssid, ssid_len) == 0) {
@@ -1037,6 +1070,7 @@ ieee80211_wnm_bss_transition_arm(struct ieee80211com *ic,
 			++ic->ic_wnm_bss_transition_next_request;
 		transition->request_generation =
 		    ic->ic_wnm_bss_transition_next_request;
+		transition->source_epoch = source_epoch;
 		IEEE80211_ADDR_COPY(transition->source_bssid, source_bssid);
 		IEEE80211_ADDR_COPY(transition->target_bssid, target_bssid);
 		memcpy(transition->ssid, ssid, ssid_len);
@@ -1079,6 +1113,7 @@ ieee80211_wnm_bss_transition_defer_fresh_scan(struct ieee80211com *ic)
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0 &&
 	    transition->candidate_confirmed == 0) {
@@ -1101,6 +1136,7 @@ ieee80211_wnm_bss_transition_fresh_scan_pending(struct ieee80211com *ic)
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	pending = transition->active != 0 &&
 	    transition->candidate_confirmed == 0 &&
@@ -1120,6 +1156,7 @@ ieee80211_wnm_bss_transition_request_generation(struct ieee80211com *ic)
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0)
 		generation = transition->request_generation;
@@ -1138,6 +1175,7 @@ ieee80211_wnm_bss_transition_retry_fresh_scan(struct ieee80211com *ic)
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0 &&
 	    transition->candidate_confirmed == 0 &&
@@ -1160,6 +1198,7 @@ ieee80211_wnm_bss_transition_fresh_scan_started(struct ieee80211com *ic)
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0) {
 		transition->fresh_scan_pending = 0;
@@ -1181,6 +1220,7 @@ ieee80211_wnm_bss_transition_candidate_disposition(
 	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0) {
 		disposition =
@@ -1210,6 +1250,7 @@ ieee80211_wnm_bss_transition_active(struct ieee80211com *ic,
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0) {
 		active = 1;
@@ -1231,6 +1272,7 @@ ieee80211_wnm_bss_transition_scan_start(struct ieee80211com *ic)
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0 &&
 	    transition->candidate_confirmed == 0 &&
@@ -1268,6 +1310,7 @@ ieee80211_wnm_bss_transition_scan_owns_admission(
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	owns = transition->active != 0 && transition->scan_starting != 0;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
@@ -1289,6 +1332,7 @@ ieee80211_wnm_bss_transition_target_channel(struct ieee80211com *ic,
 	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0 && transition->scan_starting != 0 &&
 	    transition->target_channel != 0) {
@@ -1318,6 +1362,7 @@ ieee80211_wnm_bss_transition_confirm_candidate(
 	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return 0;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_wnm_bss_transition_validate_scan_source_locked(ic);
 	transition = &ic->ic_wnm_bss_transition;
 	if (transition->active != 0 &&
 	    IEEE80211_ADDR_EQ(transition->target_bssid, ni->ni_bssid) &&

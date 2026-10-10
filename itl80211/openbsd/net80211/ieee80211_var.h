@@ -635,6 +635,7 @@ struct ieee80211_public_initial_bssid_pin {
  */
 struct ieee80211_wnm_bss_transition {
 	u_int64_t		request_generation;
+	u_int64_t		source_epoch;
 	u_int8_t		source_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t		target_bssid[IEEE80211_ADDR_LEN];
 	u_int8_t		ssid[IEEE80211_NWID_LEN];

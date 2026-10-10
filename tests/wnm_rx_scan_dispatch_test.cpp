@@ -36,6 +36,7 @@ struct _ifnet { unsigned unused=0; };
 struct ieee80211_node {
     u_int8_t ni_bssid[6]{2,1,2,3,4,5}, ni_essid[32]{'L','a','b'};
     u_int8_t ni_esslen=3, ni_port_valid=1;
+    unsigned ni_chan=13;
 };
 struct ieee80211_frame { u_int8_t prefix[10],i_addr2[6],suffix[8]; };
 static_assert(sizeof(ieee80211_frame)==24,"wire header");
@@ -52,15 +53,17 @@ struct ieee80211com {
     IOSimpleLock *ic_pae_selected_bss_lock=nullptr;
     ieee80211_wnm_bss_transition ic_wnm_bss_transition{};
     u_int64_t ic_wnm_bss_transition_next_request=0;
+    u_int64_t ic_pae_assoc_epoch=1;
     CTimeout *ic_wnm_bgscan_retry_timeout=nullptr;
     int (*ic_bgscan_start)(ieee80211com *,u_int64_t)=nullptr;
     int (*ic_bgscan_abort)(ieee80211com *,u_int64_t)=nullptr;
 };
 int ieee80211_begin_wnm_bgscan(_ifnet *);
+static unsigned ieee80211_chan2ieee(ieee80211com *,unsigned channel) { return channel; }
 static unsigned starts,aborts,blocked_commands,timers,rejections,node_clears;
 static int start_result,abort_result,timer_result,last_delay;
 static bool async_abort;
-static std::function<void(ieee80211com *)> start_hook,abort_hook;
+static std::function<void(ieee80211com *)> start_hook,abort_hook,node_clear_hook;
 static int timeout_add_msec(CTimeout **,int delay) {
     assert(!leaf_held); ++timers; last_delay=delay; return timer_result;
 }
@@ -69,8 +72,9 @@ static int ieee80211_send_bss_transition_response(ieee80211com *,
     assert(!leaf_held && status==IEEE80211_WNM_BSS_TM_REJECT_NO_SUITABLE);
     ++rejections; return 0;
 }
-static void ieee80211_free_allnodes(ieee80211com *,int keep) {
+static void ieee80211_free_allnodes(ieee80211com *ic,int keep) {
     assert(!leaf_held && !on_irq_thread && keep==0); ++node_clears;
+    if(node_clear_hook) node_clear_hook(ic);
 }
 static int lower_start(ieee80211com *ic,u_int64_t serial) {
     assert(!leaf_held && !serial); ++starts;
@@ -116,7 +120,7 @@ static void reset() {
     assert(!leaf_held && !on_irq_thread);
     starts=aborts=blocked_commands=timers=rejections=node_clears=0;
     start_result=abort_result=last_delay=0; timer_result=1; async_abort=false;
-    start_hook={}; abort_hook={};
+    start_hook={}; abort_hook={}; node_clear_hook={};
 }
 static void rx_control(bool busy) {
     reset(); Fixture f;
@@ -196,8 +200,123 @@ static unsigned matrix() {
     }
     return cases;
 }
+static void source_replacement_control(bool during_abort,unsigned replacement) {
+    reset(); Fixture f;
+    if(during_abort) f.ic.ic_flags|=IEEE80211_F_BGSCAN;
+    f.receive();
+    const auto old=f.generation();
+    auto source_changed=[&](ieee80211com *) {
+        // Explicit current-BSS replacement boundary, not a fabricated BTM.
+        // A native join can replace this public association without arming
+        // another BTM request or changing its retained request generation.
+        if(replacement==1) f.node.ni_essid[0]='N';
+        else if(replacement==2) ++f.ic.ic_pae_assoc_epoch;
+        else f.node.ni_bssid[5]^=1;
+        assert(f.ic.ic_wnm_bss_transition.request_generation==old);
+    };
+    if(during_abort) abort_hook=source_changed; else source_changed(&f.ic);
+    f.worker();
+    std::fprintf(stderr,"actual BTM source replacement duringAbort=%u replacement=%u "
+        "start=%u abort=%u nodeClears=%u rejects=%u active=%u\n",
+        during_abort,replacement,starts,aborts,node_clears,rejections,
+        f.ic.ic_wnm_bss_transition.active);
+    assert(!starts && !node_clears && !rejections);
+    assert(!f.ic.ic_wnm_bss_transition.active);
+}
+static void change_source(Fixture &f,unsigned replacement) {
+    switch(replacement) {
+    case 0: f.node.ni_bssid[5]^=1; break;
+    case 1: f.node.ni_essid[0]='N'; break;
+    case 2: ++f.ic.ic_pae_assoc_epoch; break;
+    case 3: f.ic.ic_pae_assoc_epoch=0; break;
+    case 4: f.ic.ic_state=0; break;
+    case 5: f.ic.ic_opmode=2; break;
+    case 6: f.ic.ic_bss=nullptr; break;
+    case 7: f.node.ni_esslen=33; break;
+    case 8: f.ic.ic_wnm_bss_transition.ssid_len=33; break;
+    default: assert(false);
+    }
+}
+static void node_clear_source_control() {
+    reset(); Fixture f; f.receive();
+    node_clear_hook=[&](ieee80211com *) {
+        change_source(f,2);
+        f.ic.ic_flags=IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+    }; // Explicit node-release callback boundary; not real firmware.
+    f.worker();
+    std::fprintf(stderr,"actual BTM source replacement during node release "
+        "starts=%u nodeClears=%u flags=%u active=%u\n",starts,node_clears,
+        f.ic.ic_flags,f.ic.ic_wnm_bss_transition.active);
+    assert(!starts && node_clears==1 && !rejections);
+    assert(!f.ic.ic_wnm_bss_transition.active);
+    assert(f.ic.ic_flags==IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
+}
+static unsigned source_matrix() {
+    unsigned cases=0;
+    for(unsigned replacement=0;replacement<9;++replacement) {
+        for(bool during_abort : {false,true}) {
+            reset(); Fixture f; if(during_abort) f.ic.ic_flags|=IEEE80211_F_BGSCAN;
+            f.receive();
+            if(during_abort) abort_hook=[&](ieee80211com *) { change_source(f,replacement); };
+            else change_source(f,replacement);
+            f.worker();
+            assert(!starts && !node_clears && !rejections);
+            assert(!f.ic.ic_wnm_bss_transition.active && timers==1); ++cases;
+        }
+        for(int error : {0,EIO}) {
+            reset(); Fixture f; f.receive(); start_result=error;
+            start_hook=[&](ieee80211com *) {
+                change_source(f,replacement);
+                f.ic.ic_flags=IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+            };
+            f.worker();
+            assert(starts==1 && node_clears==1 && !rejections && timers==1);
+            assert(!f.ic.ic_wnm_bss_transition.active);
+            assert(f.ic.ic_flags==IEEE80211_F_DISABLE_BG_AUTO_CONNECT); ++cases;
+        }
+        for(bool confirm : {false,true}) {
+            reset(); Fixture f; f.receive(); ieee80211_node target;
+            IEEE80211_ADDR_COPY(target.ni_bssid,f.ic.ic_wnm_bss_transition.target_bssid);
+            change_source(f,replacement);
+            u_int8_t token=99,bssid[6]={1,1,1,1,1,1};
+            if(confirm) {
+                assert(!ieee80211_wnm_bss_transition_confirm_candidate(&f.ic,&target,&token,bssid));
+                assert(!token && std::all_of(bssid,bssid+6,[](auto b) { return b==0; }));
+            } else assert(!ieee80211_wnm_bss_transition_candidate_disposition(&f.ic,&target));
+            assert(!f.ic.ic_wnm_bss_transition.active && !starts && !rejections); ++cases;
+        }
+    }
+    for(unsigned replacement=0;replacement<7;++replacement) {
+        reset(); Fixture f; f.receive(); ieee80211_node target;
+        IEEE80211_ADDR_COPY(target.ni_bssid,f.ic.ic_wnm_bss_transition.target_bssid);
+        u_int8_t token=0,bssid[6]{}; const auto generation=f.generation();
+        assert(ieee80211_wnm_bss_transition_confirm_candidate(&f.ic,&target,&token,bssid));
+        change_source(f,replacement);
+        // The scan-source guard must not cancel the separate confirmed
+        // descriptor/retarget continuation merely because it left RUN.
+        assert(f.generation()==generation && f.ic.ic_wnm_bss_transition.candidate_confirmed);
+        f.worker(); assert(!starts && !aborts && !node_clears && !rejections); ++cases;
+    }
+    { reset(); Fixture f; f.ic.ic_pae_assoc_epoch=0; f.receive();
+      assert(!f.generation() && !starts && !aborts && !timers && rejections==1); ++cases; }
+    { reset(); Fixture f; f.ic.ic_pae_assoc_epoch=UINT64_MAX; f.receive();
+      f.ic.ic_pae_assoc_epoch=1; f.worker();
+      assert(!f.generation() && !starts && !node_clears && !rejections); ++cases; }
+    { reset(); Fixture f; f.receive(); node_clear_hook=[&](ieee80211com *) { f.receive(); };
+      f.worker(); assert(!starts && node_clears==1 && !rejections);
+      assert(f.generation() && f.ic.ic_wnm_bss_transition.fresh_scan_pending); ++cases; }
+    node_clear_source_control(); ++cases;
+    return cases;
+}
 int main(int argc,char **argv) {
     if(argc==2 && std::strcmp(argv[1],"rx-idle")==0) rx_control(false);
     else if(argc==2 && std::strcmp(argv[1],"rx-busy")==0) rx_control(true);
-    else std::printf("actual BTM RX/callout dispatch: %u scenarios passed\n",matrix());
+    else if(argc==2 && std::strcmp(argv[1],"source-replaced")==0) source_replacement_control(false,0);
+    else if(argc==2 && std::strcmp(argv[1],"ess-replaced")==0) source_replacement_control(false,1);
+    else if(argc==2 && std::strcmp(argv[1],"epoch-replaced")==0) source_replacement_control(false,2);
+    else if(argc==2 && std::strcmp(argv[1],"source-replaced-during-abort")==0) source_replacement_control(true,0);
+    else if(argc==2 && std::strcmp(argv[1],"ess-replaced-during-abort")==0) source_replacement_control(true,1);
+    else if(argc==2 && std::strcmp(argv[1],"epoch-replaced-during-abort")==0) source_replacement_control(true,2);
+    else if(argc==2 && std::strcmp(argv[1],"source-replaced-during-node-release")==0) node_clear_source_control();
+    else std::printf("actual BTM RX/callout dispatch: %u scenarios passed\n",matrix()+source_matrix());
 }

@@ -10,11 +10,14 @@ awk '/^struct ieee80211_wnm_bss_transition \{/ { selected=1 }
      selected { print } selected && /^};/ { selected=0 }' \
     "$root/itl80211/openbsd/net80211/ieee80211_var.h" > "$wnm_test_dir/wnm-record.inc"
 {
-    awk '/^ieee80211_(wnm_bss_transition_clear_locked|wnm_bss_transition_clear|wnm_bss_transition_fresh_scan_started|wnm_bss_transition_scan_end)\(/ { selected=1; print "void" }
+    if [ -n "${BTM_SOURCE_NEGATIVE_REF:-}" ]; then
+        git -C "$root" show "$BTM_SOURCE_NEGATIVE_REF:itl80211/openbsd/net80211/ieee80211_proto.c"
+    else
+        sed -n '1,$p' "$root/itl80211/openbsd/net80211/ieee80211_proto.c"
+    fi | awk '/^ieee80211_(wnm_bss_transition_clear_locked|wnm_bss_transition_validate_scan_source_locked|wnm_bss_transition_clear|wnm_bss_transition_fresh_scan_started|wnm_bss_transition_scan_end)\(/ { selected=1; print "void" }
          /^ieee80211_wnm_bss_transition_request_generation\(/ { selected=1; print "u_int64_t" }
-         /^ieee80211_(bssid_is_unicast_nonzero|wnm_bss_transition_arm|wnm_bss_transition_defer_fresh_scan|wnm_bss_transition_fresh_scan_pending|wnm_bss_transition_retry_fresh_scan|wnm_bss_transition_active|wnm_bss_transition_scan_start)\(/ { selected=1; print "int" }
-         selected { print } selected && /^}/ { selected=0 }' \
-        "$root/itl80211/openbsd/net80211/ieee80211_proto.c"
+         /^ieee80211_(bssid_is_unicast_nonzero|wnm_bss_transition_arm|wnm_bss_transition_defer_fresh_scan|wnm_bss_transition_fresh_scan_pending|wnm_bss_transition_retry_fresh_scan|wnm_bss_transition_active|wnm_bss_transition_scan_start|wnm_bss_transition_candidate_disposition|wnm_bss_transition_confirm_candidate)\(/ { selected=1; print "int" }
+         selected { print } selected && /^}/ { selected=0 }'
     for wnm_source in ieee80211_input.c ieee80211.c; do
         if [ -n "${BTM_RX_NEGATIVE_REF:-}" ]; then
             git -C "$root" show "$BTM_RX_NEGATIVE_REF:itl80211/openbsd/net80211/$wnm_source"
