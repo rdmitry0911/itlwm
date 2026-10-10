@@ -94,8 +94,9 @@ Private activation `activation-20261010T122605Z` preserves four companions
 and rollback, reaches READY and verifies complete installed bundle equality.
 One guarded guest reboot loads the exact UUID. The first postboot observation
 returns connection reset; the next verifies the new boot, full bundle and en2
-management. The original dirty checkout, physical host 10.90.10.22, VM base
-and running overlay are outside this cycle's installation mutations.
+management. The original dirty checkout and physical host 10.90.10.22 are
+untouched. No host side rewrite or replacement of the VM base or overlay is
+performed; the guest installation naturally writes its existing overlay.
 
 Two exact private monitor observations show paused suspended state and serial
 records ACPI SLEEP. Power history records 77 seconds of actual S3, power button
