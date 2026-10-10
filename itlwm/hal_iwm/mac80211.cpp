@@ -1576,11 +1576,23 @@ iwm_rx_bmiss(struct iwm_softc *sc, struct iwm_rx_packet *pkt,
 {
     struct ieee80211com *ic = &sc->sc_ic;
     ItlIwm *that = container_of(sc, ItlIwm, com);
-    struct iwm_missed_beacons_notif *mbn = (struct iwm_missed_beacons_notif *)pkt->data;
+    const struct iwm_missed_beacons_notif *mbn;
+    const struct iwm_node *in;
     uint32_t missed;
+
+    if (pkt == NULL || iwm_rx_packet_len(pkt) <
+        sizeof(pkt->hdr) + sizeof(*mbn))
+        return;
+    mbn = (const struct iwm_missed_beacons_notif *)pkt->data;
     
     if ((ic->ic_opmode != IEEE80211_M_STA) ||
         (ic->ic_state != IEEE80211_S_RUN))
+        return;
+
+    /* API v3 carries a MAC ID, not an ID-and-color command token. A
+     * notification for another firmware context must not retire this STA. */
+    in = (const struct iwm_node *)ic->ic_bss;
+    if (in == NULL || le32toh(mbn->mac_id) != in->in_id)
         return;
     
     //        bus_dmamap_sync(sc->sc_dmat, data->map, sizeof(*pkt),

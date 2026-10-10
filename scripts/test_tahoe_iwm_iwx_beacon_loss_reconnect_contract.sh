@@ -44,6 +44,17 @@ for family, (path, start_marker, end_marker) in families.items():
     if start < 0 or end < 0:
         fail(f"missing bounded {family} missed-beacon handler")
     handler = text[start:end]
+    backend = family.lower()
+    ordered(
+        handler,
+        f"{family} complete payload and current MAC before loss admission",
+        "pkt == NULL",
+        f"{backend}_rx_packet_len(pkt) <",
+        "sizeof(pkt->hdr) + sizeof(*mbn)",
+        f"mbn = (const struct {backend}_missed_beacons_notif *)pkt->data",
+        "in == NULL || le32toh(mbn->mac_id) != in->in_id",
+        "missed = le32toh(mbn->consec_missed_beacons_since_last_rx)",
+    )
     ordered(
         handler,
         f"{family} firmware threshold to reconnect transition",

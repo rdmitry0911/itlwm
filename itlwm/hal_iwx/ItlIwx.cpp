@@ -10929,11 +10929,23 @@ iwx_rx_bmiss(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
 {
     struct ieee80211com *ic = &sc->sc_ic;
     ItlIwx *that = container_of(sc, ItlIwx, com);
-    struct iwx_missed_beacons_notif *mbn = (struct iwx_missed_beacons_notif *)pkt->data;
+    const struct iwx_missed_beacons_notif *mbn;
+    const struct iwx_node *in;
     uint32_t missed;
+
+    if (pkt == NULL || iwx_rx_packet_len(pkt) <
+        sizeof(pkt->hdr) + sizeof(*mbn))
+        return;
+    mbn = (const struct iwx_missed_beacons_notif *)pkt->data;
     
     if ((ic->ic_opmode != IEEE80211_M_STA) ||
         (ic->ic_state != IEEE80211_S_RUN))
+        return;
+
+    /* API v3 carries a MAC ID, not an ID-and-color command token. A
+     * notification for another firmware context must not retire this STA. */
+    in = (const struct iwx_node *)ic->ic_bss;
+    if (in == NULL || le32toh(mbn->mac_id) != in->in_id)
         return;
     
     //    bus_dmamap_sync(sc->sc_dmat, data->map, sizeof(*pkt),
@@ -10941,7 +10953,6 @@ iwx_rx_bmiss(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
     
     missed = le32toh(mbn->consec_missed_beacons_since_last_rx);
     if (missed > ic->ic_bmissthres && ic->ic_mgt_timer == 0) {
-        struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
         XYLog("%s: IWX_BMISS mac=0x%x current=0x%x since_rx=%u "
               "consecutive=%u expected=%u received=%u state=%u "
               "ic_flags=0x%x sc_flags=0x%x associd=0x%x dtim=%u/%u\n",
