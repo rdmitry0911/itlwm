@@ -96,3 +96,52 @@ therefore remains open for IWX hardware qualification.
 Evidence is retained under
 `scratch/iwm-9260-runtime-20261009.mo5CXe` in the aiam workspace with the
 `iwx-gate-*` prefix.
+
+## Exact committed build and loaded regression
+
+Production `281f2d51c19c4a0db84010eb030b2e86e1b89c88` is committed, pushed
+and independently matched to the remote branch. The complete payload aggregate
+passes on Linux and on the exact committed macOS guest checkout. Kernel build
+passes and all 1088 imports resolve against the running guest's
+`/System/Library/KernelCollections/BootKernelExtensions.kc` on Tahoe 25C56.
+The original dirty guest checkout and physical host 10.90.10.22 remain untouched.
+
+An isolated AuxKC transaction preserves the four companion members and rollback,
+returns zero and reaches READY. Independent full installed bundle equality and
+the READY summary pass before one guarded guest reboot. The first postboot
+observation returns SSH 255; the second has a banner timeout; the third verifies
+the exact new loaded image and management. No installation or reboot is replayed.
+
+- Boot session: `9A5DA19B-9BED-40E7-BE7D-07BEFEB5AD38`.
+- Mach-O UUID: `C5D0499A-28E4-3725-869F-F63CBBE337D5`.
+- Mach-O SHA256: `6d8452c868979898706a3f19f09809bd0cf75fd896a1a3e8c0fb0f6b491056c6`.
+
+Real S3 is confirmed by two private monitor observations of paused suspended
+state and serial ACPI SLEEP. Power history records 44 seconds of sleep,
+WakeTime 1.331 seconds and the existing WindowServer 30 second notification
+timeout. Private system_wakeup restores the same boot, exact loaded image,
+full bundle equality and en2 management without VM restart or overlay change.
+
+Four native postwake Off and On controls finish with exit zero and retain Off
+readbacks and en2. The completed FBT trace has both its COMPLETE marker and
+normal remote DTrace and SSH exit zero. Initial IWM disable succeeds in
+669.220 milliseconds; two queue stops return in 11.261 and 15.939 microseconds.
+Postwake native On returns `0xe00002d8` in 1.836, 1.892, 1.874 and 1.909
+milliseconds. The utility process exit zero is not radio success. No actual IWX
+sender or stop entry occurs on this IWM device; the regression does not qualify
+the changed IWX firmware path or successful IWM on air association.
+
+## Additional laboratory release
+
+The archive contains the exact installed and loaded bundle without a rebuild.
+Build, installed and extracted bundles compare equal. SCP completes with zero
+before independent local size and SHA256 checks and upload.
+
+- Asset: [AirportItlwm-Tahoe-Iwx-CommandGate-281f2d51.kext.zip](https://github.com/rdmitry0911/itlwm/releases/download/v2.4.0-alpha/AirportItlwm-Tahoe-Iwx-CommandGate-281f2d51.kext.zip).
+- Asset ID: `627703422`; size: 15,716,748 bytes.
+- ZIP SHA256: `1922eddf75555373de5fd7c7bf2c259d0ca5265e91962d907a4c69dacb38a07a`.
+
+A fresh final API read verifies all twelve older assets and immutable metadata
+unchanged, complete previous notes as an exact suffix, and the default asset
+unchanged. This additional unsigned Debug LAB asset is explicitly labelled with
+the IWM S3 regression scope and lack of current IWX on air qualification.
