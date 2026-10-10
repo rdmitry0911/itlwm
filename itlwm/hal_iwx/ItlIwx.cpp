@@ -7516,7 +7516,11 @@ iwx_nic_init(struct iwx_softc *sc)
 {
     int err;
 
-    iwx_apm_init(sc);
+    /* Preserve failed clock stabilization before configuring peripherals
+     * or RX. start_fw already propagates this error to owned init cleanup. */
+    err = iwx_apm_init(sc);
+    if (err)
+        return err;
     iwx_nic_config(sc);
 
     err = iwx_nic_rx_init(sc);
