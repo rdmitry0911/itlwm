@@ -145,3 +145,9 @@ the preceding boot as a post reboot guard. First revalidate PCI binding,
 loaded identity and hardware RFKILL. If radio admission becomes available,
 the repeated native GUI and saved network matrix remains the first runtime
 qualification task.
+
+One guarded guest shutdown completes normally with CPU halted and power off.
+The owned QEMU unit reports inactive and dead, MainPID zero and success.
+No forced QEMU termination or other VM action is used. The host copy of the
+archive verifies against the recorded SHA256 before shutdown. Laboratory
+cycles are held for the user requested host reboot.
