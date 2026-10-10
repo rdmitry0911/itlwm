@@ -22,13 +22,9 @@ for standard in 11 17; do
         -o "$SCAN_TEST_DIR/lease$standard"
     "$SCAN_TEST_DIR/lease$standard"
 done
-awk '/^iwm_send_cmd\(/ { selected=1; print "int ItlIwm::" }
-     /^iwm_radio_abort_command_waits\(/ { selected=1; print "void ItlIwm::" }
-     selected { print }
-     selected && /^}/ { selected=0 }' \
-    "$PROJECT_DIR/itlwm/hal_iwm/phy.cpp" > "$SCAN_TEST_DIR/iwm-send-cmd.inc"
+bash "$PROJECT_DIR/scripts/extract_iwm_command_queue.sh" > "$SCAN_TEST_DIR/iwm-send-cmd.inc"
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror \
-    -Wno-sign-compare -g -fsanitize=address,undefined \
+    -Wno-sign-compare -g -pthread -fsanitize=address,undefined \
     -fno-omit-frame-pointer -I "$PROJECT_DIR" -I "$SCAN_TEST_DIR" \
     "$PROJECT_DIR/tests/iwm_scan_command_submission_test.cpp" \
     -o "$SCAN_TEST_DIR/iwm-sender"
@@ -37,6 +33,10 @@ awk '/^iwm_send_cmd\(/ { selected=1; print "int ItlIwm::" }
 "$SCAN_TEST_DIR/iwm-sender" stop-before-wait
 "$SCAN_TEST_DIR/iwm-sender" stop-during-wait
 "$SCAN_TEST_DIR/iwm-sender" abort-partial-ring
+"$SCAN_TEST_DIR/iwm-sender" ack-before-wait
+"$SCAN_TEST_DIR/iwm-sender" ack-before-wait-dma
+"$SCAN_TEST_DIR/iwm-sender" command-slot-matrix
+"$SCAN_TEST_DIR/iwm-sender" command-slot-threaded
 awk '/^iwx_send_cmd\(/ { selected=1; print "int ItlIwx::" }
     /^txQueueAllocationCurrentLocked\(/ { selected=1; print "bool ItlIwx::" }
      selected { print }

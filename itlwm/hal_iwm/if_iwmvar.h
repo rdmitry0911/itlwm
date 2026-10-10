@@ -394,6 +394,8 @@ struct iwm_ucode_status {
 
 #define IWM_CMD_RESP_MAX PAGE_SIZE
 
+#include "IwmCommandSlot.hpp"
+
 /* lower blocks contain EEPROM image and calibration data */
 #define IWM_OTP_LOW_IMAGE_SIZE_FAMILY_7000     16384
 #define IWM_OTP_LOW_IMAGE_SIZE_FAMILY_8000    32768
@@ -770,6 +772,18 @@ struct iwm_softc {
 
 	uint8_t *sc_cmd_resp_pkt[IWM_TX_RING_COUNT];
 	size_t sc_cmd_resp_len[IWM_TX_RING_COUNT];
+
+    /* Wait mutex -> command leaf -> selected BSS -> scan leaf. No allocation,
+     * mapping, wait, free or callback executes under the command leaf. */
+    IOSimpleLock *sc_cmdq_lock;
+    uint64_t sc_cmdq_next_serial;
+    uint32_t sc_cmdq_epoch;
+    uint32_t sc_cmdq_senders;
+    uint32_t sc_cmdq_stoppers;
+    int sc_cmdq_generation;
+    bool sc_cmdq_stopping;
+    bool sc_cmdq_detaching;
+    struct iwm_cmd_slot sc_cmdq_slots[IWM_TX_RING_COUNT];
 	int sc_nic_locks;
 
 	struct taskq *sc_nswq;

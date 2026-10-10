@@ -6,26 +6,17 @@ ulimit -c 0
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 command_test_dir="$(mktemp -d)"
 trap 'rm -f "$command_test_dir/iwm-send-cmd.inc" "$command_test_dir/test"; rm -rf "$command_test_dir/test.dSYM"; rmdir "$command_test_dir"' EXIT
-command_ref=${IWM_COMMAND_CANCELLATION_NEGATIVE_REF:-}
-if [ -n "$command_ref" ]; then
-    git -C "$root" show "$command_ref:itlwm/hal_iwm/phy.cpp"
-else
-    sed -n '1,$p' "$root/itlwm/hal_iwm/phy.cpp"
-fi | awk '/^iwm_send_cmd\(/ { selected=1; print "int ItlIwm::" }
-    selected { print } selected && /^}/ { selected=0 }' \
-    > "$command_test_dir/iwm-send-cmd.inc"
-# A historical sender has no cancellation helper. Keep today's exact helper
-# in the explicit stop double: waking first still cannot repair an old sender
-# which subsequently registers an unconditional wait. No historical body edits.
-awk '/^iwm_radio_abort_command_waits\(/ { selected=1; print "void ItlIwm::" }
-    selected { print } selected && /^}/ { selected=0 }' \
-    "$root/itlwm/hal_iwm/phy.cpp" >> "$command_test_dir/iwm-send-cmd.inc"
+bash "$root/scripts/extract_iwm_command_queue.sh" > "$command_test_dir/iwm-send-cmd.inc"
+command_historical=0
+if [ -n "${IWM_COMMAND_CANCELLATION_NEGATIVE_REF:-}" ]; then command_historical=1; fi
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -Wno-sign-compare \
-    -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+    -g -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
+    -DIWM_COMMAND_SLOT_HISTORICAL="$command_historical" \
     -I "$root" -I "$command_test_dir" \
     "$root/tests/iwm_scan_command_submission_test.cpp" -o "$command_test_dir/test"
 if [ "${1:-all}" = all ]; then
-    for command_case in stop-before-wait stop-during-wait abort-partial-ring; do
+    for command_case in stop-before-wait stop-during-wait abort-partial-ring \
+        ack-before-wait ack-before-wait-dma command-slot-matrix command-slot-threaded; do
         "$command_test_dir/test" "$command_case"
     done
 else

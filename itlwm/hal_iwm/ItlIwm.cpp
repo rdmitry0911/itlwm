@@ -934,6 +934,7 @@ detach(IOPCIDevice *device)
 
     /* No submitter, deferred terminal, or retained private gate may outlive
      * the descriptor rings and net80211 event sink below. */
+    iwm_cmdq_detach_begin(sc);
     invalidateWclScanForReset();
     shutdownStateTransitions();
     sc->sc_ic.ic_assoc_comeback_retry = NULL;
@@ -1077,6 +1078,7 @@ releaseAll()
     }
     pci.pa_tag = NULL;
     pci.workloop = NULL;
+    iwm_cmdq_destroy(&com);
     if (wclScanLock != NULL) {
         IOSimpleLockFree(wclScanLock);
         wclScanLock = NULL;

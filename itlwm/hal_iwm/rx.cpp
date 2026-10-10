@@ -1241,28 +1241,9 @@ iwm_rx_pkt(struct iwm_softc *sc, struct iwm_rx_data *data,
             case IWM_NVM_ACCESS_CMD:
             case IWM_MCC_UPDATE_CMD:
             case IWM_TIME_EVENT_CMD: {
-                size_t pkt_len;
-                
-                if (sc->sc_cmd_resp_pkt[idx] == NULL)
-                    break;
-                
-                //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
-                //                sizeof(*pkt), BUS_DMASYNC_POSTREAD);
-                
-                pkt_len = sizeof(pkt->len_n_flags) +
+                const size_t pkt_len = sizeof(pkt->len_n_flags) +
                 iwm_rx_packet_len(pkt);
-                
-                if ((pkt->hdr.flags & IWM_CMD_FAILED_MSK) ||
-                    pkt_len < sizeof(*pkt) ||
-                    pkt_len > sc->sc_cmd_resp_len[idx]) {
-                    ::free(sc->sc_cmd_resp_pkt[idx]);
-                    sc->sc_cmd_resp_pkt[idx] = NULL;
-                    break;
-                }
-                
-                //            bus_dmamap_sync(sc->sc_dmat, data->map, sizeof(*pkt),
-                //                pkt_len - sizeof(*pkt), BUS_DMASYNC_POSTREAD);
-                memcpy(sc->sc_cmd_resp_pkt[idx], pkt, pkt_len);
+                iwm_cmdq_store_response(sc, qid, idx, code, pkt, pkt_len);
                 break;
             }
                 

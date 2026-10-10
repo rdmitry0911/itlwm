@@ -522,23 +522,251 @@ iwm_binding_cmd(struct iwm_softc *sc, struct iwm_node *in, uint32_t action)
     return error;
 }
 
+/* The mutable ring is inspected only under the command leaf. */
+static bool
+iwm_cmdq_ring_valid(const struct iwm_softc *sc)
+{
+    return sc->cmdqid >= 0 && sc->cmdqid < (int)nitems(sc->txq) &&
+        sc->txq[sc->cmdqid].desc != NULL &&
+        sc->txq[sc->cmdqid].cmd != NULL &&
+        sc->txq[sc->cmdqid].qid == sc->cmdqid;
+}
+
+/* Caller holds the radio lifecycle lock. Attach's NVM bootstrap has no init
+ * reference and no UP/RUNNING interface; runtime requires the actual owner. */
+static bool
+iwm_cmdq_epoch_owner(const struct iwm_softc *sc, int generation)
+{
+    return !sc->sc_sae_tx_detaching &&
+        (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
+        sc->sc_radio_stop_refs == 0 && sc->sc_generation == generation &&
+        (sc->sc_radio_init_refs == 1 ||
+         (sc->sc_radio_init_refs == 0 &&
+          (sc->sc_ic.ic_if.if_flags & (IFF_UP | IFF_RUNNING)) == 0));
+}
+
+int ItlIwm::
+iwm_cmdq_init(struct iwm_softc *sc)
+{
+    sc->sc_cmdq_lock = IOSimpleLockAlloc();
+    if (sc->sc_cmdq_lock == NULL)
+        return ENOMEM;
+    sc->sc_cmdq_next_serial = 0;
+    sc->sc_cmdq_epoch = 1;
+    sc->sc_cmdq_senders = sc->sc_cmdq_stoppers = 0;
+    sc->sc_cmdq_generation = 0;
+    sc->sc_cmdq_stopping = true;
+    sc->sc_cmdq_detaching = false;
+    memset(sc->sc_cmdq_slots, 0, sizeof(sc->sc_cmdq_slots));
+    return 0;
+}
+
+bool ItlIwm::
+iwm_cmdq_select(struct iwm_softc *sc, int qid, int generation)
+{
+    if (sc->sc_cmdq_lock == NULL || sc->sc_sae_tx_lifecycle_lock == NULL ||
+        qid < 0 || qid >= (int)nitems(sc->txq))
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    const bool selected = iwm_cmdq_epoch_owner(sc, generation) &&
+        !sc->sc_cmdq_detaching && sc->sc_cmdq_stopping &&
+        sc->sc_cmdq_senders == 0 && sc->sc_cmdq_stoppers == 0;
+    if (selected)
+        sc->cmdqid = qid;
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return selected;
+}
+
+bool ItlIwm::
+iwm_cmdq_start(struct iwm_softc *sc, int generation)
+{
+    if (sc->sc_cmdq_lock == NULL || sc->sc_sae_tx_lifecycle_lock == NULL)
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    bool started = iwm_cmdq_epoch_owner(sc, generation) &&
+        !sc->sc_cmdq_detaching && sc->sc_cmdq_stopping &&
+        sc->sc_cmdq_senders == 0 && sc->sc_cmdq_stoppers == 0 &&
+        iwm_cmdq_ring_valid(sc) && sc->txq[sc->cmdqid].queued == 0;
+    for (unsigned i = 0; started && i < nitems(sc->sc_cmdq_slots); i++)
+        started = sc->sc_cmd_resp_pkt[i] == NULL &&
+            sc->txq[sc->cmdqid].data[i].m == NULL;
+    if (started) {
+        if (++sc->sc_cmdq_epoch == 0)
+            ++sc->sc_cmdq_epoch;
+        memset(sc->sc_cmdq_slots, 0, sizeof(sc->sc_cmdq_slots));
+        sc->sc_cmdq_generation = generation;
+        sc->sc_cmdq_stopping = false;
+    }
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return started;
+}
+
+bool ItlIwm::
+iwm_cmdq_enter(struct iwm_softc *sc)
+{
+    if (sc->sc_cmdq_lock == NULL)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    const bool entered = !sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
+        (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
+        sc->sc_cmdq_generation == sc->sc_generation;
+    if (entered)
+        sc->sc_cmdq_senders++;
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+    return entered;
+}
+
+void ItlIwm::
+iwm_cmdq_leave(struct iwm_softc *sc)
+{
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    KASSERT(sc->sc_cmdq_senders != 0, "sc->sc_cmdq_senders != 0");
+    sc->sc_cmdq_senders--;
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+    if (getMainCommandGate() != NULL)
+        getMainCommandGate()->commandWakeup(sc, false);
+}
+
+void ItlIwm::
+iwm_cmdq_stop(struct iwm_softc *sc)
+{
+    if (sc->sc_cmdq_lock == NULL)
+        return;
+    struct iwm_tfd *wake_desc = NULL;
+    lockTsleep();
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    sc->sc_cmdq_stoppers++;
+    if (!sc->sc_cmdq_stopping) {
+        if (iwm_cmdq_ring_valid(sc))
+            wake_desc = sc->txq[sc->cmdqid].desc;
+        sc->sc_cmdq_stopping = true;
+        if (++sc->sc_cmdq_epoch == 0)
+            ++sc->sc_cmdq_epoch;
+        for (unsigned i = 0; i < nitems(sc->sc_cmdq_slots); i++)
+            if (sc->sc_cmdq_slots[i].state != IWM_CMD_SLOT_FREE)
+                sc->sc_cmdq_slots[i].state = IWM_CMD_SLOT_ABORTED;
+    }
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+    for (unsigned i = 0; wake_desc != NULL && i < IWM_TX_RING_COUNT; i++) {
+        wakeupOn(&wake_desc[i]);
+        if (getMainCommandGate() != NULL)
+            getMainCommandGate()->commandWakeup(&wake_desc[i], false);
+    }
+    unlockTsleep();
+
+    /* No descriptor, response or DMA may be reclaimed while a sender still
+     * owns it. Release a caller's entire recursive controller gate while
+     * draining; a sleeping sender must reacquire that gate before leaving. */
+    for (;;) {
+        irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+        const uint32_t senders = sc->sc_cmdq_senders;
+        IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+        if (senders == 0)
+            break;
+        if (getMainCommandGate() != NULL && getMainWorkLoop() != NULL &&
+            getMainWorkLoop()->inGate()) {
+            AbsoluteTime deadline;
+            clock_interval_to_deadline(10, kMillisecondScale,
+                reinterpret_cast<uint64_t *>(&deadline));
+            (void)getMainCommandGate()->commandSleep(sc, deadline, THREAD_UNINT);
+        } else {
+            IOSleep(1);
+        }
+    }
+    for (unsigned i = 0; i < nitems(sc->sc_cmdq_slots); i++) {
+        irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+        uint8_t *response = sc->sc_cmd_resp_pkt[i];
+        sc->sc_cmd_resp_pkt[i] = NULL;
+        sc->sc_cmd_resp_len[i] = 0;
+        IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+        ::free(response);
+    }
+    irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    KASSERT(sc->sc_cmdq_stoppers != 0, "sc->sc_cmdq_stoppers != 0");
+    sc->sc_cmdq_stoppers--;
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+}
+
+void ItlIwm::
+iwm_cmdq_detach_begin(struct iwm_softc *sc)
+{
+    if (sc->sc_cmdq_lock != NULL) {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+        sc->sc_cmdq_detaching = true;
+        IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+    }
+    iwm_cmdq_stop(sc);
+}
+
+void ItlIwm::
+iwm_cmdq_destroy(struct iwm_softc *sc)
+{
+    if (sc->sc_cmdq_lock == NULL)
+        return;
+    KASSERT(sc->sc_cmdq_stopping && sc->sc_cmdq_senders == 0 &&
+        sc->sc_cmdq_stoppers == 0, "command owners drained");
+    IOSimpleLockFree(sc->sc_cmdq_lock);
+    sc->sc_cmdq_lock = NULL;
+}
+
+void ItlIwm::
+iwm_cmdq_store_response(struct iwm_softc *sc, int qid, int idx, int code,
+                         const struct iwm_rx_packet *pkt, size_t pkt_len)
+{
+    if (sc->sc_cmdq_lock == NULL)
+        return;
+    uint8_t *discard = NULL;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
+        iwm_cmdq_ring_valid(sc) && qid == sc->cmdqid &&
+        idx >= 0 && idx < IWM_TX_RING_COUNT) {
+        const struct iwm_cmd_slot *slot = &sc->sc_cmdq_slots[idx];
+        if ((slot->state == IWM_CMD_SLOT_SUBMITTED ||
+             slot->state == IWM_CMD_SLOT_TIMED_OUT) &&
+            (slot->code & 0xffff) == (uint32_t)code &&
+            sc->sc_cmd_resp_pkt[idx] != NULL) {
+            if (slot->state == IWM_CMD_SLOT_TIMED_OUT ||
+                (pkt->hdr.flags & IWM_CMD_FAILED_MSK) ||
+                pkt_len < sizeof(*pkt) || pkt_len > sc->sc_cmd_resp_len[idx]) {
+                discard = sc->sc_cmd_resp_pkt[idx];
+                sc->sc_cmd_resp_pkt[idx] = NULL;
+                sc->sc_cmd_resp_len[idx] = 0;
+            } else {
+                memcpy(sc->sc_cmd_resp_pkt[idx], pkt, pkt_len);
+            }
+        }
+    }
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+    ::free(discard);
+}
+
 int ItlIwm::
 iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
 {
-    struct iwm_tx_ring *ring = &sc->txq[sc->cmdqid];
+    struct iwm_tx_ring *ring = NULL;
     struct iwm_tfd *desc;
     struct iwm_tx_data *txdata;
     struct iwm_device_cmd *cmd;
     mbuf_t m = NULL;
     bus_addr_t paddr;
     uint32_t addr_lo;
-    int err = 0, i, paylen, off, s;
-    int idx, code, async, group_id;
+    int err = 0, i, paylen, off, s = 0;
+    int idx = -1, code, async, group_id;
     size_t hdrlen, datasz;
     uint8_t *data;
     int generation = sc->sc_generation;
     unsigned int max_chunks = 1;
     IOPhysicalSegment seg;
+    IOMbufNaturalMemoryCursor *cursor = NULL;
+    uint8_t *resp_buf = NULL;
+    uint64_t serial = 0;
+    uint32_t epoch = 0;
+    bool command_locked = false;
+    IOInterruptState command_irq = 0;
     bool command_submitted = false;
     bool scan_locked = false;
     bool owner_locked = false;
@@ -570,9 +798,11 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
             return ENXIO;
     }
     
+    if (!iwm_cmdq_enter(sc))
+        return ENXIO;
+    s = splnet();
     code = hcmd->id;
     async = hcmd->flags & IWM_CMD_ASYNC;
-    idx = ring->cur;
     
     for (i = 0, paylen = 0; i < nitems(hcmd->len); i++) {
         paylen += hcmd->len[i];
@@ -581,26 +811,16 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
     /* If this command waits for a response, allocate response buffer. */
     hcmd->resp_pkt = NULL;
     if (hcmd->flags & IWM_CMD_WANT_RESP) {
-        uint8_t *resp_buf;
         _KASSERT(!async);
         _KASSERT(hcmd->resp_pkt_len >= sizeof(struct iwm_rx_packet));
         _KASSERT(hcmd->resp_pkt_len <= IWM_CMD_RESP_MAX);
-        if (sc->sc_cmd_resp_pkt[idx] != NULL)
-            return ENOSPC;
         resp_buf = (uint8_t *)malloc(hcmd->resp_pkt_len, M_DEVBUF,
                                      M_NOWAIT | M_ZERO);
-        if (resp_buf == NULL)
-            return ENOMEM;
-        sc->sc_cmd_resp_pkt[idx] = resp_buf;
-        sc->sc_cmd_resp_len[idx] = hcmd->resp_pkt_len;
-    } else {
-        sc->sc_cmd_resp_pkt[idx] = NULL;
+        if (resp_buf == NULL) {
+            err = ENOMEM;
+            goto out;
+        }
     }
-    
-    s = splnet();
-    
-    desc = &ring->desc[idx];
-    txdata = &ring->data[idx];
     
     group_id = iwm_cmd_groupid(code);
     if (group_id != 0) {
@@ -630,25 +850,73 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
         mbuf_setlen(m, totlen);
         mbuf_pkthdr_setlen(m, totlen);
         cmd = mtod(m, struct iwm_device_cmd *);
-        txdata->map->dm_nsegs = txdata->map->cursor->getPhysicalSegmentsWithCoalesce(m, &seg, 1);
-        if (txdata->map->dm_nsegs == 0) {
+        /* Prepare a local mapping before reserving any ring storage. A
+         * permanent slot map may already belong to a concurrent producer. */
+        cursor = IOMbufNaturalMemoryCursor::withSpecification(
+            hdrlen + IWM_MAX_CMD_PAYLOAD_SIZE, 1);
+        if (cursor == NULL) {
+            err = ENOMEM;
+            goto out;
+        }
+        if (cursor->getPhysicalSegmentsWithCoalesce(m, &seg, 1) == 0) {
             XYLog("%s: could not load fw cmd mbuf (%zd bytes)\n",
                   DEVNAME(sc), totlen);
             err = ENOMEM;
             goto out;
         }
-//        XYLog("map fw cmd dm_nsegs=%d\n", txdata->map->dm_nsegs);
-        /* Keep the allocation local until the descriptor is published. */
+        cursor->release();
+        cursor = NULL;
         paddr = seg.location;
-    } else {
-        cmd = &ring->cmd[idx];
-        paddr = txdata->cmd_paddr;
     }
 
     if (generation != sc->sc_generation ||
         (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0) {
         err = ENXIO;
         goto out;
+    }
+
+    /* The wait mutex serializes the 7000 queue's NIC wake transition against
+     * ACK. The command leaf serializes storage and the physical tail. All
+     * allocation and mapping above remain local and outside both leaves. */
+    lockTsleep();
+    wait_locked = true;
+    command_irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    command_locked = true;
+    if (sc->sc_cmdq_stopping || sc->sc_cmdq_detaching ||
+        sc->sc_cmdq_generation != generation || !iwm_cmdq_ring_valid(sc) ||
+        generation != sc->sc_generation || (sc->sc_flags & IWM_FLAG_SHUTDOWN)) {
+        err = ENXIO;
+        goto out;
+    }
+    ring = &sc->txq[sc->cmdqid];
+    idx = ring->cur;
+    if (idx < 0 || idx >= IWM_TX_RING_COUNT ||
+        ring->queued >= IWM_TX_RING_COUNT ||
+        sc->sc_cmdq_slots[idx].state != IWM_CMD_SLOT_FREE ||
+        sc->sc_cmd_resp_pkt[idx] != NULL || ring->data[idx].m != NULL) {
+        err = ENOSPC;
+        goto out;
+    }
+    if (sc->sc_device_family == IWM_DEVICE_FAMILY_7000 && ring->queued == 0) {
+        IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, command_irq);
+        command_locked = false;
+        if (!iwm_nic_lock(sc)) {
+            err = EBUSY;
+            goto out;
+        }
+        nic_wake_acquired = true;
+        command_irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+        command_locked = true;
+        if (generation != sc->sc_generation || (sc->sc_flags & IWM_FLAG_SHUTDOWN)) {
+            err = ENXIO;
+            goto out;
+        }
+    }
+    desc = &ring->desc[idx];
+    txdata = &ring->data[idx];
+    if (m == NULL) {
+        cmd = &ring->cmd[idx];
+        paddr = txdata->cmd_paddr;
     }
     
     if (group_id != 0) {
@@ -694,21 +962,6 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
     //        (char *)(void *)desc - (char *)(void *)ring->desc_dma.vaddr,
     //        sizeof (*desc), BUS_DMASYNC_PREWRITE);
     
-    /*
-     * Wake up the NIC to make sure that the firmware will see the host
-     * command - we will let the NIC sleep once all the host commands
-     * returned. This needs to be done only on 7000 family NICs.
-     */
-    if (sc->sc_device_family == IWM_DEVICE_FAMILY_7000) {
-        if (ring->queued == 0) {
-            if (!iwm_nic_lock(sc)) {
-                err = EBUSY;
-                goto out;
-            }
-            nic_wake_acquired = true;
-        }
-    }
-
     /* The scan leaf covers both the host receipt and the actual doorbell.
      * An init/stop boundary during command preparation cannot publish an
      * old scan into the new firmware epoch. No allocation or wait is inside
@@ -738,6 +991,16 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
         txdata->m = m; /* completion/reset now owns this DMA allocation */
         m = NULL;
     }
+
+    if (++sc->sc_cmdq_next_serial == 0)
+        ++sc->sc_cmdq_next_serial;
+    serial = sc->sc_cmdq_next_serial;
+    epoch = sc->sc_cmdq_epoch;
+    sc->sc_cmdq_slots[idx] = {serial, epoch, static_cast<uint32_t>(code),
+        IWM_CMD_SLOT_SUBMITTED, async != 0};
+    sc->sc_cmd_resp_pkt[idx] = resp_buf;
+    sc->sc_cmd_resp_len[idx] = resp_buf != NULL ? hcmd->resp_pkt_len : 0;
+    resp_buf = NULL;
     
     iwm_update_sched(sc, ring->qid, ring->cur, 0, 0);
     /* Kick command ring. */
@@ -755,51 +1018,92 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
         IOSimpleLockUnlockEnableInterrupt(owner_lock, owner_irq);
         owner_locked = false;
     }
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, command_irq);
+    command_locked = false;
+    unlockTsleep();
+    wait_locked = false;
     
     if (!async) {
-        /* Pair the cancellation level check and msleep registration with
-         * stop's descriptor wakeups. A stop between doorbell and sleep must
-         * not require an IRQ on a workloop whose POWER caller holds its gate. */
+        uint64_t hard_deadline;
+        clock_interval_to_deadline(2, kSecondScale, &hard_deadline);
         lockTsleep();
         wait_locked = true;
-        if (generation != sc->sc_generation ||
-            (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0) {
-            err = ENXIO;
-            goto out;
-        }
-        err = tsleep_nsec_locked(desc, PCATCH, "iwmcmd", SEC_TO_NSEC(2));
-        if (err == 0) {
-            /* if hardware is no longer up, return error */
-            if (generation != sc->sc_generation) {
+        for (;;) {
+            command_irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+            command_locked = true;
+            struct iwm_cmd_slot *slot = &sc->sc_cmdq_slots[idx];
+            if (generation != sc->sc_generation || (sc->sc_flags & IWM_FLAG_SHUTDOWN) ||
+                sc->sc_cmdq_stopping || sc->sc_cmdq_detaching ||
+                slot->serial != serial || slot->epoch != epoch ||
+                slot->state == IWM_CMD_SLOT_ABORTED) {
                 err = ENXIO;
                 goto out;
             }
-            
-            /* Response buffer will be freed in iwm_free_resp(). */
-            hcmd->resp_pkt = (struct iwm_rx_packet *)sc->sc_cmd_resp_pkt[idx];
-            sc->sc_cmd_resp_pkt[idx] = NULL;
-        } else if (generation == sc->sc_generation) {
-            ::free(sc->sc_cmd_resp_pkt[idx]);
-            sc->sc_cmd_resp_pkt[idx] = NULL;
+            if (slot->state == IWM_CMD_SLOT_COMPLETED) {
+                /* Actual ACK is retained even if it preceded registration or
+                 * raced the timeout. This slot cannot be reused before here. */
+                hcmd->resp_pkt = (struct iwm_rx_packet *)sc->sc_cmd_resp_pkt[idx];
+                sc->sc_cmd_resp_pkt[idx] = NULL;
+                sc->sc_cmd_resp_len[idx] = 0;
+                slot->state = IWM_CMD_SLOT_FREE;
+                err = 0;
+                goto out;
+            }
+            if (slot->state != IWM_CMD_SLOT_SUBMITTED) {
+                err = EIO;
+                goto out;
+            }
+            uint64_t now;
+            clock_get_uptime(&now);
+            if (err != 0 || now >= hard_deadline) {
+                if (err == 0)
+                    err = ETIMEDOUT;
+                slot->state = IWM_CMD_SLOT_TIMED_OUT;
+                /* DMA and response stay quarantined until ACK or reset. */
+                goto out;
+            }
+            uint64_t remaining;
+            absolutetime_to_nanoseconds(hard_deadline - now, &remaining);
+            IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, command_irq);
+            command_locked = false;
+            if (getMainCommandGate() != NULL && getMainWorkLoop() != NULL &&
+                getMainWorkLoop()->inGate()) {
+                AbsoluteTime deadline;
+                clock_interval_to_deadline(10, kMillisecondScale,
+                    reinterpret_cast<uint64_t *>(&deadline));
+                if (*reinterpret_cast<uint64_t *>(&deadline) > hard_deadline)
+                    *reinterpret_cast<uint64_t *>(&deadline) = hard_deadline;
+                /* Never hold the wait mutex across recursive gate release or
+                 * reacquisition. A missed gate wake is bounded to 10ms; only
+                 * the retained slot state, never a wake, confirms success. */
+                unlockTsleep();
+                wait_locked = false;
+                (void)getMainCommandGate()->commandSleep(desc, deadline, THREAD_UNINT);
+                lockTsleep();
+                wait_locked = true;
+            } else {
+                err = tsleep_nsec_locked(desc, PCATCH, "iwmcmd", remaining);
+            }
         }
     }
 out:
-    if (wait_locked)
-        unlockTsleep();
     if (scan_locked)
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, scan_irq);
     if (owner_locked)
         IOSimpleLockUnlockEnableInterrupt(owner_lock, owner_irq);
-    if (!command_submitted && generation == sc->sc_generation) {
-        if (nic_wake_acquired)
-            iwm_nic_unlock(sc);
-        ::free(sc->sc_cmd_resp_pkt[idx]);
-        sc->sc_cmd_resp_pkt[idx] = NULL;
-        sc->sc_cmd_resp_len[idx] = 0;
-    }
+    if (command_locked)
+        IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, command_irq);
+    if (!command_submitted && nic_wake_acquired)
+        iwm_nic_unlock(sc);
+    if (wait_locked)
+        unlockTsleep();
+    if (cursor != NULL)
+        cursor->release();
+    ::free(resp_buf);
     if (m != NULL)
         mbuf_freem(m);
     splx(s);
+    iwm_cmdq_leave(sc);
     
     return err;
 }
@@ -894,35 +1198,51 @@ iwm_free_resp(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
 void ItlIwm::
 iwm_cmd_done(struct iwm_softc *sc, int qid, int idx, int code)
 {
-    struct iwm_tx_ring *ring = &sc->txq[sc->cmdqid];
-    struct iwm_tx_data *data;
-    
-    if (qid != sc->cmdqid) {
-        return;    /* Not a command ack. */
+    if (sc->sc_cmdq_lock == NULL)
+        return;
+    mbuf_t retired = NULL;
+    uint8_t *discard = NULL;
+    void *wake = NULL;
+    bool unlock_nic = false;
+    lockTsleep();
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(sc->sc_cmdq_lock);
+    if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
+        iwm_cmdq_ring_valid(sc) && qid == sc->cmdqid &&
+        idx >= 0 && idx < IWM_TX_RING_COUNT) {
+        struct iwm_tx_ring *ring = &sc->txq[qid];
+        struct iwm_cmd_slot *slot = &sc->sc_cmdq_slots[idx];
+        if ((slot->state == IWM_CMD_SLOT_SUBMITTED ||
+             slot->state == IWM_CMD_SLOT_TIMED_OUT) &&
+            slot->epoch == sc->sc_cmdq_epoch &&
+            (slot->code & 0xffff) == (uint32_t)code) {
+            retired = ring->data[idx].m;
+            ring->data[idx].m = NULL;
+            KASSERT(ring->queued > 0, "ACK owns a submitted command");
+            unlock_nic = --ring->queued == 0 &&
+                sc->sc_device_family == IWM_DEVICE_FAMILY_7000;
+            if (slot->async || slot->state == IWM_CMD_SLOT_TIMED_OUT) {
+                discard = sc->sc_cmd_resp_pkt[idx];
+                sc->sc_cmd_resp_pkt[idx] = NULL;
+                sc->sc_cmd_resp_len[idx] = 0;
+                slot->state = IWM_CMD_SLOT_FREE;
+            } else {
+                slot->state = IWM_CMD_SLOT_COMPLETED;
+            }
+            wake = &ring->desc[idx];
+        }
     }
-    
-    data = &ring->data[idx];
-    
-    if (data->m != NULL) {
-        //        bus_dmamap_sync(sc->sc_dmat, data->map, 0,
-        //            data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
-        //        bus_dmamap_unload(sc->sc_dmat, data->map);
-        mbuf_freem(data->m);
-        data->m = NULL;
+    IOSimpleLockUnlockEnableInterrupt(sc->sc_cmdq_lock, irq);
+    if (unlock_nic)
+        iwm_nic_unlock(sc);
+    if (wake != NULL) {
+        wakeupOn(wake);
+        if (getMainCommandGate() != NULL)
+            getMainCommandGate()->commandWakeup(wake, false);
     }
-    wakeupOn(&ring->desc[idx]);
-    
-    if (ring->queued == 0) {
-        XYLog("%s: unexpected firmware response to command 0x%x\n",
-              DEVNAME(sc), code);
-    } else if (--ring->queued == 0) {
-        /*
-         * 7000 family NICs are locked while commands are in progress.
-         * All commands are now done so we may unlock the NIC again.
-         */
-        if (sc->sc_device_family == IWM_DEVICE_FAMILY_7000)
-            iwm_nic_unlock(sc);
-    }
+    unlockTsleep();
+    if (retired != NULL)
+        mbuf_freem(retired);
+    ::free(discard);
 }
 
 int ItlIwm::

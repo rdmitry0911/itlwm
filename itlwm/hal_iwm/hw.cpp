@@ -634,6 +634,7 @@ iwm_stop_device(struct iwm_softc *sc)
     int qid;
 
     explicit_bzero(&sae_reset_event, sizeof(sae_reset_event));
+    that->iwm_cmdq_stop(sc);
     that->iwm_sae_engine_stop_begin(sc);
     that->iwm_sae_tx_stop_begin(sc);
     that->iwm_assoc_comeback_cancel(sc);

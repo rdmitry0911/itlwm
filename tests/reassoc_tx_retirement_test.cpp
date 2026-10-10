@@ -116,6 +116,9 @@ struct ItlIwm {
     void iwm_ampdu_txq_advance(iwm_softc *, iwm_tx_ring *, int);
     void iwm_reset_tx_ring(iwm_softc *, iwm_tx_ring *);
     void iwm_free_tx_ring(iwm_softc *, iwm_tx_ring *);
+    // This fixture exercises data q3, never command q0. Command drain is
+    // covered by the complete command-queue fixture, not supplied as success.
+    void iwm_cmdq_stop(iwm_softc *) { assert(false); }
     void iwm_sae_tx_report_terminal(iwm_softc *, iwm_tx_data *data, int error) {
         assert(error == EIO); ++saeFailures; data->sae_active = false;
     }

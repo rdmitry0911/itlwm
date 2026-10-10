@@ -126,6 +126,8 @@ iwm_free_tx_ring(iwm_softc *sc, struct iwm_tx_ring *ring)
 {
     int i;
     struct mbuf_list retired = MBUF_LIST_INITIALIZER();
+    if (ring->qid == sc->cmdqid)
+        iwm_cmdq_stop(sc);
     
     iwm_dma_contig_free(&ring->desc_dma);
     iwm_dma_contig_free(&ring->cmd_dma);
@@ -181,6 +183,8 @@ iwm_reset_tx_ring(struct iwm_softc *sc, struct iwm_tx_ring *ring)
 {
     int i;
     struct mbuf_list retired = MBUF_LIST_INITIALIZER();
+    if (ring->qid == sc->cmdqid)
+        iwm_cmdq_stop(sc);
     
     for (i = 0; i < IWM_TX_RING_COUNT; i++) {
         struct iwm_tx_data *data = &ring->data[i];

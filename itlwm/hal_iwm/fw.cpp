@@ -1050,15 +1050,16 @@ iwm_load_ucode_wait_alive(struct iwm_softc *sc,
     enum iwm_ucode_type old_type = sc->sc_uc_current;
     struct iwm_fw_sects *fw = &sc->sc_fw.fw_sects[ucode_type];
     int err;
+    const int generation = sc->sc_generation;
     
     err = iwm_read_firmware(sc, ucode_type);
     if (err)
         return err;
     
-    if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT))
-        sc->cmdqid = IWM_DQA_CMD_QUEUE;
-    else
-        sc->cmdqid = IWM_CMD_QUEUE;
+    const int qid = isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT) ?
+        IWM_DQA_CMD_QUEUE : IWM_CMD_QUEUE;
+    if (!iwm_cmdq_select(sc, qid, generation))
+        return ENXIO;
     
     sc->sc_uc_current = ucode_type;
     err = iwm_start_fw(sc, ucode_type);
@@ -1070,6 +1071,8 @@ iwm_load_ucode_wait_alive(struct iwm_softc *sc,
     err = iwm_post_alive(sc);
     if (err)
         return err;
+    if (!iwm_cmdq_start(sc, generation))
+        return ENXIO;
     
     /*
      * configure and operate fw paging mechanism.

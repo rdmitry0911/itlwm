@@ -7223,6 +7223,8 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     sc->sc_radio_state_refs = 0;
     sc->sc_sae_tx_lifecycle_closed = true;
     sc->sc_sae_tx_detaching = false;
+    if (iwm_cmdq_init(sc) != 0)
+        goto fail4;
     sc->sc_sae_tx_task_ready = false;
     sc->sc_assoc_comeback_task_ready = false;
     sc->sc_assoc_comeback_queued = false;
@@ -7462,7 +7464,9 @@ fail5:
         struct iwm_rxba_data *rxba = &sc->sc_rxba_data[i];
         iwm_clear_reorder_buffer(sc, rxba);
     }
-fail4:    while (--txq_i >= 0)
+fail4:
+    iwm_cmdq_detach_begin(sc);
+    while (--txq_i >= 0)
     iwm_free_tx_ring(sc, &sc->txq[txq_i]);
     iwm_free_rx_ring(sc, &sc->rxq);
     iwm_dma_contig_free(&sc->sched_dma);

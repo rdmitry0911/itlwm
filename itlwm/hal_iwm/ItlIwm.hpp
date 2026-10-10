@@ -440,6 +440,16 @@ public:
                                   struct ieee80211_channel *, uint8_t, uint8_t);
     int    iwm_phy_ctxt_cmd(struct iwm_softc *, struct iwm_phy_ctxt *, uint8_t,
                             uint8_t, uint32_t, uint32_t);
+    int    iwm_cmdq_init(struct iwm_softc *);
+    bool   iwm_cmdq_select(struct iwm_softc *, int, int);
+    bool   iwm_cmdq_start(struct iwm_softc *, int);
+    bool   iwm_cmdq_enter(struct iwm_softc *);
+    void   iwm_cmdq_leave(struct iwm_softc *);
+    void   iwm_cmdq_stop(struct iwm_softc *);
+    void   iwm_cmdq_detach_begin(struct iwm_softc *);
+    void   iwm_cmdq_destroy(struct iwm_softc *);
+    void   iwm_cmdq_store_response(struct iwm_softc *, int, int, int,
+                                   const struct iwm_rx_packet *, size_t);
     int    iwm_send_cmd(struct iwm_softc *, struct iwm_host_cmd *);
     int    iwm_send_cmd_pdu(struct iwm_softc *, uint32_t, uint32_t, uint16_t,
                             const void *);
