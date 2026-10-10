@@ -97,3 +97,60 @@ The Mac WIP source archive is
 Evidence resides under `scratch/iwm-9260-runtime-20261009.mo5CXe` in the aiam
 workspace, with the `scan-abort-*` prefix. The current passthrough IWM 9260
 reports hardware RFKILL; neither software tests nor a loaded kext bypass it.
+
+## Exact committed build and loaded regression
+
+Production `b277d8bcdce9dacee5bf652acc0fa6909630f614` is pushed and independently
+matched to the remote branch. Exact committed Linux and Mac payload aggregates
+pass. The Tahoe 25C56 kernel build succeeds and all 1088 imports resolve against
+the running guest's `/System/Library/KernelCollections/BootKernelExtensions.kc`.
+The first bundle fetch names a branch absent from that HEAD-only bundle and
+returns 128 before checkout or build; importing its verified HEAD reconciles
+that artifact error. The original dirty guest checkout and physical host
+10.90.10.22 remain untouched.
+
+The new private AuxKC transaction preserves four companion members and rollback,
+returns zero and reaches READY. A readiness lookup initially names `summary.txt`
+instead of `activation-summary.txt` and stops before reboot. The resolved exact
+READY guard and complete installed bundle equality pass before one guest reboot.
+Neither installation nor reboot is replayed. The first postboot SSH observation
+has a banner timeout; the second verifies the new boot and exact loaded image.
+
+- Source identity: `04ae339d80a8`.
+- Boot: `51F5933F-FA18-4D7E-833A-1CD96C9AA698`.
+- Mach-O UUID: `F171BB53-E77E-3D73-B327-D0267671046B`.
+- Mach-O SHA256: `cd53ad2c5d85f2e96477ca2863874598e93dc7b8515ef7bbc217fa49530ada7e`.
+
+Two private monitor observations confirm paused suspended state, and serial
+records ACPI SLEEP and S3 WAKE. Power history records 112 seconds of real sleep
+and WakeTime 1.359 seconds. Private system_wakeup restores the same boot, image,
+complete installed bundle and en2 management without VM restart or overlay change.
+The first wake SSH observation returns 255; the second completes with zero.
+
+The S3 SSH trace observer times out and returns 255. An independent postwake
+process inspection finds that diagnostic no longer running; its initial trace
+records successful IWM disable in 700.558 milliseconds, actual scan reset
+invalidation in 6.257 microseconds and queue stops in 12.613 and 26.082
+microseconds. This is not a complete successful S3 trace.
+
+A separate postwake trace logs inside the guest and completes with its COMPLETE
+marker, remote DTrace status zero and observer exit zero. Four native Off and On
+controls complete with zero, retain Off readbacks and en2, and return NotReady
+for On in 1.954, 1.855, 1.950 and 1.791 milliseconds. Utility exit zero is not
+radio success. No actual scan abort wait or BTM receive occurs under RFKILL;
+this regression does not qualify the changed physical scan or BTM path.
+
+## Additional laboratory release
+
+The archive is the exact installed and loaded bundle, without rebuilding it.
+Build, installed and extracted bundles compare equal. Package and SCP complete
+with zero before independent local SHA256 and size validation.
+
+- Asset: [AirportItlwm-Tahoe-ScanAbort-b277d8bc.kext.zip](https://github.com/rdmitry0911/itlwm/releases/download/v2.4.0-alpha/AirportItlwm-Tahoe-ScanAbort-b277d8bc.kext.zip).
+- Asset ID: `627798740`; size: 15,717,473 bytes.
+- ZIP SHA256: `dca761084dc11cffd42b6ec6acfd3d3c3c3ac2c8f901996b26eac434b620449a`.
+
+A fresh final API read verifies all thirteen older assets and their immutable
+metadata unchanged, the default unchanged and complete previous notes preserved
+as an exact suffix. This additional unsigned Debug LAB artifact explicitly
+retains the RFKILL and lack of physical scan, BTM and IWX qualification limits.
