@@ -63,3 +63,76 @@ The full candidate payload aggregate passes on Linux and macOS. The macOS
 candidate stage is `/private/var/tmp/nic-init-wip-20261010.RpwICU/source`.
 The adjacent IWM init and stop lifetime and SAE transport checks retain their
 passing results. The frozen historical stage is not overwritten.
+
+## Exact build and loaded sleep regression
+
+Production `cb59642142e0ea202e926d7014a3b5fdc6d41a74` is committed, pushed
+and independently matched to the remote. Exact committed Linux and macOS
+payload gates pass. The ordinary Tahoe build succeeds and all 1088 imports
+resolve against the running guest BootKC. The isolated checkout is clean and
+both complete build bundles compare equal.
+
+- Source identity: `5e87aa562af0`.
+- Mach O UUID: `935EBF38-91F0-3575-98BE-2F4E6A75C014`.
+- Mach O SHA256: `6c8c420aa271fce82ba3a85ef342e91259c201ac57627b43d5e9103109b1a5b1`.
+- Loaded boot: `080BF3D4-EE4B-412A-A72D-704D3354D2F3`.
+
+Private activation `activation-20261010T142128Z` reaches readiness for guest
+reboot, preserves four companion kexts and rollback, and verifies installed
+full bundle equality. The first reboot guard names a nonexistent JSON summary
+and exits before requesting reboot. The actual protected TXT summary is
+independently reconciled; one guarded reboot then loads the exact UUID. The
+first postboot SSH banner observation times out; the next verifies the new
+boot, image, bundle, en2 management and actual NIC, APM and firmware start
+entry probes. No activation, reboot or QEMU restart is replayed.
+
+The durable guest observer is verified live with its DTrace child and READY
+before cold native Off and On. Public power reads On, but en1 remains inactive
+and actual hardware RFKILL blocks initialization. Two independent monitor
+observations confirm paused suspended state; serial confirms System Sleep
+and ACPI SLEEP. One exact private monitor wake resumes the same boot and image.
+Power history records a 46 second interval and WakeTime 1.266 seconds, not
+the full physical paused duration. The WindowServer 30 second acknowledgement
+timeout remains separate from Wi Fi service recovery.
+
+The first postwake SSH observation times out before executing controls. The
+next verifies image and management and executes four native Off and On
+controls. The durable observer in
+`/private/var/tmp/iwm-sleep-stop-local.zU2j6H` survives real S3 and ends with
+status zero and TRACE_COMPLETE, but completes before those four controls.
+Its actual disable takes 669.183 milliseconds, with two failed NIC access
+waits of 325.305 and 329.972 milliseconds and a 3.586 microsecond worker drain.
+This fix does not reduce stop delay or establish DMA idle.
+
+A separate bounded postwake observer completes with status zero and its own
+COMPLETE marker. Four additional native Off and On controls return actual
+NotReady in 2.013, 1.873, 1.842 and 1.883 milliseconds. Every RFKILL check
+reports blocked. Wi Fi ends Off and independent en2 management remains intact.
+The changed NIC, APM and firmware start functions do not execute under this
+RFKILL refusal; probe presence is not execution or on air qualification.
+
+Physical host 10.90.10.22, the original dirty guest checkout and host side
+base and overlay files remain untouched. The owned QEMU unit remains active
+with the same PID 517226.
+
+## Additional laboratory release
+
+The additional unsigned Debug asset is
+[AirportItlwm-Tahoe-NicInitAdmission-cb596421.kext.zip](https://github.com/rdmitry0911/itlwm/releases/download/v2.4.0-alpha/AirportItlwm-Tahoe-NicInitAdmission-cb596421.kext.zip).
+Built, installed, snapshot and extracted complete bundles compare equal
+without a packaging rebuild.
+
+- Asset ID: `628178182`; size: 15,719,269 bytes.
+- ZIP SHA256: `e5b65d27898e86e6e0c7cc5df2813cc4e1c5024d45777dbb481071ac07872f1b`.
+
+A fresh API check verifies 19 assets, all eighteen older asset records and
+the default archive unchanged. The complete old release notes remain the
+exact suffix below the new LAB entry. An independent release download
+compares byte for byte with the local verified archive. The label and notes
+retain hardware RFKILL and the absent on air qualification.
+
+Repeated native GUI open, WPA2 and WPA3 transitions among saved networks,
+automatic recovery without Off and On, DHCP and restored traffic after sleep
+remain the operational priority. Current IWM cells, AP service and new IWX
+hardware are not qualified by this correction. The analogous ignored APM
+return in IWX is the next software admission audit.
