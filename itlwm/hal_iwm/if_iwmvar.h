@@ -786,6 +786,7 @@ struct iwm_softc {
      * the generation first, then drains this owner before erasing DMA. */
     uint32_t      sc_radio_init_refs;
     uint32_t      sc_radio_stop_refs;
+    uint32_t      sc_radio_state_refs; /* dequeued state body firmware lifetime */
     bool          sc_sae_tx_lifecycle_closed;
     bool          sc_sae_tx_detaching;
     bool          sc_sae_tx_task_ready;

@@ -543,6 +543,7 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
     bool scan_locked = false;
     bool owner_locked = false;
     bool nic_wake_acquired = false;
+    bool wait_locked = false;
     IOInterruptState scan_irq = 0;
     IOInterruptState owner_irq = 0;
     IOSimpleLock *owner_lock = sc->sc_ic.ic_pae_selected_bss_lock;
@@ -756,7 +757,17 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
     }
     
     if (!async) {
-        err = tsleep_nsec(desc, PCATCH, "iwmcmd", SEC_TO_NSEC(2));
+        /* Pair the cancellation level check and msleep registration with
+         * stop's descriptor wakeups. A stop between doorbell and sleep must
+         * not require an IRQ on a workloop whose POWER caller holds its gate. */
+        lockTsleep();
+        wait_locked = true;
+        if (generation != sc->sc_generation ||
+            (sc->sc_flags & IWM_FLAG_SHUTDOWN) != 0) {
+            err = ENXIO;
+            goto out;
+        }
+        err = tsleep_nsec_locked(desc, PCATCH, "iwmcmd", SEC_TO_NSEC(2));
         if (err == 0) {
             /* if hardware is no longer up, return error */
             if (generation != sc->sc_generation) {
@@ -773,6 +784,8 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
         }
     }
 out:
+    if (wait_locked)
+        unlockTsleep();
     if (scan_locked)
         IOSimpleLockUnlockEnableInterrupt(wclScanLock, scan_irq);
     if (owner_locked)
@@ -789,6 +802,24 @@ out:
     splx(s);
     
     return err;
+}
+
+void ItlIwm::
+iwm_radio_abort_command_waits(struct iwm_softc *sc)
+{
+    if (sc->cmdqid < 0 || sc->cmdqid >= (int)nitems(sc->txq))
+        return;
+    struct iwm_tx_ring *ring = &sc->txq[sc->cmdqid];
+    if (ring->desc == NULL)
+        return;
+    /* Stop has already closed SHUTDOWN and advanced generation. Keep the
+     * wait mutex through wakeup; descriptor/response reclaim occurs only
+     * after the init and state bodies have left. No firmware leaf is held. */
+    lockTsleep();
+    wakeupOn(&sc->sc_scan_abort_pending);
+    for (int idx = 0; idx < IWM_TX_RING_COUNT; idx++)
+        wakeupOn(&ring->desc[idx]);
+    unlockTsleep();
 }
 
 int ItlIwm::

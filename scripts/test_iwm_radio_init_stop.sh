@@ -8,7 +8,6 @@ init_stop_dir="$(mktemp -d)"
 trap 'rm -f "$init_stop_dir/lifecycle.inc" "$init_stop_dir/test"; rm -rf "$init_stop_dir/test.dSYM"; rmdir "$init_stop_dir"' EXIT
 init_stop_ref=${IWM_RADIO_INIT_STOP_NEGATIVE_REF:-}
 historical=0
-if [ -n "$init_stop_ref" ]; then historical=1; fi
 source_text() {
     if [ -n "$init_stop_ref" ]; then
         git -C "$root" show "$init_stop_ref:$1"
@@ -16,6 +15,10 @@ source_text() {
         sed -n '1,$p' "$root/$1"
     fi
 }
+if [ -n "$init_stop_ref" ]; then
+    historical=$(source_text itlwm/hal_iwm/mac80211.cpp |
+        awk '/^iwm_init\(/ { legacy=($0 !~ /owner_admitted/) } END { print legacy+0 }')
+fi
 source_text itlwm/hal_iwm/ItlIwm.cpp | awk '
     /^disable\(/ || /^enable\(/ { selected=1; print "IOReturn ItlIwm::" }
     /^scanCommandResetEpoch\(/ { selected=1; print "uint64_t ItlIwm::" }
@@ -23,13 +26,24 @@ source_text itlwm/hal_iwm/ItlIwm.cpp | awk '
     /^claimRadioPowerOnRetry\(/ { selected=1; print "uint8_t ItlIwm::" }
     /^cancelRadioPowerOnRequest\(/ || /^reportRadioPowerOnFailure\(/ { selected=1; print "void ItlIwm::" }
     /^reopenScanCommands\(/ || /^isRadioScanReady\(/ || /^isRadioReadyCurrent\(/ { selected=1; print "bool ItlIwm::" }
+    /^takeStateTransition\(/ || /^stateTransitionCurrent\(/ { selected=1; print "bool ItlIwm::" }
+    /^postStateTransitionCommit\(/ { selected=1; print "int ItlIwm::" }
+    /^iwm_newstate_task_dispatch\(/ { selected=1; print "void ItlIwm::" }
+    /^iwm_sae_tx_lifecycle_enter\(/ { selected=1; print "static bool" }
+    /^iwm_sae_tx_lifecycle_leave\(/ { selected=1; print "static void" }
     selected { print } selected && /^}/ { selected=0 }
 ' > "$init_stop_dir/lifecycle.inc"
 source_text itlwm/hal_iwm/mac80211.cpp | awk '
     /^iwm_init\(/ || /^iwm_activate\(/ { selected=1; print "int ItlIwm::" }
-    /^iwm_stop(_internal)?\(/ || /^iwm_init_task\(/ { selected=1; print "void ItlIwm::" }
+    /^iwm_stop(_internal)?\(/ || /^iwm_init_task\(/ || /^iwm_newstate_task\(/ { selected=1; print "void ItlIwm::" }
     /^iwm_radio_(init_begin|init_current|init_current_locked|stop_begin)\(/ { selected=1; print "bool ItlIwm::" }
+    /^iwm_radio_state_enter\(/ { selected=1; print "bool ItlIwm::" }
+    /^iwm_radio_state_leave\(/ { selected=1; print "void ItlIwm::" }
     /^iwm_radio_(init_end|stop_drain|stop_end)\(/ { selected=1; print "void ItlIwm::" }
+    selected { print } selected && /^}/ { selected=0 }
+' >> "$init_stop_dir/lifecycle.inc"
+source_text itlwm/hal_iwm/phy.cpp | awk '
+    /^iwm_radio_abort_command_waits\(/ { selected=1; print "void ItlIwm::" }
     selected { print } selected && /^}/ { selected=0 }
 ' >> "$init_stop_dir/lifecycle.inc"
 historical_has_owner=1
@@ -52,7 +66,9 @@ fi
     "$root/tests/iwm_radio_init_stop_test.cpp" -o "$init_stop_dir/test"
 if [ "${1:-all}" = all ]; then
     for init_stop_case in early-off early-off-on normal timeout hardware-failure overlapping-off admission \
-        init-owner-retry worker-five-failures worker-five-enxio worker-eventual-success; do
+        init-owner-retry worker-five-failures worker-five-enxio worker-eventual-success \
+        state-worker-normal state-worker-off state-worker-gated-off \
+        state-worker-gated-lost-wake state-worker-cancelled; do
         "$init_stop_dir/test" "$init_stop_case"
     done
 else

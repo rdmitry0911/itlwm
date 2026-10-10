@@ -154,8 +154,8 @@ static bool enter(TestSoft *sc, bool allowClosed) {
     return true;
 }
 static void leave(TestSoft *sc) { assert(!leafDepth && sc->active); --sc->active; }
-static bool iwm_sae_tx_lifecycle_enter(iwm_softc *sc, bool allowClosed) { return enter(sc, allowClosed); }
-static void iwm_sae_tx_lifecycle_leave(iwm_softc *sc) { leave(sc); }
+[[maybe_unused]] static bool iwm_sae_tx_lifecycle_enter(iwm_softc *sc, bool allowClosed) { return enter(sc, allowClosed); }
+[[maybe_unused]] static void iwm_sae_tx_lifecycle_leave(iwm_softc *sc) { leave(sc); }
 
 struct TestCommandGate {
     int runAction(int (*)(OSObject *, void *, void *, void *, void *), void *) {
@@ -318,6 +318,10 @@ static void iwx_sae_engine_request_join_retirement(iwx_softc *sc, uint64_t gener
     } \
     void work() { assert(!loop.inGate()); prefix##_newstate_task_dispatch(&com); }
 struct ItlIwm : TestHal {
+    // This fixture owns state-request control flow, not radio lifetime.
+    // Complete production state/init/stop leases run in iwm_radio_init_stop.
+    bool iwm_radio_state_enter(iwm_softc *sc) { return enter(sc, true); }
+    void iwm_radio_state_leave(iwm_softc *sc) { leave(sc); }
     iwm_softc com;
     enum class Phase { Idle, InitialStarting };
     Phase wclScanPhase = Phase::Idle;

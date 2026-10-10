@@ -121,6 +121,8 @@ static bool iwm_sae_engine_mark_cancelled_locked(iwm_softc *sc,
 }
 class ItlIwm {
 public:
+    struct WorkLoop { void wakeupGate(void *, bool) {} };
+    WorkLoop *getMainWorkLoop() { return nullptr; }
     bool iwm_radio_init_begin(iwm_softc *, int *);
     bool iwm_radio_init_current(iwm_softc *, int);
     bool iwm_radio_init_current_locked(iwm_softc *, int);

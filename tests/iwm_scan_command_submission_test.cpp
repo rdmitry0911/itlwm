@@ -18,7 +18,10 @@ static IOSimpleLock *lockStack[2];
 static unsigned lock_depth, allocations, doorbells, nic_locks, nic_unlocks;
 static bool fail_allocation, fail_mapping, fail_nic;
 static int sleep_result;
+static bool wait_mutex_held;
+static unsigned sleep_calls, wake_calls;
 static std::function<void()> map_hook, unlock_hook;
+static std::function<void()> doorbell_hook, sleep_hook;
 
 static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock)
 {
@@ -101,7 +104,8 @@ struct iwm_tx_data { DmaMap *map; mbuf_t m; bus_addr_t cmd_paddr; };
 struct iwm_tx_ring {
     int cur, queued, qid;
     iwm_device_cmd cmd[4];
-    iwm_tfd desc[4];
+    iwm_tfd descriptorStorage[4];
+    iwm_tfd *desc = descriptorStorage;
     iwm_tx_data data[4];
 };
 struct iwm_rx_packet { uint32_t header; };
@@ -120,6 +124,7 @@ struct iwm_softc {
     iwm_tx_ring txq[1];
     int cmdqid, sc_generation, sc_device_family;
     uint32_t sc_flags;
+    unsigned sc_scan_abort_pending;
     uint8_t *sc_cmd_resp_pkt[4];
     unsigned sc_cmd_resp_len[4];
 };
@@ -140,8 +145,24 @@ static int iwm_cmd_version(int code) { return (code >> 16) & 0xff; }
 static uint16_t iwm_get_dma_hi_addr(uint64_t paddr) { return paddr >> 32; }
 static int splnet() { return 0; }
 static void splx(int) { assert(lock_depth == 0); }
-static int tsleep_nsec(void *, int, const char *, uint64_t)
-{ assert(lock_depth == 0); return sleep_result; }
+[[maybe_unused]] static int tsleep_nsec(void *, int, const char *, uint64_t)
+{ assert(lock_depth == 0 && !wait_mutex_held); ++sleep_calls; return sleep_result; }
+static void lockTsleep() { assert(!wait_mutex_held && lock_depth==0); wait_mutex_held=true; }
+static void unlockTsleep() { assert(wait_mutex_held); wait_mutex_held=false; }
+[[maybe_unused]] static int tsleep_nsec_locked(void *, int, const char *, uint64_t)
+{
+    assert(lock_depth==0 && wait_mutex_held);
+    ++sleep_calls;
+    if (sleep_hook) {
+        /* Explicit msleep double: registration releases the wait mutex,
+         * cancellation can acquire it, and return reacquires it. */
+        unlockTsleep();
+        sleep_hook();
+        lockTsleep();
+    }
+    return sleep_result;
+}
+static void wakeupOn(void *) { assert(wait_mutex_held); ++wake_calls; }
 static void iwm_update_sched(iwm_softc *, int, int, int, int) {}
 static bool iwm_nic_lock(iwm_softc *)
 { assert(lock_depth == 0); ++nic_locks; return !fail_nic; }
@@ -165,6 +186,7 @@ static void test_doorbell(iwm_softc *sc, int, int)
         assert(!observed_context->submitted);
     } else
         assert(lock_depth == 0);
+    if (doorbell_hook) doorbell_hook();
 }
 struct ItlIwm {
     ItlScanCommandLease scanCommand = {};
@@ -184,6 +206,7 @@ struct ItlIwm {
         return ownerCurrent && scanCommand.current(serial, generation);
     }
     int iwm_send_cmd(iwm_softc *, iwm_host_cmd *);
+    void iwm_radio_abort_command_waits(iwm_softc *);
 };
 #define nitems(a) (sizeof(a) / sizeof((a)[0]))
 #define _KASSERT(x) assert(x)
@@ -213,8 +236,10 @@ struct Fixture {
         assert(allocations == 0 && lock_depth == 0);
         fail_allocation = fail_mapping = fail_nic = false;
         sleep_result = 0;
+        wait_mutex_held=false; sleep_calls=wake_calls=0;
         doorbells = nic_locks = nic_unlocks = 0;
         map_hook = unlock_hook = {};
+        doorbell_hook = sleep_hook = {};
         sc.sc_generation = 7;
         sc.sc_ic.ic_pae_selected_bss_lock = &ownerLock;
         sc.sc_device_family = IWM_DEVICE_FAMILY_7000;
@@ -262,6 +287,7 @@ struct Fixture {
     ~Fixture()
     {
         map_hook = unlock_hook = {};
+        doorbell_hook = sleep_hook = {};
         for (unsigned i = 0; i != 4; ++i) {
             mbuf_freem(sc.txq[0].data[i].m);
             test_free(sc.sc_cmd_resp_pkt[i]);
@@ -273,6 +299,59 @@ struct Fixture {
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && std::strcmp(argv[1], "stop-before-wait")==0) {
+        Fixture f(true,false,true);
+        f.cmd.id=0x20; f.cmd.scan_serial=0; expect_scan=false;
+        sleep_result=ETIMEDOUT;
+        doorbell_hook=[&] {
+            ++f.sc.sc_generation;
+            f.sc.sc_flags|=IWM_FLAG_SHUTDOWN;
+            const auto response=f.sc.sc_cmd_resp_pkt[0];
+            f.driver.iwm_radio_abort_command_waits(&f.sc);
+            assert(f.sc.sc_cmd_resp_pkt[0]==response && response);
+        };
+        const int result=f.send();
+        std::fprintf(stderr, "IWM published command cancelled before wait result=%d sleeps=%u\n",
+            result, sleep_calls);
+        assert(result==ENXIO && sleep_calls==0);
+        assert(wake_calls==IWM_TX_RING_COUNT+1 && !wait_mutex_held);
+        assert(f.sc.sc_cmd_resp_pkt[0] && !f.cmd.resp_pkt);
+        std::puts("IWM complete command cancellation prewait: PASS");
+        return 0;
+    }
+    if (argc==2 && std::strcmp(argv[1], "stop-during-wait")==0) {
+        for (bool large : {false,true}) {
+            Fixture f(true,large,true);
+            f.cmd.id=0x20; f.cmd.scan_serial=0; expect_scan=false;
+            sleep_hook=[&] {
+                const auto response=f.sc.sc_cmd_resp_pkt[0];
+                const auto dma=f.sc.txq[0].data[0].m;
+                ++f.sc.sc_generation;
+                f.sc.sc_flags|=IWM_FLAG_SHUTDOWN;
+                f.driver.iwm_radio_abort_command_waits(&f.sc);
+                assert(f.sc.sc_cmd_resp_pkt[0]==response && response);
+                assert(f.sc.txq[0].data[0].m==dma);
+            };
+            assert(f.send()==ENXIO && sleep_calls==1);
+            assert(wake_calls==IWM_TX_RING_COUNT+1 && !wait_mutex_held);
+            assert(f.sc.sc_cmd_resp_pkt[0] && !f.cmd.resp_pkt);
+            assert(bool(f.sc.txq[0].data[0].m)==large);
+        }
+        std::puts("IWM complete command cancellation during wait: PASS");
+        return 0;
+    }
+    if (argc==2 && std::strcmp(argv[1], "abort-partial-ring")==0) {
+        Fixture f;
+        f.sc.cmdqid=-1;
+        f.driver.iwm_radio_abort_command_waits(&f.sc);
+        f.sc.cmdqid=1;
+        f.driver.iwm_radio_abort_command_waits(&f.sc);
+        f.sc.cmdqid=0; f.sc.txq[0].desc=nullptr;
+        f.driver.iwm_radio_abort_command_waits(&f.sc);
+        assert(wake_calls==0 && !wait_mutex_held);
+        std::puts("IWM command abort partial ring: PASS");
+        return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "dma-failure") == 0) {
         Fixture f(true, true, true);
         fail_mapping = true;

@@ -5635,6 +5635,39 @@ iwm_radio_init_begin(struct iwm_softc *sc, int *generation)
 }
 
 bool ItlIwm::
+iwm_radio_state_enter(struct iwm_softc *sc)
+{
+    if (sc->sc_sae_tx_lifecycle_lock == NULL)
+        return false;
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    const bool admitted = !sc->sc_sae_tx_detaching &&
+        (sc->sc_flags & IWM_FLAG_SHUTDOWN) == 0 &&
+        (sc->sc_ic.ic_if.if_flags & (IFF_UP | IFF_RUNNING)) ==
+            (IFF_UP | IFF_RUNNING);
+    if (admitted) {
+        sc->sc_radio_state_refs++;
+        sc->sc_sae_tx_lifecycle_active++;
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    return admitted;
+}
+
+void ItlIwm::
+iwm_radio_state_leave(struct iwm_softc *sc)
+{
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    KASSERT(sc->sc_radio_state_refs != 0, "sc->sc_radio_state_refs != 0");
+    KASSERT(sc->sc_sae_tx_lifecycle_active != 0,
+        "sc->sc_sae_tx_lifecycle_active != 0");
+    sc->sc_radio_state_refs--;
+    sc->sc_sae_tx_lifecycle_active--;
+    IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
+    if (getMainWorkLoop() != NULL)
+        getMainWorkLoop()->wakeupGate(sc, false);
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+}
+
+bool ItlIwm::
 iwm_radio_init_current_locked(struct iwm_softc *sc, int generation)
 {
     /* Same owner fence for init and atomic security-admission claims. */
@@ -5666,6 +5699,8 @@ iwm_radio_init_end(struct iwm_softc *sc)
     sc->sc_radio_init_refs--;
     sc->sc_sae_tx_lifecycle_active--;
     IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
+    if (getMainWorkLoop() != NULL)
+        getMainWorkLoop()->wakeupGate(sc, false);
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 }
 
@@ -5692,12 +5727,31 @@ iwm_radio_stop_drain(struct iwm_softc *sc, uint32_t self_init_refs,
 {
     if (sc->sc_sae_tx_lifecycle_lock == NULL)
         return;
-    /* No firmware, scan leaf or controller command gate is acquired here.
-     * The init caller may retain its own single reference on timeout. */
+    /* The init caller may retain its own single reference on timeout. A
+     * native POWER caller can already own the recursive main gate. Release
+     * all of its recursion while waiting: a state body may be finishing a
+     * generic scan callback on that gate. Never hold the lifecycle lock
+     * across gate reacquisition. */
+    IOWorkLoop *workloop = getMainWorkLoop();
     IOLockLock(sc->sc_sae_tx_lifecycle_lock);
     while (sc->sc_radio_init_refs > self_init_refs ||
-           sc->sc_radio_stop_refs > self_stop_refs)
-        IOLockSleep(sc->sc_sae_tx_lifecycle_lock, sc, THREAD_UNINT);
+           sc->sc_radio_stop_refs > self_stop_refs ||
+           sc->sc_radio_state_refs != 0) {
+        if (workloop != NULL && workloop->inGate()) {
+            /* Retirement wakes this gate without acquiring it. Its predicate
+             * lives under a different lock, so bound the registration gap:
+             * a missed wake only delays the next predicate check by 10ms.
+             * Timeout is never permission to erase a still-owned device. */
+            AbsoluteTime deadline;
+            clock_interval_to_deadline(10, kMillisecondScale,
+                reinterpret_cast<uint64_t *>(&deadline));
+            IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+            (void)workloop->sleepGate(sc, deadline, THREAD_UNINT);
+            IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+        } else {
+            IOLockSleep(sc->sc_sae_tx_lifecycle_lock, sc, THREAD_UNINT);
+        }
+    }
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 }
 
@@ -5710,6 +5764,8 @@ iwm_radio_stop_end(struct iwm_softc *sc, int generation)
     if (!sc->sc_sae_tx_detaching && sc->sc_generation == generation)
         sc->sc_flags &= ~IWM_FLAG_SHUTDOWN;
     IOLockWakeup(sc->sc_sae_tx_lifecycle_lock, sc, false);
+    if (getMainWorkLoop() != NULL)
+        getMainWorkLoop()->wakeupGate(sc, false);
     IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
 }
 
@@ -5972,6 +6028,10 @@ iwm_stop_internal(struct _ifnet *ifp, bool caller_is_init_epoch)
     //    rw_assert_wrlock(&sc->ioctl_rwl);
     
     /* Cancel scheduled tasks and let any stale tasks finish up. */
+    /* The main workloop gate can be held by native POWER. Command senders
+     * must observe cancellation without needing an IRQ on that same gate,
+     * before waiting for an already dequeued state body to retire. */
+    that->iwm_radio_abort_command_waits(sc);
     task_del(systq, &sc->init_task);
     iwm_del_task(sc, sc->sc_nswq, &sc->newstate_task);
     iwm_del_task(sc, sc->sc_nswq, &sc->ap_client_task);
@@ -7159,6 +7219,7 @@ iwm_attach(struct iwm_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_tx_lifecycle_active = 0;
     sc->sc_radio_init_refs = 0;
     sc->sc_radio_stop_refs = 0;
+    sc->sc_radio_state_refs = 0;
     sc->sc_sae_tx_lifecycle_closed = true;
     sc->sc_sae_tx_detaching = false;
     sc->sc_sae_tx_task_ready = false;

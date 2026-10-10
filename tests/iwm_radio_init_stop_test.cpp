@@ -3,7 +3,9 @@
 #include <HAL/ItlRadioReadyV1.h>
 #include <HAL/ItlRadioPowerOnFailureV1.h>
 #include <HAL/ItlScanCommandLease.hpp>
+#include <HAL/ItlStateTransitionLease.hpp>
 #include <cassert>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
@@ -18,18 +20,21 @@
 
 #define KASSERT(condition, message) assert(condition)
 #define XYLog(...) ((void)0)
+#define IWX_AUTH_DIAG(...) ((void)0)
 #define DEVNAME(sc) "iwm-lifecycle-test"
 #define nitems(array) int(sizeof(array) / sizeof((array)[0]))
 #define SEC_TO_NSEC(seconds) (uint64_t(seconds) * 1000000000ULL)
 #define container_of(pointer, type, member) reinterpret_cast<type *>(pointer)
 #define IEEE80211_ADDR_COPY(dst, src) std::memcpy(dst, src, 6)
 constexpr unsigned IFF_UP=1, IFF_RUNNING=2;
+constexpr int IWM_TX_RING_COUNT=4;
 constexpr uint32_t IWM_FLAG_RFKILL=2, IWM_FLAG_HW_ERR=0x80,
     IWM_FLAG_SHUTDOWN=0x100, IWM_FLAG_SCANNING=0x200, IWM_FLAG_BGSCAN=0x400,
     IWM_FLAG_MAC_ACTIVE=0x800, IWM_FLAG_BINDING_ACTIVE=0x1000,
     IWM_FLAG_STA_ACTIVE=0x2000, IWM_FLAG_TE_ACTIVE=0x4000;
-constexpr int IEEE80211_M_MONITOR=1, IEEE80211_S_INIT=0,
-    IEEE80211_S_SCAN=1, IEEE80211_S_RUN=3, IEEE80211_CHAN_WIDTH_20_NOHT=0;
+constexpr int IEEE80211_M_MONITOR=1, IEEE80211_CHAN_WIDTH_20_NOHT=0;
+enum ieee80211_state { IEEE80211_S_INIT=0, IEEE80211_S_SCAN=1,
+    IEEE80211_S_AUTH=2, IEEE80211_S_ASSOC=3, IEEE80211_S_RUN=4 };
 [[maybe_unused]] constexpr int DVACT_QUIESCE=1, DVACT_RESUME=2, DVACT_WAKEUP=3,
     PCATCH=0, THREAD_UNINT=0, THREAD_INTERRUPTIBLE=1;
 using IOReturn=int;
@@ -37,6 +42,12 @@ using IOReturn=int;
     kIOReturnIOError=-2;
 constexpr int IEEE80211_EVT_RADIO_POWER_ON_FAILED=27;
 struct IONetworkInterface {};
+struct IOInterruptEventSource {
+    unsigned posts=0;
+    void retain() {}
+    void release() {}
+    void interruptOccurred(void *, void *, int) { ++posts; }
+};
 using IOInterruptState=unsigned;
 struct IOSimpleLock { std::mutex mutex; };
 struct IOLock { std::mutex mutex; std::condition_variable cv; };
@@ -44,8 +55,47 @@ static std::mutex stageMutex;
 static std::condition_variable stageCv;
 static bool hardwareEntered=false, releaseHardware=false, offFinished=false,
     stopIntent=false, initFinished=false, resetEntered=false, releaseReset=false;
+static bool stateWorkerEntered=false, stateWorkerFinished=false,
+    releaseStateWorker=false, erasedWithStateWorker=false;
 static unsigned drainWaits=0;
 static std::function<void()> sleepHook;
+using AbsoluteTime=uint64_t;
+constexpr unsigned kMillisecondScale=1000000;
+static void clock_interval_to_deadline(unsigned interval, unsigned scale, uint64_t *deadline) {
+    assert(interval==10 && scale==kMillisecondScale); *deadline=interval;
+}
+struct WorkLoop {
+    std::recursive_timed_mutex gate;
+    std::mutex waitMutex;
+    std::condition_variable waitCv;
+    inline static thread_local WorkLoop *held=nullptr;
+    inline static thread_local unsigned depth=0;
+    std::atomic<unsigned> sleeps{0};
+    bool dropWakeups=false;
+    bool inGate() const { return held==this && depth!=0; }
+    void closeGate() {
+        gate.lock(); assert(!held || held==this); held=this; ++depth;
+    }
+    bool tryCloseGate() {
+        if (!gate.try_lock_for(std::chrono::milliseconds(250))) return false;
+        assert(!held || held==this); held=this; ++depth; return true;
+    }
+    void openGate() {
+        assert(inGate()); if (--depth==0) held=nullptr; gate.unlock();
+    }
+    int sleepGate(void *, AbsoluteTime deadline, int) {
+        assert(inGate()); const unsigned recursion=depth;
+        for (unsigned i=0; i<recursion; ++i) openGate();
+        ++sleeps;
+        { std::lock_guard<std::mutex> guard(stageMutex); ++drainWaits; stageCv.notify_all(); }
+        { std::unique_lock<std::mutex> guard(waitMutex);
+          waitCv.wait_for(guard, std::chrono::milliseconds(deadline)); }
+        for (unsigned i=0; i<recursion; ++i) closeGate();
+        return 0;
+    }
+    void wakeupGate(void *, bool) { if (!dropWakeups) waitCv.notify_all(); }
+};
+using IOWorkLoop=WorkLoop;
 static void IOLockLock(IOLock *lock) { lock->mutex.lock(); }
 static void IOLockUnlock(IOLock *lock) { lock->mutex.unlock(); }
 static void IOLockWakeup(IOLock *lock, void *, bool) { lock->cv.notify_all(); }
@@ -67,7 +117,8 @@ struct iwm_node { ieee80211_node in_ni; void *in_phyctxt=nullptr; uint8_t in_mac
 struct ieee80211com {
     union { _ifnet ic_if; struct { _ifnet ac_if; } ic_ac; };
     iwm_node node; ieee80211_node *ic_bss=&node.in_ni;
-    int ic_state=IEEE80211_S_INIT, ic_opmode=0, ic_ibss_chan=1;
+    ieee80211_state ic_state=IEEE80211_S_INIT;
+    int ic_opmode=0, ic_ibss_chan=1;
     unsigned ic_initial_scan_census_only=0;
     unsigned failureEvents=0;
     ItlRadioPowerOnFailureV1 lastFailure{};
@@ -79,10 +130,17 @@ struct taskq {};
 static taskq queue;
 static taskq *systq=&queue;
 struct iwm_rxba_data {};
+struct iwm_tfd {};
+struct iwm_tx_ring {
+    iwm_tfd storage[IWM_TX_RING_COUNT];
+    iwm_tfd *desc=storage;
+};
 struct iwm_softc {
     ieee80211com sc_ic;
     int sc_generation=10;
     uint32_t sc_flags=0;
+    iwm_tx_ring txq[1];
+    int cmdqid=0;
     unsigned agg_tid_disable=0, agg_queue_mask=0;
     struct { void *wn=nullptr; } sc_tx_ba[4];
     struct { unsigned refs=0; } task_refs;
@@ -99,8 +157,11 @@ struct iwm_softc {
     taskq *sc_nswq=&queue;
     IOLock lifeLock; IOLock *sc_sae_tx_lifecycle_lock=&lifeLock;
     unsigned sc_sae_tx_lifecycle_active=0, sc_radio_init_refs=0, sc_radio_stop_refs=0;
-    bool sc_sae_tx_detaching=false;
-    static int newstate(ieee80211com *ic, int state, int) { ic->ic_state=state; return 0; }
+    unsigned sc_radio_state_refs=0;
+    bool sc_sae_tx_detaching=false, sc_sae_tx_lifecycle_closed=true;
+    static int newstate(ieee80211com *ic, int state, int) {
+        ic->ic_state=static_cast<ieee80211_state>(state); return 0;
+    }
     int (*sc_newstate)(ieee80211com *, int, int)=newstate;
 };
 struct Resettable { void clear() {} void close() {} };
@@ -116,17 +177,30 @@ static void timeout_del(int *) {}
 static void ifq_clr_oactive(Queue *) {}
 static void ifq_flush(Queue *) {}
 static void ieee80211_pae_assoc_epoch_begin(ieee80211com *) {}
+static bool ieee80211_wcl_join_failure_pending(ieee80211com *, uint64_t) { return false; }
+static bool ieee80211_wcl_join_state_identity(ieee80211com *, uint64_t *sequence,
+    uint64_t *generation, uint64_t *epoch) {
+    *sequence=1; *generation=2; *epoch=3; return true;
+}
 static void itl_ap_firmware_runtime_reset(Resettable *, bool) {}
 constexpr int kItlApFirmwareResourceIdle=0;
 class ItlIwm;
 static ItlIwm *active=nullptr;
 static void ieee80211_begin_scan(_ifnet *);
-static void ieee80211_new_state(ieee80211com *ic, int state, int) { ic->ic_state=state; }
+static void ieee80211_new_state(ieee80211com *ic, int state, int) {
+    ic->ic_state=static_cast<ieee80211_state>(state);
+}
+static bool iwm_sae_tx_lifecycle_enter(iwm_softc *, bool);
+static void iwm_sae_tx_lifecycle_leave(iwm_softc *);
 class ItlIwm {
 public:
     iwm_softc com;
     IOSimpleLock scanLock; IOSimpleLock *wclScanLock=&scanLock;
     ItlScanCommandLease scanCommand{};
+    ItlStateTransitionLease stateTransition{};
+    IOInterruptEventSource eventSource;
+    IOInterruptEventSource *stateTransitionSource=&eventSource;
+    WorkLoop workLoop;
     uint64_t radioPowerOnEpoch=42, radioReadyReceiptSerial=0, radioReadyRequestEpoch=0;
     uint32_t radioReadyBackendGeneration=0;
     bool apCsaTimerInitialized=false;
@@ -142,6 +216,10 @@ public:
         emitReady=true, pauseReset=false;
     int hardwareStarts=0, hardwareStops=0, scans=0, readyEvents=0;
     int hardwareError=0;
+    unsigned authCalls=0;
+    bool pauseStateWorker=false, stateWorkerSawErasedDevice=false;
+    bool stateWorkerNeedsGate=false, stateWorkerGateTimedOut=false;
+    std::mutex commandWaitMutex;
     int sc_rx_ba_sessions=0;
     ItlIwm() {
         com.sc_ic.ic_if.if_softc=&com; active=this;
@@ -160,9 +238,14 @@ public:
     int iwm_init(_ifnet *, bool *owner_admitted = nullptr);
 #endif
     static void iwm_init_task(void *);
+    static void iwm_newstate_task(void *);
+    static void iwm_newstate_task_dispatch(void *);
     void iwm_stop(_ifnet *);
     void iwm_stop_internal(_ifnet *, bool);
     bool iwm_radio_init_begin(iwm_softc *, int *);
+    bool iwm_radio_state_enter(iwm_softc *);
+    void iwm_radio_state_leave(iwm_softc *);
+    void iwm_radio_abort_command_waits(iwm_softc *);
     bool iwm_radio_init_current(iwm_softc *, int);
     bool iwm_radio_init_current_locked(iwm_softc *, int);
     void iwm_radio_init_end(iwm_softc *);
@@ -177,6 +260,38 @@ public:
     void cancelRadioPowerOnRequest(uint64_t);
     uint8_t claimRadioPowerOnRetry(uint64_t);
     void reportRadioPowerOnFailure(uint64_t, IOReturn, uint32_t, int);
+    bool takeStateTransition(ItlStateTransitionRequest *);
+    bool stateTransitionCurrent(const ItlStateTransitionRequest &);
+    int postStateTransitionCommit(const ItlStateTransitionRequest &, int);
+    WorkLoop *getMainWorkLoop() { return &workLoop; }
+    int drainStateTransitionCommit(IOInterruptEventSource *) { return 0; }
+    bool deferScanCommand(const ItlStateTransitionRequest &, bool) { return false; }
+    bool deferPrimaryStationUsers(const ItlStateTransitionRequest &, bool = false) { return false; }
+    bool noteStateTransitionProgress(ItlStateTransitionRequest *, uint8_t) { return true; }
+    bool primaryFirmwareContextsPresent() { return false; }
+    int iwm_run_stop(iwm_softc *) { return 0; }
+    int iwm_deauth(iwm_softc *) { return 0; }
+    int iwm_scan(iwm_softc *, const ItlStateTransitionRequest &) { return 0; }
+    int iwm_run(iwm_softc *) { return 0; }
+    int iwm_auth(iwm_softc *) {
+        ++authCalls;
+        if (pauseStateWorker) {
+            std::unique_lock<std::mutex> guard(stageMutex);
+            stateWorkerEntered=true; stageCv.notify_all();
+            stageCv.wait(guard, [] { return releaseStateWorker; });
+            stateWorkerSawErasedDevice=!hardwareLive;
+        }
+        if (stateWorkerNeedsGate) {
+            // Explicit upper callback double; actual generic scan completion
+            // can synchronously enter this same recursive controller gate.
+            if (!workLoop.tryCloseGate()) {
+                stateWorkerGateTimedOut=true;
+                return ENXIO;
+            }
+            workLoop.openGate();
+        }
+        return stateWorkerSawErasedDevice ? ENXIO : 0;
+    }
     int iwm_init_hw(iwm_softc *) {
         ++hardwareStarts; hardwareLive=true;
         if (pauseHardware) {
@@ -188,6 +303,13 @@ public:
     }
     void iwm_stop_device(iwm_softc *) {
         ++hardwareStops;
+        IOLockLock(com.sc_sae_tx_lifecycle_lock);
+        const bool leased=com.sc_sae_tx_lifecycle_active!=0;
+        IOLockUnlock(com.sc_sae_tx_lifecycle_lock);
+        {
+            std::lock_guard<std::mutex> guard(stageMutex);
+            erasedWithStateWorker=stateWorkerEntered && leased;
+        }
         if (pauseReset) {
             std::unique_lock<std::mutex> guard(stageMutex);
             resetEntered=true; stageCv.notify_all();
@@ -203,7 +325,15 @@ public:
         std::lock_guard<std::mutex> guard(stageMutex);
         stopIntent=true; stageCv.notify_all();
     }
-    void wakeupOn(void *) {}
+    void lockTsleep() { commandWaitMutex.lock(); }
+    void unlockTsleep() { commandWaitMutex.unlock(); }
+    void wakeupOn(void *ident) {
+        if (ident != &com.txq[0].desc[0]) return;
+        std::lock_guard<std::mutex> guard(stageMutex);
+        if (stateWorkerEntered) {
+            releaseStateWorker=true; stageCv.notify_all();
+        }
+    }
     int tsleep_nsec(void *, int, const char *, uint64_t) {
         if (sleepHook) { auto hook=sleepHook; sleepHook={}; hook(); }
         return EWOULDBLOCK;
@@ -289,6 +419,70 @@ int main(int argc, char **argv) {
             assert(driver.hardwareLive && driver.scans==1 && driver.readyEvents==1 &&
                 driver.radioReadyRequestEpoch==84);
             assert(driver.disable(nullptr)==0 && !driver.hardwareLive);
+        }
+    } else if (scenario=="state-worker-normal" || scenario=="state-worker-off" ||
+        scenario=="state-worker-gated-off" || scenario=="state-worker-gated-lost-wake" ||
+        scenario=="state-worker-cancelled") {
+        driver.pauseHardware=false;
+        assert(driver.iwm_init(&driver.com.sc_ic.ic_if)==0);
+        ItlStateTransitionRequest request{};
+        assert(driver.stateTransition.prepare(driver.com.sc_generation,
+            IEEE80211_S_AUTH, 0, ItlStateTransitionIdentity{1,2,3}, &request));
+        assert(driver.stateTransition.enqueue(request, driver.com.sc_generation));
+        if (scenario=="state-worker-normal") {
+            driver.iwm_newstate_task_dispatch(&driver.com);
+            assert(driver.authCalls==1 && driver.eventSource.posts==1 &&
+                driver.com.sc_sae_tx_lifecycle_active==0);
+            assert(driver.disable(nullptr)==0 && !driver.hardwareLive);
+        } else if (scenario=="state-worker-cancelled") {
+            assert(driver.disable(nullptr)==0);
+            driver.iwm_newstate_task_dispatch(&driver.com);
+            assert(driver.authCalls==0 && driver.eventSource.posts==0 &&
+                driver.com.sc_sae_tx_lifecycle_active==0);
+        } else {
+            driver.pauseStateWorker=true;
+            const bool gated=scenario=="state-worker-gated-off" ||
+                scenario=="state-worker-gated-lost-wake";
+            driver.stateWorkerNeedsGate=gated;
+            driver.workLoop.dropWakeups=scenario=="state-worker-gated-lost-wake";
+            std::thread worker([&] {
+                driver.iwm_newstate_task_dispatch(&driver.com);
+                std::lock_guard<std::mutex> guard(stageMutex);
+                stateWorkerFinished=true; stageCv.notify_all();
+            });
+            { std::unique_lock<std::mutex> guard(stageMutex);
+              assert(stageCv.wait_for(guard, std::chrono::seconds(3),
+                  [] { return stateWorkerEntered; })); }
+            assert(driver.com.sc_sae_tx_lifecycle_active==1);
+            std::thread off([&] {
+                if (gated) { driver.workLoop.closeGate(); driver.workLoop.closeGate(); }
+                assert(driver.disable(nullptr)==0);
+                if (gated) {
+                    assert(driver.workLoop.inGate() && WorkLoop::depth==2);
+                    driver.workLoop.openGate(); driver.workLoop.openGate();
+                }
+                std::lock_guard<std::mutex> guard(stageMutex);
+                offFinished=true; stageCv.notify_all();
+            });
+            bool premature;
+            { std::unique_lock<std::mutex> guard(stageMutex);
+              assert(stageCv.wait_for(guard, std::chrono::seconds(3),
+                  [] { return offFinished || drainWaits!=0; }));
+              premature=offFinished && !releaseStateWorker;
+              releaseStateWorker=true; stageCv.notify_all(); }
+            worker.join(); off.join();
+            std::fprintf(stderr,
+                "IWM dequeued AUTH worker prematureOff=%u erasedWhileLeased=%u "
+                "workerSawErasedDevice=%u authCalls=%u commitPosts=%u active=%u\n",
+                premature, erasedWithStateWorker, driver.stateWorkerSawErasedDevice,
+                driver.authCalls, driver.eventSource.posts,
+                driver.com.sc_sae_tx_lifecycle_active);
+            assert(!premature && !erasedWithStateWorker &&
+                !driver.stateWorkerSawErasedDevice);
+            assert(!driver.stateWorkerGateTimedOut);
+            if (gated) assert(driver.workLoop.sleeps!=0);
+            assert(!driver.hardwareLive && driver.eventSource.posts==0 &&
+                driver.com.sc_sae_tx_lifecycle_active==0);
         }
     } else if (scenario=="init-owner-retry") {
         driver.com.init_retry_count=0;

@@ -916,12 +916,14 @@ void ItlIwm::
 iwm_newstate_task_dispatch(void *arg)
 {
     struct iwm_softc *sc = (struct iwm_softc *)arg;
-    /* Initial SCAN precedes SAE admission. The scan/state leaf is the
-     * readiness gate; this lease only keeps the softc alive through detach. */
-    if (!iwm_sae_tx_lifecycle_enter(sc, true))
+    /* Initial SCAN precedes SAE admission, but its body still owns firmware
+     * storage. Claim that lifetime atomically against radio stop, in addition
+     * to the copied scan/state request's generation fence. */
+    ItlIwm *that = container_of(sc, ItlIwm, com);
+    if (!that->iwm_radio_state_enter(sc))
         return;
     iwm_newstate_task(arg);
-    iwm_sae_tx_lifecycle_leave(sc);
+    that->iwm_radio_state_leave(sc);
 }
 
 void ItlIwm::

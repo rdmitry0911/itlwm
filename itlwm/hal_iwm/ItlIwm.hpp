@@ -682,6 +682,9 @@ public:
     int    iwm_init_hw(struct iwm_softc *);
     int    iwm_init(struct _ifnet *, bool *owner_admitted = nullptr);
     bool   iwm_radio_init_begin(struct iwm_softc *, int *);
+    bool   iwm_radio_state_enter(struct iwm_softc *);
+    void   iwm_radio_state_leave(struct iwm_softc *);
+    void   iwm_radio_abort_command_waits(struct iwm_softc *);
     bool   iwm_radio_init_current(struct iwm_softc *, int);
     /* Caller holds sc_sae_tx_lifecycle_lock, before any security leaf. */
     bool   iwm_radio_init_current_locked(struct iwm_softc *, int);

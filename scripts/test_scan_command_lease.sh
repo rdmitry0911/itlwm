@@ -23,6 +23,7 @@ for standard in 11 17; do
     "$SCAN_TEST_DIR/lease$standard"
 done
 awk '/^iwm_send_cmd\(/ { selected=1; print "int ItlIwm::" }
+     /^iwm_radio_abort_command_waits\(/ { selected=1; print "void ItlIwm::" }
      selected { print }
      selected && /^}/ { selected=0 }' \
     "$PROJECT_DIR/itlwm/hal_iwm/phy.cpp" > "$SCAN_TEST_DIR/iwm-send-cmd.inc"
@@ -33,6 +34,9 @@ awk '/^iwm_send_cmd\(/ { selected=1; print "int ItlIwm::" }
     -o "$SCAN_TEST_DIR/iwm-sender"
 "$SCAN_TEST_DIR/iwm-sender"
 "$SCAN_TEST_DIR/iwm-sender" dma-failure
+"$SCAN_TEST_DIR/iwm-sender" stop-before-wait
+"$SCAN_TEST_DIR/iwm-sender" stop-during-wait
+"$SCAN_TEST_DIR/iwm-sender" abort-partial-ring
 awk '/^iwx_send_cmd\(/ { selected=1; print "int ItlIwx::" }
     /^txQueueAllocationCurrentLocked\(/ { selected=1; print "bool ItlIwx::" }
      selected { print }
