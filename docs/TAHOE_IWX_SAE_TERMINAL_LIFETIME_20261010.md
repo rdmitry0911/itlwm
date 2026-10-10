@@ -33,9 +33,11 @@ native admission already closed, canceled and malformed records, a missing
 event handler, engine-consumed legacy tickets, zeroed FIFO slots, fallback
 join-generation retirement, remaining FIFO requeue and closed task admission.
 
-The current source passes on Linux with ASan/UBSan. Replacing only the full
+The current source passes on Linux and macOS with ASan/UBSan, including the
+final complete macOS aggregate at `5f351162`. Replacing only the full
 dispatcher with its historical `d2d8f1d8^` body compiles, then fails exit 134
-at `stop reclaimed the owner before terminal tail returned`. That control
+at `stop reclaimed the owner before terminal tail returned` on both systems.
+That control
 runs the callback race first, before checking the later-added retirement
 helper, so it does not fail merely because that helper was absent historically.
 

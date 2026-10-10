@@ -43,11 +43,16 @@ prove that BootReady is distinct from an owned radio-ready epoch: accepted
 bootstrap enable neither arms nor completes a public power-on wait. A later
 Off/On uses fresh RFKILL admission and preserves Off when blocked.
 
-Both IWM and IWX fixtures pass on Linux under ASan/UBSan. The cold logical
+Both IWM and IWX fixtures pass on Linux and macOS under ASan/UBSan, including
+the final complete macOS aggregate at `5f351162`. The cold logical
 On/radio-inactive distinction is now reproduced by complete local bodies,
 not merely an enableAdapter double. It remains a qualification limitation,
 not a newly closed on-air discrepancy. No arbitrary second initialization,
 fake readiness or RFKILL override is introduced.
+
+The bounded runtime run independently reproduces cold bootstrap logical On
+with actual RFKILL blocked, then ordinary and post-S3 On refusals with Off
+readback. See [the final checkpoint](TAHOE_BOUNDED_RELEASE_AUDIT_20261010.md).
 
 ## Remaining boundary
 
