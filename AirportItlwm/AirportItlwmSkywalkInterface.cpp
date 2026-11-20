@@ -26,6 +26,7 @@
 #include "TahoeSkywalkIoctlRoutes.hpp"
 #include "TahoeTxRxChainContracts.hpp"
 #include "TahoeWclTrafficCountersContracts.hpp"
+#include "TahoeWclEnterpriseScanResumeContracts.hpp"
 #include "TahoeWclOpenScanResumeContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
@@ -5057,6 +5058,58 @@ setAUTH_TYPE(struct apple80211_authtype_data *ad)
     return kIOReturnSuccess;
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * PMK of an 802.1X association.  Tahoe 25C56 AppleBCMWLANJoinAdapter::setKey
+ * (0xffffff8001558b84) sends APPLE80211_CIPHER_PMK (6) and
+ * APPLE80211_CIPHER_MSK (9) through one branch (jump table
+ * 0xffffff80015592c0 -> 0xffffff8001558c13): the key_len bytes at key+0x10
+ * become the wsec_pmk of programPMK() (0xffffff800155bf8a), the PMK with
+ * which the supplicant below the host driver runs the four-way handshake of
+ * the current association whatever its AKM.  A zero length programs an empty
+ * PMK and arms no supplicant event; eapolclient sends that form when it
+ * starts, before the EAP conversation, and the 32-byte form (cipher 9) once
+ * EAP has succeeded.
+ *
+ * The kernel PAE is that supplicant here.  Its 802.1X consumer,
+ * ieee80211_recv_4way_msg1(), takes the PMK from the PMKSA cache by
+ * authenticator and PMKID, never from ic_psk, so the PMK of an 802.1X
+ * association is stored there and the PSK owner state (ic_psk,
+ * IEEE80211_F_PSK, the PSK AKM policy) is left alone.  The selector is the
+ * consumer's own: the AKM negotiated for the current BSS.  Returns false,
+ * touching nothing, when the current association is not 802.1X.
+ */
+static bool
+tahoeInstallEnterprisePmk(struct ieee80211com *ic,
+                          const struct apple80211_key *key,
+                          IOReturn *result)
+{
+    struct ieee80211_node *ni = ic != nullptr ? ic->ic_bss : nullptr;
+
+    if (ni == nullptr ||
+        (ic->ic_state != IEEE80211_S_RUN &&
+         ic->ic_state != IEEE80211_S_ASSOC) ||
+        (ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
+        !ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms))
+        return false;
+
+    if (key->key_len == 0) {
+        ieee80211_pmksa_purge(ic);
+        *result = kIOReturnSuccess;
+    } else if (key->key_len < IEEE80211_PMK_LEN) {
+        XYLog("install_enterprise_pmk REJECT_LEN key_len=%u expected=%u\n",
+              key->key_len, (unsigned)IEEE80211_PMK_LEN);
+        *result = kIOReturnBadArgument;
+    } else {
+        /* The PMK of these AKMs is the first 256 bits of the MSK. */
+        *result = ieee80211_pmksa_add(
+            ic, (enum ieee80211_akm)ni->ni_rsnakms, ni->ni_macaddr,
+            key->key, 0) != nullptr ? kIOReturnSuccess : kIOReturnNoMemory;
+    }
+    return true;
+}
+#endif
+
 IOReturn AirportItlwmSkywalkInterface::
 setCIPHER_KEY(struct apple80211_key *key)
 {
@@ -5066,6 +5119,16 @@ setCIPHER_KEY(struct apple80211_key *key)
     static_assert(__offsetof(struct apple80211_key, wowl_kck_len) == 100, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kek_len) == 120, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kck_key) == 104, "struct corrupted");
+
+#if __IO80211_TARGET >= __MAC_26_0
+    if (key->key_cipher_type == APPLE80211_CIPHER_PMK ||
+        key->key_cipher_type == APPLE80211_CIPHER_MSK) {
+        IOReturn enterpriseResult = kIOReturnSuccess;
+        if (tahoeInstallEnterprisePmk(fHalService->get80211Controller(),
+                                      key, &enterpriseResult))
+            return enterpriseResult;
+    }
+#endif
     
     switch (key->key_cipher_type) {
         case APPLE80211_CIPHER_NONE:
@@ -5701,6 +5764,15 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
         memset(ic->ic_bss->ni_pmk, 0, sizeof(ic->ic_bss->ni_pmk));
         ic->ic_bss->ni_flags &= ~IEEE80211_NODE_PMK;
     }
+#if __IO80211_TARGET >= __MAC_26_0
+    /* The PMK of an 802.1X association lives in the PMKSA cache
+     * (tahoeInstallEnterprisePmk) and follows the same owner contract.  An
+     * entry that outlived its association would also be offered as a PMKID
+     * in the next (Re)Association Request; the reference driver keeps no
+     * such host cache (AppleBCMWLANJoinAdapter::setKey cipher 7 branch
+     * 0xffffff8001558e04: "Ignoring PMKSA request"). */
+    ieee80211_pmksa_purge(ic);
+#endif
     __atomic_add_fetch(&external_pmk_eligibility_clear_count, 1,
                        __ATOMIC_RELAXED);
     airportItlwmRegDiagRecordPmkClear(reason_tag);
@@ -8977,7 +9049,40 @@ sae_out:
         const bool resumeAfterOpenAssociation =
             TahoeWclOpenScanResumeContracts::
                 shouldResumeScanAfterOpenAssociation(openScanResumeFacts);
-        if (resumeAfterExternalPmk || resumeAfterOpenAssociation) {
+        /*
+         * An 802.1X candidate (Tahoe: Open lower, auth_upper 0x4, RSN IE, no
+         * key) has no PMK to wait for: eapolclient derives it over the
+         * associated link.  The reference joins it like every other
+         * candidate, and AppleBCMWLANJoinAdapter::handleAssoc
+         * (0xffffff800155c89e) publishes its 0xd3 whatever the AKM.
+         * WCLJoinManager::handleJoinAssocComplete (0xffffff80021d4b96)
+         * depends on that completion for an EAP join
+         * (IO80211BssManager::isEAPJoin(), 0xffffff8002242606): it calls
+         * notifyAssocDone() and extends the join timeout by 60000 ms
+         * ("Extend join timeout for EAP user input").  Without the lease
+         * below no 0xd3 is ever published and WCL aborts the join about
+         * 10 s after the request.
+         */
+        const TahoeWclEnterpriseScanResumeContracts::Facts
+            enterpriseScanResumeFacts = {
+            assocResult == kIOReturnSuccess,
+            ap_mode == APPLE80211_AP_MODE_INFRA,
+            auth_lower == APPLE80211_AUTHTYPE_OPEN,
+            TahoeAssociationAuthContracts::isAuditedEnterpriseAuth(auth_upper),
+            wcl_key_len == 0,
+            rsn_ie_len != 0,
+            ic->ic_state == IEEE80211_S_SCAN,
+            candidate_count > 0 &&
+                candidate_count <=
+                    TahoeAssociationContracts::kMaximumCandidateCount,
+            TahoeScanContracts::hasRenderableBssid(bssid->octet),
+        };
+        const bool resumeAfterEnterpriseAssociation =
+            TahoeWclEnterpriseScanResumeContracts::
+                shouldResumeScanAfterEnterpriseAssociation(
+                    enterpriseScanResumeFacts);
+        if (resumeAfterExternalPmk || resumeAfterOpenAssociation ||
+            resumeAfterEnterpriseAssociation) {
             /*
              * Commit the exact WCL lease before either JoinAdapter-equivalent
              * path can synchronously bind this BSS.  Every completion
@@ -9023,6 +9128,8 @@ sae_out:
             if (!joinedCachedCandidate) {
                 if (resumeAfterOpenAssociation)
                     XYLog("wcl_assoc OPEN_READY_SCAN_RESUME\n");
+                else if (resumeAfterEnterpriseAssociation)
+                    XYLog("wcl_assoc ENTERPRISE_READY_SCAN_RESUME\n");
                 else
                     XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
                 ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);

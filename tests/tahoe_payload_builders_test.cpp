@@ -31,6 +31,7 @@
 #include "AirportItlwm/TahoeScanContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
 #include "AirportItlwm/TahoeTxRxChainContracts.hpp"
+#include "AirportItlwm/TahoeWclEnterpriseScanResumeContracts.hpp"
 #include "AirportItlwm/TahoeWclOpenScanResumeContracts.hpp"
 #include "itlwm/hal_iwx/IwxMfpIgtkContracts.hpp"
 #include "include/Airport/IO80211BssManager.h"
@@ -1860,6 +1861,77 @@ void testTahoeWclOpenScanResumeContracts()
             "open WCL scan resume rejects zero or malformed BSSID");
 }
 
+void testTahoeWclEnterpriseScanResumeContracts()
+{
+    using namespace TahoeWclEnterpriseScanResumeContracts;
+    using namespace TahoeAssociationAuthContracts;
+
+    require(isAuditedEnterpriseAuth(kAuthWpa2) &&
+                isAuditedEnterpriseAuth(kAuthWpa) &&
+                isAuditedEnterpriseAuth(kAuthWpa | kAuthWpa2) &&
+                isAuditedEnterpriseAuth(kAuthSha2568021x),
+            "enterprise WCL selector accepts exact WPA/WPA2/SHA256 802.1X");
+    require(!isAuditedEnterpriseAuth(0) &&
+                !isAuditedEnterpriseAuth(kAuthWpa2Psk) &&
+                !isAuditedEnterpriseAuth(kAuthWpa2 | kAuthWpa2Psk) &&
+                !isAuditedEnterpriseAuth(kAuthWpa3Sae) &&
+                !isAuditedEnterpriseAuth(kAuthWpa2 | kAuthWpa3Enterprise) &&
+                !isAuditedEnterpriseAuth(kAuthWpa3Enterprise) &&
+                !isAuditedEnterpriseAuth(kAuthWpa2 | (1U << 20)),
+            "enterprise WCL selector rejects open, PSK, WPA3 and unknown companions");
+
+    const Facts accepted = {
+        true,  // association policy setup succeeded
+        true,  // infrastructure candidate
+        true,  // Open-System lower authentication
+        true,  // exact enterprise upper authentication selector
+        true,  // no key carrier: the PMK follows EAP
+        true,  // RSN IE present
+        true,  // net80211 still waits in SCAN
+        true,  // WCL supplied at least one bounded candidate
+        true,  // selected BSSID is nonzero and renderable
+    };
+    require(shouldResumeScanAfterEnterpriseAssociation(accepted),
+            "enterprise WCL scan resume accepts exact Open/802.1X candidate");
+
+    Facts rejected = accepted;
+    rejected.associationAccepted = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume rejects failed policy setup");
+    rejected = accepted;
+    rejected.infrastructureMode = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume rejects IBSS and unknown modes");
+    rejected = accepted;
+    rejected.openAuthLower = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume rejects shared-key and SAE lower auth");
+    rejected = accepted;
+    rejected.enterpriseAuthUpper = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume rejects open, PSK, SAE and unknown upper auth");
+    rejected = accepted;
+    rejected.noCredential = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume cannot admit a key or password carrier");
+    rejected = accepted;
+    rejected.hasRsnIe = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume needs the request RSN IE");
+    rejected = accepted;
+    rejected.stateIsScan = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume preserves later net80211 states");
+    rejected = accepted;
+    rejected.hasSelectedCandidate = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume rejects ownerless candidates");
+    rejected = accepted;
+    rejected.selectedBssidRenderable = false;
+    require(!shouldResumeScanAfterEnterpriseAssociation(rejected),
+            "enterprise WCL scan resume rejects zero or malformed BSSID");
+}
+
 void testTahoeWclPhysicalScanContracts()
 {
     using namespace TahoeWclPhysicalScanContracts;
@@ -2979,6 +3051,7 @@ int main()
     testTahoeAssociationAuthContracts();
     testTahoeExternalPmkScanResumeContracts();
     testTahoeWclOpenScanResumeContracts();
+    testTahoeWclEnterpriseScanResumeContracts();
     testTahoeWclPhysicalScanContracts();
     testTahoePostPltiTraceContracts();
     testTahoePostPltiTraceMatrixSealedPrefixes();

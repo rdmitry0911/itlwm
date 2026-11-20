@@ -1105,6 +1105,24 @@ ieee80211_ba_move_window(struct ieee80211com *ic, struct ieee80211_node *ni,
     ieee80211_input_ba_flush(ic, ni, ba, ml);
 }
 
+#if defined(USE_APPLE_SUPPLICANT) && __IO80211_TARGET >= __MAC_26_0
+/*
+ * Tell whether a decapsulated EAPOL frame (Ethernet header included) is an
+ * EAPOL-Key packet, i.e. part of an RSN key handshake rather than of the EAP
+ * conversation.  The packet type is the second octet of the EAPOL header.
+ */
+static int
+ieee80211_eapol_is_key(mbuf_t m)
+{
+    u_int8_t type;
+
+    if (mbuf_copydata(m, sizeof(struct ether_header) + 1, sizeof(type),
+                      &type) != 0)
+        return 0;
+    return type == EAPOL_KEY;
+}
+#endif
+
 void
 ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
                        struct ieee80211_node *ni, int mcast, struct mbuf_list *ml)
@@ -1177,11 +1195,20 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
 #endif
 // CR-250 Phase 2 step 3 — narrow the USE_APPLE_SUPPLICANT EAPOL
 // route-to-userspace gate so that on Tahoe
-// (`__IO80211_TARGET >= __MAC_26_0`) only PSK/SHA256_PSK EAPOL
-// frames go to the OpenBSD kernel `ieee80211_eapol_key_input()`.
+// (`__IO80211_TARGET >= __MAC_26_0`) the EAPOL-Key frames of every
+// AKM go to the OpenBSD kernel `ieee80211_eapol_key_input()`.
 // 802.1X/Enterprise (8021X / SHA256_8021X AKMs) keep the
-// existing Apple userspace `ml_enqueue` route because
-// eapolclient is the canonical consumer for that AKM class.
+// existing Apple userspace `ml_enqueue` route for the rest of
+// their EAPOL traffic only: eapolclient consumes the EAP
+// conversation, and then hands the resulting PMK down through
+// APPLE80211_IOC_CIPHER_KEY instead of answering EAPOL-Key.
+// Tahoe 25C56 AppleBCMWLANJoinAdapter::setKey (0xffffff8001558b84,
+// cipher 6/9 branch 0xffffff8001558c13) programs that PMK with
+// programPMK() (0xffffff800155bf8a) into the supplicant below the
+// host driver, whose four-way result returns through
+// handleSupplicantEvent() (0xffffff800155d678).  The kernel pae
+// is that supplicant here, so an 802.1X EAPOL-Key frame sent to
+// userspace alone is never answered and the AP deauthenticates.
 //
 // CR-247's setwpaparms has populated the WPA/RSN state on the
 // new PLTI userclient delivery path (CR-242/244). Once CR-251
@@ -1197,9 +1224,10 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
 // Pre-Tahoe builds preserve the legacy `ml_enqueue`-everything
 // behavior unchanged.
 #if defined(USE_APPLE_SUPPLICANT) && __IO80211_TARGET >= __MAC_26_0
-            // Tahoe split: PSK/SHA256_PSK -> kernel pae;
-            // 802.1X/Enterprise -> userspace eapolclient via ml_enqueue.
-            if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
+            // Tahoe split: EAPOL-Key -> kernel pae; the EAP conversation
+            // of 802.1X/Enterprise -> userspace eapolclient via ml_enqueue.
+            if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms) &&
+                !ieee80211_eapol_is_key(m)) {
                 ml_enqueue(ml, m);
             } else {
                 AirportItlwmPostPltiTraceRecord(

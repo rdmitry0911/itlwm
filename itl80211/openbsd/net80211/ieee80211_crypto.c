@@ -96,14 +96,9 @@ void
 ieee80211_crypto_detach(struct _ifnet *ifp)
 {
 	struct ieee80211com *ic = (struct ieee80211com *)ifp;
-	struct ieee80211_pmk *pmk;
 
 	/* purge the PMKSA cache */
-	while ((pmk = TAILQ_FIRST(&ic->ic_pmksa)) != NULL) {
-		TAILQ_REMOVE(&ic->ic_pmksa, pmk, pmk_next);
-		explicit_bzero(pmk, sizeof(*pmk));
-		free(pmk);
-	}
+	ieee80211_pmksa_purge(ic);
 
 	/* clear all group keys from memory */
 	ieee80211_crypto_clear_groupkeys(ic);
@@ -808,6 +803,21 @@ ieee80211_pmksa_add(struct ieee80211com *ic, enum ieee80211_akm akm,
 		    macaddr, ic->ic_myaddr, pmk->pmk_pmkid);
 	}
 	return pmk;
+}
+
+/*
+ * Remove every PMK entry from the PMKSA cache.
+ */
+void
+ieee80211_pmksa_purge(struct ieee80211com *ic)
+{
+	struct ieee80211_pmk *pmk;
+
+	while ((pmk = TAILQ_FIRST(&ic->ic_pmksa)) != NULL) {
+		TAILQ_REMOVE(&ic->ic_pmksa, pmk, pmk_next);
+		explicit_bzero(pmk, sizeof(*pmk));
+		free(pmk);
+	}
 }
 
 /*

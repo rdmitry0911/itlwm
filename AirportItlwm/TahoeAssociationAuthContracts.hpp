@@ -153,6 +153,19 @@ inline bool mayDeriveWpaPskPmkFromWclPassword(uint32_t authtypeUpper)
     return isAuditedPskPmkAuth(authtypeUpper);
 }
 
+inline bool isAuditedEnterpriseAuth(uint32_t authtypeUpper)
+{
+    /*
+     * The local 802.1X branch owns no credential at association time: the
+     * PMK follows the EAP conversation.  Its WCL selector is an exact
+     * nonempty subset of the WPA/WPA2/SHA256 802.1X bits (Tahoe sends 0x4
+     * for WPA2 Enterprise); a PSK, SAE, WPA3-enterprise or unknown companion
+     * needs a different owner and must not be admitted as plain 802.1X.
+     */
+    return authtypeUpper != 0 &&
+           (authtypeUpper & ~kEnterpriseAuthMask) == 0;
+}
+
 inline bool requiresUnsupportedWpa3Auth(uint32_t authtypeUpper)
 {
     /*

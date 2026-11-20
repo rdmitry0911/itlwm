@@ -181,6 +181,7 @@ struct	ieee80211_pmk *ieee80211_pmksa_add(struct ieee80211com *,
 	    enum ieee80211_akm, const u_int8_t *, const u_int8_t *, u_int32_t);
 struct	ieee80211_pmk *ieee80211_pmksa_find(struct ieee80211com *,
 	    struct ieee80211_node *, const u_int8_t *);
+void	ieee80211_pmksa_purge(struct ieee80211com *);
 void	ieee80211_derive_ptk(enum ieee80211_akm, const u_int8_t *,
 	    const u_int8_t *, const u_int8_t *, const u_int8_t *,
 	    const u_int8_t *, struct ieee80211_ptk *);
