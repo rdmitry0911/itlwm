@@ -74,6 +74,11 @@ public:
     virtual bool getTxRate(struct ItlTxRate *rate) { return false; }
 
     virtual bool getMaxTxPowerHalfDbm(uint8_t *halfDbm) { return false; }
+
+    // True when the HAL wants 802.11ax published in the card capabilities,
+    // which is what the system reads the supported PHY modes from.  The
+    // Intel HALs keep their published capability set.
+    virtual bool publishesHeCapability() { return false; }
 };
 
 #endif /* ItlDriverInfo_h */

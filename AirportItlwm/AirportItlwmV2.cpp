@@ -13128,6 +13128,11 @@ getCARD_CAPABILITIES(OSObject *object,
     // Keep the advanced-byte sanitation from CR-032 in the same helper.
     TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
         cd->capabilities);
+#if __IO80211_TARGET >= __MAC_26_0
+    if (fHalService != nullptr && fHalService->getDriverInfo() != nullptr &&
+        fHalService->getDriverInfo()->publishesHeCapability())
+        TahoeCapabilityContracts::applyHeCardCapability(cd->capabilities);
+#endif
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
     /*
      * CoreWLAN checks the Apple feature-0x41 capability before it will create

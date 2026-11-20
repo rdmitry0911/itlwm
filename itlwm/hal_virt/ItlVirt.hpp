@@ -28,6 +28,8 @@
 #include <HAL/ItlHalService.hpp>
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
+#include <HAL/ItlSaePeerTimer.hpp>
+#include <HAL/ItlSaePmkContinuationV1.h>
 
 #include "VapPlatformIOKit.hpp"
 
@@ -45,6 +47,7 @@
 /* What the firmware reports about itself and the radio (HELLO, GET_CAPS). */
 struct VirtCaps {
     uint8_t  macaddr[IEEE80211_ADDR_LEN];
+    uint64_t fw_features;           /* VAP_FEAT_* */
     char     fw_version[32];
     char     fw_name[32];
     char     country[3];
@@ -99,6 +102,122 @@ struct VirtWclTicket {
     uint32_t backend;               /* ours: the scan id */
 };
 
+/*
+ * Driver-resident SAE is the glue text of hal_iwx/IwxSaeEngine.inc, which
+ * ItlVirt.cpp builds for this HAL: the engine in net80211 runs the exchange,
+ * the glue owns one attempt at a time.  The two structures below are that
+ * text's state and keep its field names.
+ */
+#define VIRT_SAE_PEERQ_LEN      4
+
+#define VIRT_FLAG_SHUTDOWN      0x01    /* detaching: the task gate stays closed */
+#define VIRT_FLAG_SCANNING      0x02    /* never set: scanBusy() has the scan state */
+
+struct ieee80211_sae_engine;
+
+/* The attempt the glue's worker owns.  Public identity only, no key material. */
+struct virt_sae_engine_owner {
+    bool                              active;
+    bool                              start_pending;
+    bool                              cancelled;
+    bool                              suppress_scan;
+    bool                              completion_claimed;
+    bool                              assoc_tx_pending;
+    bool                              assoc_tx_accepted;
+    bool                              terminal_valid;
+    bool                              peer_overflow;
+    bool                              submit_retry_pending;
+    u_int8_t                          submit_retry_count;
+    u_int64_t                         request_generation;
+    u_int64_t                         association_epoch;
+    u_int64_t                         relay_generation;
+    u_int64_t                         join_attempt_generation;
+    u_int64_t                         join_failure_generation;
+    u_int64_t                         in_flight_ticket;
+    u_int64_t                         terminal_peer_deadline;
+    u_int64_t                         peer_reply_deadline;
+    u_int64_t                         peer_reply_ticket;
+    struct ItlSaeSelectedJoinEventV1  selected;
+    struct ItlSaeAuthActivatedEventV1 activated;
+    struct ItlSaePmkContinuationIdentityV1 completion;
+    struct ItlSaeAuthTransportEventV1 terminal;
+    struct ItlSaeAuthPeerEventV1      peerq[VIRT_SAE_PEERQ_LEN];
+    u_int8_t                          peer_head;
+    u_int8_t                          peer_tail;
+    u_int8_t                          peer_count;
+};
+
+struct virt_softc {
+    struct ieee80211com sc_ic;
+    int sc_flags;                   /* VIRT_FLAG_* */
+
+    struct task sae_tx_task;
+    struct task sae_engine_task;
+
+    /*
+     * The glue's lifecycle lease: its worker and the credential calls hold
+     * it while they run.  It closes for detach only; a radio that is off is
+     * refused by the checks of each path.
+     */
+    IOLock *sc_task_gate_lock;
+    int sc_task_gate_active;
+    bool sc_task_gate_closed;
+    bool sc_task_gate_detaching;
+    bool sc_taskq_initialized;
+    bool sc_task_callbacks_ready;
+    struct taskq *sc_nswq;          /* the queue of sae_tx_task: systq */
+
+    /*
+     * The transport.  A frame is with the firmware or refused by the time
+     * submitSaeAuthFrame() returns, so all it keeps is the highest ticket
+     * cancelled so far.  The glue also looks at a frame in flight and at
+     * queued completions: this transport has neither and they stay empty.
+     */
+    IOSimpleLock *sc_sae_tx_lock;
+    uint64_t sc_sae_tx_cancel_through;
+    bool sc_sae_tx_active;
+    bool sc_sae_tx_doorbelled;
+    uint64_t sc_sae_tx_active_ticket;
+    struct ItlSaeAuthTransportEventV1 sc_sae_tx_active_event;
+    bool sc_sae_tx_last_event_valid;
+    struct ItlSaeAuthTransportEventV1 sc_sae_tx_last_event;
+    uint8_t sc_sae_tx_event_count;
+    uint64_t sc_sae_tx_join_failure_generation;
+
+    IOSimpleLock *sc_sae_engine_lock;
+    struct virt_sae_engine_owner sc_sae_engine_owner;
+    struct ieee80211_sae_engine *sc_sae_engine;
+    u_int64_t sc_sae_engine_wcl_cancel_generation;
+    u_int64_t sc_sae_engine_join_failure_generation;
+    volatile u_int32_t sc_sae_engine_lifecycle_generation;
+    u_int64_t sc_sae_engine_next_ticket;
+    u_int64_t sc_sae_engine_next_relay_generation;
+    volatile u_int32_t sc_sae_engine_callback_state;
+    volatile u_int32_t sc_sae_engine_task_admission_state;
+    bool sc_sae_engine_task_ready;
+    bool sc_sae_engine_stopping;
+    bool sc_sae_engine_detaching;
+    bool sc_sae_engine_runtime_enabled;
+
+    /* The password macOS handed over for one network, until it is used up. */
+    IOSimpleLock *sc_sae_wcl_credential_lock;
+    bool sc_sae_wcl_credential_staged;
+    bool sc_sae_wcl_credential_pending;
+    bool sc_sae_wcl_credential_active;
+    bool sc_sae_bss_loss_recovery_armed;
+    bool sc_sae_driver_reset_recovery_pending;
+    bool sc_sae_wcl_credential_cancel_valid;
+    uint64_t sc_sae_wcl_credential_cancel_through_generation;
+    uint64_t sc_sae_bss_loss_recovery_generation;
+    struct ItlSaeWclCredentialV1 sc_sae_wcl_credential;
+};
+
+/* What the SAE glue asks of the scan state: is the radio free for a join. */
+enum class VirtScanBusy : uint8_t {
+    Idle,
+    Busy,
+};
+
 class ItlVirt : public ItlHalService, ItlDriverInfo, ItlDriverController {
     OSDeclareDefaultStructors(ItlVirt)
 
@@ -111,7 +230,7 @@ public:
     virtual void detach(IOPCIDevice *device) override;
     IOReturn enable(IONetworkInterface *netif) override;
     IOReturn disable(IONetworkInterface *netif) override;
-    virtual struct ieee80211com *get80211Controller() override { return &fIc; }
+    virtual struct ieee80211com *get80211Controller() override { return &com.sc_ic; }
     virtual ItlDriverInfo *getDriverInfo() override { return this; }
     virtual ItlDriverController *getDriverController() override { return this; }
 
@@ -132,7 +251,7 @@ public:
             (int16_t)(fStats.channel_load * 100 / 254) : -1;
     }
     virtual bool is5GBandSupport() override {
-        return fIc.ic_sup_rates[IEEE80211_MODE_11A].rs_nrates != 0;
+        return com.sc_ic.ic_sup_rates[IEEE80211_MODE_11A].rs_nrates != 0;
     }
     virtual int getTxNSS() override { return fCaps.tx_nss; }
     virtual uint8_t getTxChainMask() override { return fCaps.tx_chainmask; }
@@ -144,6 +263,9 @@ public:
     virtual uint32_t getTxQueueSize() override { return VAP_G_TX_SLOTS; }
     virtual bool getTxRate(struct ItlTxRate *rate) override;
     virtual bool getMaxTxPowerHalfDbm(uint8_t *halfDbm) override;
+    virtual bool publishesHeCapability() override {
+        return (com.sc_ic.ic_flags & IEEE80211_F_HEON) != 0;
+    }
 
     //driver controller
     virtual void clearScanningFlags() override;
@@ -160,6 +282,61 @@ public:
     void scanAbort(uint32_t id);
     void scanEnd(bool aborted, uint32_t id);
 
+    /*
+     * Driver-resident SAE.  The glue text defines the methods below and
+     * everything named iwx_, except what it calls and ItlVirt.cpp
+     * implements: the frame transport (submitSaeAuthFrame,
+     * cancelSaeAuthFrame) and the four services at the end.  All of it is
+     * public because part of that text is not class members.
+     */
+    struct virt_softc com;          /* ic_softc; holds the ieee80211com */
+    ItlSaePeerTimer saePeerTimer;
+
+    IOReturn submitSaeAuthFrame(const struct ItlSaeAuthTxRequestV1 *request) override;
+    void cancelSaeAuthFrame(uint64_t ticket) override;
+    IOReturn stageSaeWclCredential(const struct ItlSaeWclCredentialV1 *credential) override;
+    void cancelSaeWclCredential(uint64_t request_generation) override;
+    void purgeSaeWclCredentialStage() override;
+    bool isSaeWclCredentialAdmissionReady() override;
+    bool reserveSaeWclCredentialAdmission() override;
+    void releaseSaeWclCredentialAdmission() override;
+    bool supportsDriverResidentSae() override;
+
+    static int iwx_sae_auth_hold(struct ieee80211com *, struct ieee80211_node *,
+                                 enum ieee80211_state, int);
+    static int iwx_sae_auth_owned(struct ieee80211com *, const struct ieee80211_node *);
+    static int iwx_sae_engine_peer_event(struct ieee80211com *,
+                                         const struct ItlSaeAuthPeerEventV1 *);
+    static void iwx_sae_wcl_request_revoke(struct ieee80211com *, u_int64_t);
+    static void iwx_sae_roam_port_valid(struct ieee80211com *, const struct ieee80211_node *);
+    static int iwx_sae_wnm_roam_start(struct ieee80211com *, const struct ieee80211_node *,
+                                      u_int64_t, u_int64_t);
+    static int iwx_sae_wcl_roam_start(struct ieee80211com *, const struct ieee80211_node *,
+                                      const u_int8_t [IEEE80211_ADDR_LEN]);
+    static bool iwx_sae_bss_loss_arm(struct ieee80211com *, const struct ieee80211_node *);
+    static int iwx_sae_bss_loss_recover(struct ieee80211com *);
+    void iwx_sae_driver_reset_recovery_prepare(struct virt_softc *);
+    bool iwx_sae_driver_reset_recovery_pending(struct virt_softc *, bool);
+    static int iwx_sae_targeted_roam_start(struct ieee80211com *, const struct ieee80211_node *,
+                                           const u_int8_t [IEEE80211_ADDR_LEN], bool, u_int64_t);
+    static void iwx_sae_engine_task(void *);
+    void iwx_sae_peer_timer_drain();
+    static void iwx_sae_peer_timer_event(OSObject *, IOInterruptEventSource *, int);
+    static void iwx_sae_peer_timer_timeout(OSObject *, IOTimerEventSource *);
+    void iwx_sae_engine_stop_begin(struct virt_softc *);
+    void iwx_sae_engine_reopen(struct virt_softc *);
+    void iwx_sae_engine_detach_begin(struct virt_softc *);
+    void iwx_sae_wcl_stop_begin(struct virt_softc *);
+    void iwx_sae_wcl_detach_begin(struct virt_softc *);
+    static IOReturn iwx_sae_continue_assoc_action(OSObject *, void *, void *, void *, void *);
+    bool iwx_sae_continue_assoc_gated(struct ieee80211com *,
+                                      const struct ItlSaePmkContinuationIdentityV1 *);
+
+    bool iwx_task_gate_enter(struct virt_softc *, bool);
+    void iwx_task_gate_leave(struct virt_softc *);
+    void iwx_add_task(struct virt_softc *, struct taskq *, struct task *);
+    static void iwx_wcl_join_failure_scan(struct ieee80211com *, uint64_t);
+
 private:
     int request(uint16_t type, const void *payload, uint32_t len,
                 void *rsp = NULL, uint32_t *rspLen = NULL);
@@ -171,6 +348,16 @@ private:
     int scanStart(bool background, uint64_t reassocSerial);
     void scanRetry();
     void scanReset();
+    /* Caller holds fScanLock. */
+    VirtScanBusy scanBusy() const {
+        return fScan.state == VIRT_SCAN_IDLE && fWcl.phase == VIRT_WCL_IDLE ?
+            VirtScanBusy::Idle : VirtScanBusy::Busy;
+    }
+    int keyAdd(struct ieee80211_node *ni, const struct ieee80211_key *k);
+    void keyDel(const struct ieee80211_key *k);
+    bool saeAttach();
+    void saeDetach();
+    bool saeAdmitAssocReq(mbuf_t m, struct ieee80211_node *ni);
 
     static IOReturn virt_request_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn virt_radio_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -191,13 +378,21 @@ private:
                             struct ieee80211_key *k);
     static void virt_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
                                 struct ieee80211_key *k);
+    static int virt_pae_txn_submit(struct ieee80211com *ic, u_int64_t id, u_int64_t epoch,
+                                   struct ieee80211_node *ni, const struct ieee80211_key *k,
+                                   u_int8_t stage);
+    static void virt_pae_txn_cancel(struct ieee80211com *ic, u_int64_t id);
+    static int virt_pae_txn_finish(struct ieee80211com *ic, u_int64_t id);
     static int virt_ampdu_start(struct ieee80211com *ic, struct ieee80211_node *ni,
                                 uint8_t tid);
     static void virt_ampdu_stop(struct ieee80211com *ic, struct ieee80211_node *ni,
                                 uint8_t tid);
+    static IOReturn virt_newstate_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn virt_sae_tx_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn virt_join_failure_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static void virt_sae_tx_task(void *arg);
 
 private:
-    struct ieee80211com fIc;
     int (*fNewstate)(struct ieee80211com *, enum ieee80211_state, int);
     VirtCaps fCaps;
 
@@ -215,7 +410,9 @@ private:
     mbuf_t fTxHeld;                 /* the frame the device had no room for */
     struct ieee80211_node *fTxHeldNi;
     uint8_t fFwMac[IEEE80211_ADDR_LEN];     /* the address the firmware is using */
-    uint8_t fKeys;                  /* data keys the firmware holds: see virt_key_bit() */
+    uint8_t fKeys;                  /* keys the firmware holds: see virt_key_bit() */
+    uint64_t fPaeTxn;               /* key transaction with a stage to report done, or 0 */
+    uint8_t fPaeStage;
     bool fPortAuthorized;
 
     IOFilterInterruptEventSource *fIntr;
@@ -231,6 +428,7 @@ private:
     VirtScan fScan;
     VirtWclTicket fWcl;
     uint32_t fScanId;
+    bool wclSaeAdmissionReserved;   /* guarded by fScanLock; see reserveSaeWclCredentialAdmission() */
 };
 
 #endif /* ItlVirt_hpp */

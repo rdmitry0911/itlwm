@@ -39,6 +39,16 @@ static constexpr uint8_t kCardCapabilityMfpMask = 0x10;
 static constexpr size_t kCardCapabilitySaeByte = 9;
 static constexpr uint8_t kCardCapabilitySaeMask = 0x08;
 
+/*
+ * IO80211Family answers PHY_MODE for entitled clients in WCL without asking
+ * the driver: WCLConfigManager::getPHY_MODE starts from a/b/g/n/ac and adds
+ * 11ax, to the supported and to the active mode, only when
+ * WCLDeviceConfiguration::isHeSupported() is true, which is capability byte
+ * 17, bit 0x80 of the CARD_CAPABILITIES it loaded at start.
+ */
+static constexpr size_t kCardCapabilityHeByte = 17;
+static constexpr uint8_t kCardCapabilityHeMask = 0x80;
+
 static constexpr uint8_t kAppleImpossibleCap2Mask = 0x80;
 static constexpr uint8_t kAppleImpossibleCap3Mask = 0x08;
 static constexpr uint8_t kAppleImpossibleCap6Mask = 0x80;
@@ -70,6 +80,15 @@ inline void applySaeCardCapability(uint8_t (&capabilities)[N])
 
     capabilities[kCardCapabilityMfpByte] |= kCardCapabilityMfpMask;
     capabilities[kCardCapabilitySaeByte] |= kCardCapabilitySaeMask;
+}
+
+template <size_t N>
+inline void applyHeCardCapability(uint8_t (&capabilities)[N])
+{
+    static_assert(N > kCardCapabilityHeByte,
+                  "CARD_CAPABILITIES carrier must expose the HE byte");
+
+    capabilities[kCardCapabilityHeByte] |= kCardCapabilityHeMask;
 }
 
 inline bool hasAppleImpossibleAdvancedAkmBits(uint8_t cap2,
