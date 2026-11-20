@@ -220,6 +220,13 @@ extern	int ieee80211_send_eapol_key_req(struct ieee80211com *,
 		struct ieee80211_node *, u_int16_t, u_int64_t);
 extern	int ieee80211_pwrsave(struct ieee80211com *, mbuf_t,
 		struct ieee80211_node *);
+/* Supplicant key-handshake timeout of a station, in ieee80211_proto.c. */
+#define IEEE80211_SUP_WPA_TIMEOUT_MS	6000
+extern	void ieee80211_sup_wpa_timeout(void *);
+extern	void ieee80211_sup_wpa_timeout_arm(struct ieee80211com *);
+extern	void ieee80211_sup_wpa_timeout_cancel(struct ieee80211com *);
+extern	void ieee80211_recv_deauth(struct ieee80211com *, mbuf_t,
+	    struct ieee80211_node *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_current(const struct ieee80211com *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_begin(struct ieee80211com *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_begin_replacement(

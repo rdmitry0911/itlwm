@@ -5652,6 +5652,9 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
     }
     memcpy(ic->ic_psk, pmk_bytes, sizeof(ic->ic_psk));
     ic->ic_flags |= IEEE80211_F_PSK;
+    /* A PMK that arrives after the association starts the supplicant's wait
+     * for the key handshake (reference: setKey arms sup_wpa_tmo here). */
+    ieee80211_sup_wpa_timeout_arm(ic);
     struct ieee80211_wpaparams wpa;
     memset(&wpa, 0, sizeof(wpa));
     wpa.i_enabled = 1;

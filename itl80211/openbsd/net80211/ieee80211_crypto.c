@@ -802,6 +802,8 @@ ieee80211_pmksa_add(struct ieee80211com *ic, enum ieee80211_akm akm,
 		ieee80211_derive_pmkid(pmk->pmk_akm, pmk->pmk_key,
 		    macaddr, ic->ic_myaddr, pmk->pmk_pmkid);
 	}
+	/* The PAE of a station waiting for message 1 can answer it now. */
+	ieee80211_sup_wpa_timeout_arm(ic);
 	return pmk;
 }
 

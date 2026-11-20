@@ -16302,6 +16302,8 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
     memcpy(ic->ic_psk, a->key->key, sizeof(ic->ic_psk));
     ic->ic_flags |= IEEE80211_F_PSK;
     ic->ic_external_pmk_owner = 0;
+    /* Same as any PMK that arrives after the association. */
+    ieee80211_sup_wpa_timeout_arm(ic);
     s->getCommandGate()->commandWakeup(&s->fAssocTarget,
                                        /*oneThread=*/false);
 

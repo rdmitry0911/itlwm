@@ -1063,6 +1063,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     timeout_set(&ic->ic_bgscan_timeout, ieee80211_bgscan_timeout, ifp);
     timeout_set(&ic->ic_wnm_bgscan_retry_timeout,
                 ieee80211_wnm_bgscan_retry_timeout, ifp);
+    timeout_set(&ic->ic_sup_wpa_timeout, ieee80211_sup_wpa_timeout, ic);
     ieee80211_sta_sa_query_attach(ic);
 }
 
@@ -1091,6 +1092,8 @@ ieee80211_ifdetach(struct _ifnet *ifp)
                    sizeof(ic->ic_wcl_reassoc_target_bssid));
     ieee80211_roam_link_cancel(ic);
     (void)ieee80211_pae_assoc_epoch_begin(ic);
+    timeout_del(&ic->ic_sup_wpa_timeout);
+    timeout_free(&ic->ic_sup_wpa_timeout);
     timeout_del(&ic->ic_wnm_bgscan_retry_timeout);
     timeout_free(&ic->ic_wnm_bgscan_retry_timeout);
     timeout_del(&ic->ic_bgscan_timeout);

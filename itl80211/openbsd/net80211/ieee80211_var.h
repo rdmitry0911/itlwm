@@ -1020,6 +1020,7 @@ struct ieee80211com {
     void            *ic_apsta_event_arg;
 	CTimeout*		ic_bgscan_timeout;
 	CTimeout*		ic_wnm_bgscan_retry_timeout;
+	CTimeout*		ic_sup_wpa_timeout;	/* supplicant key-handshake timeout */
 	uint32_t		ic_bgscan_fail;
 	u_int8_t		ic_myaddr[IEEE80211_ADDR_LEN];
 	struct ieee80211_rateset ic_sup_rates[IEEE80211_MODE_MAX];

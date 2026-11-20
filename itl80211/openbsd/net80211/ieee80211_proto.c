@@ -6074,6 +6074,120 @@ ieee80211_roam_link_note_terminal(struct ieee80211com *ic, int link_state,
 		    0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
 
+/*
+ * Supplicant key-handshake timeout of a station.
+ *
+ * The kernel PAE is the supplicant that the reference driver has in its
+ * firmware, and that one does not wait for the authenticator forever:
+ * Tahoe 25C56 AppleBCMWLANJoinAdapter::configureSupplicantTimeOut()
+ * (0xffffff800155aa28) writes the firmware variable "sup_wpa_tmo", and both
+ * of its callers in setKey() (0xffffff8001558ce7, 0xffffff8001558f13, the
+ * places a PMK is programmed) and
+ * AppleBCMWLANCore::configureSupplicantTimeOutForEAPAssociation()
+ * (0xffffff80015f0a48) pass 6000 ms.  The timeout comes back as a supplicant
+ * event which handleSupplicantEvent() (0xffffff800155d678) turns into a
+ * failed connection (reason 15).
+ *
+ * Without it an access point that accepts the association and never starts
+ * the four-way handshake leaves a link that looks associated and carries
+ * nothing: a join is ended by its caller, a roam by nobody.
+ *
+ * The timeout runs while the PAE holds the PMK it answers message 1 with and
+ * the port is not valid yet.
+ *   armed:     entering RUN (PSK and SAE have their PMK before the
+ *              association; an 802.1X association has none yet), and
+ *              whenever a PMK is handed to the PAE in RUN (the PMK of an
+ *              802.1X association after EAP, a late PSK).
+ *   cancelled: by every state transition.  The handler itself does nothing
+ *              once the port is valid or the PMK has been withdrawn.
+ * On expiry the access point is told (deauthentication, reason 15) and the
+ * association ends exactly as if the access point had sent that frame.
+ */
+static int
+ieee80211_sup_wpa_pending(struct ieee80211com *ic)
+{
+	struct ieee80211_node *ni = ic->ic_bss;
+	size_t i;
+
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_RUN ||
+	    (ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
+	    ni == NULL || ni->ni_port_valid)
+		return 0;
+	/* The same PMK sources as ieee80211_recv_4way_msg1(). */
+	if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms))
+		return ieee80211_pmksa_find(ic, ni, NULL) != NULL;
+	for (i = 0; i < sizeof(ic->ic_psk); i++) {
+		if (ic->ic_psk[i] != 0)
+			return 1;
+	}
+	return 0;
+}
+
+void
+ieee80211_sup_wpa_timeout_arm(struct ieee80211com *ic)
+{
+	if (ic == NULL || !ieee80211_sup_wpa_pending(ic))
+		return;
+	XYLog("sup_wpa ARMED bssid=%s ms=%u\n",
+	    ether_sprintf(ic->ic_bss->ni_bssid), IEEE80211_SUP_WPA_TIMEOUT_MS);
+	timeout_add_msec(&ic->ic_sup_wpa_timeout, IEEE80211_SUP_WPA_TIMEOUT_MS);
+}
+
+void
+ieee80211_sup_wpa_timeout_cancel(struct ieee80211com *ic)
+{
+	if (ic != NULL)
+		timeout_del(&ic->ic_sup_wpa_timeout);
+}
+
+void
+ieee80211_sup_wpa_timeout(void *arg)
+{
+	struct ieee80211com *ic = (struct ieee80211com *)arg;
+	struct ieee80211_node *ni;
+	struct ieee80211_frame *wh;
+	mbuf_t m = NULL;
+	int keeps_run;
+
+	if (ic == NULL || !ieee80211_sup_wpa_pending(ic))
+		return;
+	ni = ic->ic_bss;
+	XYLog("sup_wpa TIMEOUT bssid=%s supp_state=%d: no key handshake in "
+	    "%u ms, deauthenticating\n", ether_sprintf(ni->ni_bssid),
+	    ni->ni_rsn_supp_state, IEEE80211_SUP_WPA_TIMEOUT_MS);
+	IEEE80211_SEND_MGMT(ic, ni, IEEE80211_FC0_SUBTYPE_DEAUTH,
+	    IEEE80211_REASON_4WAY_TIMEOUT);
+
+	/*
+	 * The rest is what a deauthentication from the access point does, so
+	 * ieee80211_recv_deauth() gets that frame.  It leaves RUN alone during
+	 * a roam scan (and with IEEE80211_F_STAYAUTH); an association without
+	 * keys has nothing to keep until the scan is over.
+	 */
+	keeps_run = ((ic->ic_flags & IEEE80211_F_BGSCAN) != 0 &&
+	    (ic->ic_flags & IEEE80211_F_DISABLE_BG_AUTO_CONNECT) == 0) ||
+	    (ic->ic_userflags & IEEE80211_F_STAYAUTH) != 0;
+	mbuf_gethdr(MBUF_DONTWAIT, MT_DATA, &m);
+	if (m != NULL) {
+		mbuf_setlen(m, sizeof(*wh) + 2);
+		mbuf_pkthdr_setlen(m, sizeof(*wh) + 2);
+		wh = mtod(m, struct ieee80211_frame *);
+		bzero(wh, sizeof(*wh));
+		wh->i_fc[0] = IEEE80211_FC0_VERSION_0 | IEEE80211_FC0_TYPE_MGT |
+		    IEEE80211_FC0_SUBTYPE_DEAUTH;
+		IEEE80211_ADDR_COPY(wh->i_addr1, ic->ic_myaddr);
+		IEEE80211_ADDR_COPY(wh->i_addr2, ni->ni_bssid);
+		IEEE80211_ADDR_COPY(wh->i_addr3, ni->ni_bssid);
+		((u_int8_t *)&wh[1])[0] = IEEE80211_REASON_4WAY_TIMEOUT & 0xff;
+		((u_int8_t *)&wh[1])[1] = IEEE80211_REASON_4WAY_TIMEOUT >> 8;
+		ieee80211_recv_deauth(ic, m, ni);
+		mbuf_freem(m);
+	}
+	if (m == NULL || keeps_run)
+		ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+}
+
 int
 ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
     int mgt)
@@ -6092,6 +6206,8 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 	ostate = ic->ic_state;
 	explicit_bzero(&sae_hooks, sizeof(sae_hooks));
 	sae_wcl_defer_link_up = 0;
+	/* Whatever the supplicant was waiting for belongs to the old state. */
+	ieee80211_sup_wpa_timeout_cancel(ic);
 	/* A real state-machine transition supersedes any delayed status-30
 	 * association request.  The watchdog retry deliberately sends directly
 	 * and therefore retains its retry count until success or failure. */
@@ -6468,6 +6584,8 @@ justcleanup:
                 ni->ni_fails = 0;
 			ic->ic_mgt_timer = 0;
 			ieee80211_set_beacon_miss_threshold(ic);
+			/* The access point owes us the key handshake now. */
+			ieee80211_sup_wpa_timeout_arm(ic);
 			(*ifp->if_start)(ifp);
 			break;
 		}
