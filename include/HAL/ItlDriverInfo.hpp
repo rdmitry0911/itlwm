@@ -17,6 +17,23 @@
 
 #include <stdint.h>
 
+enum {
+    ITL_TX_RATE_LEGACY,
+    ITL_TX_RATE_HT,
+    ITL_TX_RATE_VHT,
+    ITL_TX_RATE_HE,     // and later
+};
+
+// A transmit rate in plain terms: see ItlDriverInfo::getTxRate().
+struct ItlTxRate {
+    uint32_t kbps;
+    uint8_t  mode;      // ITL_TX_RATE_*
+    uint8_t  mcs;       // HT: 0-31; VHT and later: per stream
+    uint8_t  nss;       // VHT and later
+    uint8_t  bw;        // 0 = 20 MHz, 1 = 40, 2 = 80, 3 = 160
+    bool     sgi;       // short guard interval (HT, VHT)
+};
+
 class ItlDriverInfo {
     
 public:
@@ -49,6 +66,14 @@ public:
     virtual const char *getFirmwareCountryCode() = 0;
 
     virtual uint32_t getTxQueueSize() = 0;
+
+    // For a HAL whose firmware reports the current transmit rate and the
+    // transmit power limit in plain terms instead of Intel rate_n_flags and
+    // NVM fields.  False == no value here; the Airport layer then reads the
+    // HAL-specific sources it knows.
+    virtual bool getTxRate(struct ItlTxRate *rate) { return false; }
+
+    virtual bool getMaxTxPowerHalfDbm(uint8_t *halfDbm) { return false; }
 };
 
 #endif /* ItlDriverInfo_h */

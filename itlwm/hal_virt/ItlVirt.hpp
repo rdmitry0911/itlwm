@@ -36,6 +36,8 @@
 #define VIRT_TX_MAX_SEGS        16      /* mbufs in one transmitted frame */
 #define VIRT_REQUEST_MS         500     /* wait for the reply to a request */
 #define VIRT_SCAN_WATCHDOG_MS   10000   /* wait for the end of a scan */
+#define VIRT_SCAN_RETRY_MS      250     /* between attempts to start a scan on a busy firmware */
+#define VIRT_STATS_MS           1000    /* between link statistics requests while associated */
 
 /* rxFrame() flags */
 #define VIRT_RX_DECRYPTED   0x1     /* firmware removed IV and MIC and cleared Protected */
@@ -50,6 +52,7 @@ struct VirtCaps {
     uint16_t nchans;
     struct {
         uint16_t freq;              /* MHz */
+        int8_t   max_dbm;           /* regulatory transmit power limit */
         uint32_t flags;             /* IEEE80211_CHAN_* */
     } chans[VIRT_MAX_CHANNELS];
     struct ieee80211_rateset rates_2g, rates_5g;
@@ -60,6 +63,8 @@ struct VirtCaps {
     bool     ht, vht;
     uint8_t  htcap[26];
     uint8_t  vhtcap[12];
+    uint8_t  hecap[64];             /* HE: of the 5 GHz band if it has one */
+    uint8_t  hecap_len;             /* 0: no HE */
 };
 
 enum {
@@ -72,6 +77,8 @@ enum {
 struct VirtScan {
     uint8_t  state;                 /* VIRT_SCAN_* */
     bool     wcl;                   /* belongs to the WCL ticket below */
+    bool     deferred;              /* the firmware was busy: not started on it yet */
+    uint8_t  tries;
     uint32_t id;                    /* nonzero, unique per scan; the firmware's scan_id */
     uint64_t joinGeneration;
     uint64_t reassocSerial;
@@ -117,18 +124,26 @@ public:
 
     //driver info
     virtual const char *getFirmwareVersion() override { return fCaps.fw_version; }
-    virtual int16_t getBSSNoise() override { return -92; }
+    virtual int16_t getBSSNoise() override {
+        return fStatsValid && fStats.noise_dbm != 0 ? fStats.noise_dbm : -92;
+    }
+    virtual int16_t getChannelLoad() override {
+        return fStatsValid && fStats.channel_load != 255 ?
+            (int16_t)(fStats.channel_load * 100 / 254) : -1;
+    }
     virtual bool is5GBandSupport() override {
         return fIc.ic_sup_rates[IEEE80211_MODE_11A].rs_nrates != 0;
     }
     virtual int getTxNSS() override { return fCaps.tx_nss; }
     virtual uint8_t getTxChainMask() override { return fCaps.tx_chainmask; }
     virtual uint8_t getRxChainMask() override { return fCaps.rx_chainmask; }
-    virtual uint32_t getLqmBeaconCount() override { return 0; }
+    virtual uint32_t getLqmBeaconCount() override { return fStatsValid ? fStats.beacons_rx : 0; }
     virtual const char *getFirmwareName() override { return fCaps.fw_name; }
     virtual UInt32 supportedFeatures() override { return kIONetworkFeatureMultiPages; }
     virtual const char *getFirmwareCountryCode() override { return fCaps.country; }
     virtual uint32_t getTxQueueSize() override { return VAP_G_TX_SLOTS; }
+    virtual bool getTxRate(struct ItlTxRate *rate) override;
+    virtual bool getMaxTxPowerHalfDbm(uint8_t *halfDbm) override;
 
     //driver controller
     virtual void clearScanningFlags() override;
@@ -149,9 +164,12 @@ private:
     int request(uint16_t type, const void *payload, uint32_t len,
                 void *rsp = NULL, uint32_t *rspLen = NULL);
     bool queryCaps(VirtCaps *caps);
+    void syncMac();
+    void setPort(bool authorized);
     int radioStart();
     void radioStop();
     int scanStart(bool background, uint64_t reassocSerial);
+    void scanRetry();
     void scanReset();
 
     static IOReturn virt_request_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -163,6 +181,7 @@ private:
     static void virt_tx_ready(void *ctx);
     static void virt_init_task(void *arg);
     static void virt_scan_watchdog(void *arg);
+    static void virt_stats_timer(void *arg);
     static IOReturn virt_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static void virt_start(struct _ifnet *ifp);
     static int virt_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg);
@@ -195,12 +214,18 @@ private:
     uint64_t fResetCheckAt;
     mbuf_t fTxHeld;                 /* the frame the device had no room for */
     struct ieee80211_node *fTxHeldNi;
+    uint8_t fFwMac[IEEE80211_ADDR_LEN];     /* the address the firmware is using */
+    uint8_t fKeys;                  /* data keys the firmware holds: see virt_key_bit() */
+    bool fPortAuthorized;
 
     IOFilterInterruptEventSource *fIntr;
     bool fIfAttached;
     bool fTaskqReady;
 
     struct task fInitTask;
+    CTimeout *fStatsTimer;
+    struct vap_stats fStats;        /* the last answer to GET_STATS; valid while associated */
+    bool fStatsValid;
     CTimeout *fScanWatchdog;
     IOSimpleLock *fScanLock;        /* guards fScan, fWcl, fScanId */
     VirtScan fScan;

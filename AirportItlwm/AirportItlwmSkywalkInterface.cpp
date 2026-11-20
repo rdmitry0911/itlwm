@@ -727,6 +727,14 @@ static bool getTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t *raw)
     if (hal == nullptr || raw == nullptr)
         return false;
 
+    // A HAL that knows its power limit in plain terms needs no cast below.
+    uint8_t maxHalfDbm = 0;
+    ItlDriverInfo *info = hal->getDriverInfo();
+    if (info != nullptr && info->getMaxTxPowerHalfDbm(&maxHalfDbm)) {
+        *raw = encodeAppleTahoeQTxpowerBootstrap(maxHalfDbm);
+        return true;
+    }
+
     if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
         struct iwm_softc *sc = &iwm->com;
         if (sc->sc_has_last_qtxpower_raw) {
@@ -754,12 +762,42 @@ static bool getTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t *raw)
     return false;
 }
 
+// The Apple nrate word of a rate a HAL reports in plain terms.  HE and later
+// have no encoding in TahoeNrateContracts yet: no value rather than a VHT word.
+static bool buildTahoeNrateFromHalRate(const struct ItlTxRate &tx, uint32_t *nrate)
+{
+    switch (tx.mode) {
+        case ITL_TX_RATE_LEGACY:
+            return TahoeNrateContracts::buildLegacyNrateFromHalfMbps(tx.kbps / 500, nrate);
+        case ITL_TX_RATE_HT:
+            return TahoeNrateContracts::buildHtNrateFromMcs(tx.mcs, tx.bw != 0, nrate);
+        case ITL_TX_RATE_VHT:
+            if (tx.mcs > 9 || tx.nss == 0 || tx.nss > 8)
+                return false;
+            *nrate = TahoeNrateContracts::kFamilyVht | tx.mcs |
+                (static_cast<uint32_t>(tx.nss) << 4) |
+                TahoeNrateContracts::appleBandwidthFromIntelSelector(tx.bw) |
+                (tx.sgi ? TahoeNrateContracts::kShortGuardIntervalBit : 0);
+            return true;
+        default:
+            return false;
+    }
+}
+
 static IOReturn getTahoeCachedNrate(ItlHalService *hal, uint32_t *rate)
 {
     if (hal == nullptr || rate == nullptr)
         return kIOReturnError;
 
     *rate = 0;
+
+    struct ItlTxRate tx;
+    ItlDriverInfo *info = hal->getDriverInfo();
+    if (info != nullptr && info->getTxRate(&tx)) {
+        if (!buildTahoeNrateFromHalRate(tx, rate))
+            return kApple80211ErrConfigNoValue;
+        return kIOReturnSuccess;
+    }
 
     if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
         struct iwm_softc *sc = &iwm->com;
@@ -794,6 +832,14 @@ static IOReturn getTahoeCurrentRateMbps(ItlHalService *hal, uint32_t *rateMbps)
 {
     if (rateMbps == nullptr)
         return kIOReturnBadArgument;
+
+    // The firmware's own figure is exact for every PHY, HE included.
+    struct ItlTxRate tx;
+    ItlDriverInfo *info = hal != nullptr ? hal->getDriverInfo() : nullptr;
+    if (info != nullptr && info->getTxRate(&tx)) {
+        *rateMbps = tx.kbps / 1000;
+        return kIOReturnSuccess;
+    }
 
     uint32_t nrate = 0;
     IOReturn ret = getTahoeCachedNrate(hal, &nrate);

@@ -150,6 +150,14 @@ virt_parse_caps(const uint8_t *buf, uint32_t len, VirtCaps *caps)
                 caps->vht = true;
             }
             break;
+        case VAP_TLV_HE_CAP:
+            /* MAC 6, PHY 11, at least the MCS maps up to 80 MHz; 5 GHz says more. */
+            if (band != 0xff && n >= 21 && n <= sizeof(caps->hecap) &&
+                (caps->hecap_len == 0 || band == VAP_BAND_5G)) {
+                memcpy(caps->hecap, body, n);
+                caps->hecap_len = (uint8_t)n;
+            }
+            break;
         case VAP_TLV_REGDOM:
             /* Anything else, like the world domain "00", stays unknown. */
             if (t.len >= 2 && v[0] >= 'A' && v[0] <= 'Z' && v[1] >= 'A' && v[1] <= 'Z') {
@@ -219,6 +227,7 @@ virt_parse_caps(const uint8_t *buf, uint32_t len, VirtCaps *caps)
             }
             caps->chans[caps->nchans].freq = c.freq_mhz;
             caps->chans[caps->nchans].flags = flags;
+            caps->chans[caps->nchans].max_dbm = c.max_dbm;
             caps->nchans++;
         }
     }
@@ -274,9 +283,9 @@ queryCaps(VirtCaps *caps)
     XYLog("vap: firmware \"%s\" (%s), MAC %s, features 0x%llx, max frame %u\n",
           caps->fw_version, caps->fw_name, ether_sprintf(caps->macaddr),
           (unsigned long long)hs.fw_features, hs.max_frame);
-    XYLog("vap: %u channels, HT %d, VHT %d, country %s, chains tx 0x%x rx 0x%x, nss %u/%u\n",
-          caps->nchans, caps->ht, caps->vht, caps->country, caps->tx_chainmask,
-          caps->rx_chainmask, caps->tx_nss, caps->rx_nss);
+    XYLog("vap: %u channels, HT %d, VHT %d, HE %d, country %s, chains tx 0x%x rx 0x%x, nss %u/%u\n",
+          caps->nchans, caps->ht, caps->vht, caps->hecap_len != 0, caps->country,
+          caps->tx_chainmask, caps->rx_chainmask, caps->tx_nss, caps->rx_nss);
     return true;
 }
 
@@ -321,6 +330,20 @@ virt_event(void *ctx, const struct vap_hdr *h, const void *payload, uint32_t len
         /* Only the scan which is still running; the id filters out the rest. */
         if (e->scan_id != 0)
             that->scanEnd(e->aborted != 0, e->scan_id);
+        /* The firmware is free again for a scan it had no room for. */
+        that->scanRetry();
+        return;
+    }
+    if (h->type == VAP_EVT_DISCONNECTED && len >= sizeof(struct vap_evt_disconnected)) {
+        const struct vap_evt_disconnected *e = (const struct vap_evt_disconnected *)payload;
+        struct ieee80211com *ic = &that->fIc;
+
+        XYLog("vap: disconnected from %s, reason %u%s\n", ether_sprintf((u_char *)e->bssid),
+              e->reason, e->by_ap ? ", by the AP" : "");
+        /* Normally the deauthentication frame came first and did this already. */
+        if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+            IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, e->bssid))
+            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
         return;
     }
     XYLog("vap: event 0x%x, %u bytes\n", h->type, len);
@@ -393,6 +416,7 @@ attach(IOPCIDevice *device)
     fTaskqReady = true;
     task_set(&fInitTask, virt_init_task, this, "virt_init_task");
     timeout_set(&fScanWatchdog, virt_scan_watchdog, this);
+    timeout_set(&fStatsTimer, virt_stats_timer, this);
 
     for (int index = 0; ; index++) {
         int interruptType;
@@ -479,6 +503,10 @@ detach(IOPCIDevice *device)
         fIntr->release();
         fIntr = NULL;
     }
+    if (fStatsTimer != NULL) {
+        timeout_del(&fStatsTimer);
+        timeout_free(&fStatsTimer);
+    }
     if (fScanWatchdog != NULL) {
         timeout_del(&fScanWatchdog);
         timeout_free(&fScanWatchdog);
@@ -531,6 +559,7 @@ applyCaps(const VirtCaps &caps)
 
     fCaps = caps;
     IEEE80211_ADDR_COPY(ic->ic_myaddr, caps.macaddr);
+    IEEE80211_ADDR_COPY(fFwMac, caps.macaddr);
     /*
      * Not the radio's choice but this HAL's design: the firmware scans all
      * channels of all bands in one request and owns Block Ack setup, which
@@ -539,7 +568,7 @@ applyCaps(const VirtCaps &caps)
      */
     ic->ic_caps = IEEE80211_C_RSN | IEEE80211_C_SCANALL | IEEE80211_C_SCANALLBAND |
         IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU | IEEE80211_C_TX_AMPDU_SETUP_IN_HW;
-    ic->ic_max_rssi = VIRT_RSSI_OFFSET - 33;    /* -33 dBm, as the Intel HALs */
+    ic->ic_max_rssi = VIRT_RSSI_OFFSET - 33;    /* 100 % is -33 dBm, as in the Intel HALs */
 
     memset(ic->ic_channels, 0, sizeof(ic->ic_channels));
     for (int i = 0; i < caps.nchans && i < VIRT_MAX_CHANNELS; i++) {
@@ -599,6 +628,34 @@ applyCaps(const VirtCaps &caps)
         for (int i = 0; i < 8; i++)
             ic->ic_vht_sup_mcs[i] = mcs[(ic->ic_vht_rx_mcs_map >> (2 * i)) & 3];
     }
+    if (caps.hecap_len != 0 && (ic->ic_flags & IEEE80211_F_VHTON)) {
+        /*
+         * The element body: fixed capabilities, then one pair of MCS maps
+         * per supported width class, then the PPE thresholds.
+         */
+        const uint8_t *h = caps.hecap;
+        uint32_t off = sizeof(ic->ic_he_cap_elem);
+
+        ic->ic_flags |= IEEE80211_F_HEON;
+        memcpy(&ic->ic_he_cap_elem, h, sizeof(ic->ic_he_cap_elem));
+        memset(&ic->ic_he_mcs_nss_supp, 0xff, sizeof(ic->ic_he_mcs_nss_supp));
+        memcpy(&ic->ic_he_mcs_nss_supp.rx_mcs_80, h + off, 4);
+        off += 4;
+        if ((ic->ic_he_cap_elem.phy_cap_info[0] &
+             IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G) && off + 4 <= caps.hecap_len) {
+            memcpy(&ic->ic_he_mcs_nss_supp.rx_mcs_160, h + off, 4);
+            off += 4;
+        }
+        if ((ic->ic_he_cap_elem.phy_cap_info[0] &
+             IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_80PLUS80_MHZ_IN_5G) && off + 4 <= caps.hecap_len) {
+            memcpy(&ic->ic_he_mcs_nss_supp.rx_mcs_80p80, h + off, 4);
+            off += 4;
+        }
+        memset(ic->ic_ppe_thres, 0, sizeof(ic->ic_ppe_thres));
+        if (ic->ic_he_cap_elem.phy_cap_info[6] & IEEE80211_HE_PHY_CAP6_PPE_THRESHOLD_PRESENT)
+            memcpy(ic->ic_ppe_thres, h + off,
+                   MIN((size_t)(caps.hecap_len - off), sizeof(ic->ic_ppe_thres)));
+    }
 }
 
 IOReturn ItlVirt::
@@ -651,6 +708,108 @@ virt_radio_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3
     return kIOReturnSuccess;
 }
 
+/*
+ * The Airport layer changes the interface address at will: macOS uses a
+ * private one per network.  Every path leaves it in ac_enaddr; not all of them
+ * update ic_myaddr.  The firmware has to be on the air with the same address
+ * and takes a new one only while not associated, so this runs before every
+ * foreground scan and before authentication.
+ */
+void ItlVirt::
+syncMac()
+{
+    struct ieee80211com *ic = &fIc;
+    const uint8_t *want = ic->ic_ac.ac_enaddr;
+    struct vap_set_mac sm;
+    int rc;
+
+    if (IEEE80211_ADDR_EQ(want, etheranyaddr))
+        want = ic->ic_myaddr;
+    if (!IEEE80211_ADDR_EQ(want, fFwMac)) {
+        bzero(&sm, sizeof(sm));
+        IEEE80211_ADDR_COPY(sm.mac, want);
+        rc = request(VAP_CMD_SET_MAC, &sm, sizeof(sm));
+        if (rc == 0)
+            IEEE80211_ADDR_COPY(fFwMac, sm.mac);
+        XYLog("vap: MAC %s %s (%d)\n", ether_sprintf(sm.mac), rc == 0 ? "set" : "refused", rc);
+    }
+    if (!IEEE80211_ADDR_EQ(ic->ic_myaddr, want))
+        IEEE80211_ADDR_COPY(ic->ic_myaddr, want);
+}
+
+void ItlVirt::
+setPort(bool authorized)
+{
+    struct vap_port pt = { authorized ? 1u : 0u, 0 };
+
+    if (fPortAuthorized == authorized)
+        return;
+    fPortAuthorized = authorized;
+    (void)request(VAP_CMD_PORT, &pt, sizeof(pt));
+    XYLog("vap: port %s\n", authorized ? "authorized" : "closed");
+}
+
+/* Once a second while associated: what the Wi-Fi menu shows of the link. */
+void ItlVirt::
+virt_stats_timer(void *arg)
+{
+    ItlVirt *that = (ItlVirt *)arg;
+    struct ieee80211com *ic = &that->fIc;
+    struct vap_stats st;
+    uint32_t n = sizeof(st);
+
+    if (ic->ic_state != IEEE80211_S_RUN || !(ic->ic_if.if_flags & IFF_RUNNING))
+        return;
+    if (that->request(VAP_CMD_GET_STATS, NULL, 0, &st, &n) == 0 && n >= sizeof(st)) {
+        that->fStats = st;
+        that->fStatsValid = true;
+        /* net80211 has the signal of the last frame; this is the link's own. */
+        if (st.rssi_dbm != 0 && ic->ic_bss != NULL)
+            ic->ic_bss->ni_rssi =
+                (uint8_t)MAX(0, MIN(st.rssi_dbm + VIRT_RSSI_OFFSET, VIRT_RSSI_OFFSET));
+    }
+    timeout_add_msec(&that->fStatsTimer, VIRT_STATS_MS);
+}
+
+bool ItlVirt::
+getTxRate(struct ItlTxRate *rate)
+{
+    const struct vap_rate r = fStats.tx_rate;
+
+    if (!fStatsValid || r.kbps == 0)
+        return false;
+    rate->kbps = r.kbps;
+    rate->mode = r.mode == VAP_RATE_LEGACY ? ITL_TX_RATE_LEGACY :
+        r.mode == VAP_RATE_HT ? ITL_TX_RATE_HT :
+        r.mode == VAP_RATE_VHT ? ITL_TX_RATE_VHT : ITL_TX_RATE_HE;
+    rate->mcs = r.mcs;
+    rate->nss = r.nss;
+    rate->bw = MIN(r.bw_mhz_log2, 3);
+    rate->sgi = r.gi == 1;
+    return true;
+}
+
+/* The regulatory ceiling of the operating channel, else of the whole radio. */
+bool ItlVirt::
+getMaxTxPowerHalfDbm(uint8_t *halfDbm)
+{
+    const struct ieee80211_channel *c =
+        fIc.ic_state == IEEE80211_S_RUN && fIc.ic_bss != NULL ? fIc.ic_bss->ni_chan : NULL;
+    int dbm = 0;
+
+    for (int i = 0; i < fCaps.nchans; i++) {
+        if (c != NULL && c != IEEE80211_CHAN_ANYC && fCaps.chans[i].freq == c->ic_freq) {
+            dbm = fCaps.chans[i].max_dbm;
+            break;
+        }
+        dbm = MAX(dbm, (int)fCaps.chans[i].max_dbm);
+    }
+    if (dbm <= 0)
+        return false;
+    *halfDbm = (uint8_t)(dbm * 2);
+    return true;
+}
+
 int ItlVirt::
 radioStart()
 {
@@ -659,6 +818,7 @@ radioStart()
     struct vap_radio on = { 1, 0 };
     int err;
 
+    syncMac();
     err = request(VAP_CMD_RADIO, &on, sizeof(on));
     if (err) {
         XYLog("vap: radio on refused (%d)\n", err);
@@ -707,6 +867,11 @@ radioStop()
     ifq_flush(&ifp->if_snd);
     __atomic_store_n(&ic->ic_initial_scan_census_only, 0, __ATOMIC_RELEASE);
     scanReset();
+    /* The firmware leaves the BSS and forgets its keys with the radio. */
+    fKeys = 0;
+    fPortAuthorized = false;
+    timeout_del(&fStatsTimer);
+    fStatsValid = false;
     /* Also ends whatever the firmware was scanning. */
     (void)request(VAP_CMD_RADIO, &off, sizeof(off));
     XYLog("vap: radio off\n");
@@ -785,17 +950,14 @@ virt_start(struct _ifnet *ifp)
 }
 
 /*
- * Hands one 802.11 frame to the firmware as net80211 built it: a set
- * Protected bit marks plaintext which the firmware is to encrypt.  Consumes m
- * and the node reference, except on EBUSY: then the frame is held and sent
- * again from virt_tx_ready().
+ * Hands one 802.11 frame to the firmware.  Consumes m and the node reference,
+ * except on EBUSY: then the frame is held and sent again from
+ * virt_tx_ready().
  */
-// VAP-SEAM: transport marks frames which must go out unencrypted (EAPOL before
-// the keys) once the firmware holds the keys.
 int ItlVirt::
 txFrame(mbuf_t m, struct ieee80211_node *ni)
 {
-    const struct ieee80211_frame *wh = mtod(m, struct ieee80211_frame *);
+    struct ieee80211_frame *wh = mtod(m, struct ieee80211_frame *);
     struct vap_iov iov[VIRT_TX_MAX_SEGS];
     struct vap_tx_meta meta;
     unsigned n = 0;
@@ -805,6 +967,8 @@ txFrame(mbuf_t m, struct ieee80211_node *ni)
     bzero(&meta, sizeof(meta));
     if (ieee80211_has_qos(wh))
         meta.tid = ieee80211_get_qos(wh) & IEEE80211_QOS_TID;
+    /* Frames cross in the clear: the firmware encrypts with the keys it holds. */
+    wh->i_fc[1] &= ~IEEE80211_FC1_PROTECTED;
     for (seg = m; seg != NULL && n < nitems(iov); seg = mbuf_next(seg)) {
         if (mbuf_len(seg) == 0)
             continue;
@@ -854,19 +1018,26 @@ rxFrame(mbuf_t m, uint16_t freqMHz, int8_t rssiDbm, uint32_t flags)
     /* The firmware reorders aggregates itself: no reorder buffer here. */
     rxi.rxi_flags = IEEE80211_RXI_AMPDU_DONE;
     /*
-     * With the Protected bit already clear net80211 takes the payload as it
-     * is and trusts the firmware's replay check.  Without this flag it would
-     * drop such a frame as unencrypted.
+     * Not clipped to ic_max_rssi: that is where net80211 puts its "good
+     * signal" marks, and two strong access points must still compare by
+     * their real levels when a roam target is picked.
      */
-    if (flags & VIRT_RX_DECRYPTED)
-        rxi.rxi_flags |= IEEE80211_RXI_HWDEC;
-    rxi.rxi_rssi = MAX(0, MIN(rssiDbm + VIRT_RSSI_OFFSET, ic->ic_max_rssi));
+    rxi.rxi_rssi = MAX(0, MIN(rssiDbm + VIRT_RSSI_OFFSET, VIRT_RSSI_OFFSET));
     /* Zero means unknown: net80211 then assumes the current channel. */
     chan = ieee80211_mhz2ieee(freqMHz, 0);
     if (chan <= IEEE80211_CHAN_MAX && ic->ic_channels[chan].ic_freq == freqMHz)
         rxi.rxi_chan = chan;
 
     ni = ieee80211_find_rxnode(ic, wh);
+    /*
+     * The firmware delivers every frame in the clear, Protected bit off.
+     * Once net80211 expects protection from this peer it drops such a frame
+     * unless told that the firmware decrypted it (and checked the replay
+     * counter).  Before that it would drop a frame so marked, and the
+     * firmware has the key a moment earlier than net80211 switches over.
+     */
+    if ((flags & VIRT_RX_DECRYPTED) && (ni->ni_flags & IEEE80211_NODE_RXPROT))
+        rxi.rxi_flags |= IEEE80211_RXI_HWDEC;
     ieee80211_inputm(ifp, m, ni, &rxi, &ml);
     ieee80211_release_node(ic, ni);
     if_input(ifp, &ml);
@@ -878,11 +1049,30 @@ virt_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     ItlVirt *that = (ItlVirt *)ic->ic_softc;
     int err;
 
-    // VAP-SEAM: transport sends the firmware command of this transition
-    // (SET_BSS, CLEAR_BSS, PORT) and commits it on the answer.
+    /* Leaving the BSS closes the port; the keys go with the node. */
+    if (ic->ic_state == IEEE80211_S_RUN && nstate != IEEE80211_S_RUN) {
+        that->setPort(false);
+        timeout_del(&that->fStatsTimer);
+        that->fStatsValid = false;
+    }
+
+    /*
+     * The firmware follows the association from the management frames it
+     * relays, so no state needs a command of its own.
+     */
     if (nstate != IEEE80211_S_SCAN) {
         that->scanAbort(0);
-        return that->fNewstate(ic, nstate, arg);
+        /* The authentication frame must already carry the current address. */
+        if (nstate == IEEE80211_S_AUTH)
+            that->syncMac();
+        err = that->fNewstate(ic, nstate, arg);
+        if (err == 0 && nstate == IEEE80211_S_RUN && ic->ic_state == IEEE80211_S_RUN) {
+            /* Without RSN nothing else opens the port. */
+            if (!(ic->ic_flags & IEEE80211_F_RSNON))
+                that->setPort(true);
+            timeout_add_msec(&that->fStatsTimer, VIRT_STATS_MS);
+        }
+        return err;
     }
 
     /*
@@ -893,6 +1083,12 @@ virt_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     if (ic->ic_state == IEEE80211_S_RUN) {
         ieee80211_stop_ampdu_tx(ic, ic->ic_bss, -1);
         ieee80211_ba_del(ic->ic_bss);
+        /*
+         * The firmware stays associated until a deauthentication frame
+         * passes through it; net80211 sends none on this transition.
+         */
+        IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH,
+                            IEEE80211_REASON_AUTH_LEAVE);
     }
     err = that->scanStart(false, 0);
     if (err)
@@ -937,21 +1133,95 @@ virt_bgscan_abort(struct ieee80211com *ic, uint64_t reassocSerial)
     return err;
 }
 
-// VAP-SEAM: transport hands the key to the firmware (KEY_ADD), which then
-// encrypts and decrypts with it; until then net80211's software crypto keeps it.
+/* The bit of a data key in fKeys: the group keys by index, then the pairwise key. */
+static uint8_t
+virt_key_bit(const struct ieee80211_key *k)
+{
+    return (k->k_flags & IEEE80211_KEY_GROUP) ? (uint8_t)(1 << (k->k_id & 3)) : 0x80;
+}
+
+/* The data keys go to the firmware; a key it holds is never used in software. */
+static bool
+virt_key_is_firmware(const struct ieee80211_key *k)
+{
+    return (k->k_cipher == IEEE80211_CIPHER_CCMP || k->k_cipher == IEEE80211_CIPHER_TKIP) &&
+        !(k->k_flags & (IEEE80211_KEY_IGTK | IEEE80211_KEY_SWCRYPTO));
+}
+
 int ItlVirt::
 virt_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
              struct ieee80211_key *k)
 {
-    return ieee80211_set_key(ic, ni, k);
+    ItlVirt *that = (ItlVirt *)ic->ic_softc;
+    struct vap_key vk;
+    bool group;
+    int rc;
+
+    /* A live BIP slot belongs to its publisher in net80211, as in iwx. */
+    if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+        return EINVAL;
+    group = (k->k_flags & IEEE80211_KEY_GROUP) != 0;
+    // VAP-SEAM: transport hands the integrity group key to the firmware once
+    // management frame protection is offered; BIP stays in net80211 until then.
+    if (!virt_key_is_firmware(k) || k->k_len > sizeof(vk.key) || (!group && ni == NULL))
+        return ieee80211_set_key(ic, ni, k);
+
+    /* The key bytes are in the order nl80211 has them too, TKIP included. */
+    bzero(&vk, sizeof(vk));
+    vk.cipher = k->k_cipher == IEEE80211_CIPHER_CCMP ? 0x000fac04 : 0x000fac02;
+    vk.idx = k->k_id;
+    vk.len = (uint8_t)k->k_len;
+    memcpy(vk.key, k->k_key, k->k_len);
+    if (group) {
+        vk.flags = VAP_KEY_GROUP | ((k->k_flags & IEEE80211_KEY_TX) ? VAP_KEY_TX : 0);
+        for (int i = 0; i < 6; i++)
+            vk.rsc[i] = (uint8_t)(k->k_rsc[0] >> (8 * i));
+    } else {
+        vk.flags = VAP_KEY_PAIRWISE;
+        IEEE80211_ADDR_COPY(vk.peer, ni->ni_macaddr);
+        /*
+         * Whatever net80211 has queued, message 4 of the handshake above
+         * all, must reach the firmware before the key does: a frame sent
+         * after it goes out encrypted and the AP drops it.
+         */
+        that->getMainCommandGate()->runAction(virt_start_task, &ic->ic_if);
+    }
+    rc = that->request(VAP_CMD_KEY_ADD, &vk, sizeof(vk));
+    explicit_bzero(&vk, sizeof(vk));
+    XYLog("vap: %s key %u %s (%d)\n", group ? "group" : "pairwise", k->k_id,
+          rc == 0 ? "installed" : "refused", rc);
+    if (rc != 0)
+        return EIO;
+    that->fKeys |= virt_key_bit(k);
+    /* The group key is the last one of a handshake: the link is fully keyed. */
+    if (group)
+        that->setPort(true);
+    return 0;
 }
 
-// VAP-SEAM: transport removes the key from the firmware (KEY_DEL).
 void ItlVirt::
 virt_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
                 struct ieee80211_key *k)
 {
-    ieee80211_delete_key(ic, ni, k);
+    ItlVirt *that = (ItlVirt *)ic->ic_softc;
+    struct vap_key vk;
+
+    if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+        return;
+    if (!virt_key_is_firmware(k)) {
+        ieee80211_delete_key(ic, ni, k);
+        return;
+    }
+    /* net80211 deletes more often than it sets: only what the firmware holds. */
+    if (that->fKeys & virt_key_bit(k)) {
+        bzero(&vk, sizeof(vk));
+        vk.idx = k->k_id;
+        vk.flags = (k->k_flags & IEEE80211_KEY_GROUP) ? VAP_KEY_GROUP : VAP_KEY_PAIRWISE;
+        /* Fails harmlessly when the firmware has left the BSS already. */
+        (void)that->request(VAP_CMD_KEY_DEL, &vk, sizeof(vk));
+        that->fKeys &= ~virt_key_bit(k);
+    }
+    explicit_bzero(k, sizeof(*k));
 }
 
 /* The firmware negotiates and runs Block Ack sessions on its own. */
@@ -986,6 +1256,9 @@ scanStart(bool background, uint64_t reassocSerial)
 
     if (!(ic->ic_if.if_flags & IFF_RUNNING))
         return ENETDOWN;
+    /* Probe requests should carry the current address too. */
+    if (!background)
+        syncMac();
 
     /*
      * Only a foreground request displaces a running scan: a background scan
@@ -1071,6 +1344,8 @@ scanCommand(uint32_t id, bool background, uint64_t wclGeneration)
     } req;
     struct ieee80211_wcl_scan_plan plan;
     uint32_t len = sizeof(req.sc);
+    IOInterruptState irq;
+    bool waited = false;
     int rc;
 
     bzero(&req, sizeof(req));
@@ -1090,14 +1365,55 @@ scanCommand(uint32_t id, bool background, uint64_t wclGeneration)
     }
 
     rc = request(VAP_CMD_SCAN_START, &req, len);
+    /*
+     * Busy: the firmware is still ending the previous scan or runs one of
+     * its own.  The scan stays accepted and is started when that one is over.
+     */
+    irq = IOSimpleLockLockDisableInterrupt(fScanLock);
+    if (fScan.id == id) {
+        waited = fScan.deferred;
+        fScan.deferred = rc == VAP_E_BUSY;
+    }
+    IOSimpleLockUnlockEnableInterrupt(fScanLock, irq);
+    if (rc == VAP_E_BUSY) {
+        if (!waited)
+            XYLog("vap: scan %u waits for the firmware to end another\n", id);
+        timeout_add_msec(&fScanWatchdog, VIRT_SCAN_RETRY_MS);
+        return 0;
+    }
     if (rc != 0) {
         XYLog("vap: scan %u refused (%d)\n", id, rc);
-        return rc == VAP_E_BUSY ? EBUSY : rc == VAP_E_NOT_READY ? ENETDOWN : EIO;
+        return rc == VAP_E_NOT_READY ? ENETDOWN : EIO;
     }
     XYLog("vap: scan %u started%s%s\n", id, background ? ", background" : "",
           wclGeneration != 0 ? ", WCL" : "");
     timeout_add_msec(&fScanWatchdog, VIRT_SCAN_WATCHDOG_MS);
     return 0;
+}
+
+/* Starts the scan the firmware was too busy for; gives up after VIRT_SCAN_WATCHDOG_MS. */
+void ItlVirt::
+scanRetry()
+{
+    uint64_t wclGeneration = 0;
+    uint32_t id = 0, tries = 0;
+    bool background = false;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(fScanLock);
+    if (fScan.state != VIRT_SCAN_IDLE && fScan.deferred) {
+        id = fScan.id;
+        tries = ++fScan.tries;
+        background = fScan.state == VIRT_SCAN_BACKGROUND;
+        wclGeneration = fScan.wcl ? fWcl.generation : 0;
+    }
+    IOSimpleLockUnlockEnableInterrupt(fScanLock, irq);
+    if (id == 0)
+        return;
+    if (tries > VIRT_SCAN_WATCHDOG_MS / VIRT_SCAN_RETRY_MS ||
+        scanCommand(id, background, wclGeneration) != 0) {
+        XYLog("vap: scan %u never started, ending it\n", id);
+        scanEnd(false, id);
+    }
 }
 
 /* No SCAN_DONE came: end the scan with what has arrived instead of hanging on it. */
@@ -1106,12 +1422,18 @@ virt_scan_watchdog(void *arg)
 {
     ItlVirt *that = (ItlVirt *)arg;
     struct vap_scan_abort ab = { 0, 0 };
+    bool deferred;
 
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(that->fScanLock);
     ab.scan_id = that->fScan.id;
+    deferred = that->fScan.deferred;
     IOSimpleLockUnlockEnableInterrupt(that->fScanLock, irq);
     if (ab.scan_id == 0)
         return;
+    if (deferred) {
+        that->scanRetry();
+        return;
+    }
     XYLog("vap: scan %u: no SCAN_DONE in %u ms, ending it\n", ab.scan_id,
           VIRT_SCAN_WATCHDOG_MS);
     (void)that->request(VAP_CMD_SCAN_ABORT, &ab, sizeof(ab));
@@ -1123,15 +1445,22 @@ void ItlVirt::
 scanAbort(uint32_t id)
 {
     struct vap_scan_abort ab = { 0, 0 };
+    bool deferred = false;
 
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(fScanLock);
-    if (fScan.state != VIRT_SCAN_IDLE && (id == 0 || fScan.id == id))
+    if (fScan.state != VIRT_SCAN_IDLE && (id == 0 || fScan.id == id)) {
         ab.scan_id = fScan.id;
+        deferred = fScan.deferred;
+    }
     IOSimpleLockUnlockEnableInterrupt(fScanLock, irq);
     if (ab.scan_id == 0)
         return;
-    /* The firmware's own SCAN_DONE for it finds the scan retired and is ignored. */
-    (void)request(VAP_CMD_SCAN_ABORT, &ab, sizeof(ab));
+    /*
+     * The firmware's own SCAN_DONE for it finds the scan retired and is
+     * ignored.  A scan the firmware has not started yet is not its to abort.
+     */
+    if (!deferred)
+        (void)request(VAP_CMD_SCAN_ABORT, &ab, sizeof(ab));
     scanEnd(true, ab.scan_id);
 }
 
