@@ -566,29 +566,55 @@ static_assert(sizeof(struct apple80211_scan_result) == 0x8d8,
               "Tahoe scan-result carrier must match Apple80211GetWithIOCTL size");
 #endif
 
-// WCL channel info entry — 8 bytes per channel
-// Reverse-engineered from AppleBCMWLAN::getWCL_CHANNELS_INFO (macOS 26.x)
+// AppleChannelSpec_t — the 16-bit channel spec IO80211Family keys channels by
+// (25C56 ChanSpecGetPrimaryChannel 0xffffff80020f8da7,
+// ChanSpecConvToApple80211Channel 0xffffff80020f8cfd): bits 15:14 band,
+// bits 13:11 width, bits 10:8 control sideband, bits 7:0 channel (the primary
+// channel for 20 MHz, the centre channel for wider specs).
+// Band: 0x0000 2.4 GHz, 0x4000 6 GHz, 0xc000 5 GHz.
+// Width: 0x1000 20 MHz, 0x1800 40 MHz, 0x2000 80 MHz, 0x2800 160 MHz.
+#define APPLE80211_CHANSPEC_BAND_2G    0x0000
+#define APPLE80211_CHANSPEC_BAND_5G    0xc000
+#define APPLE80211_CHANSPEC_BW_20      0x1000
+
+// WCL channel info entry — 8 bytes per channel spec.
+// Producer: 25C56 AppleBCMWLANCore::getWCL_CHANNELS_INFO 0xffffff800161526c,
+// from the arrays AppleBCMWLANCore::handleChanInfoTimer 0xffffff800156a602
+// fills (all 20 MHz specs first, then the 40/80/160 MHz ones).
+// Consumers: WCLDeviceConfiguration::isChannelValid / isDFSChannel /
+// fill20MHzChanSpec / fillLegacy20MHzChanSpec / setValidChannelInfo and
+// WCLNeighborCacheManager::isChannelSpecValid 0xffffff8002196c92; they match
+// chan_spec by band bits + low byte and take the channel number from
+// primary_channel.
 #define APPLE80211_WCL_MAX_CHANNELS 400
+#define APPLE80211_WCL_CHANNEL_FLAG_RADAR      0x02
+#define APPLE80211_WCL_CHANNEL_FLAG_PASSIVE    0x04
 struct apple80211_wcl_channel_entry {
-    uint16_t chan_spec;        // 0x00 - channel spec (chanspec_t or channel number)
-    uint8_t  max_tx_power;     // 0x02 - max tx power
-    uint8_t  min_tx_power;     // 0x03 - min tx power
-    uint8_t  field4;           // 0x04
-    uint8_t  field5;           // 0x05
-    uint8_t  indoor;           // 0x06 - indoor restriction
-    uint8_t  flags;            // 0x07 - bit0:restricted bit1:radar bit2:passive bit4:40MHz bit5:80MHz bit6:160MHz
+    uint16_t chan_spec;        // 0x00 - AppleChannelSpec_t
+    uint8_t  vlp_tx_power;     // 0x02 - 6 GHz VLP tx power, 20 MHz spec
+    uint8_t  vlp_tx_power_160; // 0x03 - 6 GHz VLP tx power, 160 MHz spec
+    uint8_t  lpi_tx_power;     // 0x04 - 6 GHz LPI tx power, 20 MHz spec
+    uint8_t  lpi_tx_power_160; // 0x05 - 6 GHz LPI tx power, 160 MHz spec
+    uint8_t  primary_channel;  // 0x06 - primary 20 MHz channel number
+    uint8_t  flags;            // 0x07 - bit0:restricted bit1:radar bit2:passive bit3:CLM-restricted bit4/5:6 GHz VLP (no width bits)
 } __attribute__((packed));
 
-// WCL channel info — 0xC88 bytes total
-// Layout: entries(400*8=3200) + metadata(8) = 3208
+// WCL channel info — 0xC86 bytes total: WCLConfigManager::loadChannelInfo
+// 0xffffff80020fe112 allocates exactly 0xc86 and the IOC 0x1c1 GET handler
+// 0xffffff80021dca89 rejects any other req_len.
+// Layout: entries(400*8=3200) + metadata(6) = 3206
 struct apple80211ChannelInfo {
     struct apple80211_wcl_channel_entry entries[APPLE80211_WCL_MAX_CHANNELS]; // 0x0000
     uint16_t num_channels;     // 0x0C80
-    uint16_t config;           // 0x0C82
-    uint8_t  flag1;            // 0x0C84
+    uint8_t  country_code[3];  // 0x0C82 - WCLDeviceConfiguration::getCountryCode; first byte 0 = none
     uint8_t  support_6e;       // 0x0C85
-    uint16_t padding;          // 0x0C86
-} __attribute__((packed));     // 0x0C88 total
+} __attribute__((packed));     // 0x0C86 total
+static_assert(sizeof(struct apple80211_wcl_channel_entry) == 8,
+              "WCL channel info entry must match Apple's 8-byte record");
+static_assert(__offsetof(struct apple80211ChannelInfo, num_channels) == 0xc80,
+              "WCL channel count must live at Apple +0xc80");
+static_assert(sizeof(struct apple80211ChannelInfo) == 0xc86,
+              "WCL channel info must match the 0xc86 carrier IO80211Family allocates");
 
 // WCL BSS info (beacon message) — Tahoe WCL current-BSS ABI.
 // WCLNetManager::updateBss allocates and requests 0x844 bytes via IOC 0x1b1,

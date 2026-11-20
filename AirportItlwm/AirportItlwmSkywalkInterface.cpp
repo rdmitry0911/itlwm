@@ -11037,29 +11037,43 @@ getWCL_CHANNELS_INFO(apple80211ChannelInfo *data)
     struct ieee80211com *ic = fHalService->get80211Controller();
     bzero(data, sizeof(*data));
 
+    // 25C56 AppleBCMWLANCore::getWCL_CHANNELS_INFO (0xffffff800161526c)
+    // publishes one record per firmware chanspec: the AppleChannelSpec_t
+    // (band | width | channel), the primary channel number at +6 and the
+    // restricted/radar/passive bits at +7. WCL keys every lookup on those:
+    // WCLNeighborCacheManager::isChannelSpecValid (0xffffff8002196c92, behind
+    // IO80211NeighborCacheManager::addHotChannel's "channel spec is not valid")
+    // and WCLDeviceConfiguration::isChannelValid compare the band bits and the
+    // low byte, fill20MHzChanSpec/fillLegacy20MHzChanSpec/isDFSChannel read the
+    // channel from +6, and setValidChannelInfo (0xffffff80021cec14) stops at
+    // the first record whose channel does not fit its band. A bare channel
+    // number therefore turned every 5 GHz channel into an invalid 2.4 GHz one.
+    // Only the 20 MHz records are published: the reference appends the
+    // 40/80/160 MHz chanspecs after them, but none of those consumers uses
+    // them, and the width is carried in the chanspec, not in the flag byte
+    // (its bits 4/5 follow the firmware's 6 GHz VLP channel bit).
     uint16_t count = 0;
     for (int i = 0; i < IEEE80211_CHAN_MAX && count < APPLE80211_WCL_MAX_CHANNELS; i++) {
         struct ieee80211_channel *ch = &ic->ic_channels[i];
         if (ch->ic_freq == 0)
             continue;
 
+        const u_int chan = ieee80211_chan2ieee(ic, ch);
+        if (chan == 0 || chan > 0xff)
+            continue;
+
         struct apple80211_wcl_channel_entry *entry = &data->entries[count];
-        entry->chan_spec = ieee80211_chan2ieee(ic, ch);
-        entry->max_tx_power = 0;
-        entry->min_tx_power = 0;
-        entry->field4 = 0;
-        entry->field5 = 0;
-        entry->indoor = 0;
+        entry->chan_spec = static_cast<uint16_t>(
+            (IEEE80211_IS_CHAN_5GHZ(ch) ? APPLE80211_CHANSPEC_BAND_5G
+                                        : APPLE80211_CHANSPEC_BAND_2G) |
+            APPLE80211_CHANSPEC_BW_20 | chan);
+        entry->primary_channel = static_cast<uint8_t>(chan);
 
         uint8_t flags = 0;
         if (ch->ic_flags & IEEE80211_CHAN_PASSIVE)
-            flags |= (1 << 2);  // bit2: passive
+            flags |= APPLE80211_WCL_CHANNEL_FLAG_PASSIVE;
         if (ch->ic_flags & IEEE80211_CHAN_DFS)
-            flags |= (1 << 1);  // bit1: radar/DFS
-        if (IEEE80211_IS_CHAN_HT40(ch) || IEEE80211_IS_CHAN_VHT40(ch))
-            flags |= (1 << 4);  // bit4: 40MHz
-        if (IEEE80211_IS_CHAN_VHT80(ch))
-            flags |= (1 << 5);  // bit5: 80MHz
+            flags |= APPLE80211_WCL_CHANNEL_FLAG_RADAR;
         entry->flags = flags;
         count++;
     }
