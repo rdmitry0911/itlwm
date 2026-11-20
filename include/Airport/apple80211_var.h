@@ -664,6 +664,37 @@ static_assert(sizeof(apple80211_wcl_first_beacon_event) == 0x14,
 static_assert(__offsetof(apple80211_wcl_first_beacon_event, event_status) == 0x0c,
               "WCL first-beacon event status must be at +0x0c");
 
+// Supplicant event (APPLE80211_M_SUPPLICANT_EVENT, 76) — producer ABI
+// recovered from Tahoe 25C56 AppleBCMWLANCore::handlePSKEvent
+// (0xffffff80015a1402), which posts it for every firmware supplicant event,
+// before AppleBCMWLANJoinAdapter::handleSupplicantEvent.  The consumers are
+// IO80211InfraInterface::handleSupplicantEvent (0xffffff80022bc824: length
+// 0x28 and result 0 mean key done; reason 0xe0822c15 marks a rekey) and
+// WCLNetManager::handleSupplicantEvent (0xffffff80020f1794), which stops the
+// key-handshake deadline WCL keeps for an EAP join.
+#define APPLE80211_SUPPLICANT_EVENT_LEN 0x28
+#define APPLE80211_SUPPLICANT_STATUS_BASE  0xe0820400u  // | firmware status
+#define APPLE80211_SUPPLICANT_STATUS_KEYED 6u           // keys are in place
+#define APPLE80211_SUPPLICANT_REASON_BASE  0xe0822c00u  // | firmware reason
+#define APPLE80211_SUPPLICANT_FIELD0C_DEFAULT 0x80000000u
+struct apple80211_message_supplicant_event {
+    uint32_t status;          // 0x00  0, or STATUS_BASE | firmware status
+    uint32_t reason;          // 0x04  REASON_BASE | firmware reason
+    uint32_t result;          // 0x08  0 on success
+    uint32_t field0c;         // 0x0c  0x80000000 unless the firmware says more
+    uint8_t  data[20];        // 0x10  event data of some AKMs, else zero
+    uint8_t  flag24;          // 0x24  rewritten by WCL
+    uint8_t  pad25[3];        // 0x25
+} __attribute__((packed));    // 0x28 total
+
+static_assert(sizeof(struct apple80211_message_supplicant_event) ==
+              APPLE80211_SUPPLICANT_EVENT_LEN,
+              "apple80211_message_supplicant_event must be 0x28 bytes");
+static_assert(__offsetof(struct apple80211_message_supplicant_event, result) == 0x08,
+              "apple80211_message_supplicant_event.result must be at +0x08");
+static_assert(__offsetof(struct apple80211_message_supplicant_event, flag24) == 0x24,
+              "apple80211_message_supplicant_event.flag24 must be at +0x24");
+
 // WCL association-status event — producer ABI recovered from
 // AppleBCMWLANCore::handleAssocEvent on Tahoe.  This is the historical
 // 0x4e bulletin; it is not the WCLJoinManager completion transition.
@@ -932,6 +963,7 @@ struct apple80211_status_msg_hdr
 #define APPLE80211_M_AWDL_REALTIME_MODE_END  68
 #define APPLE80211_M_ROAM_START              70
 #define APPLE80211_M_ROAM_END                71
+#define APPLE80211_M_SUPPLICANT_EVENT        76
 #define APPLE80211_M_DUMP_LOGS               79
 #define APPLE80211_M_LEAKY_AP_STATISTICS     81
 #define APPLE80211_M_RANGING_MEASUREMENT_DONE   83

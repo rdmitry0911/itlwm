@@ -1509,6 +1509,15 @@ struct ieee80211_wcl_scan_start_rejected {
  * ItlRadioPowerOnFailureV1 must be copied without entering the command gate:
  * radio Off may be holding that gate while it drains this lower worker. */
 #define IEEE80211_EVT_RADIO_POWER_ON_FAILED          27
+/*
+ * An 802.1X association reached committed S_RUN with its port still closed:
+ * the EAP conversation and the key handshake are yet to come.  The reference
+ * driver reports the link at this point, from its firmware link event and
+ * before any supplicant event (Tahoe 25C56 AppleBCMWLANNetAdapter::handleLink,
+ * 0xffffff800152590a); the supplicant in user space needs that to see the
+ * network it is asked to authenticate to.  Carries no data.
+ */
+#define IEEE80211_EVT_STA_8021X_RUN                  28
 struct ieee80211_roam_link_loss {
     u_int64_t epoch;
     u_int8_t bssid[IEEE80211_ADDR_LEN];

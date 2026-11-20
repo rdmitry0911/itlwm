@@ -6578,6 +6578,17 @@ justcleanup:
 			    ni->ni_port_valid && ic->ic_event_handler != NULL)
 				(*ic->ic_event_handler)(
 				    ic, IEEE80211_EVT_STA_RSN_RUN_DONE, NULL);
+#if defined(USE_APPLE_SUPPLICANT) && __IO80211_TARGET >= __MAC_26_0
+			/* The link of an 802.1X association is reported here, before
+			 * EAP and the key handshake (see IEEE80211_EVT_STA_8021X_RUN). */
+			if (ic->ic_opmode == IEEE80211_M_STA &&
+			    (ic->ic_flags & IEEE80211_F_RSNON) != 0 &&
+			    !ni->ni_port_valid &&
+			    ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms) &&
+			    ic->ic_event_handler != NULL)
+				(*ic->ic_event_handler)(
+				    ic, IEEE80211_EVT_STA_8021X_RUN, NULL);
+#endif
             ni->ni_fails = 0;
             ni = ieee80211_find_node(ic, ni->ni_macaddr);
             if (ni)

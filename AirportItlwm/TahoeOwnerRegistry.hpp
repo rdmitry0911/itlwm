@@ -164,6 +164,11 @@ struct TahoeOwnerRegistry {
         // link/connect completion is therefore a separate one-shot owned by
         // this same authenticated and associated candidate.
         bool connectCompletionPublished = false;
+        // The WCL link-up of an 802.1X association is published when the
+        // association reaches RUN, before EAP and the key handshake, as the
+        // reference does from its firmware link event.  The later key-done
+        // completion must not publish a second one for the same candidate.
+        bool linkUpPublished = false;
         uint16_t apMode = 0;
         uint32_t authLower = 0;
         uint32_t authUpper = 0;

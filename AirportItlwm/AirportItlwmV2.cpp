@@ -6307,6 +6307,25 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
     return true;
 }
 
+/*
+ * The supplicant event of a completed key handshake, as Tahoe 25C56
+ * AppleBCMWLANCore::handlePSKEvent (0xffffff80015a1402) builds it for the
+ * firmware's "keyed" status: mapped status and reason, result 0.
+ */
+static void postTahoeSupplicantKeyedEvent(AirportItlwm *controller)
+{
+    struct apple80211_message_supplicant_event event;
+    bzero(&event, sizeof(event));
+    event.status = APPLE80211_SUPPLICANT_STATUS_BASE |
+        APPLE80211_SUPPLICANT_STATUS_KEYED;
+    event.reason = APPLE80211_SUPPLICANT_REASON_BASE;
+    event.result = 0;
+    event.field0c = APPLE80211_SUPPLICANT_FIELD0C_DEFAULT;
+    controller->postMessage(controller->fNetIf,
+                            APPLE80211_M_SUPPLICANT_EVENT,
+                            &event, sizeof(event), true);
+}
+
 static bool tahoeWclProtectedJoinCompletionMatchesOwner(
     const TahoeOwnerRegistry::AssociationOwner &owner,
     const struct ieee80211_pae_selected_bss &selected,
@@ -6372,7 +6391,13 @@ static IOReturn postTahoeWclProtectedRunCompletionGated(
     (void)ieee80211_wcl_join_note_success(ic, owner->joinAttemptGeneration,
         epoch, IEEE80211_JOIN_KEYS);
 
-    const bool linkPublished =
+    /* An 802.1X association published its link when it reached RUN.  WCL
+     * has been counting down to the key handshake since then, and only the
+     * supplicant event stops that (see postTahoeWclEnterpriseLinkUpGated);
+     * the reference posts it before connect-complete. */
+    if (owner->linkUpPublished)
+        postTahoeSupplicantKeyedEvent(controller);
+    const bool linkPublished = owner->linkUpPublished ||
         postTahoeWclLinkUpInd(controller, rawReason);
     const bool connectPublished =
         postTahoeWclConnectCompleteEvent(controller);
@@ -6381,6 +6406,89 @@ static IOReturn postTahoeWclProtectedRunCompletionGated(
         owner->joinTerminalObserved = false;
         return kIOReturnNotReady;
     }
+    return kIOReturnSuccess;
+}
+
+/*
+ * WCL link-up of an 802.1X association, before EAP and the key handshake.
+ *
+ * Tahoe 25C56 AppleBCMWLANNetAdapter::handleLink (0xffffff800152590a) posts
+ * the 0xd8 link indication from the firmware link event, which follows the
+ * association (handleAssoc, 0xffffff800155c89e, posts 0xd3) and precedes
+ * every supplicant event; connect-complete (0xd5) waits for the key
+ * handshake (handleSupplicantEvent, 0xffffff800155d678).  Until WCL has that
+ * link indication it answers "not associated" (0xe0822403) to the SSID query
+ * eapolclient makes when it starts, and it does not take the link-down of a
+ * failed EAP exchange as the end of the join: a rejected password held the
+ * join for the 60 s WCLJoinManager::handleJoinAssocComplete
+ * (0xffffff80021d4b96) allows an EAP join.
+ *
+ * With the link reported, WCL runs a key-handshake deadline of its own for
+ * an EAP join: WCLNetManager::set4wayHsTimeout (0xffffff80020ec9f6) is called
+ * with 10000 ms from WCLNetManager::linkUp and with 6000 ms from
+ * WCLNetManager::setKey when the PMK passes through;
+ * WCLNetManager::assocTimerAction (0xffffff80020ef94a) leaves the network
+ * once it has passed, and only the supplicant event clears it
+ * (WCLNetManager::triggerCcIfNeededOnSupplicantEvent, 0xffffff80020f193a).
+ * The key-done completion therefore posts that event for these associations.
+ *
+ * Only the candidate whose association completion (0xd3) was published is
+ * eligible, once; the key-done completion then publishes the supplicant
+ * event and 0xd5, and no second link-up.
+ */
+static bool tahoeWclEnterpriseLinkUpMatchesOwner(
+    const TahoeOwnerRegistry::AssociationOwner &owner,
+    const struct ieee80211_pae_selected_bss &selected,
+    const struct ieee80211_node *bss)
+{
+    return tahoeWclSelectedBssMatchesOwner(owner, selected, bss) &&
+           owner.authUpper != APPLE80211_AUTHTYPE_NONE &&
+           owner.authSuccessRecorded &&
+           owner.authSuccessEpoch == selected.epoch &&
+           IEEE80211_ADDR_EQ(owner.authSuccessBssid, selected.bssid) &&
+           owner.authAssocCompletionPublished &&
+           !owner.connectCompletionPublished &&
+           !owner.linkUpPublished;
+}
+
+static IOReturn postTahoeWclEnterpriseLinkUpGated(
+    OSObject *target, void *, void *, void *, void *)
+{
+    AirportItlwm *controller = OSDynamicCast(AirportItlwm, target);
+    if (controller == nullptr || controller->fHalService == nullptr ||
+        controller->fNetIf == nullptr)
+        return kIOReturnNotReady;
+
+    struct ieee80211com *ic = controller->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr ||
+        (ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
+        ic->ic_bss->ni_port_valid ||
+        !ieee80211_is_8021x_akm(
+            (enum ieee80211_akm)ic->ic_bss->ni_rsnakms))
+        return kIOReturnNotReady;
+
+    const uint64_t epoch = ieee80211_pae_assoc_epoch_current(ic);
+    struct ieee80211_pae_selected_bss current;
+    bzero(&current, sizeof(current));
+    if (epoch == 0 ||
+        !ieee80211_pae_selected_bss_copyout_current(ic, epoch, &current) ||
+        !IEEE80211_ADDR_EQ(current.bssid, ic->ic_bss->ni_bssid))
+        return kIOReturnNotReady;
+
+    TahoeOwnerRegistry &registry = controller->getTahoeOwnerRegistry();
+    TahoeOwnerRegistry::AssociationOwner *owner = &registry.association;
+    if (!tahoeWclEnterpriseLinkUpMatchesOwner(
+            *owner, current, ic->ic_bss)) {
+        owner = &registry.publicAssociation;
+        if (!tahoeWclEnterpriseLinkUpMatchesOwner(
+                *owner, current, ic->ic_bss))
+            return kIOReturnNotReady;
+    }
+
+    if (!postTahoeWclLinkUpInd(controller, 0))
+        return kIOReturnNotReady;
+    owner->linkUpPublished = true;
     return kIOReturnSuccess;
 }
 
@@ -10480,6 +10588,16 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             (void)gate->runAction(postTahoeWclJoinCompletionGated,
                                   (void *)(uintptr_t)0,
                                   (void *)(uintptr_t)true, NULL);
+#endif
+            return;
+        case IEEE80211_EVT_STA_8021X_RUN:
+#if __IO80211_TARGET >= __MAC_26_0
+        {
+            const IOReturn result =
+                gate->runAction(postTahoeWclEnterpriseLinkUpGated);
+            XYLog("wcl_8021x RUN_LINK_UP result=0x%08x\n",
+                  static_cast<unsigned int>(result));
+        }
 #endif
             return;
         case IEEE80211_EVT_STA_JOIN_FAILED:
