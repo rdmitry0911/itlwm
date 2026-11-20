@@ -12,6 +12,10 @@
 #include "ItlIwm.hpp"
 #include "ItlIwx.hpp"
 #include "ItlIwn.hpp"
+/* ItlVirt.cpp is built into the Tahoe target only. */
+#if __IO80211_TARGET >= __MAC_26_0
+#include "ItlVirt.hpp"
+#endif
 
 #define super IOService
 OSDefineMetaClassAndStructors(IOPCIEDeviceWrapper, IOService);
@@ -67,7 +71,14 @@ probe(IOService *provider, SInt32 *score)
     IOPCIDevice* device = OSDynamicCast(IOPCIDevice, provider);
     if (!device)
         return NULL;
-    if (ItlIwx::iwx_match(device)) {
+#if __IO80211_TARGET >= __MAC_26_0
+    /* First: the Intel matchers below look at the device ID only. */
+    if (ItlVirt::virt_match(device)) {
+        isMatch = true;
+        fHalService = new ItlVirt;
+    }
+#endif
+    if (!isMatch && ItlIwx::iwx_match(device)) {
         isMatch = true;
         fHalService = new ItlIwx;
     }

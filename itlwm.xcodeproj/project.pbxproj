@@ -1091,6 +1091,7 @@
 		F8E94CE32B9ABFE20081A3C4 /* tx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C523FCDC3B009FBA6C /* tx.cpp */; };
 		F8E94CE42B9ABFE20081A3C4 /* hw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C723FCE2ED009FBA6C /* hw.cpp */; };
 		F8E94CE52B9ABFE20081A3C4 /* ItlIwn.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17FD7F0E255E4AC800611406 /* ItlIwn.cpp */; };
+		7A9E00052EF0000100A11001 /* ItlVirt.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7A9E00012EF0000100A11001 /* ItlVirt.cpp */; };
 		F8E94CE62B9ABFE20081A3C4 /* phy.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C923FCE537009FBA6C /* phy.cpp */; };
 		F8E94CE72B9ABFE20081A3C4 /* mac80211.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08CB23FCE5CA009FBA6C /* mac80211.cpp */; };
 		F8E94CE82B9ABFE20081A3C4 /* nvm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08CD23FCE67F009FBA6C /* nvm.cpp */; };
@@ -1272,6 +1273,9 @@
 		17FD7F0D255E4AB000611406 /* if_iwnreg.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = if_iwnreg.h; sourceTree = "<group>"; };
 		17FD7F0E255E4AC800611406 /* ItlIwn.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ItlIwn.cpp; sourceTree = "<group>"; };
 		17FD7F0F255E4AC800611406 /* ItlIwn.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ItlIwn.hpp; sourceTree = "<group>"; };
+		7A9E00012EF0000100A11001 /* ItlVirt.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ItlVirt.cpp; sourceTree = "<group>"; };
+		7A9E00022EF0000100A11001 /* ItlVirt.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ItlVirt.hpp; sourceTree = "<group>"; };
+		7A9E00032EF0000100A11001 /* vap_regs.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vap_regs.h; sourceTree = "<group>"; };
 		17FD7F38255E4EB200611406 /* iwn-6005 */ = {isa = PBXFileReference; lastKnownFileType = text; path = "iwn-6005"; sourceTree = "<group>"; };
 		17FD7F39255E4EB200611406 /* iwn-135 */ = {isa = PBXFileReference; lastKnownFileType = text; path = "iwn-135"; sourceTree = "<group>"; };
 		17FD7F3A255E4EB200611406 /* iwn-6030 */ = {isa = PBXFileReference; lastKnownFileType = text; path = "iwn-6030"; sourceTree = "<group>"; };
@@ -1595,6 +1599,7 @@
 				17FD7F0B255E496000611406 /* hal_iwn */,
 				F8AF3A2E24F9F25E008911C1 /* hal_iwm */,
 				F8AF3A2D24F9F246008911C1 /* hal_iwx */,
+				7A9E00042EF0000100A11001 /* hal_virt */,
 				024A07AF23FCBC3C009FBA6C /* itlwm.hpp */,
 				024A07B123FCBC3C009FBA6C /* itlwm.cpp */,
 				024A07B323FCBC3C009FBA6C /* Info.plist */,
@@ -1718,6 +1723,16 @@
 				17FD7F0F255E4AC800611406 /* ItlIwn.hpp */,
 			);
 			path = hal_iwn;
+			sourceTree = "<group>";
+		};
+		7A9E00042EF0000100A11001 /* hal_virt */ = {
+			isa = PBXGroup;
+			children = (
+				7A9E00032EF0000100A11001 /* vap_regs.h */,
+				7A9E00012EF0000100A11001 /* ItlVirt.cpp */,
+				7A9E00022EF0000100A11001 /* ItlVirt.hpp */,
+			);
+			path = hal_virt;
 			sourceTree = "<group>";
 		};
 		5088ECBB252884870068A63D /* Frameworks */ = {
@@ -3562,6 +3577,7 @@
 				F8E94CE32B9ABFE20081A3C4 /* tx.cpp in Sources */,
 				F8E94CE42B9ABFE20081A3C4 /* hw.cpp in Sources */,
 				F8E94CE52B9ABFE20081A3C4 /* ItlIwn.cpp in Sources */,
+				7A9E00052EF0000100A11001 /* ItlVirt.cpp in Sources */,
 				F8E94CE62B9ABFE20081A3C4 /* phy.cpp in Sources */,
 				F8E94CE72B9ABFE20081A3C4 /* mac80211.cpp in Sources */,
 				F8E94CE82B9ABFE20081A3C4 /* nvm.cpp in Sources */,
