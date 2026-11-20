@@ -1092,6 +1092,7 @@
 		F8E94CE42B9ABFE20081A3C4 /* hw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C723FCE2ED009FBA6C /* hw.cpp */; };
 		F8E94CE52B9ABFE20081A3C4 /* ItlIwn.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17FD7F0E255E4AC800611406 /* ItlIwn.cpp */; };
 		7A9E00052EF0000100A11001 /* ItlVirt.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7A9E00012EF0000100A11001 /* ItlVirt.cpp */; };
+		7A9E000A2EF0000100A11001 /* vap_guest.c in Sources */ = {isa = PBXBuildFile; fileRef = 7A9E00062EF0000100A11001 /* vap_guest.c */; };
 		F8E94CE62B9ABFE20081A3C4 /* phy.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C923FCE537009FBA6C /* phy.cpp */; };
 		F8E94CE72B9ABFE20081A3C4 /* mac80211.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08CB23FCE5CA009FBA6C /* mac80211.cpp */; };
 		F8E94CE82B9ABFE20081A3C4 /* nvm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08CD23FCE67F009FBA6C /* nvm.cpp */; };
@@ -1276,6 +1277,10 @@
 		7A9E00012EF0000100A11001 /* ItlVirt.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ItlVirt.cpp; sourceTree = "<group>"; };
 		7A9E00022EF0000100A11001 /* ItlVirt.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ItlVirt.hpp; sourceTree = "<group>"; };
 		7A9E00032EF0000100A11001 /* vap_regs.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vap_regs.h; sourceTree = "<group>"; };
+		7A9E00062EF0000100A11001 /* vap_guest.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vap_guest.c; sourceTree = "<group>"; };
+		7A9E00072EF0000100A11001 /* vap_guest.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vap_guest.h; sourceTree = "<group>"; };
+		7A9E00082EF0000100A11001 /* vap_proto.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vap_proto.h; sourceTree = "<group>"; };
+		7A9E00092EF0000100A11001 /* VapPlatformIOKit.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = VapPlatformIOKit.hpp; sourceTree = "<group>"; };
 		17FD7F38255E4EB200611406 /* iwn-6005 */ = {isa = PBXFileReference; lastKnownFileType = text; path = "iwn-6005"; sourceTree = "<group>"; };
 		17FD7F39255E4EB200611406 /* iwn-135 */ = {isa = PBXFileReference; lastKnownFileType = text; path = "iwn-135"; sourceTree = "<group>"; };
 		17FD7F3A255E4EB200611406 /* iwn-6030 */ = {isa = PBXFileReference; lastKnownFileType = text; path = "iwn-6030"; sourceTree = "<group>"; };
@@ -1729,6 +1734,10 @@
 			isa = PBXGroup;
 			children = (
 				7A9E00032EF0000100A11001 /* vap_regs.h */,
+				7A9E00082EF0000100A11001 /* vap_proto.h */,
+				7A9E00072EF0000100A11001 /* vap_guest.h */,
+				7A9E00062EF0000100A11001 /* vap_guest.c */,
+				7A9E00092EF0000100A11001 /* VapPlatformIOKit.hpp */,
 				7A9E00012EF0000100A11001 /* ItlVirt.cpp */,
 				7A9E00022EF0000100A11001 /* ItlVirt.hpp */,
 			);
@@ -3578,6 +3587,7 @@
 				F8E94CE42B9ABFE20081A3C4 /* hw.cpp in Sources */,
 				F8E94CE52B9ABFE20081A3C4 /* ItlIwn.cpp in Sources */,
 				7A9E00052EF0000100A11001 /* ItlVirt.cpp in Sources */,
+				7A9E000A2EF0000100A11001 /* vap_guest.c in Sources */,
 				F8E94CE62B9ABFE20081A3C4 /* phy.cpp in Sources */,
 				F8E94CE72B9ABFE20081A3C4 /* mac80211.cpp in Sources */,
 				F8E94CE82B9ABFE20081A3C4 /* nvm.cpp in Sources */,

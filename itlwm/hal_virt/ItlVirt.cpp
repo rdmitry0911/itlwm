@@ -11,38 +11,14 @@
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlVirt, ItlHalService)
 
-/*
- * How long the stand-in for the firmware "scans" before finding nothing.  Not
- * shorter: net80211 rescans at once after an empty foreground scan.
- */
-#define VIRT_STUB_SCAN_MS   250
-
-static void
-virt_builtin_caps(VirtCaps *caps)
-{
-    static const uint8_t macaddr[IEEE80211_ADDR_LEN] =
-        { 0x02, 0x00, 0x00, 0x80, 0x21, 0x01 };
-    static const uint8_t chans5[] = { 36, 40, 44, 48 };
-    int n = 0;
-
-    bzero(caps, sizeof(*caps));
-    IEEE80211_ADDR_COPY(caps->macaddr, macaddr);
-    caps->ic_caps = IEEE80211_C_RSN;
-    caps->max_rssi = VIRT_RSSI_OFFSET - 33;     /* -33 dBm, as the Intel HALs */
-    for (int chan = 1; chan <= 11; chan++, n++) {
-        caps->chans[n].freq = ieee80211_ieee2mhz(chan, IEEE80211_CHAN_2GHZ);
-        caps->chans[n].flags = IEEE80211_CHAN_CCK | IEEE80211_CHAN_OFDM |
-            IEEE80211_CHAN_DYN | IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_HT20;
-    }
-    for (size_t i = 0; i < nitems(chans5); i++, n++) {
-        caps->chans[n].freq = ieee80211_ieee2mhz(chans5[i], IEEE80211_CHAN_5GHZ);
-        caps->chans[n].flags = IEEE80211_CHAN_A | IEEE80211_CHAN_HT20;
-    }
-    caps->nchans = n;
-    caps->htcaps = IEEE80211_HTCAP_SMPS_DIS << IEEE80211_HTCAP_SMPS_SHIFT;
-    caps->ampdu_params = IEEE80211_AMPDU_PARAM_SS_4 | 0x3 /* 64k */;
-    caps->sup_mcs[0] = 0xff;                    /* MCS 0-7: one spatial stream */
-}
+struct VirtRequest {
+    uint16_t    type;
+    const void *payload;
+    uint32_t    len;
+    void       *rsp;
+    uint32_t   *rspLen;
+    int         rc;
+};
 
 bool ItlVirt::
 virt_match(IOPCIDevice *device)
@@ -51,10 +27,257 @@ virt_match(IOPCIDevice *device)
         device->configRead16(kIOPCIConfigDeviceID) == VAP_PCI_DEVICE;
 }
 
-uint32_t ItlVirt::
-regRead(uint32_t reg)
+/*
+ * One request to the firmware, waited for.  Returns the firmware's status
+ * (0 or VAP_E_*) or VAP_G_*.  On entry *rspLen is the room at rsp, on return
+ * the size of the reply.
+ */
+int ItlVirt::
+request(uint16_t type, const void *payload, uint32_t len, void *rsp, uint32_t *rspLen)
 {
-    return OSReadLittleInt32((const volatile void *)fRegMap->getVirtualAddress(), reg);
+    VirtRequest rq = { type, payload, len, rsp, rspLen, VAP_G_EIO };
+
+    getMainCommandGate()->runAction(virt_request_gated, this, &rq);
+    return rq.rc;
+}
+
+IOReturn ItlVirt::
+virt_request_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3)
+{
+    ItlVirt *that = (ItlVirt *)arg0;
+    VirtRequest *rq = (VirtRequest *)arg1;
+    struct vap_dev *d = that->fDev;
+    const void *p = NULL;
+    uint32_t n = 0, waited;
+    int slot;
+
+    /* A reply that arrived after its request had been given up frees the slot. */
+    for (slot = 0; slot < (int)VAP_G_CTRL_SLOTS; slot++) {
+        if ((that->fCtrlLost & (1 << slot)) && vap_ctrl_done(d, slot)) {
+            vap_ctrl_release(d, slot);
+            that->fCtrlLost &= ~(1 << slot);
+        }
+    }
+
+    slot = vap_ctrl_send(d, rq->type, rq->payload, rq->len);
+    if (slot < 0) {
+        rq->rc = slot;
+        return kIOReturnSuccess;
+    }
+    /*
+     * The interrupt action cannot run while this thread holds the gate, so
+     * the reply is polled for; only control replies, which keeps events and
+     * frames from being delivered into the middle of the caller.
+     */
+    for (waited = 0; ; waited += 20) {
+        vap_dev_poll_ctrl(d);
+        if (vap_ctrl_done(d, slot) || waited >= VIRT_REQUEST_MS * 1000)
+            break;
+        IODelay(20);
+    }
+    if (!vap_ctrl_done(d, slot)) {
+        that->fCtrlLost |= 1 << slot;
+        XYLog("vap: request 0x%x: no reply in %u ms%s\n", rq->type, VIRT_REQUEST_MS,
+              vap_dev_needs_reset(d) ? ", the device needs a reset" : "");
+        return kIOReturnSuccess;
+    }
+    rq->rc = vap_ctrl_result(d, slot, &p, &n);
+    if (rq->rsp != NULL && rq->rspLen != NULL) {
+        if (rq->rc != VAP_G_EIO && n != 0)
+            memcpy(rq->rsp, p, MIN(n, *rq->rspLen));
+        *rq->rspLen = n;
+    }
+    vap_ctrl_release(d, slot);
+    return kIOReturnSuccess;
+}
+
+/* The next TLV of a GET_CAPS reply; false at the end or at a TLV which overruns it. */
+static bool
+virt_tlv_next(const uint8_t *buf, uint32_t len, uint32_t *off, struct vap_tlv *t,
+              const uint8_t **val)
+{
+    if (*off + sizeof(*t) > len)
+        return false;
+    memcpy(t, buf + *off, sizeof(*t));
+    if (t->len > len - *off - sizeof(*t))
+        return false;
+    *val = buf + *off + sizeof(*t);
+    *off += (uint32_t)sizeof(*t) + ((t->len + 3u) & ~3u);
+    return true;
+}
+
+static bool
+virt_parse_caps(const uint8_t *buf, uint32_t len, VirtCaps *caps)
+{
+    /* Per band: what decides the widths its channels can be used with. */
+    bool ht[2] = { false, false }, vht[2] = { false, false };
+    uint16_t htinfo[2] = { 0, 0 };
+    uint32_t vhtinfo[2] = { 0, 0 };
+    struct vap_tlv t;
+    const uint8_t *v;
+    uint32_t off;
+
+    for (off = 0; virt_tlv_next(buf, len, &off, &t, &v);) {
+        /* The per-band TLVs start with the band and three reserved bytes. */
+        const uint8_t band = (t.len >= 4 && v[0] <= VAP_BAND_5G) ? v[0] : 0xff;
+        const uint8_t *body = v + 4;
+        const uint32_t n = t.len >= 4 ? t.len - 4u : 0;
+
+        switch (t.type) {
+        case VAP_TLV_RATES:
+            if (band != 0xff) {
+                struct ieee80211_rateset *rs =
+                    band == VAP_BAND_2G ? &caps->rates_2g : &caps->rates_5g;
+                rs->rs_nrates = (uint8_t)MIN(n, (uint32_t)IEEE80211_RATE_MAXSIZE);
+                memcpy(rs->rs_rates, body, rs->rs_nrates);
+            }
+            break;
+        case VAP_TLV_HT_CAP:
+            if (band != 0xff && n == sizeof(caps->htcap)) {
+                ht[band] = true;
+                htinfo[band] = OSReadLittleInt16(body, 0);
+                if (!caps->ht)
+                    memcpy(caps->htcap, body, n);
+                caps->ht = true;
+            }
+            break;
+        case VAP_TLV_VHT_CAP:
+            if (band != 0xff && n == sizeof(caps->vhtcap)) {
+                vht[band] = true;
+                vhtinfo[band] = OSReadLittleInt32(body, 0);
+                if (!caps->vht)
+                    memcpy(caps->vhtcap, body, n);
+                caps->vht = true;
+            }
+            break;
+        case VAP_TLV_REGDOM:
+            /* Anything else, like the world domain "00", stays unknown. */
+            if (t.len >= 2 && v[0] >= 'A' && v[0] <= 'Z' && v[1] >= 'A' && v[1] <= 'Z') {
+                caps->country[0] = (char)v[0];
+                caps->country[1] = (char)v[1];
+            }
+            break;
+        case VAP_TLV_ANTENNAS:
+            if (t.len >= 4) {
+                caps->tx_chainmask = v[0];
+                caps->rx_chainmask = v[1];
+                caps->tx_nss = MAX(v[2], 1);
+                caps->rx_nss = MAX(v[3], 1);
+            }
+            break;
+        case VAP_TLV_FW_NAME:
+            if (t.len != 0) {
+                const size_t k = MIN((size_t)t.len, sizeof(caps->fw_name) - 1);
+                memcpy(caps->fw_name, v, k);
+                caps->fw_name[k] = '\0';
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    /* Stopped before the end: a TLV overruns the reply. */
+    if (off + sizeof(t) <= len)
+        return false;
+
+    /* The channels come last: their flags depend on the elements of their band. */
+    for (off = 0; virt_tlv_next(buf, len, &off, &t, &v);) {
+        uint8_t band;
+
+        if (t.type != VAP_TLV_CHANNELS || t.len < 4 || v[0] > VAP_BAND_5G)
+            continue;
+        band = v[0];
+        for (uint32_t i = 4; i + sizeof(struct vap_chan) <= t.len &&
+             caps->nchans < VIRT_MAX_CHANNELS; i += (uint32_t)sizeof(struct vap_chan)) {
+            struct vap_chan c;
+            uint32_t flags;
+
+            memcpy(&c, v + i, sizeof(c));
+            if (c.flags & VAP_CHAN_DISABLED)
+                continue;
+            flags = band == VAP_BAND_2G ? (IEEE80211_CHAN_CCK | IEEE80211_CHAN_OFDM |
+                IEEE80211_CHAN_DYN | IEEE80211_CHAN_2GHZ) : IEEE80211_CHAN_A;
+            if (c.flags & VAP_CHAN_NO_IR)
+                flags |= IEEE80211_CHAN_PASSIVE;
+            if (c.flags & VAP_CHAN_RADAR)
+                flags |= IEEE80211_CHAN_DFS;
+            if (ht[band]) {
+                flags |= IEEE80211_CHAN_HT20;
+                if (htinfo[band] & IEEE80211_HTCAP_CBW20_40) {
+                    if (!(c.flags & VAP_CHAN_NO_HT40P))
+                        flags |= IEEE80211_CHAN_HT40U;
+                    if (!(c.flags & VAP_CHAN_NO_HT40M))
+                        flags |= IEEE80211_CHAN_HT40D;
+                }
+            }
+            if (vht[band]) {
+                if (!(c.flags & VAP_CHAN_NO_80))
+                    flags |= IEEE80211_CHAN_VHT80;
+                if (!(c.flags & VAP_CHAN_NO_160) &&
+                    (vhtinfo[band] & IEEE80211_VHTCAP_SUPP_CHAN_WIDTH_MASK))
+                    flags |= IEEE80211_CHAN_VHT160;
+            }
+            caps->chans[caps->nchans].freq = c.freq_mhz;
+            caps->chans[caps->nchans].flags = flags;
+            caps->nchans++;
+        }
+    }
+    return caps->nchans != 0;
+}
+
+/* HELLO and GET_CAPS: who the firmware is and what its radio can do. */
+bool ItlVirt::
+queryCaps(VirtCaps *caps)
+{
+    struct vap_hello_req hq;
+    struct vap_hello_rsp hs;
+    uint32_t len = sizeof(hs);
+    uint8_t *tlv;
+    bool ok;
+    int rc;
+
+    bzero(&hq, sizeof(hq));
+    bzero(&hs, sizeof(hs));
+    hq.proto_version = VAP_PROTO_VERSION;
+    rc = request(VAP_CMD_HELLO, &hq, sizeof(hq), &hs, &len);
+    if (rc != 0 || len != sizeof(hs) || hs.proto_version != VAP_PROTO_VERSION) {
+        XYLog("vap: HELLO failed: status %d, %u bytes, protocol %u (ours %u)\n",
+              rc, len, hs.proto_version, VAP_PROTO_VERSION);
+        return false;
+    }
+    if (IEEE80211_IS_MULTICAST(hs.mac) || IEEE80211_ADDR_EQ(hs.mac, etheranyaddr)) {
+        XYLog("vap: HELLO: unusable MAC address %s\n", ether_sprintf(hs.mac));
+        return false;
+    }
+
+    bzero(caps, sizeof(*caps));
+    IEEE80211_ADDR_COPY(caps->macaddr, hs.mac);
+    hs.fw_version[sizeof(hs.fw_version) - 1] = '\0';
+    strlcpy(caps->fw_version, hs.fw_version, sizeof(caps->fw_version));
+    strlcpy(caps->fw_name, "v-airport", sizeof(caps->fw_name));
+    strlcpy(caps->country, "ZZ", sizeof(caps->country));
+    caps->tx_chainmask = caps->rx_chainmask = 0x1;
+    caps->tx_nss = caps->rx_nss = 1;
+
+    tlv = (uint8_t *)IOMalloc(VAP_G_CTRL_MAX);
+    if (tlv == NULL)
+        return false;
+    len = VAP_G_CTRL_MAX;
+    rc = request(VAP_CMD_GET_CAPS, NULL, 0, tlv, &len);
+    ok = rc == 0 && len <= VAP_G_CTRL_MAX && virt_parse_caps(tlv, len, caps);
+    IOFree(tlv, VAP_G_CTRL_MAX);
+    if (!ok) {
+        XYLog("vap: GET_CAPS failed: status %d, %u bytes\n", rc, len);
+        return false;
+    }
+
+    XYLog("vap: firmware \"%s\" (%s), MAC %s, features 0x%llx, max frame %u\n",
+          caps->fw_version, caps->fw_name, ether_sprintf(caps->macaddr),
+          (unsigned long long)hs.fw_features, hs.max_frame);
+    XYLog("vap: %u channels, HT %d, VHT %d, country %s, chains tx 0x%x rx 0x%x, nss %u/%u\n",
+          caps->nchans, caps->ht, caps->vht, caps->country, caps->tx_chainmask,
+          caps->rx_chainmask, caps->tx_nss, caps->rx_nss);
+    return true;
 }
 
 bool ItlVirt::
@@ -63,11 +286,72 @@ virt_intr_filter(OSObject *owner, IOFilterInterruptEventSource *sender)
     return true;
 }
 
-// VAP-SEAM: transport drains the used rings of all four queues here; the one
-// MSI vector has no status register to tell them apart.
 void ItlVirt::
 virt_intr(OSObject *owner, IOInterruptEventSource *sender, int count)
 {
+    ItlVirt *that = (ItlVirt *)owner;
+    uint64_t now;
+
+    vap_dev_poll(that->fDev);
+
+    /* Reading the status is a round trip to the host: not on every interrupt. */
+    if (that->fResetLogged)
+        return;
+    clock_get_uptime(&now);
+    if (now < that->fResetCheckAt)
+        return;
+    clock_interval_to_deadline(1, kSecondScale, &that->fResetCheckAt);
+    if (vap_dev_needs_reset(that->fDev)) {
+        that->fResetLogged = true;
+        // VAP-SEAM: transport brings the device up again with vap_dev_start().
+        XYLog("vap: the device needs a reset (the firmware restarted); not handled yet\n");
+    }
+}
+
+void ItlVirt::
+virt_event(void *ctx, const struct vap_hdr *h, const void *payload, uint32_t len)
+{
+    ItlVirt *that = (ItlVirt *)ctx;
+
+    if (h->type == VAP_EVT_SCAN_DONE && len >= sizeof(struct vap_evt_scan_done)) {
+        const struct vap_evt_scan_done *e = (const struct vap_evt_scan_done *)payload;
+
+        XYLog("vap: scan %u done, %u results%s\n", e->scan_id, e->n_results,
+              e->aborted ? ", aborted" : "");
+        /* Only the scan which is still running; the id filters out the rest. */
+        if (e->scan_id != 0)
+            that->scanEnd(e->aborted != 0, e->scan_id);
+        return;
+    }
+    XYLog("vap: event 0x%x, %u bytes\n", h->type, len);
+}
+
+void ItlVirt::
+virt_rx(void *ctx, const struct vap_rx_meta *meta, const uint8_t *frame, uint32_t len)
+{
+    ItlVirt *that = (ItlVirt *)ctx;
+    mbuf_t m;
+
+    if (len == 0 || (m = that->getController()->allocatePacket(len)) == NULL)
+        return;
+    /* A packet of more than one cluster may come as a chain. */
+    if (mbuf_copyback(m, 0, len, frame, MBUF_DONTWAIT) != 0) {
+        mbuf_freem(m);
+        return;
+    }
+    that->rxFrame(m, meta->freq_mhz, meta->rssi_dbm,
+                  (meta->flags & VAP_RXF_DECRYPTED) ? VIRT_RX_DECRYPTED : 0);
+}
+
+/* The device has room again for the frame it refused. */
+void ItlVirt::
+virt_tx_ready(void *ctx)
+{
+    ItlVirt *that = (ItlVirt *)ctx;
+    struct _ifnet *ifp = &that->fIc.ic_if;
+
+    ifq_clr_oactive(&ifp->if_snd);
+    virt_start_task(NULL, ifp, NULL, NULL, NULL);
 }
 
 bool ItlVirt::
@@ -75,25 +359,40 @@ attach(IOPCIDevice *device)
 {
     struct ieee80211com *ic = &fIc;
     struct _ifnet *ifp = &ic->ic_if;
+    struct vap_callbacks cb = { this, NULL, virt_event, virt_rx, virt_tx_ready };
+    struct vap_platform pf;
     VirtCaps caps;
-    uint32_t magic;
     int msiIndex = -1;
+    int rc;
 
     device->setMemoryEnable(true);
     device->setBusMasterEnable(true);
-    fRegMap = device->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress0);
-    if (fRegMap == NULL || fRegMap->getLength() < VAP_BAR0_SIZE) {
-        XYLog("%s: can't map BAR0\n", __FUNCTION__);
+    if (!fPlatform.init(device)) {
+        XYLog("vap: can't map BAR0\n");
         goto fail;
     }
-    magic = regRead(VAP_REG_MAGIC);
-    if (magic != VAP_MAGIC) {
-        XYLog("%s: bad magic 0x%08x, expected 0x%08x\n", __FUNCTION__,
-              magic, VAP_MAGIC);
+    fMapped = true;
+    pf = fPlatform.platform();
+    XYLog("vap: magic 0x%08x, transport version %u\n",
+          pf.rd32(pf.ctx, VAP_REG_MAGIC), pf.rd32(pf.ctx, VAP_REG_VERSION));
+    if (fDev == NULL)
+        fDev = (struct vap_dev *)IOMallocZero(sizeof(*fDev));
+    if (fDev == NULL)
+        goto fail;
+    /* Nothing else can call into the transport yet: no interrupt, no interface. */
+    rc = vap_dev_init(fDev, &pf, &cb);
+    if (rc != VAP_G_OK) {
+        XYLog("vap: device bring-up failed (%d)\n", rc);
         goto fail;
     }
-    XYLog("%s: v-Airport device, transport version %u\n", __FUNCTION__,
-          regRead(VAP_REG_VERSION));
+
+    fScanLock = IOSimpleLockAlloc();
+    if (fScanLock == NULL)
+        goto fail;
+    taskq_init();
+    fTaskqReady = true;
+    task_set(&fInitTask, virt_init_task, this, "virt_init_task");
+    timeout_set(&fScanWatchdog, virt_scan_watchdog, this);
 
     for (int index = 0; ; index++) {
         int interruptType;
@@ -105,38 +404,29 @@ attach(IOPCIDevice *device)
         }
     }
     if (msiIndex == -1) {
-        XYLog("%s: can't find MSI interrupt\n", __FUNCTION__);
+        XYLog("vap: can't find MSI interrupt\n");
         goto fail;
     }
     fIntr = IOFilterInterruptEventSource::filterInterruptEventSource(this,
         &ItlVirt::virt_intr, &ItlVirt::virt_intr_filter, device, msiIndex);
     if (fIntr == NULL) {
-        XYLog("%s: can't establish interrupt\n", __FUNCTION__);
+        XYLog("vap: can't establish interrupt\n");
         goto fail;
     }
     if (getMainWorkLoop()->addEventSource(fIntr) != kIOReturnSuccess) {
-        XYLog("%s: can't establish interrupt\n", __FUNCTION__);
+        XYLog("vap: can't establish interrupt\n");
         fIntr->release();
         fIntr = NULL;
         goto fail;
     }
     fIntr->enable();
 
-    fScanLock = IOSimpleLockAlloc();
-    if (fScanLock == NULL)
-        goto fail;
-    taskq_init();
-    fTaskqReady = true;
-    task_set(&fInitTask, virt_init_task, this, "virt_init_task");
-    timeout_set(&fScanTimer, virt_scan_timeout, this);
-
     ic->ic_phytype = IEEE80211_T_OFDM;  /* not only, but not used */
     ic->ic_opmode = IEEE80211_M_STA;    /* default to BSS mode */
     ic->ic_state = IEEE80211_S_INIT;
 
-    // VAP-SEAM: transport sets up the queues and fetches the capabilities
-    // from the firmware (GET_CAPS) here, in place of the built-in set.
-    virt_builtin_caps(&caps);
+    if (!queryCaps(&caps))
+        goto fail;
     applyCaps(caps);
 
     ifp->if_softc = this;
@@ -162,6 +452,7 @@ attach(IOPCIDevice *device)
     /* Override 802.11 state transition machine. */
     fNewstate = ic->ic_newstate;
     ic->ic_newstate = virt_newstate;
+    XYLog("vap: attached\n");
     return true;
 
 fail:
@@ -180,21 +471,28 @@ detach(IOPCIDevice *device)
         /* task_del() cannot see a callback which is already running. */
         taskq_barrier(systq);
     }
-    if (ifp->if_flags & IFF_RUNNING)
-        radioStop();
+    if (fIfAttached)
+        getMainCommandGate()->runAction(virt_radio_gated, this, NULL);
     if (fIntr != NULL) {
         fIntr->disable();
         getMainWorkLoop()->removeEventSource(fIntr);
         fIntr->release();
         fIntr = NULL;
     }
-    if (fScanTimer != NULL) {
-        timeout_del(&fScanTimer);
-        timeout_free(&fScanTimer);
+    if (fScanWatchdog != NULL) {
+        timeout_del(&fScanWatchdog);
+        timeout_free(&fScanWatchdog);
     }
     if (fIfAttached) {
         ieee80211_ifdetach(ifp);
         fIfAttached = false;
+    }
+    /* With the interrupt source gone nothing else calls into the transport. */
+    if (fMapped) {
+        if (fDev != NULL)
+            vap_dev_fini(fDev);
+        fPlatform.free();
+        fMapped = false;
     }
     if (fTaskqReady) {
         taskq_destroy(systq);
@@ -204,15 +502,16 @@ detach(IOPCIDevice *device)
         IOSimpleLockFree(fScanLock);
         fScanLock = NULL;
     }
-    if (fRegMap != NULL) {
-        fRegMap->release();
-        fRegMap = NULL;
-    }
 }
 
 void ItlVirt::
 free()
 {
+    /* Kept until here: a late caller finds a stopped device, not a freed one. */
+    if (fDev != NULL) {
+        IOFree(fDev, sizeof(*fDev));
+        fDev = NULL;
+    }
     if (ieee80211_bip_lifetime_drain(&fIc) != 0)
         panic("ItlVirt::free BIP lifetime");
     /* ieee80211_ifdetach() leaves this lock to the HAL's final release. */
@@ -230,15 +529,17 @@ applyCaps(const VirtCaps &caps)
     struct ieee80211com *ic = &fIc;
     bool has2ghz = false, has5ghz = false;
 
+    fCaps = caps;
     IEEE80211_ADDR_COPY(ic->ic_myaddr, caps.macaddr);
     /*
      * Not the radio's choice but this HAL's design: the firmware scans all
      * channels of all bands in one request and owns Block Ack setup, which
-     * net80211 only uses together with QoS.
+     * net80211 only uses together with QoS.  The cipher list of the firmware
+     * is not consulted until keys are handed to it.
      */
-    ic->ic_caps = caps.ic_caps | IEEE80211_C_SCANALL | IEEE80211_C_SCANALLBAND |
+    ic->ic_caps = IEEE80211_C_RSN | IEEE80211_C_SCANALL | IEEE80211_C_SCANALLBAND |
         IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU | IEEE80211_C_TX_AMPDU_SETUP_IN_HW;
-    ic->ic_max_rssi = caps.max_rssi;
+    ic->ic_max_rssi = VIRT_RSSI_OFFSET - 33;    /* -33 dBm, as the Intel HALs */
 
     memset(ic->ic_channels, 0, sizeof(ic->ic_channels));
     for (int i = 0; i < caps.nchans && i < VIRT_MAX_CHANNELS; i++) {
@@ -253,22 +554,51 @@ applyCaps(const VirtCaps &caps)
         if (caps.chans[i].flags & IEEE80211_CHAN_5GHZ)
             has5ghz = true;
     }
+
     memset(ic->ic_sup_rates, 0, sizeof(ic->ic_sup_rates));
     if (has2ghz) {
-        ic->ic_sup_rates[IEEE80211_MODE_11B] = ieee80211_std_rateset_11b;
-        ic->ic_sup_rates[IEEE80211_MODE_11G] = ieee80211_std_rateset_11g;
+        const struct ieee80211_rateset *g = caps.rates_2g.rs_nrates != 0 ?
+            &caps.rates_2g : &ieee80211_std_rateset_11g;
+        struct ieee80211_rateset *b = &ic->ic_sup_rates[IEEE80211_MODE_11B];
+
+        ic->ic_sup_rates[IEEE80211_MODE_11G] = *g;
+        /* 11b is the CCK part: 1, 2, 5.5 and 11 Mbit/s. */
+        for (int i = 0; i < g->rs_nrates; i++) {
+            const uint8_t rate = g->rs_rates[i] & IEEE80211_RATE_VAL;
+            if (rate == 2 || rate == 4 || rate == 11 || rate == 22)
+                b->rs_rates[b->rs_nrates++] = g->rs_rates[i];
+        }
     }
     if (has5ghz)
-        ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;
+        ic->ic_sup_rates[IEEE80211_MODE_11A] = caps.rates_5g.rs_nrates != 0 ?
+            caps.rates_5g : ieee80211_std_rateset_11a;
 
-    ic->ic_htcaps = caps.htcaps;
-    ic->ic_htxcaps = 0;
-    ic->ic_txbfcaps = 0;
-    ic->ic_aselcaps = 0;
-    ic->ic_ampdu_params = caps.ampdu_params;
-    memcpy(ic->ic_sup_mcs, caps.sup_mcs, sizeof(ic->ic_sup_mcs));
-    /* TX is supported with the same MCS as RX. */
-    ic->ic_tx_mcs_set = IEEE80211_TX_MCS_SET_DEFINED;
+    if (caps.ht) {
+        const uint8_t *h = caps.htcap;
+
+        ic->ic_htcaps = OSReadLittleInt16(h, 0);
+        ic->ic_ampdu_params = h[2];
+        /* The MCS set: 10 bytes of receive bitmap, the transmit byte at 12. */
+        memcpy(ic->ic_sup_mcs, h + 3, sizeof(ic->ic_sup_mcs));
+        ic->ic_tx_mcs_set = h[3 + 12];
+        ic->ic_htxcaps = OSReadLittleInt16(h, 19);
+        ic->ic_txbfcaps = OSReadLittleInt32(h, 21);
+        ic->ic_aselcaps = h[25];
+    }
+    if (caps.vht && !(ic->ic_userflags & IEEE80211_F_NOVHT)) {
+        /* Per stream: MCS 0-7, 0-8, 0-9, or none. */
+        static const uint16_t mcs[4] = { 0x00ff, 0x01ff, 0x03ff, 0 };
+        const uint8_t *v = caps.vhtcap;
+
+        ic->ic_flags |= IEEE80211_F_VHTON;
+        ic->ic_vhtcaps = OSReadLittleInt32(v, 0);
+        ic->ic_vht_rx_mcs_map = OSReadLittleInt16(v, 4);
+        ic->ic_vht_rx_highest = OSReadLittleInt16(v, 6);
+        ic->ic_vht_tx_mcs_map = OSReadLittleInt16(v, 8);
+        ic->ic_vht_tx_highest = OSReadLittleInt16(v, 10);
+        for (int i = 0; i < 8; i++)
+            ic->ic_vht_sup_mcs[i] = mcs[(ic->ic_vht_rx_mcs_map >> (2 * i)) & 3];
+    }
 }
 
 IOReturn ItlVirt::
@@ -294,8 +624,7 @@ disable(IONetworkInterface *netif)
         return kIOReturnSuccess;
     ifp->if_flags &= ~IFF_UP;
     task_del(systq, &fInitTask);
-    if (ifp->if_flags & IFF_RUNNING)
-        radioStop();
+    getMainCommandGate()->runAction(virt_radio_gated, this, NULL);
     return kIOReturnSuccess;
 }
 
@@ -303,10 +632,23 @@ void ItlVirt::
 virt_init_task(void *arg)
 {
     ItlVirt *that = (ItlVirt *)arg;
+
+    that->getMainCommandGate()->runAction(virt_radio_gated, that, (void *)1);
+}
+
+/* Radio on (arg1 set) or off, on the workloop gate. */
+IOReturn ItlVirt::
+virt_radio_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3)
+{
+    ItlVirt *that = (ItlVirt *)arg0;
     struct _ifnet *ifp = &that->fIc.ic_if;
 
-    if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
-        that->radioStart();
+    if (arg1 != NULL) {
+        if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
+            that->radioStart();
+    } else if (ifp->if_flags & IFF_RUNNING)
+        that->radioStop();
+    return kIOReturnSuccess;
 }
 
 int ItlVirt::
@@ -314,10 +656,15 @@ radioStart()
 {
     struct ieee80211com *ic = &fIc;
     struct _ifnet *ifp = &ic->ic_if;
+    struct vap_radio on = { 1, 0 };
     int err;
 
-    // VAP-SEAM: transport resets the device, negotiates features, enables the
-    // queues, posts RX and EVENT buffers and sets DRIVER_OK here.
+    err = request(VAP_CMD_RADIO, &on, sizeof(on));
+    if (err) {
+        XYLog("vap: radio on refused (%d)\n", err);
+        return EIO;
+    }
+    XYLog("vap: radio on\n");
     ifq_clr_oactive(&ifp->if_snd);
     ifq_flush(&ifp->if_snd);
     ifp->if_flags |= IFF_RUNNING;
@@ -326,7 +673,7 @@ radioStart()
     __atomic_store_n(&ic->ic_initial_scan_census_only, 1, __ATOMIC_RELEASE);
     err = ieee80211_begin_scan_with_result(ifp);
     if (err) {
-        XYLog("%s: initial scan rejected (%d)\n", __FUNCTION__, err);
+        XYLog("vap: initial scan rejected (%d)\n", err);
         radioStop();
         return err;
     }
@@ -347,14 +694,22 @@ radioStop()
 {
     struct ieee80211com *ic = &fIc;
     struct _ifnet *ifp = &ic->ic_if;
+    struct vap_radio off = { 0, 0 };
 
     ifp->if_flags &= ~IFF_RUNNING;
+    if (fTxHeld != NULL) {
+        mbuf_freem(fTxHeld);
+        ieee80211_release_node(ic, fTxHeldNi);
+        fTxHeld = NULL;
+        fTxHeldNi = NULL;
+    }
     ifq_clr_oactive(&ifp->if_snd);
     ifq_flush(&ifp->if_snd);
     __atomic_store_n(&ic->ic_initial_scan_census_only, 0, __ATOMIC_RELEASE);
     scanReset();
-    // VAP-SEAM: transport resets the device (VAP_REG_STATUS = 0) and takes
-    // back every buffer still on the rings here.
+    /* Also ends whatever the firmware was scanning. */
+    (void)request(VAP_CMD_RADIO, &off, sizeof(off));
+    XYLog("vap: radio off\n");
     ieee80211_new_state(ic, IEEE80211_S_INIT, -1);
 }
 
@@ -367,17 +722,23 @@ virt_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
     struct ieee80211_node *ni;
     struct ether_header *eh;
     mbuf_t m;
-    bool mgmt;
+    int err;
 
     if (!(ifp->if_flags & IFF_RUNNING) || ifq_is_oactive(&ifp->if_snd))
         return kIOReturnError;
 
     for (;;) {
+        /* The frame the device had no room for goes first. */
+        if ((m = that->fTxHeld) != NULL) {
+            ni = that->fTxHeldNi;
+            that->fTxHeld = NULL;
+            goto sendit;
+        }
+
         /* need to send management frames even if we're not RUNning */
         m = mq_dequeue(&ic->ic_mgtq);
         if (m) {
             ni = (struct ieee80211_node *)mbuf_pkthdr_rcvif(m);
-            mgmt = true;
             goto sendit;
         }
 
@@ -400,10 +761,12 @@ virt_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
             ifp->netStat->outputErrors++;
             continue;
         }
-        mgmt = false;
 
     sendit:
-        if (that->txFrame(m, ni, mgmt) != 0) {
+        err = that->txFrame(m, ni);
+        if (err == EBUSY)
+            break;
+        if (err) {
             ifp->netStat->outputErrors++;
             continue;
         }
@@ -421,22 +784,52 @@ virt_start(struct _ifnet *ifp)
     that->getMainCommandGate()->attemptAction(virt_start_task, ifp);
 }
 
-// VAP-SEAM: transport puts the 802.11 frame on VAP_Q_TX and frees it, with
-// the node reference, on the firmware's completion; until then it is dropped.
 /*
- * Consumes m and the node reference on every return.  A set Protected bit
- * marks plaintext which the firmware is to encrypt.
+ * Hands one 802.11 frame to the firmware as net80211 built it: a set
+ * Protected bit marks plaintext which the firmware is to encrypt.  Consumes m
+ * and the node reference, except on EBUSY: then the frame is held and sent
+ * again from virt_tx_ready().
  */
+// VAP-SEAM: transport marks frames which must go out unencrypted (EAPOL before
+// the keys) once the firmware holds the keys.
 int ItlVirt::
-txFrame(mbuf_t m, struct ieee80211_node *ni, bool mgmt)
+txFrame(mbuf_t m, struct ieee80211_node *ni)
 {
+    const struct ieee80211_frame *wh = mtod(m, struct ieee80211_frame *);
+    struct vap_iov iov[VIRT_TX_MAX_SEGS];
+    struct vap_tx_meta meta;
+    unsigned n = 0;
+    int rc = VAP_G_EINVAL;
+    mbuf_t seg;
+
+    bzero(&meta, sizeof(meta));
+    if (ieee80211_has_qos(wh))
+        meta.tid = ieee80211_get_qos(wh) & IEEE80211_QOS_TID;
+    for (seg = m; seg != NULL && n < nitems(iov); seg = mbuf_next(seg)) {
+        if (mbuf_len(seg) == 0)
+            continue;
+        iov[n].p = mbuf_data(seg);
+        iov[n].len = (uint32_t)mbuf_len(seg);
+        n++;
+    }
+    /* vap_tx() copies the frame, so the mbuf is not needed after it. */
+    if (seg == NULL)
+        rc = vap_tx(fDev, &meta, iov, n);
+    if (rc == VAP_G_BUSY) {
+        fTxHeld = m;
+        fTxHeldNi = ni;
+        ifq_set_oactive(&fIc.ic_if.if_snd);
+        return EBUSY;
+    }
+    if (rc != VAP_G_OK)
+        XYLog("vap: frame of %u bytes in %u+ mbufs not sent (%d)\n",
+              (unsigned)mbuf_pkthdr_len(m), n, rc);
     mbuf_freem(m);
     ieee80211_release_node(&fIc, ni);
-    return ENXIO;
+    return rc == VAP_G_OK ? 0 : EIO;
 }
 
-// VAP-SEAM: transport calls this from virt_intr() for every frame taken off
-// VAP_Q_RX: an 802.11 frame without FCS whose header is contiguous in m.
+/* Delivers one received 802.11 frame (no FCS, header contiguous in m) to net80211. */
 void ItlVirt::
 rxFrame(mbuf_t m, uint16_t freqMHz, int8_t rssiDbm, uint32_t flags)
 {
@@ -458,6 +851,8 @@ rxFrame(mbuf_t m, uint16_t freqMHz, int8_t rssiDbm, uint32_t flags)
     }
 
     bzero(&rxi, sizeof(rxi));
+    /* The firmware reorders aggregates itself: no reorder buffer here. */
+    rxi.rxi_flags = IEEE80211_RXI_AMPDU_DONE;
     /*
      * With the Protected bit already clear net80211 takes the payload as it
      * is and trusts the firmware's replay check.  Without this flag it would
@@ -465,9 +860,6 @@ rxFrame(mbuf_t m, uint16_t freqMHz, int8_t rssiDbm, uint32_t flags)
      */
     if (flags & VIRT_RX_DECRYPTED)
         rxi.rxi_flags |= IEEE80211_RXI_HWDEC;
-    /* Skips net80211's own reorder buffer. */
-    if (flags & VIRT_RX_AMPDU_DONE)
-        rxi.rxi_flags |= IEEE80211_RXI_AMPDU_DONE;
     rxi.rxi_rssi = MAX(0, MIN(rssiDbm + VIRT_RSSI_OFFSET, ic->ic_max_rssi));
     /* Zero means unknown: net80211 then assumes the current channel. */
     chan = ieee80211_mhz2ieee(freqMHz, 0);
@@ -487,7 +879,7 @@ virt_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     int err;
 
     // VAP-SEAM: transport sends the firmware command of this transition
-    // (authenticate, associate, disconnect) and commits it on the answer.
+    // (SET_BSS, CLEAR_BSS, PORT) and commits it on the answer.
     if (nstate != IEEE80211_S_SCAN) {
         that->scanAbort(0);
         return that->fNewstate(ic, nstate, arg);
@@ -545,8 +937,8 @@ virt_bgscan_abort(struct ieee80211com *ic, uint64_t reassocSerial)
     return err;
 }
 
-// VAP-SEAM: transport hands the key to the firmware, which then encrypts and
-// decrypts with it; until then net80211's software crypto keeps it.
+// VAP-SEAM: transport hands the key to the firmware (KEY_ADD), which then
+// encrypts and decrypts with it; until then net80211's software crypto keeps it.
 int ItlVirt::
 virt_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
              struct ieee80211_key *k)
@@ -554,7 +946,7 @@ virt_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     return ieee80211_set_key(ic, ni, k);
 }
 
-// VAP-SEAM: transport removes the key from the firmware.
+// VAP-SEAM: transport removes the key from the firmware (KEY_DEL).
 void ItlVirt::
 virt_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
                 struct ieee80211_key *k)
@@ -586,6 +978,7 @@ scanStart(bool background, uint64_t reassocSerial)
     struct ieee80211_wcl_scan_started started;
     const uint64_t joinGeneration =
         background ? 0 : ieee80211_wcl_join_scan_generation(ic);
+    uint64_t wclGeneration = 0;
     IOInterruptState irq;
     uint32_t id, stale = 0;
     bool wcl;
@@ -630,6 +1023,7 @@ scanStart(bool background, uint64_t reassocSerial)
     if (wcl) {
         fWcl.phase = VIRT_WCL_ACTIVE;
         fWcl.backend = id;
+        wclGeneration = fWcl.generation;
         if (!background && !fWcl.silenced) {
             started.generation = fWcl.generation;
             started.backend_generation = id;
@@ -639,7 +1033,7 @@ scanStart(bool background, uint64_t reassocSerial)
     if (wcl && background)
         __atomic_store_n(&ic->ic_wcl_scan_active, 1, __ATOMIC_RELEASE);
 
-    err = scanCommand(id, background, wcl);
+    err = scanCommand(id, background, wclGeneration);
     if (err) {
         /* The ticket goes back to STARTING; its begin call reports the failure. */
         irq = IOSimpleLockLockDisableInterrupt(fScanLock);
@@ -662,31 +1056,90 @@ scanStart(bool background, uint64_t reassocSerial)
     return 0;
 }
 
-// VAP-SEAM: transport sends the scan request (for a WCL scan as described by
-// ieee80211_wcl_scan_plan_snapshot()) and returns the firmware's verdict.
-/* The stand-in arms a timer in place of the firmware's scan-complete event. */
+/*
+ * Starts scan `id` on the firmware: all frequencies, with the SSID and the
+ * scan type of the WCL request if it is one.  The results arrive as received
+ * frames, then VAP_EVT_SCAN_DONE ends the scan.
+ */
 int ItlVirt::
-scanCommand(uint32_t id, bool background, bool wcl)
+scanCommand(uint32_t id, bool background, uint64_t wclGeneration)
 {
-    return timeout_add_msec(&fScanTimer, VIRT_STUB_SCAN_MS) ? 0 : EIO;
+    struct {
+        struct vap_scan_start sc;
+        struct vap_ssid ssid;
+        uint8_t pad[4];             /* messages are padded to 8 bytes */
+    } req;
+    struct ieee80211_wcl_scan_plan plan;
+    uint32_t len = sizeof(req.sc);
+    int rc;
+
+    bzero(&req, sizeof(req));
+    req.sc.scan_id = id;
+    if (background)
+        req.sc.flags |= VAP_SCAN_BACKGROUND;
+    if (wclGeneration != 0 && ieee80211_wcl_scan_plan_snapshot(&fIc, &plan) &&
+        plan.generation == wclGeneration) {
+        if (plan.scan_type == IEEE80211_WCL_SCAN_TYPE_PASSIVE)
+            req.sc.flags |= VAP_SCAN_PASSIVE;
+        if (plan.ssid_len != 0 && plan.ssid_len <= sizeof(req.ssid.ssid)) {
+            req.sc.n_ssids = 1;
+            req.ssid.len = plan.ssid_len;
+            memcpy(req.ssid.ssid, plan.ssid, plan.ssid_len);
+            len = sizeof(req);
+        }
+    }
+
+    rc = request(VAP_CMD_SCAN_START, &req, len);
+    if (rc != 0) {
+        XYLog("vap: scan %u refused (%d)\n", id, rc);
+        return rc == VAP_E_BUSY ? EBUSY : rc == VAP_E_NOT_READY ? ENETDOWN : EIO;
+    }
+    XYLog("vap: scan %u started%s%s\n", id, background ? ", background" : "",
+          wclGeneration != 0 ? ", WCL" : "");
+    timeout_add_msec(&fScanWatchdog, VIRT_SCAN_WATCHDOG_MS);
+    return 0;
 }
 
+/* No SCAN_DONE came: end the scan with what has arrived instead of hanging on it. */
 void ItlVirt::
-virt_scan_timeout(void *arg)
+virt_scan_watchdog(void *arg)
 {
-    ((ItlVirt *)arg)->scanEnd(false, 0);
+    ItlVirt *that = (ItlVirt *)arg;
+    struct vap_scan_abort ab = { 0, 0 };
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(that->fScanLock);
+    ab.scan_id = that->fScan.id;
+    IOSimpleLockUnlockEnableInterrupt(that->fScanLock, irq);
+    if (ab.scan_id == 0)
+        return;
+    XYLog("vap: scan %u: no SCAN_DONE in %u ms, ending it\n", ab.scan_id,
+          VIRT_SCAN_WATCHDOG_MS);
+    (void)that->request(VAP_CMD_SCAN_ABORT, &ab, sizeof(ab));
+    that->scanEnd(false, ab.scan_id);
 }
 
-// VAP-SEAM: transport tells the firmware to stop scan `id` (0: whichever is
-// running) and waits for its answer before the scan is retired.
+/* Stops scan `id` (0: whichever is running) and retires it as aborted. */
 void ItlVirt::
 scanAbort(uint32_t id)
 {
-    scanEnd(true, id);
+    struct vap_scan_abort ab = { 0, 0 };
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(fScanLock);
+    if (fScan.state != VIRT_SCAN_IDLE && (id == 0 || fScan.id == id))
+        ab.scan_id = fScan.id;
+    IOSimpleLockUnlockEnableInterrupt(fScanLock, irq);
+    if (ab.scan_id == 0)
+        return;
+    /* The firmware's own SCAN_DONE for it finds the scan retired and is ignored. */
+    (void)request(VAP_CMD_SCAN_ABORT, &ab, sizeof(ab));
+    scanEnd(true, ab.scan_id);
 }
 
-// VAP-SEAM: transport calls this from the firmware's scan-complete event; the
-// beacons and probe responses of the scan have gone through rxFrame() before.
+/*
+ * The end of scan `id`: from the firmware's SCAN_DONE (the scan's beacons and
+ * probe responses have gone through rxFrame() before), from an abort, or
+ * from the watchdog.
+ */
 void ItlVirt::
 scanEnd(bool aborted, uint32_t id)
 {
@@ -716,6 +1169,7 @@ scanEnd(bool aborted, uint32_t id)
         bzero(&fWcl, sizeof(fWcl));
     }
     IOSimpleLockUnlockEnableInterrupt(fScanLock, irq);
+    timeout_del(&fScanWatchdog);
     background = done.state == VIRT_SCAN_BACKGROUND;
 
     if (aborted || (done.wcl && !background)) {
@@ -745,8 +1199,8 @@ scanEnd(bool aborted, uint32_t id)
 }
 
 /*
- * The radio is being reset and the firmware forgets its scan.  That is not a
- * scan terminal: a WCL request is told that it will never get one.
+ * The radio is being switched off and the firmware drops its scan.  That is
+ * not a scan terminal: a WCL request is told that it will never get one.
  */
 void ItlVirt::
 scanReset()
@@ -754,7 +1208,7 @@ scanReset()
     struct ieee80211com *ic = &fIc;
     VirtWclTicket ticket;
 
-    timeout_del(&fScanTimer);
+    timeout_del(&fScanWatchdog);
     IOInterruptState irq = IOSimpleLockLockDisableInterrupt(fScanLock);
     ticket = fWcl;
     bzero(&fScan, sizeof(fScan));

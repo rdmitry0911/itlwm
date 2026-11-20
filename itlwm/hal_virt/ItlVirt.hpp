@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * HAL for the v-Airport virtual Wi-Fi device (vap_regs.h).  The device's
- * firmware runs on the VM host and owns scanning, association, encryption,
- * rate control and aggregation.  This is the skeleton without a transport:
- * every point where the transport plugs in is marked "VAP-SEAM:".
+ * HAL for the v-Airport virtual Wi-Fi device.  The device's firmware runs on
+ * the VM host and owns scanning, association, encryption, rate control and
+ * aggregation; vap_guest.c is the transport to it.  Capabilities, radio
+ * power, scans and frames go through the firmware.  The points where it is
+ * not driven yet are marked "VAP-SEAM:".
  */
 
 #ifndef ItlVirt_hpp
@@ -28,31 +29,37 @@
 #include <HAL/ItlDriverInfo.hpp>
 #include <HAL/ItlDriverController.hpp>
 
-#include "vap_regs.h"
+#include "VapPlatformIOKit.hpp"
 
-#define VIRT_MAX_CHANNELS   64
-#define VIRT_RSSI_OFFSET    100     /* net80211 RSSI = dBm + 100 */
+#define VIRT_MAX_CHANNELS       64
+#define VIRT_RSSI_OFFSET        100     /* net80211 RSSI = dBm + 100 */
+#define VIRT_TX_MAX_SEGS        16      /* mbufs in one transmitted frame */
+#define VIRT_REQUEST_MS         500     /* wait for the reply to a request */
+#define VIRT_SCAN_WATCHDOG_MS   10000   /* wait for the end of a scan */
 
 /* rxFrame() flags */
 #define VIRT_RX_DECRYPTED   0x1     /* firmware removed IV and MIC and cleared Protected */
-#define VIRT_RX_AMPDU_DONE  0x2     /* firmware already reordered this MPDU */
 
-/*
- * What the firmware reports about the radio, in net80211 terms.  VHT and HE
- * are not carried yet.
- */
+/* What the firmware reports about itself and the radio (HELLO, GET_CAPS). */
 struct VirtCaps {
     uint8_t  macaddr[IEEE80211_ADDR_LEN];
-    uint32_t ic_caps;               /* IEEE80211_C_* */
-    uint8_t  max_rssi;              /* ceiling of dBm + VIRT_RSSI_OFFSET */
-    uint8_t  nchans;
+    char     fw_version[32];
+    char     fw_name[32];
+    char     country[3];
+    uint8_t  tx_chainmask, rx_chainmask, tx_nss, rx_nss;
+    uint16_t nchans;
     struct {
         uint16_t freq;              /* MHz */
         uint32_t flags;             /* IEEE80211_CHAN_* */
     } chans[VIRT_MAX_CHANNELS];
-    uint16_t htcaps;                /* IEEE80211_HTCAP_* */
-    uint8_t  ampdu_params;
-    uint8_t  sup_mcs[howmany(80, NBBY)];    /* all zero: no 11n */
+    struct ieee80211_rateset rates_2g, rates_5g;
+    /*
+     * Bodies of the 802.11 capability elements.  net80211 keeps one set for
+     * all bands: the first one reported is taken.
+     */
+    bool     ht, vht;
+    uint8_t  htcap[26];
+    uint8_t  vhtcap[12];
 };
 
 enum {
@@ -65,7 +72,7 @@ enum {
 struct VirtScan {
     uint8_t  state;                 /* VIRT_SCAN_* */
     bool     wcl;                   /* belongs to the WCL ticket below */
-    uint32_t id;                    /* nonzero, unique per scan */
+    uint32_t id;                    /* nonzero, unique per scan; the firmware's scan_id */
     uint64_t joinGeneration;
     uint64_t reassocSerial;
 };
@@ -109,19 +116,19 @@ public:
     void invalidateWclBackgroundScan() override;
 
     //driver info
-    virtual const char *getFirmwareVersion() override { return "0"; }
+    virtual const char *getFirmwareVersion() override { return fCaps.fw_version; }
     virtual int16_t getBSSNoise() override { return -92; }
     virtual bool is5GBandSupport() override {
         return fIc.ic_sup_rates[IEEE80211_MODE_11A].rs_nrates != 0;
     }
-    virtual int getTxNSS() override { return 1; }
-    virtual uint8_t getTxChainMask() override { return 0x1; }
-    virtual uint8_t getRxChainMask() override { return 0x1; }
+    virtual int getTxNSS() override { return fCaps.tx_nss; }
+    virtual uint8_t getTxChainMask() override { return fCaps.tx_chainmask; }
+    virtual uint8_t getRxChainMask() override { return fCaps.rx_chainmask; }
     virtual uint32_t getLqmBeaconCount() override { return 0; }
-    virtual const char *getFirmwareName() override { return "v-airport"; }
+    virtual const char *getFirmwareName() override { return fCaps.fw_name; }
     virtual UInt32 supportedFeatures() override { return kIONetworkFeatureMultiPages; }
-    virtual const char *getFirmwareCountryCode() override { return "ZZ"; }
-    virtual uint32_t getTxQueueSize() override { return VAP_QUEUE_MAX_SIZE; }
+    virtual const char *getFirmwareCountryCode() override { return fCaps.country; }
+    virtual uint32_t getTxQueueSize() override { return VAP_G_TX_SLOTS; }
 
     //driver controller
     virtual void clearScanningFlags() override;
@@ -132,24 +139,30 @@ public:
 
     void applyCaps(const VirtCaps &caps);
 
-    //transport seams
-    int txFrame(mbuf_t m, struct ieee80211_node *ni, bool mgmt);
+    int txFrame(mbuf_t m, struct ieee80211_node *ni);
     void rxFrame(mbuf_t m, uint16_t freqMHz, int8_t rssiDbm, uint32_t flags);
-    int scanCommand(uint32_t id, bool background, bool wcl);
+    int scanCommand(uint32_t id, bool background, uint64_t wclGeneration);
     void scanAbort(uint32_t id);
     void scanEnd(bool aborted, uint32_t id);
 
 private:
-    uint32_t regRead(uint32_t reg);
+    int request(uint16_t type, const void *payload, uint32_t len,
+                void *rsp = NULL, uint32_t *rspLen = NULL);
+    bool queryCaps(VirtCaps *caps);
     int radioStart();
     void radioStop();
     int scanStart(bool background, uint64_t reassocSerial);
     void scanReset();
 
+    static IOReturn virt_request_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn virt_radio_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     static bool virt_intr_filter(OSObject *owner, IOFilterInterruptEventSource *sender);
     static void virt_intr(OSObject *owner, IOInterruptEventSource *sender, int count);
+    static void virt_event(void *ctx, const struct vap_hdr *h, const void *payload, uint32_t len);
+    static void virt_rx(void *ctx, const struct vap_rx_meta *meta, const uint8_t *frame, uint32_t len);
+    static void virt_tx_ready(void *ctx);
     static void virt_init_task(void *arg);
-    static void virt_scan_timeout(void *arg);
+    static void virt_scan_watchdog(void *arg);
     static IOReturn virt_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static void virt_start(struct _ifnet *ifp);
     static int virt_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg);
@@ -167,14 +180,28 @@ private:
 private:
     struct ieee80211com fIc;
     int (*fNewstate)(struct ieee80211com *, enum ieee80211_state, int);
+    VirtCaps fCaps;
 
-    IOMemoryMap *fRegMap;
+    /*
+     * The transport is not thread-safe.  Every call into it is made with the
+     * driver workloop gate held: from the interrupt action, from request()
+     * and from the transmit path.
+     */
+    VapPlatformIOKit fPlatform;
+    bool fMapped;                   /* BAR0 is mapped: the device can be reached */
+    struct vap_dev *fDev;
+    uint8_t fCtrlLost;              /* request slots given up on, by bit */
+    bool fResetLogged;
+    uint64_t fResetCheckAt;
+    mbuf_t fTxHeld;                 /* the frame the device had no room for */
+    struct ieee80211_node *fTxHeldNi;
+
     IOFilterInterruptEventSource *fIntr;
     bool fIfAttached;
     bool fTaskqReady;
 
     struct task fInitTask;
-    CTimeout *fScanTimer;           /* stands in for the firmware's scan-complete event */
+    CTimeout *fScanWatchdog;
     IOSimpleLock *fScanLock;        /* guards fScan, fWcl, fScanId */
     VirtScan fScan;
     VirtWclTicket fWcl;
