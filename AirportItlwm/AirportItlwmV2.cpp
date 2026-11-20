@@ -6745,6 +6745,51 @@ postTahoeDriverAvailabilityTransition(
                             &data, sizeof(data), true);
 }
 
+// apple80211_chip_reset_state carried by APPLE80211_M_RESET_INTERFACE:
+// 0 = reset begun (AppleBCMWLANCore::resetInterfacesBegin, 0xffffff80015fe6c0,
+// reached only from halt()), 1 = firmware loaded.
+static constexpr uint32_t kTahoeChipResetStateFirmwareLoaded = 1;
+
+static void
+postTahoeResetInterfacesComplete(AirportItlwm *controller)
+{
+    if (controller == NULL || controller->fNetIf == NULL)
+        return;
+
+    // Current 25C56 AppleBCMWLANCore::resetInterfacesComplete()
+    // (0xffffff8001575f5e) is the only producer of the firmware-loaded edge.
+    // It sends selector 0x31 with a four-byte state of 1 and async=1 through
+    // IO80211Controller::postMessage to each non-null interface it owns
+    // (+0x2c20, +0x2c28, +0x74f0, +0x74f8, +0x2c30); the local controller
+    // owns the one corresponding fNetIf.  Its callers are bootChipImage at
+    // 0xffffff8001573b16, directly after the boot-ready 0x37 carriers, and
+    // the watchdog recovery tail at 0xffffff8001568b9e.  powerOn() and
+    // powerOff() never send it, and this port has no chip-reset recovery
+    // path, so the boot tail is the single local producer.
+    //
+    // Family consumers of state 1:
+    //   1) IO80211InfraInterface::resetInterface (0xffffff80022bc326):
+    //      loadCardCapabilities, forceUpdateMacAddrOnBoot, loadHwChannels,
+    //      loadChannelInfo and the RNG_EVENT_FW_BOOT entropy request.
+    //   2) WCLSystemStateManager::resetInterfaceHandler (0xffffff8002260178,
+    //      key 0x00310002): latches its firmware-loaded flag and raises
+    //      SSM_EVENT_FW_LOADED.  handleSendFWLoadNotification
+    //      (0xffffff8002260c2c) then publishes bulletin 0x1a0003, which is
+    //      what runs every manager's fwLoadCompleteNotificationHandler;
+    //      WCLConfigManager's is the only loader of WCL's own
+    //      CARD_CAPABILITIES, hardware-address and channel-info copies.
+    //
+    // SSM starts in SSM_STATE_DEFER_SENDING_NOTIFICATION, where FW_LOADED is
+    // ignored and only the latch survives.  handleReplayNotification
+    // (0xffffff8002260644) delivers it on the next 0x37 carrier that has
+    // available=1 and a reason other than the boot-ready 0xe0822803, i.e.
+    // the power-on carrier.
+    uint32_t chipResetState = kTahoeChipResetStateFirmwareLoaded;
+
+    controller->postMessage(controller->fNetIf, APPLE80211_M_RESET_INTERFACE,
+                            &chipResetState, sizeof(chipResetState), true);
+}
+
 static void
 applyTahoeInterfaceReadyEdge(AirportItlwm *controller, bool ready)
 {
@@ -6781,8 +6826,24 @@ publishTahoeBootReadyState(AirportItlwm *controller)
 {
     applyTahoeInterfaceReadyEdge(controller, true);
     setCoreWiFiDriverReadyProperty(controller, true);
+    // In the reference the boot-time POWER replay is a real transition:
+    // start() leaves the power state at 0 (0xffffff8001566d44), so
+    // setupDriver() -> handlePowerStateChange(ON) runs powerOn(), whose 0x37
+    // carrier (reason 0xe0821803, 0xffffff80015e0250) precedes the boot-ready
+    // one.  WCLSystemStateManager::driverAvailableEventHandler
+    // (0xffffff8002260094) leaves SSM_STATE_DEFER_SENDING_NOTIFICATION only
+    // on that carrier; the boot-ready reason 0xe0822803 is ignored there.
+    // performTahoeBootChipImage() presets power_state before enableAdapter(),
+    // which makes the local replay a same-state no-op, so publish the
+    // power-on carrier it would have produced.
+    if (controller != NULL && controller->power_state == kWiFiPowerOn)
+        postTahoeDriverAvailabilityTransition(
+            controller, TahoeDriverAvailabilityContracts::Transition::PowerOn);
     postTahoeDriverAvailabilityTransition(
         controller, TahoeDriverAvailabilityContracts::Transition::BootReady);
+    // bootChipImage's success tail ends with resetInterfacesComplete(), under
+    // the same state gate as the boot-ready carrier it follows.
+    postTahoeResetInterfacesComplete(controller);
 }
 
 static void
@@ -10036,12 +10097,22 @@ static IOReturn postWclReassocCompletionGated(
     }
     if (!terminal || !stillCurrent())
         return kIOReturnSuccess;
+    /* A roam scan that selects nobody is not a failed command.  In the
+     * reference AppleBCMWLANCore::startRoamScanAsyncCallback
+     * (0xffffff8001591b14) posts 0xcf only when the reassoc command itself
+     * fails; a roam the firmware ends without moving arrives as WLC_E_ROAM,
+     * which Core::handleRoamEvent (0xffffff80015a0326) maps to
+     * 0xe0820400|status and postRoamCompletionStatus (0xffffff80015ba1be)
+     * carries in the first dword of 0x50.  Status 3 is the firmware's "no
+     * matching network found" (stringFromStatusInEvent, 0xffffff800161ec52). */
+    const bool stayed = event == IEEE80211_EVT_WCL_REASSOC_FAIL &&
+        completion->result == static_cast<uint32_t>(ENOENT);
     if (event == IEEE80211_EVT_WCL_REASSOC_DONE) {
         const UInt32 status[2] = { 0, 0 };
         that->postMessage(that->fNetIf,
             IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT,
             const_cast<UInt32 *>(status), sizeof(status), true);
-    } else {
+    } else if (!stayed) {
         UInt32 result = completion->result != 0 ? completion->result : 1U;
         that->postMessage(that->fNetIf,
             IEEE80211_WCL_REASSOC_OWNER_SELECTOR_FAILURE,
@@ -10053,7 +10124,8 @@ static IOReturn postWclReassocCompletionGated(
      * Unlike the reassoc-command reply, this executes roamDone and releases
      * its protection timer and pending force-roam request. */
     uint32_t done[42] = {};
-    done[0] = event == IEEE80211_EVT_WCL_REASSOC_DONE ? 0 : 0xe3ff8100U;
+    done[0] = event == IEEE80211_EVT_WCL_REASSOC_DONE ? 0 :
+        stayed ? 0xe0820403U : 0xe3ff8100U;
     done[1] = 0xe3ff8100U;
     memcpy(reinterpret_cast<uint8_t *>(done) + 8,
         &completion->observation.started_ms, sizeof(uint64_t));

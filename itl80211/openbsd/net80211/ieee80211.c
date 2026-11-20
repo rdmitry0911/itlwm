@@ -365,6 +365,28 @@ ieee80211_roam_profile_candidate_allowed(struct ieee80211com *ic,
     return candidate_score >= current_dbm + bracket->roam_delta_db;
 }
 
+/* One BSS as the bracket's Candidate:(delta, boost threshold, boost delta)
+ * group rates it: observed RSSI plus the boost of the band it is on. */
+static int
+ieee80211_roam_profile_score_dbm(
+    const struct ieee80211_roam_profile_policy *policy,
+    const struct ieee80211_roam_profile_bracket *bracket,
+    const struct ieee80211_node *ni)
+{
+    int band, score, boost_threshold, boost_delta;
+
+    score = (int)ni->ni_rssi - (int)policy->rssi_bias_db;
+    band = ieee80211_roam_profile_band(ni->ni_chan);
+    if (band >= 0) {
+        boost_threshold = bracket->boost_threshold_dbm[band];
+        boost_delta = bracket->boost_delta_db[band];
+        if (boost_threshold > -128 && boost_delta > 0 &&
+            score >= boost_threshold)
+            score += boost_delta;
+    }
+    return score;
+}
+
 void ieee80211_setbasicrates(struct ieee80211com *);
 int ieee80211_findrate(struct ieee80211com *, enum ieee80211_phymode, int);
 void ieee80211_configure_ampdu_tx(struct ieee80211com *, int);
@@ -480,6 +502,66 @@ ieee80211_wcl_reassoc_candidate_disposition(struct ieee80211com *ic,
 			return 1;
 	}
 	return -1;
+}
+
+/*
+ * A wildcard WLC_REASSOC names no target.  AppleBCMWLANNetAdapter hands the
+ * broadcast BSSID to firmware unchanged, so the Broadcom roam engine alone
+ * decides whether a scanned BSS replaces the current one; a scan that moves
+ * nowhere reaches WCL as a failed WLC_E_ROAM completion, association kept.
+ * Intel has no such engine and the firmware's comparison is not visible to
+ * the host, so apply the roam profile WCL pushed for it: a candidate must
+ * beat the current BSS by the bracket's roam delta, each BSS carrying the
+ * boost of its own band.  The trigger only arms autonomous scans, so a
+ * request made above it still uses the band's bracket.  Without a profile a
+ * candidate must at least be observed stronger.  An exact BSSID is the
+ * requester's own choice and is never ranked against the current BSS.
+ */
+int
+ieee80211_wcl_reassoc_candidate_improves(struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+	const struct ieee80211_wcl_reassoc_request *request;
+	const struct ieee80211_roam_profile_bracket *bracket;
+	const struct ieee80211_node *current;
+	struct ieee80211_roam_profile_policy policy;
+	int band, current_dbm, wildcard;
+	u_int i;
+
+	if (ic == NULL || ni == NULL || !ic->ic_wcl_reassoc_owner_active ||
+	    ic->ic_bss == NULL)
+		return 1;
+	request = &ic->ic_wcl_reassoc_request;
+	wildcard = request->candidate_count == 0;
+	for (i = 0; !wildcard && i < request->candidate_count; i++)
+		wildcard = ETHER_IS_ANYADDR(request->candidate[i].bssid) ||
+		    ETHER_IS_BROADCAST(request->candidate[i].bssid);
+	if (!wildcard)
+		return 1;
+
+	/* ic_bss takes the RSSI of every frame received while associated,
+	 * other BSS' beacons included; its own scan entry does not. */
+	current = ieee80211_find_node(ic, ic->ic_bss->ni_macaddr);
+	if (current == NULL)
+		current = ic->ic_bss;
+	if (!ieee80211_roam_profile_snapshot(ic, &policy))
+		return ni->ni_rssi > current->ni_rssi;
+	bracket = ieee80211_roam_profile_active(&policy, current, &band);
+	if (bracket == NULL && band >= 0 &&
+	    (policy.valid_mask & (1U << band)) != 0) {
+		current_dbm = (int)current->ni_rssi - (int)policy.rssi_bias_db;
+		for (i = 0; i < policy.count[band]; i++) {
+			if (current_dbm > policy.bracket[band][i].lower_dbm) {
+				bracket = &policy.bracket[band][i];
+				break;
+			}
+		}
+	}
+	if (bracket == NULL)
+		return ni->ni_rssi > current->ni_rssi;
+	return ieee80211_roam_profile_score_dbm(&policy, bracket, ni) >=
+	    ieee80211_roam_profile_score_dbm(&policy, bracket, current) +
+	    bracket->roam_delta_db;
 }
 
 static void ieee80211_wcl_reassoc_clear_locked(struct ieee80211com *);

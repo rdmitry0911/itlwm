@@ -1721,6 +1721,20 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
          * not per-channel scores. Rank only eligible BSS by observed RSSI;
          * never reinterpret address bytes as a candidate preference. */
         if (wcl_reassoc_scan) {
+            /* A wildcard request leaves the decision to the roam policy:
+             * the current BSS is kept unless this one clears its margin,
+             * and a scan that admits nobody ends as the usual no-target. */
+            if (!ieee80211_wcl_reassoc_candidate_improves(ic, ni)) {
+                const struct ieee80211_node *held =
+                    ieee80211_find_node(ic, ic->ic_bss->ni_macaddr);
+
+                XYLog("wcl_reassoc CANDIDATE_BELOW_ROAM_MARGIN bssid=%s channel=%u rssi=%d current_rssi=%d\n",
+                    ether_sprintf(ni->ni_bssid),
+                    ieee80211_chan2ieee(ic, ni->ni_chan),
+                    (int)ni->ni_rssi - 100,
+                    (int)(held != NULL ? held : ic->ic_bss)->ni_rssi - 100);
+                continue;
+            }
             if (selbs == NULL || ni->ni_rssi > selbs->ni_rssi)
                 selbs = ni;
             continue;

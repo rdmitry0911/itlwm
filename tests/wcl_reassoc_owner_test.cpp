@@ -109,13 +109,20 @@ static int dispatch(ieee80211com *ic,int code,ieee80211_wcl_reassoc_completion c
     if(result==0 && code != IEEE80211_EVT_WCL_REASSOC_PROGRESS &&
        ieee80211_wcl_reassoc_publication_current(ic, &copy)) {
         const bool failure=code==IEEE80211_EVT_WCL_REASSOC_FAIL;
+        /* A scan that selects nobody ends as a roam completion alone. */
+        const bool stayed=failure && copy.result==static_cast<uint32_t>(ENOENT);
+        uint32_t value;
+        if(stayed) assert(driver.commandSelector==0);
+        else {
         assert(driver.commandSelector==(failure ? IEEE80211_WCL_REASSOC_OWNER_SELECTOR_FAILURE :
             IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT));
         assert(driver.commandPayload.size()==(failure?4U:8U));
-        uint32_t value; memcpy(&value,driver.commandPayload.data(),4); assert(value==copy.result);
+        memcpy(&value,driver.commandPayload.data(),4); assert(value==copy.result);
+        }
         assert(driver.selector==IEEE80211_WCL_REASSOC_OWNER_SELECTOR_DONE_EVENT);
         assert(driver.payload.size()==168);
-        memcpy(&value,driver.payload.data(),4); assert(value==(failure?0xe3ff8100U:0));
+        memcpy(&value,driver.payload.data(),4);
+        assert(value==(stayed?0xe0820403U:failure?0xe3ff8100U:0));
         assert(!memcmp(driver.payload.data()+0x58,copy.source_bssid,6));
         assert(!memcmp(driver.payload.data()+0x5e,copy.target_bssid,6));
     }
