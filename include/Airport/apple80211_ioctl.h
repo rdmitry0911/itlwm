@@ -1339,7 +1339,18 @@ struct apple80211_awdl_extension_state_machine_parameter {
 struct apple80211_awdl_sync_state {
     uint32_t    version;
     uint32_t    state;
+#if __IO80211_TARGET >= __MAC_26_0
+    // Tahoe: the get/set wrappers take exactly 0x18 bytes (ForbiddenItlwm, 25G241).
+    uint8_t     address[APPLE80211_ADDR_LEN];
+    uint8_t     reserved[2];
+    uint32_t    flags;
+    uint8_t     driver_flags;
+    uint8_t     reserved_tail[3];
+#endif
 } __attribute__((packed));
+#if __IO80211_TARGET >= __MAC_26_0
+static_assert(sizeof(struct apple80211_awdl_sync_state) == 24, "Tahoe AWDL sync-state ABI");
+#endif
 
 struct apple80211_awdl_sync_params {
     uint32_t    version;

@@ -9307,6 +9307,11 @@ setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
              * skeleton (which validates only role 7) so that the
              * AWDL public failure is preserved exactly.
              */
+#if __IO80211_TARGET >= __MAC_26_0
+            // v-Airport AWDL probe (-vapawdl): awdl0 without a radio behind it yet.
+            if (instance != nullptr && instance->fVapAWDLEnabled)
+                return instance->materializeVapAWDLInterface(data);
+#endif
             return static_cast<IOReturn>(kAirportItlwmAPSTACreateFailedReturn);
         case 7: {
             /*

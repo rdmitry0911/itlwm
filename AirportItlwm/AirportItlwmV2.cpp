@@ -19,6 +19,7 @@
 #include <ClientKit/AirportItlwmPostPltiTrace.h>
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 #include "AirportItlwmAPSTAOwner.hpp"
+#include "AirportItlwmAWDLInterface.hpp"
 #include "TahoeScanContracts.hpp"
 #include "TahoeSkywalkIoctlRoutes.hpp"
 #include <crypto/sha1.h>
@@ -8843,6 +8844,9 @@ void AirportItlwm::prepareLifecycleDrain()
 
 void AirportItlwm::releaseAPSTAOwnerClaimed()
 {
+#if __IO80211_TARGET >= __MAC_26_0
+    teardownVapAWDLInterface();
+#endif
     /*
      * Keep the APSTA owner release after the common producer fence but before
      * fHalService is detached.  The shipped Tahoe/iwn surface is STA-only,
@@ -11294,6 +11298,16 @@ bool AirportItlwm::init(OSDictionary *properties)
     fTxCompletionPendingCount = 0;
     fAPSTAOwner = NULL;
     fAPSTANetIf = NULL;
+#if __IO80211_TARGET >= __MAC_26_0
+    fVapAWDLEnabled = false;
+    fVapAWDLRegistered = false;
+    fVapAWDLInterface = NULL;
+    fVapAWDLTxPool = NULL;
+    fVapAWDLRxPool = NULL;
+    fVapAWDLTxQueue = NULL;
+    fVapAWDLTxCompQueue = NULL;
+    fVapAWDLRxQueue = NULL;
+#endif
     fAPSTATxPool = NULL;
     fAPSTARxPool = NULL;
     memset(fAPSTATxQueues, 0, sizeof(fAPSTATxQueues));
@@ -11905,6 +11919,13 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOVHT;
     if (PE_parse_boot_argn("-noht40", &boot_value, sizeof(boot_value)))
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOHT40;
+#if __IO80211_TARGET >= __MAC_26_0
+    fVapAWDLEnabled = PE_parse_boot_argn("-vapawdl", &boot_value, sizeof(boot_value));
+    if (fVapAWDLEnabled) {
+        setProperty("VAPAWDL", "probe");
+        IOLog("VAPAWDL probe enabled (-vapawdl)\n");
+    }
+#endif
 
     if (!fHalService->attach(pciNub)) {
         XYLog("DEBUG %s [STEP 5] FAIL: HAL attach\n", __FUNCTION__);
@@ -13603,6 +13624,17 @@ getCARD_CAPABILITIES(OSObject *object,
                 break;
             }
         }
+    }
+#endif
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * v-Airport AWDL probe: wifip2pd asks for an AWDL interface only when
+     * capability byte 4 bit 0 is set; IO80211's configureValidAWDLChannels
+     * reads byte 3 bit 5 (both bands), already set (ForbiddenItlwm, 25G241).
+     */
+    if (fVapAWDLEnabled) {
+        cd->capabilities[4] |= 0x01;
+        cd->capabilities[3] |= 0x20;
     }
 #endif
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
@@ -17807,6 +17839,197 @@ void AirportItlwm::teardownAPSTAInterface()
 #endif
     OSSafeReleaseNULL(fAPSTANetIf);
 }
+
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * v-Airport AWDL, probe stage.  awdl0 is ForbiddenItlwm's sequence on Tahoe
+ * (attachVirtualInterface -> start -> pools and queues -> registration ->
+ * registerService) with this tree's 25C56 pool and registration layout from
+ * the APSTA interface.  Nothing reaches the radio: the interface records what
+ * Apple's AWDL stack asks of the firmware.
+ */
+static UInt32 vapAWDLTxCompletionAction(OSObject *, IOSkywalkTxCompletionQueue *,
+                                        IOSkywalkPacket **, UInt32, void *)
+{
+    return 0;
+}
+
+static unsigned int vapAWDLRxAction(OSObject *, IOSkywalkRxCompletionQueue *,
+                                    IOSkywalkPacket **, UInt32, void *)
+{
+    return 0;
+}
+
+IO80211VirtualInterface *AirportItlwm::createVirtualInterface(ether_addr *address, UInt role)
+{
+    if (!fVapAWDLEnabled || role != APPLE80211_VIF_AWDL || address == nullptr)
+        return super::createVirtualInterface(address, role);
+    AirportItlwmAWDLInterface *awdl = new AirportItlwmAWDLInterface;
+    if (awdl == nullptr)
+        return nullptr;
+    if (!awdl->initWithController(this, address)) {
+        awdl->release();
+        setProperty("VAPAWDLStage", "init-failed");
+        return nullptr;
+    }
+    setProperty("VAPAWDLStage", "created");
+    return awdl;
+}
+
+IOReturn AirportItlwm::materializeVapAWDLInterface(
+    const struct apple80211_virt_if_create_data *create)
+{
+    auto stage = [this](const char *name) {
+        setProperty("VAPAWDLStage", name);
+        IOLog("VAPAWDL controller stage %s\n", name);
+    };
+    if (!fVapAWDLEnabled)
+        return static_cast<IOReturn>(kAirportItlwmAPSTACreateFailedReturn);
+    if (create == nullptr)
+        return kIOReturnBadArgument;
+    if (fVapAWDLInterface != nullptr)
+        return kIOReturnSuccess;
+    if (_fWorkloop == nullptr)
+        return kIOReturnNotReady;
+
+    ether_addr address;
+    memcpy(address.octet, create->mac, IEEE80211_ADDR_LEN);
+    if ((address.octet[0] | address.octet[1] | address.octet[2] |
+         address.octet[3] | address.octet[4] | address.octet[5]) == 0 &&
+        copyPermanentHardwareAddress(address.octet))
+        address.octet[0] = static_cast<uint8_t>((address.octet[0] | 0x02U) ^ 0x08U);
+    {
+        char text[96];
+        snprintf(text, sizeof(text), "role=%u mac=%02x:%02x:%02x:%02x:%02x:%02x bsd=%.16s",
+                 create->role, address.octet[0], address.octet[1], address.octet[2],
+                 address.octet[3], address.octet[4], address.octet[5],
+                 reinterpret_cast<const char *>(create->bsd_name));
+        setProperty("VAPAWDLCreate", text);
+        IOLog("VAPAWDL VIRTUAL_IF_CREATE %s\n", text);
+    }
+
+    stage("attaching");
+    IO80211VirtualInterface *made = nullptr;
+    const bool attached = attachVirtualInterface(&made, &address, APPLE80211_VIF_AWDL, false);
+    AirportItlwmAWDLInterface *awdl = OSDynamicCast(AirportItlwmAWDLInterface, made);
+    if (!attached || awdl == nullptr) {
+        // A foreign object stays with IO80211, which made it.
+        stage(attached ? "attached-foreign-class" : "attach-failed");
+        return kIOReturnError;
+    }
+    fVapAWDLInterface = awdl;
+    awdl->note("controller.attachVirtualInterface", &address, sizeof(address));
+
+    stage("starting");
+    if (!awdl->start(this)) {
+        stage("start-failed");
+        teardownVapAWDLInterface();
+        return kIOReturnError;
+    }
+
+    stage("pools");
+    IOSkywalkPacketBufferPool::PoolOptions poolOpts = {};
+    poolOpts.packetCount = kAirportItlwmSkywalkQueueCapacity;
+    poolOpts.bufferCount = kAirportItlwmSkywalkQueueCapacity;
+    poolOpts.bufferSize = SKYWALK_BUF_SIZE;
+    poolOpts.maxBuffersPerPacket = 1;
+    poolOpts.poolFlags = 1;
+    fVapAWDLTxPool = AirportItlwmIO80211PacketPool::withName("AirportItlwm-AWDL-TX", awdl, &poolOpts);
+    fVapAWDLRxPool = AirportItlwmIO80211PacketPool::withName("AirportItlwm-AWDL-RX", awdl, &poolOpts);
+    if (fVapAWDLTxPool == nullptr || fVapAWDLRxPool == nullptr) {
+        stage("pools-failed");
+        teardownVapAWDLInterface();
+        return kIOReturnNoMemory;
+    }
+
+    stage("queues");
+    fVapAWDLTxQueue = IOSkywalkTxSubmissionQueue::withPool(
+        fVapAWDLTxPool, kAirportItlwmSkywalkQueueCapacity, 0, awdl,
+        AirportItlwmAWDLInterface::transmitAction, nullptr, 0);
+    fVapAWDLTxCompQueue = IOSkywalkTxCompletionQueue::withPool(
+        fVapAWDLTxPool, kAirportItlwmSkywalkQueueCapacity, 0, awdl,
+        vapAWDLTxCompletionAction, nullptr, 0);
+    fVapAWDLRxQueue = IOSkywalkRxCompletionQueue::withPool(
+        fVapAWDLRxPool, kAirportItlwmSkywalkQueueCapacity, 0, awdl,
+        vapAWDLRxAction, nullptr, 0);
+    if (fVapAWDLTxQueue == nullptr || fVapAWDLTxCompQueue == nullptr || fVapAWDLRxQueue == nullptr ||
+        _fWorkloop->addEventSource(fVapAWDLTxQueue) != kIOReturnSuccess ||
+        _fWorkloop->addEventSource(fVapAWDLTxCompQueue) != kIOReturnSuccess ||
+        _fWorkloop->addEventSource(fVapAWDLRxQueue) != kIOReturnSuccess) {
+        stage("queues-failed");
+        teardownVapAWDLInterface();
+        return kIOReturnNoMemory;
+    }
+
+    stage("registering");
+    IOSkywalkEthernetInterface::RegistrationInfo registrationInfo;
+    bzero(&registrationInfo, sizeof(registrationInfo));
+    if (!awdl->initRegistrationInfo(&registrationInfo, 1, sizeof(registrationInfo))) {
+        stage("registration-info-failed");
+        teardownVapAWDLInterface();
+        return kIOReturnError;
+    }
+    AirportItlwmAPSTARegistrationInfoLayout *layout =
+        reinterpret_cast<AirportItlwmAPSTARegistrationInfoLayout *>(&registrationInfo);
+    layout->interfaceSubFamily0c = 3;
+    layout->registrationType14 = 2;
+    layout->registrationOptions24 = 0x8000000080ULL;
+    layout->bsdNamePrefix30 = "awdl";
+    layout->bsdUnitNumber38 = 0;
+    layout->powerFlags40 = 4;
+    memcpy(layout->hardwareAddress108, address.octet, IEEE80211_ADDR_LEN);
+    {
+        // Headroom and MTU as ForbiddenItlwm's 25G241 AWDL registration.
+        uint8_t *raw = reinterpret_cast<uint8_t *>(&registrationInfo);
+        const UInt16 headroom = 0x40;
+        const UInt32 mtu = 1428;
+        memcpy(raw + 0x3c, &headroom, sizeof(headroom));
+        memcpy(raw + 0x48, &mtu, sizeof(mtu));
+        memcpy(raw + 0x4c, &mtu, sizeof(mtu));
+    }
+    IOSkywalkPacketQueue *queues[3] = { fVapAWDLTxQueue, fVapAWDLTxCompQueue, fVapAWDLRxQueue };
+    const IOReturn registered = awdl->registerEthernetInterface(
+        &registrationInfo, queues, 3, fVapAWDLTxPool, fVapAWDLRxPool, 0);
+    if (registered != kIOReturnSuccess) {
+        char text[48];
+        snprintf(text, sizeof(text), "registration-failed 0x%x", registered);
+        stage(text);
+        teardownVapAWDLInterface();
+        return registered;
+    }
+    fVapAWDLRegistered = true;
+    awdl->setRunningState(false);
+    fVapAWDLTxQueue->enable();
+    awdl->registerService();
+    stage("registered");
+    return kIOReturnSuccess;
+}
+
+void AirportItlwm::teardownVapAWDLInterface()
+{
+    if (fVapAWDLInterface == nullptr && fVapAWDLTxPool == nullptr && fVapAWDLRxPool == nullptr)
+        return;
+    IOEventSource *sources[3] = { fVapAWDLTxQueue, fVapAWDLTxCompQueue, fVapAWDLRxQueue };
+    for (IOEventSource *source : sources) {
+        if (source != nullptr && _fWorkloop != nullptr && source->getWorkLoop() == _fWorkloop) {
+            source->disable();
+            _fWorkloop->removeEventSource(source);
+        }
+    }
+    fVapAWDLRegistered = false;
+    if (fVapAWDLInterface != nullptr)
+        detachVirtualInterface(fVapAWDLInterface, true);
+    deliverPendingPostOfficeMail();
+    OSSafeReleaseNULL(fVapAWDLTxQueue);
+    OSSafeReleaseNULL(fVapAWDLTxCompQueue);
+    OSSafeReleaseNULL(fVapAWDLRxQueue);
+    OSSafeReleaseNULL(fVapAWDLTxPool);
+    OSSafeReleaseNULL(fVapAWDLRxPool);
+    airportItlwmReleaseTerminatedInterfaceGlue(fVapAWDLInterface);
+    OSSafeReleaseNULL(fVapAWDLInterface);
+    setProperty("VAPAWDLStage", "torn-down");
+}
+#endif
 
 /*
  * Host APSTA owner cleanup.

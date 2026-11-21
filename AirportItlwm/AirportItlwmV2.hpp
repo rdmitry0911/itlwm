@@ -993,6 +993,25 @@ public:
     void publishInitialBSDInterfaces();
     IOReturn materializeAPSTAInterface(
         const struct apple80211_virt_if_create_data *create);
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * v-Airport AWDL, probe stage (boot-arg -vapawdl): awdl0 for role 6.
+     * Without the boot-arg the driver answers as the reference does on a card
+     * without AWDL.
+     */
+    IO80211VirtualInterface *createVirtualInterface(ether_addr *, UInt) override;
+    IOReturn materializeVapAWDLInterface(
+        const struct apple80211_virt_if_create_data *create);
+    void teardownVapAWDLInterface();
+    bool fVapAWDLEnabled;
+    bool fVapAWDLRegistered;
+    IO80211VirtualInterface *fVapAWDLInterface;
+    IOSkywalkPacketBufferPool *fVapAWDLTxPool;
+    IOSkywalkPacketBufferPool *fVapAWDLRxPool;
+    IOSkywalkTxSubmissionQueue *fVapAWDLTxQueue;
+    IOSkywalkTxCompletionQueue *fVapAWDLTxCompQueue;
+    IOSkywalkRxCompletionQueue *fVapAWDLRxQueue;
+#endif
     void forwardAPSTAPacket(IO80211NetworkPacket *packet);
     void requestAPTxDequeue();
     void setAPSTADatapathEnabled(bool enable);
