@@ -184,7 +184,10 @@ static int ieeeChanFlag2appleScanFlagVentura(int flags)
     int ret = 0;
     if (flags & IEEE80211_CHAN_2GHZ)
         ret |= APPLE80211_C_FLAG_2GHZ;
-    if (flags & IEEE80211_CHAN_5GHZ)
+    /* A 6 GHz channel is also an A channel for net80211: its band is 6 GHz. */
+    if (flags & IEEE80211_CHAN_6GHZ)
+        ret |= APPLE80211_C_FLAG_6GHZ;
+    else if (flags & IEEE80211_CHAN_5GHZ)
         ret |= APPLE80211_C_FLAG_5GHZ;
     ret |= (APPLE80211_C_FLAG_ACTIVE | APPLE80211_C_FLAG_20MHZ);
     return ret;
@@ -616,6 +619,8 @@ static uint16_t buildTahoeWclCurrentBssChanSpec(struct ieee80211com *ic,
     if (primary == 0)
         return 0;
 
+    if ((chan->ic_flags & IEEE80211_CHAN_6GHZ) != 0)
+        return static_cast<uint16_t>(APPLE80211_CHANSPEC_BAND_6G | primary);
     if ((chan->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
         return static_cast<uint16_t>(0xc000 | primary);
     return primary;
@@ -913,7 +918,9 @@ static int ieeeChanFlag2apple(int flags, int bw)
     int ret = 0;
     if (flags & IEEE80211_CHAN_2GHZ)
         ret |= APPLE80211_C_FLAG_2GHZ;
-    if (flags & IEEE80211_CHAN_5GHZ)
+    if (flags & IEEE80211_CHAN_6GHZ)
+        ret |= APPLE80211_C_FLAG_6GHZ;
+    else if (flags & IEEE80211_CHAN_5GHZ)
         ret |= APPLE80211_C_FLAG_5GHZ;
     if (!(flags & IEEE80211_CHAN_PASSIVE))
         ret |= APPLE80211_C_FLAG_ACTIVE;
@@ -7236,7 +7243,7 @@ getSUPPORTED_CHANNELSImpl(struct apple80211_sup_channel_data *ad)
     ad->version = APPLE80211_VERSION;
     ad->num_channels = 0;
     struct ieee80211com *ic = fHalService->get80211Controller();
-    for (int i = 0; i < IEEE80211_CHAN_MAX; i++) {
+    for (int i = 0; i < IEEE80211_CHAN_MAX && ad->num_channels < APPLE80211_MAX_CHANNELS; i++) {
         if (ic->ic_channels[i].ic_freq != 0) {
             ad->supported_channels[ad->num_channels].channel = ieee80211_chan2ieee(ic, &ic->ic_channels[i]);
             ad->supported_channels[ad->num_channels].flags = ieeeChanFlag2appleScanFlagVentura(ic->ic_channels[i].ic_flags);
@@ -7862,6 +7869,11 @@ tahoeBuildWclScanPlan(const apple80211ScanRequest *request,
             (channel.flags & APPLE80211_C_FLAG_2GHZ) != 0;
         const bool band5 =
             (channel.flags & APPLE80211_C_FLAG_5GHZ) != 0;
+        if ((channel.flags & APPLE80211_C_FLAG_6GHZ) != 0) {
+            setbit(plan->channel_6ghz, channel.channel);
+            ++admittedChannels;
+            continue;
+        }
         if (band2)
             setbit(plan->channel_2ghz, channel.channel);
         if (band5)
@@ -11221,7 +11233,8 @@ getWCL_CHANNELS_INFO(apple80211ChannelInfo *data)
 
         struct apple80211_wcl_channel_entry *entry = &data->entries[count];
         entry->chan_spec = static_cast<uint16_t>(
-            (IEEE80211_IS_CHAN_5GHZ(ch) ? APPLE80211_CHANSPEC_BAND_5G
+            (IEEE80211_IS_CHAN_6GHZ(ch) ? APPLE80211_CHANSPEC_BAND_6G :
+             IEEE80211_IS_CHAN_5GHZ(ch) ? APPLE80211_CHANSPEC_BAND_5G
                                         : APPLE80211_CHANSPEC_BAND_2G) |
             APPLE80211_CHANSPEC_BW_20 | chan);
         entry->primary_channel = static_cast<uint8_t>(chan);
@@ -11236,7 +11249,14 @@ getWCL_CHANNELS_INFO(apple80211ChannelInfo *data)
     }
 
     data->num_channels = count;
+    /* WCL answers COUNTRY_BAND_SUPPORT itself from this byte: 7 with it, 3 without. */
     data->support_6e = 0;
+    for (uint16_t i = 0; i < count; i++) {
+        if ((data->entries[i].chan_spec & 0xc000) == APPLE80211_CHANSPEC_BAND_6G) {
+            data->support_6e = 1;
+            break;
+        }
+    }
 
     return kIOReturnSuccess;
 }

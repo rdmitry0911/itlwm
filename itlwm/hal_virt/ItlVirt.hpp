@@ -34,11 +34,12 @@
 
 #include "VapPlatformIOKit.hpp"
 
-#define VIRT_MAX_CHANNELS       64
+#define VIRT_MAX_CHANNELS       128     /* 2.4, 5 and 6 GHz */
 #define VIRT_RSSI_OFFSET        100     /* net80211 RSSI = dBm + 100 */
 #define VIRT_TX_MAX_SEGS        16      /* mbufs in one transmitted frame */
 #define VIRT_REQUEST_MS         500     /* wait for the reply to a request */
 #define VIRT_SCAN_WATCHDOG_MS   10000   /* wait for the end of a scan */
+#define VIRT_SCAN_CHANNEL_MS    250     /* ... or this per channel scanned, if longer */
 #define VIRT_SCAN_RETRY_MS      250     /* between attempts to start a scan on a busy firmware */
 #define VIRT_STATS_MS           1000    /* between link statistics requests while associated */
 #define VIRT_AP_MAX_STA         32      /* stations of the access point remembered here */
@@ -333,6 +334,7 @@ public:
     bool reserveSaeWclCredentialAdmission() override;
     void releaseSaeWclCredentialAdmission() override;
     bool supportsDriverResidentSae() override;
+    bool supportsSaeH2e() override { return supportsDriverResidentSae(); }
 
     static int iwx_sae_auth_hold(struct ieee80211com *, struct ieee80211_node *,
                                  enum ieee80211_state, int);

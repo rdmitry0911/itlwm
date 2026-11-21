@@ -270,6 +270,10 @@ enum apple80211_channel_flag
     // extension channel is below.
     APPLE80211_C_FLAG_80MHZ        = 0x400,  // name made up - set if channelWidth == 80 && 5ghz && AC
     APPLE80211_C_FLAG_160MHZ       = 0x800,  // zxystd: Apple Broadcom not use it, but we can use!
+    // 6 GHz: what IO80211Family's ChanSpecConvToApple80211Channel (25C56
+    // 0xffffff80020f8cfd) gives a chanspec of band 0x4000, where 2.4 GHz
+    // gets 0x8 and 5 GHz 0x10 (| 0x100 for 52..144).
+    APPLE80211_C_FLAG_6GHZ         = 0x2000,
 };
 
 enum apple80211_rate_flag
@@ -574,6 +578,7 @@ static_assert(sizeof(struct apple80211_scan_result) == 0x8d8,
 // Band: 0x0000 2.4 GHz, 0x4000 6 GHz, 0xc000 5 GHz.
 // Width: 0x1000 20 MHz, 0x1800 40 MHz, 0x2000 80 MHz, 0x2800 160 MHz.
 #define APPLE80211_CHANSPEC_BAND_2G    0x0000
+#define APPLE80211_CHANSPEC_BAND_6G    0x4000
 #define APPLE80211_CHANSPEC_BAND_5G    0xc000
 #define APPLE80211_CHANSPEC_BW_20      0x1000
 

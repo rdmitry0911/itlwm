@@ -545,6 +545,11 @@ public:
      * association and PMF path is present for the attached device. */
     virtual bool supportsDriverResidentSae() { return false; }
 
+    /* SAE hash-to-element as well (the reference's CARD_CAPABILITIES reports
+     * it from feature 0x64); only a backend whose join path was verified with
+     * an H2E-only network says so. */
+    virtual bool supportsSaeH2e() { return false; }
+
 protected:
     
     /* Completion paths may test their predicate before sleeping under this mutex. */

@@ -62,6 +62,21 @@ static constexpr uint8_t kCardCapabilityHeMask = 0x80;
 static constexpr size_t kCardCapabilityHostApSaeByte = 10;
 static constexpr uint8_t kCardCapabilityHostApSaeMask = 0x01;
 
+/*
+ * 6 GHz and SAE hash-to-element.  AppleBCMWLANCore::getCARD_CAPABILITIES
+ * (25C56 0xffffff80015c4a9e) sets byte 0xf of the carrier (capability 11),
+ * bit 0x40, when feature 0x5d (is6GSupported, firmware cap_ext) is set
+ * (0xffffff80015c50ac), and byte 0x10 (capability 12), bit 0x08, from
+ * feature 0x64 (isSaeH2eEnabled, 0xffffff80015c4e71).  WCL caches the
+ * carrier and its WCLDeviceConfiguration::is6GSupported (0xffffff80021ce8cc)
+ * is that 0x40: it gates the 6 GHz follow-up probe and co-located AP flags
+ * of a scan request, RNR results, set6G_MODE and 6 GHz roaming.
+ */
+static constexpr size_t kCardCapabilitySixGhzByte = 11;
+static constexpr uint8_t kCardCapabilitySixGhzMask = 0x40;
+static constexpr size_t kCardCapabilitySaeH2eByte = 12;
+static constexpr uint8_t kCardCapabilitySaeH2eMask = 0x08;
+
 static constexpr uint8_t kAppleImpossibleCap2Mask = 0x80;
 static constexpr uint8_t kAppleImpossibleCap3Mask = 0x08;
 static constexpr uint8_t kAppleImpossibleCap6Mask = 0x80;
@@ -102,6 +117,24 @@ inline void applyHostApSaeCardCapability(uint8_t (&capabilities)[N])
                   "CARD_CAPABILITIES carrier must expose the HostAP SAE byte");
 
     capabilities[kCardCapabilityHostApSaeByte] |= kCardCapabilityHostApSaeMask;
+}
+
+template <size_t N>
+inline void applySixGhzCardCapability(uint8_t (&capabilities)[N])
+{
+    static_assert(N > kCardCapabilitySixGhzByte,
+                  "CARD_CAPABILITIES carrier must expose the 6 GHz byte");
+
+    capabilities[kCardCapabilitySixGhzByte] |= kCardCapabilitySixGhzMask;
+}
+
+template <size_t N>
+inline void applySaeH2eCardCapability(uint8_t (&capabilities)[N])
+{
+    static_assert(N > kCardCapabilitySaeH2eByte,
+                  "CARD_CAPABILITIES carrier must expose the SAE H2E byte");
+
+    capabilities[kCardCapabilitySaeH2eByte] |= kCardCapabilitySaeH2eMask;
 }
 
 template <size_t N>

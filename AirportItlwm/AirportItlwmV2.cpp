@@ -5448,7 +5448,9 @@ static int ieeeChanFlag2apple(int flags, int bw)
     int ret = 0;
     if (flags & IEEE80211_CHAN_2GHZ)
         ret |= APPLE80211_C_FLAG_2GHZ;
-    if (flags & IEEE80211_CHAN_5GHZ)
+    if (flags & IEEE80211_CHAN_6GHZ)
+        ret |= APPLE80211_C_FLAG_6GHZ;
+    else if (flags & IEEE80211_CHAN_5GHZ)
         ret |= APPLE80211_C_FLAG_5GHZ;
     if (!(flags & IEEE80211_CHAN_PASSIVE))
         ret |= APPLE80211_C_FLAG_ACTIVE;
@@ -5630,6 +5632,8 @@ static uint16_t buildTahoePrimaryChanSpec(struct ieee80211com *ic,
      * Apple-compatible and causes fresh WCL scan ingestion to collapse part of
      * the candidate set on the client-visible/UI plane.
      */
+    if ((chan->ic_flags & IEEE80211_CHAN_6GHZ) != 0)
+        return static_cast<uint16_t>(APPLE80211_CHANSPEC_BAND_6G | primary);
     if ((chan->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
         return static_cast<uint16_t>(0xc000 | primary);
     return primary;
@@ -13358,6 +13362,17 @@ getCARD_CAPABILITIES(OSObject *object,
     if (fHalService != nullptr && fHalService->getDriverInfo() != nullptr &&
         fHalService->getDriverInfo()->publishesHeCapability())
         TahoeCapabilityContracts::applyHeCardCapability(cd->capabilities);
+    /* The reference's 6 GHz bit follows the firmware; ours, the radio's channels. */
+    if (fHalService != nullptr) {
+        struct ieee80211com *ic = fHalService->get80211Controller();
+        for (int i = IEEE80211_CHAN_6GHZ_IDX_FIRST;
+             ic != nullptr && i <= IEEE80211_CHAN_6GHZ_IDX_LAST; i++) {
+            if (IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[i])) {
+                TahoeCapabilityContracts::applySixGhzCardCapability(cd->capabilities);
+                break;
+            }
+        }
+    }
 #endif
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
     /*
@@ -13371,6 +13386,9 @@ getCARD_CAPABILITIES(OSObject *object,
         /* The reference drops its access point WPA3 flag with the SAE ones. */
         if (fHalService->supportsAPMode())
             TahoeCapabilityContracts::applyHostApSaeCardCapability(
+                cd->capabilities);
+        if (fHalService->supportsSaeH2e())
+            TahoeCapabilityContracts::applySaeH2eCardCapability(
                 cd->capabilities);
     }
 #endif

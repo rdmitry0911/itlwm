@@ -131,22 +131,24 @@ static bool
 virt_parse_caps(const uint8_t *buf, uint32_t len, VirtCaps *caps)
 {
     /* Per band: what decides the widths its channels can be used with. */
-    bool ht[2] = { false, false }, vht[2] = { false, false };
-    uint16_t htinfo[2] = { 0, 0 };
-    uint32_t vhtinfo[2] = { 0, 0 };
+    bool ht[3] = { false, false, false }, vht[3] = { false, false, false };
+    uint16_t htinfo[3] = { 0, 0, 0 };
+    uint32_t vhtinfo[3] = { 0, 0, 0 };
+    uint8_t he6width = 0;           /* HE PHY channel width set of the 6 GHz band */
     struct vap_tlv t;
     const uint8_t *v;
     uint32_t off;
 
     for (off = 0; virt_tlv_next(buf, len, &off, &t, &v);) {
         /* The per-band TLVs start with the band and three reserved bytes. */
-        const uint8_t band = (t.len >= 4 && v[0] <= VAP_BAND_5G) ? v[0] : 0xff;
+        const uint8_t band = (t.len >= 4 && v[0] <= VAP_BAND_6G) ? v[0] : 0xff;
         const uint8_t *body = v + 4;
         const uint32_t n = t.len >= 4 ? t.len - 4u : 0;
 
         switch (t.type) {
         case VAP_TLV_RATES:
-            if (band != 0xff) {
+            /* 6 GHz has the 5 GHz (OFDM) rates. */
+            if (band == VAP_BAND_2G || band == VAP_BAND_5G) {
                 struct ieee80211_rateset *rs =
                     band == VAP_BAND_2G ? &caps->rates_2g : &caps->rates_5g;
                 rs->rs_nrates = (uint8_t)MIN(n, (uint32_t)IEEE80211_RATE_MAXSIZE);
@@ -173,7 +175,9 @@ virt_parse_caps(const uint8_t *buf, uint32_t len, VirtCaps *caps)
             break;
         case VAP_TLV_HE_CAP:
             /* MAC 6, PHY 11, at least the MCS maps up to 80 MHz; 5 GHz says more. */
-            if (band != 0xff && n >= 21 && n <= sizeof(caps->hecap) &&
+            if (band == VAP_BAND_6G && n >= 21)
+                he6width = body[6];
+            if (band != 0xff && band != VAP_BAND_6G && n >= 21 && n <= sizeof(caps->hecap) &&
                 (caps->hecap_len == 0 || band == VAP_BAND_5G)) {
                 memcpy(caps->hecap, body, n);
                 caps->hecap_len = (uint8_t)n;
@@ -213,7 +217,7 @@ virt_parse_caps(const uint8_t *buf, uint32_t len, VirtCaps *caps)
     for (off = 0; virt_tlv_next(buf, len, &off, &t, &v);) {
         uint8_t band;
 
-        if (t.type != VAP_TLV_CHANNELS || t.len < 4 || v[0] > VAP_BAND_5G)
+        if (t.type != VAP_TLV_CHANNELS || t.len < 4 || v[0] > VAP_BAND_6G)
             continue;
         band = v[0];
         for (uint32_t i = 4; i + sizeof(struct vap_chan) <= t.len &&
@@ -230,6 +234,18 @@ virt_parse_caps(const uint8_t *buf, uint32_t len, VirtCaps *caps)
                 flags |= IEEE80211_CHAN_PASSIVE;
             if (c.flags & VAP_CHAN_RADAR)
                 flags |= IEEE80211_CHAN_DFS;
+            if (band == VAP_BAND_6G) {
+                /*
+                 * HE only there: its widths come from the HE PHY channel width
+                 * set (B2: 40 and 80 MHz, B3: 160 MHz in 5 and 6 GHz), kept in
+                 * the VHT width flags as net80211 has no others.
+                 */
+                flags |= IEEE80211_CHAN_6GHZ;
+                if ((he6width & 0x04) && !(c.flags & VAP_CHAN_NO_80))
+                    flags |= IEEE80211_CHAN_VHT80;
+                if ((he6width & 0x08) && !(c.flags & VAP_CHAN_NO_160))
+                    flags |= IEEE80211_CHAN_VHT160;
+            }
             if (ht[band]) {
                 flags |= IEEE80211_CHAN_HT20;
                 if (htinfo[band] & IEEE80211_HTCAP_CBW20_40) {
@@ -1111,8 +1127,10 @@ applyCaps(const VirtCaps &caps)
 
     memset(ic->ic_channels, 0, sizeof(ic->ic_channels));
     for (int i = 0; i < caps.nchans && i < VIRT_MAX_CHANNELS; i++) {
-        const u_int chan = ieee80211_mhz2ieee(caps.chans[i].freq,
-                                              caps.chans[i].flags);
+        u_int chan = ieee80211_mhz2ieee(caps.chans[i].freq,
+                                        caps.chans[i].flags);
+        if (caps.chans[i].flags & IEEE80211_CHAN_6GHZ)
+            chan = ieee80211_6ghz_chan2idx(chan);
         if (chan == 0 || chan > IEEE80211_CHAN_MAX)
             continue;
         ic->ic_channels[chan].ic_freq = caps.chans[i].freq;
@@ -1595,7 +1613,9 @@ rxFrame(mbuf_t m, uint16_t freqMHz, int8_t rssiDbm, uint32_t flags)
      */
     rxi.rxi_rssi = MAX(0, MIN(rssiDbm + VIRT_RSSI_OFFSET, VIRT_RSSI_OFFSET));
     /* Zero means unknown: net80211 then assumes the current channel. */
-    chan = ieee80211_mhz2ieee(freqMHz, 0);
+    chan = freqMHz >= 5935 ?
+        ieee80211_6ghz_chan2idx(ieee80211_mhz2ieee(freqMHz, IEEE80211_CHAN_6GHZ)) :
+        ieee80211_mhz2ieee(freqMHz, 0);
     if (chan <= IEEE80211_CHAN_MAX && ic->ic_channels[chan].ic_freq == freqMHz)
         rxi.rxi_chan = chan;
 
@@ -2083,13 +2103,16 @@ scanStart(bool background, uint64_t reassocSerial)
 int ItlVirt::
 scanCommand(uint32_t id, bool background, uint64_t wclGeneration)
 {
+    struct ieee80211com *ic = &com.sc_ic;
     struct {
         struct vap_scan_start sc;
         struct vap_ssid ssid;
-        uint8_t pad[4];             /* messages are padded to 8 bytes */
+        uint16_t freqs[VIRT_MAX_CHANNELS];
+        uint8_t pad[8];             /* messages are padded to 8 bytes */
     } req;
     struct ieee80211_wcl_scan_plan plan;
-    uint32_t len = sizeof(req.sc);
+    uint8_t *tail = (uint8_t *)&req.ssid;
+    uint32_t len, nchans = 0, watchdogMs;
     IOInterruptState irq;
     bool waited = false;
     int rc;
@@ -2098,7 +2121,7 @@ scanCommand(uint32_t id, bool background, uint64_t wclGeneration)
     req.sc.scan_id = id;
     if (background)
         req.sc.flags |= VAP_SCAN_BACKGROUND;
-    if (wclGeneration != 0 && ieee80211_wcl_scan_plan_snapshot(&com.sc_ic, &plan) &&
+    if (wclGeneration != 0 && ieee80211_wcl_scan_plan_snapshot(ic, &plan) &&
         plan.generation == wclGeneration) {
         if (plan.scan_type == IEEE80211_WCL_SCAN_TYPE_PASSIVE)
             req.sc.flags |= VAP_SCAN_PASSIVE;
@@ -2106,9 +2129,46 @@ scanCommand(uint32_t id, bool background, uint64_t wclGeneration)
             req.sc.n_ssids = 1;
             req.ssid.len = plan.ssid_len;
             memcpy(req.ssid.ssid, plan.ssid, plan.ssid_len);
-            len = sizeof(req);
+            tail += sizeof(req.ssid);
+        }
+        /*
+         * The channels WCL asked for, as the reference firmware scans them
+         * (AppleBCMWLANCore::setWCL_SCAN_REQ hands its channel list on):
+         * all bands of a 6 GHz radio take longer than a background scan may.
+         */
+        for (int i = 0; i <= IEEE80211_CHAN_MAX; i++) {
+            const struct ieee80211_channel *c = &ic->ic_channels[i];
+            if (c->ic_freq == 0)
+                continue;
+            nchans++;
+            if (plan.channel_filter && req.sc.n_freqs < VIRT_MAX_CHANNELS &&
+                ieee80211_wcl_scan_plan_channel_allowed(ic, &plan, c))
+                req.sc.n_freqs++;
+        }
+        if (plan.channel_filter && req.sc.n_freqs != 0 && req.sc.n_freqs < nchans) {
+            uint16_t n = 0;
+            for (int i = 0; i <= IEEE80211_CHAN_MAX && n < req.sc.n_freqs; i++) {
+                const struct ieee80211_channel *c = &ic->ic_channels[i];
+                if (c->ic_freq != 0 && ieee80211_wcl_scan_plan_channel_allowed(ic, &plan, c)) {
+                    uint16_t f = c->ic_freq;
+                    memcpy(tail + n * sizeof(f), &f, sizeof(f));
+                    n++;
+                }
+            }
+            tail += n * sizeof(uint16_t);
+            nchans = n;
+        } else {
+            req.sc.n_freqs = 0;
         }
     }
+    len = (uint32_t)(tail - (uint8_t *)&req);
+    len = (len + 7) & ~7u;
+    if (nchans == 0) {
+        for (int i = 0; i <= IEEE80211_CHAN_MAX; i++)
+            nchans += ic->ic_channels[i].ic_freq != 0;
+    }
+    /* A background scan returns to the channel between others: give it time per channel. */
+    watchdogMs = MAX((uint32_t)VIRT_SCAN_WATCHDOG_MS, nchans * VIRT_SCAN_CHANNEL_MS);
 
     rc = request(VAP_CMD_SCAN_START, &req, len);
     /*
@@ -2131,9 +2191,9 @@ scanCommand(uint32_t id, bool background, uint64_t wclGeneration)
         XYLog("vap: scan %u refused (%d)\n", id, rc);
         return rc == VAP_E_NOT_READY ? ENETDOWN : EIO;
     }
-    XYLog("vap: scan %u started%s%s\n", id, background ? ", background" : "",
-          wclGeneration != 0 ? ", WCL" : "");
-    timeout_add_msec(&fScanWatchdog, VIRT_SCAN_WATCHDOG_MS);
+    XYLog("vap: scan %u started%s%s, %u channels\n", id, background ? ", background" : "",
+          wclGeneration != 0 ? ", WCL" : "", req.sc.n_freqs != 0 ? req.sc.n_freqs : nchans);
+    timeout_add_msec(&fScanWatchdog, watchdogMs);
     return 0;
 }
 
