@@ -51,6 +51,138 @@ extern "C" void
 AirportItlwm_IO80211NetworkPacket_C1(void *self, OSMetaClass const *meta)
     __asm("__ZN20IO80211NetworkPacketC1EPK11OSMetaClass");
 
+// IO80211Controller::postMessage (25C56 0xffffff80021f58f0) queues a mail
+// holding an unretained IO80211SkywalkInterface pointer; the PostOffice
+// delivers it from a timer on the controller work queue
+// (IO80211PostOffice::outForDelivery 0xffffff800229892e calls the
+// interface's postMessage).  The same exported drain runs synchronously in
+// IO80211PostOffice::sendMailSync (0xffffff8002298742) before it delivers.
+#if __IO80211_TARGET >= __MAC_26_0
+extern "C" void
+AirportItlwm_IO80211PostOffice_outForDelivery(void *self)
+    __asm("__ZN17IO80211PostOffice14outForDeliveryEv");
+
+// IO80211PeerManager's shared vlogDebug/userPrint scratch state (exported
+// IO80211Family data, 25C56).  initWithInterface (0xffffff80021a2a6c+0x688)
+// allocates the four _log_debug_buffer / _logCC_debug_buffer slots only when
+// OSIncrementAtomic(&_log_debug_flip / &_flipCC) returns 0, i.e. for the first
+// PeerManager ever; IO80211PeerManager::free (0xffffff80021a50ce+0xe2) frees
+// and clears them for every PeerManager and never decrements the counters.
+// vlogDebug (0xffffff80021b5eb2) then claims an owner slot, finds the buffer
+// NULL and returns without releasing the slot (+0x1ab); the next log on that
+// thread takes the owned-slot path, which does not check the buffer, and
+// faults on NULL+0xb8.  Built-in Broadcom never frees its PeerManagers; a
+// re-plugged controller does.
+extern "C" volatile SInt32 _log_debug_flip;
+extern "C" volatile SInt32 _flipCC;
+extern "C" void *_log_debug_buffer[4];
+extern "C" volatile UInt32 _log_debug_buffer_owner[4];
+extern "C" UInt32 _log_buffer_size[4];
+extern "C" void *_logCC_debug_buffer[4];
+extern "C" UInt32 _logCC_buffer_size[4];
+extern "C" const char AirportItlwm_IO80211PeerManager_gMetaClass[]
+    __asm("__ZN18IO80211PeerManager10gMetaClassE");
+
+// IO80211Glue (per infrastructure interface: IO80211SkywalkInterface ivars
+// +0xd8, IO80211Glue::withOptions from IO80211SkywalkInterface::start) keeps
+// two IO80211EventSources in its ivars (+0x60, +0x68) on its own
+// IO80211WorkQueue (+0x58).  IO80211EventSource::initWithCallbacks
+// (0xffffff80022a75bc+0x53) retains the owner, the glue, and only
+// IO80211EventSource::free (0xffffff80022a762e) drops it; the glue releases
+// the sources in IO80211Glue::freeResources (0xffffff80020f3490), i.e. from
+// its own free.  IO80211SkywalkInterface::stop only calls IO80211Glue::stop
+// and IO80211SkywalkInterface::free only drops the interface's reference, so
+// the glue never frees: with it the WCL, the interface log stream, that
+// stream's CCLogPipe and, as the pipe's owner, this controller.  Once the
+// interface is stopped and detached, take the sources off the glue's queue
+// (no callback runs after that) and give back the glue references they hold;
+// the glue then frees on the interface's release and its own freeResources
+// releases the sources as before.
+extern "C" const char AirportItlwm_IO80211Glue_gMetaClass[]
+    __asm("__ZN11IO80211Glue10gMetaClassE");
+
+static void airportItlwmGlueSourcesCall(thread_call_param_t param0,
+                                        thread_call_param_t param1)
+{
+    OSObject *glue = reinterpret_cast<OSObject *>(param0);
+    uint8_t *glueIvars = *reinterpret_cast<uint8_t **>(
+        reinterpret_cast<uint8_t *>(glue) + 0x18);
+    static const size_t kSourceSlots[] = { 0x60, 0x68 };
+    for (size_t slot : kSourceSlots) {
+        if (glueIvars == nullptr)
+            break;
+        IOEventSource *source = OSDynamicCast(IOEventSource,
+            *reinterpret_cast<OSObject **>(glueIvars + slot));
+        if (source == nullptr)
+            continue;
+        IOWorkLoop *loop = source->getWorkLoop();
+        if (loop != nullptr)
+            loop->removeEventSource(source);
+        // IO80211EventSource +0x48 -> { owner, callback }.
+        void **callback = *reinterpret_cast<void ***>(
+            reinterpret_cast<uint8_t *>(source) + 0x48);
+        if (callback != nullptr && callback[0] == glue) {
+            callback[0] = nullptr;
+            glue->release();
+        }
+    }
+    glue->release();
+    (void)thread_call_free(reinterpret_cast<thread_call_t>(param1));
+}
+
+static void airportItlwmReleaseTerminatedInterfaceGlue(IOService *netif)
+{
+    if (netif == nullptr || !netif->isInactive() ||
+        netif->getProvider() != nullptr)
+        return;
+    void *ivars = *reinterpret_cast<void **>(
+        reinterpret_cast<uint8_t *>(netif) + 0x120);
+    if (ivars == nullptr)
+        return;
+    OSObject *glue = *reinterpret_cast<OSObject **>(
+        reinterpret_cast<uint8_t *>(ivars) + 0xd8);
+    const OSMetaClass *glueMeta = reinterpret_cast<const OSMetaClass *>(
+        AirportItlwm_IO80211Glue_gMetaClass);
+    if (glue == nullptr ||
+        OSMetaClassBase::safeMetaCast(glue, glueMeta) == nullptr)
+        return;
+    // Not here: stop() holds the controller work-queue gate, and the glue's
+    // queue thread may be waiting for it inside a callback.
+    thread_call_t call = thread_call_allocate(&airportItlwmGlueSourcesCall,
+                                              glue);
+    if (call == nullptr)
+        return;
+    glue->retain();
+    thread_call_enter1(call, call);
+}
+
+static void airportItlwmRearmPeerManagerLogBuffers()
+{
+    // Only with no PeerManager (of any subclass) alive: nothing can be
+    // inside vlogDebug/userPrint, and the buffers were freed by the last
+    // PeerManager::free.  Let the next initWithInterface allocate them again.
+    const OSMetaClass *peerManagerMeta = reinterpret_cast<const OSMetaClass *>(
+        AirportItlwm_IO80211PeerManager_gMetaClass);
+    if (peerManagerMeta->getInstanceCount() != 0)
+        return;
+    bool freed = false;
+    for (unsigned i = 0; i < 4; ++i)
+        freed |= _log_debug_buffer[i] == nullptr ||
+            _logCC_debug_buffer[i] == nullptr;
+    if (!freed || (_log_debug_flip == 0 && _flipCC == 0))
+        return;
+    for (unsigned i = 0; i < 4; ++i) {
+        _log_debug_buffer_owner[i] = 0;
+        _log_buffer_size[i] = 0;
+        _logCC_buffer_size[i] = 0;
+    }
+    _log_debug_flip = 0;
+    _flipCC = 0;
+    OSSynchronizeIO();
+    XYLog("IO80211PeerManager log buffers re-armed for a new controller\n");
+}
+#endif
+
 #if __IO80211_TARGET >= __MAC_26_0
 // Tahoe's AppleBCMWLANCore OFF path calls this exported IOService helper before
 // clearing its system-power bit.  It removes the named service property through
@@ -776,6 +908,11 @@ AirportItlwm_newIO80211NetworkPacket(IOSkywalkPacketBufferPool *pool,
     // (`lea rax, [rip+0x11d0f3]; mov [rbx], rax`). We avoid C++
     // placement-new because the freestanding kext build has no `<new>`.
     AirportItlwm_IO80211NetworkPacket_C1(mem, IO80211NetworkPacket::metaClass);
+    // The OSMetaClass-taking constructor is the one subclasses chain to; the
+    // class's own default constructor adds the instanceConstructed() that
+    // OSObject::free() later undoes.  Without it every pool release drives
+    // the IO80211NetworkPacket instance count negative ("bad retain").
+    IO80211NetworkPacket::metaClass->instanceConstructed();
     IO80211NetworkPacket *p = static_cast<IO80211NetworkPacket *>(mem);
 
     // vt[35] init virtual (initWithPool) and vt[5] failure destruct
@@ -8667,7 +8804,7 @@ bool AirportItlwm::lifecycleDrainOwnedByCurrentThread()
     return owned;
 }
 
-void AirportItlwm::prepareLifecycleDrain()
+void AirportItlwm::cancelUserClientWaiters(const char *reason)
 {
 #if __IO80211_TARGET >= __MAC_26_0
     /*
@@ -8676,12 +8813,19 @@ void AirportItlwm::prepareLifecycleDrain()
      * deadlock teardown while it waits for this cancellation edge. This call
      * does not hold either lifecycle lock across runAction().
      */
-    cancelPendingAssocTarget("prepareLifecycleDrain", true);
-    cancelSaeRelay("prepareLifecycleDrain", true);
+    cancelPendingAssocTarget(reason, true);
+    cancelSaeRelay(reason, true);
 #if AIRPORT_ITLWM_IWN_DIRECT_SAE_LAB_STIMULUS
     cancelIwnDirectSaeLabAll();
 #endif
+#else
+    (void)reason;
 #endif
+}
+
+void AirportItlwm::prepareLifecycleDrain()
+{
+    cancelUserClientWaiters("prepareLifecycleDrain");
 
     IOSimpleLock *admissionLock = fLifecycleAdmissionLock;
     if (admissionLock == NULL)
@@ -8985,6 +9129,81 @@ void AirportItlwm::detachSkywalkInterfaceAndFenceBorrowers()
     fSkywalkInterfaceProviderAttached = false;
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+static IOReturn
+airportItlwmDeliverPendingPostOfficeMailGated(OSObject *target, void *,
+                                              void *, void *, void *)
+{
+    AirportItlwm *self = OSDynamicCast(AirportItlwm, target);
+    if (self == nullptr)
+        return kIOReturnBadArgument;
+    void *postOffice = self->IO80211Controller::getPostOffice();
+    if (postOffice != nullptr)
+        AirportItlwm_IO80211PostOffice_outForDelivery(postOffice);
+    return kIOReturnSuccess;
+}
+#endif
+
+void AirportItlwm::deliverPendingPostOfficeMail()
+{
+    /*
+     * Mail posted to an interface while stop() holds the work queue gate
+     * (link down, power off) is delivered by the PostOffice timer only
+     * after the gate opens, i.e. after the interface reference below is
+     * gone.  Deliver it now, in the gate, while the interface is alive.
+     */
+#if __IO80211_TARGET >= __MAC_26_0
+    if (_fWorkloop != nullptr)
+        _fWorkloop->runAction(&airportItlwmDeliverPendingPostOfficeMailGated,
+                              this);
+#endif
+}
+
+void AirportItlwm::stopDriverPipes(bool includeStarted)
+{
+    /*
+     * corecapture (25C56): CCPipe::initWithOwnerNameCapacity
+     * (0xffffff80031dd284) attaches every pipe to its owner, here pciNub;
+     * only CCPipe::startPipe (0xffffff80031dcdb8) runs start(), and
+     * CCPipe::stopPipe (0xffffff80031dcef6) is a plain detach from the owner.
+     * CCLogPipe::stop (0xffffff80031ee9e0) removes its notify timer from the
+     * owner's work loop without checking that start() created one, and
+     * IOService::actionStop calls stop() on any attached client.  The log
+     * and datapath pipes are never started, so when pciNub terminates
+     * (hot-unplug) they must be off the owner before the stop phase.
+     * A started pipe is left to its owner's terminate (its stop() is
+     * valid) unless includeStarted asks for the reference stop order.
+     */
+    CCPipe *const pipes[] = {
+        driverLogPipe, driverDataPathPipe, driverSnapshotsPipe };
+    for (CCPipe *pipe : pipes) {
+        if (pipe == nullptr || pciNub == nullptr)
+            continue;
+        const bool started =
+            pipe == driverSnapshotsPipe && driverSnapshotsPipeStarted;
+        if (started && !includeStarted)
+            continue;
+        if (pipe->isParent(pciNub, gIOServicePlane))
+            pipe->stopPipe();
+    }
+    if (includeStarted)
+        driverSnapshotsPipeStarted = false;
+}
+
+bool AirportItlwm::willTerminate(IOService *provider, IOOptionBits options)
+{
+    // Phase 2 of the terminate of pciNub (or of this controller) runs
+    // before any stop(); take the never-started pipes off pciNub here.
+    stopDriverPipes(false);
+    // stop() of this controller waits for its clients.  The PLTI user
+    // client's terminate is deferred while the agent's thread is inside a
+    // Wait* external method (IOUserClient in-flight IPC), so wake those
+    // waiters now (kIOReturnAborted); the agent then closes and reopens
+    // its connection on the next controller.
+    cancelUserClientWaiters("willTerminate");
+    return super::willTerminate(provider, options);
+}
+
 void AirportItlwm::releaseAll(bool finishLifecycle)
 {
     /*
@@ -9006,6 +9225,7 @@ void AirportItlwm::releaseAll(bool finishLifecycle)
     // still owned; start failures after attachInterface() must take exactly
     // the same fence as normal stop.
     detachSkywalkInterfaceAndFenceBorrowers();
+    deliverPendingPostOfficeMail();
 
     if (fWatchdogWorkLoop) {
         fWatchdogWorkLoop->release();
@@ -9030,6 +9250,10 @@ void AirportItlwm::releaseAll(bool finishLifecycle)
 
     // Queue/pool release is intentionally above this drop: Skywalk logical
     // link teardown can still dereference the packet-pool inventory.
+    deliverPendingPostOfficeMail();
+#if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmReleaseTerminatedInterfaceGlue(fNetIf);
+#endif
     OSSafeReleaseNULL(fNetIf);
     sRT.fNetIfPtr = 0;
 
@@ -9039,10 +9263,9 @@ void AirportItlwm::releaseAll(bool finishLifecycle)
         fBssManager = nullptr;
     }
 #endif
-    if (driverSnapshotsPipe != nullptr && driverSnapshotsPipeStarted) {
-        driverSnapshotsPipe->stopPipe();
-        driverSnapshotsPipeStarted = false;
-    }
+    // Reference AppleBCMWLANBusInterfacePCIe::stop stops every CCPipe it
+    // created (stopPipe) before releasing its stream and the pipe.
+    stopDriverPipes(true);
     OSSafeReleaseNULL(driverLogStream);
     OSSafeReleaseNULL(driverLogPipe);
     OSSafeReleaseNULL(driverDataPathPipe);
@@ -11431,6 +11654,10 @@ bool AirportItlwm::start(IOService *provider)
 {
     struct IOSkywalkEthernetInterface::RegistrationInfo registInfo;
     int boot_value = 0;
+
+#if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmRearmPeerManagerLogBuffers();
+#endif
 
     // ---------------------------------------------------------------
     // Diagnostic panic timer — bitmask tracks every lifecycle phase.
@@ -17562,6 +17789,7 @@ void AirportItlwm::teardownAPSTAInterface()
         fAPSTANetIf->detach(this);
     fAPSTAInterfaceProviderAttached = false;
 
+    deliverPendingPostOfficeMail();
     OSSafeReleaseNULL(fAPSTAMultiCastQueue);
     OSSafeReleaseNULL(fAPSTATxCompQueue);
     for (unsigned int i = 0; i != kAirportItlwmAPSTATxSubQueueCount; ++i)
@@ -17569,6 +17797,10 @@ void AirportItlwm::teardownAPSTAInterface()
     OSSafeReleaseNULL(fAPSTARxQueue);
     OSSafeReleaseNULL(fAPSTATxPool);
     OSSafeReleaseNULL(fAPSTARxPool);
+    deliverPendingPostOfficeMail();
+#if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmReleaseTerminatedInterfaceGlue(fAPSTANetIf);
+#endif
     OSSafeReleaseNULL(fAPSTANetIf);
 }
 

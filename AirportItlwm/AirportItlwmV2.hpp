@@ -538,6 +538,8 @@ public:
     virtual IOService* probe(IOService* provider, SInt32* score) override;
     virtual bool start(IOService *provider) override;
     virtual void stop(IOService *provider) override;
+    virtual bool willTerminate(IOService *provider,
+                               IOOptionBits options) override;
 
 #if __IO80211_TARGET >= __MAC_26_0
     // CR-239 Phase 1 — custom IOUserClient infrastructure for a
@@ -746,15 +748,18 @@ public:
 
     bool createMediumTables(const IONetworkMedium **primary);
     void releaseAll(bool finishLifecycle = true);
+    void stopDriverPipes(bool includeStarted);
     // `detachInterface()` is the framework fence for raw Skywalk queue/pool
     // borrowers.  It must run after producer removal and BSD detach, but
     // before those borrowed objects are released on every stop/failure path.
     void detachSkywalkInterfaceAndFenceBorrowers();
+    void deliverPendingPostOfficeMail();
     void stopHalAndDrain();
     // The normal stop path claims the lifecycle fence before disableAdapter()
     // so no new external handler can enter while the HAL is still live.
     bool beginLifecycleDrain();
     void prepareLifecycleDrain();
+    void cancelUserClientWaiters(const char *reason);
     void stopHalAndDrainClaimed();
     void releaseAPSTAOwnerClaimed();
     void finishLifecycleDrain();
