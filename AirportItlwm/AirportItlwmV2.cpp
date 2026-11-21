@@ -5514,6 +5514,29 @@ static int ieeeChanFlag2apple(int flags, int bw)
     return ret;
 }
 
+/*
+ * AppleBCMWLANCore::getCHANNEL (0xffffff80015c48da) answers, when not
+ * associated, the radio's "chanspec" iovar: while the access point of
+ * Internet Sharing runs, its channel (the Option-click Wi-Fi menu shows it
+ * as "Channel").  Its width is not known here; 20 MHz.
+ */
+static bool fillTahoeApRadioChannel(ItlHalService *hal, struct ieee80211com *ic,
+                                    struct apple80211_channel *channel)
+{
+    const uint16_t number = hal != nullptr ? hal->getAPCurrentChannel() : 0;
+    if (number == 0 || ic == nullptr)
+        return false;
+    for (int i = 0; i <= IEEE80211_CHAN_MAX; i++) {
+        struct ieee80211_channel *c = &ic->ic_channels[i];
+        if (c->ic_freq != 0 && ieee80211_chan2ieee(ic, c) == number) {
+            channel->channel = number;
+            channel->flags = ieeeChanFlag2apple(c->ic_flags, IEEE80211_CHAN_WIDTH_20);
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet)
 {
     if (req == nullptr)
@@ -13570,6 +13593,8 @@ getCHANNEL(OSObject *object, struct apple80211_channel_data *cd)
         cd->channel.channel = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
         cd->channel.flags = ieeeChanFlag2apple(ic->ic_bss->ni_chan->ic_flags,
                                                ic->ic_bss->ni_chw);
+    } else {
+        (void)fillTahoeApRadioChannel(fHalService, ic, &cd->channel);
     }
     return kIOReturnSuccess;
 }
