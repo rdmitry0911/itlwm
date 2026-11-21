@@ -57,6 +57,7 @@ struct vap_hdr {
 #define VAP_FEAT_CQM          (1ull << 8)
 #define VAP_FEAT_POWERSAVE    (1ull << 9)
 #define VAP_FEAT_DATA_8023    (1ull << 10)  /* reserved: 802.3 data frames instead of 802.11 */
+#define VAP_FEAT_AWDL         (1ull << 11)  /* the firmware runs AWDL beside the station (VAP_CMD_AWDL_*) */
 
 /* ---- commands ----------------------------------------------------------- */
 
@@ -79,6 +80,8 @@ enum {
     VAP_CMD_AP_STOP      = 0x51,
     VAP_CMD_AP_STA_DEAUTH = 0x52,
     VAP_CMD_AP_STA_INFO  = 0x53,
+    VAP_CMD_AWDL_CONFIG  = 0x60,
+    VAP_CMD_AWDL_TEMPLATE = 0x61,
 };
 
 enum {
@@ -95,6 +98,8 @@ enum {
     VAP_EVT_AP_STA         = 0xc8,
     VAP_EVT_AP_STOPPED     = 0xc9,
     VAP_EVT_AP_STARTED     = 0xca,
+    VAP_EVT_AWDL_STATE     = 0xd0,
+    VAP_EVT_AWDL_PEER      = 0xd1,
 };
 
 struct vap_hello_req {
@@ -334,6 +339,84 @@ struct vap_evt_ap_sta {
 
 struct vap_evt_ap_stopped { int32_t reason; uint32_t rsvd; };
 
+/* ---- AWDL --------------------------------------------------------------- */
+
+/*
+ * The firmware runs AWDL beside the station, as Apple's own firmware does: it
+ * holds a channel context on the AWDL channel, keeps the availability windows
+ * and the channel schedule, synchronises to the elected master and takes part
+ * in the election, sends the periodic sync frames (PSF) and the master
+ * indication frames (MI) from the guest's templates, and carries data. The
+ * guest's AWDL stack decides the rest: which peers and services, what
+ * schedule it wants, what goes in the frames.
+ *
+ * AWDL_CONFIG always carries the whole configuration; enabled == 0 stops AWDL
+ * and frees its channel context. AWDL_TEMPLATE replaces one template: the
+ * guest's TLVs, to which the firmware adds those it owns (sync parameters,
+ * election parameters v1 and v2, channel sequence; any of these in the
+ * template are replaced).
+ *
+ * Frames with vif VAP_VIF_AWDL: from the firmware, the peers' AWDL action
+ * frames as 802.11 frames without FCS (VAP_RXF_AWDL_ACTION, with the RSSI and
+ * frequency they were received at) and data as 802.3 frames; to the firmware,
+ * data as 802.3 frames (AWDL carries IPv6 only).
+ */
+#define VAP_AWDL_SEQ_LEN 16
+
+struct vap_awdl_config {
+    uint8_t  addr[6];               /* the guest's AWDL interface address */
+    uint8_t  enabled;               /* the stack's "sync enabled" */
+    uint8_t  presence_mode;         /* availability windows per extended window, usually 4 */
+    uint8_t  master_channel;        /* social channel: 6, 44 or 149 */
+    uint8_t  secondary_master_channel;
+    uint8_t  seq_step;              /* availability windows per slot of seq[], minus one */
+    uint8_t  rsvd;
+    uint16_t aw_period_tu;          /* length of an availability window, usually 16 */
+    uint16_t aw_length_tu;
+    uint16_t ext_length_tu;
+    uint16_t sync_frame_period_tu;  /* PSF period, usually 110 */
+    uint32_t election_metric;
+    uint32_t election_id;
+    uint8_t  seq[VAP_AWDL_SEQ_LEN]; /* channel of each slot, 0: away (on the station's channel) */
+    uint8_t  bssid[6];              /* 00:25:00:ff:94:73 */
+    uint8_t  rsvd2[2];
+};
+
+#define VAP_AWDL_TMPL_SYNC  0u      /* TLVs of the periodic sync frame */
+#define VAP_AWDL_TMPL_MI    1u      /* TLVs of the master indication frame (the stack's OOB auto request) */
+#define VAP_AWDL_TMPL_ONCE  2u      /* one action frame now, to dst (the stack's OOB request) */
+
+/* Followed by len bytes of TLVs. */
+struct vap_awdl_template {
+    uint16_t kind;                  /* VAP_AWDL_TMPL_* */
+    uint16_t len;
+    uint8_t  dst[6];                /* ONCE; ff:ff:ff:ff:ff:ff is every peer */
+    uint8_t  rsvd[2];
+};
+
+#define VAP_AWDL_STATE_OFF    0u
+#define VAP_AWDL_STATE_MASTER 1u    /* this card is the master */
+#define VAP_AWDL_STATE_SLAVE  2u    /* synchronised to another master */
+
+/* Sent when AWDL starts or stops and when the election tree changes. */
+struct vap_evt_awdl_state {
+    uint8_t  state;                 /* VAP_AWDL_STATE_* */
+    uint8_t  channel;               /* the channel the firmware's AWDL context is on */
+    uint16_t n_peers;
+    uint8_t  master[6];
+    uint8_t  sync[6];               /* the peer we synchronise to; our own address as master */
+    uint32_t master_metric;
+    uint32_t height;                /* hops to the master */
+};
+
+/* A peer became valid (its master indication was received) or timed out. */
+struct vap_evt_awdl_peer {
+    uint8_t  addr[6];
+    uint8_t  present;
+    int8_t   rssi_dbm;
+    char     name[32];              /* from the peer's ARPA TLV, NUL-terminated, may be empty */
+};
+
 /* ---- frames ------------------------------------------------------------- */
 
 /*
@@ -341,10 +424,12 @@ struct vap_evt_ap_stopped { int32_t reason; uint32_t rsvd; };
  * without FCS, management and data alike, in the clear: the firmware
  * encrypts and decrypts with the keys from KEY_ADD. The firmware owns rate
  * control, aggregation, retries and power save. Access point frames (vif
- * VAP_VIF_AP) are 802.3 data frames.
+ * VAP_VIF_AP) are 802.3 data frames; AWDL frames (vif VAP_VIF_AWDL) are
+ * described in the AWDL section above.
  */
-#define VAP_VIF_STA 0u
-#define VAP_VIF_AP  1u
+#define VAP_VIF_STA  0u
+#define VAP_VIF_AP   1u
+#define VAP_VIF_AWDL 2u
 
 #define VAP_TXF_NO_ENCRYPT  (1u << 0)   /* EAPOL before keys are installed */
 #define VAP_TXF_WANT_STATUS (1u << 1)   /* report with VAP_EVT_TX_STATUS(cookie) */
@@ -363,6 +448,7 @@ struct vap_tx_meta {
 #define VAP_RXF_SYNTHESIZED (1u << 2)   /* built by the firmware, was not on the air in this form */
 #define VAP_RXF_DECRYPTED   (1u << 3)   /* was protected on the air: delivered in the clear,
                                            Protected bit cleared, IV and MIC removed */
+#define VAP_RXF_AWDL_ACTION (1u << 4)   /* vif AWDL: a peer's AWDL action frame (otherwise 802.3 data) */
 
 struct vap_rx_meta {
     uint32_t flags;

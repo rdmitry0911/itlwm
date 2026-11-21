@@ -2,12 +2,17 @@
 //  AirportItlwmAWDLInterface.cpp
 //  AirportItlwm (v-Airport)
 //
-//  Probe stage of awdl0 (see the header). Records what Apple's AWDL stack asks
-//  of the firmware: the call, its bytes, and the frames it hands to awdl0.
-//  Getters echo the last value set where this tree knows the structure size.
-//  Shape and the native rules it relies on (the oob request's pointer at 0x30,
-//  the 24-byte sync state, defaults of sync enabled/state) are from
-//  ForbiddenItlwm's ItlAWDLInterface (GPL-2.0).
+//  awdl0 (see the header). The stack's settings become the firmware's
+//  configuration (VAP_CMD_AWDL_CONFIG, always whole) and its frame templates
+//  (VAP_CMD_AWDL_TEMPLATE); both are sent from the controller's work loop, a
+//  moment after the stack set them, so a setAWDL_* call never waits for the
+//  host. Getters echo the last value set where this tree knows the structure
+//  size. Shape and the native rules it relies on (the oob request's pointer at
+//  0x30, the 24-byte sync state, defaults of sync enabled/state, the 72-byte
+//  action frame metadata with the RSSI at 0x2c) are from ForbiddenItlwm's
+//  ItlAWDLInterface (GPL-2.0); the 25C56 entry points are checked in v-Airport
+//  lab/abi (IO80211Buffer has no virtual methods there, IO80211BufferPool's
+//  getBuffer is virtual slot 0x118).
 //
 
 #include "AirportItlwmAWDLInterface.hpp"
@@ -21,7 +26,50 @@
 #include <sys/proc.h>
 #include <kern/clock.h>
 
+#include "Airport/IOSkywalkNetworkPacket.h"
+
 OSDefineMetaClassAndStructors(AirportItlwmAWDLInterface, IO80211AWDLProtocol)
+
+// The controller's way to the firmware (AirportItlwmV2.cpp -> the v-Airport HAL).
+extern "C" IOReturn airportItlwmVapAWDLRequest(IO80211Controller *controller, uint16_t type,
+                                               const void *payload, uint32_t length);
+extern "C" IOReturn airportItlwmVapAWDLTransmit(IO80211Controller *controller, const void *frame,
+                                                uint32_t length);
+
+// Apple's management frame buffers and the peer manager's input (25C56 exports).
+class IO80211Buffer;
+class IO80211BufferPool;
+extern "C" IO80211BufferPool *vapAWDLMgmtFramePool(IO80211Controller *)
+    __asm__("__ZN17IO80211Controller16getMgmtFramePoolEv");
+extern "C" void *vapAWDLBufferBytes(IO80211Buffer *)
+    __asm__("__ZN13IO80211Buffer14getBytesNoCopyEv");
+extern "C" size_t vapAWDLBufferCapacity(const IO80211Buffer *)
+    __asm__("__ZNK13IO80211Buffer11getCapacityEv");
+extern "C" void vapAWDLBufferSetLength(IO80211Buffer *, size_t)
+    __asm__("__ZN13IO80211Buffer9setLengthEm");
+extern "C" void vapAWDLBufferReturn(IO80211Buffer *)
+    __asm__("__ZN13IO80211Buffer12returnBufferEv");
+// Consumes the buffer on every path: the peer manager keeps it or the pool gets it back.
+extern "C" void vapAWDLActionInput(IO80211VirtualInterface *, IO80211Buffer *, unsigned int, void *,
+                                   unsigned long)
+    __asm__("__ZN23IO80211VirtualInterface11bpfTapInputEP13IO80211BufferjPvm");
+
+static constexpr unsigned kPoolGetBufferSlot = 0x118 / sizeof(void *);
+static constexpr unsigned kManagementFrameType = 12;   // action frame (the native callers pass 0xc)
+
+// What IO80211AWDLPeerManager::actionFrameInput takes with an action frame: at most 72 bytes.
+struct VapAWDLFrameMetadata {
+    uint8_t peer[6];
+    uint8_t reserved[6];
+    uint32_t version;
+    uint32_t channel;
+    uint32_t channelFlags;
+    uint8_t tail[20];
+    int32_t rssi;           // dBm; a peer is taken only above the stack's threshold
+    uint8_t tail2[24];
+};
+static_assert(sizeof(VapAWDLFrameMetadata) == 72, "AWDL management metadata");
+static_assert(__offsetof(VapAWDLFrameMetadata, rssi) == 0x2c, "AWDL metadata RSSI");
 
 static constexpr unsigned kTraceCapacity = 600;
 static constexpr size_t kUnknownLength = 16;      // never written back
@@ -43,6 +91,35 @@ static void hexInto(char *out, size_t outSize, const uint8_t *bytes, size_t leng
 bool AirportItlwmAWDLInterface::initWithController(IO80211Controller *controller,
                                                    ether_addr *address)
 {
+    fController = controller;
+    fWorkLoop = nullptr;
+    fFlushTimer = nullptr;
+    fFlushPending = false;
+    fConfigDirty = fFirmwareRunning = false;
+    fConfigResult = kIOReturnSuccess;
+    bzero(&fConfig, sizeof(fConfig));
+    bzero(fTemplateLength, sizeof(fTemplateLength));
+    bzero(fTemplateDirty, sizeof(fTemplateDirty));
+    fConfig.presence_mode = 4;
+    fConfig.master_channel = 6;
+    fConfig.seq_step = 3;
+    fConfig.aw_period_tu = fConfig.aw_length_tu = fConfig.ext_length_tu = 16;
+    fConfig.sync_frame_period_tu = 110;
+    for (unsigned i = 0; i < VAP_AWDL_SEQ_LEN; ++i)
+        fConfig.seq[i] = 6;
+    static const uint8_t bssid[6] = { 0x00, 0x25, 0x00, 0xff, 0x94, 0x73 };
+    memcpy(fConfig.bssid, bssid, sizeof(bssid));
+    if (address)
+        memcpy(fConfig.addr, address->octet, 6);
+    fRingLock = IOSimpleLockAlloc();
+    fTxCompletion = nullptr;
+    fRxCompletion = nullptr;
+    fRxPool = nullptr;
+    fTxDoneHead = fTxDoneCount = fRxHead = fRxCount = 0;
+    fTxFrames = fTxDropped = fRxFrames = fRxDropped = fActionFrames = fActionDropped = 0;
+    fPeersAdded = fPeersRemoved = fStateEvents = 0;
+    if (!fRingLock)
+        return false;
     fLock = IOLockAlloc();
     fCounts = OSDictionary::withCapacity(80);
     fLastSet = OSDictionary::withCapacity(40);
@@ -62,6 +139,11 @@ bool AirportItlwmAWDLInterface::initWithController(IO80211Controller *controller
 
 void AirportItlwmAWDLInterface::free()
 {
+    detachDataPath();
+    if (fRingLock) {
+        IOSimpleLockFree(fRingLock);
+        fRingLock = nullptr;
+    }
     OSSafeReleaseNULL(fCounts);
     OSSafeReleaseNULL(fLastSet);
     OSSafeReleaseNULL(fTrace);
@@ -199,10 +281,11 @@ void AirportItlwmAWDLInterface::noteTransmit(IOSkywalkPacket *const *packets, UI
 UInt32 AirportItlwmAWDLInterface::transmitAction(OSObject *owner, IOSkywalkTxSubmissionQueue *,
                                                  IOSkywalkPacket *const *packets, UInt32 count, void *)
 {
-    // Nothing reaches the radio at this stage: frames stay with Skywalk.
-    if (auto *self = OSDynamicCast(AirportItlwmAWDLInterface, owner))
-        self->noteTransmit(packets, count);
-    return 0;
+    auto *self = OSDynamicCast(AirportItlwmAWDLInterface, owner);
+    if (!self)
+        return 0;
+    self->noteTransmit(packets, count);
+    return self->transmitPackets(packets, count);
 }
 
 IOReturn AirportItlwmAWDLInterface::processBSDCommand(ifnet_t interface, UInt cmd, void *data)
@@ -243,6 +326,12 @@ void AirportItlwmAWDLInterface::setMacAddress(ether_addr &address)
 {
     fAddress = address;
     note("setMacAddress", &address, sizeof(address));
+    if (fLock) {
+        IOLockLock(fLock);
+        memcpy(fConfig.addr, address.octet, 6);
+        IOLockUnlock(fLock);
+        configChanged();
+    }
 }
 
 // ---- IO80211AWDLProtocol ---------------------------------------------------
@@ -338,20 +427,11 @@ IOReturn AirportItlwmAWDLInterface::getAWDL_AF_SECONDARY_PAYLOAD_CAPABILITIES(st
 
 IOReturn AirportItlwmAWDLInterface::setSSID(struct apple80211_ssid_data *data) { return noteSet("SSID", data, sizeof(*data)); }
 IOReturn AirportItlwmAWDLInterface::setCHANNEL(struct apple80211_channel_data *data) { return noteSet("CHANNEL", data, sizeof(*data)); }
-VAP_SET_KNOWN(AWDL_SYNC_PARAMS, apple80211_awdl_sync_params)
-VAP_SET_KNOWN(AWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
 VAP_SET_KNOWN(AWDL_EXTENSION_STATE_MACHINE_PARAMETERS, apple80211_awdl_extension_state_machine_parameter)
-VAP_SET_KNOWN(AWDL_ELECTION_ID, apple80211_awdl_election_id)
-VAP_SET_KNOWN(AWDL_BSSID, apple80211_awdl_bssid)
-VAP_SET_KNOWN(AWDL_ELECTION_METRIC, apple80211_awdl_election_metric)
-VAP_SET_KNOWN(AWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE, apple80211_awdl_sync_channel_sequence)
-VAP_SET_KNOWN(AWDL_MASTER_CHANNEL, apple80211_awdl_master_channel)
 VAP_SET_KNOWN(AWDL_SYNC_STATE, apple80211_awdl_sync_state)
 VAP_SET_KNOWN(AWDL_ELECTION_RSSI_THRESHOLDS, apple80211_awdl_election_rssi_thresholds)
-VAP_SET_KNOWN(AWDL_PRESENCE_MODE, apple80211_awdl_presence_mode)
 VAP_SET_UNKNOWN(PEER_CACHE_CONTROL, apple80211_peer_cache_control)
 VAP_SET_UNKNOWN(AWDL_ELECTION_PARAMS, apple80211_awdl_election_params)
-VAP_SET_KNOWN(AWDL_SECONDARY_MASTER_CHANNEL, apple80211_awdl_secondary_master_channel)
 VAP_SET_UNKNOWN(AWDL_MIN_RATE, apple80211_awdl_min_rate)
 VAP_SET_UNKNOWN(AWDL_ENCRYPTION_KEYS, apple80211_key)
 VAP_SET_UNKNOWN(AWDL_ENCRYPTION_TYPE, apple80211_encrypt)
@@ -367,6 +447,58 @@ VAP_SET_UNKNOWN(P2P_COEX_PROTECTION, apple80211_p2p_coex_protection)
 VAP_SET_UNKNOWN(PSF_DWELL, apple80211_awdl_psf_dwell_params)
 VAP_SET_UNKNOWN(AWDL_CONFIG, apple80211_awdl_config_request)
 VAP_SET_UNKNOWN(AWDL_RTG_PEER_STATS_CONFIG, apple80211_rtg_peer_stats_cfg)
+
+// ---- settings the firmware runs on -------------------------------------------
+//
+// Each records the call, updates the firmware's configuration under fLock and
+// asks for it to be sent; flush() sends the whole configuration once for any
+// number of changes in between.
+
+#define VAP_SET_CONFIG(Name, Type, Apply) \
+    IOReturn AirportItlwmAWDLInterface::set##Name(struct Type *data) \
+    { \
+        IOReturn result = noteSet(#Name, data, sizeof(struct Type)); \
+        if (result != kIOReturnSuccess || !fLock) \
+            return result; \
+        IOLockLock(fLock); \
+        { Apply; } \
+        IOLockUnlock(fLock); \
+        configChanged(); \
+        return kIOReturnSuccess; \
+    }
+
+VAP_SET_CONFIG(AWDL_SYNC_PARAMS, apple80211_awdl_sync_params,
+    if (data->availability_window_period) fConfig.aw_period_tu = (uint16_t)data->availability_window_period;
+    if (data->availability_window_length) fConfig.aw_length_tu = (uint16_t)data->availability_window_length;
+    fConfig.ext_length_tu = (uint16_t)data->extension_length;
+    if (data->synchronization_frame_period)
+        fConfig.sync_frame_period_tu = (uint16_t)data->synchronization_frame_period)
+VAP_SET_CONFIG(AWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled,
+    fConfig.enabled = data->enabled ? 1 : 0)
+VAP_SET_CONFIG(AWDL_ELECTION_ID, apple80211_awdl_election_id,
+    fConfig.election_id = data->election_id)
+VAP_SET_CONFIG(AWDL_BSSID, apple80211_awdl_bssid,
+    memcpy(fConfig.bssid, data->bssid, 6))
+VAP_SET_CONFIG(AWDL_ELECTION_METRIC, apple80211_awdl_election_metric,
+    fConfig.election_metric = data->metric)
+VAP_SET_CONFIG(AWDL_MASTER_CHANNEL, apple80211_awdl_master_channel,
+    if (data->master_channel && data->master_channel <= 0xff) fConfig.master_channel = (uint8_t)data->master_channel)
+VAP_SET_CONFIG(AWDL_SECONDARY_MASTER_CHANNEL, apple80211_awdl_secondary_master_channel,
+    fConfig.secondary_master_channel = (uint8_t)(data->secondary_master_channel <= 0xff ? data->secondary_master_channel : 0))
+VAP_SET_CONFIG(AWDL_PRESENCE_MODE, apple80211_awdl_presence_mode,
+    if (data->mode && data->mode <= 16) fConfig.presence_mode = (uint8_t)data->mode)
+// 25C56 sends 12-byte slots from offset 16, the channel in the first 32-bit word (ForbiddenItlwm
+// read the same on 25G241): (6, 8, 1) for a slot on channel 6, (0, 0, 1) for one away.
+VAP_SET_CONFIG(AWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE, apple80211_awdl_sync_channel_sequence,
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    const unsigned slots = data->length ? data->length : VAP_AWDL_SEQ_LEN;
+    fConfig.seq_step = data->step_count;
+    for (unsigned i = 0; i < VAP_AWDL_SEQ_LEN; ++i) {
+        uint32_t channel = 0;
+        if (i < slots && 16 + 12 * i + 4 <= sizeof(*data))
+            memcpy(&channel, raw + 16 + 12 * i, sizeof(channel));
+        fConfig.seq[i] = channel <= 0xff ? (uint8_t)channel : 0;
+    })
 
 IOReturn AirportItlwmAWDLInterface::setAWDL_AF_TX_MODE(struct apple80211_awdl_af_tx_mode *data)
 {
@@ -402,7 +534,21 @@ IOReturn AirportItlwmAWDLInterface::setAWDL_SYNC_FRAME_TEMPLATE(struct apple8021
             copy->release();
         }
     }
+    if (data->payload && length <= kTemplateMax)
+        templateChanged(VAP_AWDL_TMPL_SYNC, static_cast<const uint8_t *>(data->payload), length);
     return kIOReturnSuccess;
+}
+
+// The frame's TLVs of an out-of-band request: length at 0x28, a kernel pointer at 0x30 (ForbiddenItlwm).
+static const uint8_t *vapOobPayload(const struct apple80211_awdl_oob_request *data, uint16_t *length)
+{
+    const uint8_t *header = reinterpret_cast<const uint8_t *>(data);
+    const uint8_t *source;
+    memcpy(length, header + 0x28, sizeof(*length));
+    memcpy(&source, header + 0x30, sizeof(source));
+    if (reinterpret_cast<uintptr_t>(source) < 0xffffff8000000000ULL || !*length || *length > 0x4b0)
+        return nullptr;
+    return source;
 }
 
 static void vapNoteOob(AirportItlwmAWDLInterface *self, const char *name,
@@ -435,6 +581,9 @@ IOReturn AirportItlwmAWDLInterface::setAWDL_OOB_REQUEST(struct apple80211_awdl_o
         return kIOReturnBadArgument;
     noteSet("AWDL_OOB_REQUEST", data, 0);
     vapNoteOob(this, "VAPAWDLOobRequest", data);
+    uint16_t length = 0;
+    if (const uint8_t *tlvs = vapOobPayload(data, &length))
+        templateChanged(VAP_AWDL_TMPL_ONCE, tlvs, length);
     return kIOReturnSuccess;
 }
 
@@ -444,7 +593,377 @@ IOReturn AirportItlwmAWDLInterface::setAWDL_OOB_AUTO_REQUEST(struct apple80211_a
         return kIOReturnBadArgument;
     noteSet("AWDL_OOB_AUTO_REQUEST", data, 0);
     vapNoteOob(this, "VAPAWDLOobAutoRequest", data);
+    uint16_t length = 0;
+    if (const uint8_t *tlvs = vapOobPayload(data, &length))
+        templateChanged(VAP_AWDL_TMPL_MI, tlvs, length);
     return kIOReturnSuccess;
+}
+
+// ---- the firmware side ---------------------------------------------------------
+
+void AirportItlwmAWDLInterface::configChanged()
+{
+    if (!fLock)
+        return;
+    IOLockLock(fLock);
+    fConfigDirty = true;
+    IOLockUnlock(fLock);
+    kick();
+}
+
+void AirportItlwmAWDLInterface::templateChanged(unsigned kind, const uint8_t *tlvs, size_t length)
+{
+    if (!fLock || kind > VAP_AWDL_TMPL_ONCE || length > kTemplateMax || (length && !tlvs))
+        return;
+    IOLockLock(fLock);
+    // The stack sets the same template again and again: only a new one goes down.
+    const bool same = kind != VAP_AWDL_TMPL_ONCE && fTemplateLength[kind] == length &&
+        !memcmp(fTemplate[kind], tlvs, length);
+    if (!same) {
+        memcpy(fTemplate[kind], tlvs, length);
+        fTemplateLength[kind] = (uint16_t)length;
+        fTemplateDirty[kind] = true;
+    }
+    IOLockUnlock(fLock);
+    if (!same)
+        kick();
+}
+
+void AirportItlwmAWDLInterface::kick()
+{
+    IOTimerEventSource *timer = fFlushTimer;
+    if (!timer || __atomic_exchange_n(&fFlushPending, true, __ATOMIC_ACQ_REL))
+        return;
+    timer->setTimeoutUS(500);       // the stack sets several things in a row
+}
+
+void AirportItlwmAWDLInterface::flushAction(OSObject *owner, IOTimerEventSource *)
+{
+    if (auto *self = OSDynamicCast(AirportItlwmAWDLInterface, owner))
+        self->flush();
+}
+
+// In the work loop: the configuration if it changed, then any new template.
+void AirportItlwmAWDLInterface::flush()
+{
+    struct vap_awdl_config config;
+    bool sendConfig;
+
+    __atomic_store_n(&fFlushPending, false, __ATOMIC_RELEASE);
+    if (!fLock || !fController)
+        return;
+    IOLockLock(fLock);
+    sendConfig = fConfigDirty;
+    fConfigDirty = false;
+    config = fConfig;
+    IOLockUnlock(fLock);
+    if (sendConfig && (config.enabled || fFirmwareRunning)) {
+        const bool was = fFirmwareRunning;
+        fConfigResult = airportItlwmVapAWDLRequest(fController, VAP_CMD_AWDL_CONFIG, &config, sizeof(config));
+        fFirmwareRunning = config.enabled && fConfigResult == kIOReturnSuccess;
+        char text[96];
+        snprintf(text, sizeof(text), "%s ch %u seq %u%u%u%u -> 0x%x", config.enabled ? "on" : "off",
+                 config.master_channel, config.seq[0], config.seq[4], config.seq[8], config.seq[12], fConfigResult);
+        setProperty("VAPAWDLFirmwareConfig", text);
+        if (fFirmwareRunning != was)
+            IOLog("VAPAWDL firmware AWDL %s (0x%x)\n", fFirmwareRunning ? "running" : "stopped", fConfigResult);
+        if (fFirmwareRunning && !was) {
+            // A fresh start in the firmware: it has no templates yet.
+            IOLockLock(fLock);
+            for (unsigned k = VAP_AWDL_TMPL_SYNC; k <= VAP_AWDL_TMPL_MI; ++k)
+                if (fTemplateLength[k])
+                    fTemplateDirty[k] = true;
+            IOLockUnlock(fLock);
+        }
+    }
+    if (!fFirmwareRunning)
+        return;
+    for (unsigned kind = VAP_AWDL_TMPL_SYNC; kind <= VAP_AWDL_TMPL_ONCE; ++kind) {
+        auto *t = reinterpret_cast<struct vap_awdl_template *>(fSend);
+        IOLockLock(fLock);
+        const bool dirty = fTemplateDirty[kind];
+        fTemplateDirty[kind] = false;
+        bzero(t, sizeof(*t));
+        t->kind = (uint16_t)kind;
+        t->len = fTemplateLength[kind];
+        memcpy(fSend + sizeof(*t), fTemplate[kind], t->len);
+        IOLockUnlock(fLock);
+        if (!dirty)
+            continue;
+        if (kind == VAP_AWDL_TMPL_ONCE)
+            memset(t->dst, 0xff, sizeof(t->dst));
+        const IOReturn result = airportItlwmVapAWDLRequest(fController, VAP_CMD_AWDL_TEMPLATE, fSend,
+                                                           (uint32_t)(sizeof(*t) + t->len));
+        if (result != kIOReturnSuccess) {
+            char text[48];
+            snprintf(text, sizeof(text), "kind %u len %u -> 0x%x", kind, t->len, result);
+            setProperty("VAPAWDLFirmwareTemplateError", text);
+        }
+    }
+}
+
+// ---- data path ----------------------------------------------------------------
+
+void AirportItlwmAWDLInterface::attachDataPath(IOWorkLoop *workLoop, IOSkywalkTxCompletionQueue *txCompletion,
+                                               IOSkywalkRxCompletionQueue *rxCompletion,
+                                               IOSkywalkPacketBufferPool *rxPool)
+{
+    fTxCompletion = txCompletion;
+    fRxCompletion = rxCompletion;
+    fRxPool = rxPool;
+    fWorkLoop = workLoop;
+    if (workLoop && !fFlushTimer) {
+        fFlushTimer = IOTimerEventSource::timerEventSource(this, flushAction);
+        if (fFlushTimer && workLoop->addEventSource(fFlushTimer) != kIOReturnSuccess)
+            OSSafeReleaseNULL(fFlushTimer);
+    }
+    setProperty("VAPAWDLStage", fFlushTimer ? "firmware" : "firmware-no-timer");
+    if (fConfigDirty)
+        kick();
+}
+
+void AirportItlwmAWDLInterface::detachDataPath()
+{
+    IOSkywalkPacket *rx[kRing];
+    unsigned nrx = 0, ntx;
+
+    if (fFlushTimer) {
+        fFlushTimer->cancelTimeout();
+        if (fWorkLoop)
+            fWorkLoop->removeEventSource(fFlushTimer);
+        OSSafeReleaseNULL(fFlushTimer);
+    }
+    if (fFirmwareRunning && fController && fLock) {
+        struct vap_awdl_config config;
+        IOLockLock(fLock);
+        config = fConfig;
+        IOLockUnlock(fLock);
+        config.enabled = 0;
+        airportItlwmVapAWDLRequest(fController, VAP_CMD_AWDL_CONFIG, &config, sizeof(config));
+        fFirmwareRunning = false;
+    }
+    if (!fRingLock)
+        return;
+    IOSimpleLockLock(fRingLock);
+    while (fRxCount) {
+        rx[nrx++] = fRxReady[fRxHead];
+        fRxHead = (fRxHead + 1) % kRing;
+        --fRxCount;
+    }
+    // Accepted transmit packets not completed yet can't be any more: the queues go (as ForbiddenItlwm).
+    ntx = fTxDoneCount;
+    fTxDoneCount = fTxDoneHead = 0;
+    IOSimpleLockUnlock(fRingLock);
+    for (unsigned i = 0; i < nrx; ++i) {
+        rx[i]->completeWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0);
+        if (fRxPool)
+            fRxPool->deallocatePacket(rx[i]);
+    }
+    if (ntx)
+        setProperty("VAPAWDLTxAbandonedAtStop", ntx, 32);
+    fTxCompletion = nullptr;
+    fRxCompletion = nullptr;
+    fRxPool = nullptr;
+}
+
+void AirportItlwmAWDLInterface::publishCounters()
+{
+    char text[128];
+    snprintf(text, sizeof(text), "tx %u drop %u, rx %u drop %u, action %u drop %u, peers +%u -%u, states %u",
+             fTxFrames, fTxDropped, fRxFrames, fRxDropped, fActionFrames, fActionDropped, fPeersAdded,
+             fPeersRemoved, fStateEvents);
+    setProperty("VAPAWDLData", text);
+}
+
+static bool vapAWDLCountShown(uint32_t n)
+{
+    return n <= 8 || !(n % 64);
+}
+
+UInt32 AirportItlwmAWDLInterface::transmitPackets(IOSkywalkPacket *const *packets, UInt32 count)
+{
+    UInt32 accepted = 0;
+
+    if (!fTxCompletion || !packets || !fRingLock)
+        return 0;
+    for (; accepted < count; ++accepted) {
+        IOSkywalkPacket *packet = packets[accepted];
+        IOSimpleLockLock(fRingLock);
+        const bool room = fTxDoneCount < kRing;
+        IOSimpleLockUnlock(fRingLock);
+        if (!room)
+            break;                  // the rest stays with Skywalk until completions free the ring
+        if (!packet)
+            continue;
+        const uint8_t *base = static_cast<const uint8_t *>(packet->getDataVirtualAddress());
+        const UInt32 offset = packet->getDataOffset();
+        const UInt32 length = packet->getDataLength();
+        IOReturn result = kIOReturnBadArgument;
+        if (base && length >= 14 && offset <= kBufferSize && length <= kBufferSize - offset)
+            result = airportItlwmVapAWDLTransmit(fController, base + offset, length);
+        if (result == kIOReturnSuccess)
+            ++fTxFrames;
+        else
+            ++fTxDropped;           // the firmware had no room or the frame is not for AWDL: as a full NIC
+        IOSimpleLockLock(fRingLock);
+        fTxDone[(fTxDoneHead + fTxDoneCount) % kRing] = packet;
+        ++fTxDoneCount;
+        IOSimpleLockUnlock(fRingLock);
+    }
+    if (accepted)
+        fTxCompletion->requestEnqueue(nullptr, 0);
+    if (vapAWDLCountShown(fTxFrames + fTxDropped))
+        publishCounters();
+    return accepted;
+}
+
+UInt32 AirportItlwmAWDLInterface::popTransmitted(IOSkywalkPacket **packets, UInt32 count)
+{
+    UInt32 n = 0;
+
+    if (!packets || !fRingLock)
+        return 0;
+    IOSimpleLockLock(fRingLock);
+    while (n < count && fTxDoneCount) {
+        packets[n++] = fTxDone[fTxDoneHead];
+        fTxDoneHead = (fTxDoneHead + 1) % kRing;
+        --fTxDoneCount;
+    }
+    IOSimpleLockUnlock(fRingLock);
+    return n;
+}
+
+UInt32 AirportItlwmAWDLInterface::popReceived(IOSkywalkPacket **packets, UInt32 count)
+{
+    UInt32 n = 0;
+
+    if (!packets || !fRingLock)
+        return 0;
+    IOSimpleLockLock(fRingLock);
+    while (n < count && fRxCount) {
+        packets[n++] = fRxReady[fRxHead];
+        fRxHead = (fRxHead + 1) % kRing;
+        --fRxCount;
+    }
+    IOSimpleLockUnlock(fRingLock);
+    return n;
+}
+
+// One 802.3 frame from the firmware into awdl0, as ForbiddenItlwm delivers it: straight to the
+// receive ring (headroom 0, a 14-byte link header), not through IO80211's per-peer input.
+void AirportItlwmAWDLInterface::inputData(const uint8_t *frame, uint32_t length)
+{
+    IOSkywalkPacket *packet = nullptr;
+    bool staged = false;
+
+    if (!fRxPool || !fRxCompletion || !fRingLock || length < 14 || length > kBufferSize) {
+        ++fRxDropped;
+        return;
+    }
+    if (fRxPool->allocatePacket(1, &packet, 0) != kIOReturnSuccess || !packet) {
+        ++fRxDropped;
+        return;
+    }
+    if (packet->prepareWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0) == kIOReturnSuccess) {
+        void *base = packet->getDataVirtualAddress();
+        if (base) {
+            memcpy(base, frame, length);
+            if (packet->setDataOffsetAndLength(0, length) == kIOReturnSuccess) {
+                auto *network = static_cast<IOSkywalkNetworkPacket *>(packet);
+                network->setHeadroom(0);
+                network->setLinkHeaderLength(14);
+                IOSimpleLockLock(fRingLock);
+                if (fRxCount < kRing) {
+                    fRxReady[(fRxHead + fRxCount) % kRing] = packet;
+                    ++fRxCount;
+                    staged = true;
+                }
+                IOSimpleLockUnlock(fRingLock);
+            }
+        }
+    }
+    if (!staged) {
+        packet->completeWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0);
+        fRxPool->deallocatePacket(packet);
+        ++fRxDropped;
+        return;
+    }
+    ++fRxFrames;
+    fRxCompletion->requestEnqueue(nullptr, 0);
+    if (vapAWDLCountShown(fRxFrames))
+        publishCounters();
+}
+
+// A peer's action frame into Apple's peer manager, with the RSSI it needs to take the peer.
+void AirportItlwmAWDLInterface::inputAction(const uint8_t *frame, uint32_t length, uint16_t freq, int8_t rssi)
+{
+    if (!fController || length < 24 + 8 || frame[24] != 127) {
+        ++fActionDropped;
+        return;
+    }
+    IO80211BufferPool *pool = vapAWDLMgmtFramePool(fController);
+    if (!pool) {
+        ++fActionDropped;
+        return;
+    }
+    auto getBuffer = reinterpret_cast<IO80211Buffer *(*)(IO80211BufferPool *)>(
+        (*reinterpret_cast<void *const *const *>(pool))[kPoolGetBufferSlot]);
+    IO80211Buffer *buffer = getBuffer(pool);
+    if (!buffer) {
+        ++fActionDropped;
+        return;
+    }
+    uint8_t *bytes = static_cast<uint8_t *>(vapAWDLBufferBytes(buffer));
+    const size_t body = length - 24;    // the peer manager reads from the category on
+    if (!bytes || body > vapAWDLBufferCapacity(buffer)) {
+        vapAWDLBufferReturn(buffer);
+        ++fActionDropped;
+        return;
+    }
+    memcpy(bytes, frame + 24, body);
+    vapAWDLBufferSetLength(buffer, body);
+    VapAWDLFrameMetadata meta;
+    bzero(&meta, sizeof(meta));
+    memcpy(meta.peer, frame + 10, 6);
+    meta.version = 1;
+    const unsigned channel = freq >= 5000 ? (freq - 5000) / 5 : freq == 2484 ? 14 : freq > 2407 ? (freq - 2407) / 5 : 0;
+    meta.channel = channel;
+    meta.channelFlags = channel <= 14 ? APPLE80211_C_FLAG_2GHZ : APPLE80211_C_FLAG_5GHZ;
+    meta.rssi = rssi;
+    vapAWDLActionInput(this, buffer, kManagementFrameType, &meta, sizeof(meta));
+    ++fActionFrames;
+    if (vapAWDLCountShown(fActionFrames))
+        publishCounters();
+}
+
+void AirportItlwmAWDLInterface::firmwareEvent(uint16_t type, const void *payload, uint32_t length)
+{
+    char text[128];
+
+    if (type == VAP_EVT_AWDL_STATE && length >= sizeof(struct vap_evt_awdl_state)) {
+        struct vap_evt_awdl_state e;
+        memcpy(&e, payload, sizeof(e));
+        ++fStateEvents;
+        snprintf(text, sizeof(text), "%s ch %u peers %u master %02x:%02x:%02x:%02x:%02x:%02x metric %u hops %u",
+                 e.state == VAP_AWDL_STATE_MASTER ? "master" : e.state == VAP_AWDL_STATE_SLAVE ? "slave" : "off",
+                 e.channel, e.n_peers, e.master[0], e.master[1], e.master[2], e.master[3], e.master[4],
+                 e.master[5], e.master_metric, e.height);
+        setProperty("VAPAWDLFirmwareState", text);
+        IOLog("VAPAWDL firmware %s\n", text);
+    } else if (type == VAP_EVT_AWDL_PEER && length >= sizeof(struct vap_evt_awdl_peer)) {
+        struct vap_evt_awdl_peer e;
+        memcpy(&e, payload, sizeof(e));
+        e.name[sizeof(e.name) - 1] = 0;
+        if (e.present)
+            ++fPeersAdded;
+        else
+            ++fPeersRemoved;
+        snprintf(text, sizeof(text), "%s %02x:%02x:%02x:%02x:%02x:%02x \"%s\"", e.present ? "added" : "removed",
+                 e.addr[0], e.addr[1], e.addr[2], e.addr[3], e.addr[4], e.addr[5], e.name);
+        setProperty("VAPAWDLFirmwareLastPeer", text);
+        IOLog("VAPAWDL firmware peer %s\n", text);
+    }
+    publishCounters();
 }
 
 #endif /* __IO80211_TARGET >= __MAC_26_0 */

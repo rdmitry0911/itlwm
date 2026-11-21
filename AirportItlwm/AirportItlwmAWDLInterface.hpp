@@ -3,10 +3,12 @@
 //  AirportItlwm (v-Airport)
 //
 //  awdl0 for Tahoe: a concrete IO80211AWDLProtocol. Ported in shape from
-//  ForbiddenItlwm's ItlAWDLInterface (GPL-2.0). This is the probe stage of
-//  v-Airport's AWDL (docs/AWDL_FEASIBILITY.md): every request Apple's stack
-//  makes of the "firmware" is recorded and acknowledged, nothing goes to the
-//  radio yet. Enabled only by the boot-arg -vapawdl.
+//  ForbiddenItlwm's ItlAWDLInterface (GPL-2.0). The "firmware" of AWDL runs
+//  on the v-Airport host (vap_proto.h, "AWDL"; v-Airport docs/AWDL_FEASIBILITY.md):
+//  this interface is thin. It turns the stack's setAWDL_* calls into the
+//  firmware's configuration and templates, hands the peers' action frames to
+//  Apple's peer manager and carries awdl0's data. Every request is also
+//  recorded in the I/O Registry. Enabled only by the boot-arg -vapawdl.
 //
 
 #ifndef AirportItlwmAWDLInterface_hpp
@@ -19,8 +21,15 @@
 #include "Airport/IO80211AWDLProtocol.h"
 #include <IOKit/IOLocks.h>
 #include <skywalk/packet/os_packet.h>
+#include <IOKit/IOTimerEventSource.h>
+#include <IOKit/IOWorkLoop.h>
 #include <IOKit/skywalk/IOSkywalkPacket.h>
+#include <IOKit/skywalk/IOSkywalkPacketBufferPool.h>
 #include <IOKit/skywalk/IOSkywalkTxSubmissionQueue.h>
+#include <IOKit/skywalk/IOSkywalkTxCompletionQueue.h>
+#include <IOKit/skywalk/IOSkywalkRxCompletionQueue.h>
+
+#include "../itlwm/hal_virt/vap_proto.h"
 
 class AirportItlwmAWDLInterface : public IO80211AWDLProtocol {
     OSDeclareDefaultStructors(AirportItlwmAWDLInterface)
@@ -169,12 +178,37 @@ public:
     // Recording, also used by the controller for its own AWDL steps.
     void note(const char *what, const void *bytes, size_t length);
 
+    // The data path, set up by the controller around its pools and queues.
+    void attachDataPath(IOWorkLoop *workLoop, IOSkywalkTxCompletionQueue *txCompletion,
+                        IOSkywalkRxCompletionQueue *rxCompletion, IOSkywalkPacketBufferPool *rxPool);
+    void detachDataPath();
+    UInt32 popTransmitted(IOSkywalkPacket **packets, UInt32 count);
+    UInt32 popReceived(IOSkywalkPacket **packets, UInt32 count);
+
+    // From the firmware (vif VAP_VIF_AWDL), in the controller's work loop.
+    void inputAction(const uint8_t *frame, uint32_t length, uint16_t freq, int8_t rssi);
+    void inputData(const uint8_t *frame, uint32_t length);
+    void firmwareEvent(uint16_t type, const void *payload, uint32_t length);
+
 private:
     // Requests whose size this tree knows are echoed back by their getter.
     IOReturn noteSet(const char *name, const void *data, size_t knownLength);
     IOReturn noteGet(const char *name, void *data, size_t knownLength);
     void noteTransmit(IOSkywalkPacket *const *packets, UInt32 count);
     void publish();
+
+    // The firmware side: configuration and templates, sent from the work loop.
+    void configChanged();
+    void templateChanged(unsigned kind, const uint8_t *tlvs, size_t length);
+    void kick();
+    static void flushAction(OSObject *owner, IOTimerEventSource *sender);
+    void flush();
+    UInt32 transmitPackets(IOSkywalkPacket *const *packets, UInt32 count);
+    void publishCounters();
+
+    static constexpr unsigned kTemplateMax = 1500;
+    static constexpr unsigned kRing = 512;
+    static constexpr unsigned kBufferSize = 2048;   // the awdl0 pools' buffers (SKYWALK_BUF_SIZE)
 
     IOLock *fLock;
     OSDictionary *fCounts;      // name -> calls
@@ -184,6 +218,29 @@ private:
     uint32_t fTransmitCallbacks;
     uint32_t fTransmitOffered;
     ether_addr fAddress;
+
+    IO80211Controller *fController;
+    IOWorkLoop *fWorkLoop;
+    IOTimerEventSource *fFlushTimer;
+    bool fFlushPending;
+    struct vap_awdl_config fConfig;     // under fLock
+    bool fConfigDirty, fFirmwareRunning;
+    IOReturn fConfigResult;
+    uint8_t fTemplate[3][kTemplateMax];         // VAP_AWDL_TMPL_SYNC, _MI, _ONCE
+    uint16_t fTemplateLength[3];
+    bool fTemplateDirty[3];
+    uint8_t fSend[sizeof(struct vap_awdl_template) + kTemplateMax];   // the work loop's request buffer
+
+    IOSimpleLock *fRingLock;
+    IOSkywalkTxCompletionQueue *fTxCompletion;
+    IOSkywalkRxCompletionQueue *fRxCompletion;
+    IOSkywalkPacketBufferPool *fRxPool;
+    IOSkywalkPacket *fTxDone[kRing];
+    unsigned fTxDoneHead, fTxDoneCount;
+    IOSkywalkPacket *fRxReady[kRing];
+    unsigned fRxHead, fRxCount;
+    uint32_t fTxFrames, fTxDropped, fRxFrames, fRxDropped, fActionFrames, fActionDropped;
+    uint32_t fPeersAdded, fPeersRemoved, fStateEvents;
 };
 
 #endif /* __IO80211_TARGET >= __MAC_26_0 */

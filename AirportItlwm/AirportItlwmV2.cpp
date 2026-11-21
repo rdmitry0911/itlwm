@@ -17842,22 +17842,75 @@ void AirportItlwm::teardownAPSTAInterface()
 
 #if __IO80211_TARGET >= __MAC_26_0
 /*
- * v-Airport AWDL, probe stage.  awdl0 is ForbiddenItlwm's sequence on Tahoe
+ * v-Airport AWDL.  awdl0 is ForbiddenItlwm's sequence on Tahoe
  * (attachVirtualInterface -> start -> pools and queues -> registration ->
  * registerService) with this tree's 25C56 pool and registration layout from
- * the APSTA interface.  Nothing reaches the radio: the interface records what
- * Apple's AWDL stack asks of the firmware.
+ * the APSTA interface.  The firmware of AWDL runs on the v-Airport host: the
+ * interface passes the stack's settings, the peers' action frames and the
+ * data through the HAL (vif VAP_VIF_AWDL).
  */
-static UInt32 vapAWDLTxCompletionAction(OSObject *, IOSkywalkTxCompletionQueue *,
-                                        IOSkywalkPacket **, UInt32, void *)
+extern "C" bool airportItlwmVirtAWDLSupported(ItlHalService *service);
+extern "C" IOReturn airportItlwmVirtAWDLRequest(ItlHalService *service, uint16_t type,
+                                                const void *payload, uint32_t len);
+extern "C" IOReturn airportItlwmVirtAWDLTransmit(ItlHalService *service, const void *frame, uint32_t len);
+
+// The completion queues' producers: what awdl0 staged (transmitted packets, received ones).
+static UInt32 vapAWDLTxCompletionAction(OSObject *owner, IOSkywalkTxCompletionQueue *,
+                                        IOSkywalkPacket **packets, UInt32 count, void *)
 {
-    return 0;
+    auto *awdl = OSDynamicCast(AirportItlwmAWDLInterface, owner);
+    return awdl ? awdl->popTransmitted(packets, count) : 0;
 }
 
-static unsigned int vapAWDLRxAction(OSObject *, IOSkywalkRxCompletionQueue *,
-                                    IOSkywalkPacket **, UInt32, void *)
+static unsigned int vapAWDLRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *,
+                                    IOSkywalkPacket **packets, UInt32 count, void *)
 {
-    return 0;
+    auto *awdl = OSDynamicCast(AirportItlwmAWDLInterface, owner);
+    return awdl ? awdl->popReceived(packets, count) : 0;
+}
+
+extern "C" IOReturn
+airportItlwmVapAWDLRequest(IO80211Controller *controller, uint16_t type, const void *payload, uint32_t length)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, controller);
+    if (that == nullptr || that->fHalService == nullptr)
+        return kIOReturnNotReady;
+    return airportItlwmVirtAWDLRequest(that->fHalService, type, payload, length);
+}
+
+extern "C" IOReturn
+airportItlwmVapAWDLTransmit(IO80211Controller *controller, const void *frame, uint32_t length)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, controller);
+    if (that == nullptr || that->fHalService == nullptr)
+        return kIOReturnNotReady;
+    return airportItlwmVirtAWDLTransmit(that->fHalService, frame, length);
+}
+
+// From the HAL's interrupt action, in the work loop: what the firmware's AWDL sends up.
+extern "C" void
+airportItlwmAWDLInput(IOEthernetController *controller, uint32_t flags, int8_t rssi, uint16_t freq,
+                      const uint8_t *frame, uint32_t length)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, controller);
+    AirportItlwmAWDLInterface *awdl = that != nullptr && that->fVapAWDLRegistered ?
+        OSDynamicCast(AirportItlwmAWDLInterface, that->fVapAWDLInterface) : nullptr;
+    if (awdl == nullptr || frame == nullptr)
+        return;
+    if (flags & VAP_RXF_AWDL_ACTION)
+        awdl->inputAction(frame, length, freq, rssi);
+    else
+        awdl->inputData(frame, length);
+}
+
+extern "C" void
+airportItlwmAWDLEvent(IOEthernetController *controller, uint16_t type, const void *payload, uint32_t length)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, controller);
+    AirportItlwmAWDLInterface *awdl = that != nullptr && that->fVapAWDLRegistered ?
+        OSDynamicCast(AirportItlwmAWDLInterface, that->fVapAWDLInterface) : nullptr;
+    if (awdl != nullptr)
+        awdl->firmwareEvent(type, payload, length);
 }
 
 IO80211VirtualInterface *AirportItlwm::createVirtualInterface(ether_addr *address, UInt role)
@@ -17960,6 +18013,7 @@ IOReturn AirportItlwm::materializeVapAWDLInterface(
         teardownVapAWDLInterface();
         return kIOReturnNoMemory;
     }
+    awdl->attachDataPath(_fWorkloop, fVapAWDLTxCompQueue, fVapAWDLRxQueue, fVapAWDLRxPool);
 
     stage("registering");
     IOSkywalkEthernetInterface::RegistrationInfo registrationInfo;
@@ -18000,8 +18054,12 @@ IOReturn AirportItlwm::materializeVapAWDLInterface(
     fVapAWDLRegistered = true;
     awdl->setRunningState(false);
     fVapAWDLTxQueue->enable();
+    fVapAWDLTxCompQueue->enable();
+    fVapAWDLRxQueue->enable();
     awdl->registerService();
     stage("registered");
+    setProperty("VAPAWDLFirmware", fHalService != nullptr && airportItlwmVirtAWDLSupported(fHalService) ?
+                "host" : "none");
     return kIOReturnSuccess;
 }
 
@@ -18009,6 +18067,8 @@ void AirportItlwm::teardownVapAWDLInterface()
 {
     if (fVapAWDLInterface == nullptr && fVapAWDLTxPool == nullptr && fVapAWDLRxPool == nullptr)
         return;
+    if (auto *awdl = OSDynamicCast(AirportItlwmAWDLInterface, fVapAWDLInterface))
+        awdl->detachDataPath();
     IOEventSource *sources[3] = { fVapAWDLTxQueue, fVapAWDLTxCompQueue, fVapAWDLRxQueue };
     for (IOEventSource *source : sources) {
         if (source != nullptr && _fWorkloop != nullptr && source->getWorkLoop() == _fWorkloop) {

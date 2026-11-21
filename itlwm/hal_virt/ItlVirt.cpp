@@ -13,6 +13,11 @@
 
 #if __IO80211_TARGET >= __MAC_26_0
 extern "C" void airportItlwmRequestAPTxDequeue(IOEthernetController *controller);
+/* AWDL (vif VAP_VIF_AWDL): what the firmware sends up goes to the controller's awdl0. */
+extern "C" void airportItlwmAWDLInput(IOEthernetController *controller, uint32_t flags, int8_t rssi,
+                                      uint16_t freq, const uint8_t *frame, uint32_t len);
+extern "C" void airportItlwmAWDLEvent(IOEthernetController *controller, uint16_t type,
+                                      const void *payload, uint32_t len);
 #endif
 
 #define super ItlHalService
@@ -399,6 +404,12 @@ virt_event(void *ctx, const struct vap_hdr *h, const void *payload, uint32_t len
         that->apReset(true);
         return;
     }
+#if __IO80211_TARGET >= __MAC_26_0
+    if (h->type == VAP_EVT_AWDL_STATE || h->type == VAP_EVT_AWDL_PEER) {
+        airportItlwmAWDLEvent(that->getController(), h->type, payload, len);
+        return;
+    }
+#endif
     if (h->type == VAP_EVT_AP_STA && len >= sizeof(struct vap_evt_ap_sta)) {
         const struct vap_evt_ap_sta *e = (const struct vap_evt_ap_sta *)payload;
         const uint16_t ieLen = len >= sizeof(*e) + e->ie_len ? e->ie_len : 0;
@@ -417,6 +428,12 @@ virt_rx(void *ctx, const struct vap_rx_meta *meta, const uint8_t *frame, uint32_
 
     if (meta->vif == VAP_VIF_AP) {
         that->apInput(frame, len);
+        return;
+    }
+    if (meta->vif == VAP_VIF_AWDL) {
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmAWDLInput(that->getController(), meta->flags, meta->rssi_dbm, meta->freq_mhz, frame, len);
+#endif
         return;
     }
     if (len == 0 || (m = that->getController()->allocatePacket(len)) == NULL)
@@ -812,6 +829,83 @@ transmitAPData(mbuf_t packet)
     /* No room: virt_tx_ready() asks for the queue again. */
     return tx.rc == VAP_G_BUSY ? kIOReturnNoResources :
         tx.rc == VAP_E_NOT_READY ? kIOReturnNotReady : kIOReturnError;
+}
+
+/* ---- AWDL ----------------------------------------------------------------- */
+
+/*
+ * The firmware runs AWDL (vap_proto.h, "AWDL"); awdl0 hands its configuration,
+ * templates and data down through these, from the controller.  Kept out of
+ * the HAL's virtual table, like the access point's transmit-space bridge.
+ */
+struct VirtAwdlTx {
+    const void *frame;
+    uint32_t    len;
+    int         rc;
+};
+
+IOReturn ItlVirt::
+virt_awdl_tx_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3)
+{
+    ItlVirt *that = (ItlVirt *)arg0;
+    VirtAwdlTx *tx = (VirtAwdlTx *)arg1;
+    struct vap_tx_meta meta;
+    struct vap_iov iov = { tx->frame, tx->len };
+
+    bzero(&meta, sizeof(meta));
+    meta.vif = VAP_VIF_AWDL;
+    tx->rc = that->fDev != NULL ? vap_tx(that->fDev, &meta, &iov, 1) : VAP_E_NOT_READY;
+    return kIOReturnSuccess;
+}
+
+bool ItlVirt::
+awdlSupported() const
+{
+    return (fCaps.fw_features & VAP_FEAT_AWDL) != 0;
+}
+
+IOReturn ItlVirt::
+awdlRequest(uint16_t type, const void *payload, uint32_t len)
+{
+    int rc;
+
+    if (!awdlSupported())
+        return kIOReturnUnsupported;
+    rc = request(type, payload, len);
+    return rc == 0 ? kIOReturnSuccess : rc == VAP_E_UNSUPPORTED ? kIOReturnUnsupported :
+        rc == VAP_E_NOT_READY ? kIOReturnNotReady : kIOReturnError;
+}
+
+IOReturn ItlVirt::
+awdlTransmit(const void *frame, uint32_t len)
+{
+    VirtAwdlTx tx = { frame, len, VAP_G_EINVAL };
+
+    if (frame == NULL || len < sizeof(struct ether_header))
+        return kIOReturnBadArgument;
+    getMainCommandGate()->runAction(virt_awdl_tx_gated, this, &tx);
+    return tx.rc == VAP_G_OK ? kIOReturnSuccess : tx.rc == VAP_G_BUSY ? kIOReturnNoResources : kIOReturnError;
+}
+
+extern "C" bool
+airportItlwmVirtAWDLSupported(ItlHalService *service)
+{
+    ItlVirt *that = OSDynamicCast(ItlVirt, service);
+    return that != NULL && that->awdlSupported();
+}
+
+extern "C" IOReturn
+airportItlwmVirtAWDLRequest(ItlHalService *service, uint16_t type, const void *payload, uint32_t len)
+{
+    ItlVirt *that = OSDynamicCast(ItlVirt, service);
+    return that != NULL ? that->awdlRequest(type, payload, len) : kIOReturnUnsupported;
+}
+
+extern "C" IOReturn
+airportItlwmVirtAWDLTransmit(ItlHalService *service, const void *frame, uint32_t len)
+{
+    ItlVirt *that = OSDynamicCast(ItlVirt, service);
+    return that != NULL ? that->awdlTransmit(frame, len) : kIOReturnUnsupported;
 }
 
 /*

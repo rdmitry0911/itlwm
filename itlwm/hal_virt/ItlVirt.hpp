@@ -307,6 +307,11 @@ public:
     IOReturn sendAPStationCommand(const struct ItlHalApStationCommand *command) override;
     uint32_t getAPTxFreeSpace() const;
 
+    /* AWDL: the firmware runs it (vap_proto.h); the bridges in ItlVirt.cpp call these. */
+    bool awdlSupported() const;
+    IOReturn awdlRequest(uint16_t type, const void *payload, uint32_t len);
+    IOReturn awdlTransmit(const void *frame, uint32_t len);
+
     void applyCaps(const VirtCaps &caps);
 
     int txFrame(mbuf_t m, struct ieee80211_node *ni);
@@ -396,6 +401,7 @@ private:
     void apInput(const uint8_t *frame, uint32_t len);
     void apTxKick();
     static IOReturn virt_ap_tx_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn virt_awdl_tx_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     bool saeAttach();
     void saeDetach();
     bool saeAdmitAssocReq(mbuf_t m, struct ieee80211_node *ni);
