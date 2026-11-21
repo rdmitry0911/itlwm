@@ -251,6 +251,16 @@ int vap_dev_needs_reset(struct vap_dev *d)
     return (rd(d, VAP_REG_STATUS) & VAP_STATUS_NEEDS_RESET) != 0;
 }
 
+int vap_dev_lost(struct vap_dev *d)
+{
+    /* All ones is a device that is gone, not one that was reset. */
+    uint32_t s;
+
+    if (!d->running) return 0;
+    s = rd(d, VAP_REG_STATUS);
+    return s != 0xffffffffu && !(s & VAP_STATUS_DRIVER_OK);
+}
+
 static void reclaim_tx(struct vap_dev *d)
 {
     uint16_t slot;

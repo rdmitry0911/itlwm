@@ -77,6 +77,10 @@ virt_request_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *ar
     uint32_t n = 0, waited;
     int slot;
 
+    if (!that->transportRecover()) {
+        rq->rc = VAP_G_EIO;
+        return kIOReturnSuccess;
+    }
     /* A reply that arrived after its request had been given up frees the slot. */
     for (slot = 0; slot < (int)VAP_G_CTRL_SLOTS; slot++) {
         if ((that->fCtrlLost & (1 << slot)) && vap_ctrl_done(d, slot)) {
@@ -115,6 +119,31 @@ virt_request_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *ar
     }
     vap_ctrl_release(d, slot);
     return kIOReturnSuccess;
+}
+
+/*
+ * A virtual machine's wake from S3 resets every device (QEMU
+ * pc_machine_wakeup), this one too: the firmware drops the queues, leaves the
+ * BSS and takes the card's own address back, as a card that lost power in
+ * sleep.  The Airport layer stopped the radio before the sleep
+ * (handleSystemPowerStateChange), so only the transport and the address the
+ * firmware uses are stale.  The queues come up again on the memory they had.
+ * On the gate; true when the transport runs.
+ */
+bool ItlVirt::
+transportRecover()
+{
+    int rc;
+
+    if (fDev == NULL || !vap_dev_lost(fDev))
+        return true;
+    rc = vap_dev_start(fDev);
+    fCtrlLost = 0;
+    fResetLogged = false;
+    IEEE80211_ADDR_COPY(fFwMac, fCaps.macaddr);
+    XYLog("vap: the device was reset under the driver (wake from sleep): transport %s (%d)\n",
+          rc == VAP_G_OK ? "up again" : "failed", rc);
+    return rc == VAP_G_OK;
 }
 
 /* The next TLV of a GET_CAPS reply; false at the end or at a TLV which overruns it. */
@@ -1352,7 +1381,8 @@ virt_radio_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3
     struct _ifnet *ifp = &that->com.sc_ic.ic_if;
 
     if (arg1 != NULL) {
-        if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
+        /* Before syncMac(): a reset device has the card's own address again. */
+        if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP && that->transportRecover())
             that->radioStart();
     } else if (ifp->if_flags & IFF_RUNNING)
         that->radioStop();

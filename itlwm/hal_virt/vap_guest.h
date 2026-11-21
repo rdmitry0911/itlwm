@@ -113,6 +113,12 @@ int  vap_dev_start(struct vap_dev *d);
 void vap_dev_stop(struct vap_dev *d);
 /* VAP_STATUS_NEEDS_RESET: the firmware restarted, call vap_dev_start(). */
 int  vap_dev_needs_reset(struct vap_dev *d);
+/*
+ * The device was reset under a running driver and no longer has the queues
+ * (a virtual machine's wake from S3 resets every device): call vap_dev_start().
+ * One register read, a round trip to the host: not for the data path.
+ */
+int  vap_dev_lost(struct vap_dev *d);
 
 /* Drain completed work and invoke the callbacks. Call on every interrupt. */
 void vap_dev_poll(struct vap_dev *d);

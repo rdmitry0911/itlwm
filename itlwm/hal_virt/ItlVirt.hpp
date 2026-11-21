@@ -380,6 +380,7 @@ private:
     int request(uint16_t type, const void *payload, uint32_t len,
                 void *rsp = NULL, uint32_t *rspLen = NULL);
     bool queryCaps(VirtCaps *caps);
+    bool transportRecover();
     void syncMac();
     void setPort(bool authorized);
     int radioStart();
