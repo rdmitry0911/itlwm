@@ -238,6 +238,16 @@ static void array_sprintf(char *output, uint8_t output_size, const uint8_t *arra
 
 #define	IEEE80211_CHAN_MAX	255
 #define	IEEE80211_CHAN_ANY	0xffff		/* token for ``any channel'' */
+/*
+ * ic_channels[] is indexed by the IEEE channel number for 2.4 and 5 GHz.
+ * 6 GHz channel numbers (1, 5, ..., 233 and 2) are the same numbers again,
+ * so 6 GHz channels sit at indices no 2.4/5 GHz channel uses: channel n
+ * (n = 1 mod 4) at 178 + (n - 1) / 4, channel 2 at 237.  The channel itself
+ * carries IEEE80211_CHAN_6GHZ; ieee80211_chan2ieee() gives its number and
+ * ieee80211_chan2idx() its index.
+ */
+#define	IEEE80211_CHAN_6GHZ_IDX_FIRST	178
+#define	IEEE80211_CHAN_6GHZ_IDX_LAST	237
 #define	IEEE80211_CHAN_ANYC \
 	((struct ieee80211_channel *) NULL)
 
@@ -355,6 +365,7 @@ struct ieee80211_wcl_scan_plan {
 	u_char		channel_any[IEEE80211_WCL_SCAN_BITMAP_BYTES];
 	u_char		channel_2ghz[IEEE80211_WCL_SCAN_BITMAP_BYTES];
 	u_char		channel_5ghz[IEEE80211_WCL_SCAN_BITMAP_BYTES];
+	u_char		channel_6ghz[IEEE80211_WCL_SCAN_BITMAP_BYTES];
 };
 
 static inline u_int32_t
@@ -453,6 +464,7 @@ struct ieee80211_channel {
 #define IEEE80211_CHAN_VHT80    0x08000000 /* VHT80 channel */
 #define IEEE80211_CHAN_VHT160    0x10000000 /* VHT160 channel */
 #define IEEE80211_CHAN_VHT80_80    0x20000000 /* VHT80+80 channel */
+#define IEEE80211_CHAN_6GHZ    0x40000000 /* 6 GHz channel; also IEEE80211_CHAN_A */
 
 #define IEEE80211_CHAN_HT40    (IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D)
 #define IEEE80211_CHAN_HT    (IEEE80211_CHAN_HT20 | IEEE80211_CHAN_HT40)
@@ -496,6 +508,8 @@ struct ieee80211_channel {
 	(((_c)->ic_flags & IEEE80211_CHAN_2GHZ) != 0)
 #define	IEEE80211_IS_CHAN_5GHZ(_c) \
 	(((_c)->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
+#define	IEEE80211_IS_CHAN_6GHZ(_c) \
+	(((_c)->ic_flags & IEEE80211_CHAN_6GHZ) != 0)
 #define	IEEE80211_IS_CHAN_OFDM(_c) \
 	(((_c)->ic_flags & IEEE80211_CHAN_OFDM) != 0)
 #define	IEEE80211_IS_CHAN_CCK(_c) \
@@ -1691,6 +1705,9 @@ u_int8_t ieee80211_plcp2rate(u_int8_t, enum ieee80211_phymode);
 u_int	ieee80211_mhz2ieee(u_int, u_int);
 u_int	ieee80211_chan2ieee(struct ieee80211com *,
 		const struct ieee80211_channel *);
+u_int	ieee80211_chan2idx(struct ieee80211com *,
+		const struct ieee80211_channel *);
+u_int	ieee80211_6ghz_chan2idx(u_int);
 u_int	ieee80211_ieee2mhz(u_int, u_int);
 int	ieee80211_min_basic_rate(struct ieee80211com *);
 int	ieee80211_max_basic_rate(struct ieee80211com *);

@@ -888,7 +888,7 @@ ieee80211_next_scan_result(struct _ifnet *ifp)
     for (;;) {
         if (++chan > &ic->ic_channels[IEEE80211_CHAN_MAX])
             chan = &ic->ic_channels[0];
-        if (isset(ic->ic_chan_scan, ieee80211_chan2ieee(ic, chan))) {
+        if (isset(ic->ic_chan_scan, ieee80211_chan2idx(ic, chan))) {
             /*
              * Ignore channels marked passive-only
              * during an active scan.
@@ -902,7 +902,7 @@ ieee80211_next_scan_result(struct _ifnet *ifp)
             return 0;
         }
     }
-    clrbit(ic->ic_chan_scan, ieee80211_chan2ieee(ic, chan));
+    clrbit(ic->ic_chan_scan, ieee80211_chan2idx(ic, chan));
     ic->ic_bss->ni_chan = chan;
     /* This is the scanner's own intra-scan channel hop, not a fresh generic
      * SCAN request.  The private tag survives an IWN deferred replay to its
@@ -1123,7 +1123,7 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
         return 0;
 
     if ((ic->ic_flags & IEEE80211_F_BGSCAN) == 0 &&
-        isclr(ic->ic_chan_active, ieee80211_chan2ieee(ic, ni->ni_chan)))
+        isclr(ic->ic_chan_active, ieee80211_chan2idx(ic, ni->ni_chan)))
         fail |= IEEE80211_NODE_ASSOCFAIL_CHAN;
     if (ic->ic_des_chan != IEEE80211_CHAN_ANYC &&
         ni->ni_chan != ic->ic_des_chan && !wcl_target)
@@ -1923,7 +1923,7 @@ ieee80211_end_scan_owned(struct _ifnet *ifp,
          */
         memset(occupied, 0, sizeof(occupied));
         RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree)
-        setbit(occupied, ieee80211_chan2ieee(ic, ni->ni_chan));
+        setbit(occupied, ieee80211_chan2idx(ic, ni->ni_chan));
         for (i = 0; i < IEEE80211_CHAN_MAX; i++)
             if (isset(ic->ic_chan_active, i) && isclr(occupied, i))
                 break;
