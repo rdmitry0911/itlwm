@@ -5966,7 +5966,15 @@ getHW_ADDR(struct apple80211_hw_mac_address *data)
     // therefore an architectural mismatch, not an optional capability.
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
-    IEEE80211_ADDR_COPY(data->hw_addr, ic->ic_myaddr);
+    // The hardware address is the card's own, not the one in use: macOS
+    // sets a private address before its first scan, and ic_myaddr follows
+    // it.  With that one here the Wi-Fi menu showed a random "Hardware
+    // Address", and a network whose private address was switched off (it
+    // then uses the card's own) was taken for one with a manually set
+    // address: Settings greyed the private address control out.
+    if (instance == nullptr ||
+        !instance->copyPermanentHardwareAddress(data->hw_addr))
+        IEEE80211_ADDR_COPY(data->hw_addr, ic->ic_myaddr);
     return kIOReturnSuccess;
 }
 
@@ -7398,6 +7406,16 @@ getMCS(struct apple80211_mcs_data* md)
 
     md->version = APPLE80211_VERSION;
     md->index = 0;
+
+    // A HAL that reports its rate in full has the index itself; the rate
+    // word below has no encoding for HE and would leave 0.
+    struct ItlTxRate tx;
+    ItlDriverInfo *info = fHalService->getDriverInfo();
+    if (info != nullptr && info->getTxRate(&tx) &&
+        tx.mode != ITL_TX_RATE_LEGACY) {
+        md->index = tx.mcs;
+        return kIOReturnSuccess;
+    }
 
     uint32_t rate = 0;
     IOReturn ret = getTahoeCachedNrate(fHalService, &rate);
