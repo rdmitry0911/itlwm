@@ -993,8 +993,12 @@ getCARD_CAPABILITIES(OSObject *object,
         cd->capabilities);
 #if AIRPORT_ITLWM_IWN_SAE_WCL_INGRESS
     if (fHalService != nullptr &&
-        fHalService->supportsDriverResidentSae())
+        fHalService->supportsDriverResidentSae()) {
         TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
+        if (fHalService->supportsAPMode())
+            TahoeCapabilityContracts::applyHostApSaeCardCapability(
+                cd->capabilities);
+    }
 #endif
     //cd->capabilities[8] = 0x40;
     //cd->capabilities[8] |= 8;//dfs white list

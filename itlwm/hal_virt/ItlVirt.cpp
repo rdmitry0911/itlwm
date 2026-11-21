@@ -560,8 +560,9 @@ startAPMode(const struct ItlHalApConfig *config)
     if (config == NULL || config->ssid == NULL || config->ssidLength == 0 ||
         config->ssidLength > sizeof(a->ssid))
         return kIOReturnBadArgument;
-    /* authUpper as the Airport layer hands it over: open, WPA2-PSK, WPA3-SAE. */
-    if (config->authUpper != 0 && config->authUpper != 0x8 && config->authUpper != 0x1000)
+    /* authUpper as the Airport layer hands it over: open, WPA2-PSK, WPA3-SAE, both. */
+    if (config->authUpper != 0 && config->authUpper != 0x8 && config->authUpper != 0x1000 &&
+        config->authUpper != 0x1008)
         return kIOReturnUnsupported;
     if (config->authUpper != 0 &&
         (config->credential == NULL || config->credentialLength < 8 ||
@@ -582,8 +583,11 @@ startAPMode(const struct ItlHalApConfig *config)
         (uint8_t)(config->maxStations > 255 ? 255 : config->maxStations);
     a->pairwise_cipher = a->group_cipher = 0x000fac04;      /* CCMP */
     if (config->authUpper != 0) {
-        a->akm = config->authUpper == 0x1000 ? VAP_AP_AKM_SAE : VAP_AP_AKM_PSK;
-        a->mfp = config->authUpper == 0x1000 ? 2 : 0;
+        /* WPA2 Personal 0x8, WPA3 Personal 0x1000, transition both */
+        a->akm = (config->authUpper & 0x1000) ? VAP_AP_AKM_SAE : 0;
+        if ((config->authUpper & 0x8) || a->akm == 0)
+            a->akm |= VAP_AP_AKM_PSK;
+        a->mfp = a->akm == VAP_AP_AKM_SAE ? 2 : 0;
         virt_ap_parse_rsn(config->rsnIE, config->rsnIELength, &a->group_cipher,
                           &a->pairwise_cipher, &a->mfp);
         a->cred_len = (uint8_t)config->credentialLength;

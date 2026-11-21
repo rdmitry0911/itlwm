@@ -49,6 +49,19 @@ static constexpr uint8_t kCardCapabilitySaeMask = 0x08;
 static constexpr size_t kCardCapabilityHeByte = 17;
 static constexpr uint8_t kCardCapabilityHeMask = 0x80;
 
+/*
+ * WPA3 for the access point.  AppleBCMWLANCore::getCARD_CAPABILITIES
+ * (0xffffff80015e4c66) sets capability byte 10, bit 0x01 (CoreWiFi
+ * capability 80) from feature flag 0x4b, which IssueFwCapExt takes from the
+ * firmware and which is cleared together with the SAE flags 0x41/0x42/0x6d
+ * when the firmware has no SAE.  -[CWWiFiClient platformCapabilities] turns
+ * capability 80 into 0x200000, and the Internet Sharing dialog
+ * (-[CWHostAPDialog_SL populateSecurityTypes]) offers WPA3 Personal and the
+ * WPA2/WPA3 transition, and enables its Security popup, only with it.
+ */
+static constexpr size_t kCardCapabilityHostApSaeByte = 10;
+static constexpr uint8_t kCardCapabilityHostApSaeMask = 0x01;
+
 static constexpr uint8_t kAppleImpossibleCap2Mask = 0x80;
 static constexpr uint8_t kAppleImpossibleCap3Mask = 0x08;
 static constexpr uint8_t kAppleImpossibleCap6Mask = 0x80;
@@ -80,6 +93,15 @@ inline void applySaeCardCapability(uint8_t (&capabilities)[N])
 
     capabilities[kCardCapabilityMfpByte] |= kCardCapabilityMfpMask;
     capabilities[kCardCapabilitySaeByte] |= kCardCapabilitySaeMask;
+}
+
+template <size_t N>
+inline void applyHostApSaeCardCapability(uint8_t (&capabilities)[N])
+{
+    static_assert(N > kCardCapabilityHostApSaeByte,
+                  "CARD_CAPABILITIES carrier must expose the HostAP SAE byte");
+
+    capabilities[kCardCapabilityHostApSaeByte] |= kCardCapabilityHostApSaeMask;
 }
 
 template <size_t N>

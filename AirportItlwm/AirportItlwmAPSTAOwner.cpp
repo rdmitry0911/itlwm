@@ -71,6 +71,9 @@ enum {
     kAirportItlwmAPSTAAuthUpperOpen = 0,
     kAirportItlwmAPSTAAuthUpperWPA2PSK = 0x8,
     kAirportItlwmAPSTAAuthUpperWPA3SAE = 0x1000,
+    /* "WPA2/WPA3 Personal": both bits, the access point takes both AKMs. */
+    kAirportItlwmAPSTAAuthUpperWPA3Transition =
+        kAirportItlwmAPSTAAuthUpperWPA2PSK | kAirportItlwmAPSTAAuthUpperWPA3SAE,
     kAirportItlwmAPSTAWPA2CredentialLengthMin = 8,
     kAirportItlwmAPSTAWPA2CredentialLengthMax = 63,
     /*
@@ -126,6 +129,31 @@ static size_t apsta_build_wpa3_sae_rsn_ie(
         0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
         0x01, 0x00, 0x00, 0x0f, 0xac, 0x08,
         0xc0, 0x00,
+        0x00, 0x00,
+        0x00, 0x0f, 0xac, 0x06
+    };
+    if (output == nullptr || outputCapacity < sizeof(rsn))
+        return 0;
+    memcpy(output, rsn, sizeof(rsn));
+    return sizeof(rsn);
+}
+
+static size_t apsta_build_wpa3_transition_rsn_ie(
+    uint8_t *output,
+    size_t outputCapacity)
+{
+    /*
+     * WPA3-Personal transition mode: RSN v1, group/pairwise CCMP, AKMs PSK
+     * and SAE, management-frame protection capable but not required, no
+     * PMKID, BIP-CMAC-128 as the group management cipher.
+     */
+    static const uint8_t rsn[] = {
+        IEEE80211_ELEMID_RSN, 30,
+        0x01, 0x00,
+        0x00, 0x0f, 0xac, 0x04,
+        0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
+        0x02, 0x00, 0x00, 0x0f, 0xac, 0x02, 0x00, 0x0f, 0xac, 0x08,
+        0x80, 0x00,
         0x00, 0x00,
         0x00, 0x0f, 0xac, 0x06
     };
@@ -788,6 +816,9 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
             rsnIE, sizeof(rsnIE));
     } else if (apAuthUpper == kAirportItlwmAPSTAAuthUpperWPA3SAE) {
         rsnIELength = apsta_build_wpa3_sae_rsn_ie(
+            rsnIE, sizeof(rsnIE));
+    } else if (apAuthUpper == kAirportItlwmAPSTAAuthUpperWPA3Transition) {
+        rsnIELength = apsta_build_wpa3_transition_rsn_ie(
             rsnIE, sizeof(rsnIE));
     } else if (apAuthUpper != kAirportItlwmAPSTAAuthUpperOpen) {
         lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
@@ -1764,11 +1795,11 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
 
     if (in->authUpper0c != kAirportItlwmAPSTAAuthUpperOpen &&
         in->authUpper0c != kAirportItlwmAPSTAAuthUpperWPA2PSK &&
-        in->authUpper0c != kAirportItlwmAPSTAAuthUpperWPA3SAE) {
+        in->authUpper0c != kAirportItlwmAPSTAAuthUpperWPA3SAE &&
+        in->authUpper0c != kAirportItlwmAPSTAAuthUpperWPA3Transition) {
         return kIOReturnUnsupported;
     }
-    if ((in->authUpper0c == kAirportItlwmAPSTAAuthUpperWPA2PSK ||
-         in->authUpper0c == kAirportItlwmAPSTAAuthUpperWPA3SAE) &&
+    if (in->authUpper0c != kAirportItlwmAPSTAAuthUpperOpen &&
         (in->credentialLength44 <
              kAirportItlwmAPSTAWPA2CredentialLengthMin ||
          in->credentialLength44 >

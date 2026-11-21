@@ -13330,8 +13330,13 @@ getCARD_CAPABILITIES(OSObject *object,
      * the build which also owns the complete driver-resident SAE/PMF path.
      */
     if (fHalService != nullptr &&
-        fHalService->supportsDriverResidentSae())
+        fHalService->supportsDriverResidentSae()) {
         TahoeCapabilityContracts::applySaeCardCapability(cd->capabilities);
+        /* The reference drops its access point WPA3 flag with the SAE ones. */
+        if (fHalService->supportsAPMode())
+            TahoeCapabilityContracts::applyHostApSaeCardCapability(
+                cd->capabilities);
+    }
 #endif
 //
 //    cd->capabilities[2] |= 0x10;
