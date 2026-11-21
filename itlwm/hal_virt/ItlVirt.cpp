@@ -11,6 +11,10 @@
 #include <net80211/ieee80211_sae_engine.h>
 #include <net80211/ieee80211_sae_policy.h>
 
+#if __IO80211_TARGET >= __MAC_26_0
+extern "C" void airportItlwmRequestAPTxDequeue(IOEthernetController *controller);
+#endif
+
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlVirt, ItlHalService)
 
@@ -364,6 +368,28 @@ virt_event(void *ctx, const struct vap_hdr *h, const void *payload, uint32_t len
             ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
         return;
     }
+    if (h->type == VAP_EVT_AP_STARTED && len >= sizeof(struct vap_ap_started)) {
+        that->apStarted((const struct vap_ap_started *)payload);
+        return;
+    }
+    if (h->type == VAP_EVT_AP_STOPPED && len >= sizeof(struct vap_evt_ap_stopped)) {
+        const struct vap_evt_ap_stopped *e = (const struct vap_evt_ap_stopped *)payload;
+
+        /*
+         * The firmware lost the access point, or could not start it.  The
+         * Airport layer sees the channel go to zero and decides what to do.
+         */
+        XYLog("vap: AP stopped by the firmware (%d)\n", e->reason);
+        that->apReset(true);
+        return;
+    }
+    if (h->type == VAP_EVT_AP_STA && len >= sizeof(struct vap_evt_ap_sta)) {
+        const struct vap_evt_ap_sta *e = (const struct vap_evt_ap_sta *)payload;
+        const uint16_t ieLen = len >= sizeof(*e) + e->ie_len ? e->ie_len : 0;
+
+        that->apStation(e->sta, e->connected != 0, (const uint8_t *)&e[1], ieLen);
+        return;
+    }
     XYLog("vap: event 0x%x, %u bytes\n", h->type, len);
 }
 
@@ -373,6 +399,10 @@ virt_rx(void *ctx, const struct vap_rx_meta *meta, const uint8_t *frame, uint32_
     ItlVirt *that = (ItlVirt *)ctx;
     mbuf_t m;
 
+    if (meta->vif == VAP_VIF_AP) {
+        that->apInput(frame, len);
+        return;
+    }
     if (len == 0 || (m = that->getController()->allocatePacket(len)) == NULL)
         return;
     /* A packet of more than one cluster may come as a chain. */
@@ -393,6 +423,484 @@ virt_tx_ready(void *ctx)
 
     ifq_clr_oactive(&ifp->if_snd);
     virt_start_task(NULL, ifp, NULL, NULL, NULL);
+    /* The access point's queue was held back by the same lack of room. */
+    that->apTxKick();
+}
+
+/* ---- access point --------------------------------------------------------- */
+
+static uint16_t
+virt_ap_chan2freq(uint16_t chan)
+{
+    if (chan == 14)
+        return 2484;
+    if (chan >= 1 && chan <= 13)
+        return 2407 + 5 * chan;
+    if (chan >= 32 && chan <= 177)
+        return 5000 + 5 * chan;
+    return 0;
+}
+
+static uint16_t
+virt_ap_freq2chan(uint16_t freq)
+{
+    if (freq == 2484)
+        return 14;
+    if (freq >= 2412 && freq <= 2472)
+        return (freq - 2407) / 5;
+    if (freq >= 5160 && freq <= 5885)
+        return (freq - 5000) / 5;
+    return 0;
+}
+
+/*
+ * What the access point's RSN element asks for: the group cipher, the first
+ * pairwise cipher (suite selectors, OUI first) and management frame
+ * protection (0 off, 1 optional, 2 required).  Leaves alone what the
+ * element does not say.
+ */
+static void
+virt_ap_parse_rsn(const uint8_t *ie, size_t len, uint32_t *group, uint32_t *pairwise, uint8_t *mfp)
+{
+    size_t off, n;
+
+    if (ie == NULL || len < 8 || ie[0] != IEEE80211_ELEMID_RSN || (size_t)ie[1] + 2 > len)
+        return;
+    len = (size_t)ie[1] + 2;
+    *group = (uint32_t)ie[4] << 24 | (uint32_t)ie[5] << 16 | (uint32_t)ie[6] << 8 | ie[7];
+    off = 8;
+    if (off + 2 > len)
+        return;
+    n = ie[off] | (size_t)ie[off + 1] << 8;
+    off += 2;
+    if (n == 0 || off + 4 * n > len)
+        return;
+    *pairwise = (uint32_t)ie[off] << 24 | (uint32_t)ie[off + 1] << 16 |
+        (uint32_t)ie[off + 2] << 8 | ie[off + 3];
+    off += 4 * n;
+    if (off + 2 > len)
+        return;
+    n = ie[off] | (size_t)ie[off + 1] << 8;        /* AKM suites: startAPMode() has them from authUpper */
+    off += 2 + 4 * n;
+    if (off + 2 > len)
+        return;
+    /* RSN capabilities: bit 6 "required", bit 7 "capable". */
+    *mfp = (ie[off] & 0x40) ? 2 : (ie[off] & 0x80) ? 1 : 0;
+}
+
+/*
+ * The vendor elements of the beacon the Airport layer built, for the
+ * firmware to add to its own beacons and probe responses.  Microsoft's (WPA,
+ * WMM, WPS) are the firmware's business.
+ */
+static uint16_t
+virt_ap_vendor_ies(const uint8_t *beacon, size_t len, uint8_t *out, size_t cap)
+{
+    static const uint8_t microsoft[3] = { 0x00, 0x50, 0xf2 };
+    const size_t fixed = sizeof(struct ieee80211_frame) + 12;  /* timestamp, interval, capabilities */
+    size_t off, used = 0;
+
+    if (beacon == NULL || len <= fixed)
+        return 0;
+    for (off = fixed; off + 2 <= len && off + 2 + beacon[off + 1] <= len; off += 2 + beacon[off + 1]) {
+        const size_t el = 2 + (size_t)beacon[off + 1];
+
+        if (beacon[off] != IEEE80211_ELEMID_VENDOR || el < 5 ||
+            memcmp(&beacon[off + 2], microsoft, sizeof(microsoft)) == 0)
+            continue;
+        if (used + el > cap)
+            break;
+        memcpy(out + used, &beacon[off], el);
+        used += el;
+    }
+    return (uint16_t)used;
+}
+
+/* Sends the AP_START kept in fApStart.  Returns the firmware's status or VAP_G_*. */
+int ItlVirt::
+apStartCommand()
+{
+    const struct vap_ap_start *a = (const struct vap_ap_start *)fApStart;
+    struct vap_ap_started st;
+    uint32_t n = sizeof(st);
+    int rc;
+
+    bzero(&st, sizeof(st));
+    rc = request(VAP_CMD_AP_START, fApStart, fApStartLen, &st, &n);
+    if (rc == 0 && n < sizeof(st))
+        rc = VAP_G_EIO;
+    if (rc != 0) {
+        XYLog("vap: AP start refused (%d)\n", rc);
+        fApState = VIRT_AP_OFF;
+        fApChannel = 0;
+        return rc;
+    }
+    /*
+     * Accepted: the firmware answers with the address and the channel it
+     * will use (next to an associated station that is the station's
+     * channel) and reports later that it beacons, or that it could not.
+     */
+    fApState = VIRT_AP_STARTING;
+    fApChannel = virt_ap_freq2chan(st.freq_mhz);
+    memcpy(fApBssid, st.bssid, sizeof(fApBssid));
+    XYLog("vap: AP start accepted: %s, %u MHz (asked for %u), akm 0x%x, mfp %u, %u vendor IE bytes%s\n",
+          ether_sprintf(fApBssid), st.freq_mhz, a->freq_mhz, a->akm, a->mfp, a->ie_len,
+          (a->flags & VAP_AP_HIDDEN) ? ", hidden" : "");
+    return 0;
+}
+
+IOReturn ItlVirt::
+startAPMode(const struct ItlHalApConfig *config)
+{
+    struct vap_ap_start *a = (struct vap_ap_start *)fApStart;
+    int rc;
+
+    if (!supportsAPMode())
+        return kIOReturnUnsupported;
+    if (config == NULL || config->ssid == NULL || config->ssidLength == 0 ||
+        config->ssidLength > sizeof(a->ssid))
+        return kIOReturnBadArgument;
+    /* authUpper as the Airport layer hands it over: open, WPA2-PSK, WPA3-SAE. */
+    if (config->authUpper != 0 && config->authUpper != 0x8 && config->authUpper != 0x1000)
+        return kIOReturnUnsupported;
+    if (config->authUpper != 0 &&
+        (config->credential == NULL || config->credentialLength < 8 ||
+         config->credentialLength > sizeof(a->cred)))
+        return kIOReturnBadArgument;
+    if (virt_ap_chan2freq(config->channel) == 0)
+        return kIOReturnBadArgument;
+    /* A start over an access point which is up replaces it. */
+    if (fApState != VIRT_AP_OFF)
+        (void)stopAPMode();
+
+    explicit_bzero(fApStart, sizeof(fApStart));
+    memcpy(a->bssid, config->bssid, sizeof(a->bssid));
+    a->freq_mhz = virt_ap_chan2freq(config->channel);
+    a->beacon_int = config->beaconInterval;
+    a->dtim = config->dtimPeriod;
+    a->max_sta = fApMaxSta != 0 ? fApMaxSta :
+        (uint8_t)(config->maxStations > 255 ? 255 : config->maxStations);
+    a->pairwise_cipher = a->group_cipher = 0x000fac04;      /* CCMP */
+    if (config->authUpper != 0) {
+        a->akm = config->authUpper == 0x1000 ? VAP_AP_AKM_SAE : VAP_AP_AKM_PSK;
+        a->mfp = config->authUpper == 0x1000 ? 2 : 0;
+        virt_ap_parse_rsn(config->rsnIE, config->rsnIELength, &a->group_cipher,
+                          &a->pairwise_cipher, &a->mfp);
+        a->cred_len = (uint8_t)config->credentialLength;
+        memcpy(a->cred, config->credential, config->credentialLength);
+    }
+    a->flags = fApHidden ? VAP_AP_HIDDEN : 0;
+    a->ssid_len = (uint8_t)config->ssidLength;
+    memcpy(a->ssid, config->ssid, config->ssidLength);
+    a->ie_len = virt_ap_vendor_ies((const uint8_t *)config->beaconTemplate,
+                                   config->beaconTemplateLength,
+                                   fApStart + sizeof(*a), VIRT_AP_IE_MAX);
+    fApStartLen = sizeof(*a) + a->ie_len;
+
+    rc = apStartCommand();
+    if (rc != 0) {
+        explicit_bzero(fApStart, sizeof(fApStart));
+        fApStartLen = 0;
+    }
+    return rc == 0 ? kIOReturnSuccess :
+        rc == VAP_E_UNSUPPORTED ? kIOReturnUnsupported :
+        rc == VAP_E_BUSY ? kIOReturnBusy :
+        rc == VAP_E_INVAL ? kIOReturnBadArgument : kIOReturnError;
+}
+
+IOReturn ItlVirt::
+stopAPMode()
+{
+    int rc;
+
+    if (fApState == VIRT_AP_OFF)
+        return kIOReturnSuccess;
+    rc = request(VAP_CMD_AP_STOP, NULL, 0);
+    XYLog("vap: AP stopped (%d)\n", rc);
+    apReset(false);
+    explicit_bzero(fApStart, sizeof(fApStart));
+    fApStartLen = 0;
+    return kIOReturnSuccess;
+}
+
+/* The access point is gone.  tellStations: its stations were not told to leave. */
+void ItlVirt::
+apReset(bool tellStations)
+{
+    static const uint8_t none[IEEE80211_ADDR_LEN] = { 0 };
+    unsigned i;
+
+    fApState = VIRT_AP_OFF;
+    fApChannel = 0;
+    timeout_del(&fApTxTimer);
+    for (i = 0; i < VIRT_AP_MAX_STA; i++) {
+        if (memcmp(fApSta[i], none, sizeof(none)) == 0)
+            continue;
+        if (tellStations) {
+            struct ieee80211_node witness;
+
+            bzero(&witness, sizeof(witness));
+            IEEE80211_ADDR_COPY(witness.ni_macaddr, fApSta[i]);
+            ieee80211_apsta_event_publish(&com.sc_ic, &witness, IEEE80211_APSTA_EVENT_LEAVE);
+        }
+        bzero(fApSta[i], sizeof(fApSta[i]));
+    }
+}
+
+void ItlVirt::
+apStarted(const struct vap_ap_started *st)
+{
+    if (fApState == VIRT_AP_OFF)
+        return;
+    fApState = VIRT_AP_ON;
+    fApChannel = virt_ap_freq2chan(st->freq_mhz);
+    memcpy(fApBssid, st->bssid, sizeof(fApBssid));
+    XYLog("vap: AP up: %s, %u MHz\n", ether_sprintf(fApBssid), st->freq_mhz);
+    apTxKick();
+}
+
+/*
+ * A station has completed the key handshake with the firmware's
+ * authenticator, or has left.  The Airport layer hears of it the way it does
+ * from the other HALs: a witness node with the address and, when the
+ * firmware has them, the elements of the association request.
+ */
+void ItlVirt::
+apStation(const uint8_t *sta, bool connected, const uint8_t *ies, uint16_t ieLen)
+{
+    static const uint8_t none[IEEE80211_ADDR_LEN] = { 0 };
+    struct ieee80211_node witness;
+    int slot = -1, vacant = -1;
+    unsigned i;
+
+    if (fApState == VIRT_AP_OFF || memcmp(sta, none, sizeof(none)) == 0)
+        return;
+    for (i = 0; i < VIRT_AP_MAX_STA; i++) {
+        if (memcmp(fApSta[i], sta, IEEE80211_ADDR_LEN) == 0)
+            slot = (int)i;
+        else if (vacant < 0 && memcmp(fApSta[i], none, sizeof(none)) == 0)
+            vacant = (int)i;
+    }
+    XYLog("vap: AP station %s %s\n", ether_sprintf((u_char *)sta),
+          connected ? (slot >= 0 ? "joined again" : "joined") : "left");
+    if (!connected && slot < 0)
+        return;
+    bzero(&witness, sizeof(witness));
+    IEEE80211_ADDR_COPY(witness.ni_macaddr, sta);
+    if (connected) {
+        if (slot < 0 && vacant >= 0)
+            memcpy(fApSta[vacant], sta, IEEE80211_ADDR_LEN);
+        if (ieLen != 0) {
+            witness.ni_rsnie_tlv = const_cast<uint8_t *>(ies);
+            witness.ni_rsnie_tlv_len = ieLen;
+        }
+        ieee80211_apsta_event_publish(&com.sc_ic, &witness,
+            slot >= 0 ? IEEE80211_APSTA_EVENT_REASSOC : IEEE80211_APSTA_EVENT_ASSOC);
+        apTxKick();
+        timeout_add_msec(&fApTxTimer, VIRT_AP_TX_POLL_MS);
+    } else {
+        bzero(fApSta[slot], sizeof(fApSta[slot]));
+        ieee80211_apsta_event_publish(&com.sc_ic, &witness, IEEE80211_APSTA_EVENT_LEAVE);
+    }
+}
+
+/* One 802.3 frame from a station of the access point. */
+void ItlVirt::
+apInput(const uint8_t *frame, uint32_t len)
+{
+    struct mbuf_list ml = MBUF_LIST_INITIALIZER();
+    mbuf_t m;
+
+    if (fApState != VIRT_AP_ON || len < sizeof(struct ether_header) ||
+        (m = getController()->allocatePacket(len)) == NULL)
+        return;
+    if (mbuf_copyback(m, 0, len, frame, MBUF_DONTWAIT) != 0) {
+        mbuf_freem(m);
+        return;
+    }
+    ml_enqueue(&ml, m);
+    if_input_ap(&com.sc_ic.ic_if, &ml);
+    /* The answer to this frame is in the access point's queue by now. */
+    apTxKick();
+}
+
+/*
+ * The Airport layer hands over the access point's outgoing packets only when
+ * it is asked to.  The other HALs ask when their transmit rings have made
+ * progress; this transport always has room, so it asks after every received
+ * frame and, while a station is associated, on a short timer for what the
+ * guest sends unprompted.
+ */
+void ItlVirt::
+apTxKick()
+{
+#if __IO80211_TARGET >= __MAC_26_0
+    if (fApState == VIRT_AP_ON)
+        airportItlwmRequestAPTxDequeue(getController());
+#endif
+}
+
+void ItlVirt::
+virt_ap_tx_timer(void *arg)
+{
+    ItlVirt *that = (ItlVirt *)arg;
+    static const uint8_t none[IEEE80211_ADDR_LEN] = { 0 };
+    unsigned i;
+
+    if (that->fApState != VIRT_AP_ON)
+        return;
+    for (i = 0; i < VIRT_AP_MAX_STA; i++) {
+        if (memcmp(that->fApSta[i], none, sizeof(none)) != 0)
+            break;
+    }
+    if (i == VIRT_AP_MAX_STA)
+        return;                 /* nobody to send to: apStation() starts it again */
+    that->apTxKick();
+    timeout_add_msec(&that->fApTxTimer, VIRT_AP_TX_POLL_MS);
+}
+
+struct VirtApTx {
+    mbuf_t  m;
+    int     rc;
+};
+
+IOReturn ItlVirt::
+virt_ap_tx_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3)
+{
+    ItlVirt *that = (ItlVirt *)arg0;
+    VirtApTx *tx = (VirtApTx *)arg1;
+    struct vap_iov iov[VIRT_TX_MAX_SEGS];
+    struct vap_tx_meta meta;
+    unsigned n = 0;
+    mbuf_t seg;
+
+    tx->rc = VAP_G_EINVAL;
+    if (that->fApState != VIRT_AP_ON) {
+        tx->rc = VAP_E_NOT_READY;
+        return kIOReturnSuccess;
+    }
+    bzero(&meta, sizeof(meta));
+    meta.vif = VAP_VIF_AP;
+    for (seg = tx->m; seg != NULL && n < nitems(iov); seg = mbuf_next(seg)) {
+        if (mbuf_len(seg) == 0)
+            continue;
+        iov[n].p = mbuf_data(seg);
+        iov[n].len = (uint32_t)mbuf_len(seg);
+        n++;
+    }
+    /* vap_tx() copies the frame. */
+    if (seg == NULL && n != 0)
+        tx->rc = vap_tx(that->fDev, &meta, iov, n);
+    return kIOReturnSuccess;
+}
+
+/* The mbuf is ours only when this returns success. */
+IOReturn ItlVirt::
+transmitAPData(mbuf_t packet)
+{
+    VirtApTx tx = { packet, VAP_G_EINVAL };
+
+    if (packet == NULL || mbuf_pkthdr_len(packet) < sizeof(struct ether_header))
+        return kIOReturnBadArgument;
+    getMainCommandGate()->runAction(virt_ap_tx_gated, this, &tx);
+    if (tx.rc == VAP_G_OK) {
+        mbuf_freem(packet);
+        return kIOReturnSuccess;
+    }
+    /* No room: virt_tx_ready() asks for the queue again. */
+    return tx.rc == VAP_G_BUSY ? kIOReturnNoResources :
+        tx.rc == VAP_E_NOT_READY ? kIOReturnNotReady : kIOReturnError;
+}
+
+/*
+ * How many packets the Airport layer may take off the access point's queue
+ * at once.  The transport counts its free slots lazily (it collects finished
+ * ones when it runs out), so that count is no measure: a batch is offered
+ * and vap_tx() says when there really is no room, with tx_ready() to follow.
+ */
+uint32_t ItlVirt::
+getAPTxFreeSpace() const
+{
+    return fApState == VIRT_AP_ON ? VAP_G_TX_SLOTS / 2 : 0;
+}
+
+IOReturn ItlVirt::
+setAPMaxStations(uint32_t maxStations)
+{
+    /* Part of the access point's configuration: taken at its next start. */
+    fApMaxSta = (uint8_t)(maxStations > 255 ? 255 : maxStations);
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlVirt::
+setAPHidden(bool hidden)
+{
+    struct vap_ap_start *a = (struct vap_ap_start *)fApStart;
+
+    if (fApHidden == hidden)
+        return kIOReturnSuccess;
+    fApHidden = hidden;
+    if (fApState == VIRT_AP_OFF || fApStartLen == 0)
+        return kIOReturnSuccess;
+    /* Hidden or not is how the firmware's access point is configured: start it again. */
+    (void)request(VAP_CMD_AP_STOP, NULL, 0);
+    apReset(true);
+    a->flags = hidden ? (a->flags | VAP_AP_HIDDEN) : (a->flags & ~VAP_AP_HIDDEN);
+    return apStartCommand() == 0 ? kIOReturnSuccess : kIOReturnError;
+}
+
+uint16_t ItlVirt::
+getAPSTARequiredSharedChannel() const
+{
+    struct ieee80211com *ic = const_cast<struct ieee80211com *>(&com.sc_ic);
+
+    /* Asked before the access point starts as well: the station's channel first. */
+    if (ic->ic_opmode == IEEE80211_M_STA && ic->ic_state == IEEE80211_S_RUN &&
+        ic->ic_bss != NULL && ic->ic_bss->ni_chan != NULL &&
+        ic->ic_bss->ni_chan != IEEE80211_CHAN_ANYC)
+        return (uint16_t)ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+    return fApChannel;
+}
+
+IOReturn ItlVirt::
+sendAPStationCommand(const struct ItlHalApStationCommand *command)
+{
+    struct vap_ap_sta_deauth d;
+    int rc;
+
+    if (fApState != VIRT_AP_ON)
+        return kIOReturnNotReady;
+    if (command == NULL || command->station == NULL)
+        return kIOReturnBadArgument;
+    switch (command->command) {
+    case kItlHalApStationAuthorize:
+    case kItlHalApStationUnauthorize:
+        /* The firmware's authenticator opens and closes the port itself. */
+        return kIOReturnSuccess;
+    case kItlHalApStationDisassociate:
+        bzero(&d, sizeof(d));
+        memcpy(d.sta, command->station, sizeof(d.sta));
+        d.reason = command->disassocReason != 0 && command->disassocReason <= 0xffff ?
+            (uint16_t)command->disassocReason : IEEE80211_REASON_AUTH_LEAVE;
+        rc = request(VAP_CMD_AP_STA_DEAUTH, &d, sizeof(d));
+        XYLog("vap: AP station %s told to leave, reason %u (%d)\n",
+              ether_sprintf((u_char *)d.sta), d.reason, rc);
+        return rc == 0 ? kIOReturnSuccess : kIOReturnError;
+    default:
+        return kIOReturnUnsupported;
+    }
+}
+
+/* The Airport layer limits what it takes off the access point's queue by this. */
+extern "C" bool
+airportItlwmQueryVirtAPTxFreeSpace(ItlHalService *service, uint32_t *freeSpace)
+{
+    ItlVirt *that = OSDynamicCast(ItlVirt, service);
+
+    if (that == NULL || freeSpace == NULL)
+        return false;
+    *freeSpace = that->getAPTxFreeSpace();
+    return true;
 }
 
 bool ItlVirt::
@@ -435,6 +943,7 @@ attach(IOPCIDevice *device)
     task_set(&fInitTask, virt_init_task, this, "virt_init_task");
     timeout_set(&fScanWatchdog, virt_scan_watchdog, this);
     timeout_set(&fStatsTimer, virt_stats_timer, this);
+    timeout_set(&fApTxTimer, virt_ap_tx_timer, this);
 
     for (int index = 0; ; index++) {
         int interruptType;
@@ -532,6 +1041,10 @@ detach(IOPCIDevice *device)
     }
     /* No frame arrives any more: the SAE worker can be waited for. */
     saeDetach();
+    if (fApTxTimer != NULL) {
+        timeout_del(&fApTxTimer);
+        timeout_free(&fApTxTimer);
+    }
     if (fStatsTimer != NULL) {
         timeout_del(&fStatsTimer);
         timeout_free(&fStatsTimer);
@@ -921,6 +1434,11 @@ radioStop()
     ifq_flush(&ifp->if_snd);
     __atomic_store_n(&ic->ic_initial_scan_census_only, 0, __ATOMIC_RELEASE);
     scanReset();
+    /* The firmware's access point goes with the radio; its owner starts it again. */
+    if (fApState != VIRT_AP_OFF) {
+        (void)request(VAP_CMD_AP_STOP, NULL, 0);
+        apReset(true);
+    }
     /* The firmware leaves the BSS and forgets its keys with the radio. */
     fKeys = 0;
     fPaeTxn = 0;

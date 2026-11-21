@@ -69,6 +69,8 @@ extern "C" bool airportItlwmQueryIwmAPTxFreeSpace(
     ItlHalService *, uint32_t *);
 extern "C" bool airportItlwmQueryIwxAPTxFreeSpace(
     ItlHalService *, uint32_t *);
+extern "C" bool airportItlwmQueryVirtAPTxFreeSpace(
+    ItlHalService *service, uint32_t *freeSpace);
 extern "C" bool airportItlwmHandoffIwmPrimaryStaRecoveryScanToAP(
     ItlHalService *, IOReturn *);
 extern "C" bool airportItlwmHandoffIwxPrimaryStaRecoveryScanToAP(
@@ -7061,7 +7063,9 @@ airportItlwmQueryAPTxFreeSpace(ItlHalService *service)
     uint32_t freeSpace = 0;
     if (airportItlwmQueryIwmAPTxFreeSpace(service, &freeSpace))
         return freeSpace;
-    return airportItlwmQueryIwxAPTxFreeSpace(service, &freeSpace) ?
+    if (airportItlwmQueryIwxAPTxFreeSpace(service, &freeSpace))
+        return freeSpace;
+    return airportItlwmQueryVirtAPTxFreeSpace(service, &freeSpace) ?
         freeSpace : 0;
 }
 

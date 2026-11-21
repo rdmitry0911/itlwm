@@ -75,6 +75,10 @@ enum {
     VAP_CMD_GET_STATS    = 0x40,
     VAP_CMD_SET_CQM      = 0x41,
     VAP_CMD_SET_POWERSAVE = 0x42,
+    VAP_CMD_AP_START     = 0x50,
+    VAP_CMD_AP_STOP      = 0x51,
+    VAP_CMD_AP_STA_DEAUTH = 0x52,
+    VAP_CMD_AP_STA_INFO  = 0x53,
 };
 
 enum {
@@ -88,6 +92,9 @@ enum {
     VAP_EVT_CHANNEL_SWITCH = 0xa4,
     VAP_EVT_TX_STATUS      = 0xb0,
     VAP_EVT_REGDOM         = 0xc0,
+    VAP_EVT_AP_STA         = 0xc8,
+    VAP_EVT_AP_STOPPED     = 0xc9,
+    VAP_EVT_AP_STARTED     = 0xca,
 };
 
 struct vap_hello_req {
@@ -260,14 +267,85 @@ struct vap_evt_channel_switch { uint16_t freq_mhz; uint16_t center_freq1_mhz; ui
 
 struct vap_evt_tx_status { uint32_t cookie; uint32_t acked; };
 
+/* ---- access point ------------------------------------------------------- */
+
+/*
+ * The firmware runs the access point itself: beacons, probe responses,
+ * authentication, association and the authenticator side of the 4-way
+ * handshake. The guest says what to run and gets the stations' comings and
+ * goings; data for the AP crosses as 802.3 frames with vif VAP_VIF_AP.
+ *
+ * AP_START answers at once with the BSSID and channel it will use (status 0:
+ * accepted); VAP_EVT_AP_STARTED follows when the AP beacons, or
+ * VAP_EVT_AP_STOPPED if it could not start or stops later.
+ */
+#define VAP_AP_AKM_OPEN 0x0u
+#define VAP_AP_AKM_PSK  (1u << 0)
+#define VAP_AP_AKM_SAE  (1u << 1)
+
+#define VAP_AP_HIDDEN   (1u << 0)
+
+/* Followed by ie_len bytes: elements to add to beacons and probe responses. */
+struct vap_ap_start {
+    uint8_t  bssid[6];          /* all zero: the firmware picks one */
+    uint16_t freq_mhz;          /* 0: the station's channel, or the firmware's choice */
+    uint16_t beacon_int;
+    uint8_t  dtim;
+    uint8_t  max_sta;           /* 0: the firmware's limit */
+    uint32_t akm;               /* VAP_AP_AKM_*; PSK|SAE is WPA3 transition */
+    uint32_t pairwise_cipher;   /* suite selector, e.g. CCMP 0x000fac04 */
+    uint32_t group_cipher;
+    uint8_t  mfp;               /* 0 off, 1 optional, 2 required */
+    uint8_t  flags;             /* VAP_AP_* */
+    uint8_t  ssid_len;
+    uint8_t  cred_len;          /* passphrase 8..63, or 64 hexadecimal digits of the PSK */
+    uint8_t  ssid[32];
+    uint8_t  cred[64];
+    uint16_t ie_len;
+    uint16_t rsvd;
+};
+
+/* AP_START reply and VAP_EVT_AP_STARTED payload. */
+struct vap_ap_started { uint8_t bssid[6]; uint16_t freq_mhz; };
+
+struct vap_ap_sta_deauth { uint8_t sta[6]; uint16_t reason; };
+
+struct vap_ap_sta_query { uint8_t sta[6]; uint8_t rsvd[2]; };
+
+struct vap_ap_sta_info {
+    uint8_t  sta[6];
+    uint16_t aid;
+    int8_t   rssi_dbm;
+    uint8_t  rsvd[3];
+    uint32_t connected_s;
+    uint64_t tx_packets, rx_packets, tx_bytes, rx_bytes;
+    struct vap_rate tx_rate;
+    struct vap_rate rx_rate;
+};
+
+/* Followed by ie_len bytes: the station's association request elements, when known. */
+struct vap_evt_ap_sta {
+    uint8_t  sta[6];
+    uint8_t  connected;
+    uint8_t  rsvd;
+    uint16_t reason;            /* when it left */
+    uint16_t ie_len;
+};
+
+struct vap_evt_ap_stopped { int32_t reason; uint32_t rsvd; };
+
 /* ---- frames ------------------------------------------------------------- */
 
 /*
- * Frames cross the boundary as 802.11 frames without FCS, management and
- * data alike, in the clear: the firmware encrypts and decrypts with the keys
- * from KEY_ADD. The firmware owns rate control, aggregation, retries and
- * power save.
+ * Station frames (vif VAP_VIF_STA) cross the boundary as 802.11 frames
+ * without FCS, management and data alike, in the clear: the firmware
+ * encrypts and decrypts with the keys from KEY_ADD. The firmware owns rate
+ * control, aggregation, retries and power save. Access point frames (vif
+ * VAP_VIF_AP) are 802.3 data frames.
  */
+#define VAP_VIF_STA 0u
+#define VAP_VIF_AP  1u
+
 #define VAP_TXF_NO_ENCRYPT  (1u << 0)   /* EAPOL before keys are installed */
 #define VAP_TXF_WANT_STATUS (1u << 1)   /* report with VAP_EVT_TX_STATUS(cookie) */
 
@@ -276,7 +354,8 @@ struct vap_tx_meta {
     uint32_t cookie;
     uint16_t frame_len;
     uint8_t  tid;
-    uint8_t  rsvd[5];
+    uint8_t  vif;               /* VAP_VIF_* */
+    uint8_t  rsvd[4];
 };
 
 #define VAP_RXF_SCAN_RESULT (1u << 0)   /* beacon or probe response reported by a scan */
@@ -293,7 +372,8 @@ struct vap_rx_meta {
     uint16_t freq_mhz;
     int8_t   rssi_dbm;
     int8_t   noise_dbm;
-    uint8_t  rsvd[2];
+    uint8_t  vif;               /* VAP_VIF_* */
+    uint8_t  rsvd;
     struct vap_rate rate;
 };
 

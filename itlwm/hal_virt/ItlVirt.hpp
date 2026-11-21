@@ -3,8 +3,9 @@
  * HAL for the v-Airport virtual Wi-Fi device.  The device's firmware runs on
  * the VM host and owns scanning, association, encryption, rate control and
  * aggregation; vap_guest.c is the transport to it.  Capabilities, radio
- * power, scans and frames go through the firmware.  The points where it is
- * not driven yet are marked "VAP-SEAM:".
+ * power, scans and frames go through the firmware, and so does the access
+ * point, which the firmware runs whole.  The points where it is not driven
+ * yet are marked "VAP-SEAM:".
  */
 
 #ifndef ItlVirt_hpp
@@ -40,6 +41,9 @@
 #define VIRT_SCAN_WATCHDOG_MS   10000   /* wait for the end of a scan */
 #define VIRT_SCAN_RETRY_MS      250     /* between attempts to start a scan on a busy firmware */
 #define VIRT_STATS_MS           1000    /* between link statistics requests while associated */
+#define VIRT_AP_MAX_STA         32      /* stations of the access point remembered here */
+#define VIRT_AP_IE_MAX          512     /* vendor elements handed to the access point */
+#define VIRT_AP_TX_POLL_MS      10      /* between requests for the access point's outgoing packets */
 
 /* rxFrame() flags */
 #define VIRT_RX_DECRYPTED   0x1     /* firmware removed IV and MIC and cleared Protected */
@@ -68,6 +72,13 @@ struct VirtCaps {
     uint8_t  vhtcap[12];
     uint8_t  hecap[64];             /* HE: of the 5 GHz band if it has one */
     uint8_t  hecap_len;             /* 0: no HE */
+};
+
+/* The access point the firmware runs for us (vap_proto.h, "access point"). */
+enum {
+    VIRT_AP_OFF,
+    VIRT_AP_STARTING,               /* AP_START accepted, not beaconing yet */
+    VIRT_AP_ON,
 };
 
 enum {
@@ -274,6 +285,28 @@ public:
         return kIOReturnSuccess;
     }
 
+    /*
+     * Access point.  The firmware runs it whole: beacons, authentication,
+     * association and the authenticator's key handshake.  This side says
+     * what to run, passes 802.3 data both ways and reports the stations.
+     */
+    bool supportsAPMode() const override {
+        return (fCaps.fw_features & VAP_FEAT_AP) != 0;
+    }
+    IOReturn startAPMode(const struct ItlHalApConfig *config) override;
+    IOReturn stopAPMode() override;
+    IOReturn transmitAPData(mbuf_t packet) override;
+    /* The keys of the access point are the firmware's. */
+    IOReturn setAPKey(const struct ItlHalApKey *key) override { return kIOReturnSuccess; }
+    IOReturn setAPMaxStations(uint32_t maxStations) override;
+    IOReturn setAPHidden(bool hidden) override;
+    uint16_t getAPCurrentChannel() const override { return fApChannel; }
+    /* One radio, one channel: next to a station the access point is on its channel. */
+    bool requiresAPSTASharedChannel() const override { return true; }
+    uint16_t getAPSTARequiredSharedChannel() const override;
+    IOReturn sendAPStationCommand(const struct ItlHalApStationCommand *command) override;
+    uint32_t getAPTxFreeSpace() const;
+
     void applyCaps(const VirtCaps &caps);
 
     int txFrame(mbuf_t m, struct ieee80211_node *ni);
@@ -355,6 +388,14 @@ private:
     }
     int keyAdd(struct ieee80211_node *ni, const struct ieee80211_key *k);
     void keyDel(const struct ieee80211_key *k);
+    int apStartCommand();
+    void apReset(bool tellStations);
+    void apStarted(const struct vap_ap_started *st);
+    void apStation(const uint8_t *sta, bool connected, const uint8_t *ies, uint16_t ieLen);
+    void apInput(const uint8_t *frame, uint32_t len);
+    void apTxKick();
+    static void virt_ap_tx_timer(void *arg);
+    static IOReturn virt_ap_tx_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     bool saeAttach();
     void saeDetach();
     bool saeAdmitAssocReq(mbuf_t m, struct ieee80211_node *ni);
@@ -429,6 +470,18 @@ private:
     VirtWclTicket fWcl;
     uint32_t fScanId;
     bool wclSaeAdmissionReserved;   /* guarded by fScanLock; see reserveSaeWclCredentialAdmission() */
+
+    /* The access point; touched with the workloop gate held. */
+    uint8_t fApState;               /* VIRT_AP_* */
+    CTimeout *fApTxTimer;
+    uint16_t fApChannel;            /* accepted or running; 0 without an access point */
+    bool fApHidden;
+    uint8_t fApMaxSta;              /* 0: as the start request says */
+    uint8_t fApBssid[IEEE80211_ADDR_LEN];
+    uint8_t fApSta[VIRT_AP_MAX_STA][IEEE80211_ADDR_LEN];   /* all zero: free */
+    /* The last AP_START, to run it again with another setting.  Holds the passphrase. */
+    uint32_t fApStartLen;
+    uint8_t fApStart[sizeof(struct vap_ap_start) + VIRT_AP_IE_MAX];
 };
 
 #endif /* ItlVirt_hpp */
