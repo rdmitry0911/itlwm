@@ -6414,14 +6414,16 @@ static IOReturn postTahoeWclProtectedRunCompletionGated(
     (void)ieee80211_wcl_join_note_success(ic, owner->joinAttemptGeneration,
         epoch, IEEE80211_JOIN_KEYS);
 
-    /* An 802.1X association published its link when it reached RUN.  WCL
-     * has been counting down to the key handshake since then, and only the
-     * supplicant event stops that (see postTahoeWclEnterpriseLinkUpGated);
-     * the reference posts it before connect-complete. */
-    if (owner->linkUpPublished)
-        postTahoeSupplicantKeyedEvent(controller);
     const bool linkPublished = owner->linkUpPublished ||
         postTahoeWclLinkUpInd(controller, rawReason);
+    /* The key handshake is done.  AppleBCMWLANCore::handlePSKEvent
+     * (0xffffff80015a1402) posts the supplicant event for it, whatever the
+     * AKM (PSK and SAE run in the firmware's supplicant), after the link and
+     * before connect-complete.  An 802.1X association published its link
+     * when it reached RUN; WCL has been counting down to the key handshake
+     * since then and only this event stops that (see
+     * postTahoeWclEnterpriseLinkUpGated). */
+    postTahoeSupplicantKeyedEvent(controller);
     const bool connectPublished =
         postTahoeWclConnectCompleteEvent(controller);
     if (!linkPublished || !connectPublished) {
