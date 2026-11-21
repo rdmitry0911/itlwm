@@ -10617,12 +10617,16 @@ setSET_MAC_ADDRESSImpl(apple80211_set_mac_address_data *data)
         memcpy(linkMac.octet, mac, IEEE80211_ADDR_LEN);
         setLinkLayerAddress(&linkMac);
     }
+    /*
+     * Only the interface's IOMACAddress follows the address in use, as the
+     * MacAddressAgent's updateMacAddress (0xffffff8002238c61) and
+     * IOSkywalkEthernetInterface::setLinkLayerAddress (0xffffff8002a17cd4)
+     * do.  IOSkywalkLegacyEthernet keeps the hardware address it
+     * materialized after registration: nothing in IO80211Family,
+     * IOSkywalkFamily or AppleBCMWLAN* writes its IOMACAddress, and
+     * SCNetworkInterface/airportd report it as the hardware address.
+     */
     setProperty(kIOMACAddress, const_cast<uint8_t *>(mac), kIOEthernetAddressSize);
-    IORegistryEntry *legacy = getChildEntry(gIOServicePlane);
-    if (legacy != nullptr &&
-        legacy->metaCast("IOSkywalkLegacyEthernet") != nullptr)
-        legacy->setProperty(kIOMACAddress, const_cast<uint8_t *>(mac),
-                            kIOEthernetAddressSize);
     postMessage(APPLE80211_M_LINK_ADDRESS_CHANGED, const_cast<uint8_t *>(mac), 6, true);
 
     return kIOReturnSuccess;

@@ -884,24 +884,6 @@ static bool snapshotWclPhysicalScanTerminal(AirportItlwm *that,
 // simultaneous controllers independent.
 
 #if __IO80211_TARGET >= __MAC_26_0
-static bool
-seedTahoeInitialMacAddress(IO80211SkywalkInterface *netIf,
-                           struct ieee80211com *ic)
-{
-    if (netIf == nullptr || ic == nullptr)
-        return false;
-
-    const uint8_t *mac = ic->ic_myaddr;
-    if ((mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]) == 0)
-        return false;
-
-    ether_addr initMac;
-    memcpy(initMac.octet, mac, IEEE80211_ADDR_LEN);
-    netIf->setInitMacAddress(initMac);
-    netIf->setProperty(kIOMACAddress, initMac.octet, kIOEthernetAddressSize);
-    return true;
-}
-
 static void
 publishTahoeSkywalkLinkCarrier(IOSkywalkNetworkInterface *netIf, bool active)
 {
@@ -11839,9 +11821,6 @@ bool AirportItlwm::start(IOService *provider)
 #if __IO80211_TARGET < __MAC_26_0
     fNetIf->setInterfaceRole(1);
     fNetIf->setInterfaceId(1);
-#else
-    (void)seedTahoeInitialMacAddress(
-        fNetIf, fHalService->get80211Controller());
 #endif
 
 #if __IO80211_TARGET < __MAC_26_0
@@ -12113,6 +12092,36 @@ bool AirportItlwm::start(IOService *provider)
         sRT.regObjA0      = (uint64_t)(uintptr_t)regObjA0;
     }
 
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * Hardware address, as the reference sets it up (25C56):
+     * AppleBCMWLANCore::skywalkInfraInit (0xffffff8001565d32) passes the
+     * provisioned MAC in the create parameters, createSkywalkInterface
+     * (0xffffff800160e145) copies it to RegistrationInfo+0x108, and
+     * AppleBCMWLANSkywalkInterface::start(core, info) (0xffffff800153ccd8)
+     * runs IO80211InfraInterface::start first and registers afterwards.  The
+     * start creates the IO80211MacAddressAgent, which publishes a locally
+     * administered IOMACAddress (initWithOptions 0xffffff80022386f8); the
+     * registration then publishes RegistrationInfo+0x108 as IOMACAddress
+     * (IOSkywalkEthernetInterface::copyRegistrationInfo 0xffffff8002a17923).
+     * That value is what IOSkywalkLegacyEthernet materializes, and so what
+     * SCNetworkInterface and airportd report as the hardware address.  The
+     * reference seeds no initial address for this interface
+     * (setInitMacAddress is called only by AppleBCMWLANLowLatencyInterface).
+     */
+    {
+        struct ieee80211com *ic = fHalService->get80211Controller();
+        if (ic != nullptr)
+            memcpy(reinterpret_cast<uint8_t *>(&registInfo) + 0x108,
+                   ic->ic_myaddr, IEEE80211_ADDR_LEN);
+    }
+    sDiag.step = 81;
+    RT3_SET(10); // entering fNetIf->start
+    fNetIf->start(this);
+    RT3_SET(11); // fNetIf->start returned
+    SD_SET(15); // fNetIf->start OK
+#endif
+
     {
         IOSkywalkPacketQueue *queues[] = {
             (IOSkywalkPacketQueue *)fTxQueue,
@@ -12163,12 +12172,14 @@ bool AirportItlwm::start(IOService *provider)
         }
     }
 
+#if __IO80211_TARGET < __MAC_26_0
     // Start the Skywalk interface
     sDiag.step = 81;
     RT3_SET(10); // entering fNetIf->start
     fNetIf->start(this);
     RT3_SET(11); // fNetIf->start returned
     SD_SET(15); // fNetIf->start OK
+#endif
 
 #if __IO80211_TARGET >= __MAC_26_0
     /*
