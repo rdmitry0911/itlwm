@@ -2443,14 +2443,107 @@ getCHANNELS_INFOImpl(apple80211_channels_info *data)
 
     // Tahoe's UI path still queries legacy APPLE80211_IOC_CHANNELS_INFO.
     // Live 26.x IOC DEBUG traces showed slot [483] returning 0xe00002c7 from
-    // this Skywalk vtable.  The older AirportVirtualIOCTL path already proved
-    // that a simple channel inventory satisfies the family contract here, so
-    // keep the Skywalk slot on that same ABI instead of shadowing it with
-    // unsupported.
+    // this Skywalk vtable, so the slot answers with the channel inventory.
+    // On 25C56 the inventory has its own layout (count at +0xc, 400 specs):
+    // the pre-Tahoe one put the count where IO80211 reads the second spec,
+    // so the AWDL peer manager saw no channels and kept AWDL on channel 6.
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
     if (!ic)
         return kIOReturnNotReady;
 
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * The 25C56 layout (apple80211_ioctl.h), filled the way
+     * AppleBCMWLANCore::handleChanInfoTimer 0xffffff800156a602 does: every
+     * 20 MHz spec, then each wider spec once per primary channel with the
+     * flags of that channel's 20 MHz entry. IO80211's AWDL peer manager
+     * takes its social channels from here
+     * (IO80211AWDLPeerManager::configureValidAWDLChannels
+     * 0xffffff8002129dae): with no entries it logs "invalid number of
+     * chanspecs" and keeps AWDL on 2.4 GHz only.
+     */
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    if (instance != nullptr) {
+        struct apple80211_country_code_data cc;
+
+        memset(&cc, 0, sizeof(cc));
+        if (instance->getCOUNTRY_CODE(this, &cc) == kIOReturnSuccess)
+            memcpy(data->country_code, cc.cc, sizeof(data->country_code));
+    }
+    for (int width = 20; width <= 160; width *= 2) {
+        for (int i = 0; i < IEEE80211_CHAN_MAX; i++) {
+            const struct ieee80211_channel *c = &ic->ic_channels[i];
+            const bool six = IEEE80211_IS_CHAN_6GHZ(c);
+            const bool five = !six && IEEE80211_IS_CHAN_5GHZ(c);
+            int ch, center, sb, wcode, n;
+            uint32_t flags;
+
+            if (c->ic_freq == 0)
+                continue;
+            ch = ieee80211_chan2ieee(ic, c);
+            if (ch <= 0 || ch > 255)
+                continue;
+            /* The centre of the block of this width that holds ch. */
+            if (width == 20) {
+                center = ch;
+            } else if (six) {
+                center = 1 + ((ch - 1) / (width / 5)) * (width / 5) + width / 10 - 2;
+            } else if (five) {
+                const int base = ch >= 149 ? 149 : 36;
+                center = base + ((ch - base) / (width / 5)) * (width / 5) + width / 10 - 2;
+            } else {
+                center = 0;     /* 2.4 GHz: 40 MHz only, by HT40U/HT40D below */
+            }
+            if (width == 40 && !six && !five) {
+                if (c->ic_flags & IEEE80211_CHAN_HT40U)
+                    center = ch + 2;
+                else if (c->ic_flags & IEEE80211_CHAN_HT40D)
+                    center = ch - 2;
+            }
+            if (width == 40 && !(c->ic_flags & IEEE80211_CHAN_HT40) &&
+                !(six && (c->ic_flags & (IEEE80211_CHAN_VHT80 | IEEE80211_CHAN_VHT160))))
+                continue;
+            if (width == 80 && (!(c->ic_flags & IEEE80211_CHAN_VHT80) || (!six && !five)))
+                continue;
+            if (width == 160 && (!(c->ic_flags & IEEE80211_CHAN_VHT160) || (!six && !five)))
+                continue;
+            if (center <= 0 || center > 255)
+                continue;
+            if (data->num_chan_specs >= APPLE80211_CHANNELS_INFO_MAX)
+                break;
+            /* AppleChannelSpec_t (apple80211_var.h): band, width, primary's place, centre. */
+            wcode = width == 20 ? 2 : width == 40 ? 3 : width == 80 ? 4 : 5;
+            sb = (ch - (center - width / 10 + 2)) / 4;
+            n = data->num_chan_specs;
+            data->chan_spec[n] = (uint16_t)((six ? APPLE80211_CHANSPEC_BAND_6G :
+                five ? APPLE80211_CHANSPEC_BAND_5G : APPLE80211_CHANSPEC_BAND_2G) |
+                (wcode << 11) | ((sb & 7) << 8) | center);
+            /* The firmware's own chanspec: Broadcom's d11ac form, 6 GHz band 0x8000. */
+            data->per_chan[n] = (data->chan_spec[n] & 0x3fff) | (six ? 0x8000u : five ? 0xc000u : 0);
+            data->chan_num[n] = (uint8_t)ch;
+            flags = APPLE80211_CHANINFO_VALID_HW | APPLE80211_CHANINFO_VALID_SW;
+            if (five)
+                flags |= APPLE80211_CHANINFO_BAND_5G;
+            if (six)
+                flags |= APPLE80211_CHANINFO_BAND_6G;
+            if (c->ic_flags & IEEE80211_CHAN_DFS)
+                flags |= APPLE80211_CHANINFO_RADAR;
+            if (c->ic_flags & IEEE80211_CHAN_PASSIVE)
+                flags |= APPLE80211_CHANINFO_PASSIVE;
+            data->chan_bitmap[n] = flags;
+            data->indoor_restric[n] = (flags & APPLE80211_CHANINFO_RESTRICTED) != 0;
+            data->radar_dfs[n] = (flags & APPLE80211_CHANINFO_RADAR) != 0;
+            data->passive[n] = (flags & APPLE80211_CHANINFO_PASSIVE) != 0;
+            data->support_40Mhz[n] = width == 40;
+            data->support_80Mhz[n] = width == 80;
+            data->support_160Mhz[n] = width == 160;
+            data->is_6ghz[n] = six;
+            data->num_chan_specs++;
+        }
+    }
+    return kIOReturnSuccess;
+#else
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
     for (int i = 0; i < IEEE80211_CHAN_MAX; i++) {
@@ -2469,6 +2562,7 @@ getCHANNELS_INFOImpl(apple80211_channels_info *data)
             break;
     }
     return kIOReturnSuccess;
+#endif
 }
 
 UInt64 AirportItlwmSkywalkInterface::createEventPipe(IO80211APIUserClient *client)

@@ -1245,6 +1245,70 @@ struct apple80211_awdl_channel {
     uint32_t    chan_bitmap;
 } __attribute__((packed));
 
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * APPLE80211_IOC_CHANNELS_INFO on 25C56: 0x2720 bytes, 400 channel specs,
+ * one array per field.
+ * - Size: the IOC 207 GET handler 0xffffff80021d88b7 rejects any other
+ *   req_len; IO80211AWDLPeerManager::configureValidAWDLChannels
+ *   0xffffff8002129dae asks for and copies exactly 0x2720.
+ * - Producer: AppleBCMWLANCore::getCHANNELS_INFO 0xffffff80015ffece copies
+ *   its cache, which AppleBCMWLANCore::handleChanInfoTimer 0xffffff800156a602
+ *   fills: every 20 MHz spec first, then each 40/80/160 MHz spec once per
+ *   primary channel, taking the flags of that channel's 20 MHz entry.
+ * - Consumer: IO80211AWDLPeerManager::isValidChannel 0xffffff8002131090
+ *   (count at +0xc must be 1..400, entries matched by chan_num, the last
+ *   match wins).
+ * The firmware flags (chan_bitmap) are Broadcom's chan_info bits; the
+ * reference splits bit 6 into indoor_restric, bit 3 into radar_dfs and bit 5
+ * into passive.
+ */
+#define APPLE80211_CHANNELS_INFO_MAX     400
+#define APPLE80211_CHANINFO_VALID_HW     0x001
+#define APPLE80211_CHANINFO_VALID_SW     0x002
+#define APPLE80211_CHANINFO_BAND_5G      0x004
+#define APPLE80211_CHANINFO_RADAR        0x008
+#define APPLE80211_CHANINFO_PASSIVE      0x020
+#define APPLE80211_CHANINFO_RESTRICTED   0x040
+#define APPLE80211_CHANINFO_BAND_6G      0x200
+struct apple80211_channels_info {
+    uint32_t    version;                                         // 0x0000
+    uint32_t    unk1;                                            // 0x0004
+    char        country_code[3];                                 // 0x0008
+    uint8_t     pad0;                                            // 0x000b
+    uint16_t    num_chan_specs;                                  // 0x000c
+    uint16_t    chan_spec[APPLE80211_CHANNELS_INFO_MAX];         // 0x000e AppleChannelSpec_t
+    uint8_t     chan_num[APPLE80211_CHANNELS_INFO_MAX];          // 0x032e primary channel
+    uint8_t     indoor_restric[APPLE80211_CHANNELS_INFO_MAX];    // 0x04be flags bit 6
+    uint8_t     radar_dfs[APPLE80211_CHANNELS_INFO_MAX];         // 0x064e flags bit 3
+    uint8_t     passive[APPLE80211_CHANNELS_INFO_MAX];           // 0x07de flags bit 5
+    uint8_t     support_40Mhz[APPLE80211_CHANNELS_INFO_MAX];     // 0x096e this spec is 40 MHz
+    uint8_t     support_80Mhz[APPLE80211_CHANNELS_INFO_MAX];     // 0x0afe this spec is 80 MHz
+    uint8_t     pad1[2];                                         // 0x0c8e
+    uint32_t    per_chan[APPLE80211_CHANNELS_INFO_MAX];          // 0x0c90 the firmware's chanspec
+    uint32_t    chan_bitmap[APPLE80211_CHANNELS_INFO_MAX];       // 0x12d0 the firmware's flags
+    uint8_t     support_160Mhz[APPLE80211_CHANNELS_INFO_MAX];    // 0x1910 this spec is 160 MHz
+    uint8_t     is_6ghz[APPLE80211_CHANNELS_INFO_MAX];           // 0x1aa0 band bits are 6 GHz
+    uint8_t     flag_bit10[APPLE80211_CHANNELS_INFO_MAX];        // 0x1c30 flags bit 10
+    uint8_t     flag_bit10_tx[APPLE80211_CHANNELS_INFO_MAX];     // 0x1dc0 bit 10 and 6 GHz power known
+    uint8_t     tx_power_6g[5][APPLE80211_CHANNELS_INFO_MAX];    // 0x1f50 6 GHz VLP/LPI tx power
+} __attribute__((packed));
+
+static_assert(__offsetof(struct apple80211_channels_info, num_chan_specs) == 0xc, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, chan_num) == 0x32e, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, indoor_restric) == 0x4be, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, radar_dfs) == 0x64e, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, passive) == 0x7de, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, support_40Mhz) == 0x96e, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, support_80Mhz) == 0xafe, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, per_chan) == 0xc90, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, chan_bitmap) == 0x12d0, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, support_160Mhz) == 0x1910, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, is_6ghz) == 0x1aa0, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, flag_bit10) == 0x1c30, "invalid offset");
+static_assert(__offsetof(struct apple80211_channels_info, flag_bit10_tx) == 0x1dc0, "invalid offset");
+static_assert(sizeof(struct apple80211_channels_info) == 0x2720, "25C56 CHANNELS_INFO is 0x2720 bytes");
+#else
 struct apple80211_channels_info {
     uint32_t    version;
     uint32_t    unk1;
@@ -1269,6 +1333,7 @@ static_assert(__offsetof(struct apple80211_channels_info, passive) == 0x28A, "in
 static_assert(__offsetof(struct apple80211_channels_info, support_40Mhz) == 0x30A, "invalid offset");
 static_assert(__offsetof(struct apple80211_channels_info, support_80Mhz) == 0x38A, "invalid offset");
 static_assert(__offsetof(struct apple80211_channels_info, per_chan) == 0x60C, "invalid offset");
+#endif
 
 struct apple80211_peer_cache_maximum_size {
     uint32_t    version;
