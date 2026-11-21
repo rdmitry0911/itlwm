@@ -636,7 +636,6 @@ apReset(bool tellStations)
 
     fApState = VIRT_AP_OFF;
     fApChannel = 0;
-    timeout_del(&fApTxTimer);
     for (i = 0; i < VIRT_AP_MAX_STA; i++) {
         if (memcmp(fApSta[i], none, sizeof(none)) == 0)
             continue;
@@ -700,8 +699,6 @@ apStation(const uint8_t *sta, bool connected, const uint8_t *ies, uint16_t ieLen
         }
         ieee80211_apsta_event_publish(&com.sc_ic, &witness,
             slot >= 0 ? IEEE80211_APSTA_EVENT_REASSOC : IEEE80211_APSTA_EVENT_ASSOC);
-        apTxKick();
-        timeout_add_msec(&fApTxTimer, VIRT_AP_TX_POLL_MS);
     } else {
         bzero(fApSta[slot], sizeof(fApSta[slot]));
         ieee80211_apsta_event_publish(&com.sc_ic, &witness, IEEE80211_APSTA_EVENT_LEAVE);
@@ -724,16 +721,20 @@ apInput(const uint8_t *frame, uint32_t len)
     }
     ml_enqueue(&ml, m);
     if_input_ap(&com.sc_ic.ic_if, &ml);
-    /* The answer to this frame is in the access point's queue by now. */
-    apTxKick();
 }
 
 /*
- * The Airport layer hands over the access point's outgoing packets only when
- * it is asked to.  The other HALs ask when their transmit rings have made
- * progress; this transport always has room, so it asks after every received
- * frame and, while a station is associated, on a short timer for what the
- * guest sends unprompted.
+ * The access point's outgoing packets come with the stack's doorbell: the
+ * queue set notification calls IOSkywalkTxSubmissionQueue::packetSubmission
+ * (true) on each submission queue (25C56 nxp_tx_qset_notify
+ * 0xffffff8002a06449), which runs the Airport layer's action synchronously
+ * (legacyDequeue 0xffffff8002a32c26).  A queue stops taking doorbells only
+ * when the action took nothing (no room here: legacyDequeue sets the stall
+ * bit, 0xffffff8002a32c7f) or was asked before the access point was up, and
+ * only checkForWork, through requestDequeue, clears that.  The reference
+ * restarts on its transmit completions (AppleBCMWLAN txCompRingDrain); this
+ * transport says when it has room again (virt_tx_ready), and the access
+ * point's start clears what was refused before it.
  */
 void ItlVirt::
 apTxKick()
@@ -742,25 +743,6 @@ apTxKick()
     if (fApState == VIRT_AP_ON)
         airportItlwmRequestAPTxDequeue(getController());
 #endif
-}
-
-void ItlVirt::
-virt_ap_tx_timer(void *arg)
-{
-    ItlVirt *that = (ItlVirt *)arg;
-    static const uint8_t none[IEEE80211_ADDR_LEN] = { 0 };
-    unsigned i;
-
-    if (that->fApState != VIRT_AP_ON)
-        return;
-    for (i = 0; i < VIRT_AP_MAX_STA; i++) {
-        if (memcmp(that->fApSta[i], none, sizeof(none)) != 0)
-            break;
-    }
-    if (i == VIRT_AP_MAX_STA)
-        return;                 /* nobody to send to: apStation() starts it again */
-    that->apTxKick();
-    timeout_add_msec(&that->fApTxTimer, VIRT_AP_TX_POLL_MS);
 }
 
 struct VirtApTx {
@@ -947,7 +929,6 @@ attach(IOPCIDevice *device)
     task_set(&fInitTask, virt_init_task, this, "virt_init_task");
     timeout_set(&fScanWatchdog, virt_scan_watchdog, this);
     timeout_set(&fStatsTimer, virt_stats_timer, this);
-    timeout_set(&fApTxTimer, virt_ap_tx_timer, this);
 
     for (int index = 0; ; index++) {
         int interruptType;
@@ -1045,10 +1026,6 @@ detach(IOPCIDevice *device)
     }
     /* No frame arrives any more: the SAE worker can be waited for. */
     saeDetach();
-    if (fApTxTimer != NULL) {
-        timeout_del(&fApTxTimer);
-        timeout_free(&fApTxTimer);
-    }
     if (fStatsTimer != NULL) {
         timeout_del(&fStatsTimer);
         timeout_free(&fStatsTimer);

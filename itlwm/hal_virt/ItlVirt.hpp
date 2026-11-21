@@ -43,7 +43,6 @@
 #define VIRT_STATS_MS           1000    /* between link statistics requests while associated */
 #define VIRT_AP_MAX_STA         32      /* stations of the access point remembered here */
 #define VIRT_AP_IE_MAX          512     /* vendor elements handed to the access point */
-#define VIRT_AP_TX_POLL_MS      10      /* between requests for the access point's outgoing packets */
 
 /* rxFrame() flags */
 #define VIRT_RX_DECRYPTED   0x1     /* firmware removed IV and MIC and cleared Protected */
@@ -394,7 +393,6 @@ private:
     void apStation(const uint8_t *sta, bool connected, const uint8_t *ies, uint16_t ieLen);
     void apInput(const uint8_t *frame, uint32_t len);
     void apTxKick();
-    static void virt_ap_tx_timer(void *arg);
     static IOReturn virt_ap_tx_gated(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     bool saeAttach();
     void saeDetach();
@@ -473,7 +471,6 @@ private:
 
     /* The access point; touched with the workloop gate held. */
     uint8_t fApState;               /* VIRT_AP_* */
-    CTimeout *fApTxTimer;
     uint16_t fApChannel;            /* accepted or running; 0 without an access point */
     bool fApHidden;
     uint8_t fApMaxSta;              /* 0: as the start request says */
