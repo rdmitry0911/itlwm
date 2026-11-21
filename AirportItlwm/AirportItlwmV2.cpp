@@ -12550,8 +12550,12 @@ bool AirportItlwm::start(IOService *provider)
     return true;
 }
 
+/* Set once a controller is torn down; see IOPCIEDeviceWrapper::probe. */
+volatile bool gAirportItlwmControllerRetired = false;
+
 void AirportItlwm::stop(IOService *provider)
 {
+    gAirportItlwmControllerRetired = true;
     RT_SET(19);
     sRT.stopStep = 1;
 

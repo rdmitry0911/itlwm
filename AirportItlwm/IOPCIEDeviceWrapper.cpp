@@ -55,6 +55,7 @@ static void pciMsiXClearAndSet(IOPCIDevice *device, UInt8 msixCap, UInt16 clear,
 }
 
 extern IOWorkLoop *_fWorkloop;
+extern volatile bool gAirportItlwmControllerRetired;
 
 IOWorkLoop *IOPCIEDeviceWrapper::getWorkLoop() const
 {
@@ -71,6 +72,20 @@ probe(IOService *provider, SInt32 *score)
     IOPCIDevice* device = OSDynamicCast(IOPCIDevice, provider);
     if (!device)
         return NULL;
+    /*
+     * IO80211Family keeps one controller per boot: after a hot-unplug, airportd
+     * keeps the first controller's interfaces and the Wi-Fi control layer's
+     * state machines (IO80211Family statics) never run for a second one, and
+     * its teardown hangs (evidence/2026-11-21-pve-hotplug.md). The reference
+     * Wi-Fi is never removed. A device plugged again in the same boot is left
+     * without a driver, so a later unplug needs no teardown; Wi-Fi comes back
+     * after a guest restart.
+     */
+    if (gAirportItlwmControllerRetired) {
+        XYLog("%s: a Wi-Fi controller was already removed in this boot; "
+              "restart macOS to use this device\n", __FUNCTION__);
+        return NULL;
+    }
 #if __IO80211_TARGET >= __MAC_26_0
     /* First: the Intel matchers below look at the device ID only. */
     if (ItlVirt::virt_match(device)) {
